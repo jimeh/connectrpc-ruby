@@ -19,9 +19,12 @@ module ConnectRPC
         fallback = ::Falcon::Server.rack_middleware(RackGuard.new(rack_app)) unless rack_app.nil?
         application = ::ConnectRPC::Async::Application.new(server: server, fallback: fallback)
         listener_application = ListenerApplication.new(application, configured.scheme)
+        @listener_application = listener_application
         utilization_registry ||= ::Async::Utilization::Registry.new
         @connection_total = utilization_registry.metric(:connections_total)
         @connection_active = utilization_registry.metric(:connections_active)
+        @request_total = utilization_registry.metric(:requests_total)
+        @request_active = utilization_registry.metric(:requests_active)
         @session = ::ConnectRPC::Async::ServerSession.new(
           application: method(:call), tls: tls, tls_provider: tls_provider,
           max_connections: max_connections, max_requests: max_requests,
@@ -29,7 +32,7 @@ module ConnectRPC
           refresh_interval: refresh_interval, refresh_jitter: refresh_jitter,
           refresh_timeout: refresh_timeout, on_tls_error: on_tls_error,
           alpn_protocols: %w[h2 http/1.1], http1: HTTP1Resource.method(:new),
-          stop_accepting: method(:stop_accepting)
+          stop_accepting: method(:stop_accepting), on_request_rejected: -> { @request_total.increment }
         )
         # Preserve parent-bound descriptors while installing a worker-local
         # accept wrapper through IO::Endpoint's supported wrapper option.
@@ -56,6 +59,23 @@ module ConnectRPC
 
       def close(grace: 5)
         @session.close(grace: grace)
+      end
+
+      def abort = @session.abort
+
+      def call(request)
+        @request_total.increment
+        @request_active.increment
+        response = @listener_application.call(request)
+        if response&.body
+          # Empty bodies can still own completion callbacks. Preserve their
+          # wire length while retaining the metric until close finishes.
+          response.body = ::Falcon::Body::RequestFinished.new(response.body, @request_active)
+          wrapped = true
+        end
+        response
+      ensure
+        @request_active.decrement unless wrapped
       end
 
       def reload_tls(**) = @session.reload_tls(**)

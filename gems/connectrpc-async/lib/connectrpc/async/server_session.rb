@@ -7,14 +7,19 @@ module ConnectRPC
 
       def initialize(application:, tls: nil, tls_provider: nil, max_connections: 128, max_requests: 128,
                      handshake_timeout: 10, idle_timeout: 60, refresh_interval: 60, refresh_jitter: 0.1,
-                     refresh_timeout: 10, on_tls_error: nil, alpn_protocols: ["h2"], http1: nil, stop_accepting: nil)
+                     refresh_timeout: 10, on_tls_error: nil, alpn_protocols: ["h2"], http1: nil, stop_accepting: nil,
+                     on_request_rejected: nil)
         initialize_affinity
         raise ArgumentError, "application must be callable" unless application.respond_to?(:call)
         raise ArgumentError, "stop_accepting must be callable" if stop_accepting && !stop_accepting.respond_to?(:call)
+        if on_request_rejected && !on_request_rejected.respond_to?(:call)
+          raise ArgumentError, "on_request_rejected must be callable"
+        end
 
         @application = application
         @http1 = http1
         @stop_accepting = stop_accepting
+        @on_request_rejected = on_request_rejected
         @selector = ::Async::HTTP::Protocol::HTTP.new if http1
         @max_connections = Internal.positive_integer(max_connections, "max_connections")
         @max_requests = Internal.positive_integer(max_requests, "max_requests")
@@ -215,6 +220,7 @@ module ConnectRPC
         @admitted.delete_if { |stream, completed| completed && (!stream.respond_to?(:closed?) || stream.closed?) }
         key = request.respond_to?(:stream) ? request.stream : request
         if @state != :running || resource.draining || @admitted.size >= @max_requests
+          @on_request_rejected&.call
           return ::Protocol::HTTP::Response[503, {}, nil]
         end
 
@@ -269,6 +275,9 @@ module ConnectRPC
 
         @aborting = true
         @state = :closing unless @state == :closed
+        # Listener cancellation can yield into its own cleanup. Fail all raw
+        # peers before that boundary, then cancel/join the protocol owners.
+        @resources.each { |resource| Internal.raw_close(resource.raw) }
         stop_accepting
         @resources.each(&:abort)
         @tls.close

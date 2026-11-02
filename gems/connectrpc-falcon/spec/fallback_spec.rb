@@ -49,14 +49,21 @@ RSpec.describe "Falcon Rack/Rails fallback boundary" do
   it "supports ordinary streamed and callable Rack bodies with completion callbacks" do
     reactor do
       completed = []
+      closed = []
       rack = lambda do |env|
         env["rack.response_finished"] << ->(*) { completed << env["PATH_INFO"] }
-        body = if env["PATH_INFO"] == "/callable"
+        route = env["PATH_INFO"]
+        body = case route
+               when "/callable"
                  lambda do |stream|
                    stream.write("callable-body")
                  ensure
                    stream.close
                  end
+               when "/array"
+                 ["array-body"]
+               when "/readable"
+                 Protocol::HTTP::Body::Buffered.wrap("readable-body")
                else
                  Class.new do
                    def each
@@ -65,12 +72,16 @@ RSpec.describe "Falcon Rack/Rails fallback boundary" do
                    end
                  end.new
                end
+        body.define_singleton_method(:close) { |*| closed << route }
         [200, { "content-type" => "text/plain" }, body]
       end
       falcon(rack_app: rack) do |_host, origin|
         expect(http1(origin, "/callable").values_at(0, 2)).to eq([200, "callable-body"])
         expect(http1(origin, "/streamed").values_at(0, 2)).to eq([200, "streamed-body"])
-        expect(completed).to eq(%w[/callable /streamed])
+        expect(http1(origin, "/array").values_at(0, 2)).to eq([200, "array-body"])
+        expect(http1(origin, "/readable").values_at(0, 2)).to eq([200, "readable-body"])
+        expect(completed).to eq(%w[/callable /streamed /array /readable])
+        expect(closed).to eq(completed)
       end
     end
   end

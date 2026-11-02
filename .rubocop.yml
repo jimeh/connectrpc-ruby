@@ -159,6 +159,7 @@ Style/MixinUsage:
 Naming/PredicateMethod:
   AllowedMethods:
     - drain_resources
+    - rewind
 
 # Consumer fixtures exercise multiple independently signed callable objects.
 Style/OneClassPerFile:

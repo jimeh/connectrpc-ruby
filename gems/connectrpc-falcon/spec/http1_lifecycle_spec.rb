@@ -25,7 +25,7 @@ class FalconEventBody < Protocol::HTTP::Body::Readable
   end
 end
 
-RSpec.describe "Falcon HTTP/1 wire lifecycle" do
+RSpec.describe "Falcon HTTP wire lifecycle" do
   [false, true].each do |chunked|
     it "drains a large #{chunked ? 'chunked' : 'fixed'} response and refuses the pipelined next request" do
       reactor do |task|
@@ -94,38 +94,53 @@ RSpec.describe "Falcon HTTP/1 wire lifecycle" do
     end
   end
 
-  it "bounds idle parsing and real Rack callbacks without reentry or metric leaks" do
-    reactor do |task|
-      entered = Async::Queue.new
-      calls = 0
-      registry = Async::Utilization::Registry.new
-      rack = lambda do |env|
-        env["rack.response_finished"] << lambda { |*|
-          calls += 1
-          entered.enqueue(true)
-          Async::Condition.new.wait
-        }
-        [200, { "content-type" => "text/plain" }, ["finished-wire"]]
-      end
-      falcon(rack_app: rack, utilization_registry: registry) do |host, origin|
-        idle = IO::Endpoint.tcp("127.0.0.1", URI(origin).port).connect
-        idle.write("GET /idle HTTP/1.1\r\n")
-        raw = IO::Endpoint.tcp("127.0.0.1", URI(origin).port).connect
-        connection = Async::HTTP::Protocol::HTTP1.client(raw)
-        response = connection.call(Protocol::HTTP::Request["GET", "/callback", {}, nil, authority: "localhost"])
-        expect(response.read).to eq("finished-wire")
-        entered.dequeue
-        expect(registry.metric(:requests_active).value).to eq(1)
-        expect(host.close(grace: 0.03)).to be(false)
-        wait_until(task, "all accepted tasks and callback metrics closed") do
-          registry.metric(:connections_active).value.zero? && registry.metric(:requests_active).value.zero?
+  ["", "finished-wire"].product(%i[http1 h2]).each do |payload, protocol|
+    label = "#{protocol}/#{payload.empty? ? 'empty' : 'nonempty'}"
+    it "closes the #{label} body on callback cancellation and retains metrics" do
+      reactor do |task|
+        entered = Async::Queue.new
+        calls = 0
+        body_closed = 0
+        registry = Async::Utilization::Registry.new
+        rack = lambda do |env|
+          env["rack.response_finished"] << lambda { |*|
+            calls += 1
+            entered.enqueue(true)
+            Async::Condition.new.wait
+          }
+          body = Object.new
+          body.define_singleton_method(:each) { |&block| block.call(payload) unless payload.empty? }
+          body.define_singleton_method(:close) { body_closed += 1 }
+          [200, { "content-type" => "text/plain", "content-length" => payload.bytesize.to_s }, body]
         end
-        expect(calls).to eq(1)
-        expect(idle.read).to eq("")
-      ensure
-        AsyncHelpers::INTERNAL.raw_close(raw)
-        AsyncHelpers::INTERNAL.raw_close(idle)
-        connection&.close
+        falcon(rack_app: rack, utilization_registry: registry) do |host, origin|
+          idle = IO::Endpoint.tcp("127.0.0.1", URI(origin).port).connect
+          idle.write("GET /idle HTTP/1.1\r\n")
+          raw = IO::Endpoint.tcp("127.0.0.1", URI(origin).port).connect
+          implementation = protocol == :h2 ? Async::HTTP::Protocol::HTTP2 : Async::HTTP::Protocol::HTTP1
+          connection = implementation.client(raw)
+          response = connection.call(Protocol::HTTP::Request["GET", "/callback", {}, nil, authority: "localhost"])
+          expect(response.status).to eq(200)
+          if protocol == :http1
+            expect(response.read.to_s).to eq(payload)
+          elsif !payload.empty?
+            expect(response.body.read).to eq(payload)
+          end
+          entered.dequeue
+          expect(registry.metric(:requests_active).value).to eq(1)
+          expect(body_closed).to eq(0)
+          expect(host.close(grace: 0.03)).to be(false)
+          wait_until(task, "all accepted tasks and callback metrics closed") do
+            registry.metric(:connections_active).value.zero? && registry.metric(:requests_active).value.zero?
+          end
+          expect(calls).to eq(1)
+          expect(body_closed).to eq(1)
+          expect(idle.read).to eq("")
+        ensure
+          AsyncHelpers::INTERNAL.raw_close(raw)
+          AsyncHelpers::INTERNAL.raw_close(idle)
+          connection&.close
+        end
       end
     end
   end
@@ -153,6 +168,7 @@ RSpec.describe "Falcon HTTP/1 wire lifecycle" do
     reactor do
       entered = Async::Queue.new
       release = Async::Queue.new
+      registry = Async::Utilization::Registry.new
       rack = lambda do |env|
         body = if env["PATH_INFO"] == "/held"
                  FalconEventBody.new(total: 200_000, gate: release, entered: entered)
@@ -161,15 +177,19 @@ RSpec.describe "Falcon HTTP/1 wire lifecycle" do
                end
         [200, {}, body]
       end
-      falcon(rack_app: rack, max_requests: 1) do |_host, origin|
+      falcon(rack_app: rack, max_requests: 1, utilization_registry: registry) do |_host, origin|
         raw = IO::Endpoint.tcp("127.0.0.1", URI(origin).port).connect
         connection = Async::HTTP::Protocol::HTTP1.client(raw)
         response = connection.call(Protocol::HTTP::Request["GET", "/held", {}, nil, authority: "localhost"])
         entered.dequeue
         expect(http1(origin, "/while-held").first).to eq(503)
+        expect(registry.metric(:requests_total).value).to eq(2)
+        expect(registry.metric(:requests_active).value).to eq(1)
         release.enqueue(true)
         expect(response.read).to eq("x" * 200_000)
         expect(http1(origin, "/after-completion").values_at(0, 2)).to eq([200, "other"])
+        expect(registry.metric(:requests_total).value).to eq(3)
+        expect(registry.metric(:requests_active).value).to eq(0)
       ensure
         release.enqueue(true)
         AsyncHelpers::INTERNAL.raw_close(raw)

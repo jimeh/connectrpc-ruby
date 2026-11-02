@@ -1,5 +1,7 @@
 # frozen_string_literal: true
 
+require "English"
+
 module ConnectRPC
   module Falcon
     class Service < ::Falcon::Service::Server
@@ -18,7 +20,11 @@ module ConnectRPC
 
           ready.enqueue([nil, e])
         ensure
-          server&.close
+          if $ERROR_INFO && !managed_stop?($ERROR_INFO)
+            server&.abort
+          else
+            server&.close
+          end
         end
         server, error = ready.dequeue
         raise error if error
@@ -26,6 +32,17 @@ module ConnectRPC
         # Service::Server keeps this for its normal statistics/process title,
         # and cannot declare readiness until the worker's initial load succeeds.
         server
+      end
+
+      private
+
+      def managed_stop?(error)
+        while error
+          return true if error.is_a?(Interrupt)
+
+          error = error.cause
+        end
+        false
       end
     end
 
