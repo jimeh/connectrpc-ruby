@@ -131,10 +131,15 @@ WEBrick. The installed gem performs real typed Rack/NetHTTP calls with both
 binary and JSON scalar-wrapper payloads. The helper scripts are copied to the
 external cwd; library code loads exclusively from the fresh installed gem.
 The installed executable first proves missing Google fails helpfully with empty
-stdout. After the optional artifacts are installed, actual protoc invokes only
+stdout. The task retains its task-local compiler activation, and the check
+requires `protoc --version` to report `libprotoc 36.2`. Missing executables and
+failed commands report the command and failure status. After the optional
+artifacts are installed, actual protoc invokes only
 `GEM_HOME/bin/protoc-gen-connectrpc-ruby` outside the checkout with cleared
 Ruby/Bundler source paths. The generated tree performs typed success/error,
 metadata/trailers, nested imported types and presence calls in both codecs.
+Google package and explicit Ruby package fixtures import ordinary WKTs, assert
+exact official message-class identity and perform typed calls in both codecs.
 The check does not install the development JSON gem: it exercises the Ruby
 default JSON and Net::HTTP gems. All installs are offline and temporary files
 are removed. Nothing is published.

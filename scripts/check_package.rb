@@ -2,11 +2,26 @@
 
 require "bundler"
 require "fileutils"
+require "English"
 require "open3"
 require "rbconfig"
 require "rubygems/package"
+require "shellwords"
 require "stringio"
 require "tmpdir"
+
+def run_package_command(environment, command, working)
+  result = system(environment, *command, chdir: working)
+  return if result
+
+  status = $CHILD_STATUS
+  reason = if result.nil?
+             "executable missing or could not start; check task-local tools and PATH"
+           else
+             status.to_s
+           end
+  abort "Isolated package command failed (#{reason}): #{Shellwords.join(command)}"
+end
 
 root = File.expand_path("..", __dir__)
 specification = Gem::Specification.load(File.join(root, "connectrpc.gemspec"))
@@ -15,7 +30,7 @@ package = Gem::Package.new(archive)
 expected = %w[
   README.md docs/development.md docs/design.md lib/connectrpc.rb lib/connectrpc/version.rb
   exe/protoc-gen-connectrpc-ruby lib/connectrpc/generator.rb lib/connectrpc/generator/names.rb
-  lib/connectrpc/generator/schema.rb lib/connectrpc/generator/renderer.rb
+  lib/connectrpc/generator/schema.rb lib/connectrpc/generator/renderer.rb lib/connectrpc/generator/runtime_names.rb
   lib/connectrpc/method.rb lib/connectrpc/metadata.rb lib/connectrpc/error.rb lib/connectrpc/deadline.rb
   lib/connectrpc/message_io.rb lib/connectrpc/protocol.rb lib/connectrpc/client.rb
   lib/connectrpc/server.rb lib/connectrpc/rack.rb
@@ -66,6 +81,17 @@ Bundler.with_unbundled_env do
     ENV.each_key do |name|
       environment[name] = nil if name.start_with?("BUNDLE_", "BUNDLER_")
     end
+    begin
+      version, error, status = Open3.capture3(environment, "protoc", "--version", chdir: working)
+    rescue Errno::ENOENT => e
+      abort "Package command protoc --version could not start: #{e.message}; " \
+            "run mise run check:package for task-local protoc 36.2"
+    end
+    unless status.success? && version.strip == "libprotoc 36.2"
+      abort "Package command protoc --version failed (#{status}): " \
+            "expected libprotoc 36.2, got #{version.inspect}; #{error}"
+    end
+    puts "Package compiler: #{version.strip}"
     commands = [
       [RbConfig.ruby, "-S", "gem", "install", "--norc", archive, "--local", "--no-document", "--ignore-dependencies"],
       [RbConfig.ruby, "-e", <<~'RUBY']
@@ -88,7 +114,7 @@ Bundler.with_unbundled_env do
     ]
     installed_plugin = File.join(gem_home, "bin/protoc-gen-connectrpc-ruby")
     commands.each do |command|
-      abort "Isolated package check failed" unless system(environment, *command, chdir: working)
+      run_package_command(environment, command, working)
     end
     output, error, status = Open3.capture3(environment, installed_plugin, stdin_data: "", chdir: working)
     unless !status.success? && output.empty? && error.include?("generator requires google-protobuf >= 4.36.2, < 5")
@@ -107,8 +133,9 @@ Bundler.with_unbundled_env do
                  "--connectrpc-ruby_out=#{generated}", "--plugin=protoc-gen-connectrpc-ruby=#{installed_plugin}",
                  *inputs]
     commands << [RbConfig.ruby, "-I", generated, "generated_integration.rb"]
+    puts "Installed plugin: #{installed_plugin} (compiler #{version.strip})"
     commands.each do |command|
-      abort "Isolated package check failed" unless system(environment, *command, chdir: working)
+      run_package_command(environment, command, working)
     end
   end
 end

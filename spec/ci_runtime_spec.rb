@@ -141,3 +141,14 @@ RSpec.describe "CI Mise task replacement" do
     expect(ci.fetch("run")).to eq(["ruby {{config_root}}/scripts/ci_runtime.rb interop", "go mod download"])
   end
 end
+
+RSpec.describe "Task-local tool activation" do
+  it "runs tool-owning commands directly so nested Mise cannot remove their tools" do
+    output, error, status = Open3.capture3("mise", "tasks", "--json")
+    expect(status.success?).to be(true), error
+    tasks = JSON.parse(output)
+    tasks.reject { |task| task.fetch("tools", {}).empty? }.each do |task|
+      expect(task.fetch("run")).not_to include(a_string_matching(/\bmise exec\b/)), task.fetch("name")
+    end
+  end
+end

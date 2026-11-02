@@ -72,6 +72,18 @@ RSpec.describe "Service generation" do
     end
   end
 
+  %w[
+    InitializeCopy InitializeDup InitializeClone MethodMissing RespondToMissing
+    SingletonMethodAdded SingletonMethodRemoved SingletonMethodUndefined
+    ToStr ToAry ToHash ToProc ToIo ToPath ToInt ToSym ToRegexp
+  ].each do |name|
+    it "rejects object hook or implicit conversion RPC #{name}" do
+      response = generate(request_for(rpcs: [name]))
+      expect(response.error).to include("Reserved", name)
+      expect(response.file).to be_empty
+    end
+  end
+
   it "ignores imported streaming services and only emits targets" do
     request = request_for
     imported = Google::Protobuf.deep_copy(request.proto_file.first)
@@ -190,6 +202,95 @@ RSpec.describe "Service generation" do
       request = request_for(rpcs: [], service: name, package: "")
       expect(generate(request).error).to include("Reserved top-level Ruby constant", name)
     end
+  end
+
+  %w[Google ConnectRPC].each do |name|
+    %i[message enum].each do |kind|
+      it "rejects loaded top-level #{kind} replacement of #{name}" do
+        request = request_for(rpcs: [], package: "")
+        file = request.proto_file.first
+        if kind == :message
+          file.message_type << Google::Protobuf::DescriptorProto.new(name: name)
+        else
+          file.enum_type << Google::Protobuf::EnumDescriptorProto.new(name: name)
+        end
+        response = generate(request)
+        expect(response.error).to include("Reserved", name)
+        expect(response.file).to be_empty
+      end
+    end
+  end
+
+  %w[file ConnectRPC].each do |package|
+    it "rejects incompatible loaded import package #{package}" do
+      request = request_for
+      imported = Google::Protobuf::FileDescriptorProto.new(
+        name: "imported.proto", package: package,
+        message_type: [Google::Protobuf::DescriptorProto.new(name: "Imported")]
+      )
+      request.proto_file << imported
+      request.proto_file.first.dependency << imported.name
+      response = generate(request)
+      expect(response.error).to include("Reserved", package == "file" ? "File" : "ConnectRPC")
+      expect(response.file).to be_empty
+    end
+  end
+
+  %w[
+    Google::Protobuf Google::Protobuf::DescriptorPool Google::Protobuf::Error
+    Google::Protobuf::Internal::Arena Google::Protobuf::MessageExts
+    Google::Protobuf::Compiler::CodeGeneratorRequest Google::Protobuf::Timestamp
+    ConnectRPC::Method ConnectRPC::Bindings::GoogleProtobuf
+  ].each do |constant|
+    %i[message enum package service].each do |kind|
+      description = if kind == :package && constant == "Google::Protobuf"
+                      "allows package nesting under #{constant}"
+                    else
+                      "rejects #{kind} collision with runtime #{constant}"
+                    end
+      it description do
+        request = request_for(rpcs: [])
+        file = request.proto_file.first
+        parts = constant.split("::")
+        # A package is emitted with module blocks; the other forms replace or
+        # reopen the final constant through the official Ruby package option.
+        namespace = kind == :package ? parts : parts[0...-1]
+        file.options = Google::Protobuf::FileOptions.new(ruby_package: namespace.join("::"))
+        case kind
+        when :message
+          file.message_type << Google::Protobuf::DescriptorProto.new(name: parts.last)
+        when :enum
+          file.enum_type << Google::Protobuf::EnumDescriptorProto.new(name: parts.last)
+        when :service
+          file.service.first.name = parts.last
+        end
+        response = generate(request)
+        if kind == :package && constant == "Google::Protobuf"
+          expect(response.error).to eq("")
+        else
+          if constant.start_with?("Google")
+            protected_name = constant.sub("Internal::Arena", "Internal")
+            expect(response.error).to include("Reserved runtime Ruby constant #{protected_name}")
+          else
+            expect(response.error).to include("Reserved top-level Ruby constant ConnectRPC")
+          end
+          expect(response.file).to be_empty
+        end
+      end
+    end
+  end
+
+  it "allows Google package nesting and equivalent explicit Ruby package mappings" do
+    request = request_for(package: "google.correction_fixture.v1")
+    expect(generate(request).error).to eq("")
+    request.proto_file.first.options = Google::Protobuf::FileOptions.new(ruby_package: "Google::CorrectionFixture::V1")
+    expect(generate(request).error).to eq("")
+  end
+
+  it "does not reject unrelated unloaded runtime package declarations" do
+    request = request_for
+    request.proto_file << Google::Protobuf::FileDescriptorProto.new(name: "unloaded.proto", package: "file")
+    expect(generate(request).error).to eq("")
   end
 
   it "rejects Ruby collisions in imported message namespaces required by a target" do

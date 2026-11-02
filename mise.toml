@@ -81,7 +81,7 @@ depends = ["check:static", "syntax"]
 description = "Install and require the built gem in isolation"
 depends = ["build", "setup:generation"]
 tools."aqua:protocolbuffers/protobuf/protoc" = "36.2"
-run = "mise exec -- bundle _4.0.23_ exec rake check:package"
+run = "bundle _4.0.23_ exec rake check:package"
 
 [tasks.verify]
 description = "Run static checks, specs, installed package integration, Go interop and official conformance"

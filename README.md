@@ -99,7 +99,10 @@ streaming targets and nonempty plugin parameters are rejected. Output is
 remains official `--ruby_out`. No RBS/Sorbet files are emitted. Ruby module
 placement follows official package/`ruby_package` naming; RPC methods use the
 gRPC Ruby underscore rule (`GetHTTP` becomes `get_http`). Leading-underscore
-RPCs, reserved names and collisions visible in the request fail with diagnostics.
+RPCs, object hooks, implicit conversion methods, reserved runtime names and
+collisions visible in the request fail with diagnostics. Compatible `google.*`
+and `Google::...` Ruby package nesting is supported, including WKT imports;
+replacing `Google`, `ConnectRPC` or concrete protobuf runtime constants is rejected.
 Cross-invocation namespace conflicts cannot all be discovered; generated code
 also guards its directly defined constants at load time. See [design](docs/design.md).
 

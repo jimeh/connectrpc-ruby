@@ -13,6 +13,9 @@ module ConnectRPC
       CLIENT_RESERVED = %w[
         initialize handlers raise class clone define_singleton_method display dup enum_for
         extend freeze
+        initialize_copy initialize_dup initialize_clone method_missing respond_to_missing
+        singleton_method_added singleton_method_removed singleton_method_undefined
+        to_str to_ary to_hash to_proc to_io to_path to_int to_sym to_regexp
         to_yaml to_json pretty_print_inspect pretty_print_cycle pretty_print
         pretty_print_instance_variables pretty_inspect
         hash inspect instance_eval instance_exec instance_variable_get

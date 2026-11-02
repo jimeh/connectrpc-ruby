@@ -8,6 +8,7 @@ rescue LoadError => e
 end
 
 require_relative "generator/names"
+require_relative "generator/runtime_names"
 require_relative "generator/schema"
 require_relative "generator/renderer"
 

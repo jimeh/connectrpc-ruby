@@ -48,9 +48,9 @@ module ConnectRPC
         @symbols[name] = description
       end
 
-      def node(parts, kind, origin)
+      def node(parts, kind, origin, file)
         parts.each { |part| Names.constant!(part, origin) }
-        @namespaces[parts] << [kind, origin]
+        @namespaces[parts] << [kind, origin, file.name]
       end
 
       def index_file(file)
@@ -61,7 +61,7 @@ module ConnectRPC
         namespace = Names.namespace(file)
         namespace.each_index do |index|
           # Repeated declarations of the same package are legitimate.
-          node(namespace.take(index + 1), :package, "package #{namespace.take(index + 1).join('::')}")
+          node(namespace.take(index + 1), :package, "package #{namespace.take(index + 1).join('::')}", file)
         end
         file.dependency.each do |name|
           raise InvalidDescriptor, "Missing dependency #{name} in #{file.name}" unless @files.key?(name)
@@ -87,14 +87,14 @@ module ConnectRPC
           next if message.options&.map_entry
 
           parts = namespace + [Names.rubify(message.name)]
-          node(parts, :message, full)
+          node(parts, :message, full, file)
           index_types(message.nested_type, message.enum_type, full, parts, file)
         end
         enums.each do |enum|
           Names.identifier!(enum.name, file.name)
           full = qualified(prefix, enum.name)
           symbol!(full, file.name)
-          node(namespace + [Names.rubify(enum.name)], :enum, full)
+          node(namespace + [Names.rubify(enum.name)], :enum, full, file)
         end
       end
 
@@ -106,13 +106,9 @@ module ConnectRPC
         file.service.each do |service|
           origin = "#{file.name}: #{qualified(file.package, service.name)}"
           parts = Names.namespace(file) + [Names.rubify(service.name)]
-          if Names::TOP_LEVEL_RESERVED.include?(parts.first)
-            raise InvalidDescriptor, "Reserved top-level Ruby constant #{parts.first} for #{origin}"
-          end
-
-          node(parts, :service, origin)
-          node(parts + ["SERVICE"], :generated, "#{origin} SERVICE")
-          node(parts + ["Client"], :generated, "#{origin} Client")
+          node(parts, :service, origin, file)
+          node(parts + ["SERVICE"], :generated, "#{origin} SERVICE", file)
+          node(parts + ["Client"], :generated, "#{origin} Client", file)
           methods = {}
           service["method"].each do |method|
             validate_method(method, origin)
@@ -122,7 +118,7 @@ module ConnectRPC
             end
 
             methods[ruby] = method.name
-            node(parts + [ruby.upcase], :generated, "#{origin}.#{method.name}")
+            node(parts + [ruby.upcase], :generated, "#{origin}.#{method.name}", file)
           end
         end
       end
@@ -141,7 +137,9 @@ module ConnectRPC
       end
 
       def validate_namespaces
-        relevant = loaded_files.flat_map do |file|
+        loaded = loaded_files
+        loaded_names = loaded.map(&:name)
+        relevant = loaded.flat_map do |file|
           namespace = Names.namespace(file)
           if namespace.empty?
             [*file.message_type, *file.enum_type, *file.service].map { |type| [Names.rubify(type.name)] }
@@ -152,7 +150,10 @@ module ConnectRPC
         @namespaces.each do |parts, declarations|
           next unless relevant.any? { |prefix| parts.take(prefix.size) == prefix || prefix.take(parts.size) == parts }
 
-          unique = declarations.uniq
+          declarations.each do |kind, origin, file|
+            RuntimeNames.validate!(parts, kind, origin, file) if loaded_names.include?(file)
+          end
+          unique = declarations.map { |kind, origin, _file| [kind, origin] }.uniq
           next if unique.size == 1
           next if unique.all? { |kind, _origin| kind == :package }
 

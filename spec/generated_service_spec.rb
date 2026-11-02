@@ -8,6 +8,8 @@ require_relative "../examples/localhost"
 $LOAD_PATH.unshift(File.expand_path("fixtures/generation/ruby", __dir__))
 require "generation/service_connect"
 require "generation/dotted_connect"
+require "generation/google_connect"
+require "generation/google_ruby_connect"
 require "generation_empty_connect"
 
 RSpec.describe "Generated service integration" do
@@ -24,6 +26,26 @@ RSpec.describe "Generated service integration" do
     expect(service::ECHO).to be_frozen
     expect(service::ECHO.path).to eq("/generation_fixture.v1.EchoService/Echo")
     expect(GenerationFixture::V1::ConnectRPC.new.value).to eq("")
+  end
+
+  it "loads official Google package and ruby_package messages with identical WKT types" do
+    google_service = Google::GenerationFixture::V1::EchoService
+    google_type = Google::GenerationFixture::V1::Message
+    expect(google_service::ECHO.request_type).to equal(google_type)
+    expect(google_service::ECHO.response_type).to equal(google_type)
+    expect(google_service::TIME.request_type).to equal(Google::Protobuf::Timestamp)
+    expect(google_service::TIME.response_type).to equal(Google::Protobuf::Timestamp)
+    mapped_service = Google::GenerationFixture::MappedV1::EchoService
+    mapped_type = Google::GenerationFixture::MappedV1::Message
+    expect(mapped_service::ECHO.request_type).to equal(mapped_type)
+    expect(mapped_service::ECHO.response_type).to equal(mapped_type)
+    %i[proto json].each do |codec|
+      message = google_type.new(time: Google::Protobuf::Timestamp.new(seconds: 123, nanos: 456))
+      decoded = binding.decode(binding.encode(message, type: google_type, codec: codec), type: google_type,
+                                                                                         codec: codec)
+      expect(decoded.class).to equal(google_type)
+      expect(decoded).to eq(message)
+    end
   end
 
   it "forwards omitted, nil, finite, metadata and arbitrary options with return identity" do
