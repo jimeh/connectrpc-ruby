@@ -169,7 +169,7 @@ Core ships no `lib/connectrpc/rack.rb`. Core `sig/`, the explicitly selected
 `exe/protoc-gen-connectrpc-ruby`, `LICENSE`, `README.md`, and the
 design/development/[RBS guide](rbs.md) documents ship. The executable metadata and packaged execute
 bits are checked; syntax and RuboCop include the extensionless executable.
-The optional Rack, Rails, Async and testing packages carry byte-identical copies of the root
+The optional Rack, Rails, Async, testing and Falcon packages carry byte-identical copies of the root
 `LICENSE`; their package checks verify both the copies and archived notices.
 Keep these copies in sync when updating the canonical notice.
 The exact manifest in `scripts/check_package.rb` must be deliberately updated
@@ -404,7 +404,7 @@ Rack source ownership. Root installed checks also retain default JSON/NetHTTP
 and the actual installed generator. Rails checks all three local owners.
 
 Final local handoff requires `mise run verify` followed by `mise run rack:verify`.
-Root `verify` composition is unchanged. CI preserves the original 16 checks and
+Rack verification stays separate from root `verify`. CI preserves the original 16 checks and
 adds two Rack specs/check/package lanes on the existing Rubies; clean-environment
 matrix evidence remains a hosted responsibility. No runtime savings are claimed.
 

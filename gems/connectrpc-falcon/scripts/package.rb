@@ -22,10 +22,12 @@ expected_dependencies = {
 actual = packages.last.spec.runtime_dependencies.to_h { |dependency| [dependency.name, dependency.requirement.to_s] }
 abort "Falcon runtime dependencies changed" unless actual == expected_dependencies
 packages.each do |package|
-  license = package.spec.name == "connectrpc-falcon" ? "MIT" : "Nonstandard"
-  unless package.spec.metadata["allowed_push_host"] == "https://gems.invalid" && package.spec.license == license
+  unless package.spec.metadata["allowed_push_host"] == "https://gems.invalid" && package.spec.license == "MIT"
     abort "Publication guard missing"
   end
+end
+unless File.binread(File.expand_path("../LICENSE", __dir__)) == File.binread(File.join(root, "LICENSE"))
+  abort "Falcon license differs from root LICENSE"
 end
 specifications = Bundler.load.specs.reject do |spec|
   %w[connectrpc connectrpc-async connectrpc-falcon bundler].include?(spec.name)
@@ -37,10 +39,12 @@ artifacts = specifications.map do |spec|
 end
 Bundler.with_unbundled_env do
   Dir.mktmpdir("connectrpc-falcon-package-") do |temporary|
-    manifest = File.join(temporary, "manifest")
-    packages.last.extract_files(manifest)
-    unless File.binread(File.join(manifest, "LICENSE")) == File.binread(File.expand_path("../LICENSE", __dir__))
-      abort "Packaged MIT notice changed"
+    packages.each do |package|
+      manifest = File.join(temporary, package.spec.name)
+      package.extract_files(manifest, "LICENSE")
+      unless File.binread(File.join(manifest, "LICENSE")) == File.binread(File.join(root, "LICENSE"))
+        abort "Packaged MIT notice changed: #{package.spec.name}"
+      end
     end
 
     working = File.join(temporary, "outside-checkout")
