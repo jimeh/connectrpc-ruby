@@ -343,7 +343,7 @@ of root build output. `check:package:rails` checks manifests, guards and
 conventional runtime dependency requirements, installs offline into fresh
 GEM_HOME/GEM_PATH outside the checkout, and exercises installed generated
 binary/JSON clients against native Rails callbacks and structured failures.
-Only the adapter README and library files ship in its archive. No dependencies
+Only the adapter README, `LICENSE` and library files ship in its archive. No dependencies
 or fixtures are vendored into either package, and nothing is published.
 
 ## Optional HTTP/2 development
