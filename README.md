@@ -340,3 +340,5 @@ header normalization. `mise run async:example` runs the generated localhost
 example; `async:verify` checks the independent bundle, installed packages and
 connect-go interoperability. Core require and core/Rails dependencies stay
 independent.
+
+See the optional [in-process testing package](gems/connectrpc-testing/README.md) for real encoded client/server round trips without sockets.

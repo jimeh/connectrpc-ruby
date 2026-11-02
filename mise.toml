@@ -310,3 +310,43 @@ description = "Prepare exact Ruby/Bundler for the independent Rack bundle"
 dir = "{{config_root}}/gems/connectrpc-rack"
 env = { BUNDLE_GEMFILE = "{{config_root}}/gems/connectrpc-rack/Gemfile", BUNDLE_PATH = "{{config_root}}/vendor/rack/bundle", BUNDLE_USER_HOME = "{{config_root}}/vendor/rack/bundler", BUNDLE_COOLDOWN = "7" }
 run = ["mise install --locked ruby", "mise exec -- ruby ../../scripts/setup_bundler.rb"]
+
+# Optional in-process testing bundle.
+
+[tasks."testing:setup"]
+description = "Install independent frozen testing bundle"
+depends = ["testing:tools"]
+run = "mise exec -- ruby gems/connectrpc-testing/scripts/run.rb setup"
+
+[tasks."testing:test"]
+description = "Run testing transport behavior specs"
+depends = ["testing:setup"]
+run = "mise exec -- ruby gems/connectrpc-testing/scripts/run.rb test"
+
+[tasks."testing:check"]
+description = "Parse and lint maintained testing package files"
+depends = ["testing:setup"]
+run = "mise exec -- ruby gems/connectrpc-testing/scripts/run.rb check"
+
+[tasks."testing:build"]
+description = "Build independent core and testing archives"
+depends = ["testing:setup"]
+run = "mise exec -- ruby gems/connectrpc-testing/scripts/run.rb build"
+
+[tasks."testing:package"]
+description = "Install testing and core offline and exercise generated clients"
+depends = ["testing:build"]
+run = "mise exec -- ruby gems/connectrpc-testing/scripts/run.rb package"
+
+[tasks."testing:example"]
+description = "Run generated in-process unary calls in both codecs"
+depends = ["testing:setup"]
+run = "mise exec -- ruby gems/connectrpc-testing/scripts/run.rb example"
+
+[tasks."testing:tools"]
+description = "Require preinstalled pinned Ruby and Bundler without global installs"
+run = "mise exec -- ruby gems/connectrpc-testing/scripts/tools.rb"
+
+[tasks."testing:verify"]
+description = "Verify testing transport source, specs, installed package and example"
+depends = ["testing:test", "testing:check", "testing:package", "testing:example"]

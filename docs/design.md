@@ -276,3 +276,5 @@ remains an option; cross-backend message-class compatibility is not promised.
 No custom protobuf parser is implemented. See the
 [Ruby generated-code guide](https://protobuf.dev/reference/ruby/ruby-generated/)
 and [Rack specification](https://github.com/rack/rack/blob/v3.2.7/SPEC.rdoc).
+
+See the optional [in-process testing package](../gems/connectrpc-testing/README.md) for real encoded client/server round trips without sockets.

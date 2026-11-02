@@ -78,7 +78,7 @@ During Ruby iteration, use focused tests and relevant static checks. Run
 final implementation handoff. Run `mise run verify` and then `mise run rack:verify`
 for final handoff; moved middleware specs have their own canonical gate.
 [CI](https://github.com/jimeh/connectrpc-ruby/blob/main/docs/ci.md) splits the same
-canonical component tasks into nine core, three Rails, four optional HTTP/2 and two optional Rack checks, with syntax, specs, package isolation,
+canonical component tasks into nine core, three Rails, four optional HTTP/2, two optional Rack and two optional testing checks, with syntax, specs, package isolation,
 interop and official conformance on both Rubies. Hosted clean-environment and
 matrix results remain CI evidence; a local pass cannot establish them.
 
@@ -404,3 +404,5 @@ Final local handoff requires `mise run verify` followed by `mise run rack:verify
 Root `verify` composition is unchanged. CI preserves the original 16 checks and
 adds two Rack specs/check/package lanes on the existing Rubies; clean-environment
 matrix evidence remains a hosted responsibility. No runtime savings are claimed.
+
+See the optional [in-process testing package](../gems/connectrpc-testing/README.md) for real encoded client/server round trips without sockets.

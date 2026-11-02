@@ -76,10 +76,10 @@ RSpec.describe "CI check mapping" do
   let(:workflow) { YAML.load_file(File.expand_path("../.github/workflows/ci.yml", __dir__)) }
   let(:jobs) { workflow.fetch("jobs") }
 
-  it "preserves nine core, three Rails, four async and two Rack checks" do
+  it "preserves nine core, three Rails, four async, two Rack and two testing checks" do
     core = %w[static specs package interop conformance]
     backend = %w[async_specs async_interop]
-    expect(jobs.keys).to match_array([*core, "rails", *backend, "rack"])
+    expect(jobs.keys).to match_array([*core, "rails", *backend, "rack", "testing"])
     count = lambda do |names|
       jobs.slice(*names).values.sum do |job|
         job.dig("strategy", "matrix", "ruby")&.size || job.dig("strategy", "matrix", "include")&.size || 1
@@ -89,7 +89,8 @@ RSpec.describe "CI check mapping" do
     expect(count.call(["rails"])).to eq(3)
     expect(count.call(backend)).to eq(4)
     expect(count.call(["rack"])).to eq(2)
-    expect(count.call(jobs.keys)).to eq(18)
+    expect(count.call(["testing"])).to eq(2)
+    expect(count.call(jobs.keys)).to eq(20)
     jobs.each_value { |job| expect(job).not_to have_key("needs") }
     jobs.except("static", "rails").each_value do |job|
       expect(job.dig("strategy", "fail-fast")).to be(false)
