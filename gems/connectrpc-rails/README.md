@@ -110,8 +110,11 @@ deadline_exceeded. Messages are generic. Ambiguous 400/409/500, redirects,
 unmapped statuses, and success without a typed result become `internal`.
 A non-200 native halt after the handler also prevents typed success. Raw Rails
 bodies and exception messages never become protocol error messages.
-Unexpected exceptions escaping native rescue handling are reported with their
-original backtraces through `Rails.error` before safe core normalization.
+Exceptions explicitly registered in Rails' `rescue_responses` remain expected
+outcomes and do not produce adapter error reports or exception logs. Unexpected
+exceptions are logged with their original backtraces and reported through
+`Rails.error` before safe core normalization. Request preparation uses the same
+classification, including application overrides to `rescue_responses`.
 
 Controller instrumentation describes controller execution: a deliberate Connect
 exception can appear as a Rails 500, while successful controller execution can

@@ -32,7 +32,6 @@ module ConnectRPC
           @connect_method = rpc_method
           @connect_request = message
           @connect_context = context
-          connect_prepare_request
           connect_run_lifecycle { super(name, ...) }
         end
       end
@@ -71,6 +70,7 @@ module ConnectRPC
       end
 
       def connect_run_lifecycle
+        connect_prepare_request
         yield
         raise connect_status_error(response.status) unless @connect_result_set && response.status == 200
 
@@ -83,6 +83,9 @@ module ConnectRPC
       end
 
       def connect_report(error)
+        return if ActionDispatch::ExceptionWrapper.rescue_responses.key?(error.class.name)
+
+        logger&.error { "[connectrpc.rails] #{error.full_message(highlight: false)}" }
         return unless defined?(::Rails) && ::Rails.respond_to?(:error)
 
         ::Rails.error.report(error, handled: false, source: "connectrpc.rails")

@@ -125,6 +125,7 @@ RSpec.describe ConnectRPC::Rails::Controller do
     expect(JSON.parse(response.body)).to include("code" => "internal", "message" => "Internal error")
     report = reports.find { |error, options| error.message == "secret bug" && options[:source] == "connectrpc.rails" }
     expect(report).not_to be_nil
+    expect(reports.count { |_error, options| options[:source] == "connectrpc.rails" }).to eq(1)
     expect(report.first.backtrace.join).to include("rpc_echo")
     expect(report.last[:handled]).to be(false)
   ensure
