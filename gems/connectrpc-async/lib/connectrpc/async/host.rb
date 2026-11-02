@@ -12,8 +12,10 @@ module ConnectRPC
         @host = host
         @requested_port = port
         @addresses = [].freeze
+        application = Application.new(server: server)
         @session = build_session(
-          application: Application.new(server: server), tls: tls, tls_provider: tls_provider,
+          application: application, lifecycle_factory: application.method(:start_call),
+          tls: tls, tls_provider: tls_provider,
           max_connections: max_connections, max_requests: max_requests,
           handshake_timeout: handshake_timeout, idle_timeout: idle_timeout,
           refresh_interval: refresh_interval, refresh_jitter: refresh_jitter,

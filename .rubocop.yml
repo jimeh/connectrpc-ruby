@@ -31,6 +31,8 @@ Metrics/BlockLength:
     - gems/connectrpc-rack/scripts/**/*.rb
     - gems/connectrpc-rails/spec/**/*.rb
     - gems/connectrpc-async/spec/**/*.rb
+    - gems/connectrpc-otel/spec/**/*.rb
+    - gems/connectrpc-otel/scripts/**/*.rb
     - gems/connectrpc-testing/spec/**/*.rb
     - gems/connectrpc-testing/scripts/**/*.rb
     - gems/connectrpc-falcon/spec/**/*.rb
@@ -60,6 +62,8 @@ Metrics/MethodLength:
     - gems/connectrpc-rack/scripts/**/*.rb
     - gems/connectrpc-rails/spec/**/*.rb
     - gems/connectrpc-async/spec/**/*.rb
+    - gems/connectrpc-otel/spec/**/*.rb
+    - gems/connectrpc-otel/scripts/**/*.rb
     - gems/connectrpc-testing/spec/**/*.rb
     - gems/connectrpc-testing/scripts/**/*.rb
     - gems/connectrpc-falcon/spec/**/*.rb
@@ -83,6 +87,8 @@ Metrics/AbcSize:
     - gems/connectrpc-rack/scripts/**/*.rb
     - gems/connectrpc-rails/spec/**/*.rb
     - gems/connectrpc-async/spec/**/*.rb
+    - gems/connectrpc-otel/spec/**/*.rb
+    - gems/connectrpc-otel/scripts/**/*.rb
     - gems/connectrpc-testing/spec/**/*.rb
     - gems/connectrpc-testing/scripts/**/*.rb
     - gems/connectrpc-falcon/spec/**/*.rb

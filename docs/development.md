@@ -440,3 +440,19 @@ Keep its checksummed Gemfile/lock, `vendor/falcon/bundle`, Bundler user state an
 artifact for seven-day release age and downloaded archive SHA256. Actual worker,
 TLS, retirement and installed-caller tests establish different properties;
 green coverage or baseline probes do not substitute for them.
+
+## Optional OpenTelemetry development
+
+`mise run otel:setup` installs the independent checksummed API/SDK and integration
+bundle under `vendor/otel`. Use `otel:test -- spec/tracing_spec.rb` for generated
+in-process traces, `spec/native_spec.rb` for real Async/Falcon boundaries, and
+`spec/rack_rails_spec.rb spec/rails_spec.rb` for Rack/NetHTTP and native Rails.
+`otel:check`, `otel:build`, `otel:package`, `otel:example` and `otel:verify` are
+discoverable leaves. Repeat `MISE_RUBY_VERSION=4.0.9 mise run otel:verify` for the
+second pinned runtime. Coverage starts before requires and includes core and all
+local integration libraries under `coverage/otel/<Ruby>/`. The two OTel CI leaves
+are independent of the existing 26 jobs. Runtime bundles never gain an SDK.
+Package checks install normal dependencies offline into a fresh external
+GEM_HOME, then run copied generated callers with actual SDK in-memory exports.
+See the [package guide](../gems/connectrpc-otel/README.md) for the precise trace
+baseline and unknown-method default-redaction limitation.

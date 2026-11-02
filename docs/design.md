@@ -293,3 +293,50 @@ No custom protobuf parser is implemented. See the
 and [Rack specification](https://github.com/rack/rack/blob/v3.2.7/SPEC.rdoc).
 
 See the optional [in-process testing package](../gems/connectrpc-testing/README.md) for real encoded client/server round trips without sockets.
+
+## RPC lifecycle observation
+
+`Instrumentation.new(subscribers:, on_error: nil)` freezes a copied subscriber
+list. `start(call)` returns a per-call observer. Optional callbacks are fixed:
+`attach` returns a local activation token; `detach(token)` unwinds successful
+attachments in reverse registration order; `processing_finished(outcome)`
+receives an immutable final processing snapshot; `finished(completion)` receives
+one terminal processing/delivery observation. Core owns one application yield.
+Each callback/reporter StandardError is isolated. Fatal exceptions retain Ruby
+semantics. Observers must make attach/detach exception-safe: the dispatcher
+cannot repair private context state mutated before a failing attach returns a
+token. Retained observers hold no globally active core context.
+
+Call facts contain role, Connect protocol, recognized immutable Method or nil,
+client endpoint host/port and a propagation carrier, never message objects.
+The client starts before timeout/metadata validation and applies validated staged
+injection transactionally to copied metadata. Server extraction uses defensive
+read-only headers without moving validation ahead of 405. Outcomes distinguish
+original exceptions, normalized/replacement exceptions, emitted Connect code,
+HTTP status, monotonic processing duration and measured encoded byte counts.
+Unknown byte counts are nil. Metadata snapshots retain repeated arrays.
+
+`Server#start_call(path:, headers:)` is the explicit host SPI. It resolves a known
+method and starts observers without reading input or validating protocol.
+`Server#call(..., lifecycle: handle)` consumes that Server/path-bound handle once
+and leaves terminal ownership to the host. `handle.activate { ... }` scopes
+context to the executing task; `handle.finish(delivery:, error: nil,
+decision: :processed, http_status: nil)` terminates idempotently. Ordinary
+Server#call owns start/processing/unobserved completion. Optional
+`TransportRequest.lifecycle` lets a transport activate independent RPC tasks.
+`Context#record_failure(error)` retains the first original escaping failure
+before framework normalization. It does not itself complete a call.
+
+Processing state (`not_started`, `running`, `finished`), admission/host decision
+and delivery observation are independent. A host abort while processing runs
+is latched until processing cleanup, with processing callback before terminal
+callback. Terminal state is committed before observers run, preventing reentry.
+Admission-only calls have no fabricated processing result. Portable Rack
+response-finished callbacks take precedence over body close and have their own
+label; they never claim native full-write completion. A consumer that neither
+closes a body nor runs promised callbacks can leave observation unfinished.
+Native Async/Falcon own explicit request exchanges before admission, independent
+handler activation and write/reset/cleanup evidence. Connection setup before an
+RPC exists remains outside this scope. See the
+[OTel guide](../gems/connectrpc-otel/README.md) for trace semantics, privacy,
+HTTP instrumentation nesting and synchronous processor costs.

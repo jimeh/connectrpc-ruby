@@ -39,11 +39,18 @@ module ConnectRPC
   class Context
     attr_reader :request_metadata, :response_metadata, :response_trailers, :deadline
 
-    def initialize(request_metadata: {}, deadline: nil)
+    def initialize(request_metadata: {}, deadline: nil, lifecycle: nil)
       @request_metadata = Metadata.new(request_metadata)
       @response_metadata = Metadata.new
       @response_trailers = Metadata.new
       @deadline = deadline
+      @lifecycle = lifecycle
+    end
+
+    # Framework invokers record escaping application failures before normalizing them.
+    def record_failure(error)
+      @lifecycle&.record_failure(error)
+      nil
     end
 
     def cancelled?

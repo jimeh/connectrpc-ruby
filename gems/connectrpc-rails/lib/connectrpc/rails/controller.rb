@@ -23,6 +23,7 @@ module ConnectRPC
       def connect_binding = raise NotImplementedError, "Implement private connect_binding"
       def connect_handlers = raise NotImplementedError, "Implement private connect_handlers"
       def connect_limits = {}
+      def connect_instrumentation = nil
 
       def process_action(name, ...)
         return super unless name.to_s == "connect"
@@ -40,7 +41,7 @@ module ConnectRPC
         service = connect_service
         env = connect_env(service)
         server = Server.new(services: [service], binding: connect_binding, handlers: @connect_handlers,
-                            invoker: invoker, **connect_limits)
+                            invoker: invoker, instrumentation: connect_instrumentation, **connect_limits)
         connect_apply_response(ConnectRPC::Rack.new(server: server).call(env))
       end
 
@@ -69,7 +70,7 @@ module ConnectRPC
         request.formats = [:json]
       end
 
-      def connect_run_lifecycle
+      def connect_run_lifecycle # rubocop:disable Metrics/AbcSize
         connect_prepare_request
         yield
         raise connect_status_error(response.status) unless @connect_result_set && response.status == 200
@@ -78,6 +79,7 @@ module ConnectRPC
       rescue Error
         raise
       rescue StandardError => e
+        connect_context.record_failure(e)
         connect_report(e)
         raise connect_status_error(ActionDispatch::ExceptionWrapper.status_code_for_exception(e.class.name))
       end

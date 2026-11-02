@@ -22,6 +22,8 @@ module RBSHarness
     "constructor" => "Ruby::ArgumentTypeMismatch",
     "repeated" => "Ruby::ArgumentTypeMismatch",
     "map" => "Ruby::ArgumentTypeMismatch",
+    "lifecycle_delivery" => "Ruby::ArgumentTypeMismatch",
+    "lifecycle_failure" => "Ruby::ArgumentTypeMismatch",
     "struct" => "Ruby::InsufficientKeywordArguments"
   }.freeze
 

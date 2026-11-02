@@ -16,7 +16,7 @@ core_expected = %w[
   lib/connectrpc/generator/schema.rb lib/connectrpc/generator/renderer.rb lib/connectrpc/generator/runtime_names.rb
   lib/connectrpc/method.rb lib/connectrpc/metadata.rb lib/connectrpc/error.rb lib/connectrpc/deadline.rb
   lib/connectrpc/compression.rb lib/connectrpc/message_io.rb lib/connectrpc/protocol.rb
-  lib/connectrpc/client.rb lib/connectrpc/server.rb
+  lib/connectrpc/client.rb lib/connectrpc/server.rb lib/connectrpc/instrumentation.rb
   lib/connectrpc/bindings/google_protobuf.rb lib/connectrpc/transports/net_http.rb
 ].sort
 abort "Core package changed" unless core.contents.sort == core_expected && core.spec.runtime_dependencies.empty?

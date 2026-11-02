@@ -8,7 +8,7 @@ module ConnectRPC
       def initialize(application:, tls: nil, tls_provider: nil, max_connections: 128, max_requests: 128,
                      handshake_timeout: 10, idle_timeout: 60, refresh_interval: 60, refresh_jitter: 0.1,
                      refresh_timeout: 10, on_tls_error: nil, alpn_protocols: ["h2"], http1: nil, stop_accepting: nil,
-                     on_request_rejected: nil)
+                     on_request_rejected: nil, lifecycle_factory: nil)
         initialize_affinity
         raise ArgumentError, "application must be callable" unless application.respond_to?(:call)
         raise ArgumentError, "stop_accepting must be callable" if stop_accepting && !stop_accepting.respond_to?(:call)
@@ -16,6 +16,7 @@ module ConnectRPC
           raise ArgumentError, "on_request_rejected must be callable"
         end
 
+        @lifecycle_factory = lifecycle_factory
         @application = application
         @http1 = http1
         @stop_accepting = stop_accepting
@@ -217,9 +218,22 @@ module ConnectRPC
       end
 
       def dispatch(resource, request)
+        lifecycle = @lifecycle_factory&.call(request)
+        if lifecycle
+          exchange = Internal::Exchange.new(lifecycle)
+          if request.respond_to?(:stream)
+            request.stream.exchange = exchange
+          else
+            resource.exchange = exchange
+          end
+        end
         @admitted.delete_if { |stream, completed| completed && (!stream.respond_to?(:closed?) || stream.closed?) }
         key = request.respond_to?(:stream) ? request.stream : request
         if @state != :running || resource.draining || @admitted.size >= @max_requests
+          if exchange
+            exchange.decision = :admission_rejected
+            exchange.http_status = 503
+          end
           @on_request_rejected&.call
           return ::Protocol::HTTP::Response[503, {}, nil]
         end
@@ -229,12 +243,17 @@ module ConnectRPC
           handler = resource.track(@lifetime.async(finished: false) do |task|
             @identities[task] = resource.snapshot.authenticated_leaf
             begin
-              @application.call(request)
+              if lifecycle
+                lifecycle.activate { @application.call(request, lifecycle: lifecycle) }
+              else
+                @application.call(request)
+              end
             ensure
               @identities.delete(task)
             end
           end)
           response = handler.wait
+          exchange.http_status = response&.status if exchange
           if !request.respond_to?(:stream) && response
             response.body = Internal::AdmissionBody.new(response.body) do
               @admitted.delete(key)

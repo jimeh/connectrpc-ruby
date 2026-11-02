@@ -356,3 +356,20 @@ WebSockets, ActionCable, upgrades, CONNECT and hijack are rejected on this
 listener. `mise run falcon:example` exercises the normal service DSL;
 `falcon:verify` checks its independent bundle, protocols, workers, packages and
 pinned Go interoperability. Core, Rails and Async bundles remain independent.
+
+## RPC lifecycle instrumentation
+
+Pass `instrumentation: ConnectRPC::Instrumentation.new(subscribers: [recorder])`
+to a Client or Server for synchronous per-call observation. A subscriber's
+`start(call)` returns an observer with optional `attach`, `detach(token)`,
+`processing_finished(outcome)` and `finished(completion)` methods. Core owns the
+application yield and isolates each StandardError from subscribers and the
+optional `on_error:` reporter. Original exceptions are process-local trusted
+subscriber data. Instrumentation is disabled by default and performs no lifecycle
+allocation or instrumentation clock reads on that path.
+
+The optional [connectrpc-otel package](gems/connectrpc-otel/README.md) turns this
+lifecycle into real Connect CLIENT/SERVER traces using an application-owned
+OpenTelemetry SDK. Core has no OpenTelemetry dependency. See
+[design](docs/design.md#rpc-lifecycle-observation) for host ownership and
+`mise run otel:example` for a runnable generated caller with real SDK exports.

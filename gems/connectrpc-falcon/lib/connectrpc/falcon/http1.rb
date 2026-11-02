@@ -1,5 +1,7 @@
 # frozen_string_literal: true
 
+require "English"
+
 require "async/http/protocol/http1/server"
 
 module ConnectRPC
@@ -19,22 +21,36 @@ module ConnectRPC
         request
       end
 
+      def each(...)
+        super
+      ensure
+        # Header failures and cancellation can bypass write_body entirely.
+        @resource.exchange&.finish(false, $ERROR_INFO)
+        @resource.exchange = nil
+      end
+
       def write_body(...)
         super
+        written = true
       rescue StandardError
         @resource.failed!
         raise
       ensure
         # Upstream returns after final fixed/chunked bytes AND body callbacks.
-        @resource.active = false
-        @resource.changed
+        begin
+          @resource.exchange&.finish(!!written, $ERROR_INFO)
+        ensure
+          @resource.exchange = nil
+          @resource.active = false
+          @resource.changed
+        end
       end
     end
     private_constant :HTTP1Connection
 
     # Serial HTTP/1 ownership. It deliberately has no HTTP/2 stream/GOAWAY API.
     class HTTP1Resource
-      attr_accessor :raw, :socket, :task, :snapshot, :ready, :draining, :active
+      attr_accessor :raw, :socket, :task, :snapshot, :ready, :draining, :active, :exchange
       attr_reader :connection, :generation, :progress, :activity_at
 
       def initialize(stream, progress:, generation:)

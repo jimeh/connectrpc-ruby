@@ -30,7 +30,10 @@ end
     reset: ->(request, _context) { request }
   )
   binding = ConnectRPC::Bindings::GoogleProtobuf.new
-  server = ConnectRPC::Server.new(services: [RbsFixture::Api::Echo::SERVICE], binding: binding, handlers: handlers)
+  recorder = LifecycleRecorder.new
+  instrumentation = ConnectRPC::Instrumentation.new(subscribers: [recorder])
+  server = ConnectRPC::Server.new(services: [RbsFixture::Api::Echo::SERVICE], binding: binding, handlers: handlers,
+                                  instrumentation: instrumentation)
   core = ConnectRPC::Client.new(base_url: "https://rbs.invalid", binding: binding,
                                 transport: LoopbackTransport.new(server), codec: codec.to_sym)
   client = RbsFixture::Api::Echo::Client.new(client: core)
@@ -46,6 +49,8 @@ end
   unless response.message.is_a?(RbsFixture::Messages::Envelope::Reply) && response.message.count == 5
     raise "Reply association lost"
   end
+  raise "Lifecycle callback missing" unless recorder.completions.size == 1 &&
+                                            recorder.completions.first.outcome.code == "OK"
   raise "Metadata lost" unless response.metadata["checked"] == ["yes"]
   raise "Proto2 import failed" unless client.plain(RbsPlain::V1::Request.new(text: "plain")).message.text == "plain"
   raise "WKT failed" unless client.reset(Google::Protobuf::Empty.new).message.is_a?(Google::Protobuf::Empty)

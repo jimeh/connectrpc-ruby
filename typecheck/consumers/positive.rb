@@ -23,7 +23,13 @@ end
 RbsFixture::Api::Echo.handlers(exchange: GoodHandler.new,
                                plain: ->(_request, _context) { RbsPlain::V1::Outer::Reply.new },
                                reset: ->(request, _context) { request })
-server = ConnectRPC::Server.new(services: [RbsFixture::Api::Echo::SERVICE], binding: binding, handlers: handlers)
+recorder = LifecycleRecorder.new
+instrumentation = ConnectRPC::Instrumentation.new(subscribers: [recorder], on_error: lambda { |error|
+  error.message
+  nil
+})
+server = ConnectRPC::Server.new(services: [RbsFixture::Api::Echo::SERVICE], binding: binding, handlers: handlers,
+                                instrumentation: instrumentation)
 client = ConnectRPC::Client.new(base_url: "https://rbs.invalid", binding: binding,
                                 transport: LoopbackTransport.new(server))
 generated = RbsFixture::Api::Echo::Client.new(client: client)
@@ -55,3 +61,11 @@ pool = Google::Protobuf::DescriptorPool.generated_pool
 pool.lookup("rbs_types.v1.Envelope.Request").msgclass.new(text: "lookup").text.size
 RbsFixture::Messages::Envelope::Request::State.lookup(1)&.to_s
 RbsFixture::Messages::Envelope::Request::State.resolve(:READY)&.succ
+
+handle = server.start_call(path: "/rbs_service.v1.Manual/Exchange", headers: {})
+if handle
+  handle.activate { 42 }.succ
+  handle.finish(delivery: :completed, decision: :admission_rejected, http_status: 503)
+end
+ConnectRPC::Context.new.record_failure(RuntimeError.new("local"))
+recorder.completions.each { |completion| completion.delivery.to_s }

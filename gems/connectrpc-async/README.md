@@ -187,3 +187,11 @@ Original project work is [MIT licensed](LICENSE), copyright 2026 Jim Myhrberg.
 Both archives include the complete license and retain the invalid
 `https://gems.invalid` push guard. Publishing, releasing or deploying requires
 separate, explicit authorization.
+
+## RPC observation
+
+Configure `instrumentation:` on the core Client/Server to enable the fixed
+neutral per-call lifecycle or the optional [OpenTelemetry adapter](../connectrpc-otel/README.md).
+Native hosts create explicit handles before request admission, activate the
+actual handler tasks, and finish after full-write/reset/cleanup evidence.
+Connection-level setup/admission before an RPC exists is outside this lifecycle.

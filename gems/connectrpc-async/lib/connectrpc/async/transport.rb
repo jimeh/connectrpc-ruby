@@ -43,7 +43,9 @@ module ConnectRPC
         operation = { request: request }
         @calls[operation] = true
         begin
-          operation[:task] = @lifetime.async(finished: false) { exchange(operation) }
+          operation[:task] = @lifetime.async(finished: false) do
+            activate(request) { exchange(operation) }
+          end
           expires = Internal.now + request.deadline.remaining if request.deadline
           result = Internal.wait(operation[:task], expires)
           request.deadline&.check!
@@ -51,6 +53,7 @@ module ConnectRPC
 
           result
         rescue ::Async::TimeoutError, StandardError => e
+          request.lifecycle&.record_failure(e)
           request.deadline&.check!
           raise e if e.is_a?(ConnectRPC::Error)
 
@@ -87,24 +90,7 @@ module ConnectRPC
         deadline = operation.fetch(:request).deadline
         expires = [expires, Internal.now + deadline.remaining].min if deadline
         setup = @lifetime.async(finished: false) do
-          resource.raw = ::IO::Endpoint.tcp(@origin.hostname, @origin.port).connect
-          socket = resource.raw
-          if @snapshot
-            socket = @snapshot.socket(resource.raw)
-            resource.socket = socket
-            socket.hostname = @origin.hostname
-            socket.connect
-            socket.post_connection_check(@origin.hostname)
-            raise OpenSSL::SSL::SSLError, "HTTP/2 ALPN is required" unless socket.alpn_protocol == "h2"
-          end
-          resource.socket = socket
-          connection = Internal::ClientConnection.new(::IO::Stream(socket))
-          resource.connection = connection
-          connection.resource = resource
-          connection.send_connection_preface(Internal.settings(@max_requests))
-          resource.ready = true
-          connection.read_in_background(parent: @lifetime)
-          connection
+          activate(operation.fetch(:request)) { setup_connection(resource) }
         end
         resource.task = setup
         begin
@@ -113,6 +99,31 @@ module ConnectRPC
           resource.abort
           raise
         end
+      end
+
+      def activate(request, &work)
+        request.lifecycle ? request.lifecycle.activate(&work) : work.call
+      end
+
+      def setup_connection(resource)
+        resource.raw = ::IO::Endpoint.tcp(@origin.hostname, @origin.port).connect
+        socket = resource.raw
+        if @snapshot
+          socket = @snapshot.socket(resource.raw)
+          resource.socket = socket
+          socket.hostname = @origin.hostname
+          socket.connect
+          socket.post_connection_check(@origin.hostname)
+          raise OpenSSL::SSL::SSLError, "HTTP/2 ALPN is required" unless socket.alpn_protocol == "h2"
+        end
+        resource.socket = socket
+        connection = Internal::ClientConnection.new(::IO::Stream(socket))
+        resource.connection = connection
+        connection.resource = resource
+        connection.send_connection_preface(Internal.settings(@max_requests))
+        resource.ready = true
+        connection.read_in_background(parent: @lifetime)
+        connection
       end
 
       def exchange(operation)
