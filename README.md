@@ -7,7 +7,7 @@ Ruby handlers. It is not production ready.
 
 The implemented profile is POST, identity encoding, and `application/proto` or
 protobuf `application/json`. Streaming, GET, compression, gRPC, gRPC-Web, Rails,
-Faraday, a production server, and code generation are outside this slice.
+Faraday and a production server are outside this slice.
 Unsupported profiles and streaming declarations fail explicitly.
 
 ## Try the localhost example
@@ -27,6 +27,81 @@ calls a typed handler through real Net::HTTP in both codecs, prints the results,
 and closes the host and its workers. Its schema comes from the shared
 [descriptor fixture](spec/fixtures/echo.proto). Go is needed only for interop
 and final verification, and those tasks install its project pin separately.
+
+## Generate services from protobuf
+
+`protoc-gen-connectrpc-ruby` generates unary service declarations, thin clients
+and handler maps. Supply google-protobuf `>= 4.36.2, < 5` for the plugin and
+Google message integration. The core gem still has zero runtime dependencies.
+Run the complete `.proto` -> generated messages/service -> ephemeral localhost
+example with:
+
+```sh
+mise run example:generated
+```
+
+It compiles [greeting.proto](examples/proto/greeting.proto) with protoc 36.2,
+then [calls the generated client](examples/generated.rb) in binary and JSON,
+including typed deliberate error details. To use the installed gem's plugin
+in your own project, with `protoc-gen-connectrpc-ruby` on PATH:
+
+```sh
+mkdir -p generated
+protoc -I examples/proto --ruby_out=generated --connectrpc-ruby_out=generated greeting.proto
+```
+
+This creates official `greeting_pb.rb` and `greeting_connect.rb`. Add `generated`
+to the Ruby load path. The service API is:
+
+```ruby
+require "greeting_connect"
+require "connectrpc/bindings/google_protobuf"
+
+service = Greeting::V1::GreetingService
+binding = ConnectRPC::Bindings::GoogleProtobuf.new
+core = ConnectRPC::Client.new(base_url: "http://127.0.0.1:8080", binding: binding, codec: :json)
+client = service::Client.new(client: core)
+response = client.greet(Greeting::V1::Greeting.new(name: "Ruby"), timeout: 2)
+
+# Supply application callables accepting (request, context).
+handlers = service.handlers(greet: greet_handler, fail: fail_handler)
+server = ConnectRPC::Server.new(services: [service::SERVICE], handlers: handlers, binding: binding)
+```
+
+`greet_handler` and `fail_handler` above are application-defined callables; the
+[runnable example](examples/generated.rb) defines both and hosts the Rack app.
+`GREET` and `FAIL` are frozen `ConnectRPC::Method` constants; `SERVICE` is reusable.
+Wrapper calls return the existing `Response` and forward keyword options exactly,
+including omission of `timeout:` versus explicit `timeout: nil`. Binding, transport,
+codec, URL and limits belong to the configured core client. `handlers` requires
+all declared RPC keywords and validates callability; use the existing Server
+handler map directly for partial/custom registration.
+
+Buf 1.75.0 local generation is tested alongside official message generation:
+
+```yaml
+# buf.gen.yaml, for a Buf module containing greeting.proto
+version: v2
+plugins:
+  - protoc_builtin: ruby
+    out: generated
+  - local: protoc-gen-connectrpc-ruby
+    out: generated
+```
+
+Run `buf generate` in that module with pinned protoc on PATH. For this checkout,
+`mise run generation:check` runs both actual tools with explicit local paths,
+compares glue bytes and exercises both generated message trees.
+
+Proto2 and proto3, including optional presence, are supported. Editions,
+streaming targets and nonempty plugin parameters are rejected. Output is
+`dir/foo_connect.rb` for service-bearing `dir/foo.proto`; message generation
+remains official `--ruby_out`. No RBS/Sorbet files are emitted. Ruby module
+placement follows official package/`ruby_package` naming; RPC methods use the
+gRPC Ruby underscore rule (`GetHTTP` becomes `get_http`). Leading-underscore
+RPCs, reserved names and collisions visible in the request fail with diagnostics.
+Cross-invocation namespace conflicts cannot all be discovered; generated code
+also guards its directly defined constants at load time. See [design](docs/design.md).
 
 ## Declare a unary method
 

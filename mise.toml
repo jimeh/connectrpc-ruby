@@ -60,7 +60,7 @@ depends = ["setup"]
 run = "mise exec -- bundle _4.0.23_ exec rspec"
 
 [tasks.build]
-description = "Build the private gem into pkg/"
+description = "Build the experimental gem into pkg/"
 depends = ["setup"]
 run = "mise exec -- bundle _4.0.23_ exec rake build"
 
@@ -79,12 +79,13 @@ depends = ["check:static", "syntax"]
 
 [tasks."check:package"]
 description = "Install and require the built gem in isolation"
-depends = ["build"]
+depends = ["build", "setup:generation"]
+tools."aqua:protocolbuffers/protobuf/protoc" = "36.2"
 run = "mise exec -- bundle _4.0.23_ exec rake check:package"
 
 [tasks.verify]
 description = "Run static checks, specs, installed package integration, Go interop and official conformance"
-depends = ["check", "test", "check:package", "test:interop", "test:conformance"]
+depends = ["check", "test", "check:package", "test:interop", "test:conformance", "generation:check"]
 
 [tasks."fixture:build"]
 description = "Rebuild the shared test descriptor from its explicit schema builder"
@@ -136,3 +137,29 @@ description = "Run official unary conformance (optional client/server and exact 
 depends = ["conformance:check"]
 tools."github:connectrpc/conformance" = "1.0.6"
 run = "bundle _4.0.23_ exec ruby scripts/conformance.rb"
+
+[tasks."setup:generation"]
+description = "Install checksum-locked protoc and development-only Buf"
+run = "mise install --locked aqua:protocolbuffers/protobuf/protoc@36.2 aqua:bufbuild/buf@1.75.0"
+
+[tasks."generation:build"]
+description = "Regenerate official Ruby messages and service glue with protoc and Buf"
+depends = ["setup", "setup:generation"]
+tools."aqua:protocolbuffers/protobuf/protoc" = "36.2"
+tools."aqua:bufbuild/buf" = "1.75.0"
+env.BUF_CACHE_DIR = "{{config_root}}/vendor/buf/cache"
+run = "bundle _4.0.23_ exec ruby scripts/build_generation.rb"
+
+[tasks."generation:check"]
+description = "Check protoc/Buf output parity and checked-in generation fixtures"
+depends = ["setup", "setup:generation"]
+tools."aqua:protocolbuffers/protobuf/protoc" = "36.2"
+tools."aqua:bufbuild/buf" = "1.75.0"
+env.BUF_CACHE_DIR = "{{config_root}}/vendor/buf/cache"
+run = "bundle _4.0.23_ exec ruby scripts/build_generation.rb --check"
+
+[tasks."example:generated"]
+description = "Generate a service, then run typed localhost success and errors in both codecs"
+depends = ["setup", "setup:generation"]
+tools."aqua:protocolbuffers/protobuf/protoc" = "36.2"
+run = "bundle _4.0.23_ exec ruby scripts/generated_example.rb"

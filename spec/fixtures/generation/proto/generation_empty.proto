@@ -1,0 +1,5 @@
+syntax = "proto3";
+message generation_message { string value = 1; }
+service _generation_service {
+  rpc Call(generation_message) returns (generation_message);
+}

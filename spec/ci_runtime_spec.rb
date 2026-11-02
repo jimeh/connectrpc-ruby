@@ -86,7 +86,7 @@ RSpec.describe "CI check mapping" do
     commands = jobs.transform_values { |job| job.fetch("steps").filter_map { |step| step["run"] } }
     expect(commands.fetch("static")).to include("mise run check:static")
     expect(commands.fetch("specs").first(2)).to eq(["mise run syntax", "mise run test"])
-    expect(commands.fetch("package")).to include("mise run check:package")
+    expect(commands.fetch("package").first(2)).to eq(["mise run generation:check", "mise run check:package"])
     expect(commands.fetch("interop").first(2)).to eq(["mise run fixture:check", "mise run test:interop"])
     expect(commands.fetch("conformance")).to include("mise run test:conformance")
   end
@@ -112,9 +112,12 @@ RSpec.describe "CI check mapping" do
     expect(sets.fetch("conformance")).to include("install" => true, "cache" => true,
                                                  "install_args" => "github:connectrpc/conformance@1.0.6 " \
                                                                    "aqua:protocolbuffers/protobuf/protoc@36.2")
-    %w[specs package interop].each do |job|
+    %w[specs interop].each do |job|
       expect(sets.fetch(job)).to include("install" => false, "cache" => false)
     end
+    expect(sets.fetch("package")).to include("install" => true, "cache" => true,
+                                             "install_args" => "aqua:protocolbuffers/protobuf/protoc@36.2 " \
+                                                               "aqua:bufbuild/buf@1.75.0")
     interop = jobs.fetch("interop")
     expect(interop.fetch("env")).to include("GOMODCACHE" => "${{ github.workspace }}/vendor/interop/mod",
                                             "GOCACHE" => "${{ github.workspace }}/vendor/interop/build")

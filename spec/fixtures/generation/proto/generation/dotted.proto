@@ -1,0 +1,5 @@
+syntax = "proto3";
+package generation_dotted;
+option ruby_package = "generation_fixture.dotted_name";
+message message_name { string value = 1; }
+service service_name { rpc Get_Foo(message_name) returns (message_name); }

@@ -1,8 +1,8 @@
 # frozen_string_literal: true
 
 require "open3"
+require "rbconfig"
 require "tmpdir"
-require_relative "../examples/echo_schema"
 require_relative "../examples/localhost"
 
 module Interop
@@ -45,7 +45,7 @@ module Interop
     end
   end
 
-  def self.ruby_server
+  def self.ruby_handlers
     handler = lambda do |request, context|
       context.response_metadata["x-echo"] = context.request_metadata["x-request"] || []
       context.response_metadata["x-repeat"] = %w[one two]
@@ -58,11 +58,17 @@ module Interop
                                                                    metadata: { "x-error" => %w[a b] },
                                                                    trailers: { "x-end" => %w[c d] })
     end
+    { EchoExample::ECHO.path => handler, EchoExample::FAIL.path => failure }
+  end
+
+  def self.ruby_server
     ConnectRPC::Server.new(services: [EchoExample::SERVICE], binding: EchoExample::BINDING, request_limit: 1024,
-                           handlers: { EchoExample::ECHO.path => handler, EchoExample::FAIL.path => failure })
+                           handlers: ruby_handlers)
   end
 
   def self.run
+    require_relative "../examples/echo_schema"
+
     version, status = Open3.capture2("go", "version")
     check(status.success? && version.start_with?("go version go1.27.3 "),
           "Interop requires pinned Go 1.27.3: #{version}")
@@ -89,6 +95,7 @@ module Interop
         end
         check(process.value.success?, "Go server failed")
       end
+      system(RbConfig.ruby, File.join(root, "scripts/generated_interop.rb"), binary, chdir: peer_dir, exception: true)
       host = EchoExample::Localhost.new(ConnectRPC::Rack.new(server: ruby_server))
       begin
         system(binary, "client", host.url, "Ruby", chdir: peer_dir, exception: true)
@@ -100,4 +107,4 @@ module Interop
   end
 end
 
-Interop.run
+Interop.run if $PROGRAM_NAME == __FILE__

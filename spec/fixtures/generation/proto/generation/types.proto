@@ -1,0 +1,10 @@
+syntax = "proto2";
+package generation_types;
+option ruby_package = "GenerationFixture::Types";
+message outer_name {
+  message _value { optional int32 count = 1; }
+  optional _value value = 1;
+}
+service LegacyService {
+  rpc LegacyGet(outer_name._value) returns (outer_name._value);
+}

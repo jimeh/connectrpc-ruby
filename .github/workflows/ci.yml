@@ -121,8 +121,12 @@ jobs:
           add_shims_to_path: false
           env: false
           export_path: false
-          install: false
-          cache: false
+          install: true
+          install_args: aqua:protocolbuffers/protobuf/protoc@36.2 aqua:bufbuild/buf@1.75.0
+          cache: true
+          cache_key_prefix: connectrpc-ci-tools-v1
+      - name: Run generation:check
+        run: mise run generation:check
       - name: Run check:package
         run: mise run check:package
       - name: Check workspace stayed clean

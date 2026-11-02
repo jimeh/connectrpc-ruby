@@ -7,17 +7,18 @@ It has nine independent checks, with no serial cache primer or aggregate job:
 | --- | --- | --- |
 | Static | 3.4.12 | `mise run check:static` |
 | Specs | 3.4.12, 4.0.9 | `mise run syntax`, then a separate `mise run test` step |
-| Package | 3.4.12, 4.0.9 | `mise run check:package` |
+| Package | 3.4.12, 4.0.9 | `mise run generation:check`, then `mise run check:package` |
 | Go interoperability | 3.4.12, 4.0.9 | `mise run fixture:check`, then `mise run test:interop` |
 | Official conformance | 3.4.12, 4.0.9 | `mise run test:conformance` |
 
 Each matrix has `fail-fast: false`. Every check runs its commands on cache
 hits too. Package isolation still installs cached `.gem` artifacts offline and
 exercises default JSON and Net::HTTP. Interop still verifies modules and builds
-with readonly dependencies before its 18 cases. Conformance still regenerates
+with readonly dependencies before its 18 original cases and separate generated
+Ruby path. Conformance still regenerates
 descriptors and executes 94 client cases (92 passes, two exact expected
-failures) and 88 server cases. The existing 110 product/harness specs remain
-part of Specs; CI guard specs are additional tooling coverage.
+failures) and 88 server cases. Product, generator and harness specs remain
+part of Specs; CI guard specs cover task and runtime boundaries.
 
 ## Runtime boundary
 
@@ -43,8 +44,8 @@ setup therefore repeats the local task's `tools.go`, environment and directory;
 keep those fields aligned when changing the local task. Its only behavioral
 change is replacing the runtime installer with validation. The Mise action
 adds neither shims nor tool/environment PATH exports, so it cannot hide the
-action runtimes. Canonical tasks still activate their task-local static and
-conformance tools. Each job rejects tracked changes and unexpected untracked
+action runtimes. Canonical tasks still activate their task-local static,
+generation and conformance tools. Each job rejects tracked changes and unexpected untracked
 files, including accidental `mise.ci.lock` creation. Ignored bundle, package,
 coverage and harness outputs are allowed.
 
@@ -74,7 +75,10 @@ after complete installs/builds, with no partial primer job.
   run. Unused global Go caches are not archived.
 - Mise caches its data directory, including its binary and installed tools.
   Static installs only `actionlint zizmor`; conformance installs only the exact
-  runner/protoc backends. Other jobs disable Mise installation and caching.
+  runner/protoc backends. Package installs the exact protoc 36.2/Buf 1.75.0
+  set for regeneration parity/runtime and installed-plugin checks. Specs and
+  Interop disable Mise installation and caching. Buf cache is project-local
+  under ignored `vendor/buf/cache`.
   `install: true` runs even after restores and saves only after all requested
   installs complete. The default key with prefix `connectrpc-ci-tools-v1`
   includes platform/runner image family (`ImageOS`), Mise version, `MISE_ENV`,
