@@ -166,7 +166,7 @@ Core ships no `lib/connectrpc/rack.rb`. Only the remaining `lib/**/*.rb`,
 `exe/protoc-gen-connectrpc-ruby`, `LICENSE`, `README.md`, and the two
 design/development documents ship. The executable metadata and packaged execute
 bits are checked; syntax and RuboCop include the extensionless executable.
-The optional Rack, Rails and Async packages carry byte-identical copies of the root
+The optional Rack, Rails, Async and testing packages carry byte-identical copies of the root
 `LICENSE`; their package checks verify both the copies and archived notices.
 Keep these copies in sync when updating the canonical notice.
 The exact manifest in `scripts/check_package.rb` must be deliberately updated

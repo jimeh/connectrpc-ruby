@@ -315,7 +315,7 @@ conformance.
 ## Status and licensing
 
 Original project work is licensed under the [MIT License](LICENSE), copyright
-2026 Jim Myhrberg. The core, Rails and Async gem archives each include the
+2026 Jim Myhrberg. The core, Rack, Rails, Async and testing gem archives each include the
 complete license. Third-party dependencies and imported fixtures retain their
 own licenses and notices, including the separately licensed
 [conformance schemas](conformance/README.md).

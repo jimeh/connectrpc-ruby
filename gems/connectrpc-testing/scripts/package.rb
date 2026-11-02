@@ -15,10 +15,10 @@ testing_archive = File.join(output, "connectrpc-testing-0.1.0.gem")
 core = Gem::Package.new(core_archive)
 testing = Gem::Package.new(testing_archive)
 expected_core = %w[
-  README.md docs/development.md docs/design.md exe/protoc-gen-connectrpc-ruby
+  LICENSE README.md docs/development.md docs/design.md exe/protoc-gen-connectrpc-ruby
   lib/connectrpc.rb lib/connectrpc/version.rb lib/connectrpc/method.rb lib/connectrpc/metadata.rb
   lib/connectrpc/error.rb lib/connectrpc/deadline.rb lib/connectrpc/compression.rb lib/connectrpc/message_io.rb
-  lib/connectrpc/protocol.rb lib/connectrpc/client.rb lib/connectrpc/server.rb lib/connectrpc/rack.rb
+  lib/connectrpc/protocol.rb lib/connectrpc/client.rb lib/connectrpc/server.rb
   lib/connectrpc/bindings/google_protobuf.rb lib/connectrpc/transports/net_http.rb
   lib/connectrpc/generator.rb lib/connectrpc/generator/names.rb lib/connectrpc/generator/schema.rb
   lib/connectrpc/generator/renderer.rb lib/connectrpc/generator/runtime_names.rb
@@ -32,8 +32,10 @@ abort "Unexpected testing dependencies" unless dependencies.size == 1 && depende
                                                dependencies.first.requirement.to_s == "~> 0.1.0"
 [core, testing].each do |archive|
   abort "Publication guard missing" unless archive.spec.metadata["allowed_push_host"] == "https://gems.invalid"
+  abort "MIT metadata missing" unless archive.spec.licenses == ["MIT"]
 end
-abort "MIT metadata missing" unless testing.spec.licenses == ["MIT"]
+license = File.binread(File.join(root, "LICENSE"))
+abort "Testing license differs from root LICENSE" unless File.binread(File.join(package_root, "LICENSE")) == license
 abort "Core executable metadata changed" unless core.spec.bindir == "exe" &&
                                                 core.spec.executables == ["protoc-gen-connectrpc-ruby"]
 # Check archive permissions as well as the gemspec executable metadata.
@@ -44,6 +46,8 @@ Gem::Package::TarReader.new(File.open(core_archive, "rb")) do |tar|
 
     Gem::Package::TarReader.new(Zlib::GzipReader.new(StringIO.new(entry.read))) do |data|
       data.each do |file|
+        abort "Core archived MIT notice differs" if file.full_name == "LICENSE" && file.read != license
+
         next unless file.full_name == "exe/protoc-gen-connectrpc-ruby"
 
         mode_failure = file.header.mode & 0o777 != 0o755
@@ -58,7 +62,6 @@ artifacts = %w[rake bigdecimal google-protobuf].map do |name|
 
   cached
 end
-license = File.read(File.join(package_root, "LICENSE"))
 abort "Copyright missing" unless license.include?("Copyright (c) 2026 Jim Myhrberg")
 Gem::Package::TarReader.new(File.open(testing_archive, "rb")) do |tar|
   tar.each do |entry|
@@ -79,6 +82,7 @@ Bundler.with_unbundled_env do
     gem_home = File.join(temporary, "gems")
     FileUtils.mkdir_p(working)
     FileUtils.cp([core_archive, testing_archive, *artifacts], working)
+    FileUtils.cp(File.join(root, "LICENSE"), File.join(working, "expected-license"))
     FileUtils.cp(File.join(__dir__, "integration.rb"), working)
     FileUtils.cp(Dir.glob(File.join(root, "spec/fixtures/generation/echo/*.rb")), working)
     environment = { "GEM_HOME" => gem_home, "GEM_PATH" => gem_home, "RUBYOPT" => nil,
@@ -100,12 +104,25 @@ Bundler.with_unbundled_env do
         abort "Loaded outside GEM_HOME" unless spec.full_gem_path.start_with?("#{ENV.fetch('GEM_HOME')}/")
         abort "Push guard missing" unless spec.metadata["allowed_push_host"] == "https://gems.invalid"
       end
+      { ConnectRPC::Server => ["connectrpc", "lib/connectrpc/server.rb"],
+        ConnectRPC::Testing::Transport => ["connectrpc-testing", "lib/connectrpc/testing/transport.rb"] }.each do |type, files|
+        owner, relative = files
+        installed_source = File.join(Gem.loaded_specs.fetch(owner).full_gem_path, relative)
+        abort "Wrong installed source owner" unless File.realpath(type.instance_method(:call).source_location.first) ==
+                                                   File.realpath(installed_source)
+      end
+      begin
+        require "connectrpc/rack"
+        abort "Core/testing unexpectedly supplies middleware"
+      rescue LoadError => e
+        abort "Wrong missing middleware path" unless e.path == "connectrpc/rack"
+      end
       unexpected = Gem::Specification.reject(&:default_gem?).map(&:name) - expected
       abort "Unexpected installed gems: #{unexpected}" unless unexpected.empty?
-      notice = File.read(File.join(Gem.loaded_specs.fetch("connectrpc-testing").full_gem_path, "LICENSE"))
-      abort "MIT notice missing" unless notice.include?("Permission is hereby granted, free of charge") &&
-                                        notice.include?("Copyright (c) 2026 Jim Myhrberg") &&
-                                        notice.include?('THE SOFTWARE IS PROVIDED "AS IS"')
+      expected.each do |name|
+        notice = File.binread(File.join(Gem.loaded_specs.fetch(name).full_gem_path, "LICENSE"))
+        abort "Installed MIT notice differs" unless notice == File.binread("expected-license")
+      end
       puts "Fresh isolated require passed; only testing and normally resolved core installed (Ruby #{RUBY_VERSION})"
     CODE
     artifacts.each do |artifact|
