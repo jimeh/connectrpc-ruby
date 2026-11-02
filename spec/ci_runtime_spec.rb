@@ -105,6 +105,7 @@ RSpec.describe "CI check mapping" do
     expect(commands.fetch("package").first(2)).to eq(["mise run generation:check", "mise run check:package"])
     expect(commands.fetch("interop").first(2)).to eq(["mise run fixture:check", "mise run test:interop"])
     expect(commands.fetch("conformance")).to include("mise run test:conformance")
+    expect(commands.fetch("rbs").first(2)).to eq(["mise run rbs:check", "mise run rbs:package"])
   end
 
   it "pins the three Rails Appraisal lanes and caches the selected frozen lock" do
@@ -145,7 +146,7 @@ RSpec.describe "CI check mapping" do
     expect(sets.fetch("conformance")).to include("install" => true, "cache" => true,
                                                  "install_args" => "github:connectrpc/conformance@1.0.6 " \
                                                                    "aqua:protocolbuffers/protobuf/protoc@36.2")
-    %w[specs interop].each do |job|
+    %w[specs interop rbs].each do |job|
       expect(sets.fetch(job)).to include("install" => false, "cache" => false)
     end
     expect(sets.fetch("package")).to include("install" => true, "cache" => true,

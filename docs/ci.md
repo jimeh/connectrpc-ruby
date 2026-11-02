@@ -19,7 +19,6 @@ serial cache primer or aggregate job:
 | Rack specs/check/package | 3.4.12, 4.0.9 | `mise run rack:test`, `mise run rack:check`, `mise run rack:package` |
 | In-process testing | 3.4.12, 4.0.9 | `mise run testing:verify` |
 | RBS consumers/package | 3.4.12, 4.0.9 | `mise run rbs:check`, then `mise run rbs:package` |
-
 | Falcon specs/package | 3.4.12, 4.0.9 | `mise run falcon:test`, then `mise run falcon:package` |
 | Falcon Go interoperability | 3.4.12, 4.0.9 | `mise run falcon:interop` |
 
