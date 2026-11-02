@@ -1,0 +1,18 @@
+# Official setup actions own CI runtimes. Local source-build tasks stay unchanged.
+[settings]
+disable_tools = ["ruby", "go"]
+# Also covers nested `mise exec`, independently of task.run_auto_install.
+exec_auto_install = false
+
+[tasks."setup:tools"]
+description = "Validate the action-provided Ruby and frozen bundle configuration"
+run = "ruby {{config_root}}/scripts/ci_runtime.rb"
+
+# A command-bearing override replaces the WHOLE task, including tools/env/dir.
+# Keep this context aligned with mise.toml; only runtime installation differs.
+[tasks."setup:interop"]
+description = "Validate action-provided Go and download checksum-locked modules"
+tools.go = "1.27.3"
+env = { GOTOOLCHAIN = "local", GOWORK = "off", GOFLAGS = "-mod=readonly", GOMODCACHE = "{{config_root}}/vendor/interop/mod", GOCACHE = "{{config_root}}/vendor/interop/build" }
+dir = "{{config_root}}/interop"
+run = ["ruby {{config_root}}/scripts/ci_runtime.rb interop", "go mod download"]

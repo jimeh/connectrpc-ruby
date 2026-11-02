@@ -69,9 +69,13 @@ description = "Check GitHub Actions syntax and security offline"
 depends = ["setup:tools"]
 run = ["mise exec -- actionlint", "mise exec -- zizmor --offline .github/workflows"]
 
+[tasks."check:static"]
+description = "Run platform-independent format, lint, and workflow checks"
+depends = ["format:check", "lint", "lint:workflows"]
+
 [tasks.check]
 description = "Run fast static checks"
-depends = ["format:check", "lint", "syntax", "lint:workflows"]
+depends = ["check:static", "syntax"]
 
 [tasks."check:package"]
 description = "Install and require the built gem in isolation"
@@ -79,8 +83,8 @@ depends = ["build"]
 run = "mise exec -- bundle _4.0.23_ exec rake check:package"
 
 [tasks.verify]
-description = "Run static checks, specs, installed package integration, and independent Go interop"
-depends = ["check", "test", "check:package", "test:interop"]
+description = "Run static checks, specs, installed package integration, Go interop and official conformance"
+depends = ["check", "test", "check:package", "test:interop", "test:conformance"]
 
 [tasks."fixture:build"]
 description = "Rebuild the shared test descriptor from its explicit schema builder"
@@ -110,3 +114,25 @@ depends = ["setup", "setup:interop", "fixture:check"]
 tools.go = "1.27.3"
 env = { GOTOOLCHAIN = "local", GOWORK = "off", GOFLAGS = "-mod=readonly", GOMODCACHE = "{{config_root}}/vendor/interop/mod", GOCACHE = "{{config_root}}/vendor/interop/build" }
 run = "bundle _4.0.23_ exec ruby scripts/interop.rb"
+
+[tasks."setup:conformance"]
+description = "Install the pinned official conformance runner and protoc"
+run = "mise install --locked github:connectrpc/conformance@1.0.6 aqua:protocolbuffers/protobuf/protoc@36.2"
+
+[tasks."conformance:build"]
+description = "Generate official conformance descriptors with pinned protoc"
+depends = ["setup", "setup:conformance"]
+tools."aqua:protocolbuffers/protobuf/protoc" = "36.2"
+run = "bundle _4.0.23_ exec ruby scripts/build_conformance.rb"
+
+[tasks."conformance:check"]
+description = "Check official schemas and reproducible descriptor bytes"
+depends = ["setup", "setup:conformance"]
+tools."aqua:protocolbuffers/protobuf/protoc" = "36.2"
+run = "bundle _4.0.23_ exec ruby scripts/build_conformance.rb --check"
+
+[tasks."test:conformance"]
+description = "Run official unary conformance (optional client/server and exact test name)"
+depends = ["conformance:check"]
+tools."github:connectrpc/conformance" = "1.0.6"
+run = "bundle _4.0.23_ exec ruby scripts/conformance.rb"

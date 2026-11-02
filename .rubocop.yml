@@ -23,26 +23,49 @@ Metrics/BlockLength:
     - spec/**/*.rb
     - scripts/check_package.rb
     - scripts/interop.rb
+    - scripts/conformance.rb
+    - conformance/**/*.rb
 
 Metrics/MethodLength:
   Exclude:
     - spec/**/*.rb
     - scripts/interop.rb
+    - scripts/conformance.rb
+    - conformance/**/*.rb
     - examples/localhost.rb
 
 Metrics/AbcSize:
   Exclude:
     - spec/**/*.rb
     - scripts/interop.rb
-
-Metrics/CyclomaticComplexity:
-  Exclude:
-    - spec/support/socket_peer.rb
-
-Metrics/PerceivedComplexity:
-  Exclude:
-    - spec/support/socket_peer.rb
+    - scripts/conformance.rb
+    - conformance/**/*.rb
 
 # Public configuration uses named options rather than positional argument bags.
 Metrics/ParameterLists:
   CountKeywordArgs: false
+
+# The version-pinned log parser keeps its complete protocol cases together.
+Metrics/ClassLength:
+  Exclude:
+    - conformance/ledger.rb
+
+Metrics/CyclomaticComplexity:
+  Exclude:
+    - spec/support/socket_peer.rb
+    - conformance/ledger.rb
+    - conformance/client.rb
+    - conformance/server.rb
+
+Metrics/PerceivedComplexity:
+  Exclude:
+    - spec/support/socket_peer.rb
+    - conformance/ledger.rb
+    - conformance/client.rb
+    - conformance/server.rb
+
+# Official protobuf enum identifiers.
+Naming/VariableNumber:
+  AllowedIdentifiers:
+    - HTTP_VERSION_1
+    - HTTP_VERSION_2

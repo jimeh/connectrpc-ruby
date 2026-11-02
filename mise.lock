@@ -13,6 +13,26 @@ url = "https://github.com/rhysd/actionlint/releases/download/v1.7.12/actionlint_
 url_api = "https://api.github.com/repos/rhysd/actionlint/releases/assets/384924896"
 provenance = "github-attestations"
 
+[[tools."aqua:protocolbuffers/protobuf/protoc"]]
+version = "36.2"
+backend = "aqua:protocolbuffers/protobuf/protoc"
+specifiers = ["36.2"]
+
+[tools."aqua:protocolbuffers/protobuf/protoc"."platforms.linux-x64"]
+checksum = "sha256:121f6c7afe1d4d0e3ea6aab9432038599250134cbf4474cb1167d2c7decd4278"
+url = "https://github.com/protocolbuffers/protobuf/releases/download/v36.2/protoc-36.2-linux-x86_64.zip"
+url_api = "https://api.github.com/repos/protocolbuffers/protobuf/releases/assets/570742434"
+
+[[tools."github:connectrpc/conformance"]]
+version = "1.0.6"
+backend = "github:connectrpc/conformance"
+specifiers = ["1.0.6"]
+
+[tools."github:connectrpc/conformance"."platforms.linux-x64"]
+checksum = "sha256:803a9ed1778583f9b98f44b4b77ab06897d1027183ef2064de32a0fb7d688ab0"
+url = "https://github.com/connectrpc/conformance/releases/download/v1.0.6/connectconformance-v1.0.6-Linux-x86_64.tar.gz"
+url_api = "https://api.github.com/repos/connectrpc/conformance/releases/assets/640907174"
+
 [[tools.go]]
 version = "1.27.3"
 backend = "core:go"

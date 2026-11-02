@@ -25,7 +25,8 @@ RSpec::Core::RakeTask.new(:test)
 
 desc "Parse every maintained Ruby source, spec, script, gemspec, and Rakefile"
 task :syntax do
-  files = FileList["lib/**/*.rb", "spec/**/*.rb", "scripts/**/*.rb", "examples/**/*.rb", "*.gemspec", "Gemfile",
+  files = FileList["lib/**/*.rb", "spec/**/*.rb", "scripts/**/*.rb", "examples/**/*.rb", "conformance/**/*.rb",
+                   "*.gemspec", "Gemfile",
                    "Rakefile"]
   files.each { |file| ruby "-c", file }
 end

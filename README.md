@@ -1,6 +1,6 @@
 # connectrpc-ruby
 
-A private, unofficial, experimental Ruby implementation of typed
+An unofficial, experimental Ruby implementation of typed
 [Connect](https://connectrpc.com/docs/protocol/) unary RPCs. It provides a
 configurable client, a Net::HTTP transport, and Rack middleware for reusable
 Ruby handlers. It is not production ready.
@@ -129,7 +129,11 @@ If even a minimal error exceeds the response limit, the server sends an empty
 body with status 429; clients then apply the protocol's HTTP fallback mapping.
 Header size limits belong to the HTTP library and host.
 
-Client `timeout:` is finite positive seconds, defaulting to 30. One monotonic
+Client `timeout:` accepts finite positive seconds, defaulting to 30. Explicit
+`timeout: nil` sends no timeout header and creates no logical deadline or expiry
+watchdog. Native TCP/TLS/read/write waits remain independently capped at
+`9_999_999.999` seconds; a native timeout returns `unavailable`. Sustained progress
+can outlast that per-operation cap. For finite values, one monotonic
 budget starts before encoding and covers network I/O and checks around codec
 work. NetHTTP uses one connection per call, closes it on every outcome, sends
 `Accept-Encoding: identity`, ignores proxy environment variables, disables
@@ -152,17 +156,26 @@ slice. Checks surround input, decode, and invocation; handlers must cooperate.
 Synchronous Rack cannot interrupt blocked reads or arbitrary handlers, or
 detect every disconnected peer. See [design](docs/design.md) for these limits.
 
-CRuby >= 3.4 is the baseline; project verification targets source-built Ruby
-3.4.12 and 4.0.9 on Linux x64. See [development](docs/development.md) for the
+CRuby >= 3.4 is the baseline; project verification targets Ruby 3.4.12 and
+4.0.9 on Linux x64. Local setup builds from source; CI uses official prebuilt
+runtimes. See [development](docs/development.md) for the
 commands, dependency policy, isolated installation and evidence scope. The
 interop fixture runs 18 cases: six Go-to-Go reference baseline cases and twelve
 Ruby-to-Go/Go-to-Ruby cases. Both codecs share typed success, deliberate error
 and request-limit scenarios. This covers the advertised unary subset, not full
 conformance.
 
-## Private status and licensing
+The pinned [official conformance harness](conformance/README.md) independently
+executes 94 client and 88 server cases for the declared profile. Two client
+caller-cancellation instructions currently fail because there is no cancellation
+API; both still execute real RPCs and are required to fail for the exact
+documented reason. Results are 92 client passes plus two expected failures, and
+88 server passes. This is a bounded profile, not full Connect conformance.
 
-Licensing is undecided. `Nonstandard` gem metadata grants no new license.
+## Status and licensing
+
+The source repository is public, but licensing is undecided. `Nonstandard` gem
+metadata grants no new license.
 The gem's `allowed_push_host` is `https://gems.invalid`, a reserved invalid
 domain, to guard against accidental public RubyGems pushes. It is not a
 publication destination or a complete access-control mechanism. Do not publish

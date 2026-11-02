@@ -49,6 +49,22 @@ RSpec.describe "real Rack/NetHTTP unary calls" do
     end
   end
 
+  it "exchanges actual success and deliberate error without a logical timeout" do
+    allow(handler).to receive(:call).and_wrap_original do |original, request, context|
+      expect(context.deadline).to be_nil
+      original.call(request, context)
+    end
+    allow(failure).to receive(:call).and_wrap_original do |original, request, context|
+      expect(context.deadline).to be_nil
+      original.call(request, context)
+    end
+    client = ConnectRPC::Client.new(base_url: @host.url, binding: EchoExample::BINDING)
+    message = EchoExample::Message.new(name: "no deadline")
+    expect(client.call(EchoExample::ECHO, message, metadata: { "x-request" => ["ok"] },
+                                                   timeout: nil).message).to eq(message)
+    expect { client.call(EchoExample::FAIL, message, timeout: nil) }.to raise_error(ConnectRPC::Error, "deliberate")
+  end
+
   it "enforces response limits over actual HTTP" do
     client = ConnectRPC::Client.new(base_url: @host.url, binding: EchoExample::BINDING, response_limit: 2)
     expect do
