@@ -1,16 +1,16 @@
 # frozen_string_literal: true
 
 require "rake"
-require "rubygems/package_task"
+require "rubygems/package"
 require "rubocop/rake_task"
 require "rspec/core/rake_task"
 
 specification = Gem::Specification.load("connectrpc.gemspec")
-Gem::PackageTask.new(specification).define
-file File.join("pkg", specification.file_name) => "connectrpc.gemspec"
-
-desc "Build the private gem"
-task build: :gem
+desc "Build the private gem from the current exact manifest"
+task :build do
+  mkdir_p "pkg"
+  Gem::Package.build(specification, false, false, File.join("pkg", specification.file_name))
+end
 
 RuboCop::RakeTask.new(:format) do |task|
   task.options = ["--only", "Layout", "--autocorrect"]
@@ -25,7 +25,8 @@ RSpec::Core::RakeTask.new(:test)
 
 desc "Parse every maintained Ruby source, spec, script, gemspec, and Rakefile"
 task :syntax do
-  files = FileList["lib/**/*.rb", "spec/**/*.rb", "scripts/**/*.rb", "*.gemspec", "Gemfile", "Rakefile"]
+  files = FileList["lib/**/*.rb", "spec/**/*.rb", "scripts/**/*.rb", "examples/**/*.rb", "*.gemspec", "Gemfile",
+                   "Rakefile"]
   files.each { |file| ruby "-c", file }
 end
 

@@ -16,3 +16,33 @@ Style/Documentation:
 # Publication is disabled; there is no public RubyGems account policy to assert.
 Gemspec/RequireMFA:
   Enabled: false
+
+# Scenario harnesses keep setup, assertions and deterministic cleanup together.
+Metrics/BlockLength:
+  Exclude:
+    - spec/**/*.rb
+    - scripts/check_package.rb
+    - scripts/interop.rb
+
+Metrics/MethodLength:
+  Exclude:
+    - spec/**/*.rb
+    - scripts/interop.rb
+    - examples/localhost.rb
+
+Metrics/AbcSize:
+  Exclude:
+    - spec/**/*.rb
+    - scripts/interop.rb
+
+Metrics/CyclomaticComplexity:
+  Exclude:
+    - spec/support/socket_peer.rb
+
+Metrics/PerceivedComplexity:
+  Exclude:
+    - spec/support/socket_peer.rb
+
+# Public configuration uses named options rather than positional argument bags.
+Metrics/ParameterLists:
+  CountKeywordArgs: false

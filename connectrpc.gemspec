@@ -5,8 +5,8 @@ Gem::Specification.new do |spec|
   # Read without loading library code before SimpleCov starts.
   spec.version = File.read(File.join(__dir__, "lib/connectrpc/version.rb"))[/VERSION = "([^"]+)"/, 1]
   spec.authors = ["jimeh"]
-  spec.summary = "Private, experimental Ruby Connect RPC project skeleton"
-  spec.description = "Unofficial bootstrap only. No RPC implementation or production-ready API is provided."
+  spec.summary = "Private, experimental Connect unary RPC for Ruby"
+  spec.description = "Unofficial typed Connect unary clients and Rack middleware. Experimental, not production ready."
   spec.homepage = "https://github.com/jimeh/connectrpc-ruby"
   spec.license = "Nonstandard"
   spec.required_ruby_version = ">= 3.4"

@@ -79,5 +79,34 @@ depends = ["build"]
 run = "mise exec -- bundle _4.0.23_ exec rake check:package"
 
 [tasks.verify]
-description = "Run static checks, specs, build, and isolated package verification"
-depends = ["check", "test", "check:package"]
+description = "Run static checks, specs, installed package integration, and independent Go interop"
+depends = ["check", "test", "check:package", "test:interop"]
+
+[tasks."fixture:build"]
+description = "Rebuild the shared test descriptor from its explicit schema builder"
+depends = ["setup"]
+run = "mise exec -- bundle _4.0.23_ exec ruby scripts/build_fixture.rb"
+
+[tasks."fixture:check"]
+description = "Check the shared Ruby/Go descriptor fixture is reproducible"
+depends = ["setup"]
+run = "mise exec -- bundle _4.0.23_ exec ruby scripts/build_fixture.rb --check"
+
+[tasks.example]
+description = "Run an ephemeral Rack/NetHTTP typed unary example in both codecs"
+depends = ["setup"]
+run = "mise exec -- bundle _4.0.23_ exec ruby examples/unary.rb"
+
+[tasks."setup:interop"]
+description = "Install the pinned Go peer toolchain and checksum-locked modules"
+tools.go = "1.27.3"
+env = { GOTOOLCHAIN = "local", GOWORK = "off", GOFLAGS = "-mod=readonly", GOMODCACHE = "{{config_root}}/vendor/interop/mod", GOCACHE = "{{config_root}}/vendor/interop/build" }
+dir = "{{config_root}}/interop"
+run = ["mise install --locked go@1.27.3", "go mod download"]
+
+[tasks."test:interop"]
+description = "Run the independent connect-go unary subset in both directions/codecs"
+depends = ["setup", "setup:interop", "fixture:check"]
+tools.go = "1.27.3"
+env = { GOTOOLCHAIN = "local", GOWORK = "off", GOFLAGS = "-mod=readonly", GOMODCACHE = "{{config_root}}/vendor/interop/mod", GOCACHE = "{{config_root}}/vendor/interop/build" }
+run = "bundle _4.0.23_ exec ruby scripts/interop.rb"

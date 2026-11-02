@@ -1,7 +1,10 @@
 # Project map
 
-This is a private, unofficial Ruby gem bootstrap. `lib/connectrpc.rb` is the
-public require entry point; `lib/connectrpc/version.rb` is the only API.
+This is a private, unofficial typed Connect unary Ruby gem. `lib/connectrpc.rb`
+is the host-neutral core entry point; Google protobuf and Rack are explicit
+optional integration requires. `lib/connectrpc/` holds the core, bindings and
+transports. `examples/` owns ephemeral localhost hosting and `interop/` the
+pinned independent Go peer.
 `connectrpc.gemspec` owns package metadata and files. Specs live in `spec/`;
 `Rakefile` and `scripts/` implement tooling behind `mise.toml`.
 
@@ -16,8 +19,7 @@ tests and workflow checks apply only if the edit affects those commands or examp
 
 Before protocol, adapter, message-binding, or public-API work, read
 [design](docs/design.md). Keep shared protocol code independent of HTTP hosting
-and concrete protobuf classes. Do not implement the proposed milestone as part
-of bootstrap maintenance. Reject unsupported transport capabilities explicitly.
+and concrete protobuf classes. Keep future streaming, Rails, host and generator work outside unary maintenance. Reject unsupported transport capabilities explicitly.
 
 Use RSpec for observable behavior. Choose tests for concrete success, failure,
 boundary, and regression risks; do not treat a green smoke suite or coverage

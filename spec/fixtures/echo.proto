@@ -1,0 +1,19 @@
+syntax = "proto3";
+package example.v1;
+import "google/protobuf/timestamp.proto";
+
+message EchoMessage {
+  optional string name = 1;
+  int64 count = 2;
+  enum Mood {
+    MOOD_UNSPECIFIED = 0;
+    HAPPY = 1;
+  }
+  Mood mood = 3;
+  google.protobuf.Timestamp at = 4;
+  bytes data = 5;
+}
+service EchoService {
+  rpc Echo(EchoMessage) returns (EchoMessage);
+  rpc Fail(EchoMessage) returns (EchoMessage);
+}

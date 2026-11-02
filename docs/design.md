@@ -1,70 +1,141 @@
-# Design direction
+# Design and implemented profile
 
-This records accepted future boundaries. The current gem is a bootstrap with
-no protocol, hosting, codec, or transport implementation. Public names such as
-Services, Channel, and Server remain sketches.
+The gem implements a first typed Connect unary slice. Shared protocol code is
+independent of HTTP hosting and concrete protobuf classes. The public require
+is `connectrpc`, and the Ruby namespace is `ConnectRPC`. The API is experimental.
 
-## Shared protocol and hosting
+## Shared boundaries
 
-Shared Ruby protocol code will own dispatch, framing, negotiation, compression,
-errors, metadata, limits, deadlines, and interceptors. It must remain independent
-of HTTP hosting and concrete protobuf message classes. Wire selection
-(Connect, gRPC, or gRPC-Web), HTTP implementation, and protobuf backend are
-separate configuration choices.
+`Method` holds validated service/method names, request/response binding types,
+`cardinality: :unary`, and a case-sensitive path. `Service` validates its method
+set. Other cardinalities are rejected. There are no generated stubs yet.
 
-Rack middleware is required. Optional Rails integration will map individual
-RPCs to controller actions through a shared invocation boundary so callbacks,
-authentication, `rescue_from`, and instrumentation participate. A mounted Rack
-app alone does not provide that controller lifecycle. See the
-[Rack specification](https://github.com/rack/rack/blob/main/SPEC.rdoc) and
-[Rails controller guide](https://guides.rubyonrails.org/action_controller_overview.html).
+`Client` owns request encoding, protocol headers, response validation, errors,
+metadata, byte limits and the deadline. Base URL path prefixes are retained.
+A binding provides `encode(message, type:, codec:)` and
+`decode(bytes, type:, codec:)`. Custom bindings raise `CodecError` for invalid
+messages. The optional Google binding delegates binary and
+[protobuf JSON](https://protobuf.dev/programming-guides/json/) to native
+protobuf APIs. It ignores unknown JSON fields. Scalar wrapper roots use a
+standard Any envelope internally to work around protobuf 4.36's direct-root
+decoder limitation; the backend still validates the protobuf values.
 
-A standalone server is required long-term for HTTP/2, HTTP trailers, and
-bidirectional features. Start with an existing HTTP stack; Async::HTTP is a
-candidate, not a selection. Connect streaming carries end-stream metadata in
-its response body; it does not require HTTP trailers. Future gRPC support has
-different trailer requirements. See the
-[Connect protocol](https://connectrpc.com/docs/protocol/),
-[gRPC HTTP/2 protocol](https://github.com/grpc/grpc/blob/master/doc/PROTOCOL-HTTP2.md),
-and [Async::HTTP](https://github.com/socketry/async-http).
+A transport provides `call(request)` with these host-neutral value objects:
 
-## Messages and generated code
+| Object | Fields |
+| --- | --- |
+| `TransportRequest` | `url` (URI), `http_method`, `headers` (lower-case keys, string arrays), `body` (bytes), `response_limit`, `deadline` |
+| `TransportResponse` | `status` (integer), `headers` (repeated string arrays), `body` (bounded bytes) |
+| `Response` | `message` (binding type), `metadata`, `trailers` (Metadata objects) |
 
-Codec and message binding will be configurable. The first product slice will
-use google-protobuf's native binary and protobuf JSON support. Protobuf JSON
-means the protobuf mapping, not arbitrary Ruby JSON serialization. A Rust,
-descriptor-driven backend using prost-reflect is only an option. Changing
-backends may change concrete message classes; cross-backend message-class
-compatibility is not promised. Do not implement a new protobuf parser.
+Custom transports must enforce the supplied deadline during their I/O and
+bound the body incrementally. Client validation checks their output again but
+cannot undo an oversized allocation or interrupt their work.
 
-Eventually a protoc plugin will generate service metadata and stubs with Buf
-compatibility. See the [Ruby generated-code guide](https://protobuf.dev/reference/ruby/ruby-generated/),
-[protobuf JSON mapping](https://protobuf.dev/programming-guides/json/),
-[prost-reflect](https://docs.rs/prost-reflect/latest/prost_reflect/), and
-[Buf plugin model](https://buf.build/docs/generate/).
+`Server` owns negotiation, bounded input, decoding, invocation, serialization,
+and safe errors. `Rack` only translates request/response HTTP state. It wraps
+an optional downstream app and routes `PATH_INFO`; unrelated service paths
+fall through, while unknown methods within registered services fail explicitly.
+Neither core nor handlers need Rack envs. Google and Rack load only through
+`connectrpc/bindings/google_protobuf` and `connectrpc/rack`, with useful errors
+when their optional dependency is absent or incompatible.
 
-## Client HTTP transports
+A default invoker calls the registered plain handler with `(request, context)`.
+An explicit `invoker` callable receives `(method, request, context)` and can
+supply framework execution later. Every invocation has a fresh `Context` with
+request metadata, response leading/trailing metadata, and optional deadline.
+Handlers are reusable; application-owned shared state needs its own locking.
 
-Client HTTP transports will be configurable. Net::HTTP over HTTP/1.1 can carry
-unary RPCs and one-direction request or response streaming with a proper
-implementation. It does not provide HTTP/2 or duplex exchange. Its body-stream
-and response-chunk APIs do not by themselves prove an RPC implementation's
-streaming behavior. See [Net::HTTP](https://docs.ruby-lang.org/en/master/Net/HTTP.html).
+## Wire behavior
 
-Faraday is optional; each adapter's capabilities require verification. Direct
-Async::HTTP is a full-feature candidate, not a selected transport. Unsupported
-protocol, transport, or streaming combinations must fail explicitly rather
-than silently buffering. See [Faraday adapters](https://lostisland.github.io/faraday/#/adapters/index)
-and [Async::HTTP](https://github.com/socketry/async-http).
+The implemented [Connect profile](https://connectrpc.com/docs/protocol/) is
+unary POST, identity encoding, and `application/proto` or `application/json`.
+JSON also accepts `charset=utf-8`. Clients send protocol version `1`; servers
+accept an absent version and reject any other supplied value. A 200 response
+must match the request codec. Non-application response types produce `unknown`;
+mismatched application codecs and nonidentity response encodings produce
+`internal`. JSON errors are only parsed for an appropriate JSON content type.
 
-## Proposed next PR
+Other verbs get bare 405 with `Allow: POST`; unsupported types, including
+Connect streaming and gRPC variants, get bare 415 with `Accept-Post`.
+Unsupported request encoding returns `unimplemented` listing identity. Invalid
+version, timeout, or request decoding returns `invalid_argument`. Limits return
+`resource_exhausted`. Unexpected application exceptions return generic
+`internal`; deliberate `Error` messages are application-controlled safe text.
+Standard Connect-to-HTTP and fallback HTTP-to-Connect tables are used. Unknown
+wire codes become `unknown`; absent/malformed codes, bodies or details use the
+HTTP fallback. Error details preserve a type name and binary bytes, with
+unpadded base64 on output and validated padded/unpadded input.
 
-Implement a small end-to-end Connect unary slice: shared core, errors and
-service metadata, configurable google-protobuf binary and protobuf JSON
-binding, a Net::HTTP client, and Rack middleware. Verify real localhost HTTP
-transport and an independent Connect interoperability fixture or peer. Cover
-negotiation, errors, malformed input, unknown methods, content types, limits,
-and deadlines in proportion to the actual slice.
+`Metadata` stores lower-case keys and repeated printable ASCII values and
+rejects protocol/framing overrides and header injection. Binary `-bin` helpers
+handle base64 and comma coalescing. Trailing metadata becomes `trailer-`
+response fields. Other fields are never blindly comma-split. The middleware
+emits separate arrays under `Rack::Lint`, and NetHTTP preserves raw repeated
+response fields. rackup/WEBrick coalesces values with comma+space in both
+directions; interop asserts those host-visible values explicitly.
 
-Rails, a standalone server, streaming, other transports, and other wire
-protocols are outside that slice. This bootstrap implements none of it.
+## Bounds and lifecycle
+
+Default serialized request/response limits are 4 MiB each. Declared lengths
+are validated and oversized lengths rejected before input or decode.
+Unknown-length bodies are read with bounded chunks, stopping at the first
+excess byte. HTTP responses and error bodies are bounded before decode.
+Serialization can allocate before the output check. If a bounded error cannot
+fit, the server emits an empty 429 body. There is no independent header-size
+guarantee beyond the host and HTTP library.
+
+One monotonic client deadline begins before encoding. Finite positive seconds
+are required, with a default of 30 seconds. Remaining timeout milliseconds are
+rounded up and clamped to ten digits without extending actual expiry. NetHTTP
+recomputes the header at dispatch and checks the budget around connection,
+codec and body progress. Each call owns one connection and one watchdog. The
+watchdog closes the owned raw socket on expiry, including during header
+trickle, stalled reads and blocked writes, and is joined on every exit.
+NetHTTP depends on the pinned stdlib BufferedIO socket layout for that close.
+
+DNS/native resolution may outlast the budget. Net::HTTP's internal connection
+implementation can itself use `Timeout.timeout` on Ruby 3.4; ConnectRPC never
+calls it or asynchronously interrupts application code. TLS handshake timeout
+uses the remaining budget after TCP/DNS. Peer/hostname verification stays on.
+There is no pooling, proxy-env routing, retries, redirect following, automatic
+decompression or compression negotiation beyond identity.
+
+Server timeout validation creates a per-call monotonic deadline. Checks run
+around input, decoding, handler execution and encoding. `cancelled?` means
+expiry, and handlers can call `check!` cooperatively. No header means no server
+expiry. Synchronous Rack cannot interrupt blocked input, arbitrary handlers or
+codec work, or detect every disconnect. No hard server cancellation is claimed.
+
+## Evidence and future direction
+
+Specs exercise real custom bindings/transports/invokers, ProtoJSON mapping,
+Rack::Lint success and errors, real localhost HTTP, byte limits and lifecycle.
+The pinned connect-go Client and Handler verify both directions/codecs against
+one shared descriptor fixture, including details, host-visible metadata and a
+request limit. This is an independent unary subset, not full conformance.
+
+Wire protocol, HTTP transport, and message binding remain separate choices.
+Streaming, GET, gzip, gRPC/gRPC-Web, interceptors, a production server, Rails,
+Faraday and generators are future work. Unsupported modes/options are rejected
+rather than represented as buffered streaming. Optional Rails execution should
+use the invoker boundary for callbacks, authentication, `rescue_from` and
+instrumentation, not claim a mounted Rack app supplies the controller lifecycle.
+See the [Rails controller guide](https://guides.rubyonrails.org/action_controller_overview.html).
+
+A future standalone host will need verified HTTP/2 and duplex behavior. Start
+with an existing stack; [Async::HTTP](https://github.com/socketry/async-http) is
+a candidate, not a selection. Connect streaming carries end-stream metadata in
+its body and does not require HTTP trailers; future gRPC has different
+[trailer requirements](https://github.com/grpc/grpc/blob/master/doc/PROTOCOL-HTTP2.md).
+[Net::HTTP](https://docs.ruby-lang.org/en/3.4/Net/HTTP.html) provides HTTP/1.1
+APIs, not proof of RPC streaming. Each future [Faraday adapter](https://lostisland.github.io/faraday/#/adapters/index)
+needs capability verification.
+
+A future protoc plugin can generate service metadata/stubs with
+[Buf compatibility](https://buf.build/docs/generate/). A Rust descriptor-driven
+backend using [prost-reflect](https://docs.rs/prost-reflect/latest/prost_reflect/)
+remains an option; cross-backend message-class compatibility is not promised.
+No custom protobuf parser is implemented. See the
+[Ruby generated-code guide](https://protobuf.dev/reference/ruby/ruby-generated/)
+and [Rack specification](https://github.com/rack/rack/blob/v3.2.7/SPEC.rdoc).
