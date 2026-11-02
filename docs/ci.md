@@ -1,7 +1,7 @@
 # CI
 
 The workflow runs on pull requests and pushes to `main`, on Ubuntu 24.04.
-It has nine independent checks, with no serial cache primer or aggregate job:
+It has nine core and three optional Rails checks, with no serial cache primer or aggregate job:
 
 | Check | Ruby | Canonical commands |
 | --- | --- | --- |
@@ -10,6 +10,8 @@ It has nine independent checks, with no serial cache primer or aggregate job:
 | Package | 3.4.12, 4.0.9 | `mise run generation:check`, then `mise run check:package` |
 | Go interoperability | 3.4.12, 4.0.9 | `mise run fixture:check`, then `mise run test:interop` |
 | Official conformance | 3.4.12, 4.0.9 | `mise run test:conformance` |
+| Rails 8.0.5.1 | 3.4.12 | `mise run test:rails`, `generation:check:rails`, `check:package:rails` with `RAILS_LANE=8.0` |
+| Rails 8.1.4 | 3.4.12, 4.0.9 | Same Rails commands with `RAILS_LANE=8.1` |
 
 Each matrix has `fail-fast: false`. Every check runs its commands on cache
 hits too. Package isolation still installs cached `.gem` artifacts offline and
@@ -115,3 +117,18 @@ Compare observations with that qualification; do not attribute the entire
 historical difference to the workflow. Local probes establish task/runtime
 contracts, not hosted action success, cache hits or a guaranteed speedup.
 Licensing remains undecided and the invalid gem push guard stays in place.
+
+## Optional Rails lanes
+
+Rails uses the same official pinned Ruby/Bundler action and root ABI-specific
+`vendor/bundle` cache. The setup-ruby step selects its generated Appraisal
+Gemfile explicitly, so each lane key includes the selected checksummed lock.
+Mise then propagates `RAILS_LANE` deliberately through the launcher, asserts
+actual Rails in the specs, and preserves action-provided runtimes with the
+existing CI guard. Rails setup depends on `setup:bundler`, avoiding root
+development-bundle installation in those lanes. `BUNDLE_COOLDOWN=7` is effective
+in setup-ruby and every adapter task. CI installs frozen locks and executes
+actual `appraisal <lane>` commands, never `appraisal install`. The nine core
+checks retain their commands and evidence scope; no aggregate verify job is
+added. Local Appraisal generation and package checks do not prove hosted cache
+behavior or clean exact-head CI success.

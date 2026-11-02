@@ -84,8 +84,8 @@ tools."aqua:protocolbuffers/protobuf/protoc" = "36.2"
 run = "bundle _4.0.23_ exec rake check:package"
 
 [tasks.verify]
-description = "Run static checks, specs, installed package integration, Go interop and official conformance"
-depends = ["check", "test", "check:package", "test:interop", "test:conformance", "generation:check"]
+description = "Run core checks, specs, packages, Go/official conformance and the selected Rails lane"
+depends = ["check", "test", "check:package", "test:interop", "test:conformance", "generation:check", "verify:rails"]
 
 [tasks."fixture:build"]
 description = "Rebuild the shared test descriptor from its explicit schema builder"
@@ -163,3 +163,38 @@ description = "Generate a service, then run typed localhost success and errors i
 depends = ["setup", "setup:generation"]
 tools."aqua:protocolbuffers/protobuf/protoc" = "36.2"
 run = "bundle _4.0.23_ exec ruby scripts/generated_example.rb"
+
+# Optional Rails bundle, independent of the root development bundle.
+[tasks."setup:rails"]
+description = "Install the frozen selected Rails Appraisal lane (RAILS_LANE=8.0 or 8.1)"
+depends = ["setup:bundler"]
+env.BUNDLE_COOLDOWN = "7"
+run = "mise exec -- ruby scripts/rails.rb setup"
+
+[tasks."test:rails"]
+description = "Run real Rails integration specs under the selected actual Appraisal lane"
+depends = ["setup:rails"]
+env.BUNDLE_COOLDOWN = "7"
+run = "mise exec -- ruby scripts/rails.rb test"
+
+[tasks."generation:check:rails"]
+description = "Check actual Appraisal generation in a temporary relative-layout copy"
+depends = ["setup:rails"]
+env.BUNDLE_COOLDOWN = "7"
+run = "mise exec -- ruby scripts/rails.rb generation:check"
+
+[tasks."build:rails"]
+description = "Build core and optional Rails archives into vendor/rails/pkg"
+depends = ["setup:rails"]
+env.BUNDLE_COOLDOWN = "7"
+run = "mise exec -- ruby scripts/rails.rb build"
+
+[tasks."check:package:rails"]
+description = "Install core and Rails archives offline and dispatch installed Rails requests"
+depends = ["build:rails"]
+env.BUNDLE_COOLDOWN = "7"
+run = "mise exec -- ruby scripts/rails.rb package"
+
+[tasks."verify:rails"]
+description = "Verify selected Rails specs, Appraisal generation and isolated packages"
+depends = ["test:rails", "generation:check:rails", "check:package:rails"]

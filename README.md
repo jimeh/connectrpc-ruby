@@ -6,7 +6,8 @@ configurable client, a Net::HTTP transport, and Rack middleware for reusable
 Ruby handlers. It is not production ready.
 
 The implemented profile is POST, identity encoding, and `application/proto` or
-protobuf `application/json`. Streaming, GET, compression, gRPC, gRPC-Web, Rails,
+protobuf `application/json`. The optional [connectrpc-rails gem](gems/connectrpc-rails/README.md)
+runs generated handlers through native Rails controllers. Streaming, GET, compression, gRPC, gRPC-Web,
 Faraday and a production server are outside this slice.
 Unsupported profiles and streaming declarations fail explicitly.
 

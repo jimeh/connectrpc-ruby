@@ -6,8 +6,13 @@ optional integration requires. `lib/connectrpc/` holds the core, bindings,
 transports and explicit optional generator. `exe/protoc-gen-connectrpc-ruby` is
 the standard protoc/Buf plugin. `examples/` owns ephemeral localhost hosting
 and `interop/` the pinned independent Go peer.
-`connectrpc.gemspec` owns package metadata and files. Specs live in `spec/`;
-`Rakefile` and `scripts/` implement tooling behind `mise.toml`.
+`connectrpc.gemspec` owns core package metadata and files. The optional
+`gems/connectrpc-rails/` package owns native Rails controller execution and its
+Appraisal lanes. Core setup/test remain independent. Use `RAILS_LANE=8.0` or
+`8.1` with `mise run test:rails` / `verify:rails`; every adapter bundle process
+uses `BUNDLE_COOLDOWN=7` and the root `vendor/bundle` cache.
+Core specs live in `spec/`; `Rakefile` and `scripts/` implement tooling behind
+`mise.toml`.
 
 Use `mise tasks` to discover commands. Start with `mise run setup`.
 For a Ruby change, run focused specs with `mise run test -- spec/connectrpc_spec.rb`
@@ -23,9 +28,10 @@ tests and workflow checks apply only if the edit affects those commands or examp
 
 Before protocol, adapter, message-binding, or public-API work, read
 [design](docs/design.md). Keep shared protocol code independent of HTTP hosting
-and concrete protobuf classes. Keep future streaming, Rails and production
-host work outside unary maintenance. Service generation composes existing unary
-metadata/client/handler APIs. Reject unsupported transport capabilities explicitly.
+and concrete protobuf classes. Keep future streaming and production
+host work outside unary maintenance. Rails execution belongs in the optional gem;
+keep generated files outside Zeitwerk-managed paths and all hooks/handlers
+private. Service generation composes existing unary metadata/client/handler APIs. Reject unsupported transport capabilities explicitly.
 
 Use RSpec for observable behavior. Choose tests for concrete success, failure,
 boundary, and regression risks; do not treat a green smoke suite or coverage

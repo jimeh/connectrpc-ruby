@@ -76,10 +76,12 @@ RSpec.describe "CI check mapping" do
   let(:workflow) { YAML.load_file(File.expand_path("../.github/workflows/ci.yml", __dir__)) }
   let(:jobs) { workflow.fetch("jobs") }
 
-  it "runs nine independent checks with each Ruby syntax check separate from its specs" do
-    expect(jobs.values.sum { |job| job.dig("strategy", "matrix", "ruby")&.size || 1 }).to eq(9)
+  it "runs nine core and three Rails checks with each Ruby syntax check separate from its specs" do
+    expect(jobs.values.sum do |job|
+      job.dig("strategy", "matrix", "ruby")&.size || job.dig("strategy", "matrix", "include")&.size || 1
+    end).to eq(12)
     jobs.each_value { |job| expect(job).not_to have_key("needs") }
-    jobs.except("static").each_value do |job|
+    jobs.except("static", "rails").each_value do |job|
       expect(job.dig("strategy", "fail-fast")).to be(false)
       expect(job.dig("strategy", "matrix", "ruby")).to eq(%w[3.4.12 4.0.9])
     end
@@ -89,6 +91,23 @@ RSpec.describe "CI check mapping" do
     expect(commands.fetch("package").first(2)).to eq(["mise run generation:check", "mise run check:package"])
     expect(commands.fetch("interop").first(2)).to eq(["mise run fixture:check", "mise run test:interop"])
     expect(commands.fetch("conformance")).to include("mise run test:conformance")
+  end
+
+  it "pins the three Rails Appraisal lanes and caches the selected frozen lock" do
+    rails = jobs.fetch("rails")
+    expected = [
+      { "rails" => "8.0", "ruby" => "3.4.12" }, { "rails" => "8.1", "ruby" => "3.4.12" },
+      { "rails" => "8.1", "ruby" => "4.0.9" }
+    ]
+    expect(rails.dig("strategy", "matrix", "include")).to eq(expected)
+    expect(rails.fetch("env")).to include("BUNDLE_COOLDOWN" => "7", "RAILS_LANE" => "${{ matrix.rails }}")
+    setup = rails.fetch("steps").find { |step| step.fetch("uses", "").start_with?("ruby/setup-ruby@") }
+    gemfile = "${{ github.workspace }}/gems/connectrpc-rails/gemfiles/rails_${{ matrix.rails }}.gemfile"
+    expect(setup.dig("env", "BUNDLE_GEMFILE")).to eq(gemfile)
+    commands = rails.fetch("steps").filter_map { |step| step["run"] }
+    expect(commands.first(3)).to eq(["mise run test:rails", "mise run generation:check:rails",
+                                     "mise run check:package:rails"])
+    expect(commands.join).not_to include("appraisal install", "mise run verify")
   end
 
   it "keeps shared complete bundle keys and prevents Mise from shadowing action runtimes" do
@@ -139,6 +158,23 @@ RSpec.describe "CI Mise task replacement" do
     expect(ci.fetch("description")).not_to be_empty
     expect(local.fetch("run")).to eq(["mise install --locked go@1.27.3", "go mod download"])
     expect(ci.fetch("run")).to eq(["ruby {{config_root}}/scripts/ci_runtime.rb interop", "go mod download"])
+  end
+end
+
+RSpec.describe "Optional Rails task context" do
+  it "keeps frozen Rails setup independent of root setup and preserves the task context in CI" do
+    ["setup:rails", "test:rails", "generation:check:rails", "build:rails", "check:package:rails"].each do |name|
+      tasks = [nil, "ci"].map do |mode|
+        output, error, status = Open3.capture3({ "MISE_ENV" => mode }, "mise", "tasks", "info", name, "--json")
+        expect(status.success?).to be(true), error
+        JSON.parse(output)
+      end
+      local, ci = tasks
+      %w[env tools dir depends run].each { |field| expect(ci.fetch(field)).to eq(local.fetch(field)) }
+      expect(local.fetch("env")).to include("BUNDLE_COOLDOWN=7")
+      expect(local.fetch("depends")).not_to include("setup")
+      expect(local.fetch("depends")).to eq(["setup:bundler"]) if name == "setup:rails"
+    end
   end
 end
 
