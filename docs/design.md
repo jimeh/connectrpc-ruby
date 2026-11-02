@@ -213,9 +213,10 @@ metadata while ignoring actual trailing HEADERS after backend validation.
 It reconstructs lengths normalized by the backend; malformed lengths and some
 singleton repeats can fail before core. Conservative frame/window settings do
 not provide a hard process-memory/header-size guarantee. Independent connect-go
-unary h2c/TLS/mTLS results are separate from the unchanged core conformance
-profile. NetHTTP remains HTTP/1.1; each future transport needs its own verified
-capability scope.
+unary h2c/TLS/mTLS results are separate from core's identity and gzip conformance
+profiles. Combined gzip specs exercise opaque bytes and wire/decompressed bounds
+over the actual Async host and transport. NetHTTP remains HTTP/1.1; each future
+transport needs its own verified capability scope.
 
 The explicit optional `connectrpc/generator` entry point implements the standard
 protoc request/response protocol through official `google/protobuf/plugin_pb`.

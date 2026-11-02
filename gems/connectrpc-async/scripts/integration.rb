@@ -24,18 +24,40 @@ Dir.mktmpdir("integration-", Dir.pwd) do |directory|
   File.write(ca_file, ca.first.to_pem)
   reactor do
     [false, true].each do |tls|
-      host = ConnectRPC::Async::Host.new(server: server, tls: tls ? host_tls(leaf, anchors: [ca]) : nil).start
+      host = ConnectRPC::Async::Host.new(server: server(encoding: :gzip),
+                                         tls: tls ? host_tls(leaf, anchors: [ca]) : nil).start
       origin = "#{tls ? 'https' : 'http'}://localhost:#{host.port}"
       options = { origin: origin }
       options.merge!(ca_file: ca_file, **host_tls(identity).except(:client_ca)) if tls
       transport = ConnectRPC::Async::Transport.new(**options)
-      %i[proto json].each do |codec|
-        typed = client(transport, origin, codec: codec)
+      exchanges = []
+      observed = lambda do |request|
+        transport.call(request).tap { |response| exchanges << [request, response] }
+      end
+      %i[proto json].product(%i[identity gzip]).each do |codec, encoding|
+        typed = client(observed, origin, codec: codec, encoding: encoding)
         message = AsyncHelpers::MESSAGE.new(name: "", count: 9_007_199_254_740_993, data: "\x00\xff".b)
         response = typed.echo(message, metadata: { "x-request" => %w[a b] })
         unless response.message == message && response.message.has_name? &&
                response.metadata["x-echo"] == %w[a b] && response.trailers["x-tail"] == %w[three four]
           raise "Installed typed/presence/metadata"
+        end
+
+        outgoing, incoming = exchanges.last
+        if encoding == :gzip
+          unless outgoing.headers["content-encoding"] == ["gzip"] && incoming.headers["content-encoding"] == ["gzip"]
+            raise "Installed gzip coding changed"
+          end
+
+          binding = ConnectRPC::Bindings::GoogleProtobuf.new
+          [outgoing, incoming].each do |wire|
+            unless wire.body.b.start_with?("\x1f\x8b".b) &&
+                   binding.decode(Zlib.gunzip(wire.body), type: AsyncHelpers::MESSAGE, codec: codec) == message
+              raise "Installed opaque gzip bytes changed"
+            end
+          end
+        elsif incoming.headers.key?("content-encoding")
+          raise "Installed identity default changed"
         end
 
         begin
@@ -45,7 +67,9 @@ Dir.mktmpdir("integration-", Dir.pwd) do |directory|
           raise "Installed typed error" unless e.code == "invalid_argument" &&
                                                AsyncHelpers::MESSAGE.decode(e.details.first.value) == message
         end
-        puts "PASS installed generated #{tls ? 'mTLS h2' : 'h2c'} #{codec} success/error/details/metadata"
+        raise "Installed error coding changed" if exchanges.last.last.headers.key?("content-encoding")
+
+        puts "PASS installed generated #{tls ? 'mTLS h2' : 'h2c'} #{codec}/#{encoding} success/error/details/metadata"
       end
     ensure
       transport&.close
@@ -53,7 +77,7 @@ Dir.mktmpdir("integration-", Dir.pwd) do |directory|
     end
   end
 
-  # Exercise the unchanged core NetHTTP transport after this graph activates
+  # Exercise core NetHTTP identity/gzip after this graph activates
   # OpenSSL 4.0.2 and JSON 3.1.0, with trust scoped to this child process.
   require "webrick"
   require "webrick/https"
@@ -62,7 +86,7 @@ Dir.mktmpdir("integration-", Dir.pwd) do |directory|
   web = WEBrick::HTTPServer.new(BindAddress: "127.0.0.1", Port: 0, SSLEnable: true,
                                 SSLCertificate: leaf.first, SSLPrivateKey: leaf.last,
                                 Logger: WEBrick::Log.new(File::NULL), AccessLog: [], StartCallback: started)
-  implementation = server
+  implementation = server(encoding: :gzip)
   web.mount_proc("/") do |request, response|
     output = implementation.call(path: request.path, http_method: request.request_method,
                                  headers: request.header, input: StringIO.new(request.body || ""))
@@ -73,18 +97,20 @@ Dir.mktmpdir("integration-", Dir.pwd) do |directory|
   worker = Thread.new { web.start }
   ready.pop
   begin
-    smoke = <<~CODE
+    smoke = <<~'CODE'
       require "connectrpc/async"
       require "connectrpc/bindings/google_protobuf"
       $LOAD_PATH.unshift(File.expand_path("generated", Dir.pwd))
       require "echo_connect"
       abort "OpenSSL activation" unless Gem.loaded_specs.fetch("openssl").version.to_s == "4.0.2"
       abort "JSON activation" unless Gem.loaded_specs.fetch("json").version.to_s == "3.1.0"
-      core = ConnectRPC::Client.new(base_url: ARGV.fetch(0),
-        binding: ConnectRPC::Bindings::GoogleProtobuf.new, codec: :json)
-      result = core.call(Example::V1::EchoService::ECHO, Example::V1::EchoMessage.new(name: "core TLS JSON"))
-      abort "Core NetHTTP interaction" unless result.message.name == "core TLS JSON"
-      puts "PASS installed core NetHTTP TLS/JSON with activated OpenSSL 4.0.2/JSON 3.1.0"
+      %i[identity gzip].each do |encoding|
+        core = ConnectRPC::Client.new(base_url: ARGV.fetch(0),
+          binding: ConnectRPC::Bindings::GoogleProtobuf.new, codec: :json, encoding: encoding)
+        result = core.call(Example::V1::EchoService::ECHO, Example::V1::EchoMessage.new(name: "core TLS JSON"))
+        abort "Core NetHTTP interaction" unless result.message.name == "core TLS JSON"
+        puts "PASS installed core NetHTTP TLS/JSON/#{encoding} with activated OpenSSL 4.0.2/JSON 3.1.0/Zlib #{Zlib::VERSION}"
+      end
     CODE
     system({ "SSL_CERT_FILE" => ca_file }, RbConfig.ruby, "-e", smoke,
            "https://localhost:#{web.config.fetch(:Port)}", exception: true)

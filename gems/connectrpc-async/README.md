@@ -2,8 +2,8 @@
 
 Optional HTTP/2 unary hosting and pooled transport. Require `connectrpc/async`
 explicitly. Core, Rails and Rack remain independent. This experimental package
-supports Connect unary identity, protobuf and ProtoJSON, h2c prior knowledge
-and TLS with verified peers and ALPN `h2`.
+supports Connect unary identity and opt-in core gzip, protobuf and ProtoJSON,
+h2c prior knowledge and TLS with verified peers and ALPN `h2`.
 
 The example assumes existing core `server`, `binding`, `method` and `message`
 objects, as shown in the repository unary examples.
@@ -46,7 +46,8 @@ transport seam. Origins contain only scheme/host/port. Request paths, including
 core's base prefix, remain intact. One connection multiplexes requests. Full
 admission fails with unavailable; pool waits honor finite RPC deadlines. Nil
 RPC deadlines remain unbounded, while actual setup still has its own timeout.
-No retries, redirects, proxy environment routing, compression or HTTP/1 fallback.
+No retries, redirects, proxy environment routing or HTTP/1 fallback. The transport
+carries opaque encoded bytes; core owns compression and negotiation.
 A future separate call can open a fresh connection after failure/GOAWAY.
 
 Both objects provide `close(grace: 5)`: stop admission, await handlers/calls and
@@ -110,6 +111,13 @@ There are no file watchers, ACME, secret services or authentication policy DSLs.
 
 ## Backend boundaries and verification
 
+Enable gzip with `encoding: :gzip` on the core client and server. Client
+`accept_encoding:` controls response negotiation independently. Core's
+`request_limit:` and `response_limit:` bound serialized/decompressed messages;
+the separate wire limits default to those same caps. The transport's
+`TransportRequest.response_limit` remains the encoded wire read cap. Defaults
+remain identity, and neither host nor transport performs transparent inflation.
+
 Core owns codecs, errors, metadata and serialized byte limits. The backend
 reads bounded chunks, reconstructs declared length from backend body.length,
 preserves raw repeated leading fields and leading `trailer-*`, and ignores real
@@ -128,6 +136,8 @@ Independent connect-go tests exercise both directions/codecs over h2c/TLS/mTLS,
 with observed HTTP/2/ALPN and large typed wire-tail drains. Original core fixture
 and official conformance harnesses remain separate. Installed package checks use
 normal offline dependencies and a fresh GEM_HOME outside the checkout. This
-graph activates OpenSSL 4.0.2/JSON 3.1.0; installed core NetHTTP TLS/JSON is also
-exercised under that activation. Nothing is published. Licensing is undecided
-and the invalid `https://gems.invalid` push guard remains in both archives.
+graph activates OpenSSL 4.0.2/JSON 3.1.0; installed core NetHTTP TLS/JSON with
+identity and gzip is also exercised under that activation. Focused combined
+specs cover actual gzip bytes over h2c/TLS in both codecs and independent host
+wire/inflated and transport wire/client inflated caps. Nothing is published.
+Licensing is undecided and the invalid `https://gems.invalid` push guard remains in both archives.
