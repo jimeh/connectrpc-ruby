@@ -24,6 +24,8 @@ Gemspec/RequireMFA:
 # Scenario harnesses keep setup, assertions and deterministic cleanup together.
 Metrics/BlockLength:
   Exclude:
+    - typecheck/package.rb
+    - typecheck/runtime.rb
     - spec/**/*.rb
     - gems/connectrpc-rack/spec/**/*.rb
     - gems/connectrpc-rack/scripts/**/*.rb
@@ -44,9 +46,11 @@ Metrics/BlockLength:
 # mirror generated Ruby blocks. These files still receive all syntax/style cops.
 Metrics/MethodLength:
   Exclude:
+    - typecheck/harness.rb
     - gems/connectrpc-async/lib/connectrpc/async/*.rb
     - lib/connectrpc/generator/schema.rb
     - lib/connectrpc/generator/renderer.rb
+    - lib/connectrpc/generator/rbs_renderer.rb
     - lib/connectrpc/generator/names.rb
     - spec/**/*.rb
     - gems/connectrpc-rack/spec/**/*.rb
@@ -63,9 +67,11 @@ Metrics/MethodLength:
 
 Metrics/AbcSize:
   Exclude:
+    - typecheck/harness.rb
     - gems/connectrpc-async/lib/connectrpc/async/*.rb
     - lib/connectrpc/generator/schema.rb
     - lib/connectrpc/generator/renderer.rb
+    - lib/connectrpc/generator/rbs_renderer.rb
     - spec/**/*.rb
     - gems/connectrpc-rack/spec/**/*.rb
     - gems/connectrpc-rack/scripts/**/*.rb
@@ -91,6 +97,7 @@ Metrics/ClassLength:
 
 Metrics/CyclomaticComplexity:
   Exclude:
+    - typecheck/harness.rb
     - gems/connectrpc-async/lib/connectrpc/async/*.rb
     - lib/connectrpc/generator/schema.rb
     - spec/support/socket_peer.rb
@@ -134,3 +141,8 @@ Style/MixinUsage:
 Naming/PredicateMethod:
   AllowedMethods:
     - drain_resources
+
+# Consumer fixtures exercise multiple independently signed callable objects.
+Style/OneClassPerFile:
+  Exclude:
+    - typecheck/consumers/support.rb

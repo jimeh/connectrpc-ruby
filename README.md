@@ -97,9 +97,12 @@ Run `buf generate` in that module with pinned protoc on PATH. For this checkout,
 compares glue bytes and exercises both generated message trees.
 
 Proto2 and proto3, including optional presence, are supported. Editions,
-streaming targets and nonempty plugin parameters are rejected. Output is
+streaming targets and unsupported plugin parameters are rejected. Default output is
 `dir/foo_connect.rb` for service-bearing `dir/foo.proto`; message generation
-remains official `--ruby_out`. No RBS/Sorbet files are emitted. Ruby module
+remains official `--ruby_out`. Set `rbs=true` to also emit `dir/foo_connect.rbs`.
+The gem ships optional core signatures; the [RBS guide](docs/rbs.md) covers
+official message `--rbs_out`, explicit protobuf bridge selection and strict Steep
+configuration. Ruby module
 placement follows official package/`ruby_package` naming; RPC methods use the
 gRPC Ruby underscore rule (`GetHTTP` becomes `get_http`). Leading-underscore
 RPCs, object hooks, implicit conversion methods, reserved runtime names and

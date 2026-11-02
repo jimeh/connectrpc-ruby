@@ -350,3 +350,28 @@ run = "mise exec -- ruby gems/connectrpc-testing/scripts/tools.rb"
 [tasks."testing:verify"]
 description = "Verify testing transport source, specs, installed package and example"
 depends = ["testing:test", "testing:check", "testing:package", "testing:example"]
+
+# Optional static typing tools never enter a runtime or adapter bundle.
+[tasks."rbs:setup"]
+description = "Install the independent frozen Steep/RBS development bundle"
+run = "mise exec -- ruby typecheck/run.rb setup"
+
+[tasks."rbs:check"]
+description = "Check official protoc/Buf RBS, strict positive/negative consumers and runtime"
+depends = ["rbs:runtime", "rbs:setup", "setup:generation"]
+tools."aqua:protocolbuffers/protobuf/protoc" = "36.2"
+tools."aqua:bufbuild/buf" = "1.75.0"
+run = "ruby typecheck/run.rb check"
+
+[tasks."rbs:package"]
+description = "Check installed RBS discovery and consumers outside the checkout"
+depends = ["rbs:runtime", "rbs:setup", "setup:generation"]
+tools."aqua:protocolbuffers/protobuf/protoc" = "36.2"
+tools."aqua:bufbuild/buf" = "1.75.0"
+run = "ruby typecheck/run.rb package"
+
+[tasks."rbs:runtime"]
+description = "Prepare the frozen fixture runtime bundle with local Bundler state"
+depends = ["setup:bundler"]
+env.BUNDLE_USER_HOME = "{{config_root}}/vendor/rbs/root-bundler"
+run = "bundle _4.0.23_ install"

@@ -1,0 +1,41 @@
+# protoc 36.2 / google-protobuf 4.36.2 compatibility shapes only.
+# Official message field signatures remain upstream-owned. No iteration API.
+module Google
+  module Protobuf
+    class AbstractMessage
+    end
+    interface _MessageClass[T]
+    end
+    class RepeatedField[Read, Write]
+      def []: (Integer index) -> Read?
+      def []=: (Integer index, Write value) -> nil
+      def <<: (Write value) -> self
+    end
+    class Map[KeyRead, ValueRead, KeyWrite, ValueWrite]
+      def []: (KeyWrite key) -> ValueRead?
+      def []=: (KeyWrite key, ValueWrite value) -> ValueWrite
+    end
+    interface _EnumModule
+      def lookup: (Integer) -> Symbol?
+      def resolve: (Symbol) -> Integer?
+    end
+    interface _SpecificDescriptor[T]
+      def msgclass: () -> T
+    end
+    interface _SpecificEnumDescriptor[T]
+      def enummodule: () -> T
+    end
+    class Descriptor
+      def msgclass: () -> Class
+    end
+    class EnumDescriptor
+      def enummodule: () -> Module
+    end
+    class DescriptorPool
+      def self.generated_pool: () -> DescriptorPool
+      # Other names can resolve to file/service/extension descriptors. Keep
+      # those runtime shapes opaque; upstream literal overloads refine messages.
+      def lookup: (String name) -> Object?
+    end
+  end
+end

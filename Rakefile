@@ -35,6 +35,7 @@ task :syntax do
                    "gems/connectrpc-rack/lib/**/*.rb", "gems/connectrpc-rack/spec/**/*.rb",
                    "gems/connectrpc-rack/scripts/**/*.rb", "gems/connectrpc-rack/*.gemspec",
                    "gems/connectrpc-rack/Gemfile",
+                   "typecheck/**/*.rb", "typecheck/Gemfile",
                    "exe/*", "*.gemspec", "Gemfile",
                    "Rakefile"]
   files.each { |file| ruby "-c", file }

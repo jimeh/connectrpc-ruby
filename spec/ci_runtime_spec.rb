@@ -76,10 +76,10 @@ RSpec.describe "CI check mapping" do
   let(:workflow) { YAML.load_file(File.expand_path("../.github/workflows/ci.yml", __dir__)) }
   let(:jobs) { workflow.fetch("jobs") }
 
-  it "preserves nine core, three Rails, four async, two Rack and two testing checks" do
+  it "preserves core, Rails, Async, Rack, testing and RBS checks" do
     core = %w[static specs package interop conformance]
     backend = %w[async_specs async_interop]
-    expect(jobs.keys).to match_array([*core, "rails", *backend, "rack", "testing"])
+    expect(jobs.keys).to match_array([*core, "rails", *backend, "rack", "testing", "rbs"])
     count = lambda do |names|
       jobs.slice(*names).values.sum do |job|
         job.dig("strategy", "matrix", "ruby")&.size || job.dig("strategy", "matrix", "include")&.size || 1
@@ -90,7 +90,8 @@ RSpec.describe "CI check mapping" do
     expect(count.call(backend)).to eq(4)
     expect(count.call(["rack"])).to eq(2)
     expect(count.call(["testing"])).to eq(2)
-    expect(count.call(jobs.keys)).to eq(20)
+    expect(count.call(["rbs"])).to eq(2)
+    expect(count.call(jobs.keys)).to eq(22)
     jobs.each_value { |job| expect(job).not_to have_key("needs") }
     jobs.except("static", "rails").each_value do |job|
       expect(job.dig("strategy", "fail-fast")).to be(false)
@@ -102,6 +103,7 @@ RSpec.describe "CI check mapping" do
     expect(commands.fetch("package").first(2)).to eq(["mise run generation:check", "mise run check:package"])
     expect(commands.fetch("interop").first(2)).to eq(["mise run fixture:check", "mise run test:interop"])
     expect(commands.fetch("conformance")).to include("mise run test:conformance")
+    expect(commands.fetch("rbs").first(2)).to eq(["mise run rbs:check", "mise run rbs:package"])
   end
 
   it "pins the three Rails Appraisal lanes and caches the selected frozen lock" do
@@ -142,7 +144,7 @@ RSpec.describe "CI check mapping" do
     expect(sets.fetch("conformance")).to include("install" => true, "cache" => true,
                                                  "install_args" => "github:connectrpc/conformance@1.0.6 " \
                                                                    "aqua:protocolbuffers/protobuf/protoc@36.2")
-    %w[specs interop].each do |job|
+    %w[specs interop rbs].each do |job|
       expect(sets.fetch(job)).to include("install" => false, "cache" => false)
     end
     expect(sets.fetch("package")).to include("install" => true, "cache" => true,

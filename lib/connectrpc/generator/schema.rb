@@ -3,17 +3,19 @@
 module ConnectRPC
   module Generator
     class Schema
-      attr_reader :targets, :types
+      attr_reader :targets, :types, :ruby_types, :rbs
 
       def initialize(request)
-        unless request.parameter.empty?
-          raise InvalidDescriptor,
-                "Plugin parameters are not supported: #{request.parameter.inspect}"
+        unless ["", "rbs=true"].include?(request.parameter)
+          raise InvalidDescriptor, "Invalid plugin parameters #{request.parameter.inspect}; expected rbs=true or empty"
         end
+
+        @rbs = request.parameter == "rbs=true"
 
         @files = unique_files(request.proto_file)
         @targets = target_files(request.file_to_generate)
         @types = {}
+        @ruby_types = {}
         @symbols = {}
         @namespaces = Hash.new { |hash, key| hash[key] = [] }
         @files.each_value { |file| index_file(file) }
@@ -87,6 +89,7 @@ module ConnectRPC
           next if message.options&.map_entry
 
           parts = namespace + [Names.rubify(message.name)]
+          @ruby_types[".#{full}"] = "::#{parts.join('::')}"
           node(parts, :message, full, file)
           index_types(message.nested_type, message.enum_type, full, parts, file)
         end
@@ -196,13 +199,16 @@ module ConnectRPC
           outputs[output] = file.name
         end
         targets.reject { |file| file.service.empty? }.each do |file|
-          output = "#{Names.stem(file.name)}_connect.rb"
-          if outputs[output]
-            raise InvalidDescriptor,
-                  "Output collision: #{outputs[output]} and #{file.name} -> #{output}"
-          end
+          extensions = rbs ? %w[rb rbs] : %w[rb]
+          extensions.each do |extension|
+            output = "#{Names.stem(file.name)}_connect.#{extension}"
+            if outputs[output]
+              raise InvalidDescriptor,
+                    "Output collision: #{outputs[output]} and #{file.name} -> #{output}"
+            end
 
-          outputs[output] = file.name
+            outputs[output] = file.name
+          end
         end
       end
 

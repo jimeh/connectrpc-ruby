@@ -51,7 +51,7 @@ RSpec.describe "Service generation" do
     expect(response.file).to be_empty
   end
 
-  it "rejects every nonempty plugin parameter" do
+  it "rejects unknown plugin parameters" do
     request = request_for
     request.parameter = "unknown=true"
     expect(generate(request).error).to include("parameter")
