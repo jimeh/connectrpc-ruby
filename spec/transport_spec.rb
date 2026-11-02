@@ -152,17 +152,18 @@ RSpec.describe ConnectRPC::Transports::NetHTTP do
   end
 
   it "rechecks logical expiry after each capped watchdog wait" do
+    stub_const("ConnectRPC::Deadline::MAX_NATIVE_WAIT", 500)
     now = 0.0
-    deadline = ConnectRPC::Deadline.new(90_000, clock: -> { now })
+    deadline = ConnectRPC::Deadline.new(600, clock: -> { now })
     closed = Queue.new
     socket = double("owned socket")
     condition = ConditionVariable.new
     allow(ConditionVariable).to receive(:new).and_return(condition)
-    expect(condition).to receive(:wait).with(instance_of(Mutex), 86_400).ordered do
-      now += 86_400
+    expect(condition).to receive(:wait).with(instance_of(Mutex), 500).ordered do
+      now += 500
     end
-    expect(condition).to receive(:wait).with(instance_of(Mutex), 3600).ordered do
-      now += 3600
+    expect(condition).to receive(:wait).with(instance_of(Mutex), 100).ordered do
+      now += 100
     end
     expect(socket).to receive(:shutdown).with(Socket::SHUT_RDWR) { expect(deadline).to be_expired }
     expect(socket).to receive(:close) { closed << true }
@@ -170,6 +171,33 @@ RSpec.describe ConnectRPC::Transports::NetHTTP do
     expect(closed.pop(timeout: 1)).to be(true)
   ensure
     watchdog&.stop
+  end
+
+  [[30, 0.05, "unavailable", false], [0.05, 1, "deadline_exceeded", true]].each do |budget, cap, code, expired|
+    it "reports #{code} when a native wait ends with logical expiry #{expired}" do
+      stub_const("ConnectRPC::Deadline::MAX_NATIVE_WAIT", cap)
+      progress = Queue.new
+      peer = lambda do |socket|
+        read_request(socket)
+        socket.write("HTTP/1.1 200 OK\r\nContent-Length: 100\r\n\r\nx")
+        progress << :body_started
+        # The native read timeout and logical deadline are the elapsed I/O
+        # behavior under test. Peer EOF proves closure after that boundary.
+        expect(socket.read).to eq("")
+      end
+      before = owned_threads
+      with_peer(peer) do |url, listener|
+        request = transport_request(url, timeout: budget)
+        expect { transport.call(request) }.to raise_error(ConnectRPC::Error) do |error|
+          expect(error.code).to eq(code)
+          expect(error.message).to eq(expired ? "Deadline exceeded" : "HTTP transport failed")
+          expect(request.deadline.expired?).to eq(expired)
+        end
+        expect(progress.pop(timeout: 1)).to eq(:body_started)
+        expect(listener.wait_readable(0)).to be_nil
+      end
+      expect(owned_threads - before).to be_empty
+    end
   end
 
   it "closes and stops reading an unknown-length response at its byte limit" do

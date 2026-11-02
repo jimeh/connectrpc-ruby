@@ -75,9 +75,8 @@ module ConnectRPC
         outgoing = prepare_request(request)
         http = connection(request.url, deadline)
         with_connection(http, deadline) { exchange(http, request, outgoing) }
-      rescue Net::OpenTimeout, Net::ReadTimeout, Net::WriteTimeout
-        raise Error.new(:deadline_exceeded, "Deadline exceeded")
-      rescue SocketError, IOError, SystemCallError, Net::HTTPBadResponse, Net::HTTPHeaderSyntaxError,
+      rescue Net::OpenTimeout, Net::ReadTimeout, Net::WriteTimeout,
+             SocketError, IOError, SystemCallError, Net::HTTPBadResponse, Net::HTTPHeaderSyntaxError,
              OpenSSL::SSL::SSLError
         deadline.check!
         raise Error.new(:unavailable, "HTTP transport failed")

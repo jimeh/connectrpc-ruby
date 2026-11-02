@@ -140,9 +140,11 @@ resolution may outlast the budget; expiry is checked when control returns.
 Codec work and request preparation are synchronous and checked before/after,
 not interrupted. Dispatch rechecks expiry and refreshes the wire timeout after
 connection setup; a closed socket cannot trigger an implicit reconnect. Native
-waits are capped at one day to avoid platform overflow for very large budgets.
-The logical deadline stays unchanged, and the watchdog rechecks it after each
-capped wait.
+operations are independently capped at `9_999_999.999` seconds, the Connect
+wire maximum, to avoid platform overflow for very large budgets. A native
+operation timeout before logical expiry returns `unavailable`; actual expiry
+returns `deadline_exceeded`. The logical deadline stays unchanged, and the
+watchdog rechecks it after each capped wait.
 
 Server contexts expose `deadline`, `cancelled?`, and `check!`. With no inbound
 timeout, there is no server expiry. Cancellation means deadline expiry in this

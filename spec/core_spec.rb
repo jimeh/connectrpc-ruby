@@ -53,7 +53,10 @@ end
 
 RSpec.describe "deadline and wire boundaries" do
   it "clamps finite extremely large timeouts without numeric overflow" do
-    expect(ConnectRPC::Deadline.new(Float::MAX).timeout_ms).to eq("9999999999")
+    deadline = ConnectRPC::Deadline.new(Float::MAX, clock: -> { 0.0 })
+    expect(deadline.timeout_ms).to eq("9999999999")
+    expect(deadline.native_timeout).to eq(9_999_999.999)
+    expect(deadline.remaining).to eq(Float::MAX)
   end
 
   it "falls back safely for invalid UTF-8 inside otherwise valid JSON errors" do

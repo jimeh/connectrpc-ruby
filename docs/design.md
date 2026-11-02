@@ -104,9 +104,14 @@ Request preparation finishes before connecting, with an expiry check afterward.
 The connection checks expiry and recomputes the wire timeout immediately before
 dispatch, and rejects Net::HTTP's implicit reconnect of a closed socket. This
 keeps every dispatched byte on the one socket owned by the watchdog.
-TCP/TLS/read/write timeout arguments and watchdog waits are capped at one day
-for safe native time conversion. Logical expiry remains unchanged; the watchdog
-re-evaluates it after each capped wait.
+TCP/TLS/read/write timeout arguments and watchdog waits are capped at exactly
+`9_999_999.999` seconds, the Connect wire maximum, for safe native time conversion.
+Individual native operations are independently bounded: an operation timeout
+before logical expiry returns `unavailable`, while actual expiry returns
+`deadline_exceeded`. Logical expiry remains unchanged; the watchdog re-evaluates
+it after each capped wait and only closes the socket at actual expiry. Local
+huge-budget calls verify conversions on the exercised plain TCP paths, not an
+actual 115-day duration or runtime TLS behavior.
 
 DNS/native resolution may outlast the budget. Net::HTTP's internal connection
 implementation can itself use `Timeout.timeout` on Ruby 3.4; ConnectRPC never

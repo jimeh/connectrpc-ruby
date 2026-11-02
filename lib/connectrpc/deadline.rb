@@ -3,7 +3,7 @@
 module ConnectRPC
   class Deadline
     # Bound native time conversions without shortening the logical deadline.
-    MAX_NATIVE_WAIT = 86_400
+    MAX_NATIVE_WAIT = 9_999_999.999
 
     def initialize(timeout, clock: -> { Process.clock_gettime(Process::CLOCK_MONOTONIC) })
       unless timeout.is_a?(Numeric) && timeout.real? && timeout.finite? && timeout.positive?

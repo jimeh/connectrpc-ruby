@@ -145,7 +145,10 @@ Pre-dispatch race tests use a controlled monotonic clock and peer-observed EOF
 before resuming dispatch, then check for queued replacement connections after
 the call completes. Wire timeout assertions consume budget during preparation
 and connection. Huge finite budgets exercise real localhost I/O, with capped
-native waits and an unchanged logical deadline. Proxy configuration assertions
+native waits and an unchanged logical deadline. Scaled-cap socket tests verify
+`unavailable` before logical expiry and `deadline_exceeded` after actual expiry,
+with closure and no replacement connection. Huge-budget tests exercise native
+conversions, not the full elapsed native-operation ceiling. Proxy configuration assertions
 set hostile proxy environment variables and restore their previous state.
 
 ## Dependency and action updates
