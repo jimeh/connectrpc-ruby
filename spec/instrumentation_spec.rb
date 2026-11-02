@@ -2,6 +2,7 @@
 
 require "spec_helper"
 require "stringio"
+require "socket"
 
 RSpec.describe "RPC lifecycle instrumentation" do
   let(:rpc) { ConnectRPC::Method.new(service: "test.Echo", name: "Echo", request_type: String, response_type: String) }
@@ -283,5 +284,60 @@ RSpec.describe "RPC lifecycle instrumentation" do
     expect(outcome.error).to equal(original)
     expect(outcome.normalized_error.code).to eq("deadline_exceeded")
     expect(outcome.code).to eq("deadline_exceeded")
+  end
+
+  it "isolates subscriber mutation of empty failure metadata from later observers" do
+    mutator = Object.new
+    mutator.define_singleton_method(:start) { |_| self }
+    mutator.define_singleton_method(:processing_finished) { |outcome| outcome.response_metadata["x-added"] = ["bad"] }
+    reports = []
+    configured = ConnectRPC::Instrumentation.new(subscribers: [mutator, subscriber], on_error: ->(e) { reports << e })
+    caller = ConnectRPC::Client.new(base_url: "https://example.test", binding: binding, instrumentation: configured)
+    expect { caller.call(rpc, "request", timeout: 0) }.to raise_error(ArgumentError)
+    outcome = events.find { |event| event.first == :processing }.last
+    expect(outcome.response_metadata).to eq({})
+    expect(outcome.response_metadata).to be_frozen
+    expect(reports).to contain_exactly(an_instance_of(FrozenError))
+    expect(events.last.last.outcome).to equal(outcome)
+  end
+
+  it "retains the original refused NetHTTP connection before the public unavailable error" do
+    reserved = Socket.new(Socket::AF_INET, Socket::SOCK_STREAM, 0)
+    reserved.bind(Socket.sockaddr_in(0, "127.0.0.1"))
+    caller = ConnectRPC::Client.new(base_url: "http://127.0.0.1:#{reserved.local_address.ip_port}",
+                                    binding: binding, instrumentation: bus)
+    expect { caller.call(rpc, "request", timeout: nil) }.to raise_error(ConnectRPC::Error) do |error|
+      expect(error.code).to eq("unavailable")
+      outcome = events.find { |event| event.first == :processing }.last
+      expect(outcome.normalized_error).to equal(error)
+      expect(outcome.error).to be_a(Errno::ECONNREFUSED)
+    end
+  ensure
+    reserved&.close
+  end
+
+  it "retains malformed request and response gzip before their protocol errors" do
+    response = server(encoding: :gzip).call(path: rpc.path, http_method: "POST",
+                                            headers: { "content-type" => ["application/proto"],
+                                                       "content-encoding" => ["gzip"] }, input: StringIO.new("bad"))
+    expect(response.status).to eq(400)
+    outcome = events.find { |event| event.first == :processing }.last
+    expect(outcome.error).to be_a(ConnectRPC::Compression::Malformed)
+    expect(outcome.normalized_error.code).to eq("invalid_argument")
+    [200, 503].each do |status|
+      events.clear
+      transport = lambda do |_|
+        ConnectRPC::TransportResponse.new(status: status, headers: { "content-type" => ["application/proto"],
+                                                                     "content-encoding" => ["gzip"] }, body: "not gzip")
+      end
+      caller = ConnectRPC::Client.new(base_url: "https://example.test", binding: binding, transport: transport,
+                                      instrumentation: bus, accept_encoding: [:gzip])
+      expect { caller.call(rpc, "request", timeout: nil) }.to raise_error(ConnectRPC::Error) do |error|
+        expect(error.code).to eq(status == 200 ? "internal" : "unavailable")
+        outcome = events.find { |event| event.first == :processing }.last
+        expect(outcome.error).to be_a(ConnectRPC::Compression::Malformed)
+        expect(outcome.normalized_error).to equal(error)
+      end
+    end
   end
 end

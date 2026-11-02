@@ -123,8 +123,10 @@ module ConnectRPC
         # Keep role-specific wire codes and independent operation failures in one table.
         # rubocop:disable Metrics/AbcSize, Metrics/CyclomaticComplexity, Metrics/PerceivedComplexity
         def processing_error(outcome)
-          if outcome.code && outcome.code != "OK" && (@role == :client || SERVER_ERRORS.include?(outcome.code))
-            return outcome.code
+          if outcome.code && outcome.code != "OK"
+            return outcome.code if @role == :client || SERVER_ERRORS.include?(outcome.code)
+
+            return nil
           end
           return "operation_failed" if outcome.error && !outcome.error.is_a?(ConnectRPC::Error)
           return "operation_failed" if outcome.code.nil? && outcome.error

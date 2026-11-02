@@ -125,7 +125,8 @@ module ConnectRPC
       end
       Protocol.check_size!(bytes, @request_limit)
       bytes
-    rescue Compression::Malformed
+    rescue Compression::Malformed => e
+      context.record_failure(e)
       raise Error.new(:invalid_argument, "Cannot decompress request")
     end
 
@@ -166,7 +167,8 @@ module ConnectRPC
       metadata = Protocol.metadata(headers)
       lifecycle.request_metadata = Instrumentation.carrier(metadata) if lifecycle
       Context.new(request_metadata: metadata, deadline: request_deadline(headers), lifecycle: lifecycle)
-    rescue ArgumentError
+    rescue ArgumentError => e
+      lifecycle&.record_failure(e)
       raise Error.new(:invalid_argument, "Malformed request metadata")
     end
 

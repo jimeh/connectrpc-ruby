@@ -125,7 +125,8 @@ module ConnectRPC
         @outcome = Outcome.new(code: code, http_status: http_status, error: @error,
                                normalized_error: normalized_error, duration: now - @processing_at,
                                request_bytes: @request_bytes, response_bytes: response_bytes,
-                               request_metadata: @request_metadata, response_metadata: response_metadata)
+                               request_metadata: Instrumentation.carrier(@request_metadata),
+                               response_metadata: Instrumentation.carrier(response_metadata))
         @processing_state = :finished
         @notifying_processing = true
         begin

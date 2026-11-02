@@ -199,4 +199,17 @@ RSpec.describe ConnectRPC::OTel::Subscriber do
     end
     expect(rpc_spans(exporter).size).to eq(5)
   end
+
+  it "keeps malformed request gzip under the server invalid_argument status policy" do
+    target = server(instrumentation: bus, encoding: :gzip)
+    response = target.call(path: AsyncHelpers::ECHO::ECHO.path, http_method: "POST",
+                           headers: { "content-type" => ["application/proto"], "content-encoding" => ["gzip"] },
+                           input: StringIO.new("not gzip"))
+    expect(response.status).to eq(400)
+    span = rpc_spans(exporter).fetch(0)
+    expect(span.attributes["rpc.response.status_code"]).to eq("invalid_argument")
+    expect(span.attributes).not_to have_key("error.type")
+    expect(span.status.code).to eq(OpenTelemetry::Trace::Status::UNSET)
+    expect(Array(span.events)).to be_empty
+  end
 end

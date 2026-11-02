@@ -163,7 +163,7 @@ module ConnectRPC
             next if request.stream.closed?
 
             worker = task.async(request, finished: false) do |_worker, incoming|
-              response = nil
+              response = error = written = nil
               begin
                 response = yield(incoming)
                 incoming.stream.exchange.http_status = response&.status if incoming.stream.exchange
@@ -176,14 +176,16 @@ module ConnectRPC
                   incoming.stream.response_task&.wait
                   written = incoming.stream.response_written?
                 end
-              rescue StandardError
+              rescue StandardError => e
+                error = e
                 reset(incoming.stream)
               ensure
+                error ||= $ERROR_INFO
                 begin
-                  cleaned = close_request(response, incoming)
+                  cleaned = close_request(response, incoming) { |failure| error ||= failure }
                 ensure
                   incoming.stream.exchange&.finish(written && cleaned && incoming.stream.response_written? &&
-                    !@resource.finished?, $ERROR_INFO)
+                    !@resource.finished?, error || $ERROR_INFO)
                   @resource.changed
                 end
               end
@@ -198,7 +200,8 @@ module ConnectRPC
           response&.close
           request.body&.close
           true
-        rescue ::Protocol::HTTP2::ProtocolError, IOError, SystemCallError
+        rescue ::Protocol::HTTP2::ProtocolError, IOError, SystemCallError => e
+          yield e if block_given?
           nil
         end
 

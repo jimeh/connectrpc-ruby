@@ -15,6 +15,96 @@ RSpec.describe "Native admission and forced teardown observation" do
     [calls, subscriber]
   end
 
+  %i[write cleanup].each do |stage|
+    it "retains the original HTTP/2 #{stage} error in its aborted completion" do
+      calls, recorder = record_calls
+      _provider, exporter, bus = tracing(subscribers: [recorder])
+      reactor do |task|
+        entered = Async::Queue.new
+        release = Async::Queue.new
+        original = IOError.new("private #{stage} failure")
+        target = server(instrumentation: bus, echo: lambda { |message, _|
+          entered.enqueue(true)
+          release.dequeue
+          message
+        })
+        host = ConnectRPC::Async::Host.new(server: target).start
+        session = host_session(host)
+        if stage == :cleanup
+          application = session.instance_variable_get(:@application)
+          application.define_singleton_method(:call) do |request, **options|
+            response = super(request, **options)
+            close = request.body.method(:close)
+            failed = false
+            request.body.define_singleton_method(:close) do |*arguments|
+              close.call(*arguments)
+              return if failed
+
+              failed = true
+              raise original
+            end
+            response
+          end
+        end
+        origin = "http://127.0.0.1:#{host.port}"
+        transport = ConnectRPC::Async::Transport.new(origin: origin)
+        reading = task.async do
+          client(transport, origin).echo(AsyncHelpers::MESSAGE.new(name: "failure"))
+        rescue ConnectRPC::Error => e
+          e
+        end
+        entered.dequeue
+        if stage == :write
+          resource = session.instance_variable_get(:@resources).first
+          boundary = SimpleDelegator.new(resource.socket)
+          failed = false
+          boundary.define_singleton_method(:write) do |buffer|
+            if !failed && buffer.to_s.getbyte(3) == 1
+              failed = true
+              raise original
+            end
+            super(buffer)
+          end
+          resource.connection.stream.instance_variable_set(:@io, boundary)
+        end
+        release.enqueue(true)
+        reading.wait
+        wait_until(task, "#{stage} failure completion") { calls.first&.last&.any? { |event| event.first == :finished } }
+        completion = calls.first.last.find { |event| event.first == :finished }.last
+        expect(completion.delivery).to eq(:aborted)
+        expect(completion.error).to equal(original)
+        expect(rpc_spans(exporter).size).to eq(1)
+      ensure
+        release&.enqueue(true)
+        transport&.close(grace: 0)
+        host&.close(grace: 0)
+      end
+    end
+  end
+
+  it "retains an Async connection failure without exposing it through the public error cause" do
+    calls, recorder = record_calls
+    _provider, _exporter, bus = tracing(subscribers: [recorder])
+    reserved = Socket.new(Socket::AF_INET, Socket::SOCK_STREAM, 0)
+    reserved.bind(Socket.sockaddr_in(0, "127.0.0.1"))
+    reactor do
+      origin = "http://127.0.0.1:#{reserved.local_address.ip_port}"
+      transport = ConnectRPC::Async::Transport.new(origin: origin)
+      typed = client(transport, origin, instrumentation: bus)
+      expect { typed.echo(AsyncHelpers::MESSAGE.new, timeout: nil) }.to raise_error(ConnectRPC::Error) do |error|
+        expect(error.code).to eq("unavailable")
+        expect(error.cause).to be_nil
+        outcome = calls.first.last.find { |event| event.first == :processing }.last
+        expect(outcome.error).to be_a(Errno::ECONNREFUSED)
+        expect(outcome.normalized_error).to equal(error)
+      end
+    ensure
+      transport&.close(grace: 0)
+    end
+  ensure
+    reserved&.close
+  end
+
   %i[completed aborted].each do |delivery|
     it "records admission rejection with #{delivery} output and no fabricated processing callback" do
       _provider, exporter, bus = tracing

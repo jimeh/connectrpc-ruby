@@ -115,7 +115,7 @@ module ConnectRPC
 
     def build_request(method, request, metadata, deadline, lifecycle = nil)
       body = encode_request(method, request, deadline, lifecycle)
-      body = compress_request(body, deadline) if @encoding == :gzip
+      body = compress_request(body, deadline, lifecycle) if @encoding == :gzip
       Protocol.check_size!(body, @request_wire_limit)
       url = @base_url.dup
       url.path = @base_url.path.delete_suffix("/") + method.path
@@ -132,30 +132,33 @@ module ConnectRPC
       headers
     end
 
-    def compress_request(body, deadline)
+    def compress_request(body, deadline, lifecycle = nil)
       Compression.encode(body, limit: @request_wire_limit, deadline: deadline)
-    rescue Zlib::Error
+    rescue Zlib::Error => e
+      lifecycle&.record_failure(e)
       raise Error.new(:internal, "Cannot compress request")
     end
 
-    def response_body(response, headers, deadline)
+    def response_body(response, headers, deadline, lifecycle = nil)
       encoding = response_encoding!(headers)
 
       body = response.body
-      body = inflate_response(body, response.status, deadline) if encoding == :gzip && !body.empty?
+      body = inflate_response(body, response.status, deadline, lifecycle) if encoding == :gzip && !body.empty?
       Protocol.check_size!(body, @response_limit)
       deadline&.check!
       body
     end
 
-    def inflate_response(body, status, deadline)
+    def inflate_response(body, status, deadline, lifecycle = nil)
       Compression.decode(body, limit: @response_limit, deadline: deadline)
-    rescue Compression::Malformed
+    rescue Compression::Malformed => e
+      lifecycle&.record_failure(e)
       raise Error.new(:internal, "Cannot decompress response") if status == 200
 
       # Malformed error Bare-Messages use HTTP fallback, preserving metadata.
       ""
-    rescue Zlib::Error
+    rescue Zlib::Error => e
+      lifecycle&.record_failure(e)
       raise Error.new(:internal, "Cannot decompress response")
     end
 
@@ -176,14 +179,15 @@ module ConnectRPC
       raise Error.new(code, "Unexpected response content type")
     end
 
-    def read_response(response, method, deadline, lifecycle = nil)
+    def read_response(response, method, deadline, lifecycle = nil) # rubocop:disable Metrics/MethodLength
       headers = Protocol.headers(response.headers)
-      body = response_body(response, headers, deadline)
+      body = response_body(response, headers, deadline, lifecycle)
       validate_response!(response.status, headers, body)
       message = decode_response(body, method, lifecycle)
       Response.new(message: message, metadata: Protocol.metadata(headers),
                    trailers: Protocol.metadata(headers, trailers: true))
-    rescue ArgumentError
+    rescue ArgumentError => e
+      lifecycle&.record_failure(e)
       raise Error.new(:internal, "Malformed response metadata")
     ensure
       deadline&.check!

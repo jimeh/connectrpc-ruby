@@ -53,6 +53,7 @@ module ConnectRPC
 
           result
         rescue ::Async::TimeoutError, StandardError => e
+          request.lifecycle&.record_failure(e)
           request.deadline&.check!
           raise e if e.is_a?(ConnectRPC::Error)
 
