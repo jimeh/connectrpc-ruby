@@ -9,7 +9,7 @@ root = File.expand_path("../../..", __dir__)
 archives = %w[connectrpc connectrpc-async].map { |name| File.join(root, "vendor/async/pkg/#{name}-0.1.0.gem") }
 core, backend = archives.map { |archive| Gem::Package.new(archive) }
 core_expected = %w[
-  README.md docs/development.md docs/design.md lib/connectrpc.rb lib/connectrpc/version.rb
+  LICENSE README.md docs/development.md docs/design.md lib/connectrpc.rb lib/connectrpc/version.rb
   exe/protoc-gen-connectrpc-ruby lib/connectrpc/generator.rb lib/connectrpc/generator/names.rb
   lib/connectrpc/generator/schema.rb lib/connectrpc/generator/renderer.rb lib/connectrpc/generator/runtime_names.rb
   lib/connectrpc/method.rb lib/connectrpc/metadata.rb lib/connectrpc/error.rb lib/connectrpc/deadline.rb
@@ -18,7 +18,7 @@ core_expected = %w[
   lib/connectrpc/rack.rb lib/connectrpc/bindings/google_protobuf.rb lib/connectrpc/transports/net_http.rb
 ].sort
 abort "Core package changed" unless core.contents.sort == core_expected && core.spec.runtime_dependencies.empty?
-expected = %w[README.md lib/connectrpc/async.rb lib/connectrpc/async/internal.rb lib/connectrpc/async/tls.rb
+expected = %w[LICENSE README.md lib/connectrpc/async.rb lib/connectrpc/async/internal.rb lib/connectrpc/async/tls.rb
               lib/connectrpc/async/connection.rb lib/connectrpc/async/host.rb lib/connectrpc/async/transport.rb].sort
 abort "Backend manifest changed" unless backend.contents.sort == expected
 expected_dependencies = {
@@ -29,8 +29,20 @@ expected_dependencies = {
 actual = backend.spec.runtime_dependencies.to_h { |dependency| [dependency.name, dependency.requirement.to_s] }
 abort "Runtime dependencies changed" unless actual == expected_dependencies
 [core, backend].each do |package|
-  unless package.spec.metadata["allowed_push_host"] == "https://gems.invalid" && package.spec.license == "Nonstandard"
+  unless package.spec.metadata["allowed_push_host"] == "https://gems.invalid" && package.spec.license == "MIT"
     abort "Publication guard missing"
+  end
+end
+unless File.binread(File.join(root, "gems/connectrpc-async/LICENSE")) == File.binread(File.join(root, "LICENSE"))
+  abort "Package-local license differs from root LICENSE"
+end
+Dir.mktmpdir("connectrpc-license-") do |temporary|
+  [core, backend].each do |package|
+    destination = File.join(temporary, package.spec.name)
+    package.extract_files(destination, "LICENSE")
+    unless File.binread(File.join(destination, "LICENSE")) == File.binread(File.join(root, "LICENSE"))
+      abort "Packaged license differs from root LICENSE: #{package.spec.name}"
+    end
   end
 end
 specifications = Bundler.load.specs.reject do |spec|

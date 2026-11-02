@@ -8,11 +8,11 @@ Gem::Specification.new do |spec|
   spec.summary = "Experimental Connect unary RPC and service generation for Ruby"
   spec.description = "Unofficial typed Connect unary clients and Rack middleware. Experimental, not production ready."
   spec.homepage = "https://github.com/jimeh/connectrpc-ruby"
-  spec.license = "Nonstandard"
+  spec.license = "MIT"
   spec.required_ruby_version = ">= 3.4"
   spec.metadata["allowed_push_host"] = "https://gems.invalid"
   spec.metadata["source_code_uri"] = spec.homepage
-  spec.files = Dir.glob("lib/**/*.rb") + Dir.glob("exe/*") + %w[README.md docs/development.md docs/design.md]
+  spec.files = Dir.glob("lib/**/*.rb") + Dir.glob("exe/*") + %w[LICENSE README.md docs/development.md docs/design.md]
   spec.require_paths = ["lib"]
   spec.bindir = "exe"
   spec.executables = ["protoc-gen-connectrpc-ruby"]

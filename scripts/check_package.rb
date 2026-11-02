@@ -28,7 +28,7 @@ specification = Gem::Specification.load(File.join(root, "connectrpc.gemspec"))
 archive = File.join(root, "pkg", specification.file_name)
 package = Gem::Package.new(archive)
 expected = %w[
-  README.md docs/development.md docs/design.md lib/connectrpc.rb lib/connectrpc/version.rb
+  LICENSE README.md docs/development.md docs/design.md lib/connectrpc.rb lib/connectrpc/version.rb
   exe/protoc-gen-connectrpc-ruby lib/connectrpc/generator.rb lib/connectrpc/generator/names.rb
   lib/connectrpc/generator/schema.rb lib/connectrpc/generator/renderer.rb lib/connectrpc/generator/runtime_names.rb
   lib/connectrpc/method.rb lib/connectrpc/metadata.rb lib/connectrpc/error.rb lib/connectrpc/deadline.rb
@@ -38,6 +38,7 @@ expected = %w[
 ].sort
 abort "Unexpected package files: #{package.contents.inspect}" unless package.contents.sort == expected
 abort "Runtime dependencies leaked into package" unless package.spec.runtime_dependencies.empty?
+abort "MIT license metadata missing" unless package.spec.license == "MIT"
 abort "Publication guard missing" unless package.spec.metadata["allowed_push_host"] == "https://gems.invalid"
 
 abort "Executable metadata missing" unless package.spec.bindir == "exe" &&
@@ -48,6 +49,9 @@ Gem::Package::TarReader.new(File.open(archive, "rb")) do |tar|
 
     Gem::Package::TarReader.new(Zlib::GzipReader.new(StringIO.new(entry.read))) do |data|
       data.each do |file|
+        if file.full_name == "LICENSE" && file.read != File.binread(File.join(root, "LICENSE"))
+          abort "Packaged license differs from root LICENSE"
+        end
         next unless file.full_name == "exe/protoc-gen-connectrpc-ruby"
 
         abort "Plugin is not executable in package" unless file.header.mode & 0o777 == 0o755

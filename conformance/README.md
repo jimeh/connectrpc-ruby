@@ -32,7 +32,7 @@ live unwaived runs established the same caller-cancellation cause.
 Schemas are unchanged copies from
 [connectrpc/conformance v1.0.6](https://github.com/connectrpc/conformance/tree/eaa97669854d500691a393033d15950895d6aff7/proto/connectrpc/conformance/v1)
 (commit `eaa97669854d500691a393033d15950895d6aff7`). Their upstream Apache-2.0
-[license](LICENSE) applies to those files, separately from the undecided gem
+[license](LICENSE) applies to those files, separately from the project MIT
 license. [schema-sha256.json](schema-sha256.json) records every copied schema.
 
 Mise uses explicit task-local `github:connectrpc/conformance@1.0.6` and
