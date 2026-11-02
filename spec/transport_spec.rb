@@ -31,6 +31,87 @@ RSpec.describe ConnectRPC::Transports::NetHTTP do
     end
   end
 
+  it "dispatches without a deadline/header/watchdog and closes its socket" do
+    before = owned_threads
+    expect(described_class::Watchdog).not_to receive(:new)
+    peer = lambda do |socket|
+      expect(read_request(socket).downcase).not_to include("connect-timeout-ms:")
+      socket.write("HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok")
+      expect(socket.read).to eq("")
+    end
+    with_peer(peer) do |url|
+      request = transport_request(url)
+      request.deadline = nil
+      expect(transport.call(request).body).to eq("ok")
+    end
+    expect(owned_threads - before).to be_empty
+    http = transport.send(:connection, URI("https://example.invalid"), nil)
+    expect([http.open_timeout, http.read_timeout, http.write_timeout]).to eq([9_999_999.999] * 3)
+  end
+
+  it "allows sustained no-deadline progress beyond an independently capped native wait" do
+    stub_const("ConnectRPC::Deadline::MAX_NATIVE_WAIT", 0.2)
+    before = owned_threads
+    peer = lambda do |socket|
+      read_request(socket)
+      socket.write("HTTP/1.1 200 OK\r\nContent-Length: 4\r\n\r\n")
+      # Elapsed I/O progress is the behavior under test: each chunk arrives
+      # before the native read cap, while the aggregate call outlasts it.
+      4.times do
+        raise "Client closed before the next body chunk" if socket.wait_readable(0.07)
+
+        socket.write("x")
+      end
+      expect(socket.read).to eq("")
+    end
+    with_peer(peer) do |url|
+      request = transport_request(url)
+      request.deadline = nil
+      expect(transport.call(request).body).to eq("xxxx")
+    end
+    expect(owned_threads - before).to be_empty
+  end
+
+  it "maps a native timeout without a logical deadline to unavailable and closes without retry" do
+    stub_const("ConnectRPC::Deadline::MAX_NATIVE_WAIT", 0.05)
+    before = owned_threads
+    peer = lambda do |socket|
+      read_request(socket)
+      socket.write("HTTP/1.1 200 OK\r\nContent-Length: 10\r\n\r\nx")
+      # The actual native read timeout is the behavior being measured. EOF
+      # proves cleanup after the client has started receiving this body.
+      expect(socket.read).to eq("")
+    end
+    with_peer(peer) do |url, listener|
+      request = transport_request(url)
+      request.deadline = nil
+      expect { transport.call(request) }.to raise_error(ConnectRPC::Error) do |error|
+        expect(error.code).to eq("unavailable")
+      end
+      expect(listener.wait_readable(0)).to be_nil
+    end
+    expect(owned_threads - before).to be_empty
+  end
+
+  ["Content-Length: 9\r\n", "Connection: close\r\n"].each do |header|
+    it "bounds a no-deadline response with #{header.strip} and closes its socket" do
+      before = owned_threads
+      peer = lambda do |socket|
+        read_request(socket)
+        socket.write("HTTP/1.1 200 OK\r\n#{header}\r\noversized")
+        expect(socket.read).to eq("")
+      end
+      with_peer(peer) do |url|
+        request = transport_request(url, limit: 3)
+        request.deadline = nil
+        expect { transport.call(request) }.to raise_error(ConnectRPC::Error) do |error|
+          expect(error.code).to eq("resource_exhausted")
+        end
+      end
+      expect(owned_threads - before).to be_empty
+    end
+  end
+
   it "keeps TLS peer/hostname verification enabled, ignores proxy env, and disables retries" do
     keys = %w[http_proxy https_proxy HTTP_PROXY HTTPS_PROXY no_proxy NO_PROXY]
     previous = keys.to_h { |key| [key, ENV.fetch(key, nil)] }

@@ -1,0 +1,6 @@
+{
+  "connectrpc/conformance/v1/client_compat.proto": "68cf079973f081ec16fddc25f137855cbbe45cce15dc38800b0840e1826d03bf",
+  "connectrpc/conformance/v1/config.proto": "f17110f76f3415de3ae09cac3655b3d990100612c3503ab52867380d0964ccba",
+  "connectrpc/conformance/v1/server_compat.proto": "36e85b23c7e8ee8088bc20a31a88d97036e6d2f05344116a39a0cdb2f5126896",
+  "connectrpc/conformance/v1/service.proto": "1770afc1b9bf0bcf31d5dd2e5750563a3d474e7f5c7bbb4d480879ad2c01ca4b"
+}

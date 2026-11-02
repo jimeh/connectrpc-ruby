@@ -15,7 +15,7 @@ module ConnectRPC
         private
 
         def connect
-          deadline.check!
+          deadline&.check!
           # begin_transport can reconnect a closed socket even with retries
           # disabled. A second socket would escape the call's watchdog.
           raise IOError, "Owned connection is closed" if @socket
@@ -24,15 +24,15 @@ module ConnectRPC
         end
 
         def begin_transport(request)
-          deadline.check!
+          deadline&.check!
           super
-          request["connect-timeout-ms"] = deadline.timeout_ms
+          request["connect-timeout-ms"] = deadline.timeout_ms if deadline
         end
 
         def ssl_socket_connect(socket, _timeout)
-          deadline.check!
-          super(socket, deadline.native_timeout)
-          deadline.check!
+          deadline&.check!
+          super(socket, deadline ? deadline.native_timeout : Deadline::MAX_NATIVE_WAIT)
+          deadline&.check!
         end
       end
 
@@ -78,25 +78,25 @@ module ConnectRPC
       rescue Net::OpenTimeout, Net::ReadTimeout, Net::WriteTimeout,
              SocketError, IOError, SystemCallError, Net::HTTPBadResponse, Net::HTTPHeaderSyntaxError,
              OpenSSL::SSL::SSLError
-        deadline.check!
+        deadline&.check!
         raise Error.new(:unavailable, "HTTP transport failed")
       end
 
       private
 
       def prepare_request(request)
-        request.deadline.check!
+        request.deadline&.check!
         outgoing = outgoing_request(request)
-        request.deadline.check!
+        request.deadline&.check!
         outgoing
       end
 
       def with_connection(http, deadline)
         http.start
-        deadline.check!
+        deadline&.check!
         # Net::HTTP has no public connection-close hook usable concurrently
         # with request. These pinned stdlib versions expose their BufferedIO.
-        watchdog = Watchdog.new(http.instance_variable_get(:@socket).io.to_io, deadline)
+        watchdog = Watchdog.new(http.instance_variable_get(:@socket).io.to_io, deadline) if deadline
         yield
       ensure
         watchdog&.stop
@@ -106,12 +106,12 @@ module ConnectRPC
       def exchange(http, request, outgoing)
         result = nil
         http.request(outgoing) do |response|
-          request.deadline.check!
+          request.deadline&.check!
           check_response_size!(response, request.response_limit)
           body = read_body(response, request)
           result = TransportResponse.new(status: response.code.to_i, headers: response.to_hash, body: body)
         end
-        request.deadline.check!
+        request.deadline&.check!
         result
       end
 
@@ -136,7 +136,7 @@ module ConnectRPC
       def read_body(response, request)
         body = +"".b
         response.read_body do |chunk|
-          request.deadline.check!
+          request.deadline&.check!
           if body.bytesize + chunk.bytesize > request.response_limit
             raise Error.new(:resource_exhausted, "Response exceeds byte limit")
           end
@@ -161,9 +161,10 @@ module ConnectRPC
 
       def configure_http(http, deadline)
         verify_tls!(http) if http.use_ssl?
-        http.open_timeout = deadline.native_timeout
-        http.read_timeout = deadline.native_timeout
-        http.write_timeout = deadline.native_timeout
+        native_timeout = deadline ? deadline.native_timeout : Deadline::MAX_NATIVE_WAIT
+        http.open_timeout = native_timeout
+        http.read_timeout = native_timeout
+        http.write_timeout = native_timeout
         http.max_retries = 0
         http.ignore_eof = false
       end

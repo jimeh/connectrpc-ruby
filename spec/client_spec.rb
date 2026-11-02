@@ -51,6 +51,24 @@ RSpec.describe ConnectRPC::Client do
     expect(captured.deadline).to be_a(ConnectRPC::Deadline)
   end
 
+  it "retains the default 30 second budget when timeout is omitted" do
+    expect(transport).to receive(:call) do |request|
+      expect(request.deadline.remaining).to be_between(29, 30)
+      expect(request.headers.fetch("connect-timeout-ms").first.to_i).to be_between(29_000, 30_000)
+      reply
+    end
+    expect(client.call(method, "hello").message).to eq("hello")
+  end
+
+  it "passes an absent deadline and no timeout header for explicit nil" do
+    expect(transport).to receive(:call) do |request|
+      expect(request.deadline).to be_nil
+      expect(request.headers).not_to have_key("connect-timeout-ms")
+      reply
+    end
+    expect(client.call(method, "hello", timeout: nil).message).to eq("hello")
+  end
+
   it "runs all three custom seams through the host-neutral server" do
     service = ConnectRPC::Service.new(name: method.service, methods: [method])
     invoker = lambda do |declaration, request, context|
@@ -181,7 +199,7 @@ RSpec.describe "Connect errors" do
     mapping = { 400 => "internal", 401 => "unauthenticated", 403 => "permission_denied", 404 => "unimplemented",
                 429 => "unavailable", 502 => "unavailable", 503 => "unavailable", 504 => "unavailable",
                 418 => "unknown" }
-    malformed = ["", "{", "null", "[]", '{"code":null}', '{"message":"absent"}',
+    malformed = ["", "{", "null", "[]",
                  '{"code":"internal","details":{}}', '{"code":"internal","details":[null]}',
                  '{"code":"internal","details":[{"type":"test.Detail","value":"!"}]}',
                  '{"code":"internal","message":1}', "\xff".b]
@@ -195,12 +213,25 @@ RSpec.describe "Connect errors" do
     expect(error.code).to eq("unavailable")
   end
 
-  it "accepts unknown codes as unknown, JSON charset and repeated metadata" do
+  it "uses HTTP fallback for unknown codes with JSON charset and repeated metadata" do
     error = ConnectRPC::Protocol.parse_error(400, { "content-type" => ["application/json; charset=utf-8"],
                                                     "x-tag" => %w[a b], "trailer-x-tag" => %w[c d] },
                                              '{"code":"future_code","details":[]}')
-    expect(error.code).to eq("unknown")
+    expect(error.code).to eq("internal")
     expect(error.metadata["x-tag"]).to eq(%w[a b])
     expect(error.trailers["x-tag"]).to eq(%w[c d])
+  end
+end
+
+RSpec.describe "Connect error code fallback" do
+  [nil, "future_code", :missing].each do |code|
+    it "preserves message and details with HTTP fallback for #{code.inspect} code" do
+      wire = { "message" => "preserved", "details" => [{ "type" => "test.Detail", "value" => "aGk" }] }
+      wire["code"] = code unless code == :missing
+      error = ConnectRPC::Protocol.parse_error(503, { "content-type" => ["application/json"] }, JSON.generate(wire))
+      expect(error.code).to eq("unavailable")
+      expect(error.message).to eq("preserved")
+      expect(error.details.map { |detail| [detail.type, detail.value] }).to eq([["test.Detail", "hi"]])
+    end
   end
 end

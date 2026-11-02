@@ -28,8 +28,9 @@ A transport provides `call(request)` with these host-neutral value objects:
 | `TransportResponse` | `status` (integer), `headers` (repeated string arrays), `body` (bounded bytes) |
 | `Response` | `message` (binding type), `metadata`, `trailers` (Metadata objects) |
 
-Custom transports must enforce the supplied deadline during their I/O and
-bound the body incrementally. Client validation checks their output again but
+`TransportRequest.deadline` is a `Deadline` or `nil`. Custom transports must
+enforce a supplied deadline during their I/O and bound the body incrementally.
+An absent deadline means no aggregate RPC expiry or wire timeout. Client validation checks their output again but
 cannot undo an oversized allocation or interrupt their work.
 
 `Server` owns negotiation, bounded input, decoding, invocation, serialization,
@@ -64,9 +65,9 @@ Unsupported request encoding returns `unimplemented` listing identity. Invalid
 version, timeout, or request decoding returns `invalid_argument`. Limits return
 `resource_exhausted`. Unexpected application exceptions return generic
 `internal`; deliberate `Error` messages are application-controlled safe text.
-Standard Connect-to-HTTP and fallback HTTP-to-Connect tables are used. Unknown
-wire codes become `unknown`; absent/malformed codes, bodies or details use the
-HTTP fallback. Error details preserve a type name and binary bytes, with
+Standard Connect-to-HTTP and fallback HTTP-to-Connect tables are used. Null, absent and unrecognized wire codes use the HTTP fallback while preserving
+valid message and details. Malformed bodies, code types or details use the
+HTTP fallback without decoding those error fields. Error details preserve a type name and binary bytes, with
 unpadded base64 on output and validated padded/unpadded input.
 
 `Metadata` stores lower-case keys and repeated printable ASCII values and
@@ -92,11 +93,14 @@ Serialization can allocate before the output check. If a bounded error cannot
 fit, the server emits an empty 429 body. There is no independent header-size
 guarantee beyond the host and HTTP library.
 
-One monotonic client deadline begins before encoding. Finite positive seconds
-are required, with a default of 30 seconds. Remaining timeout milliseconds are
+The default timeout is 30 seconds. Explicit `timeout: nil` means no logical
+client deadline, timeout header or expiry watchdog. Native operation waits still
+use the exact `9_999_999.999` second cap, returning `unavailable` on timeout.
+Sustained progress can outlast this per-operation cap. For finite positive
+timeouts, one monotonic client deadline begins before encoding. Remaining timeout milliseconds are
 rounded up and clamped to ten digits without extending actual expiry. NetHTTP
 recomputes the header at dispatch and checks the budget around connection,
-codec and body progress. Each call owns one connection and one watchdog. The
+codec and body progress. Each call owns one connection; a finite deadline also owns one watchdog. The
 watchdog closes the owned raw socket on expiry, including during header
 trickle, stalled reads and blocked writes, and is joined on every exit.
 NetHTTP depends on the pinned stdlib BufferedIO socket layout for that close.
@@ -136,7 +140,10 @@ host-visible metadata and a request limit. The same Go client scenarios also
 run against the Go server as a reference baseline, with raw repeated Go fields
 instead of WEBrick's coalesced values. There are 18 fixture cases: six reference
 baseline cases and twelve cross-language cases. This is a unary subset, not
-full conformance.
+full conformance. The separate [official conformance harness](../conformance/README.md)
+executes 94 configured client and 88 server cases. Two caller-cancellation
+instructions remain executed expected failures under an exact-name limitation
+manifest with strict causal result checks. There is no full-conformance claim.
 
 Wire protocol, HTTP transport, and message binding remain separate choices.
 Streaming, GET, gzip, gRPC/gRPC-Web, interceptors, a production server, Rails,

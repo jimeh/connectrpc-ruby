@@ -58,7 +58,11 @@ Mise owns setup ordering and verification composition.
 | `mise run fixture:check` | Compare the checked-in descriptor bytes to the builder. |
 | `mise run setup:interop` | Install task-local Go 1.27.3 and download checksum-locked modules. |
 | `mise run test:interop` | Run the Go-to-Go reference baseline and both cross-language directions/codecs, 18 cases total. |
-| `mise run verify` | Run check, test, installed package integration, fixture check, reference baseline and cross-language interop. |
+| `mise run setup:conformance` | Install task-local official runner 1.0.6 and protoc 36.2 with locked checksums. |
+| `mise run conformance:build` | Generate descriptors from unchanged official schemas using protoc. |
+| `mise run conformance:check` | Verify schema hashes and byte-for-byte descriptor regeneration. |
+| `mise run test:conformance` | Run all 94 client and 88 server profile cases with strict logs/telemetry accounting. |
+| `mise run verify` | Run check, test, installed package integration, fixture check, Go interop and official conformance. |
 
 Every entry point installs missing prerequisites through the same task graph.
 During Ruby iteration, use focused tests and relevant static checks. Run
@@ -72,6 +76,27 @@ examples when changing prose. There is no automatic Markdown formatter or
 Node toolchain. Mise parses TOML, while actionlint and zizmor check workflows.
 Docs-only edits do not require a test rerun unless an example changes behavior;
 packaged-doc changes can be checked with `check:package`.
+
+### Official conformance
+
+[The conformance harness](../conformance/README.md) documents exact pins,
+provenance, supported axes, lifecycle, named selectors and result artifacts.
+`test:conformance` accepts an optional `client` or `server` direction and then
+one exact case name from `conformance/cases.json` for troubleshooting. CI and
+`verify` run every configured case in both directions on both pinned Rubies.
+The 18-case independent Go fixture stays unchanged.
+
+The profile has 92 client passes and two expected caller-cancellation
+failures, plus 88 server passes. Both unsupported caller instructions still
+invoke real uncanceled RPCs and return faithful results. Only the two exact
+caller-cancellation cases are marked known-failing, and every assertion and
+actual RPC result must match the documented limitation. Unexpected passes or
+unrelated failures still fail verification.
+Timeouts, duplicate metadata and remote canceled errors must pass normally.
+Raw runner logs, JSON telemetry and strict JSON summaries are preserved under
+ignored `vendor/conformance/results/`. An accounting mismatch fails even if
+the official runner exits successfully. This evidence is distinct from full
+conformance or unsupported configuration-space totals.
 
 ### Coverage
 

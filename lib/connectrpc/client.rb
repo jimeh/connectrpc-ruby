@@ -16,10 +16,10 @@ module ConnectRPC
     end
 
     def call(method, request, metadata: {}, timeout: 30)
-      deadline = Deadline.new(timeout)
+      deadline = Deadline.new(timeout) unless timeout.nil?
       outgoing = build_request(method, request, Metadata.new(metadata), deadline)
       response = @transport.call(outgoing)
-      deadline.check!
+      deadline&.check!
       Protocol.check_size!(response.body, @response_limit)
       read_response(response, method, deadline)
     end
@@ -41,9 +41,9 @@ module ConnectRPC
     end
 
     def encode_request(method, request, deadline)
-      deadline.check!
+      deadline&.check!
       body = @binding.encode(request, type: method.request_type, codec: @codec)
-      deadline.check!
+      deadline&.check!
       Protocol.check_size!(body, @request_limit)
       body
     rescue CodecError
@@ -55,8 +55,8 @@ module ConnectRPC
       url = @base_url.dup
       url.path = @base_url.path.delete_suffix("/") + method.path
       headers = metadata.to_h.merge("content-type" => [Protocol::CONTENT_TYPES.fetch(@codec)],
-                                    "accept-encoding" => ["identity"], "connect-protocol-version" => ["1"],
-                                    "connect-timeout-ms" => [deadline.timeout_ms])
+                                    "accept-encoding" => ["identity"], "connect-protocol-version" => ["1"])
+      headers["connect-timeout-ms"] = [deadline.timeout_ms] if deadline
       TransportRequest.new(url: url, http_method: "POST", headers: headers, body: body,
                            response_limit: @response_limit, deadline: deadline)
     end
@@ -87,7 +87,7 @@ module ConnectRPC
     rescue ArgumentError
       raise Error.new(:internal, "Malformed response metadata")
     ensure
-      deadline.check!
+      deadline&.check!
     end
 
     def decode_response(bytes, method)

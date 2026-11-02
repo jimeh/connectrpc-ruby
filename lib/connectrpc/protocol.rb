@@ -91,17 +91,17 @@ module ConnectRPC
     def self.parse_error(status, headers, body)
       values = { metadata: metadata(headers), trailers: metadata(headers, trailers: true) }
       if content_codec(single(headers, "content-type")) == :json
-        wire = wire_error(body)
+        wire = wire_error(body, fallback: Error::HTTP_FALLBACK.fetch(status, "unknown"))
         return Error.new(wire.fetch(:code), wire.fetch(:message), details: wire.fetch(:details), **values) if wire
       end
       Error.new(Error::HTTP_FALLBACK.fetch(status, "unknown"), "HTTP #{status}", **values)
     end
 
-    def self.wire_error(body)
+    def self.wire_error(body, fallback:)
       object = JSON.parse(body)
       return unless valid_wire_error?(object)
 
-      code = Error::HTTP_STATUS.key?(object["code"]) ? object["code"] : "unknown"
+      code = Error::HTTP_STATUS.key?(object["code"]) ? object["code"] : fallback
       { code: code, message: object.fetch("message", ""), details: wire_details(object.fetch("details", [])) }
     rescue JSON::ParserError, ArgumentError, TypeError, EncodingError
       # Invalid Connect error bodies use the protocol's HTTP fallback table.
@@ -113,7 +113,8 @@ module ConnectRPC
 
       code = object["code"]
       message = object.fetch("message", "")
-      code.is_a?(String) && code.valid_encoding? && message.is_a?(String) && message.valid_encoding?
+      (code.nil? || (code.is_a?(String) && code.valid_encoding?)) &&
+        message.is_a?(String) && message.valid_encoding?
     end
 
     def self.wire_details(details)

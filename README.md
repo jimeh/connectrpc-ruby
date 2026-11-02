@@ -129,7 +129,11 @@ If even a minimal error exceeds the response limit, the server sends an empty
 body with status 429; clients then apply the protocol's HTTP fallback mapping.
 Header size limits belong to the HTTP library and host.
 
-Client `timeout:` is finite positive seconds, defaulting to 30. One monotonic
+Client `timeout:` accepts finite positive seconds, defaulting to 30. Explicit
+`timeout: nil` sends no timeout header and creates no logical deadline or expiry
+watchdog. Native TCP/TLS/read/write waits remain independently capped at
+`9_999_999.999` seconds; a native timeout returns `unavailable`. Sustained progress
+can outlast that per-operation cap. For finite values, one monotonic
 budget starts before encoding and covers network I/O and checks around codec
 work. NetHTTP uses one connection per call, closes it on every outcome, sends
 `Accept-Encoding: identity`, ignores proxy environment variables, disables
@@ -159,6 +163,13 @@ interop fixture runs 18 cases: six Go-to-Go reference baseline cases and twelve
 Ruby-to-Go/Go-to-Ruby cases. Both codecs share typed success, deliberate error
 and request-limit scenarios. This covers the advertised unary subset, not full
 conformance.
+
+The pinned [official conformance harness](conformance/README.md) independently
+executes 94 client and 88 server cases for the declared profile. Two client
+caller-cancellation instructions currently fail because there is no cancellation
+API; both still execute real RPCs and are required to fail for the exact
+documented reason. Results are 92 client passes plus two expected failures, and
+88 server passes. This is a bounded profile, not full Connect conformance.
 
 ## Private status and licensing
 
