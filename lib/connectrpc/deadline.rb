@@ -2,6 +2,9 @@
 
 module ConnectRPC
   class Deadline
+    # Bound native time conversions without shortening the logical deadline.
+    MAX_NATIVE_WAIT = 86_400
+
     def initialize(timeout, clock: -> { Process.clock_gettime(Process::CLOCK_MONOTONIC) })
       unless timeout.is_a?(Numeric) && timeout.real? && timeout.finite? && timeout.positive?
         raise ArgumentError, "Timeout must be finite positive seconds"
@@ -17,6 +20,10 @@ module ConnectRPC
 
     def expired?
       remaining.zero?
+    end
+
+    def native_timeout
+      [remaining, MAX_NATIVE_WAIT].min
     end
 
     def check!

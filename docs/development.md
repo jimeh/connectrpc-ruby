@@ -121,9 +121,10 @@ The 12 advertised cases are success, deliberate error/details/metadata, and a
 request limit, for both codecs in both directions. They use the actual
 connect-go Client and Handler with dynamic message initialization. Success
 covers optional presence, int64, enum, timestamp and bytes. Raw repeated Go
-response values remain separate at NetHTTP; the WEBrick host coalesces request
-and response values with comma+space, and assertions preserve those observed
-semantics. This is not the Connect conformance suite.
+response values remain separate at NetHTTP. NetHTTP joins outgoing request
+arrays with comma+space, and the WEBrick host also coalesces incoming and
+response values. Assertions preserve those observed semantics. This is not the
+Connect conformance suite.
 
 `spec/fixtures/echo.proto` documents the schema. `scripts/build_fixture.rb`
 explicitly builds a matching `FileDescriptorProto`; it is not protoc output or
@@ -140,6 +141,12 @@ pacing measures real elapsed network behavior, not readiness. The Ruby 3.4
 stdlib may lazily retain its process-wide Timeout service thread; tests exclude
 that named service from call-owned worker checks. ConnectRPC watchdogs and
 peer/host workers must all stop, and sockets must close.
+Pre-dispatch race tests use a controlled monotonic clock and peer-observed EOF
+before resuming dispatch, then check for queued replacement connections after
+the call completes. Wire timeout assertions consume budget during preparation
+and connection. Huge finite budgets exercise real localhost I/O, with capped
+native waits and an unchanged logical deadline. Proxy configuration assertions
+set hostile proxy environment variables and restore their previous state.
 
 ## Dependency and action updates
 

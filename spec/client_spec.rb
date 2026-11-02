@@ -110,6 +110,50 @@ RSpec.describe ConnectRPC::Client do
     expect { client.call(method, "hello") }.to raise_error(ConnectRPC::Error, "Unsupported response content encoding")
   end
 
+  %w[Identity IDENTITY].each do |encoding|
+    it "accepts case-insensitive #{encoding} response encoding" do
+      reply.headers["content-encoding"] = [encoding]
+      expect(client.call(method, "hello").message).to eq("hello")
+    end
+  end
+
+  [["identity", "identity"], ["identity, gzip"], ["identity, identity"]].each do |encodings|
+    it "rejects multiple response encodings #{encodings}" do
+      reply.headers["content-encoding"] = encodings
+      expect(binding).not_to receive(:decode)
+      expect { client.call(method, "hello") }.to raise_error(ConnectRPC::Error, "Unsupported response content encoding")
+    end
+  end
+
+  [200, 400].each do |status|
+    it "filters unrepresentable received metadata on a #{status} response without losing adjacent fields" do
+      reply.status = status
+      if status == 400
+        reply.headers["content-type"] = ["application/json"]
+        reply.body = '{"code":"invalid_argument","message":"deliberate"}'
+      end
+      fields = { "server" => ["caf\xff".b], "x-tab" => ["a\tb"], "legal!" => ["value"],
+                 "x-mixed" => ["valid", "bad\x00"], "x-injection" => ["bad\r\nfield: value"],
+                 "x-valid" => ["one,two", "three"] }
+      reply.headers.merge!(fields)
+      fields.each { |key, values| reply.headers["trailer-#{key}"] = values }
+      result = if status == 200
+                 client.call(method, "hello")
+               else
+                 begin
+                   client.call(method, "hello")
+                 rescue ConnectRPC::Error => e
+                   expect(e.code).to eq("invalid_argument")
+                   e
+                 end
+               end
+      [result.metadata, result.trailers].each do |metadata|
+        expect(metadata["x-valid"]).to eq(["one,two", "three"])
+        (fields.keys - ["x-valid"]).each { |key| expect(metadata[key]).to be_nil }
+      end
+    end
+  end
+
   it "rejects unsupported profile, codecs, limits and URL components" do
     [{ protocol: :grpc }, { mode: :stream }, { encoding: :gzip }, { codec: :xml }, { request_limit: 0 },
      { response_limit: 1.5 }].each do |options|

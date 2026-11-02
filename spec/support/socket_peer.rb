@@ -14,7 +14,7 @@ module SocketPeer
     ensure
       socket&.close unless socket&.closed?
     end
-    yield "http://127.0.0.1:#{listener.addr[1]}"
+    yield "http://127.0.0.1:#{listener.addr[1]}", listener
     raise "Socket peer did not finish" unless worker.join(5)
 
     worker.value

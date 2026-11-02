@@ -62,7 +62,7 @@ module ConnectRPC
     end
 
     def validate_encoding!(headers)
-      return unless headers.key?("content-encoding") && Protocol.single(headers, "content-encoding") != "identity"
+      return if Protocol.identity_encoding?(headers)
 
       raise Error.new(:internal, "Unsupported response content encoding")
     end

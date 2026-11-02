@@ -31,6 +31,10 @@ RSpec.describe "unary core" do
       expect { metadata.add(key, "bad") }.to raise_error(ArgumentError)
     end
     expect { metadata.add("tag", "value\r\ninjected: yes") }.to raise_error(ArgumentError)
+    ["a\tb", "caf\xff".b, "bad\x00", "bad\n", "bad\r"].each do |value|
+      expect { metadata.add("tag", value) }.to raise_error(ArgumentError)
+    end
+    expect { metadata.add("legal!", "value") }.to raise_error(ArgumentError)
   end
 
   it "keeps a monotonic budget and derives a positive clamped wire timeout" do

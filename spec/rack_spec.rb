@@ -90,6 +90,35 @@ RSpec.describe ConnectRPC::Rack do
     expect(JSON.parse(body)).to include("code" => "unimplemented", "message" => /identity/)
   end
 
+  %w[Identity IDENTITY].each do |encoding|
+    it "accepts case-insensitive #{encoding} request encoding" do
+      expect(request(HTTP_CONTENT_ENCODING: encoding).first).to eq(200)
+    end
+  end
+
+  [["identity", "identity"], ["identity, gzip"], ["identity, identity"]].each do |encodings|
+    it "rejects multiple request encodings #{encodings}" do
+      response = server.call(path: method.path, http_method: "POST", input: StringIO.new(message.to_proto),
+                             headers: { "content-type" => ["application/proto"], "content-encoding" => encodings })
+      expect(response.status).to eq(501)
+      expect(JSON.parse(response.body)["code"]).to eq("unimplemented")
+    end
+  end
+
+  it "filters HTTP fields outside the metadata contract while preserving adjacent valid fields" do
+    allow(handler).to receive(:call) do |value, context|
+      expect(context.request_metadata.to_h).to include("x-request" => ["client"], "x-valid" => ["one,two"])
+      %w[user-agent x-tab legal! x-injection x-null].each do |key|
+        expect(context.request_metadata[key]).to be_nil
+      end
+      value
+    end
+    status, = request(HTTP_USER_AGENT: "caf\xff".b, HTTP_X_TAB: "a\tb", "HTTP_LEGAL!" => "value",
+                      HTTP_X_REQUEST: "client", HTTP_X_VALID: "one,two",
+                      HTTP_X_INJECTION: "bad\r\nfield: value", HTTP_X_NULL: "bad\x00")
+    expect(status).to eq(200)
+  end
+
   [[:proto, "\xff".b], [:json, "{"]].each do |codec, body|
     it "returns invalid_argument for malformed #{codec}" do
       status, _headers, bytes = request(codec: codec, body: body)

@@ -14,9 +14,24 @@ module ConnectRPC
 
         private
 
+        def connect
+          deadline.check!
+          # begin_transport can reconnect a closed socket even with retries
+          # disabled. A second socket would escape the call's watchdog.
+          raise IOError, "Owned connection is closed" if @socket
+
+          super
+        end
+
+        def begin_transport(request)
+          deadline.check!
+          super
+          request["connect-timeout-ms"] = deadline.timeout_ms
+        end
+
         def ssl_socket_connect(socket, _timeout)
           deadline.check!
-          super(socket, deadline.remaining)
+          super(socket, deadline.native_timeout)
           deadline.check!
         end
       end
@@ -33,7 +48,7 @@ module ConnectRPC
 
         def watch(socket, deadline)
           @mutex.synchronize do
-            @condition.wait(@mutex, deadline.remaining) until @done || deadline.expired?
+            @condition.wait(@mutex, deadline.native_timeout) until @done || deadline.expired?
             close_socket(socket) unless @done
           end
         end
@@ -57,9 +72,9 @@ module ConnectRPC
 
       def call(request)
         deadline = request.deadline
-        deadline.check!
+        outgoing = prepare_request(request)
         http = connection(request.url, deadline)
-        with_connection(http, deadline) { exchange(http, request) }
+        with_connection(http, deadline) { exchange(http, request, outgoing) }
       rescue Net::OpenTimeout, Net::ReadTimeout, Net::WriteTimeout
         raise Error.new(:deadline_exceeded, "Deadline exceeded")
       rescue SocketError, IOError, SystemCallError, Net::HTTPBadResponse, Net::HTTPHeaderSyntaxError,
@@ -69,6 +84,13 @@ module ConnectRPC
       end
 
       private
+
+      def prepare_request(request)
+        request.deadline.check!
+        outgoing = outgoing_request(request)
+        request.deadline.check!
+        outgoing
+      end
 
       def with_connection(http, deadline)
         http.start
@@ -82,9 +104,9 @@ module ConnectRPC
         http.finish if http.started?
       end
 
-      def exchange(http, request)
+      def exchange(http, request, outgoing)
         result = nil
-        http.request(outgoing_request(request)) do |response|
+        http.request(outgoing) do |response|
           request.deadline.check!
           check_response_size!(response, request.response_limit)
           body = read_body(response, request)
@@ -100,8 +122,7 @@ module ConnectRPC
       end
 
       def outgoing_request(request)
-        headers = request.headers.merge("connect-timeout-ms" => [request.deadline.timeout_ms],
-                                        "connection" => ["close"])
+        headers = request.headers.merge("connection" => ["close"])
         outgoing = Net::HTTPGenericRequest.new(request.http_method, true, true, request.url.request_uri,
                                                "accept-encoding" => "identity")
         headers.each do |key, values|
@@ -141,9 +162,9 @@ module ConnectRPC
 
       def configure_http(http, deadline)
         verify_tls!(http) if http.use_ssl?
-        http.open_timeout = deadline.remaining
-        http.read_timeout = deadline.remaining
-        http.write_timeout = deadline.remaining
+        http.open_timeout = deadline.native_timeout
+        http.read_timeout = deadline.native_timeout
+        http.write_timeout = deadline.native_timeout
         http.max_retries = 0
         http.ignore_eof = false
       end

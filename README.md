@@ -101,11 +101,16 @@ ASCII header strings. Protocol and framing keys are reserved. Use
 binary values. Writers emit unpadded base64; readers accept valid padded and
 unpadded base64. Only binary helpers split coalesced comma-separated values.
 Other metadata values keep their received boundaries.
+Incoming HTTP fields whose names or values cannot be represented as Connect
+metadata are omitted, including the entire field if any repeated value is
+invalid. Valid adjacent fields remain available in leading and trailing
+metadata. Outbound names and values are always validated strictly.
 
 Rack responses preserve arrays. Net::HTTP preserves repeated raw response
-fields. A host may coalesce them: rackup/WEBrick joins repeated response values
-with `", "` and coalesces incoming fields too. For example, `['a', 'b']` may
-arrive as `['a, b']`. This host boundary is exercised explicitly by interop.
+fields, but joins outgoing request arrays with `", "`. rackup/WEBrick also
+coalesces incoming and response fields. For example, `['a', 'b']` may arrive as
+`['a, b']`. Interop asserts these observed values; original outbound field
+boundaries are not preserved.
 
 Raise a deliberate `ConnectRPC::Error.new(:invalid_argument, "safe message",
 details: [...], metadata: {...}, trailers: {...})` from a handler. Unexpected
@@ -132,7 +137,12 @@ retries and decompression, preserves TLS peer/hostname verification, and does
 not follow redirects. A transport-owned watchdog closes its socket at expiry,
 including during response-header trickle and blocked writes. Native DNS
 resolution may outlast the budget; expiry is checked when control returns.
-Codec work is synchronous and checked before/after, not interrupted.
+Codec work and request preparation are synchronous and checked before/after,
+not interrupted. Dispatch rechecks expiry and refreshes the wire timeout after
+connection setup; a closed socket cannot trigger an implicit reconnect. Native
+waits are capped at one day to avoid platform overflow for very large budgets.
+The logical deadline stays unchanged, and the watchdog rechecks it after each
+capped wait.
 
 Server contexts expose `deadline`, `cancelled?`, and `check!`. With no inbound
 timeout, there is no server expiry. Cancellation means deadline expiry in this

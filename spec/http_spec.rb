@@ -35,8 +35,8 @@ RSpec.describe "real Rack/NetHTTP unary calls" do
       message = EchoExample::Message.new(name: "", count: 9_007_199_254_740_993, mood: :HAPPY)
       response = client.call(EchoExample::ECHO, message, metadata: { "x-request" => %w[a b] })
       expect(response.message).to eq(message)
-      # rackup/WEBrick coalesces duplicates. These assertions describe what the
-      # hosting boundary actually exposes, including the comma and space.
+      # NetHTTP joins outgoing request arrays with comma+space. rackup/WEBrick
+      # also coalesces incoming and response fields; assert the observed values.
       expect(response.metadata["x-echo"]).to eq(["a, b"])
       expect(response.trailers["x-tail"]).to eq(["one, two"])
       expect { client.call(EchoExample::FAIL, message) }.to raise_error(ConnectRPC::Error) do |error|

@@ -45,8 +45,12 @@ module ConnectRPC
       entries&.size == 1 ? entries.first : nil
     end
 
+    def self.identity_encoding?(headers)
+      !headers.key?("content-encoding") || single(headers, "content-encoding")&.casecmp?("identity")
+    end
+
     def self.metadata(headers, trailers: false)
-      values = headers.each_with_object({}) do |(key, entries), result|
+      headers.each_with_object(Metadata.new) do |(key, entries), result|
         if trailers
           next unless key.start_with?("trailer-")
 
@@ -55,8 +59,11 @@ module ConnectRPC
         next if Metadata.reserved?(key)
 
         result[key] = entries
+      rescue ArgumentError
+        # HTTP permits names and values outside Connect's metadata contract.
+        # Omit the whole field while retaining adjacent valid metadata.
+        next
       end
-      Metadata.new(values)
     end
 
     def self.check_size!(bytes, limit)

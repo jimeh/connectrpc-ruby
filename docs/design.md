@@ -55,6 +55,8 @@ accept an absent version and reject any other supplied value. A 200 response
 must match the request codec. Non-application response types produce `unknown`;
 mismatched application codecs and nonidentity response encodings produce
 `internal`. JSON errors are only parsed for an appropriate JSON content type.
+The single identity content coding is case-insensitive on requests and
+responses; duplicate or multiple codings are rejected.
 
 Other verbs get bare 405 with `Allow: POST`; unsupported types, including
 Connect streaming and gRPC variants, get bare 415 with `Accept-Post`.
@@ -72,8 +74,13 @@ rejects protocol/framing overrides and header injection. Binary `-bin` helpers
 handle base64 and comma coalescing. Trailing metadata becomes `trailer-`
 response fields. Other fields are never blindly comma-split. The middleware
 emits separate arrays under `Rack::Lint`, and NetHTTP preserves raw repeated
-response fields. rackup/WEBrick coalesces values with comma+space in both
-directions; interop asserts those host-visible values explicitly.
+response fields. NetHTTP joins outgoing request arrays with comma+space.
+rackup/WEBrick additionally coalesces incoming and response fields; interop
+asserts those observed values explicitly. Received fields outside the metadata
+name/printable-ASCII contract are omitted during extraction, including an
+entire field with any invalid repeated value. Valid adjacent leading/trailing
+fields survive. Protocol validation is separate, and outbound metadata remains
+strictly validated.
 
 ## Bounds and lifecycle
 
@@ -93,6 +100,13 @@ codec and body progress. Each call owns one connection and one watchdog. The
 watchdog closes the owned raw socket on expiry, including during header
 trickle, stalled reads and blocked writes, and is joined on every exit.
 NetHTTP depends on the pinned stdlib BufferedIO socket layout for that close.
+Request preparation finishes before connecting, with an expiry check afterward.
+The connection checks expiry and recomputes the wire timeout immediately before
+dispatch, and rejects Net::HTTP's implicit reconnect of a closed socket. This
+keeps every dispatched byte on the one socket owned by the watchdog.
+TCP/TLS/read/write timeout arguments and watchdog waits are capped at one day
+for safe native time conversion. Logical expiry remains unchanged; the watchdog
+re-evaluates it after each capped wait.
 
 DNS/native resolution may outlast the budget. Net::HTTP's internal connection
 implementation can itself use `Timeout.timeout` on Ruby 3.4; ConnectRPC never

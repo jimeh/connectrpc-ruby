@@ -96,7 +96,7 @@ module ConnectRPC
       if headers.key?("connect-protocol-version") && Protocol.single(headers, "connect-protocol-version") != "1"
         raise Error.new(:invalid_argument, "Unsupported Connect protocol version")
       end
-      return unless headers.key?("content-encoding") && Protocol.single(headers, "content-encoding") != "identity"
+      return if Protocol.identity_encoding?(headers)
 
       raise Error.new(:unimplemented, "Supported content encodings: identity")
     end
