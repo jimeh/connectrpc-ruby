@@ -2,8 +2,9 @@
 
 An unofficial, experimental Ruby implementation of typed
 [Connect](https://connectrpc.com/docs/protocol/) unary RPCs. It provides a
-configurable client, a Net::HTTP transport, and Rack middleware for reusable
-Ruby handlers. It is not production ready.
+configurable client, a Net::HTTP transport, and host-neutral servers for reusable
+Ruby handlers. The optional [connectrpc-rack gem](gems/connectrpc-rack/README.md)
+provides Rack middleware. It is not production ready.
 
 The implemented profile is POST, identity or opt-in gzip encoding, and `application/proto` or
 protobuf `application/json`. The optional [connectrpc-rails gem](gems/connectrpc-rails/README.md)
@@ -21,6 +22,7 @@ then run:
 mise run setup
 mise run example
 mise run verify
+mise run rack:verify
 ```
 
 [The example](examples/unary.rb) starts Rack on an ephemeral loopback port,
@@ -112,7 +114,18 @@ also guards its directly defined constants at load time. See [design](docs/desig
 Core `require "connectrpc"` needs no Google or Rack gems. Load optional
 integrations explicitly. Development uses exact pins; the integration entry
 points support google-protobuf `>= 4.36.2, < 5` and Rack `>= 3.2.7, < 4`.
-Applications that use them must supply those gems themselves.
+Applications using Google must supply `google-protobuf`. Rack middleware ships
+in the separate `connectrpc-rack` gem, which installs compatible core and Rack
+dependencies. Existing middleware users must add this Gemfile dependency:
+
+```ruby
+gem "connectrpc-rack", "~> 0.1.0"
+```
+
+Keep `require "connectrpc/rack"` and the middleware API unchanged. Core installed
+alone has no middleware file, so requiring that path raises an ordinary
+`LoadError`. This is an installation migration; Rack already loaded only on
+explicit require.
 
 ```ruby
 require "connectrpc/bindings/google_protobuf"

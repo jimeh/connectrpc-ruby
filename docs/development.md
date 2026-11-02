@@ -30,6 +30,8 @@ these locks do not promise bit-identical Ruby binaries across machines.
 
 Setup installs only the declared project tools, then Bundler 4.0.23 into the
 active Ruby, then the frozen `Gemfile.lock` into ignored `vendor/bundle/`.
+Root Bundler user state is scoped to `vendor/bundler/`; optional bundles set
+their own user directories.
 Re-running setup is safe. Bundler config files are ignored so user-level
 settings cannot silently change the bundle location or frozen behavior.
 `mise.lock` currently locks Linux x64 downloads and checksums, including both
@@ -73,9 +75,10 @@ Mise owns setup ordering and verification composition.
 Every entry point installs missing prerequisites through the same task graph.
 During Ruby iteration, use focused tests and relevant static checks. Run
 `check` for fast static feedback and `verify` for package/tooling changes and
-final implementation handoff.
+final implementation handoff. Run `mise run verify` and then `mise run rack:verify`
+for final handoff; moved middleware specs have their own canonical gate.
 [CI](https://github.com/jimeh/connectrpc-ruby/blob/main/docs/ci.md) splits the same
-canonical component tasks into nine core, three Rails and four optional HTTP/2 checks, with syntax, specs, package isolation,
+canonical component tasks into nine core, three Rails, four optional HTTP/2 and two optional Rack checks, with syntax, specs, package isolation,
 interop and official conformance on both Rubies. Hosted clean-environment and
 matrix results remain CI evidence; a local pass cannot establish them.
 
@@ -135,8 +138,12 @@ proof. The separate Go peer tests establish the advertised unary subset.
 dependencies, MIT metadata and complete license bytes, and the publication guard. It runs `gem install --norc --local`
 from a separate temporary working directory inside `Bundler.with_unbundled_env`,
 with fresh `GEM_HOME`/`GEM_PATH` and cleared Ruby/Bundler options. It verifies
-core require without Google/Rack and useful missing-optional-require errors.
-It then installs the cached, locked optional artifacts, including native
+core require without Google/Rack, an ordinary missing `connectrpc/rack` file
+error, and useful missing Google/generator dependency errors.
+It independently builds the optional Rack archive under `vendor/package/rack`,
+stages it and only the required runtime archives in the external cwd, and uses
+normal offline dependency resolution. It installs the cached, locked optional
+artifacts, including native
 `bigdecimal`, Google protobuf and its `rake` dependency, Rack, rackup and
 WEBrick. The installed gem performs real typed Rack/NetHTTP calls with both
 binary and JSON scalar-wrapper payloads with identity and gzip, including errors. The helper scripts are copied to the
@@ -155,10 +162,11 @@ The check does not install the development JSON gem: it exercises the Ruby
 default JSON and Net::HTTP gems. All installs are offline and temporary files
 are removed. Nothing is published.
 
-Only `lib/**/*.rb`, `exe/protoc-gen-connectrpc-ruby`, `LICENSE`, `README.md`, and the two
+Core ships no `lib/connectrpc/rack.rb`. Only the remaining `lib/**/*.rb`,
+`exe/protoc-gen-connectrpc-ruby`, `LICENSE`, `README.md`, and the two
 design/development documents ship. The executable metadata and packaged execute
 bits are checked; syntax and RuboCop include the extensionless executable.
-The optional Rails and Async packages carry byte-identical copies of the root
+The optional Rack, Rails and Async packages carry byte-identical copies of the root
 `LICENSE`; their package checks verify both the copies and archived notices.
 Keep these copies in sync when updating the canonical notice.
 The exact manifest in `scripts/check_package.rb` must be deliberately updated
@@ -338,9 +346,9 @@ Adapter SimpleCov includes every adapter `lib/**/*.rb` file before requires
 and writes to `vendor/rails/coverage`, separate from core. Real app tests use
 matching Rails defaults, native Base/API dispatch and CSRF/session behavior,
 Rack::Lint, eager load/reload and synchronized concurrent requests.
-`build:rails` builds both exact archives into `vendor/rails/pkg` independently
-of root build output. `check:package:rails` checks manifests, guards and
-conventional runtime dependency requirements, installs offline into fresh
+`build:rails` builds core, Rack and Rails exact archives into `vendor/rails/pkg` independently
+of root build output. `check:package:rails` checks all three manifests, guards and
+conventional runtime dependency requirements, stages only their runtime closure, installs offline into fresh
 GEM_HOME/GEM_PATH outside the checkout, and exercises installed generated
 binary/JSON clients against native Rails callbacks and structured failures.
 Only the adapter README, `LICENSE` and library files ship in its archive. No dependencies
@@ -372,3 +380,27 @@ native caches use `vendor/async/bundle`; Bundler user state uses
 is ignored. SimpleCov starts before backend/core requires, includes every
 backend library file and writes `coverage/async/<Ruby>/`. Green coverage does
 not establish interoperability or hosted clean-environment success.
+
+## Optional Rack development
+
+The [middleware guide](../gems/connectrpc-rack/README.md) owns installation,
+mounting and lifecycle limits. Run `mise run rack:setup`, focused
+`mise run rack:test -- spec/rack_spec.rb`, and `mise run rack:check` while iterating.
+The frozen checksummed Gemfile reuses exact root registry pins with core as a
+development path dependency. Bundle, Bundler user state, lint cache and build
+outputs are isolated under `vendor/rack`; SimpleCov starts before requires and
+covers every package source in `coverage/rack/<Ruby>/`.
+
+`rack:build` builds its own core and middleware archives, avoiding root/Rails
+output races. `rack:package` checks exact manifests/dependencies/guards, installs
+core alone to prove middleware is unavailable, then resolves the Rack package
+normally offline using staged runtime archives in an external fresh GEM_HOME.
+It runs real Google proto/JSON identity/gzip success, errors/details and metadata
+under Rack::Lint over ephemeral localhost NetHTTP, asserting installed core and
+Rack source ownership. Root installed checks also retain default JSON/NetHTTP
+and the actual installed generator. Rails checks all three local owners.
+
+Final local handoff requires `mise run verify` followed by `mise run rack:verify`.
+Root `verify` composition is unchanged. CI preserves the original 16 checks and
+adds two Rack specs/check/package lanes on the existing Rubies; clean-environment
+matrix evidence remains a hosted responsibility. No runtime savings are claimed.

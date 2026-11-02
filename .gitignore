@@ -1,6 +1,7 @@
 /.bundle/
 /gems/connectrpc-rails/gemfiles/.bundle/
 /gems/connectrpc-async/.bundle/
+/gems/connectrpc-rack/.bundle/
 /vendor/
 /pkg/
 /coverage/

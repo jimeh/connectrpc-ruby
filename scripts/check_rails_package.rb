@@ -7,35 +7,40 @@ require "rbconfig"
 require "tmpdir"
 
 root = File.expand_path("..", __dir__)
-archives = %w[connectrpc connectrpc-rails].map { |name| File.join(root, "vendor/rails/pkg/#{name}-0.1.0.gem") }
-core, adapter = archives.map { |archive| Gem::Package.new(archive) }
+archives = %w[connectrpc connectrpc-rack connectrpc-rails].map do |name|
+  File.join(root, "vendor/rails/pkg/#{name}-0.1.0.gem")
+end
+core, middleware, adapter = archives.map { |archive| Gem::Package.new(archive) }
 core_files = %w[
   LICENSE README.md docs/development.md docs/design.md lib/connectrpc.rb lib/connectrpc/version.rb
   exe/protoc-gen-connectrpc-ruby lib/connectrpc/generator.rb lib/connectrpc/generator/names.rb
   lib/connectrpc/generator/schema.rb lib/connectrpc/generator/renderer.rb lib/connectrpc/generator/runtime_names.rb
   lib/connectrpc/method.rb lib/connectrpc/metadata.rb lib/connectrpc/error.rb lib/connectrpc/deadline.rb
   lib/connectrpc/compression.rb lib/connectrpc/message_io.rb lib/connectrpc/protocol.rb lib/connectrpc/client.rb
-  lib/connectrpc/server.rb lib/connectrpc/rack.rb
+  lib/connectrpc/server.rb
   lib/connectrpc/bindings/google_protobuf.rb lib/connectrpc/transports/net_http.rb
 ].sort
 abort "Core manifest changed" unless core.contents.sort == core_files.sort && core.spec.runtime_dependencies.empty?
 expected = %w[LICENSE README.md lib/connectrpc/rails.rb lib/connectrpc/rails/controller.rb]
 abort "Unexpected Rails manifest" unless adapter.contents.sort == expected.sort
 expected_dependencies = {
-  "connectrpc" => "~> 0.1.0", "actionpack" => ">= 8.0.5.1, < 8.2", "rack" => ">= 3.2.7, < 4"
+  "connectrpc" => "~> 0.1.0", "actionpack" => ">= 8.0.5.1, < 8.2", "connectrpc-rack" => "~> 0.1.0"
 }
 actual = adapter.spec.runtime_dependencies.to_h { |dependency| [dependency.name, dependency.requirement.to_s] }
 abort "Unexpected Rails dependencies: #{actual}" unless actual == expected_dependencies
-[core, adapter].each do |package|
-  unless package.spec.metadata["allowed_push_host"] == "https://gems.invalid" && package.spec.license == "MIT"
+[core, middleware, adapter].each do |package|
+  unless package.spec.metadata["allowed_push_host"] == "https://gems.invalid" &&
+         package.spec.license == "MIT"
     abort "Publication guard/license missing"
   end
 end
-unless File.binread(File.join(root, "gems/connectrpc-rails/LICENSE")) == File.binread(File.join(root, "LICENSE"))
-  abort "Package-local license differs from root LICENSE"
+%w[connectrpc-rack connectrpc-rails].each do |name|
+  unless File.binread(File.join(root, "gems", name, "LICENSE")) == File.binread(File.join(root, "LICENSE"))
+    abort "Package-local license differs from root LICENSE: #{name}"
+  end
 end
 Dir.mktmpdir("connectrpc-license-") do |temporary|
-  [core, adapter].each do |package|
+  [core, middleware, adapter].each do |package|
     destination = File.join(temporary, package.spec.name)
     package.extract_files(destination, "LICENSE")
     unless File.binread(File.join(destination, "LICENSE")) == File.binread(File.join(root, "LICENSE"))
@@ -43,15 +48,39 @@ Dir.mktmpdir("connectrpc-license-") do |temporary|
     end
   end
 end
-specs = Bundler.load.specs.reject { |spec| %w[connectrpc connectrpc-rails bundler].include?(spec.name) }
-artifacts = specs.map do |spec|
+abort "Rack manifest changed" unless middleware.contents.sort == %w[LICENSE README.md lib/connectrpc/rack.rb]
+rack_dependencies = middleware.spec.runtime_dependencies.to_h do |dependency|
+  [dependency.name, dependency.requirement.to_s]
+end
+abort "Rack dependencies changed" unless rack_dependencies == { "connectrpc" => "~> 0.1.0", "rack" => ">= 3.2.7, < 4" }
+specs = Bundler.load.specs.to_h { |spec| [spec.name, spec] }
+pending = %w[connectrpc-rails railties google-protobuf]
+required = {}
+until pending.empty?
+  name = pending.shift
+  next if required.key?(name)
+
+  spec = specs.fetch(name)
+  required[name] = spec
+  pending.concat(spec.runtime_dependencies.map(&:name))
+end
+artifacts = required.values.reject { |spec| spec.source.is_a?(Bundler::Source::Path) }.map do |spec|
   abort "Missing offline archive #{spec.full_name}" unless File.file?(spec.cache_file)
 
   spec.cache_file
 end
-core_check = <<~CODE
+core_check = <<~'CODE'
   require "connectrpc"
-  abort "Core loaded Rails" if defined?(Rails) || defined?(ActionController)
+  abort "Core loaded optional hosting" if defined?(Rails) || defined?(ActionController) || defined?(Rack)
+  core = Gem.loaded_specs.fetch("connectrpc")
+  abort "Core outside isolated GEM_HOME" unless core.full_gem_path.start_with?("#{ENV.fetch('GEM_HOME')}/")
+  abort "Core runtime dependencies" unless core.runtime_dependencies.empty?
+  begin
+    require "connectrpc/rack"
+    abort "Core supplies middleware"
+  rescue LoadError => e
+    abort "Wrong missing middleware path" unless e.path == "connectrpc/rack"
+  end
   puts "Isolated core without Rails passed"
 CODE
 Bundler.with_unbundled_env do
@@ -66,9 +95,9 @@ Bundler.with_unbundled_env do
                     "CONNECTRPC_RAILS_VERSION" => ENV.fetch("CONNECTRPC_RAILS_VERSION") }
     ENV.each_key { |name| environment[name] = nil if name.start_with?("BUNDLE_", "BUNDLER_") }
     commands = [
-      [RbConfig.ruby, "-S", "gem", "install", "--norc", archives.first, "--local", "--no-document"],
+      [RbConfig.ruby, "-S", "gem", "install", "--norc", File.basename(archives.first), "--local", "--no-document"],
       [RbConfig.ruby, "-e", core_check],
-      [RbConfig.ruby, "-S", "gem", "install", "--norc", archives.last, "--local", "--no-document"],
+      [RbConfig.ruby, "-S", "gem", "install", "--norc", File.basename(archives.last), "--local", "--no-document"],
       [RbConfig.ruby, "-S", "gem", "install", "--norc", "railties", "--version", ENV.fetch("CONNECTRPC_RAILS_VERSION"),
        "--local", "--no-document"],
       [RbConfig.ruby, "-S", "gem", "install", "--norc", "google-protobuf", "--version", "4.36.2", "--local",

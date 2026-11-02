@@ -5,6 +5,7 @@ source "https://rubygems.org", cooldown: 7
 gemspec
 
 group :development, :test do
+  gem "connectrpc-rack", path: "gems/connectrpc-rack", require: false
   gem "google-protobuf", "4.36.2", require: false
   gem "rack", "3.2.7", require: false
   gem "rackup", "2.3.1", require: false

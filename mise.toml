@@ -18,6 +18,7 @@ RUBOCOP_CACHE_ROOT = "{{config_root}}/.rubocop_cache"
 BUNDLE_IGNORE_CONFIG = "true"
 BUNDLE_FROZEN = "true"
 BUNDLE_PATH = "{{config_root}}/vendor/bundle"
+BUNDLE_USER_HOME = "{{config_root}}/vendor/bundler"
 BUNDLE_DISABLE_SHARED_GEMS = "true"
 BUNDLE_VERSION = "4.0.23"
 
@@ -272,3 +273,40 @@ description = "Run the independent gzip conformance portion"
 depends = ["conformance:check"]
 tools."github:connectrpc/conformance" = "1.0.6"
 run = "bundle _4.0.23_ exec ruby scripts/conformance.rb --profile=gzip"
+
+# Optional Rack bundle, independent of core, Rails and HTTP/2.
+
+[tasks."rack:setup"]
+description = "Install the independent frozen Rack middleware bundle"
+depends = ["rack:tools"]
+run = "mise exec -- ruby gems/connectrpc-rack/scripts/run.rb setup"
+
+[tasks."rack:test"]
+description = "Run optional Rack middleware specs"
+depends = ["rack:setup"]
+run = "mise exec -- ruby gems/connectrpc-rack/scripts/run.rb test"
+
+[tasks."rack:check"]
+description = "Check optional Rack middleware source"
+depends = ["rack:setup"]
+run = "mise exec -- ruby gems/connectrpc-rack/scripts/run.rb check"
+
+[tasks."rack:build"]
+description = "Build isolated core and Rack archives"
+depends = ["rack:setup"]
+run = "mise exec -- ruby gems/connectrpc-rack/scripts/run.rb build"
+
+[tasks."rack:package"]
+description = "Install and exercise normal Rack dependencies offline"
+depends = ["rack:build"]
+run = "mise exec -- ruby gems/connectrpc-rack/scripts/run.rb package"
+
+[tasks."rack:verify"]
+description = "Verify optional Rack specs, source and installed packages"
+depends = ["rack:test", "rack:check", "rack:package"]
+
+[tasks."rack:tools"]
+description = "Prepare exact Ruby/Bundler for the independent Rack bundle"
+dir = "{{config_root}}/gems/connectrpc-rack"
+env = { BUNDLE_GEMFILE = "{{config_root}}/gems/connectrpc-rack/Gemfile", BUNDLE_PATH = "{{config_root}}/vendor/rack/bundle", BUNDLE_USER_HOME = "{{config_root}}/vendor/rack/bundler", BUNDLE_COOLDOWN = "7" }
+run = ["mise install --locked ruby", "mise exec -- ruby ../../scripts/setup_bundler.rb"]

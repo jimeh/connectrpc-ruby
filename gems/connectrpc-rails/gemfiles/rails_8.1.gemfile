@@ -4,6 +4,7 @@ source "https://rubygems.org"
 
 gem "appraisal", "2.5.0"
 gem "connectrpc", path: "../../.."
+gem "connectrpc-rack", path: "../../connectrpc-rack"
 gem "google-protobuf", "4.36.2"
 gem "rack", "3.2.7"
 gem "rackup", "2.3.1"

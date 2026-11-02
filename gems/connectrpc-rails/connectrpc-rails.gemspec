@@ -15,5 +15,5 @@ Gem::Specification.new do |spec|
   spec.require_paths = ["lib"]
   spec.add_dependency "actionpack", ">= 8.0.5.1", "< 8.2"
   spec.add_dependency "connectrpc", "~> 0.1.0"
-  spec.add_dependency "rack", ">= 3.2.7", "< 4"
+  spec.add_dependency "connectrpc-rack", "~> 0.1.0"
 end

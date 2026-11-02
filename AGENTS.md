@@ -2,7 +2,10 @@
 
 This is a public, unofficial typed Connect unary Ruby gem. `lib/connectrpc.rb`
 is the host-neutral core entry point; Google protobuf and Rack are explicit
-optional integration requires. `lib/connectrpc/` holds the core, bindings,
+optional integration requires. `gems/connectrpc-rack/` exclusively owns the
+`connectrpc/rack` entry point and middleware specs, independent bundle and
+`rack:` tasks. Core has no middleware source shim. `lib/connectrpc/` holds the
+core, bindings,
 transports and explicit optional generator. `exe/protoc-gen-connectrpc-ruby` is
 the standard protoc/Buf plugin. `examples/` owns ephemeral localhost hosting
 and `interop/` the pinned independent Go peer.
@@ -21,8 +24,9 @@ For a Ruby change, run focused specs with `mise run test -- spec/connectrpc_spec
 run `mise run generation:check` (pinned protoc/Buf).
 Keep official `_pb.rb` and generated `_connect.rb` fixtures reproducible; regenerate
 with `mise run generation:build`, never hand-edit them. Use `mise run format` for
-Layout fixes. Run `mise run verify` for package/tooling changes and final
-implementation handoff; it includes tests, build, and isolated gem installation.
+Layout fixes. Run `mise run verify` followed by `mise run rack:verify` for
+package/tooling changes and final implementation handoff. These include tests,
+build, and isolated gem installation.
 [Development](docs/development.md) owns setup, verification tiers, coverage,
 updates, hooks, and PR guidance. Docs-only changes need link/command review;
 tests and workflow checks apply only if the edit affects those commands or examples.

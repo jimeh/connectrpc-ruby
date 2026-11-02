@@ -37,9 +37,14 @@ cannot undo an oversized allocation or interrupt their work.
 and safe errors. `Rack` only translates request/response HTTP state. It wraps
 an optional downstream app and routes `PATH_INFO`; unrelated service paths
 fall through, while unknown methods within registered services fail explicitly.
-Neither core nor handlers need Rack envs. Google and Rack load only through
-`connectrpc/bindings/google_protobuf` and `connectrpc/rack`, with useful errors
-when their optional dependency is absent or incompatible.
+Neither core nor handlers need Rack envs. The optional `connectrpc-rack` package
+owns `connectrpc/rack` exclusively and loads core through `require "connectrpc"`.
+Applications add `gem "connectrpc-rack", "~> 0.1.0"` while keeping the require
+and `ConnectRPC::Rack` API unchanged. Core has no middleware file or runtime
+dependencies; requiring middleware without its package raises an ordinary
+`LoadError`. Google loads only through `connectrpc/bindings/google_protobuf`;
+its missing/incompatible dependency diagnostic remains useful. The middleware
+retains its own Rack version activation diagnostic.
 
 A default invoker calls the registered plain handler with `(request, context)`.
 An explicit `invoker` callable receives `(method, request, context)` and can
@@ -185,8 +190,8 @@ Streaming, GET, gRPC/gRPC-Web, interceptors, a production server,
 and Faraday are future work. Unsupported modes/options are rejected
 rather than represented as buffered streaming. The optional [connectrpc-rails gem](../gems/connectrpc-rails/README.md) uses
 the invoker boundary to run native controller callbacks, authentication,
-`rescue_from` and instrumentation after bounded core decode. It reuses Rack
-translation and keeps hosting dependencies out of core. It preserves native
+`rescue_from` and instrumentation after bounded core decode. It depends on `connectrpc-rack` for Rack translation and keeps hosting
+dependencies out of core. It preserves native
 CSRF/session policy, reports unexpected errors through Rails.error and keeps
 generated files non-reloadable outside Zeitwerk paths. A mounted Rack app alone
 does not supply the Rails controller lifecycle.
