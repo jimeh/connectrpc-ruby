@@ -15,7 +15,9 @@ testing_archive = File.join(output, "connectrpc-testing-0.1.0.gem")
 core = Gem::Package.new(core_archive)
 testing = Gem::Package.new(testing_archive)
 expected_core = %w[
-  LICENSE README.md docs/development.md docs/design.md exe/protoc-gen-connectrpc-ruby
+  LICENSE README.md docs/development.md docs/design.md docs/rbs.md exe/protoc-gen-connectrpc-ruby
+  sig/connectrpc.rbs sig/manifest.yaml rbs/google_protobuf_4_36/runtime.rbs rbs/google_protobuf_4_36/binding.rbs
+  lib/connectrpc/generator/rbs_renderer.rb
   lib/connectrpc.rb lib/connectrpc/version.rb lib/connectrpc/method.rb lib/connectrpc/metadata.rb
   lib/connectrpc/error.rb lib/connectrpc/deadline.rb lib/connectrpc/compression.rb lib/connectrpc/message_io.rb
   lib/connectrpc/protocol.rb lib/connectrpc/client.rb lib/connectrpc/server.rb

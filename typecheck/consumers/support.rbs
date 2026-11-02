@@ -1,0 +1,11 @@
+class LoopbackTransport
+  @server: ConnectRPC::Server
+  def initialize: (ConnectRPC::Server) -> void
+  def call: (ConnectRPC::TransportRequest) -> ConnectRPC::TransportResponse
+end
+class GoodHandler
+  def call: (RbsFixture::Messages::Envelope::Request, ConnectRPC::Context) -> RbsFixture::Messages::Envelope::Reply
+end
+class BadHandler
+  def call: (RbsFixture::Messages::Envelope::Request, ConnectRPC::Context) -> RbsFixture::Messages::Envelope::Request
+end

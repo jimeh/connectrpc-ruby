@@ -1,0 +1,139 @@
+module ConnectRPC
+  VERSION: String
+  type codec = :proto | :json
+  type headers = Hash[String, Array[String]]
+  type metadata_input = Metadata | Hash[String, String | Array[String]]
+
+  # Tokens belong to the binding. Only schema facts or an application assertion
+  # associate them with instance types; the constructor cannot infer that link.
+  class Method[Req, Resp]
+    def initialize: (service: String, name: String, request_type: Object, response_type: Object, ?cardinality: :unary) -> void
+    attr_reader service: String
+    attr_reader name: String
+    attr_reader path: String
+    attr_reader request_type: Object
+    attr_reader response_type: Object
+    def cardinality: () -> :unary
+  end
+
+  class Service
+    def initialize: (name: String, methods: Array[Method[untyped, untyped]]) -> void
+    attr_reader name: String
+    attr_reader methods: Array[Method[untyped, untyped]]
+  end
+
+  # Custom token-based codecs erase message identity at this boundary.
+  interface _Binding
+    def encode: (untyped message, type: Object, codec: codec) -> String
+    def decode: (String bytes, type: Object, codec: codec) -> untyped
+  end
+
+  interface _Transport
+    def call: (TransportRequest) -> TransportResponse
+  end
+
+  interface _Input
+    def read: (Integer) -> String?
+  end
+
+  interface _Handler[Req, Resp]
+    def call: (Req, Context) -> Resp
+  end
+
+  class Client
+    def initialize: (base_url: String, binding: _Binding, ?transport: _Transport?, ?codec: codec, ?request_limit: Integer, ?response_limit: Integer, ?request_wire_limit: Integer, ?response_wire_limit: Integer, ?accept_encoding: Array[:identity | :gzip]?, ?protocol: :connect, ?mode: :unary, ?encoding: :identity | :gzip) -> void
+    def call: [Req, Resp] (Method[Req, Resp], Req request, ?metadata: metadata_input, ?timeout: Numeric?) -> Response[Resp]
+  end
+
+  class Server
+    # Generated .handlers checks each concrete callable before this heterogeneous
+    # registration map erases its individual request/response associations.
+    def initialize: (services: Array[Service], binding: _Binding, ?handlers: Hash[String, untyped], ?invoker: (^(Method[untyped, untyped], untyped, Context) -> untyped)?, ?request_limit: Integer, ?response_limit: Integer, ?request_wire_limit: Integer, ?response_wire_limit: Integer, ?protocol: :connect, ?mode: :unary, ?encoding: :identity | :gzip) -> void
+    attr_reader services: Array[Service]
+    def handles?: (String path) -> bool
+    def call: (path: String, http_method: String, headers: headers, input: _Input?) -> TransportResponse
+  end
+
+  # These mutable Struct signatures cover fully initialized keyword construction
+  # only. Ruby's omitted-member nil defaults are outside this typed subset.
+  class Response[M]
+    def initialize: (message: M, metadata: Metadata, trailers: Metadata) -> void
+    attr_accessor message: M
+    attr_accessor metadata: Metadata
+    attr_accessor trailers: Metadata
+  end
+
+  class TransportRequest
+    def initialize: (url: URI::Generic, http_method: String, headers: headers, body: String, response_limit: Integer, deadline: Deadline?) -> void
+    attr_accessor url: URI::Generic
+    attr_accessor http_method: String
+    attr_accessor headers: headers
+    attr_accessor body: String
+    attr_accessor response_limit: Integer
+    attr_accessor deadline: Deadline?
+  end
+
+  class TransportResponse
+    def initialize: (status: Integer, headers: headers, body: String) -> void
+    attr_accessor status: Integer
+    attr_accessor headers: headers
+    attr_accessor body: String
+  end
+
+  class Metadata
+    include Enumerable[[String, Array[String]]]
+    def initialize: (?metadata_input values) -> void
+    def self.reserved?: (String) -> bool
+    def self.encode_binary: (String) -> String
+    def self.decode_binary: (String) -> String
+    def []: (String key) -> Array[String]?
+    def []=: (String key, String | Array[String] entries) -> Array[String]
+    def add: (String key, String value) -> self
+    def add_binary: (String key, String bytes) -> self
+    def binary: (String key) -> Array[String]
+    def each: () { ([String, Array[String]]) -> void } -> headers
+            | () -> Enumerator[[String, Array[String]], headers]
+    def to_h: () -> headers
+  end
+
+  class Deadline
+    MAX_NATIVE_WAIT: Float
+    def initialize: (Numeric timeout, ?clock: ^() -> Numeric) -> void
+    def remaining: () -> Numeric
+    def expired?: () -> bool
+    def native_timeout: () -> Numeric
+    def check!: () -> nil
+    def timeout_ms: () -> String
+  end
+
+  class Context
+    def initialize: (?request_metadata: metadata_input, ?deadline: Deadline?) -> void
+    attr_reader request_metadata: Metadata
+    attr_reader response_metadata: Metadata
+    attr_reader response_trailers: Metadata
+    attr_reader deadline: Deadline?
+    def cancelled?: () -> bool
+    def check!: () -> nil
+  end
+
+  class CodecError < StandardError
+  end
+
+  class ErrorDetail
+    def initialize: (type: String, value: String) -> void
+    attr_reader type: String
+    attr_reader value: String
+    def decode: (binding: _Binding, type: Object) -> untyped
+    def to_h: () -> Hash[String, String]
+  end
+
+  class Error < StandardError
+    def initialize: (String | Symbol code, ?String message, ?details: Array[ErrorDetail], ?metadata: metadata_input, ?trailers: metadata_input) -> void
+    attr_reader code: String
+    attr_reader details: Array[ErrorDetail]
+    attr_reader metadata: Metadata
+    attr_reader trailers: Metadata
+    def http_status: () -> Integer
+    def to_h: () -> Hash[String, String | Array[Hash[String, String]]]
+  end
+end

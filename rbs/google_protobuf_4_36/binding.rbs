@@ -1,0 +1,10 @@
+# Explicit integration only; not loaded with library "connectrpc".
+module ConnectRPC
+  module Bindings
+    class GoogleProtobuf
+      def initialize: () -> void
+      def encode: (untyped message, type: Object, codec: ConnectRPC::codec) -> String
+      def decode: (String bytes, type: Object, codec: ConnectRPC::codec) -> untyped
+    end
+  end
+end

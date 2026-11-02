@@ -239,7 +239,9 @@ contain frozen RPC `Method` constants, `SERVICE`, a `Client` initialized with
 `client:`, and `.handlers` with required callable RPC keywords. The client only
 forwards `call(METHOD, request, **options)` and returns its result unchanged.
 Partial handlers/custom invocation remain core Server features. No framework,
-transport configuration, binding auto-require or static typing system is added.
+transport configuration or binding auto-require is added.
+Optional [RBS signatures](rbs.md) preserve these runtime boundaries and require
+`rbs=true` for service signature generation.
 Concrete types come from the official generated descriptor pool, preserving
 nested classes, imports, proto2/proto3 presence and `ruby_package` mappings.
 

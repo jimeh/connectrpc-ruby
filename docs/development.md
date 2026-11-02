@@ -78,7 +78,7 @@ During Ruby iteration, use focused tests and relevant static checks. Run
 final implementation handoff. Run `mise run verify` and then `mise run rack:verify`
 for final handoff; moved middleware specs have their own canonical gate.
 [CI](https://github.com/jimeh/connectrpc-ruby/blob/main/docs/ci.md) splits the same
-canonical component tasks into nine core, three Rails, four optional HTTP/2, two optional Rack and two optional testing checks, with syntax, specs, package isolation,
+canonical component tasks into nine core, three Rails, four optional HTTP/2, two optional Rack, two optional testing and two optional RBS checks, with syntax, specs, package isolation,
 interop and official conformance on both Rubies. Hosted clean-environment and
 matrix results remain CI evidence; a local pass cannot establish them.
 
@@ -162,9 +162,10 @@ The check does not install the development JSON gem: it exercises the Ruby
 default JSON and Net::HTTP gems. All installs are offline and temporary files
 are removed. Nothing is published.
 
-Core ships no `lib/connectrpc/rack.rb`. Only the remaining `lib/**/*.rb`,
-`exe/protoc-gen-connectrpc-ruby`, `LICENSE`, `README.md`, and the two
-design/development documents ship. The executable metadata and packaged execute
+Core ships no `lib/connectrpc/rack.rb`. Core `sig/`, the explicitly selected
+`rbs/google_protobuf_4_36/` bridge, remaining `lib/**/*.rb`,
+`exe/protoc-gen-connectrpc-ruby`, `LICENSE`, `README.md`, and the
+design/development/[RBS guide](rbs.md) documents ship. The executable metadata and packaged execute
 bits are checked; syntax and RuboCop include the extensionless executable.
 The optional Rack, Rails, Async and testing packages carry byte-identical copies of the root
 `LICENSE`; their package checks verify both the copies and archived notices.
@@ -406,3 +407,15 @@ adds two Rack specs/check/package lanes on the existing Rubies; clean-environmen
 matrix evidence remains a hosted responsibility. No runtime savings are claimed.
 
 See the optional [in-process testing package](../gems/connectrpc-testing/README.md) for real encoded client/server round trips without sockets.
+
+## Optional RBS development
+
+[The RBS guide](rbs.md) covers official message generation, opt-in service RBS,
+strict Steep configuration, the explicit protobuf bridge and nominal alternatives.
+`mise run rbs:setup` installs the independent frozen checksummed development
+bundle. `rbs:check` checks protoc/Buf parity, unchanged default Ruby and official
+message RBS, deterministic output, real generated runtime calls, RBS validation
+and positive/negative strict consumers. `rbs:package` checks installed discovery
+and the same consumers outside the checkout. Run both on each pinned Ruby.
+These leaves keep their Bundler state, caches, bundle and package outputs under
+`vendor/rbs/` and add no runtime or root-bundle dependencies.

@@ -1,0 +1,27 @@
+# Application-owned identities; no constructor or protobuf runtime declarations.
+module RbsFixture
+  module Messages
+    class Envelope
+      class Request
+      end
+      class Reply
+      end
+    end
+  end
+end
+module RbsPlain
+  module V1
+    class Request
+    end
+    class Outer
+      class Reply
+      end
+    end
+  end
+end
+module Google
+  module Protobuf
+    class Empty
+    end
+  end
+end

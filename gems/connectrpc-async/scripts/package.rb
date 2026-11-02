@@ -9,7 +9,9 @@ root = File.expand_path("../../..", __dir__)
 archives = %w[connectrpc connectrpc-async].map { |name| File.join(root, "vendor/async/pkg/#{name}-0.1.0.gem") }
 core, backend = archives.map { |archive| Gem::Package.new(archive) }
 core_expected = %w[
-  LICENSE README.md docs/development.md docs/design.md lib/connectrpc.rb lib/connectrpc/version.rb
+  LICENSE README.md docs/development.md docs/design.md docs/rbs.md lib/connectrpc.rb lib/connectrpc/version.rb
+  sig/connectrpc.rbs sig/manifest.yaml rbs/google_protobuf_4_36/runtime.rbs rbs/google_protobuf_4_36/binding.rbs
+  lib/connectrpc/generator/rbs_renderer.rb
   exe/protoc-gen-connectrpc-ruby lib/connectrpc/generator.rb lib/connectrpc/generator/names.rb
   lib/connectrpc/generator/schema.rb lib/connectrpc/generator/renderer.rb lib/connectrpc/generator/runtime_names.rb
   lib/connectrpc/method.rb lib/connectrpc/metadata.rb lib/connectrpc/error.rb lib/connectrpc/deadline.rb

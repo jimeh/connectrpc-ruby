@@ -1,0 +1,4 @@
+# A separate application-owned field extension does not collide with service RBS.
+class RbsFixture::Messages::Envelope::Request
+  attr_accessor text: String
+end

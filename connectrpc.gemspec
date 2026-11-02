@@ -13,7 +13,8 @@ Gem::Specification.new do |spec|
   spec.required_ruby_version = ">= 3.4"
   spec.metadata["allowed_push_host"] = "https://gems.invalid"
   spec.metadata["source_code_uri"] = spec.homepage
-  spec.files = Dir.glob("lib/**/*.rb") + Dir.glob("exe/*") + %w[LICENSE README.md docs/development.md docs/design.md]
+  spec.files = Dir.glob("lib/**/*.rb") + Dir.glob("exe/*") + Dir.glob("sig/**/*.{rbs,yaml}") +
+               Dir.glob("rbs/**/*.rbs") + %w[LICENSE README.md docs/development.md docs/design.md docs/rbs.md]
   spec.require_paths = ["lib"]
   spec.bindir = "exe"
   spec.executables = ["protoc-gen-connectrpc-ruby"]

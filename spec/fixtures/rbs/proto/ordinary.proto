@@ -1,0 +1,4 @@
+syntax = "proto2";
+package rbs_plain.v1;
+message Request { optional string text = 1; }
+message Outer { message Reply { optional string text = 1; } }

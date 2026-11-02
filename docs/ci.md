@@ -1,8 +1,8 @@
 # CI
 
 The workflow runs on pull requests and pushes to `main`, on Ubuntu 24.04.
-It has nine core, three optional Rails, four optional HTTP/2, two optional Rack
-and two optional in-process testing checks, with no serial cache primer or aggregate job:
+It has nine core, three optional Rails, four optional HTTP/2, two optional Rack,
+two optional in-process testing and two optional RBS checks, with no serial cache primer or aggregate job:
 
 | Check | Ruby | Canonical commands |
 | --- | --- | --- |
@@ -17,6 +17,7 @@ and two optional in-process testing checks, with no serial cache primer or aggre
 | Async Go interoperability | 3.4.12, 4.0.9 | `mise run async:interop` |
 | Rack specs/check/package | 3.4.12, 4.0.9 | `mise run rack:test`, `mise run rack:check`, `mise run rack:package` |
 | In-process testing | 3.4.12, 4.0.9 | `mise run testing:verify` |
+| RBS consumers/package | 3.4.12, 4.0.9 | `mise run rbs:check`, then `mise run rbs:package` |
 
 Each matrix has `fail-fast: false`. Every check runs its commands on cache
 hits too. Package isolation still installs cached `.gem` artifacts offline and
@@ -188,3 +189,20 @@ The complete `testing:tools` CI override validates the action runtime and actual
 testing Gemfile/cache directly, without assuming the root bundle path. Root
 `verify` composition remains unchanged. These calls do not provide network or
 independent-peer interoperability evidence.
+
+## Optional RBS lanes
+
+The independent RBS matrix adds two checks, one per exact Ruby. Each runs real
+protoc/Buf service RBS generation, unchanged official message RBS, strict
+positive and separately asserted negative Steep consumers, and installed
+gem/executable discovery outside the checkout. Root runtime-generation fixtures
+remain under the existing Package job. The RBS tools use a separate frozen
+checksummed `typecheck/Gemfile.lock` and worktree-local `vendor/rbs/` bundle,
+Bundler state, caches and per-Ruby package outputs. No additional runtime
+dependency enters core, Rails or Async bundles.
+
+The job reuses the pinned Ruby/Bundler action and root development-bundle cache.
+Its RBS tool bundle is installed independently without an additional cache action;
+task-local protoc/Buf installation retains the existing locked versions. These
+checks remain independent of the aggregate local `verify` task. See the
+[RBS guide](rbs.md) for bridge selection and strict diagnostic requirements.
