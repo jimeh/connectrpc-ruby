@@ -15,7 +15,8 @@ mise exec -- bundle --version
 
 `mise.toml` pins CRuby 3.4.12 and 4.0.9, actionlint, and zizmor. Both Rubies
 compile from upstream source. Local setup installs both, with 3.4.12 first on
-PATH. CI uses official prebuilt runtimes instead; see [CI](ci.md). Run a
+PATH. CI uses official prebuilt runtimes instead; see
+[CI](https://github.com/jimeh/connectrpc-ruby/blob/main/docs/ci.md). Run a
 targeted local check on the other version with:
 
 ```sh
@@ -68,8 +69,9 @@ Mise owns setup ordering and verification composition.
 Every entry point installs missing prerequisites through the same task graph.
 During Ruby iteration, use focused tests and relevant static checks. Run
 `check` for fast static feedback and `verify` for package/tooling changes and
-final implementation handoff. [CI](ci.md) splits the same canonical component
-tasks into nine independent checks, with syntax, specs, package isolation,
+final implementation handoff.
+[CI](https://github.com/jimeh/connectrpc-ruby/blob/main/docs/ci.md) splits the same
+canonical component tasks into nine independent checks, with syntax, specs, package isolation,
 interop and official conformance on both Rubies. Hosted clean-environment and
 matrix results remain CI evidence; a local pass cannot establish them.
 

@@ -67,8 +67,8 @@ after complete installs/builds, with no partial primer job.
   Offline package checks require cached `.gem` files as well as installed gems.
 - Go caches the actual `go env GOMODCACHE` and `GOCACHE`. Job environment sets
   these to workspace `vendor/interop/mod` and `vendor/interop/build` before
-  setup-go, matching the task environment. Its key includes OS, Linux image,
-  architecture, exact Go and `interop/go.sum` hash. Both Ruby jobs may share it;
+  setup-go, matching the task environment. Its key includes OS, Linux image
+  family (`ImageOS`), architecture, exact Go and `interop/go.sum` hash. Both Ruby jobs may share it;
   Go's content-addressed build cache handles source changes. The post action
   saves after a successful job; module verification and readonly builds always
   run. Unused global Go caches are not archived.
@@ -77,12 +77,16 @@ after complete installs/builds, with no partial primer job.
   runner/protoc backends. Other jobs disable Mise installation and caching.
   `install: true` runs even after restores and saves only after all requested
   installs complete. The default key with prefix `connectrpc-ci-tools-v1`
-  includes platform/runner image, Mise version, `MISE_ENV`, normalized tool set,
-  and config/lock hashes, including `mise.ci.toml`. Its default 30-day period
+  includes platform/runner image family (`ImageOS`), Mise version, `MISE_ENV`,
+  normalized tool set and config/lock hashes, including `mise.ci.toml`. Its default 30-day period
   bounds cache reuse even without configuration changes. Distinct tool sets
   prevent an incomplete static subset winning the conformance cache key.
   Locked checksums govern fresh downloads; restored extracted tools are trusted
   cache contents, not freshly checksum-verified archives.
+
+`ImageOS` identifies the image family, such as `ubuntu24`. A new weekly
+`ImageVersion` within that family does not itself invalidate these Go or Mise
+cache keys.
 
 These behaviors are grounded in the pinned action sources:
 [ruby bundle install/key](https://github.com/ruby/setup-ruby/blob/7f797815d8adceb1c412e7abefdd1ab4abc47a5f/bundler.js),
