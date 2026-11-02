@@ -97,7 +97,7 @@ module AsyncHelpers
   end
 
   def with_ca(root = tls_material.fetch(:root))
-    Dir.mktmpdir("connectrpc-async-ca-", File.expand_path("../../../../vendor/async", __dir__)) do |directory|
+    Dir.mktmpdir("connectrpc-async-ca-") do |directory|
       file = File.join(directory, "ca.pem")
       File.write(file, root.first.to_pem)
       yield file

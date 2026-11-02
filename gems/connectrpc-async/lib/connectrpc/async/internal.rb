@@ -138,10 +138,34 @@ module ConnectRPC
         end
       end
 
+      # HTTP/1 has no stream object retaining admission through body output.
+      # Release only after wire writing and response-finished callbacks close
+      # the body, including empty responses and cancellation during callbacks.
+      class AdmissionBody < ::Protocol::HTTP::Body::Wrapper
+        def initialize(body, &completion)
+          super(body || ::Protocol::HTTP::Body::Buffered.wrap([]))
+          @completion = completion
+        end
+
+        def close(error = nil)
+          completion = @completion
+          return unless completion
+
+          @completion = nil
+          begin
+            super
+          ensure
+            completion.call
+          end
+        end
+      end
+
       def self.headers(message)
         result = {}
         message.headers.header.each { |key, value| (result[key.downcase] ||= []) << value }
-        length = message.body&.length || message.stream.declared_length
+        length = message.body&.length
+        length ||= message.stream.declared_length if message.respond_to?(:stream)
+        length = 0 if length.nil? && message.body.nil?
         result["content-length"] = [length.to_s] if length
         result
       end

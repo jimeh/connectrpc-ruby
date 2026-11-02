@@ -12,7 +12,10 @@ and `interop/` the pinned independent Go peer.
 `connectrpc.gemspec` owns core package metadata and files. The optional
 `gems/connectrpc-rails/` package owns native Rails controller execution and its
 Appraisal lanes. The optional `gems/connectrpc-async/` package owns the standalone HTTP/2 host,
-transport, independent bundle and `async:` tasks. Core setup/test remain independent. Use `RAILS_LANE=8.0` or
+transport, independent bundle and `async:` tasks. The optional `gems/connectrpc-falcon/` package composes the shared Async native
+application, TLS manager and server session with real Falcon workers and a local
+HTTP/1 resource. It owns its independent `falcon:` tasks and bundle. Core
+setup/test remain independent. Use `RAILS_LANE=8.0` or
 `8.1` with `mise run test:rails` / `verify:rails`; every Rails bundle process
 uses `BUNDLE_COOLDOWN=7` and the root `vendor/bundle` cache.
 Core specs live in `spec/`; `Rakefile` and `scripts/` implement tooling behind
@@ -60,3 +63,10 @@ backend dependencies to core or Rails bundles. Both Ruby lanes must run actual
 h2c/TLS/mTLS and independent Go checks. Cancellation tests must establish real
 wire progress; a stuck frame deliberately fails its connection and siblings.
 Backend package checks build their own core archive to avoid root/Rails races.
+
+Optional Falcon development uses `mise run falcon:setup`, then `falcon:test`,
+`falcon:check` and `falcon:verify`. Its separate lock, caches/package outputs and
+coverage live under `vendor/falcon` and `coverage/falcon`. Keep RPC outside
+Falcon encoding/cache middleware; only explicit Rack fallback receives it.
+Worker providers compile after prepare and before accepts. Keep production
+lifecycle hooks independent of test-only event/control plumbing.

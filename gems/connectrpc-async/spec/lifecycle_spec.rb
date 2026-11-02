@@ -56,7 +56,7 @@ RSpec.describe "HTTP/2 ownership and setup bounds" do
       # The regression's old cleanup path can leave a half-aborted lifetime.
       # Dispose that fixture explicitly so a failed assertion cannot hang RSpec.
       if host&.instance_variable_get(:@aborting)
-        host.instance_variable_get(:@lifetime).cancel
+        host_session(host).instance_variable_get(:@lifetime).cancel
       else
         host&.close(grace: 0)
       end
@@ -84,8 +84,8 @@ RSpec.describe "HTTP/2 ownership and setup bounds" do
         host = ConnectRPC::Async::Host.new(server: server, tls: mode == :tls ? host_tls : nil,
                                            max_connections: 1, handshake_timeout: 0.03).start
         raw = IO::Endpoint.tcp("127.0.0.1", host.port).connect
-        wait_until(task, "first socket accepted") { host.instance_variable_get(:@resources).size == 1 }
-        record = host.instance_variable_get(:@resources).first
+        wait_until(task, "first socket accepted") { host_session(host).instance_variable_get(:@resources).size == 1 }
+        record = host_session(host).instance_variable_get(:@resources).first
         excess = IO::Endpoint.tcp("127.0.0.1", host.port).connect
         expect(excess.read(1)).to be_nil
         expect(raw.read(1)).to be_nil
@@ -194,14 +194,14 @@ RSpec.describe "HTTP/2 ownership and setup bounds" do
       transport = ConnectRPC::Async::Transport.new(origin: origin)
       call = task.async { client(transport, origin).echo(AsyncHelpers::MESSAGE.new(name: "held"), timeout: nil) }
       entered.dequeue
-      record = host.instance_variable_get(:@resources).first
+      record = host_session(host).instance_variable_get(:@resources).first
       # Elapsed time is the behavior here: the idle network timer must expire
       # while this already-observed active handler is still blocked.
       task.with_timeout(0.04) { Async::Condition.new.wait }
     rescue Async::TimeoutError
       expect(record.raw).not_to be_closed
       first_close = task.async { host.close(grace: 1) }
-      wait_until(task, "closing host") { host.instance_variable_get(:@state) == :closing }
+      wait_until(task, "closing host") { host_session(host).instance_variable_get(:@state) == :closing }
       second_close = task.async { host.close(grace: 0) }
       release.enqueue(true)
       expect(call.wait.message.name).to eq("held")
@@ -227,7 +227,7 @@ RSpec.describe "HTTP/2 ownership and setup bounds" do
         Async::Condition.new.wait
       end
       host, transport = ready.dequeue
-      records = host.instance_variable_get(:@resources) + transport.instance_variable_get(:@resources)
+      records = host_session(host).instance_variable_get(:@resources) + transport.instance_variable_get(:@resources)
       owner.cancel
       owner.wait
       wait_until(task, "owner resources closed") do
@@ -254,7 +254,7 @@ RSpec.describe "HTTP/2 idle expiry" do
       transport = ConnectRPC::Async::Transport.new(origin: origin)
       typed = client(transport, origin)
       typed.echo(AsyncHelpers::MESSAGE.new(name: "warm"))
-      host_record = host.instance_variable_get(:@resources).first
+      host_record = host_session(host).instance_variable_get(:@resources).first
       client_record = transport.instance_variable_get(:@resources).first
       wait_until(task, "idle connection EOF") { host_record.raw.closed? && client_record.raw.closed? }
       expect(host_record.task).to be_finished

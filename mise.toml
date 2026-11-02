@@ -86,8 +86,8 @@ tools."aqua:protocolbuffers/protobuf/protoc" = "36.2"
 run = "bundle _4.0.23_ exec rake check:package"
 
 [tasks.verify]
-description = "Run core checks, specs, packages, Go/official conformance, selected Rails lane and HTTP/2 backend"
-depends = ["check", "test", "check:package", "test:interop", "test:conformance", "generation:check", "verify:rails", "async:verify"]
+description = "Run core checks, specs, packages, Go/official conformance, selected Rails lane, HTTP/2 and Falcon backends"
+depends = ["check", "test", "check:package", "test:interop", "test:conformance", "generation:check", "verify:rails", "async:verify", "falcon:verify"]
 
 [tasks."fixture:build"]
 description = "Rebuild the shared test descriptor from its explicit schema builder"
@@ -375,3 +375,50 @@ description = "Prepare the frozen fixture runtime bundle with local Bundler stat
 depends = ["setup:bundler"]
 env.BUNDLE_USER_HOME = "{{config_root}}/vendor/rbs/root-bundler"
 run = "bundle _4.0.23_ install"
+
+[tasks."falcon:setup"]
+description = "Install the independent frozen Falcon backend bundle"
+depends = ["falcon:tools"]
+run = "mise exec -- ruby gems/connectrpc-falcon/scripts/run.rb setup"
+
+[tasks."falcon:test"]
+description = "Run optional Falcon backend product specs"
+depends = ["falcon:setup"]
+run = "mise exec -- ruby gems/connectrpc-falcon/scripts/run.rb test"
+
+[tasks."falcon:check"]
+description = "Check optional Falcon backend source"
+depends = ["falcon:setup"]
+run = "mise exec -- ruby gems/connectrpc-falcon/scripts/run.rb check"
+
+[tasks."falcon:build"]
+description = "Build isolated core and Falcon backend archives"
+depends = ["falcon:setup"]
+run = "mise exec -- ruby gems/connectrpc-falcon/scripts/run.rb build"
+
+[tasks."falcon:package"]
+description = "Install and exercise normal Falcon gem dependencies offline"
+depends = ["falcon:build"]
+run = "mise exec -- ruby gems/connectrpc-falcon/scripts/run.rb package"
+
+[tasks."falcon:example"]
+description = "Run generated unary Falcon localhost example"
+depends = ["falcon:setup"]
+run = "mise exec -- ruby gems/connectrpc-falcon/scripts/run.rb example"
+
+[tasks."falcon:interop"]
+description = "Run independent connect-go Falcon interoperability"
+depends = ["falcon:setup", "setup:interop"]
+tools.go = "1.27.3"
+env = { GOTOOLCHAIN = "local", GOWORK = "off", GOFLAGS = "-mod=readonly", GOMODCACHE = "{{config_root}}/vendor/interop/mod", GOCACHE = "{{config_root}}/vendor/interop/build" }
+run = "ruby gems/connectrpc-falcon/scripts/run.rb interop"
+
+[tasks."falcon:verify"]
+description = "Verify Falcon specs, source, packages and Go interoperability"
+depends = ["falcon:test", "falcon:check", "falcon:package", "falcon:interop"]
+
+[tasks."falcon:tools"]
+description = "Prepare exact Ruby/Bundler for the independent backend bundle"
+dir = "{{config_root}}/gems/connectrpc-falcon"
+env = { BUNDLE_GEMFILE = "{{config_root}}/gems/connectrpc-falcon/Gemfile", BUNDLE_PATH = "{{config_root}}/vendor/falcon/bundle", BUNDLE_USER_HOME = "{{config_root}}/vendor/falcon/bundler", BUNDLE_COOLDOWN = "7" }
+run = ["mise install --locked ruby", "mise exec -- ruby ../../scripts/setup_bundler.rb"]

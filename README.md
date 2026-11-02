@@ -345,3 +345,14 @@ connect-go interoperability. Core require and core/Rails dependencies stay
 independent.
 
 See the optional [in-process testing package](gems/connectrpc-testing/README.md) for real encoded client/server round trips without sockets.
+
+## Optional Falcon hosting
+
+The [connectrpc-falcon package](gems/connectrpc-falcon/README.md) serves the native
+unary application in real Falcon process workers, with explicit Rack/Rails
+fallback, h2/HTTP1 TLS selection and worker-local versioned TLS providers.
+RPC compression and byte limits stay outside generic Falcon middleware.
+WebSockets, ActionCable, upgrades, CONNECT and hijack are rejected on this
+listener. `mise run falcon:example` exercises the normal service DSL;
+`falcon:verify` checks its independent bundle, protocols, workers, packages and
+pinned Go interoperability. Core, Rails and Async bundles remain independent.

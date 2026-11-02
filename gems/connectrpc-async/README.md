@@ -109,6 +109,49 @@ The listener and current/newer generations survive concurrent reloads/drains.
 Close supersedes drains. Renewal alone does not instantly revoke existing peers.
 There are no file watchers, ACME, secret services or authentication policy DSLs.
 
+## Native application and managed TLS
+
+`Application.new(server:, fallback: nil)` is a reusable Protocol::HTTP callable.
+It routes whole registered service prefixes to core, strips queries and returns
+bare 404 or calls the native fallback for unrelated paths. HTTP/1 requests do
+not need a stream object. Keep generic compression/cache middleware on fallback
+so core owns RPC encoded bytes and limits.
+
+Host accepts `tls_provider:`, `refresh_interval: 60`, `refresh_jitter: 0.1`,
+`refresh_timeout: 10` and `on_tls_error:`. `refresh_tls` coalesces immediate source
+checks; `tls_status` exposes safe state/generation and separate monotonic
+source-check/publication ages. Managed `reload_tls` conflicts with provider
+ownership. `TLSConfiguration` also exposes `start`, `refresh`, complete static
+`reload`, `close`, `generation` and `status`. Construction is reactor/thread
+bound; initial static/provider compilation happens on `start`, before accepts.
+
+Providers return exactly `version`, `certificate_chain`, `private_key` and
+`client_ca` symbol keys. A nonempty opaque String version identifies validated
+canonical content. Same version/content preserves generation; changed content
+under that version fails. A different previous version can deliberately roll
+back through a fresh generation. Missing/nil data never disables TLS. Background
+errors retain the last good snapshot and emit only safe immutable diagnostics.
+Concurrent callers join one owned attempt, and waiter cancellation does not
+cancel it. Timer intervals start after each completed attempt. Timeout and
+shutdown remain cooperative for arbitrary native/CPU application code.
+
+The earliest served identity-chain expiry is checked against actual wall time
+at accept and again at pending handshake start. There is no maximum staleness
+setting; established connections retain negotiated state until drain/close.
+The [Falcon guide](../connectrpc-falcon/README.md) explains complete provider
+semantics and safe diagnostics shared by both hosts.
+
+`ServerSession` is the small hosting SPI: start the worker session, synchronously
+`accept(raw)` before scheduling, then call the opaque accepted handle's `serve`.
+`schedule` attaches accepted work to the independent session lifetime. The handle
+also supports `close`, `wait_closed`, `timeout=` and `remote_address`, and exposes no SSLContext.
+The session forwards TLS lifecycle/identity operations, bounded `close` and
+raw-first `abort` for listener/setup failure.
+The optional `stop_accepting:` callback runs after affinity/grace validation,
+before refresh stops and connection drain begins. Its one HTTP/1 construction hook is for the optional Falcon-local resource;
+HTTP/2 resources do not pretend to implement HTTP/1. The standalone Host keeps
+its strict h2 listener and composes the shared session.
+
 ## Backend boundaries and verification
 
 Enable gzip with `encoding: :gzip` on the core client and server. Client

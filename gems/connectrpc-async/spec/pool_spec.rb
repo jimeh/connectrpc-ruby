@@ -16,7 +16,7 @@ RSpec.describe "HTTP/2 pool ownership" do
       calls = %w[first second].map { |name| task.async { typed.echo(AsyncHelpers::MESSAGE.new(name: name)) } }
       expect([entered.dequeue, entered.dequeue]).to match_array(%w[first second])
       expect(transport.instance_variable_get(:@resources).size).to eq(1)
-      expect(host.instance_variable_get(:@resources).size).to eq(1)
+      expect(host_session(host).instance_variable_get(:@resources).size).to eq(1)
       expect(transport.instance_variable_get(:@pool).resources.values.sum).to eq(2)
       2.times { release.enqueue(true) }
       expect(calls.map { |call| call.wait.message.name }).to eq(%w[first second])

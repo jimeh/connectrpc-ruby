@@ -2,7 +2,8 @@
 
 The workflow runs on pull requests and pushes to `main`, on Ubuntu 24.04.
 It has nine core, three optional Rails, four optional HTTP/2, two optional Rack,
-two optional in-process testing and two optional RBS checks, with no serial cache primer or aggregate job:
+two optional in-process testing, two optional RBS and four Falcon checks, with no
+serial cache primer or aggregate job:
 
 | Check | Ruby | Canonical commands |
 | --- | --- | --- |
@@ -18,6 +19,8 @@ two optional in-process testing and two optional RBS checks, with no serial cach
 | Rack specs/check/package | 3.4.12, 4.0.9 | `mise run rack:test`, `mise run rack:check`, `mise run rack:package` |
 | In-process testing | 3.4.12, 4.0.9 | `mise run testing:verify` |
 | RBS consumers/package | 3.4.12, 4.0.9 | `mise run rbs:check`, then `mise run rbs:package` |
+| Falcon specs/package | 3.4.12, 4.0.9 | `mise run falcon:test`, then `mise run falcon:package` |
+| Falcon Go interoperability | 3.4.12, 4.0.9 | `mise run falcon:interop` |
 
 Each matrix has `fail-fast: false`. Every check runs its commands on cache
 hits too. Package isolation still installs cached `.gem` artifacts offline and
@@ -175,7 +178,7 @@ frozen settings and seven-day cooldown. No Go or compiler tool is needed.
 working directory, then reuses the unchanged root runtime/PATH guard. Its CI
 replacement retains the whole local task context. Specs, lint and normal
 offline installed-package calls run on both Rubies, including source-owner
-assertions. Root `verify` keeps its composition; local handoff also runs
+assertions. Rack verification stays separate from root `verify`; local handoff also runs
 `mise run rack:verify` for the moved middleware coverage.
 
 
@@ -186,8 +189,8 @@ checksummed bundle and native cache under `vendor/testing/bundle`, with Bundler
 user state under `vendor/testing/bundler`. Both Ruby lanes run package syntax,
 lint, behavior specs, the generated example and isolated offline installation.
 The complete `testing:tools` CI override validates the action runtime and actual
-testing Gemfile/cache directly, without assuming the root bundle path. Root
-`verify` composition remains unchanged. These calls do not provide network or
+testing Gemfile/cache directly, without assuming the root bundle path. Testing verification stays separate from root
+`verify`. These calls do not provide network or
 independent-peer interoperability evidence.
 
 ## Optional RBS lanes
@@ -206,3 +209,18 @@ Its RBS tool bundle is installed independently without an additional cache actio
 task-local protoc/Buf installation retains the existing locked versions. These
 checks remain independent of the aggregate local `verify` task. See the
 [RBS guide](rbs.md) for bridge selection and strict diagnostic requirements.
+
+## Optional Falcon lanes
+
+Two Ruby matrix jobs add four Falcon checks alongside the existing 22. They
+select `gems/connectrpc-falcon/Gemfile`, `vendor/falcon/bundle` and
+`vendor/falcon/bundler` before setup-ruby. The pinned Ruby/Bundler actions,
+frozen installation and seven-day cooldown apply independently of core, Rack,
+Rails and Async bundles. `falcon:tools` retains its complete task environment
+and directory in CI while validating the action runtime and actual bundle.
+
+Specs/package checks exercise native requests, TLS/provider lifecycle, real
+process workers, Rack/Rails fallback and isolated installed service hosting.
+Separate Go jobs use the existing pinned toolchain/module caches and run the
+independent peer against actual Falcon workers. Every lane checks workspace
+cleanliness. Local verification does not establish hosted exact-head success.

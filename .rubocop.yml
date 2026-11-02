@@ -33,7 +33,9 @@ Metrics/BlockLength:
     - gems/connectrpc-async/spec/**/*.rb
     - gems/connectrpc-testing/spec/**/*.rb
     - gems/connectrpc-testing/scripts/**/*.rb
+    - gems/connectrpc-falcon/spec/**/*.rb
     - gems/connectrpc-async/scripts/**/*.rb
+    - gems/connectrpc-falcon/scripts/**/*.rb
     - scripts/check_package.rb
     - scripts/build_generation.rb
     - scripts/generated_integration.rb
@@ -48,6 +50,7 @@ Metrics/MethodLength:
   Exclude:
     - typecheck/harness.rb
     - gems/connectrpc-async/lib/connectrpc/async/*.rb
+    - gems/connectrpc-falcon/lib/connectrpc/falcon/*.rb
     - lib/connectrpc/generator/schema.rb
     - lib/connectrpc/generator/renderer.rb
     - lib/connectrpc/generator/rbs_renderer.rb
@@ -59,7 +62,9 @@ Metrics/MethodLength:
     - gems/connectrpc-async/spec/**/*.rb
     - gems/connectrpc-testing/spec/**/*.rb
     - gems/connectrpc-testing/scripts/**/*.rb
+    - gems/connectrpc-falcon/spec/**/*.rb
     - gems/connectrpc-async/scripts/**/*.rb
+    - gems/connectrpc-falcon/scripts/**/*.rb
     - scripts/interop.rb
     - scripts/conformance.rb
     - conformance/**/*.rb
@@ -69,6 +74,7 @@ Metrics/AbcSize:
   Exclude:
     - typecheck/harness.rb
     - gems/connectrpc-async/lib/connectrpc/async/*.rb
+    - gems/connectrpc-falcon/lib/connectrpc/falcon/*.rb
     - lib/connectrpc/generator/schema.rb
     - lib/connectrpc/generator/renderer.rb
     - lib/connectrpc/generator/rbs_renderer.rb
@@ -79,7 +85,9 @@ Metrics/AbcSize:
     - gems/connectrpc-async/spec/**/*.rb
     - gems/connectrpc-testing/spec/**/*.rb
     - gems/connectrpc-testing/scripts/**/*.rb
+    - gems/connectrpc-falcon/spec/**/*.rb
     - gems/connectrpc-async/scripts/**/*.rb
+    - gems/connectrpc-falcon/scripts/**/*.rb
     - scripts/interop.rb
     - scripts/conformance.rb
     - conformance/**/*.rb
@@ -92,6 +100,7 @@ Metrics/ParameterLists:
 Metrics/ClassLength:
   Exclude:
     - gems/connectrpc-async/lib/connectrpc/async/*.rb
+    - gems/connectrpc-falcon/lib/connectrpc/falcon/*.rb
     - conformance/ledger.rb
     - lib/connectrpc/generator/schema.rb
 
@@ -99,9 +108,11 @@ Metrics/CyclomaticComplexity:
   Exclude:
     - typecheck/harness.rb
     - gems/connectrpc-async/lib/connectrpc/async/*.rb
+    - gems/connectrpc-falcon/lib/connectrpc/falcon/*.rb
     - lib/connectrpc/generator/schema.rb
     - spec/support/socket_peer.rb
     - gems/connectrpc-async/spec/support/helpers.rb
+    - gems/connectrpc-falcon/spec/support/helpers.rb
     - conformance/ledger.rb
     - conformance/client.rb
     - conformance/server.rb
@@ -109,9 +120,11 @@ Metrics/CyclomaticComplexity:
 Metrics/PerceivedComplexity:
   Exclude:
     - gems/connectrpc-async/lib/connectrpc/async/*.rb
+    - gems/connectrpc-falcon/lib/connectrpc/falcon/*.rb
     - lib/connectrpc/generator/schema.rb
     - spec/support/socket_peer.rb
     - gems/connectrpc-async/spec/support/helpers.rb
+    - gems/connectrpc-falcon/spec/support/helpers.rb
     - conformance/ledger.rb
     - conformance/client.rb
     - conformance/server.rb
@@ -136,11 +149,14 @@ Style/ArgumentsForwarding:
 Style/MixinUsage:
   Exclude:
     - gems/connectrpc-async/scripts/integration.rb
+    - gems/connectrpc-falcon/scripts/integration.rb
     - gems/connectrpc-async/scripts/interop.rb
+    - gems/connectrpc-falcon/scripts/interop.rb
 
 Naming/PredicateMethod:
   AllowedMethods:
     - drain_resources
+    - rewind
 
 # Consumer fixtures exercise multiple independently signed callable objects.
 Style/OneClassPerFile:
