@@ -151,3 +151,11 @@ mise run falcon:verify
 `falcon:interop` are separate discoverable leaves. Both Ruby lanes exercise real
 localhost protocols and workers. The Go peer uses the repository's independently
 pinned Connect/Go graph. This is unary subset evidence, not full conformance.
+
+## RPC observation
+
+Configure `instrumentation:` on the core Client/Server to enable the fixed
+neutral per-call lifecycle or the optional [OpenTelemetry adapter](../connectrpc-otel/README.md).
+Native hosts create explicit handles before request admission, activate the
+actual handler tasks, and finish after full-write/reset/cleanup evidence.
+Connection-level setup/admission before an RPC exists is outside this lifecycle.

@@ -9,3 +9,10 @@ end
 class BadHandler
   def call: (RbsFixture::Messages::Envelope::Request, ConnectRPC::Context) -> RbsFixture::Messages::Envelope::Request
 end
+
+class LifecycleRecorder
+  def initialize: () -> void
+  attr_reader completions: Array[ConnectRPC::Instrumentation::Completion]
+  def start: (ConnectRPC::Instrumentation::Call) -> LifecycleRecorder
+  def finished: (ConnectRPC::Instrumentation::Completion) -> Array[ConnectRPC::Instrumentation::Completion]
+end

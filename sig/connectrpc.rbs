@@ -40,18 +40,67 @@ module ConnectRPC
     def call: (Req, Context) -> Resp
   end
 
+  interface _Subscriber
+    # Observers may implement any of attach, detach, processing_finished, finished.
+    # Ruby's optional structural methods are deliberately not required here.
+    def start: (Instrumentation::Call) -> untyped
+  end
+
+  class Instrumentation
+    type delivery = :unobserved | :body_closed | :response_finished | :completed | :aborted
+    type decision = :processed | :admission_rejected | :host_rejected
+    def initialize: (subscribers: Array[_Subscriber], ?on_error: (^(StandardError) -> void)?) -> void
+
+    class Call
+      attr_reader role: :client | :server
+      attr_reader protocol: :connect
+      attr_reader method: Method[untyped, untyped]?
+      attr_reader server_address: String?
+      attr_reader server_port: Integer?
+      attr_reader carrier: Hash[String, String | Array[String]]
+    end
+
+    class Outcome
+      attr_reader code: String?
+      attr_reader http_status: Integer?
+      attr_reader error: Exception?
+      attr_reader normalized_error: Exception?
+      attr_reader duration: Float
+      attr_reader request_bytes: Integer?
+      attr_reader response_bytes: Integer?
+      attr_reader request_metadata: headers
+      attr_reader response_metadata: headers
+    end
+
+    class Completion
+      attr_reader outcome: Outcome?
+      attr_reader processing_state: :not_started | :running | :finished
+      attr_reader decision: decision
+      attr_reader delivery: delivery
+      attr_reader error: Exception?
+      attr_reader http_status: Integer?
+      attr_reader duration: Float
+    end
+
+    class Handle
+      def activate: [T] () { () -> T } -> T
+      def finish: (delivery: delivery, ?error: Exception?, ?decision: decision, ?http_status: Integer?) -> nil
+    end
+  end
+
   class Client
-    def initialize: (base_url: String, binding: _Binding, ?transport: _Transport?, ?codec: codec, ?request_limit: Integer, ?response_limit: Integer, ?request_wire_limit: Integer, ?response_wire_limit: Integer, ?accept_encoding: Array[:identity | :gzip]?, ?protocol: :connect, ?mode: :unary, ?encoding: :identity | :gzip) -> void
+    def initialize: (base_url: String, binding: _Binding, ?transport: _Transport?, ?codec: codec, ?request_limit: Integer, ?response_limit: Integer, ?request_wire_limit: Integer, ?response_wire_limit: Integer, ?accept_encoding: Array[:identity | :gzip]?, ?protocol: :connect, ?mode: :unary, ?encoding: :identity | :gzip, ?instrumentation: Instrumentation?) -> void
     def call: [Req, Resp] (Method[Req, Resp], Req request, ?metadata: metadata_input, ?timeout: Numeric?) -> Response[Resp]
   end
 
   class Server
     # Generated .handlers checks each concrete callable before this heterogeneous
     # registration map erases its individual request/response associations.
-    def initialize: (services: Array[Service], binding: _Binding, ?handlers: Hash[String, untyped], ?invoker: (^(Method[untyped, untyped], untyped, Context) -> untyped)?, ?request_limit: Integer, ?response_limit: Integer, ?request_wire_limit: Integer, ?response_wire_limit: Integer, ?protocol: :connect, ?mode: :unary, ?encoding: :identity | :gzip) -> void
+    def initialize: (services: Array[Service], binding: _Binding, ?handlers: Hash[String, untyped], ?invoker: (^(Method[untyped, untyped], untyped, Context) -> untyped)?, ?request_limit: Integer, ?response_limit: Integer, ?request_wire_limit: Integer, ?response_wire_limit: Integer, ?protocol: :connect, ?mode: :unary, ?encoding: :identity | :gzip, ?instrumentation: Instrumentation?) -> void
     attr_reader services: Array[Service]
     def handles?: (String path) -> bool
-    def call: (path: String, http_method: String, headers: headers, input: _Input?) -> TransportResponse
+    def start_call: (path: String, headers: headers) -> Instrumentation::Handle?
+    def call: (path: String, http_method: String, headers: headers, input: _Input?, ?lifecycle: Instrumentation::Handle?) -> TransportResponse
   end
 
   # These mutable Struct signatures cover fully initialized keyword construction
@@ -64,13 +113,14 @@ module ConnectRPC
   end
 
   class TransportRequest
-    def initialize: (url: URI::Generic, http_method: String, headers: headers, body: String, response_limit: Integer, deadline: Deadline?) -> void
+    def initialize: (url: URI::Generic, http_method: String, headers: headers, body: String, response_limit: Integer, deadline: Deadline?, ?lifecycle: Instrumentation::Handle?) -> void
     attr_accessor url: URI::Generic
     attr_accessor http_method: String
     attr_accessor headers: headers
     attr_accessor body: String
     attr_accessor response_limit: Integer
     attr_accessor deadline: Deadline?
+    attr_accessor lifecycle: Instrumentation::Handle?
   end
 
   class TransportResponse
@@ -107,11 +157,12 @@ module ConnectRPC
   end
 
   class Context
-    def initialize: (?request_metadata: metadata_input, ?deadline: Deadline?) -> void
+    def initialize: (?request_metadata: metadata_input, ?deadline: Deadline?, ?lifecycle: Instrumentation::Handle?) -> void
     attr_reader request_metadata: Metadata
     attr_reader response_metadata: Metadata
     attr_reader response_trailers: Metadata
     attr_reader deadline: Deadline?
+    def record_failure: (Exception error) -> nil
     def cancelled?: () -> bool
     def check!: () -> nil
   end

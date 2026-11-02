@@ -1,0 +1,158 @@
+# frozen_string_literal: true
+
+module ConnectRPC
+  # Synchronous, fixed per-RPC callbacks. Subscribers never own the application yield.
+  class Instrumentation
+    # The fixed call contract names its declared RPC method explicitly.
+    Call = Data.define(:role, :protocol, :method, :server_address, :server_port, :carrier) # rubocop:disable Lint/DataDefineOverride
+    Outcome = Data.define(:code, :http_status, :error, :normalized_error, :duration,
+                          :request_bytes, :response_bytes, :request_metadata, :response_metadata)
+    Completion = Data.define(:outcome, :processing_state, :decision, :delivery, :error, :http_status, :duration)
+
+    def initialize(subscribers:, on_error: nil)
+      @subscribers = subscribers.dup.freeze
+      @on_error = on_error
+    end
+
+    # Internal constructor shared by client processing and the server hosting SPI.
+    def start(owner:, role:, method:, carrier:, server_address: nil, server_port: nil, path: nil)
+      call = Call.new(role: role, protocol: :connect, method: method,
+                      server_address: server_address, server_port: server_port, carrier: carrier)
+      observers = @subscribers.filter_map { |subscriber| safely { subscriber.start(call) } }
+      Handle.new(self, owner, path, observers)
+    end
+
+    def safely
+      yield
+    rescue StandardError => e
+      begin
+        @on_error&.call(e)
+      rescue StandardError
+        nil
+      end
+      nil
+    end
+
+    # Defensive read-only snapshot. Extraction must not validate/reorder protocol work.
+    def self.carrier(headers) # rubocop:disable Metrics/CyclomaticComplexity
+      values = headers.each_with_object({}) do |(key, entries), result|
+        next unless key.is_a?(String)
+
+        entries = Array(entries)
+        next unless entries.all?(String)
+
+        (result[key.downcase] ||= []).concat(entries.map { |entry| entry.dup.freeze })
+      end
+      values.transform_values!(&:freeze).freeze
+    rescue StandardError
+      {}.freeze
+    end
+
+    class Handle
+      attr_reader :outcome
+      attr_accessor :request_bytes, :request_metadata, :code, :normalized_error
+
+      def initialize(bus, owner, path, observers) # rubocop:disable Metrics/MethodLength
+        @bus = bus
+        @owner = owner
+        @path = path
+        # Resolve the optional callback surface once per observer.
+        @observers = observers.map do |observer|
+          %i[attach detach processing_finished finished].to_h do |name|
+            [name, @bus.safely { observer.public_method(name) if observer.respond_to?(name) }]
+          end
+        end
+        @started_at = now
+        @processing_state = :not_started
+        @request_metadata = {}.freeze
+      end
+
+      # Keep the application yield and reverse unwind in one exception boundary.
+      def activate # rubocop:disable Metrics/MethodLength
+        return yield if @terminal
+
+        tokens = []
+        begin
+          @observers.each do |callbacks|
+            next unless callbacks[:attach]
+
+            @bus.safely do
+              token = callbacks[:attach].call
+              tokens << [callbacks[:detach], token]
+            end
+          end
+          yield
+        ensure
+          tokens.reverse_each { |detach, token| @bus.safely { detach&.call(token) } }
+        end
+      end
+
+      # Hosts may finish before processing unwinds. The first delivery fact wins.
+      def finish(delivery:, error: nil, decision: :processed, http_status: nil)
+        return if @terminal || @pending
+
+        @pending = { delivery: delivery, error: error, decision: decision, http_status: http_status }
+        complete unless @processing_state == :running || @notifying_processing
+        nil
+      end
+
+      def host_rejected!
+        @host_rejected = true
+      end
+
+      def host_rejected? = !!@host_rejected
+
+      def record_failure(error)
+        @error ||= error
+        nil
+      end
+
+      # Internal, bound single-use processing entry. Hosts only activate and finish.
+      def begin_processing(owner, path = nil)
+        unless @owner.equal?(owner) && @path == path && @processing_state == :not_started && !@pending && !@terminal
+          raise ArgumentError, "Lifecycle belongs to another call or has already been used"
+        end
+
+        @processing_state = :running
+        @processing_at = now
+      end
+
+      # Commit the snapshot/state before callbacks can request terminal completion.
+      # rubocop:disable Metrics/MethodLength
+      def processing_finished(code:, http_status: nil, normalized_error: nil, error: nil,
+                              response_bytes: nil, response_metadata: {})
+        record_failure(error) if error
+        @outcome = Outcome.new(code: code, http_status: http_status, error: @error,
+                               normalized_error: normalized_error, duration: now - @processing_at,
+                               request_bytes: @request_bytes, response_bytes: response_bytes,
+                               request_metadata: @request_metadata, response_metadata: response_metadata)
+        @processing_state = :finished
+        @notifying_processing = true
+        begin
+          notify(:processing_finished, @outcome)
+        ensure
+          @notifying_processing = false
+          complete if @pending
+        end
+        nil
+      end
+
+      # rubocop:enable Metrics/MethodLength
+
+      private
+
+      def now = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+
+      def notify(name, value)
+        @observers.each { |callbacks| @bus.safely { callbacks[name]&.call(value) } }
+      end
+
+      def complete
+        @terminal = true
+        completion = Completion.new(outcome: @outcome, processing_state: @processing_state,
+                                    duration: now - @started_at, **@pending)
+        notify(:finished, completion)
+      end
+    end
+  end
+end

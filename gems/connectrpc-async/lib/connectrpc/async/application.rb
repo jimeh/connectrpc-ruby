@@ -12,14 +12,19 @@ module ConnectRPC
         @fallback = fallback
       end
 
-      def call(request)
+      def start_call(request)
+        path = request.path&.split("?", 2)&.first
+        @server.start_call(path: path, headers: Internal.headers(request)) if path && @server.handles?(path)
+      end
+
+      def call(request, lifecycle: nil)
         path = request.path.split("?", 2).first
         unless @server.handles?(path)
           return @fallback ? @fallback.call(request) : ::Protocol::HTTP::Response[404, {}, nil]
         end
 
         response = @server.call(path: path, http_method: request.method, headers: Internal.headers(request),
-                                input: Internal::Input.new(request.body))
+                                input: Internal::Input.new(request.body), lifecycle: lifecycle)
         body = response.body.empty? ? nil : [response.body]
         ::Protocol::HTTP::Response[response.status, Internal.fields(response.headers), body]
       end

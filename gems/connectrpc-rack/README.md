@@ -67,3 +67,11 @@ proto/JSON identity/gzip calls, safe errors/details and metadata run under
 Rack::Lint over ephemeral localhost NetHTTP, using installed sources only.
 CI runs Rack specs/package checks on Ruby 3.4.12 and 4.0.9. Final local handoff
 requires both `verify` and `rack:verify`; root verification composition is unchanged.
+
+## RPC observation
+
+Configure `instrumentation:` on the core Client/Server to enable the fixed
+neutral per-call lifecycle or the optional [OpenTelemetry adapter](../connectrpc-otel/README.md).
+A supplied `rack.response_finished` extension takes precedence over body close.
+Without it the observation is only `body_closed`, with no delivery promise.
+Consumers must close bodies or invoke promised callbacks.

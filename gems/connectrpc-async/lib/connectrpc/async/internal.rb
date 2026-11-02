@@ -6,6 +6,22 @@ module ConnectRPC
       CLEANUP_SECONDS = 0.1
       MAX_WAIT = 86_400
 
+      # Retained by the host through response output, independent of handler tasks.
+      class Exchange
+        attr_accessor :decision, :http_status
+
+        def initialize(lifecycle)
+          @lifecycle = lifecycle
+          @decision = :processed
+        end
+
+        def finish(completed, error = nil)
+          @lifecycle.finish(delivery: completed ? :completed : :aborted, error: error,
+                            decision: @lifecycle.host_rejected? ? :host_rejected : @decision,
+                            http_status: @http_status)
+        end
+      end
+
       class WaitTimeout < ::Async::TimeoutError; end
       private_constant :WaitTimeout
 

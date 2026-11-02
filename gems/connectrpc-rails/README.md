@@ -210,3 +210,12 @@ after native execution; errors remain identity. A compression/size failure after
 execution does not rerun callbacks, and native process-action instrumentation can
 record 200 before core replaces the response with its final error. Wire limits
 default to the corresponding message limits; gzip framing overhead must fit too.
+
+## RPC observation
+
+Configure `instrumentation:` on the core Client/Server to enable the fixed
+neutral per-call lifecycle or the optional [OpenTelemetry adapter](../connectrpc-otel/README.md).
+Native controllers override private `connect_instrumentation` (default nil),
+separately from `connect_limits`. Escaping original failures are captured before
+reporting/normalization; successfully handled `rescue_from` exceptions are not
+automatically failures. Configuration before Server construction is outside it.

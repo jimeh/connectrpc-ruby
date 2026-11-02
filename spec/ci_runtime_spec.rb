@@ -76,11 +76,11 @@ RSpec.describe "CI check mapping" do
   let(:workflow) { YAML.load_file(File.expand_path("../.github/workflows/ci.yml", __dir__)) }
   let(:jobs) { workflow.fetch("jobs") }
 
-  it "preserves nine core, three Rails, four Async, two Rack, two testing, two RBS and four Falcon checks" do
+  it "preserves all 26 existing checks and adds two independent OTel leaves" do
     core = %w[static specs package interop conformance]
     backend = %w[async_specs async_interop]
     falcon = %w[falcon_specs falcon_interop]
-    expect(jobs.keys).to match_array([*core, "rails", *backend, "rack", "testing", "rbs", *falcon])
+    expect(jobs.keys).to match_array([*core, "rails", *backend, "rack", "testing", "rbs", *falcon, "otel"])
     count = lambda do |names|
       jobs.slice(*names).values.sum do |job|
         job.dig("strategy", "matrix", "ruby")&.size || job.dig("strategy", "matrix", "include")&.size || 1
@@ -93,7 +93,9 @@ RSpec.describe "CI check mapping" do
     expect(count.call(["rack"])).to eq(2)
     expect(count.call(["testing"])).to eq(2)
     expect(count.call(["rbs"])).to eq(2)
-    expect(count.call(jobs.keys)).to eq(26)
+    expect(count.call(jobs.keys - ["otel"])).to eq(26)
+    expect(count.call(["otel"])).to eq(2)
+    expect(count.call(jobs.keys)).to eq(28)
     jobs.each_value { |job| expect(job).not_to have_key("needs") }
     jobs.except("static", "rails").each_value do |job|
       expect(job.dig("strategy", "fail-fast")).to be(false)
@@ -105,6 +107,7 @@ RSpec.describe "CI check mapping" do
     expect(commands.fetch("package").first(2)).to eq(["mise run generation:check", "mise run check:package"])
     expect(commands.fetch("interop").first(2)).to eq(["mise run fixture:check", "mise run test:interop"])
     expect(commands.fetch("conformance")).to include("mise run test:conformance")
+    expect(commands.fetch("otel").first).to eq("mise run otel:verify")
     expect(commands.fetch("rbs").first(2)).to eq(["mise run rbs:check", "mise run rbs:package"])
   end
 
@@ -346,5 +349,20 @@ RSpec.describe "Optional Rack CI boundary" do
       expect(status.success?).to be(false)
       expect(error).to include("unexpected working directory")
     end
+  end
+end
+
+RSpec.describe "Optional OpenTelemetry CI boundary" do
+  it "keeps the independent context and CI override aligned" do
+    root = File.expand_path("..", __dir__)
+    local, ci = [nil, "ci"].map do |mode|
+      output, error, status = Open3.capture3({ "MISE_ENV" => mode }, "mise", "tasks", "info", "otel:tools", "--json")
+      expect(status.success?).to be(true), error
+      JSON.parse(output)
+    end
+    %w[tools env dir depends depends_post].each { |key| expect(ci.fetch(key)).to eq(local.fetch(key)) }
+    expect(ci.fetch("run")).to eq(["ruby scripts/ci_runtime.rb"])
+    expect(local.fetch("run")).to eq(["mise exec -- ruby scripts/tools.rb"])
+    expect(File.read(File.join(root, "gems/connectrpc-otel/scripts/ci_runtime.rb"))).to include("scripts/ci_runtime.rb")
   end
 end

@@ -70,3 +70,10 @@ coverage live under `vendor/falcon` and `coverage/falcon`. Keep RPC outside
 Falcon encoding/cache middleware; only explicit Rack fallback receives it.
 Worker providers compile after prepare and before accepts. Keep production
 lifecycle hooks independent of test-only event/control plumbing.
+
+Optional tracing lives in `gems/connectrpc-otel/`; read its README before changing
+span conventions, propagation or host completion. Core owns the fixed neutral
+lifecycle and has no OTel dependency. The separate `otel:` bundle owns real
+SDK-backed cross-package specs and packages, using `vendor/otel` and
+`coverage/otel`. Preserve independent admission, processing and delivery facts;
+never infer HTTP/2 completion from `send_response` return or Rack body close.

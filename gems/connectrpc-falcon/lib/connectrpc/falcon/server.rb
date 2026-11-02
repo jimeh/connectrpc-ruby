@@ -26,7 +26,8 @@ module ConnectRPC
         @request_total = utilization_registry.metric(:requests_total)
         @request_active = utilization_registry.metric(:requests_active)
         @session = ::ConnectRPC::Async::ServerSession.new(
-          application: method(:call), tls: tls, tls_provider: tls_provider,
+          application: method(:call), lifecycle_factory: application.method(:start_call),
+          tls: tls, tls_provider: tls_provider,
           max_connections: max_connections, max_requests: max_requests,
           handshake_timeout: handshake_timeout, idle_timeout: idle_timeout,
           refresh_interval: refresh_interval, refresh_jitter: refresh_jitter,
@@ -63,10 +64,10 @@ module ConnectRPC
 
       def abort = @session.abort
 
-      def call(request)
+      def call(request, lifecycle: nil)
         @request_total.increment
         @request_active.increment
-        response = @listener_application.call(request)
+        response = @listener_application.call(request, lifecycle: lifecycle)
         if response&.body
           # Empty bodies can still own completion callbacks. Preserve their
           # wire length while retaining the metric until close finishes.

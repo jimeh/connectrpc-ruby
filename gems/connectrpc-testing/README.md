@@ -96,3 +96,10 @@ codecs and encodings. Root verification remains independent.
 
 Licensed under the [MIT License](LICENSE). The invalid `allowed_push_host` guard
 remains in place; no task publishes or releases this package.
+
+## RPC observation
+
+Configure `instrumentation:` on the core Client/Server to enable the fixed
+neutral per-call lifecycle or the optional [OpenTelemetry adapter](../connectrpc-otel/README.md).
+The server always extracts serialized propagation headers, even while a client
+context is ambient. Direct processing ends with delivery `unobserved`.

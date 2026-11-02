@@ -422,3 +422,45 @@ description = "Prepare exact Ruby/Bundler for the independent backend bundle"
 dir = "{{config_root}}/gems/connectrpc-falcon"
 env = { BUNDLE_GEMFILE = "{{config_root}}/gems/connectrpc-falcon/Gemfile", BUNDLE_PATH = "{{config_root}}/vendor/falcon/bundle", BUNDLE_USER_HOME = "{{config_root}}/vendor/falcon/bundler", BUNDLE_COOLDOWN = "7" }
 run = ["mise install --locked ruby", "mise exec -- ruby ../../scripts/setup_bundler.rb"]
+
+# Optional API-only tracing adapter; SDK-backed cross-package development bundle.
+
+[tasks."otel:tools"]
+description = "Require preinstalled pinned Ruby and Bundler for OpenTelemetry"
+dir = "{{config_root}}/gems/connectrpc-otel"
+env = { BUNDLE_GEMFILE = "{{config_root}}/gems/connectrpc-otel/Gemfile", BUNDLE_PATH = "{{config_root}}/vendor/otel/bundle", BUNDLE_USER_HOME = "{{config_root}}/vendor/otel/bundler", BUNDLE_COOLDOWN = "7" }
+run = "mise exec -- ruby scripts/tools.rb"
+
+[tasks."otel:setup"]
+description = "Install the independent frozen OpenTelemetry development bundle"
+depends = ["otel:tools"]
+run = "mise exec -- ruby gems/connectrpc-otel/scripts/run.rb setup"
+
+[tasks."otel:test"]
+description = "Run SDK-backed RPC and host tracing specs"
+depends = ["otel:setup"]
+run = "mise exec -- ruby gems/connectrpc-otel/scripts/run.rb test"
+
+[tasks."otel:check"]
+description = "Parse and lint OpenTelemetry package source"
+depends = ["otel:setup"]
+run = "mise exec -- ruby gems/connectrpc-otel/scripts/run.rb check"
+
+[tasks."otel:build"]
+description = "Build isolated core and OpenTelemetry archives"
+depends = ["otel:setup"]
+run = "mise exec -- ruby gems/connectrpc-otel/scripts/run.rb build"
+
+[tasks."otel:package"]
+description = "Install and exercise normal API-only tracing dependencies offline"
+depends = ["otel:build"]
+run = "mise exec -- ruby gems/connectrpc-otel/scripts/run.rb package"
+
+[tasks."otel:example"]
+description = "Run generated in-process RPCs with real in-memory traces"
+depends = ["otel:setup"]
+run = "mise exec -- ruby gems/connectrpc-otel/scripts/run.rb example"
+
+[tasks."otel:verify"]
+description = "Verify API-only packages and SDK-backed cross-package tracing"
+depends = ["otel:test", "otel:check", "otel:package", "otel:example"]

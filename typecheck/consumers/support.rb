@@ -25,3 +25,14 @@ class BadHandler
     request
   end
 end
+
+class LifecycleRecorder
+  attr_reader :completions
+
+  def initialize
+    @completions = []
+  end
+
+  def start(_call) = self
+  def finished(completion) = @completions << completion
+end

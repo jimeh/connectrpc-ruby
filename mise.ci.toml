@@ -40,3 +40,9 @@ description = "Validate exact action Ruby/Bundler and the independent backend bu
 dir = "{{config_root}}/gems/connectrpc-falcon"
 env = { BUNDLE_GEMFILE = "{{config_root}}/gems/connectrpc-falcon/Gemfile", BUNDLE_PATH = "{{config_root}}/vendor/falcon/bundle", BUNDLE_USER_HOME = "{{config_root}}/vendor/falcon/bundler", BUNDLE_COOLDOWN = "7" }
 run = "ruby scripts/ci_runtime.rb"
+
+[tasks."otel:tools"]
+description = "Validate action Ruby/Bundler and independent OpenTelemetry bundle settings"
+dir = "{{config_root}}/gems/connectrpc-otel"
+env = { BUNDLE_GEMFILE = "{{config_root}}/gems/connectrpc-otel/Gemfile", BUNDLE_PATH = "{{config_root}}/vendor/otel/bundle", BUNDLE_USER_HOME = "{{config_root}}/vendor/otel/bundler", BUNDLE_COOLDOWN = "7" }
+run = "ruby scripts/ci_runtime.rb"

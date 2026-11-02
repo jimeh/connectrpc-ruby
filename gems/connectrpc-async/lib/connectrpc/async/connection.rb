@@ -1,5 +1,7 @@
 # frozen_string_literal: true
 
+require "English"
+
 module ConnectRPC
   module Async
     module Internal
@@ -106,6 +108,31 @@ module ConnectRPC
 
       class RequestStream < ::Async::HTTP::Protocol::HTTP2::Request::Stream
         include Stream
+
+        attr_accessor :exchange
+        attr_reader :response_task
+
+        def response_written? = @response_written && !@response_reset
+
+        def send_body(...)
+          @response_task = super
+        end
+
+        def receive_reset_stream(...)
+          @response_reset = true
+          super
+        end
+
+        def send_headers(headers, flags = 0)
+          super
+          @response_written = true if flags.anybits?(::Protocol::HTTP2::END_STREAM) && !@response_reset
+        end
+
+        def finish_output(error = nil)
+          writable = !closed? && !@response_reset && error.nil?
+          super
+          @response_written = true if writable && !@response_reset
+        end
       end
 
       class ResponseStream < ::Async::HTTP::Protocol::HTTP2::Response::Stream
@@ -139,17 +166,26 @@ module ConnectRPC
               response = nil
               begin
                 response = yield(incoming)
+                incoming.stream.exchange.http_status = response&.status if incoming.stream.exchange
                 unless incoming.stream.closed?
                   synchronize do
                     ::Async::Task.current.defer_cancel { incoming.send_response(response) }
                   end
                   response = nil
+                  # send_body schedules output; wait outside the connection guard.
+                  incoming.stream.response_task&.wait
+                  written = incoming.stream.response_written?
                 end
               rescue StandardError
                 reset(incoming.stream)
               ensure
-                close_request(response, incoming)
-                @resource.changed
+                begin
+                  cleaned = close_request(response, incoming)
+                ensure
+                  incoming.stream.exchange&.finish(written && cleaned && incoming.stream.response_written? &&
+                    !@resource.finished?, $ERROR_INFO)
+                  @resource.changed
+                end
               end
             end
             @resource.track(worker)
@@ -161,6 +197,7 @@ module ConnectRPC
         def close_request(response, request)
           response&.close
           request.body&.close
+          true
         rescue ::Protocol::HTTP2::ProtocolError, IOError, SystemCallError
           nil
         end

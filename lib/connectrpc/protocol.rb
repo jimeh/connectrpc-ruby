@@ -3,7 +3,8 @@
 require "json"
 
 module ConnectRPC
-  TransportRequest = Struct.new(:url, :http_method, :headers, :body, :response_limit, :deadline, keyword_init: true)
+  TransportRequest = Struct.new(:url, :http_method, :headers, :body, :response_limit, :deadline, :lifecycle,
+                                keyword_init: true)
   TransportResponse = Struct.new(:status, :headers, :body, keyword_init: true)
   Response = Struct.new(:message, :metadata, :trailers, keyword_init: true)
 
@@ -107,13 +108,18 @@ module ConnectRPC
       entries.first.to_i
     end
 
-    def self.error_body(error, limit)
+    def self.error_body(error, limit) # rubocop:disable Metrics/AbcSize
       body = JSON.generate(error.to_h)
-      return [body, error.http_status] if body.bytesize <= limit
+      if body.bytesize <= limit
+        yield error, error.code if block_given?
+        return [body, error.http_status]
+      end
 
       error = Error.new(:resource_exhausted, "Error exceeds byte limit")
       body = JSON.generate(error.to_h)
-      [body.bytesize <= limit ? body : "", error.http_status]
+      emitted = body.bytesize <= limit
+      yield error, (error.code if emitted) if block_given?
+      [emitted ? body : "", error.http_status]
     end
 
     def self.parse_error(status, headers, body)
