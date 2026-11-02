@@ -68,14 +68,14 @@ Mise owns setup ordering and verification composition.
 | `mise run conformance:build` | Generate descriptors from unchanged official schemas using protoc. |
 | `mise run conformance:check` | Verify schema hashes and byte-for-byte descriptor regeneration. |
 | `mise run test:conformance` | Run all 94 client and 88 server profile cases with strict logs/telemetry accounting. |
-| `mise run verify` | Run core checks, specs, packages, generation, Go interop, official conformance and the selected Rails lane. |
+| `mise run verify` | Run core checks, specs, packages, generation, Go interop, official conformance and the selected Rails lane plus the HTTP/2 backend. |
 
 Every entry point installs missing prerequisites through the same task graph.
 During Ruby iteration, use focused tests and relevant static checks. Run
 `check` for fast static feedback and `verify` for package/tooling changes and
 final implementation handoff.
 [CI](https://github.com/jimeh/connectrpc-ruby/blob/main/docs/ci.md) splits the same
-canonical component tasks into nine core and three Rails checks, with syntax, specs, package isolation,
+canonical component tasks into nine core, three Rails and four optional HTTP/2 checks, with syntax, specs, package isolation,
 interop and official conformance on both Rubies. Hosted clean-environment and
 matrix results remain CI evidence; a local pass cannot establish them.
 
@@ -331,3 +331,29 @@ GEM_HOME/GEM_PATH outside the checkout, and exercises installed generated
 binary/JSON clients against native Rails callbacks and structured failures.
 Only the adapter README and library files ship in its archive. No dependencies
 or fixtures are vendored into either package, and nothing is published.
+
+## Optional HTTP/2 development
+
+The [backend guide](../gems/connectrpc-async/README.md) owns its public API,
+reactor affinity, TLS/mTLS lifecycle, backend normalization and resource limits.
+Use `mise run async:setup`, then focused `mise run async:test -- spec/tls_spec.rb`
+or `async:check` while iterating. `async:build` builds its own core and backend
+archives under `vendor/async/pkg`; `async:package` installs cached normal runtime
+dependencies in a fresh outside-checkout GEM_HOME and performs generated
+h2c/mTLS calls plus core NetHTTP TLS/JSON. That process activates OpenSSL
+4.0.2/JSON 3.1.0, so its TLS trust fixture is passed only to the child process.
+`async:example` runs the same generated localhost scenarios from development
+sources. `async:interop` uses the existing pinned Go module graph and toolchain
+with a separate peer executable. `async:verify` combines backend checks, product
+specs, package isolation and independent Go interoperability; root `verify`
+includes it alongside the existing core and selected Rails verification.
+
+The backend Gemfile/lock is independent; do not resolve it into root or Rails
+locks. All registry/platform artifacts require seven-day primary release-age
+and archive checksum verification, including generic/native variants. Keep its
+root dependency as a development-only relative path. Bundle installation and
+native caches use `vendor/async/bundle`; Bundler user state uses
+`vendor/async/bundler`. Only the observed generated backend `.bundle/` directory
+is ignored. SimpleCov starts before backend/core requires, includes every
+backend library file and writes `coverage/async/<Ruby>/`. Green coverage does
+not establish interoperability or hosted clean-environment success.

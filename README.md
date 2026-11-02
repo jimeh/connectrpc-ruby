@@ -259,3 +259,18 @@ The gem's `allowed_push_host` is `https://gems.invalid`, a reserved invalid
 domain, to guard against accidental public RubyGems pushes. It is not a
 publication destination or a complete access-control mechanism. Do not publish
 this gem without an explicit licensing and publication decision.
+
+## Optional standalone HTTP/2
+
+The [connectrpc-async package](gems/connectrpc-async/README.md) provides explicit
+`connectrpc/async` integration: `ConnectRPC::Async::Host` and a matching pooled
+`Transport` for Connect unary protobuf/ProtoJSON over h2c and verified TLS `h2`.
+It supports required client authentication, complete live TLS snapshot reloads
+on the same listener, older-generation drain, and an authenticated client leaf
+accessor scoped to the exact handler task. Applications own the Async reactor,
+authorization and lifecycle. There is no HTTP/1 fallback, automatic replay or
+streaming API. See the package guide for defaults, bounded cleanup and backend
+header normalization. `mise run async:example` runs the generated localhost
+example; `async:verify` checks the independent bundle, installed packages and
+connect-go interoperability. Core require and core/Rails dependencies stay
+independent.

@@ -16,3 +16,9 @@ tools.go = "1.27.3"
 env = { GOTOOLCHAIN = "local", GOWORK = "off", GOFLAGS = "-mod=readonly", GOMODCACHE = "{{config_root}}/vendor/interop/mod", GOCACHE = "{{config_root}}/vendor/interop/build" }
 dir = "{{config_root}}/interop"
 run = ["ruby {{config_root}}/scripts/ci_runtime.rb interop", "go mod download"]
+
+[tasks."async:tools"]
+description = "Validate exact action Ruby/Bundler and the independent backend bundle"
+dir = "{{config_root}}/gems/connectrpc-async"
+env = { BUNDLE_GEMFILE = "{{config_root}}/gems/connectrpc-async/Gemfile", BUNDLE_PATH = "{{config_root}}/vendor/async/bundle", BUNDLE_USER_HOME = "{{config_root}}/vendor/async/bundler", BUNDLE_COOLDOWN = "7" }
+run = "ruby scripts/ci_runtime.rb"

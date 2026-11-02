@@ -14,6 +14,7 @@ actionlint = "1.7.12"
 zizmor = "1.31.1"
 
 [env]
+RUBOCOP_CACHE_ROOT = "{{config_root}}/.rubocop_cache"
 BUNDLE_IGNORE_CONFIG = "true"
 BUNDLE_FROZEN = "true"
 BUNDLE_PATH = "{{config_root}}/vendor/bundle"
@@ -84,8 +85,8 @@ tools."aqua:protocolbuffers/protobuf/protoc" = "36.2"
 run = "bundle _4.0.23_ exec rake check:package"
 
 [tasks.verify]
-description = "Run core checks, specs, packages, Go/official conformance and the selected Rails lane"
-depends = ["check", "test", "check:package", "test:interop", "test:conformance", "generation:check", "verify:rails"]
+description = "Run core checks, specs, packages, Go/official conformance, selected Rails lane and HTTP/2 backend"
+depends = ["check", "test", "check:package", "test:interop", "test:conformance", "generation:check", "verify:rails", "async:verify"]
 
 [tasks."fixture:build"]
 description = "Rebuild the shared test descriptor from its explicit schema builder"
@@ -198,3 +199,50 @@ run = "mise exec -- ruby scripts/rails.rb package"
 [tasks."verify:rails"]
 description = "Verify selected Rails specs, Appraisal generation and isolated packages"
 depends = ["test:rails", "generation:check:rails", "check:package:rails"]
+
+[tasks."async:setup"]
+description = "Install the independent frozen HTTP/2 backend bundle"
+depends = ["async:tools"]
+run = "mise exec -- ruby gems/connectrpc-async/scripts/run.rb setup"
+
+[tasks."async:test"]
+description = "Run optional HTTP/2 backend product specs"
+depends = ["async:setup"]
+run = "mise exec -- ruby gems/connectrpc-async/scripts/run.rb test"
+
+[tasks."async:check"]
+description = "Check optional HTTP/2 backend source"
+depends = ["async:setup"]
+run = "mise exec -- ruby gems/connectrpc-async/scripts/run.rb check"
+
+[tasks."async:build"]
+description = "Build isolated core and HTTP/2 backend archives"
+depends = ["async:setup"]
+run = "mise exec -- ruby gems/connectrpc-async/scripts/run.rb build"
+
+[tasks."async:package"]
+description = "Install and exercise normal HTTP/2 gem dependencies offline"
+depends = ["async:build"]
+run = "mise exec -- ruby gems/connectrpc-async/scripts/run.rb package"
+
+[tasks."async:example"]
+description = "Run generated unary HTTP/2 localhost example"
+depends = ["async:setup"]
+run = "mise exec -- ruby gems/connectrpc-async/scripts/run.rb example"
+
+[tasks."async:interop"]
+description = "Run independent connect-go HTTP/2 interoperability"
+depends = ["async:setup", "setup:interop"]
+tools.go = "1.27.3"
+env = { GOTOOLCHAIN = "local", GOWORK = "off", GOFLAGS = "-mod=readonly", GOMODCACHE = "{{config_root}}/vendor/interop/mod", GOCACHE = "{{config_root}}/vendor/interop/build" }
+run = "ruby gems/connectrpc-async/scripts/run.rb interop"
+
+[tasks."async:verify"]
+description = "Verify optional HTTP/2 specs, source, packages and Go interoperability"
+depends = ["async:test", "async:check", "async:package", "async:interop"]
+
+[tasks."async:tools"]
+description = "Prepare exact Ruby/Bundler for the independent backend bundle"
+dir = "{{config_root}}/gems/connectrpc-async"
+env = { BUNDLE_GEMFILE = "{{config_root}}/gems/connectrpc-async/Gemfile", BUNDLE_PATH = "{{config_root}}/vendor/async/bundle", BUNDLE_USER_HOME = "{{config_root}}/vendor/async/bundler", BUNDLE_COOLDOWN = "7" }
+run = ["mise install --locked ruby", "mise exec -- ruby ../../scripts/setup_bundler.rb"]

@@ -1,7 +1,7 @@
 # CI
 
 The workflow runs on pull requests and pushes to `main`, on Ubuntu 24.04.
-It has nine core and three optional Rails checks, with no serial cache primer or aggregate job:
+It has nine core, three optional Rails and four optional HTTP/2 checks, with no serial cache primer or aggregate job:
 
 | Check | Ruby | Canonical commands |
 | --- | --- | --- |
@@ -12,6 +12,8 @@ It has nine core and three optional Rails checks, with no serial cache primer or
 | Official conformance | 3.4.12, 4.0.9 | `mise run test:conformance` |
 | Rails 8.0.5.1 | 3.4.12 | `mise run test:rails`, `generation:check:rails`, `check:package:rails` with `RAILS_LANE=8.0` |
 | Rails 8.1.4 | 3.4.12, 4.0.9 | Same Rails commands with `RAILS_LANE=8.1` |
+| Async specs/package | 3.4.12, 4.0.9 | `mise run async:test`, then `mise run async:package` |
+| Async Go interoperability | 3.4.12, 4.0.9 | `mise run async:interop` |
 
 Each matrix has `fail-fast: false`. Every check runs its commands on cache
 hits too. Package isolation still installs cached `.gem` artifacts offline and
@@ -132,3 +134,25 @@ actual `appraisal <lane>` commands, never `appraisal install`. The nine core
 checks retain their commands and evidence scope; no aggregate verify job is
 added. Local Appraisal generation and package checks do not prove hosted cache
 behavior or clean exact-head CI success.
+
+## Optional HTTP/2 lanes
+
+Two independent Ruby matrix jobs add four checks, preserving the nine core and
+three Rails lanes explicitly. Backend specs/package and independent connect-go
+interop run on both exact Rubies. They reuse the pinned official Ruby/Bundler
+and Go actions, with lock-keyed native backend caches under
+`vendor/async/bundle` and the existing pinned module/build caches. Their selected
+Gemfile is `gems/connectrpc-async/Gemfile`; Bundler user state is separate under
+`vendor/async/bundler`, frozen installation and seven-day cooldown remain on.
+Core setup/spec jobs install no backend dependencies.
+
+`async:tools` has a complete CI override preserving its task environment and
+working directory while replacing local runtime preparation with exact
+runtime/PATH/config validation. It reuses the unchanged root runtime guard in a
+separate process and checks the actual backend bundle/Gemfile itself. Task-local
+Go activation stays on `async:interop`; its command runs directly without a
+nested Mise execution dropping Go. CI still disables exec auto-install and
+rejects tracked/unexpected untracked changes after every lane. The sole observed
+backend `.bundle/` output from local Bundler configuration is ignored, matching
+the setup-ruby behavior without hiding Gemfiles or locks. Local guards and
+product/Go/package passes do not prove hosted cache behavior or exact-head CI.
