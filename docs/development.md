@@ -57,8 +57,8 @@ Mise owns setup ordering and verification composition.
 | `mise run fixture:build` | Rebuild the shared descriptor fixture from its explicit Ruby schema builder. |
 | `mise run fixture:check` | Compare the checked-in descriptor bytes to the builder. |
 | `mise run setup:interop` | Install task-local Go 1.27.3 and download checksum-locked modules. |
-| `mise run test:interop` | Build/run the reference connect-go Client and Handler against Ruby, both codecs. |
-| `mise run verify` | Run check, test, installed package integration, fixture check, and independent interop. |
+| `mise run test:interop` | Run the Go-to-Go reference baseline and both cross-language directions/codecs, 18 cases total. |
+| `mise run verify` | Run check, test, installed package integration, fixture check, reference baseline and cross-language interop. |
 
 Every entry point installs missing prerequisites through the same task graph.
 During Ruby iteration, use focused tests and relevant static checks. Run
@@ -117,14 +117,20 @@ toolchain/module updates. Go's module/build caches are project-local under
 ignored `vendor/interop/`. Setup downloads the pinned modules; tests run
 `go mod verify` and a readonly build.
 
-The 12 advertised cases are success, deliberate error/details/metadata, and a
-request limit, for both codecs in both directions. They use the actual
-connect-go Client and Handler with dynamic message initialization. Success
-covers optional presence, int64, enum, timestamp and bytes. Raw repeated Go
+The 18 fixture cases are success, deliberate error/details/metadata, and a
+request limit, for both codecs across Go-to-Go, Ruby-to-Go and Go-to-Ruby.
+They use the actual connect-go Client and Handler with dynamic message
+initialization. The Go-to-Go baseline runs while the existing Go host is alive,
+using the same client scenarios and configured limits as Go-to-Ruby. Twelve
+cases establish cross-language interoperability; six validate the reference
+baseline. Success compares typed messages semantically, covering optional
+presence, int64, enum, timestamp and bytes. The Go baseline asserts separate raw
+request/response metadata, trailers and error metadata. Go-to-Ruby keeps exact
+WEBrick coalescing expectations for those known fixture fields. Raw repeated Go
 response values remain separate at NetHTTP. NetHTTP joins outgoing request
 arrays with comma+space, and the WEBrick host also coalesces incoming and
-response values. Assertions preserve those observed semantics. This is not the
-Connect conformance suite.
+response values. Assertions preserve those observed semantics without splitting
+arbitrary comma-containing values. This is not the Connect conformance suite.
 
 `spec/fixtures/echo.proto` documents the schema. `scripts/build_fixture.rb`
 explicitly builds a matching `FileDescriptorProto`; it is not protoc output or
@@ -196,6 +202,7 @@ pre-push hook is installed.
 
 Keep PRs scoped. Describe the concrete result, relevant design boundaries,
 commands and results (including RSpec example counts), and remaining limits.
+Approved merges use squash merging; merge authorization remains separate.
 Reuse valid evidence. Design changes should update [design.md](design.md).
 No release workflow, publication task, external bot, or secret is required.
 Publishing needs a separate licensing/publication decision and authorization.

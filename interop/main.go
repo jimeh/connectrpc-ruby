@@ -111,7 +111,7 @@ func serve(service protoreflect.ServiceDescriptor) {
 	done := make(chan error, 1)
 	go func() { done <- server.Serve(listener) }()
 	fmt.Println("http://" + listener.Addr().String())
-	// Parent closes stdin after Ruby client assertions. No polling or signals.
+	// Parent closes stdin after reference and Ruby client assertions.
 	scanner := bufio.NewScanner(os.Stdin)
 	scanner.Scan()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -121,12 +121,25 @@ func serve(service protoreflect.ServiceDescriptor) {
 	check(errors.Is(err, http.ErrServerClosed), "Go server failed")
 }
 
-func client(service protoreflect.ServiceDescriptor, url string) {
+type metadataExpectations struct {
+	echo, repeat, tail, errorHeader, errorTrailer []string
+}
+
+func client(service protoreflect.ServiceDescriptor, url, target string) {
+	// These are expectations for known fixture fields, not general HTTP header
+	// normalization. The Go host preserves raw fields; WEBrick coalesces them.
+	profiles := map[string]metadataExpectations{
+		"Go":   {[]string{"a", "b"}, []string{"one", "two"}, []string{"three", "four"}, []string{"a", "b"}, []string{"c", "d"}},
+		"Ruby": {[]string{"a, b"}, []string{"one, two"}, []string{"three, four"}, []string{"a, b"}, []string{"c, d"}},
+	}
+	expected, ok := profiles[target]
+	check(ok, "unknown reference client target: "+target)
 	httpTransport := &http.Transport{Proxy: nil, DisableCompression: true}
 	defer httpTransport.CloseIdleConnections()
 	httpClient := &http.Client{Transport: httpTransport, Timeout: 5 * time.Second,
 		CheckRedirect: func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse }}
 	for _, codec := range []string{"proto", "json"} {
+		label := "Go->" + target + " " + codec
 		options := []connect.ClientOption{connect.WithResponseInitializer(initializer)}
 		if codec == "json" {
 			options = append(options, connect.WithProtoJSON())
@@ -141,31 +154,32 @@ func client(service protoreflect.ServiceDescriptor, url string) {
 		request.Header().Add("X-Request", "b")
 		response, err := echo.CallUnary(context.Background(), request)
 		must(err)
-		check(proto.Equal(response.Msg, msg), "Go->Ruby typed "+codec)
-		check(reflect.DeepEqual(response.Header().Values("X-Echo"), []string{"a, b"}), "WEBrick request coalescing")
-		check(reflect.DeepEqual(response.Header().Values("X-Repeat"), []string{"one, two"}), "WEBrick response coalescing")
-		check(reflect.DeepEqual(response.Trailer().Values("X-Tail"), []string{"three, four"}), "WEBrick trailer coalescing")
-		fmt.Println("PASS Go->Ruby " + codec + " success/presence/int64/enum/WKT/bytes/metadata/trailers")
+		check(proto.Equal(response.Msg, msg), label+" typed message")
+		check(response.Msg.Has(echoDesc.Output().Fields().ByName("name")), label+" optional presence")
+		check(reflect.DeepEqual(response.Header().Values("X-Echo"), expected.echo), label+" request metadata")
+		check(reflect.DeepEqual(response.Header().Values("X-Repeat"), expected.repeat), label+" response metadata")
+		check(reflect.DeepEqual(response.Trailer().Values("X-Tail"), expected.tail), label+" response trailers")
+		fmt.Println("PASS " + label + " success/presence/int64/enum/WKT/bytes/metadata/trailers")
 
 		failDesc := service.Methods().ByName("Fail")
 		failOptions := append(append([]connect.ClientOption{}, options...), connect.WithSchema(failDesc))
 		failure := connect.NewClient[dynamicpb.Message, dynamicpb.Message](httpClient, url+prefix+"Fail", failOptions...)
 		_, err = failure.CallUnary(context.Background(), connect.NewRequest(msg))
 		var rpcError *connect.Error
-		check(errors.As(err, &rpcError), "Go->Ruby error type")
-		check(rpcError.Code() == connect.CodeInvalidArgument && rpcError.Message() == "deliberate", "Go->Ruby error code/message")
-		check(len(rpcError.Details()) == 1, "Go->Ruby detail count")
+		check(errors.As(err, &rpcError), label+" error type")
+		check(rpcError.Code() == connect.CodeInvalidArgument && rpcError.Message() == "deliberate", label+" error code/message")
+		check(len(rpcError.Details()) == 1, label+" detail count")
 		decoded, err := rpcError.Details()[0].Value()
 		must(err)
-		check(proto.Equal(decoded, msg), "Go->Ruby typed detail")
-		check(reflect.DeepEqual(rpcError.Meta().Values("X-Error"), []string{"a, b"}), "WEBrick error leading metadata")
-		check(reflect.DeepEqual(rpcError.Meta().Values("X-End"), []string{"c, d"}), "WEBrick error trailing metadata")
-		fmt.Println("PASS Go->Ruby " + codec + " deliberate error/detail/metadata/trailers")
+		check(proto.Equal(decoded, msg), label+" typed detail")
+		check(reflect.DeepEqual(rpcError.Meta().Values("X-Error"), expected.errorHeader), label+" error leading metadata")
+		check(reflect.DeepEqual(rpcError.Meta().Values("X-End"), expected.errorTrailer), label+" error trailing metadata")
+		fmt.Println("PASS " + label + " deliberate error/detail/metadata/trailers")
 
 		msg.Set(echoDesc.Input().Fields().ByName("name"), protoreflect.ValueOfString(string(make([]byte, 2048))))
 		_, err = echo.CallUnary(context.Background(), connect.NewRequest(msg))
-		check(connect.CodeOf(err) == connect.CodeResourceExhausted, "Go->Ruby request limit")
-		fmt.Println("PASS Go->Ruby " + codec + " request limit")
+		check(connect.CodeOf(err) == connect.CodeResourceExhausted, label+" request limit")
+		fmt.Println("PASS " + label + " request limit")
 	}
 }
 
@@ -175,7 +189,7 @@ func main() {
 	case "serve":
 		serve(service)
 	case "client":
-		client(service, os.Args[2])
+		client(service, os.Args[2], os.Args[3])
 	default:
 		panic("serve|client")
 	}

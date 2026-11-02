@@ -155,7 +155,10 @@ detect every disconnected peer. See [design](docs/design.md) for these limits.
 CRuby >= 3.4 is the baseline; project verification targets source-built Ruby
 3.4.12 and 4.0.9 on Linux x64. See [development](docs/development.md) for the
 commands, dependency policy, isolated installation and evidence scope. The
-independent Go tests cover the advertised unary subset, not full conformance.
+interop fixture runs 18 cases: six Go-to-Go reference baseline cases and twelve
+Ruby-to-Go/Go-to-Ruby cases. Both codecs share typed success, deliberate error
+and request-limit scenarios. This covers the advertised unary subset, not full
+conformance.
 
 ## Private status and licensing
 

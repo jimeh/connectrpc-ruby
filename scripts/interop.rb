@@ -78,6 +78,7 @@ module Interop
 
         url = output.gets&.strip
         check(url&.start_with?("http://127.0.0.1:"), "Invalid Go peer readiness: #{url.inspect}")
+        system(binary, "client", url, "Go", chdir: peer_dir, exception: true)
         ruby_clients(url)
       ensure
         input.close
@@ -90,12 +91,12 @@ module Interop
       end
       host = EchoExample::Localhost.new(ConnectRPC::Rack.new(server: ruby_server))
       begin
-        system(binary, "client", host.url, chdir: peer_dir, exception: true)
+        system(binary, "client", host.url, "Ruby", chdir: peer_dir, exception: true)
       ensure
         host.close
       end
     end
-    puts "Independent unary subset: 12 cases passed; no full conformance claim"
+    puts "Unary interop subset: 18 cases passed (6 Go->Go baseline, 12 cross-language); no full conformance claim"
   end
 end
 

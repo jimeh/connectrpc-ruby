@@ -105,7 +105,7 @@ dir = "{{config_root}}/interop"
 run = ["mise install --locked go@1.27.3", "go mod download"]
 
 [tasks."test:interop"]
-description = "Run the independent connect-go unary subset in both directions/codecs"
+description = "Run the Go reference baseline and cross-language unary subset in both codecs"
 depends = ["setup", "setup:interop", "fixture:check"]
 tools.go = "1.27.3"
 env = { GOTOOLCHAIN = "local", GOWORK = "off", GOFLAGS = "-mod=readonly", GOMODCACHE = "{{config_root}}/vendor/interop/mod", GOCACHE = "{{config_root}}/vendor/interop/build" }

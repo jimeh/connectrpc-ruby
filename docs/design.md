@@ -130,9 +130,13 @@ codec work, or detect every disconnect. No hard server cancellation is claimed.
 
 Specs exercise real custom bindings/transports/invokers, ProtoJSON mapping,
 Rack::Lint success and errors, real localhost HTTP, byte limits and lifecycle.
-The pinned connect-go Client and Handler verify both directions/codecs against
-one shared descriptor fixture, including details, host-visible metadata and a
-request limit. This is an independent unary subset, not full conformance.
+The pinned connect-go Client and Handler verify both cross-language directions
+and codecs against one shared descriptor fixture, including details,
+host-visible metadata and a request limit. The same Go client scenarios also
+run against the Go server as a reference baseline, with raw repeated Go fields
+instead of WEBrick's coalesced values. There are 18 fixture cases: six reference
+baseline cases and twelve cross-language cases. This is a unary subset, not
+full conformance.
 
 Wire protocol, HTTP transport, and message binding remain separate choices.
 Streaming, GET, gzip, gRPC/gRPC-Web, interceptors, a production server, Rails,
