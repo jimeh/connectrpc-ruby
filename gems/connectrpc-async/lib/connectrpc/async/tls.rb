@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "securerandom"
+require "digest"
 
 module ConnectRPC
   module Async
@@ -48,7 +49,7 @@ module ConnectRPC
           context.session_id_context = SecureRandom.random_bytes(16)
         end
 
-        def self.server(certificate_chain:, private_key:, client_ca:)
+        def self.server(certificate_chain:, private_key:, client_ca:, alpn_protocols: ["h2"])
           certificates, key = identity(certificate_chain, private_key)
           context = OpenSSL::SSL::SSLContext.new
           configure(context)
@@ -57,18 +58,23 @@ module ConnectRPC
             raise ArgumentError unless client_ca.is_a?(Array) && !client_ca.empty?
 
             store = OpenSSL::X509::Store.new
-            client_ca.each { |pem| store.add_cert(certificate(pem)) }
+            anchors = client_ca.map { |pem| certificate(pem) }
+            anchors.uniq(&:to_der).each { |anchor| store.add_cert(anchor) }
             store.flags = OpenSSL::X509::V_FLAG_PARTIAL_CHAIN
             context.cert_store = store
             context.verify_mode = OpenSSL::SSL::VERIFY_PEER | OpenSSL::SSL::VERIFY_FAIL_IF_NO_PEER_CERT
           end
           context.alpn_select_cb = lambda do |protocols|
-            raise OpenSSL::SSL::SSLError, "HTTP/2 ALPN is required" unless protocols.include?("h2")
+            selected = alpn_protocols.find { |protocol| protocols.include?(protocol) }
+            raise OpenSSL::SSL::SSLError, "Unsupported ALPN" unless selected
 
-            "h2"
+            selected
           end
           context.setup
-          new(context, !client_ca.nil?)
+          trust = anchors.map(&:to_der).uniq.sort if anchors
+          canonical = [certificates.map(&:to_der), key.public_to_der, trust]
+          new(context, !client_ca.nil?, fingerprint: Digest::SHA256.digest(Marshal.dump(canonical)).freeze,
+                                        expires_at: certificates.map(&:not_after).min.freeze)
         rescue StandardError
           raise ArgumentError, "Invalid TLS snapshot", cause: nil
         end
@@ -92,10 +98,18 @@ module ConnectRPC
           raise ArgumentError, "Invalid TLS client configuration", cause: nil
         end
 
-        def initialize(context, authenticated)
+        def initialize(context, authenticated, fingerprint: nil, expires_at: nil)
           @context = context
           @authenticated = authenticated
+          @fingerprint = fingerprint
+          @expires_at = expires_at
           freeze
+        end
+
+        attr_reader :fingerprint
+
+        def check_validity!
+          raise ArgumentError, "Expired TLS snapshot", cause: nil if @expires_at && Time.now >= @expires_at
         end
 
         def socket(raw)

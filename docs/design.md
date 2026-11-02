@@ -223,6 +223,19 @@ profiles. Combined gzip specs exercise opaque bytes and wire/decompressed bounds
 over the actual Async host and transport. NetHTTP remains HTTP/1.1; each future
 transport needs its own verified capability scope.
 
+The reusable `ConnectRPC::Async::Application` translates native Protocol::HTTP
+requests independently of hosting. `TLSConfiguration` owns complete versioned
+provider results and immutable worker-local compilation; `ServerSession` owns
+raw-accept generation capture, setup/admission, exact-task identity and reviewed
+HTTP/2 resource cleanup. The strict standalone Host composes that session.
+The optional [Falcon package](../gems/connectrpc-falcon/README.md) composes it with
+Falcon's process workers, raw endpoints and HTTP server/run lifecycle. Its local
+HTTP/1 resource uses upstream parse/write hooks and preserves wire completion
+and callback boundaries during retirement. Only explicit Rack fallback receives
+Falcon's generic encoding/cache middleware. No core signatures or unary wire
+capabilities change. See the package guide for source failure, expiry, worker
+stop and unsupported socket-ownership transfer policies.
+
 The explicit optional `connectrpc/generator` entry point implements the standard
 protoc request/response protocol through official `google/protobuf/plugin_pb`.
 The extensionless executable reads raw protobuf to EOF, with no conformance

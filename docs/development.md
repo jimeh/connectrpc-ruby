@@ -70,7 +70,7 @@ Mise owns setup ordering and verification composition.
 | `mise run conformance:build` | Generate descriptors from unchanged official schemas using protoc. |
 | `mise run conformance:check` | Verify schema hashes and byte-for-byte descriptor regeneration. |
 | `mise run test:conformance` | Run identity (94/88) and gzip (88/82) client/server profiles with strict accounting. |
-| `mise run verify` | Run core checks, specs, packages, generation, Go interop, official conformance, the selected Rails lane and the HTTP/2 backend. |
+| `mise run verify` | Run core checks, specs, packages, generation, Go interop, official conformance, the selected Rails lane and the independent HTTP/2 and Falcon backends. |
 
 Every entry point installs missing prerequisites through the same task graph.
 During Ruby iteration, use focused tests and relevant static checks. Run
@@ -78,7 +78,9 @@ During Ruby iteration, use focused tests and relevant static checks. Run
 final implementation handoff. Run `mise run verify` and then `mise run rack:verify`
 for final handoff; moved middleware specs have their own canonical gate.
 [CI](https://github.com/jimeh/connectrpc-ruby/blob/main/docs/ci.md) splits the same
-canonical component tasks into nine core, three Rails, four optional HTTP/2, two optional Rack, two optional testing and two optional RBS checks, with syntax, specs, package isolation,
+canonical component tasks into nine core, three Rails, four optional HTTP/2,
+two optional Rack, two optional testing, two optional RBS and four optional Falcon
+checks, with syntax, specs, package isolation,
 interop and official conformance on both Rubies. Hosted clean-environment and
 matrix results remain CI evidence; a local pass cannot establish them.
 
@@ -419,3 +421,22 @@ and positive/negative strict consumers. `rbs:package` checks installed discovery
 and the same consumers outside the checkout. Run both on each pinned Ruby.
 These leaves keep their Bundler state, caches, bundle and package outputs under
 `vendor/rbs/` and add no runtime or root-bundle dependencies.
+
+## Optional Falcon development
+
+The [Falcon guide](../gems/connectrpc-falcon/README.md) owns the listener,
+worker-local TLS provider and Rack/Rails fallback contracts. Start with
+`mise run falcon:setup`, then use focused `falcon:test` selectors and
+`falcon:check`. `falcon:build` writes separate core/Async/Falcon archives to
+`vendor/falcon/pkg`. `falcon:package` installs normal dependencies offline in an
+isolated GEM_HOME and runs the actual Falcon DSL/service outside the checkout.
+`falcon:interop` runs identity and gzip against the pinned independent Go peer,
+including actual Falcon process workers. `falcon:verify` combines these leaves;
+root `verify` includes it. The existing 22 CI checks remain, with four additional
+Falcon checks across Ruby 3.4.12 and 4.0.9.
+
+Keep its checksummed Gemfile/lock, `vendor/falcon/bundle`, Bundler user state and
+`coverage/falcon/<Ruby>/` independent. Audit every added registry/platform
+artifact for seven-day release age and downloaded archive SHA256. Actual worker,
+TLS, retirement and installed-caller tests establish different properties;
+green coverage or baseline probes do not substitute for them.

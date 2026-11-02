@@ -31,7 +31,7 @@ RSpec.describe "HTTP/2 TLS snapshots and authentication" do
     end.to raise_error(ArgumentError)
     snapshot = tls.server(**options)
     expect(snapshot.inspect).not_to include("BEGIN", leaf.first.subject.to_s, "OpenSSL")
-    expect(snapshot.instance_variables).to eq(%i[@context @authenticated])
+    expect(snapshot.instance_variables).to eq(%i[@context @authenticated @fingerprint @expires_at])
   end
 
   it "proves private-key possession for Ed25519 and rejects public-only and mismatched keys" do
@@ -165,7 +165,7 @@ RSpec.describe "HTTP/2 TLS snapshots and authentication" do
         }
         expect(observed).to eq([[201, nil, nil], 201, [201, nil, nil], 201])
         expect(host.peer_certificate).to be_nil
-        expect(host.instance_variable_get(:@identities)).to be_empty
+        expect(host_session(host).instance_variable_get(:@identities)).to be_empty
       ensure
         transport&.close
       end
@@ -219,10 +219,11 @@ RSpec.describe "HTTP/2 TLS snapshots and authentication" do
         old = ConnectRPC::Async::Transport.new(**options)
         inflight = task.async { client(old, origin).echo(AsyncHelpers::MESSAGE.new(name: "hold")) }
         entered.dequeue
-        previous = host.instance_variable_get(:@snapshot)
+        previous = host_session(host).instance_variable_get(:@tls).instance_variable_get(:@snapshot)
         expect(host.reload_tls(**host_tls(anchors: [tls_material.fetch(:client_ca)]))).to eq(2)
-        expect(host.instance_variable_get(:@snapshot)).not_to equal(previous)
-        fresh_context = host.instance_variable_get(:@snapshot).instance_variable_get(:@context)
+        expect(host_session(host).instance_variable_get(:@tls).instance_variable_get(:@snapshot)).not_to equal(previous)
+        snapshot = host_session(host).instance_variable_get(:@tls).instance_variable_get(:@snapshot)
+        fresh_context = snapshot.instance_variable_get(:@context)
         expect(fresh_context).not_to equal(previous.instance_variable_get(:@context))
         next_leaf = credentials(102, "renewal", issuer: tls_material.fetch(:root), usage: "serverAuth")
         expect(host.reload_tls(**host_tls(next_leaf, anchors: [tls_material.fetch(:client_ca)]))).to eq(3)

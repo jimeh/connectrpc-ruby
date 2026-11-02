@@ -34,3 +34,9 @@ description = "Validate action Ruby/Bundler and independent testing bundle setti
 dir = "{{config_root}}/gems/connectrpc-testing"
 env = { BUNDLE_GEMFILE = "{{config_root}}/gems/connectrpc-testing/Gemfile", BUNDLE_PATH = "{{config_root}}/vendor/testing/bundle", BUNDLE_USER_HOME = "{{config_root}}/vendor/testing/bundler", BUNDLE_COOLDOWN = "7" }
 run = "ruby scripts/ci_runtime.rb"
+
+[tasks."falcon:tools"]
+description = "Validate exact action Ruby/Bundler and the independent backend bundle"
+dir = "{{config_root}}/gems/connectrpc-falcon"
+env = { BUNDLE_GEMFILE = "{{config_root}}/gems/connectrpc-falcon/Gemfile", BUNDLE_PATH = "{{config_root}}/vendor/falcon/bundle", BUNDLE_USER_HOME = "{{config_root}}/vendor/falcon/bundler", BUNDLE_COOLDOWN = "7" }
+run = "ruby scripts/ci_runtime.rb"
