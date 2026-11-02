@@ -14,32 +14,32 @@ url_api = "https://api.github.com/repos/rhysd/actionlint/releases/assets/3849248
 provenance = "github-attestations"
 
 [[tools.ruby]]
-version = "3.4.12"
-backend = "core:ruby"
-specifiers = ["3.4.12"]
-
-[tools.ruby.options]
-compile = "true"
-ruby_build_repo = "https://github.com/rbenv/ruby-build.git"
-ruby_install = "false"
-
-[tools.ruby."platforms.linux-x64"]
-checksum = "sha256:5e5d85ad93b0adcccbad47733680f4892bd0078e3342437f7babce01c1872479"
-url = "https://cache.ruby-lang.org/pub/ruby/3.4/ruby-3.4.12.tar.gz"
-
-[[tools.ruby]]
 version = "4.0.9"
 backend = "core:ruby"
 specifiers = ["4.0.9"]
 
 [tools.ruby.options]
 compile = "true"
-ruby_build_repo = "https://github.com/rbenv/ruby-build.git"
+ruby_build_repo = "https://github.com/rbenv/ruby-build.git#b6a92c15f0df872047c74f7dfa0b92dfd4de8a92"
 ruby_install = "false"
 
 [tools.ruby."platforms.linux-x64"]
 checksum = "sha256:c35350682ff050b79702d57ade4516e7336063f510155d19fb2fb5b3f3909511"
 url = "https://cache.ruby-lang.org/pub/ruby/4.0/ruby-4.0.9.tar.gz"
+
+[[tools.ruby]]
+version = "3.4.12"
+backend = "core:ruby"
+specifiers = ["3.4.12"]
+
+[tools.ruby.options]
+compile = "true"
+ruby_build_repo = "https://github.com/rbenv/ruby-build.git#b6a92c15f0df872047c74f7dfa0b92dfd4de8a92"
+ruby_install = "false"
+
+[tools.ruby."platforms.linux-x64"]
+checksum = "sha256:5e5d85ad93b0adcccbad47733680f4892bd0078e3342437f7babce01c1872479"
+url = "https://cache.ruby-lang.org/pub/ruby/3.4/ruby-3.4.12.tar.gz"
 
 [[tools.zizmor]]
 version = "1.31.1"

@@ -22,6 +22,11 @@ check on the other version with:
 MISE_RUBY_VERSION=4.0.9 mise run test
 ```
 
+The source-build installer is pinned to [ruby-build v20261023](https://github.com/rbenv/ruby-build/releases/tag/v20261023)
+by commit in `ruby.ruby_build_repo`. Review its release age and commit alongside
+Ruby updates. Compilation uses the host's compiler and system libraries, so
+these locks do not promise bit-identical Ruby binaries across machines.
+
 Setup installs only the declared project tools, then Bundler 4.0.23 into the
 active Ruby, then the frozen `Gemfile.lock` into ignored `vendor/bundle/`.
 Re-running setup is safe. Bundler config files are ignored so user-level
@@ -72,8 +77,8 @@ summaries and writes an ignored local HTML report to `coverage/index.html`.
 Reports describe the current run, without merging prior focused runs. There is
 no coverage threshold, upload, external service, or artifact job. A skeleton
 with no branches may report zero total branches; its high line percentage
-proves no protocol behavior. The two smoke examples establish require/version
-behavior only, not interoperability or production readiness.
+proves no protocol behavior. The version example and isolated package require
+establish bootstrap behavior only, not interoperability or production readiness.
 
 ### Package isolation
 

@@ -4,6 +4,8 @@ min_version = "2026.9.14"
 lockfile = true
 minimum_release_age = "7d"
 ruby.compile = true
+# ruby-build v20261023; keep installer code inside the dependency age policy.
+ruby.ruby_build_repo = "https://github.com/rbenv/ruby-build.git#b6a92c15f0df872047c74f7dfa0b92dfd4de8a92"
 task.run_auto_install = false
 
 [tools]
