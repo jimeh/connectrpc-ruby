@@ -1,5 +1,7 @@
 # frozen_string_literal: true
 
+require "English"
+
 module ConnectRPC
   module Falcon
     class RackGuard
@@ -34,35 +36,41 @@ module ConnectRPC
         env["protocol.http.request"] = Request.new(env["protocol.http.request"], reject)
         response = @app.call(env)
         status, headers, body = response
+        original = guarded_body(body)
         if attempted || status == 101 || headers.keys.any? do |key|
              %w[rack.hijack rack.protocol upgrade].include?(key.downcase)
            end
-          body.close if body.respond_to?(:close)
           return rejected
         end
-        [status, headers, completing_body(env, status, headers, body)]
+
+        response = [status, headers, completing_body(env, status, headers, original)]
+        handed_off = true
+        response
       rescue Unsupported
         rejected
+      ensure
+        original&.close($ERROR_INFO) unless handed_off
       end
 
       private
 
-      def completing_body(env, status, headers, body)
-        callbacks = env["rack.response_finished"]
-        return body unless callbacks&.any?
+      def guarded_body(body)
+        if body.is_a?(::Protocol::HTTP::Body::Readable)
+          CloseOnce.new(body)
+        elsif body
+          RackBody.new(body)
+        end
+      end
 
-        # Reuse upstream conversion and callback policy, with separate cleanup
-        # ownership so cancellation inside a callback cannot skip body close.
-        env["rack.response_finished"] = []
-        original = if body.is_a?(::Protocol::HTTP::Body::Readable)
-                     CloseOnce.new(body)
-                   elsif body
-                     RackBody.new(body)
-                   end
-        converted = ::Protocol::Rack::Body.wrap(env, status, headers.dup, original,
-                                                env["protocol.http.request"].body)
+      def completing_body(env, status, headers, original)
+        # Original-body ownership is needed even without callbacks: upstream
+        # array conversion retains only the array's contents.
+        callbacks = env["rack.response_finished"] || []
         callback = ::Protocol::Rack::Body.completion_callback(callbacks, env, status, headers)
-        CompletionBody.new(converted || ::Protocol::HTTP::Body::Buffered.wrap([]), callback, original)
+        env["rack.response_finished"] = []
+        CompletionBody.new(callback, original) do
+          ::Protocol::Rack::Body.wrap(env, status, headers.dup, original, env["protocol.http.request"].body)
+        end
       end
 
       def rejected
@@ -82,16 +90,23 @@ module ConnectRPC
     private_constant :RackBody
 
     class CompletionBody < ::Protocol::HTTP::Body::Wrapper
-      def initialize(body, callback, original)
-        super(body)
+      def initialize(callback, original)
+        super(::Protocol::HTTP::Body::Buffered.wrap([]))
         @callback = callback
         @original = original
+        begin
+          @body = yield || @body
+          converted = true
+        ensure
+          close($ERROR_INFO) unless converted
+        end
       end
 
       def rewindable? = false
       def rewind = false
 
-      def close(error = nil)
+      # The Rack adapter closes a rejected tuple without passing its exception.
+      def close(error = $ERROR_INFO)
         return if @closed
 
         @closed = true
