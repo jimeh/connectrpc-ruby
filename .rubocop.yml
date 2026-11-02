@@ -8,6 +8,8 @@ AllCops:
     - coverage/**/*
     # Official protoc output is checked by regeneration, not rewritten by lint.
     - spec/fixtures/generation/**/*_pb.rb
+    # Appraisal output is byte-checked with its actual generator.
+    - gems/connectrpc-rails/gemfiles/**/*
 
 Style/StringLiterals:
   EnforcedStyle: double_quotes
@@ -23,6 +25,7 @@ Gemspec/RequireMFA:
 Metrics/BlockLength:
   Exclude:
     - spec/**/*.rb
+    - gems/connectrpc-rails/spec/**/*.rb
     - scripts/check_package.rb
     - scripts/build_generation.rb
     - scripts/generated_integration.rb
@@ -39,6 +42,7 @@ Metrics/MethodLength:
     - lib/connectrpc/generator/renderer.rb
     - lib/connectrpc/generator/names.rb
     - spec/**/*.rb
+    - gems/connectrpc-rails/spec/**/*.rb
     - scripts/interop.rb
     - scripts/conformance.rb
     - conformance/**/*.rb
@@ -49,6 +53,7 @@ Metrics/AbcSize:
     - lib/connectrpc/generator/schema.rb
     - lib/connectrpc/generator/renderer.rb
     - spec/**/*.rb
+    - gems/connectrpc-rails/spec/**/*.rb
     - scripts/interop.rb
     - scripts/conformance.rb
     - conformance/**/*.rb

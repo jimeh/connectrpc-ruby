@@ -146,11 +146,15 @@ instructions remain executed expected failures under an exact-name limitation
 manifest with strict causal result checks. There is no full-conformance claim.
 
 Wire protocol, HTTP transport, and message binding remain separate choices.
-Streaming, GET, gzip, gRPC/gRPC-Web, interceptors, a production server, Rails,
+Streaming, GET, gzip, gRPC/gRPC-Web, interceptors, a production server,
 and Faraday are future work. Unsupported modes/options are rejected
-rather than represented as buffered streaming. Optional Rails execution should
-use the invoker boundary for callbacks, authentication, `rescue_from` and
-instrumentation, not claim a mounted Rack app supplies the controller lifecycle.
+rather than represented as buffered streaming. The optional [connectrpc-rails gem](../gems/connectrpc-rails/README.md) uses
+the invoker boundary to run native controller callbacks, authentication,
+`rescue_from` and instrumentation after bounded core decode. It reuses Rack
+translation and keeps hosting dependencies out of core. It preserves native
+CSRF/session policy, reports unexpected errors through Rails.error and keeps
+generated files non-reloadable outside Zeitwerk paths. A mounted Rack app alone
+does not supply the Rails controller lifecycle.
 See the [Rails controller guide](https://guides.rubyonrails.org/action_controller_overview.html).
 
 A future standalone host will need verified HTTP/2 and duplex behavior. Start
