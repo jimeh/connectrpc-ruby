@@ -26,6 +26,7 @@ module ConnectRPC
       loop do
         @context.check!
         chunk = @input.read([16_384, @limit + 1 - body.bytesize].min)
+        @context.check!
         break if chunk.nil? || chunk.empty?
 
         raise Error.new(:resource_exhausted, "Message exceeds byte limit") if body.bytesize + chunk.bytesize > @limit

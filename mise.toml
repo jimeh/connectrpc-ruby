@@ -111,7 +111,7 @@ dir = "{{config_root}}/interop"
 run = ["mise install --locked go@1.27.3", "go mod download"]
 
 [tasks."test:interop"]
-description = "Run the Go reference baseline and cross-language unary subset in both codecs"
+description = "Run separately named identity/generated and gzip Go interoperability portions"
 depends = ["setup", "setup:interop", "fixture:check"]
 tools.go = "1.27.3"
 env = { GOTOOLCHAIN = "local", GOWORK = "off", GOFLAGS = "-mod=readonly", GOMODCACHE = "{{config_root}}/vendor/interop/mod", GOCACHE = "{{config_root}}/vendor/interop/build" }
@@ -134,7 +134,7 @@ tools."aqua:protocolbuffers/protobuf/protoc" = "36.2"
 run = "bundle _4.0.23_ exec ruby scripts/build_conformance.rb --check"
 
 [tasks."test:conformance"]
-description = "Run official unary conformance (optional client/server and exact test name)"
+description = "Run separate identity and gzip official profiles (optional direction/exact name)"
 depends = ["conformance:check"]
 tools."github:connectrpc/conformance" = "1.0.6"
 run = "bundle _4.0.23_ exec ruby scripts/conformance.rb"
@@ -246,3 +246,29 @@ description = "Prepare exact Ruby/Bundler for the independent backend bundle"
 dir = "{{config_root}}/gems/connectrpc-async"
 env = { BUNDLE_GEMFILE = "{{config_root}}/gems/connectrpc-async/Gemfile", BUNDLE_PATH = "{{config_root}}/vendor/async/bundle", BUNDLE_USER_HOME = "{{config_root}}/vendor/async/bundler", BUNDLE_COOLDOWN = "7" }
 run = ["mise install --locked ruby", "mise exec -- ruby ../../scripts/setup_bundler.rb"]
+
+[tasks."test:interop:identity"]
+description = "Run the independent identity interop portion"
+depends = ["setup", "setup:interop", "fixture:check"]
+tools.go = "1.27.3"
+env = { GOTOOLCHAIN = "local", GOWORK = "off", GOFLAGS = "-mod=readonly", GOMODCACHE = "{{config_root}}/vendor/interop/mod", GOCACHE = "{{config_root}}/vendor/interop/build" }
+run = "bundle _4.0.23_ exec ruby scripts/interop.rb identity"
+
+[tasks."test:interop:gzip"]
+description = "Run the independent gzip interop portion"
+depends = ["setup", "setup:interop", "fixture:check"]
+tools.go = "1.27.3"
+env = { GOTOOLCHAIN = "local", GOWORK = "off", GOFLAGS = "-mod=readonly", GOMODCACHE = "{{config_root}}/vendor/interop/mod", GOCACHE = "{{config_root}}/vendor/interop/build" }
+run = "bundle _4.0.23_ exec ruby scripts/interop.rb gzip"
+
+[tasks."test:conformance:identity"]
+description = "Run the independent identity conformance portion"
+depends = ["conformance:check"]
+tools."github:connectrpc/conformance" = "1.0.6"
+run = "bundle _4.0.23_ exec ruby scripts/conformance.rb --profile=identity"
+
+[tasks."test:conformance:gzip"]
+description = "Run the independent gzip conformance portion"
+depends = ["conformance:check"]
+tools."github:connectrpc/conformance" = "1.0.6"
+run = "bundle _4.0.23_ exec ruby scripts/conformance.rb --profile=gzip"

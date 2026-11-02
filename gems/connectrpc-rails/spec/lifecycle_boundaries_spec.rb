@@ -3,6 +3,7 @@
 require "json"
 require "open3"
 require "timeout"
+require "zlib"
 
 RSpec.describe "Rails lifecycle boundaries" do
   let(:app) { RailsIntegration::APP }
@@ -45,6 +46,44 @@ RSpec.describe "Rails lifecycle boundaries" do
     expect(JSON.parse(bytes)["code"]).to eq("invalid_argument")
     expect(trace).to be_empty
     expect(events).to be_empty
+  ensure
+    ActiveSupport::Notifications.unsubscribe(subscriber) if subscriber
+  end
+
+  it "rejects malformed and inflated-oversize gzip before native lifecycle or instrumentation" do
+    trace = []
+    events = []
+    subscriber = ActiveSupport::Notifications.subscribe("process_action.action_controller") { |*args| events << args.last }
+    [[Zlib.gzip("valid")[0...-1], "", 400, "invalid_argument"],
+     [Zlib.gzip("x" * 1000), "gzip-inflated-limit", 429, "resource_exhausted"]].each do |body, scenario, status, code|
+      result, headers, bytes = dispatch(input: StringIO.new(body), "HTTP_X_GZIP" => "yes", "HTTP_X_CASE" => scenario,
+                                        "HTTP_CONTENT_ENCODING" => "gzip", "connectrpc.test.trace" => trace)
+      expect(result).to eq(status)
+      expect(headers).not_to have_key("content-encoding")
+      expect(JSON.parse(bytes)["code"]).to eq(code)
+    end
+    expect(trace).to be_empty
+    expect(events).to be_empty
+  ensure
+    ActiveSupport::Notifications.unsubscribe(subscriber) if subscriber
+  end
+
+  it "does not rerun native execution when compressed response exceeds its wire cap" do
+    trace = []
+    events = []
+    subscriber = ActiveSupport::Notifications.subscribe("process_action.action_controller") { |*args| events << args.last }
+    # Deterministic varied bytes ensure the encoded response exceeds 80 bytes.
+    message = type.new(name: (32..126).map(&:chr).join)
+    input = Zlib.gzip(binding.encode(message, type: type, codec: :proto))
+    status, headers, bytes = dispatch(input: StringIO.new(input), "HTTP_X_GZIP" => "yes",
+                                      "HTTP_X_CASE" => "gzip-wire-limit", "HTTP_CONTENT_ENCODING" => "gzip",
+                                      "connectrpc.test.trace" => trace)
+    expect(status).to eq(429)
+    expect(JSON.parse(bytes)["code"]).to eq("resource_exhausted")
+    expect(headers).not_to have_key("content-encoding")
+    expect(trace.map(&:first)).to eq(%i[before around_before handler after around_ensure])
+    expect(events.size).to eq(1)
+    expect(events.first[:status]).to eq(200)
   ensure
     ActiveSupport::Notifications.unsubscribe(subscriber) if subscriber
   end
@@ -113,16 +152,20 @@ RSpec.describe "Rails lifecycle boundaries" do
     response = Rack::MockRequest.new(app).get("/base/ordinary", "HTTP_HOST" => "www.example.com")
     token = JSON.parse(response.body).fetch("token")
     cookies = Array(response["set-cookie"]).map { |cookie| cookie.split(";", 2).first }.join("; ")
-    %i[proto json].each do |codec|
+    %i[proto json].product(%i[identity gzip]).each do |codec, encoding|
       bytes = binding.encode(type.new(name: "Base"), type: type, codec: codec)
+      bytes = Zlib.gzip(bytes) if encoding == :gzip
       content_type = "application/#{codec == :proto ? 'proto' : 'json'}"
       status, fields, body = dispatch(path: "/base/example.v1.EchoService/Echo", input: StringIO.new(bytes),
                                       "CONTENT_TYPE" => content_type,
-                                      "HTTP_COOKIE" => cookies, "HTTP_X_CSRF_TOKEN" => token)
+                                      "HTTP_COOKIE" => cookies, "HTTP_X_CSRF_TOKEN" => token, "HTTP_X_GZIP" => "yes",
+                                      "HTTP_CONTENT_ENCODING" => encoding.to_s)
       expect(status).to eq(200)
       expect(fields["content-type"]).to eq(content_type)
       expect(fields["x-base"]).to eq(["before"])
       expect(fields["trailer-x-base"]).to eq(["after"])
+      expect(fields["content-encoding"]).to eq(["gzip"]) if encoding == :gzip
+      body = Zlib.gunzip(body) if encoding == :gzip
       expect(binding.decode(body, type: type, codec: codec).name).to eq("Base")
     end
   end

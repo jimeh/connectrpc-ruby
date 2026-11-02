@@ -122,8 +122,9 @@ module ConnectRPC
 
       def outgoing_request(request)
         headers = request.headers.merge("connection" => ["close"])
+        accept = request.headers.fetch("accept-encoding", ["identity"]).join(", ")
         outgoing = Net::HTTPGenericRequest.new(request.http_method, true, true, request.url.request_uri,
-                                               "accept-encoding" => "identity")
+                                               "accept-encoding" => accept)
         headers.each do |key, values|
           next if key == "accept-encoding"
 

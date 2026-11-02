@@ -4,7 +4,8 @@ This directory is test infrastructure and is excluded from the gem. The adapters
 exercise the real `ConnectRPC::Client`/NetHTTP and `Server`/Rack implementations
 on ephemeral loopback HTTP/1.1. `profile.yaml` explicitly selects Connect unary
 POST, identity, proto and JSON, and message receive limits. It disables TLS,
-client certificates, H2C, HTTP trailers, GET and half-duplex. This plaintext
+client certificates, H2C, HTTP trailers, GET and half-duplex.
+`profile-gzip.yaml` adds a separately executed gzip-only profile with the same axes. This plaintext
 host profile does not qualify the library's TLS behavior. Connect unary
 `trailer-` metadata is still tested.
 
@@ -13,12 +14,18 @@ mise run setup:conformance
 mise run conformance:check
 mise run test:conformance
 mise run test:conformance -- server
+mise run test:conformance:identity
+mise run test:conformance:gzip
 ```
 
 For troubleshooting, append one exact name from [cases.json](cases.json), quoted
-as a single argument, after `client` or `server`. Full verification and CI supply
+or [cases-gzip.json](cases-gzip.json), as a single argument after `client` or
+`server`. The exact inventory selects the profile automatically. Full verification and CI supply
 no selector. No skips, flakes or wildcards are enabled. The two exact
-caller-cancellation cases use [known-failing-client.txt](known-failing-client.txt).
+identity caller-cancellation cases use [known-failing-client.txt](known-failing-client.txt).
+The two exact gzip cases use the separate
+[known-failing-gzip-client.txt](known-failing-gzip-client.txt), approved after
+live unwaived runs established the same caller-cancellation cause.
 
 ## Pins and provenance
 
@@ -57,16 +64,24 @@ The pinned runner discovers 94 configured client cases and 88 server cases.
 [cases.json](cases.json) freezes the complete observed names, including timeout,
 duplicate metadata and remote `canceled` error cases. These are configured and
 executed counts, not totals for unsupported protocol/configuration axes. The
-independent [Go fixture](../interop/) remains 18 cases and is separate evidence.
+independent [Go fixture](../interop/) retains its 18 identity cases and adds
+40 separate gzip cases; neither is official conformance evidence. The exact
+gzip inventory has 88 client and 82 server cases, disjoint from identity. Their
+union is 182/170 configured cases, without implying that all pass. The dedicated
+compressed-error client case has no compression/codec suffix, so membership is
+never inferred from substrings.
 
 Each run preserves `runner.log`, `telemetry.jsonl` and `summary.json` beneath
 ignored `vendor/conformance/results/`, with Ruby version and direction in the
-run directory name. Raw `--vv` logs retain complete assertion blocks. The
+run directory name, together with profile identity. Raw `--vv` logs retain complete assertion blocks. The
 version-specific ledger requires exact scheduled, response, actual dispatch
 and completion sets, and checks totals, duplicates, missing outcomes, setup
 errors, could-not-run cases, unknown output and runner exit status. The client
 records receipt, actual NetHTTP exchange, completion and emitted framed result.
-The server records actual Rack requests, completed HTTP responses, readiness,
+Wire observations retain coding, encoded byte counts, Content-Length when
+present, gzip magic and SHA256. Failed transport reads are distinguished from
+complete responses. Matching default wire caps are retained for runner receive
+limits. The server records actual Rack requests, completed HTTP responses, readiness,
 stdin EOF and main-thread shutdown. The child command uses `RbConfig.ruby` and
 the inherited Bundler environment; Mise output never enters protobuf framing.
 
@@ -77,7 +92,7 @@ and explicit malformed/truncated errors. Protocol stdout contains frames only.
 
 ## Explicit caller-cancellation limitation
 
-There is no public caller-cancellation API. The two expanded client
+There is no public caller-cancellation API. Each profile has two client
 `Client Cancellation/.../unary/cancel-after-close-send` instructions request
 cancellation after 5 ms against a response delayed 200 ms. The adapter records
 that the instruction is unsupported, executes the real uncanceled RPC normally,
@@ -91,7 +106,7 @@ expecting an error but received none
 expecting 0 response messages but instead got 1
 ```
 
-The observed full run is 92 passed plus two expected failures for the client,
+The identity run is 92 passed plus two expected failures for the client,
 and 88 passed with zero failures for the server. The two unsupported caller instructions are still
 dispatched and executed; they are not passes. The ledger verifies their actual
 success, echoed request, absence of timeout, payload, headers/trailers and exact
@@ -100,3 +115,16 @@ to fail, and the ledger independently rejects any different assertion or result.
 An unexpected pass, missing case, setup error or unrelated failure fails
 verification. Every timeout/deadline case remains a
 must-pass. This profile does not establish full Connect conformance.
+
+
+The gzip profile executes 88 client cases: 86 pass and the two exact
+proto/JSON gzip caller-cancellation cases are executed expected failures with
+the assertions above. All 82 gzip server cases pass. Its separate exact-name
+manifest was approved after live unwaived runs on both pinned Rubies. The ledger
+checks the uncanceled gzip calls' real successful delayed echo, payload,
+metadata/trailers, absence of deadline, actual wire coding and exact causal
+assertions. An unexpected pass, unrelated failure, setup error or missing case
+fails verification. Across both profiles, 182 client cases execute with 178
+actual passes and four expected failures; all 170 server cases pass. Server errors remain identity by product policy;
+ordinary reference errors may do the same. Basic success separately requires
+actual gzip responses in both codecs and both directions.

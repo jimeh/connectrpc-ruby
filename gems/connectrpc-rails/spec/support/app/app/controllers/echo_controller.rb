@@ -21,11 +21,15 @@ class EchoController < ActionController::API
   def connect_handlers = Example::V1::EchoService.handlers(echo: method(:rpc_echo), fail: method(:rpc_fail))
 
   def connect_limits
-    case request.headers["x-case"]
-    when "request-limit" then { request_limit: 8 }
-    when "response-limit" then { response_limit: 100 }
-    else {}
-    end
+    limits = case request.headers["x-case"]
+             when "request-limit" then { request_limit: 8 }
+             when "gzip-inflated-limit" then { request_limit: 8, request_wire_limit: 1024 }
+             when "gzip-wire-limit" then { response_wire_limit: 80 }
+             when "response-limit" then { response_limit: 100 }
+             else {}
+             end
+    limits[:encoding] = :gzip if request.headers["x-gzip"] == "yes"
+    limits
   end
 
   def rpc_before

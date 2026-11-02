@@ -30,6 +30,7 @@ module InstalledIntegration
     private
 
     def connect_service = Example::V1::EchoService::SERVICE
+    def connect_limits = { encoding: :gzip }
     def connect_binding = ConnectRPC::Bindings::GoogleProtobuf.new
     def connect_handlers = Example::V1::EchoService.handlers(echo: method(:rpc_echo), fail: method(:rpc_fail))
 
@@ -64,11 +65,20 @@ transport = lambda do |request|
   body.close
   expected = request.headers.fetch("content-type").first
   abort "Changed content type" unless headers["content-type"] == (status == 200 ? expected : "application/json")
+  if request.headers["content-encoding"] == ["gzip"]
+    abort "Installed request not gzip" unless request.body.b.start_with?("\x1f\x8b".b)
+    if status == 200
+      abort "Installed Rails response not gzip" unless headers["content-encoding"] == ["gzip"] &&
+                                                       bytes.b.start_with?("\x1f\x8b".b)
+    elsif headers.key?("content-encoding")
+      abort "Installed Rails error must be identity"
+    end
+  end
   ConnectRPC::TransportResponse.new(status: status, headers: headers, body: bytes)
 end
-%i[proto json].each do |codec|
+%i[proto json].product(%i[identity gzip]).each do |codec, encoding|
   client = Example::V1::EchoService::Client.new(client: ConnectRPC::Client.new(
-    base_url: "http://www.example.com/rpc", binding: binding, codec: codec, transport: transport
+    base_url: "http://www.example.com/rpc", binding: binding, codec: codec, transport: transport, encoding: encoding
   ))
   response = client.echo(Example::V1::EchoMessage.new(name: "installed"))
   unless response.message.name == "installed" && response.metadata["x-callback"] == ["native"]
@@ -85,7 +95,7 @@ end
     detail = e.details.first.decode(binding: binding, type: Example::V1::EchoMessage)
     abort "Typed detail failed" unless detail.name == "detail"
   end
-  puts "Installed Rails #{Rails.version} Ruby #{RUBY_VERSION}: #{codec} typed success/error/detail passed"
+  puts "Installed Rails #{Rails.version} Ruby #{RUBY_VERSION}: #{codec}/#{encoding} typed success/error/detail passed"
   puts "Installed metadata/trailers + Rack::Lint passed"
 end
 %w[connectrpc connectrpc-rails actionpack railties rack google-protobuf].each do |name|

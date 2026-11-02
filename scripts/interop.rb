@@ -5,7 +5,7 @@ require "rbconfig"
 require "tmpdir"
 require_relative "../examples/localhost"
 
-module Interop
+module Interop # rubocop:disable Metrics/ModuleLength
   def self.check(condition, message)
     raise message unless condition
   end
@@ -66,8 +66,16 @@ module Interop
                            handlers: ruby_handlers)
   end
 
-  def self.run
+  # Keep peer startup, observable readiness and cleanup in the same scope.
+  # rubocop:disable-next Metrics/CyclomaticComplexity, Metrics/PerceivedComplexity
+  def self.run(profile: "identity")
     require_relative "../examples/echo_schema"
+
+    serve_mode, client_mode, ruby_peer = if profile == "gzip"
+                                           ["serve-gzip", "client-gzip", GzipInterop]
+                                         else
+                                           ["serve", "client", Interop]
+                                         end
 
     version, status = Open3.capture2("go", "version")
     check(status.success? && version.start_with?("go version go1.27.3 "),
@@ -79,13 +87,13 @@ module Interop
       binary = File.join(temporary, "peer")
       system("go", "mod", "verify", chdir: peer_dir, exception: true)
       system("go", "build", "-mod=readonly", "-o", binary, ".", chdir: peer_dir, exception: true)
-      Open3.popen2(binary, "serve", chdir: peer_dir) do |input, output, process|
+      Open3.popen2(binary, serve_mode, chdir: peer_dir) do |input, output, process|
         raise "Go peer did not announce readiness" unless output.wait_readable(10)
 
         url = output.gets&.strip
         check(url&.start_with?("http://127.0.0.1:"), "Invalid Go peer readiness: #{url.inspect}")
-        system(binary, "client", url, "Go", chdir: peer_dir, exception: true)
-        ruby_clients(url)
+        system(binary, client_mode, url, "Go", chdir: peer_dir, exception: true)
+        ruby_peer.ruby_clients(url)
       ensure
         input.close
         unless process.join(10)
@@ -95,16 +103,29 @@ module Interop
         end
         check(process.value.success?, "Go server failed")
       end
-      system(RbConfig.ruby, File.join(root, "scripts/generated_interop.rb"), binary, chdir: peer_dir, exception: true)
-      host = EchoExample::Localhost.new(ConnectRPC::Rack.new(server: ruby_server))
+      if profile == "identity"
+        system(RbConfig.ruby, File.join(root, "scripts/generated_interop.rb"), binary, chdir: peer_dir, exception: true)
+      end
+      host = EchoExample::Localhost.new(ConnectRPC::Rack.new(server: ruby_peer.ruby_server))
       begin
-        system(binary, "client", host.url, "Ruby", chdir: peer_dir, exception: true)
+        system(binary, client_mode, host.url, "Ruby", chdir: peer_dir, exception: true)
       ensure
         host.close
       end
     end
+    if profile == "gzip"
+      return puts "Gzip interop subset: 40 cases passed " \
+                  "(14 Go->Go, 12 Ruby->Go, 14 Go->Ruby, including 4 raw asymmetric probes)"
+    end
+
     puts "Unary interop subset: 18 cases passed (6 Go->Go baseline, 12 cross-language); no full conformance claim"
   end
 end
 
-Interop.run if $PROGRAM_NAME == __FILE__
+if $PROGRAM_NAME == __FILE__
+  require_relative "interop_gzip"
+  profiles = ARGV.empty? ? %w[identity gzip] : ARGV
+  raise "Usage: interop.rb [identity|gzip]" unless profiles.all? { |entry| %w[identity gzip].include?(entry) }
+
+  profiles.each { |profile| Interop.run(profile: profile) }
+end

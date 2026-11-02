@@ -2,6 +2,7 @@
 
 require "json"
 require "timeout"
+require "zlib"
 
 RSpec.describe ConnectRPC::Rails::Controller do
   let(:binding) { ConnectRPC::Bindings::GoogleProtobuf.new }
@@ -28,24 +29,33 @@ RSpec.describe ConnectRPC::Rails::Controller do
       body.close if body.respond_to?(:close)
       ConnectRPC::TransportResponse.new(status: status, headers: headers, body: bytes)
     end
-    %i[proto json].each do |codec|
+    %i[proto json].product(%i[identity gzip]).each do |codec, encoding|
       core = ConnectRPC::Client.new(base_url: "http://www.example.com/rpc", binding: binding,
-                                    codec: codec, transport: transport)
+                                    codec: codec, transport: transport, encoding: encoding)
       client = service::Client.new(client: core)
-      result = client.echo(type.new(name: "", count: 4_294_967_296, data: "\x00\xff".b))
+      result = client.echo(type.new(name: "", count: 4_294_967_296, data: "\x00\xff".b),
+                           metadata: { "x-gzip" => ["yes"] })
       expect(result.message.has_name?).to be_truthy
       expect(result.message.name).to eq("")
       expect(result.message.count).to eq(4_294_967_296)
       expect(result.message.data).to eq("\x00\xff".b)
       expect(result.metadata["x-leading"]).to eq(%w[one two])
       expect(result.trailers["x-trailing"]).to eq(["three"])
-      expect { client.fail(type.new(name: "detail")) }.to raise_error(ConnectRPC::Error) { |error|
-        expect(error.code).to eq("invalid_argument")
-        expect(error.message).to eq("safe failure")
-        expect(error.metadata["x-error"]).to eq(%w[one two])
-        expect(error.trailers["x-end"]).to eq(%w[three four])
-        expect(error.details.first.decode(binding: binding, type: type).name).to eq("detail")
-      }
+      expect do
+        client.fail(type.new(name: "detail"), metadata: { "x-gzip" => ["yes"] })
+      end.to raise_error(ConnectRPC::Error) { |error|
+               expect(error.code).to eq("invalid_argument")
+               expect(error.message).to eq("safe failure")
+               expect(error.metadata["x-error"]).to eq(%w[
+                                                         one two
+                                                       ])
+               expect(error.trailers["x-end"]).to eq(%w[
+                                                       three four
+                                                     ])
+               expect(error.details.first.decode(
+                 binding: binding, type: type
+               ).name).to eq("detail")
+             }
     end
   end
 
@@ -158,6 +168,15 @@ RSpec.describe ConnectRPC::Rails::Controller do
                                                             "CONTENT_TYPE" => "application/json",
                                                             input: '{"name":"normal"}')
     expect(JSON.parse(ordinary.body)).to include("name" => "normal")
+  end
+
+  it "dispatches gzip JSON scalar through native parser suppression" do
+    response = rpc("/example.Scalar/Echo", codec: :json, body: Zlib.gzip('"scalar"'),
+                                           "HTTP_CONTENT_ENCODING" => "gzip", "HTTP_X_GZIP" => "yes",
+                                           "HTTP_ACCEPT_ENCODING" => "gzip")
+    expect(response.status).to eq(200)
+    expect(response["content-encoding"]).to eq(["gzip"])
+    expect(JSON.parse(Zlib.gunzip(response.body))).to eq("scalar")
   end
 
   it "keeps real Base forgery protection and ordinary Base actions" do
