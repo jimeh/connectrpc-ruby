@@ -194,9 +194,11 @@ generation, Go interoperability and official conformance evidence.
 
 ## Status and licensing
 
-Experimental and not production ready. Streaming, GET, gRPC/gRPC-Web and production hosting are outside this adapter. Publication
-and licensing remain undecided. Both gems retain the `Nonstandard` license and
-`https://gems.invalid` push guard. Verification authorizes no publication.
+Experimental and not production ready. Streaming, GET, gRPC/gRPC-Web and production hosting are outside this adapter.
+Original project work is [MIT licensed](LICENSE), copyright 2026 Jim Myhrberg.
+Both gem archives include the complete license and retain the
+`https://gems.invalid` push guard. Publishing, releasing or deploying requires
+separate, explicit authorization. Verification authorizes no publication.
 
 
 To enable unary gzip, return `encoding: :gzip` from the private `connect_limits`

@@ -301,12 +301,17 @@ conformance.
 
 ## Status and licensing
 
-The source repository is public, but licensing is undecided. `Nonstandard` gem
-metadata grants no new license.
-The gem's `allowed_push_host` is `https://gems.invalid`, a reserved invalid
+Original project work is licensed under the [MIT License](LICENSE), copyright
+2026 Jim Myhrberg. The core, Rails and Async gem archives each include the
+complete license. Third-party dependencies and imported fixtures retain their
+own licenses and notices, including the separately licensed
+[conformance schemas](conformance/README.md).
+
+The gems' `allowed_push_host` remains `https://gems.invalid`, a reserved invalid
 domain, to guard against accidental public RubyGems pushes. It is not a
-publication destination or a complete access-control mechanism. Do not publish
-this gem without an explicit licensing and publication decision.
+publication destination or a complete access-control mechanism. Project MIT
+licensing is approved; publishing, releasing or deploying still requires
+separate, explicit authorization.
 
 ## Optional standalone HTTP/2
 

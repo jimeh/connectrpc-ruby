@@ -42,11 +42,12 @@ library and keep all `lib/**/*.rb` in scope. For asynchronous work, synchronize
 on observable progress and bounded completion; do not use fixed sleeps to
 assume a race has started or an operation has finished.
 
-Keep runtime dependencies deliberate and package checks isolated. Licensing is
-undecided, and `allowed_push_host` intentionally points to `https://gems.invalid`.
+Keep runtime dependencies deliberate and package checks isolated. Original
+project work is MIT licensed; `allowed_push_host` intentionally points to
+`https://gems.invalid`.
 Do not remove that guard or publish, release, or deploy without separate,
-explicit authorization and a licensing/publication decision. A successful build
-or verify command does not authorize publication.
+explicit authorization. A successful build or verify command does not authorize
+publication.
 
 Optional HTTP/2 development uses `mise run async:setup`, then `async:test`,
 `async:check` and `async:verify`. It has a separate checksummed Gemfile/lock,

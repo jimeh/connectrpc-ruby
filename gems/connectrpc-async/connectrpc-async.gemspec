@@ -6,10 +6,10 @@ Gem::Specification.new do |spec|
   spec.summary = "Optional Async HTTP/2 host and transport for ConnectRPC unary"
   spec.authors = ["jimeh"]
   spec.homepage = "https://github.com/jimeh/connectrpc-ruby"
-  spec.license = "Nonstandard"
+  spec.license = "MIT"
   spec.required_ruby_version = ">= 3.4"
   spec.metadata["allowed_push_host"] = "https://gems.invalid"
-  spec.files = Dir["lib/**/*.rb", "README.md"].sort
+  spec.files = Dir["lib/**/*.rb", "LICENSE", "README.md"].sort
   spec.require_paths = ["lib"]
   {
     "connectrpc" => "~> 0.1.0", "async-http" => "~> 0.105.0", "async" => "~> 2.46.0",

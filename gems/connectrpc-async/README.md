@@ -140,4 +140,7 @@ graph activates OpenSSL 4.0.2/JSON 3.1.0; installed core NetHTTP TLS/JSON with
 identity and gzip is also exercised under that activation. Focused combined
 specs cover actual gzip bytes over h2c/TLS in both codecs and independent host
 wire/inflated and transport wire/client inflated caps. Nothing is published.
-Licensing is undecided and the invalid `https://gems.invalid` push guard remains in both archives.
+Original project work is [MIT licensed](LICENSE), copyright 2026 Jim Myhrberg.
+Both archives include the complete license and retain the invalid
+`https://gems.invalid` push guard. Publishing, releasing or deploying requires
+separate, explicit authorization.

@@ -132,7 +132,7 @@ proof. The separate Go peer tests establish the advertised unary subset.
 ### Package isolation
 
 `check:package` asserts an explicit reviewed package manifest, zero runtime
-dependencies, and the publication guard. It runs `gem install --norc --local`
+dependencies, MIT metadata and complete license bytes, and the publication guard. It runs `gem install --norc --local`
 from a separate temporary working directory inside `Bundler.with_unbundled_env`,
 with fresh `GEM_HOME`/`GEM_PATH` and cleared Ruby/Bundler options. It verifies
 core require without Google/Rack and useful missing-optional-require errors.
@@ -155,9 +155,12 @@ The check does not install the development JSON gem: it exercises the Ruby
 default JSON and Net::HTTP gems. All installs are offline and temporary files
 are removed. Nothing is published.
 
-Only `lib/**/*.rb`, `exe/protoc-gen-connectrpc-ruby`, `README.md`, and the two
+Only `lib/**/*.rb`, `exe/protoc-gen-connectrpc-ruby`, `LICENSE`, `README.md`, and the two
 design/development documents ship. The executable metadata and packaged execute
 bits are checked; syntax and RuboCop include the extensionless executable.
+The optional Rails and Async packages carry byte-identical copies of the root
+`LICENSE`; their package checks verify both the copies and archived notices.
+Keep these copies in sync when updating the canonical notice.
 The exact manifest in `scripts/check_package.rb` must be deliberately updated
 when library files are added. Specs, fixtures, examples, peer code, tooling,
 coverage and installed development dependencies do not ship.
@@ -274,9 +277,10 @@ installation. For an urgent security fix inside the seven-day window, obtain
 an explicit maintainer exception, record the advisory/version/reason in the PR,
 and override cooldown only for that resolution (for example,
 `mise exec -- env BUNDLE_COOLDOWN=0 BUNDLE_FROZEN=false bundle lock --update <gem>`).
-Do not weaken the persistent policy. Licensing remains undecided; the invalid
-push host is an accidental-push guard, not permission to distribute or a
-security boundary against someone editing metadata.
+Do not weaken the persistent policy. Original project work is [MIT licensed](../LICENSE).
+The invalid push host remains an accidental-push guard, not a security boundary
+against someone editing metadata. Publishing, releasing or deploying requires
+separate, explicit authorization.
 
 ## Hooks and pull requests
 
@@ -293,7 +297,7 @@ commands and results (including RSpec example counts), and remaining limits.
 Approved merges use squash merging; merge authorization remains separate.
 Reuse valid evidence. Design changes should update [design.md](design.md).
 No release workflow, publication task, external bot, or secret is required.
-Publishing needs a separate licensing/publication decision and authorization.
+Project MIT licensing is approved. Publishing still needs separate, explicit authorization.
 
 ## Optional Rails development
 

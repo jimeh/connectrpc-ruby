@@ -121,7 +121,8 @@ The repository is now public, so runner hardware allocation can differ.
 Compare observations with that qualification; do not attribute the entire
 historical difference to the workflow. Local probes establish task/runtime
 contracts, not hosted action success, cache hits or a guaranteed speedup.
-Licensing remains undecided and the invalid gem push guard stays in place.
+Original project work is MIT licensed. The invalid gem push guard stays in place;
+publishing, releasing or deploying requires separate, explicit authorization.
 
 ## Optional Rails lanes
 

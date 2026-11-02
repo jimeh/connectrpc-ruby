@@ -10,7 +10,7 @@ root = File.expand_path("..", __dir__)
 archives = %w[connectrpc connectrpc-rails].map { |name| File.join(root, "vendor/rails/pkg/#{name}-0.1.0.gem") }
 core, adapter = archives.map { |archive| Gem::Package.new(archive) }
 core_files = %w[
-  README.md docs/development.md docs/design.md lib/connectrpc.rb lib/connectrpc/version.rb
+  LICENSE README.md docs/development.md docs/design.md lib/connectrpc.rb lib/connectrpc/version.rb
   exe/protoc-gen-connectrpc-ruby lib/connectrpc/generator.rb lib/connectrpc/generator/names.rb
   lib/connectrpc/generator/schema.rb lib/connectrpc/generator/renderer.rb lib/connectrpc/generator/runtime_names.rb
   lib/connectrpc/method.rb lib/connectrpc/metadata.rb lib/connectrpc/error.rb lib/connectrpc/deadline.rb
@@ -19,7 +19,7 @@ core_files = %w[
   lib/connectrpc/bindings/google_protobuf.rb lib/connectrpc/transports/net_http.rb
 ].sort
 abort "Core manifest changed" unless core.contents.sort == core_files.sort && core.spec.runtime_dependencies.empty?
-expected = %w[README.md lib/connectrpc/rails.rb lib/connectrpc/rails/controller.rb]
+expected = %w[LICENSE README.md lib/connectrpc/rails.rb lib/connectrpc/rails/controller.rb]
 abort "Unexpected Rails manifest" unless adapter.contents.sort == expected.sort
 expected_dependencies = {
   "connectrpc" => "~> 0.1.0", "actionpack" => ">= 8.0.5.1, < 8.2", "rack" => ">= 3.2.7, < 4"
@@ -27,8 +27,20 @@ expected_dependencies = {
 actual = adapter.spec.runtime_dependencies.to_h { |dependency| [dependency.name, dependency.requirement.to_s] }
 abort "Unexpected Rails dependencies: #{actual}" unless actual == expected_dependencies
 [core, adapter].each do |package|
-  unless package.spec.metadata["allowed_push_host"] == "https://gems.invalid" && package.spec.license == "Nonstandard"
+  unless package.spec.metadata["allowed_push_host"] == "https://gems.invalid" && package.spec.license == "MIT"
     abort "Publication guard/license missing"
+  end
+end
+unless File.binread(File.join(root, "gems/connectrpc-rails/LICENSE")) == File.binread(File.join(root, "LICENSE"))
+  abort "Package-local license differs from root LICENSE"
+end
+Dir.mktmpdir("connectrpc-license-") do |temporary|
+  [core, adapter].each do |package|
+    destination = File.join(temporary, package.spec.name)
+    package.extract_files(destination, "LICENSE")
+    unless File.binread(File.join(destination, "LICENSE")) == File.binread(File.join(root, "LICENSE"))
+      abort "Packaged license differs from root LICENSE: #{package.spec.name}"
+    end
   end
 end
 specs = Bundler.load.specs.reject { |spec| %w[connectrpc connectrpc-rails bundler].include?(spec.name) }
