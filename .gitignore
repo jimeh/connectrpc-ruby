@@ -1,0 +1,7 @@
+/.bundle/
+/vendor/
+/pkg/
+/coverage/
+/.rubocop_cache/
+/mise.local.toml
+/mise.local.lock

@@ -1,0 +1,83 @@
+min_version = "2026.9.14"
+
+[settings]
+lockfile = true
+minimum_release_age = "7d"
+ruby.compile = true
+# ruby-build v20261023; keep installer code inside the dependency age policy.
+ruby.ruby_build_repo = "https://github.com/rbenv/ruby-build.git#b6a92c15f0df872047c74f7dfa0b92dfd4de8a92"
+task.run_auto_install = false
+
+[tools]
+ruby = ["3.4.12", "4.0.9"]
+actionlint = "1.7.12"
+zizmor = "1.31.1"
+
+[env]
+BUNDLE_IGNORE_CONFIG = "true"
+BUNDLE_FROZEN = "true"
+BUNDLE_PATH = "{{config_root}}/vendor/bundle"
+BUNDLE_DISABLE_SHARED_GEMS = "true"
+BUNDLE_VERSION = "4.0.23"
+
+[tasks."setup:tools"]
+description = "Install locked project tools"
+run = "mise install --locked ruby actionlint zizmor"
+
+[tasks."setup:bundler"]
+description = "Install the pinned Bundler into the active Ruby"
+depends = ["setup:tools"]
+run = "mise exec -- ruby scripts/setup_bundler.rb"
+
+[tasks.setup]
+description = "Install tools, pinned Bundler, and the frozen bundle"
+depends = ["setup:bundler"]
+run = "mise exec -- bundle _4.0.23_ install"
+
+[tasks.format]
+description = "Format Ruby with RuboCop Layout cops"
+depends = ["setup"]
+run = "mise exec -- bundle _4.0.23_ exec rake format"
+
+[tasks."format:check"]
+description = "Check Ruby formatting without writing"
+depends = ["setup"]
+run = "mise exec -- bundle _4.0.23_ exec rake format:check"
+
+[tasks.lint]
+description = "Check non-Layout RuboCop cops"
+depends = ["setup"]
+run = "mise exec -- bundle _4.0.23_ exec rake lint"
+
+[tasks.syntax]
+description = "Parse all maintained Ruby files"
+depends = ["setup"]
+run = "mise exec -- bundle _4.0.23_ exec rake syntax"
+
+[tasks.test]
+description = "Run RSpec with local HTML and console coverage (accepts spec paths/options)"
+depends = ["setup"]
+run = "mise exec -- bundle _4.0.23_ exec rspec"
+
+[tasks.build]
+description = "Build the private gem into pkg/"
+depends = ["setup"]
+run = "mise exec -- bundle _4.0.23_ exec rake build"
+
+[tasks."lint:workflows"]
+description = "Check GitHub Actions syntax and security offline"
+depends = ["setup:tools"]
+run = ["mise exec -- actionlint", "mise exec -- zizmor --offline .github/workflows"]
+
+[tasks.check]
+description = "Run fast static checks"
+depends = ["format:check", "lint", "syntax", "lint:workflows"]
+
+[tasks."check:package"]
+description = "Install and require the built gem in isolation"
+depends = ["build"]
+run = "mise exec -- bundle _4.0.23_ exec rake check:package"
+
+[tasks.verify]
+description = "Run static checks, specs, build, and isolated package verification"
+depends = ["check", "test", "check:package"]
