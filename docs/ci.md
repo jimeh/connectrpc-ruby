@@ -1,7 +1,7 @@
 # CI
 
 The workflow runs on pull requests and pushes to `main`, on Ubuntu 24.04.
-It has nine core, three optional Rails and four optional HTTP/2 checks, with no serial cache primer or aggregate job:
+It has nine core, three optional Rails, four optional HTTP/2 and two optional Rack checks, with no serial cache primer or aggregate job:
 
 | Check | Ruby | Canonical commands |
 | --- | --- | --- |
@@ -14,6 +14,7 @@ It has nine core, three optional Rails and four optional HTTP/2 checks, with no 
 | Rails 8.1.4 | 3.4.12, 4.0.9 | Same Rails commands with `RAILS_LANE=8.1` |
 | Async specs/package | 3.4.12, 4.0.9 | `mise run async:test`, then `mise run async:package` |
 | Async Go interoperability | 3.4.12, 4.0.9 | `mise run async:interop` |
+| Rack specs/check/package | 3.4.12, 4.0.9 | `mise run rack:test`, `mise run rack:check`, `mise run rack:package` |
 
 Each matrix has `fail-fast: false`. Every check runs its commands on cache
 hits too. Package isolation still installs cached `.gem` artifacts offline and
@@ -160,3 +161,16 @@ rejects tracked/unexpected untracked changes after every lane. The sole observed
 backend `.bundle/` output from local Bundler configuration is ignored, matching
 the setup-ruby behavior without hiding Gemfiles or locks. Local guards and
 product/Go/package passes do not prove hosted cache behavior or exact-head CI.
+
+## Optional Rack lanes
+
+The Rack matrix adds two independent checks while preserving the original 16.
+It selects `gems/connectrpc-rack/Gemfile`, `vendor/rack/bundle` and
+`vendor/rack/bundler` before setup-ruby, with the existing exact Ruby/Bundler,
+frozen settings and seven-day cooldown. No Go or compiler tool is needed.
+`rack:tools` validates actual middleware Gemfile, bundle path, user home and
+working directory, then reuses the unchanged root runtime/PATH guard. Its CI
+replacement retains the whole local task context. Specs, lint and normal
+offline installed-package calls run on both Rubies, including source-owner
+assertions. Root `verify` keeps its composition; local handoff also runs
+`mise run rack:verify` for the moved middleware coverage.

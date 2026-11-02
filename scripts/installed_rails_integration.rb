@@ -98,7 +98,7 @@ end
   puts "Installed Rails #{Rails.version} Ruby #{RUBY_VERSION}: #{codec}/#{encoding} typed success/error/detail passed"
   puts "Installed metadata/trailers + Rack::Lint passed"
 end
-%w[connectrpc connectrpc-rails actionpack railties rack google-protobuf].each do |name|
+%w[connectrpc connectrpc-rack connectrpc-rails actionpack railties rack google-protobuf].each do |name|
   spec = Gem.loaded_specs.fetch(name)
   abort "#{name} loaded outside isolated GEM_HOME" unless spec.full_gem_path.start_with?("#{ENV.fetch('GEM_HOME')}/")
 end
@@ -106,3 +106,12 @@ source = ConnectRPC::Rails::Controller.instance_method(:connect).source_location
 unless source.start_with?(Gem.loaded_specs.fetch("connectrpc-rails").full_gem_path)
   abort "Adapter source escaped installed archive"
 end
+
+core = Gem.loaded_specs.fetch("connectrpc")
+abort "Core ships middleware" if File.exist?(File.join(core.full_gem_path, "lib/connectrpc/rack.rb"))
+source = File.join(Gem.loaded_specs.fetch("connectrpc-rack").full_gem_path, "lib/connectrpc/rack.rb")
+abort "Wrong middleware source owner" unless ConnectRPC::Rack.instance_method(:call).source_location.first == source
+abort "Duplicate middleware require owner" unless $LOADED_FEATURES.grep(%r{/connectrpc/rack\.rb$}) == [source]
+source = File.join(core.full_gem_path, "lib/connectrpc/server.rb")
+abort "Wrong core source owner" unless ConnectRPC::Server.instance_method(:call).source_location.first == source
+puts "Installed core/Rack/Rails source ownership passed"

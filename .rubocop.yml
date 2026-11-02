@@ -25,6 +25,8 @@ Gemspec/RequireMFA:
 Metrics/BlockLength:
   Exclude:
     - spec/**/*.rb
+    - gems/connectrpc-rack/spec/**/*.rb
+    - gems/connectrpc-rack/scripts/**/*.rb
     - gems/connectrpc-rails/spec/**/*.rb
     - gems/connectrpc-async/spec/**/*.rb
     - gems/connectrpc-async/scripts/**/*.rb
@@ -45,6 +47,8 @@ Metrics/MethodLength:
     - lib/connectrpc/generator/renderer.rb
     - lib/connectrpc/generator/names.rb
     - spec/**/*.rb
+    - gems/connectrpc-rack/spec/**/*.rb
+    - gems/connectrpc-rack/scripts/**/*.rb
     - gems/connectrpc-rails/spec/**/*.rb
     - gems/connectrpc-async/spec/**/*.rb
     - gems/connectrpc-async/scripts/**/*.rb
@@ -59,6 +63,8 @@ Metrics/AbcSize:
     - lib/connectrpc/generator/schema.rb
     - lib/connectrpc/generator/renderer.rb
     - spec/**/*.rb
+    - gems/connectrpc-rack/spec/**/*.rb
+    - gems/connectrpc-rack/scripts/**/*.rb
     - gems/connectrpc-rails/spec/**/*.rb
     - gems/connectrpc-async/spec/**/*.rb
     - gems/connectrpc-async/scripts/**/*.rb

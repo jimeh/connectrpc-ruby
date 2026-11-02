@@ -15,7 +15,7 @@ core_expected = %w[
   lib/connectrpc/method.rb lib/connectrpc/metadata.rb lib/connectrpc/error.rb lib/connectrpc/deadline.rb
   lib/connectrpc/compression.rb lib/connectrpc/message_io.rb lib/connectrpc/protocol.rb
   lib/connectrpc/client.rb lib/connectrpc/server.rb
-  lib/connectrpc/rack.rb lib/connectrpc/bindings/google_protobuf.rb lib/connectrpc/transports/net_http.rb
+  lib/connectrpc/bindings/google_protobuf.rb lib/connectrpc/transports/net_http.rb
 ].sort
 abort "Core package changed" unless core.contents.sort == core_expected && core.spec.runtime_dependencies.empty?
 expected = %w[LICENSE README.md lib/connectrpc/async.rb lib/connectrpc/async/internal.rb lib/connectrpc/async/tls.rb

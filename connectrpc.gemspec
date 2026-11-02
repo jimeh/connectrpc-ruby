@@ -6,7 +6,8 @@ Gem::Specification.new do |spec|
   spec.version = File.read(File.join(__dir__, "lib/connectrpc/version.rb"))[/VERSION = "([^"]+)"/, 1]
   spec.authors = ["jimeh"]
   spec.summary = "Experimental Connect unary RPC and service generation for Ruby"
-  spec.description = "Unofficial typed Connect unary clients and Rack middleware. Experimental, not production ready."
+  spec.description = "Unofficial typed Connect unary clients and host-neutral servers. " \
+                     "Experimental, not production ready."
   spec.homepage = "https://github.com/jimeh/connectrpc-ruby"
   spec.license = "MIT"
   spec.required_ruby_version = ">= 3.4"

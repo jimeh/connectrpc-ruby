@@ -26,7 +26,7 @@ arguments = case command
             when "build" then ["exec", "ruby", "-rrubygems/package", "-rfileutils", "-e", <<~CODE]
               FileUtils.mkdir_p("../../vendor/rails/pkg")
               output = File.expand_path("../../vendor/rails/pkg")
-              ["../..", "."].each do |directory|
+              ["../..", "../connectrpc-rack", "."].each do |directory|
                 Dir.chdir(directory) do
                   specification = Gem::Specification.load(Dir.glob("*.gemspec").fetch(0))
                   Gem::Package.build(specification, false, false, File.join(output, specification.file_name))

@@ -5,6 +5,7 @@ require "connectrpc/bindings/google_protobuf"
 require "google/protobuf/wrappers_pb"
 require "connectrpc/transports/net_http"
 require_relative "localhost"
+require "rack/lint"
 
 type = Google::Protobuf::StringValue
 method = ConnectRPC::Method.new(service: "installed.Echo", name: "Call", request_type: type, response_type: type)
@@ -15,12 +16,13 @@ handler = lambda do |request, context|
     detail = ConnectRPC::ErrorDetail.new(type: "google.protobuf.StringValue", value: request.to_proto)
     raise ConnectRPC::Error.new(:invalid_argument, "safe", details: [detail], trailers: { "x-error" => ["installed"] })
   end
+  context.response_metadata["x-leading"] = %w[one two]
   context.response_trailers.add("x-installed", "yes")
   type.new(value: "installed #{request.value}")
 end
 server = ConnectRPC::Server.new(services: [service], binding: binding, handlers: { method.path => handler },
                                 encoding: :gzip)
-host = EchoExample::Localhost.new(ConnectRPC::Rack.new(server: server))
+host = EchoExample::Localhost.new(Rack::Lint.new(ConnectRPC::Rack.new(server: server)))
 begin
   observed = []
   http = ConnectRPC::Transports::NetHTTP.new
@@ -34,6 +36,7 @@ begin
                                     transport: transport)
     result = client.call(method, type.new(value: "typed"), timeout: 2)
     abort "Installed typed integration failed" unless result.message.value == "installed typed"
+    abort "Installed metadata failed" unless result.metadata["x-leading"] == ["one, two"]
     abort "Installed trailers failed" unless result.trailers["x-installed"] == ["yes"]
     request, response = observed.last
     if encoding == :gzip
@@ -61,8 +64,17 @@ begin
     error = ConnectRPC::Protocol.parse_error(503, { "content-type" => ["application/json"] }, body)
     abort "Default JSON malformed error fallback failed" unless error.code == "unavailable"
   end
+  core = Gem.loaded_specs.fetch("connectrpc")
+  middleware = Gem.loaded_specs.fetch("connectrpc-rack")
+  abort "Core ships middleware" if File.exist?(File.join(core.full_gem_path, "lib/connectrpc/rack.rb"))
+  source = File.join(middleware.full_gem_path, "lib/connectrpc/rack.rb")
+  abort "Wrong middleware source owner" unless ConnectRPC::Rack.instance_method(:call).source_location.first == source
+  abort "Duplicate middleware require owner" unless $LOADED_FEATURES.grep(%r{/connectrpc/rack\.rb$}) == [source]
+  core_source = ConnectRPC::Server.instance_method(:call).source_location.first
+  abort "Wrong core source owner" unless core_source == File.join(core.full_gem_path, "lib/connectrpc/server.rb")
+  puts "Installed core/Rack source ownership passed"
   puts "Default libraries: JSON #{Gem.loaded_specs.fetch('json').version}, Net::HTTP #{Net::HTTP::VERSION}, Zlib #{Zlib::VERSION}"
-  %w[connectrpc google-protobuf rack rackup webrick bigdecimal rake].each do |name|
+  %w[connectrpc connectrpc-rack google-protobuf rack rackup webrick bigdecimal rake].each do |name|
     installed = Gem.loaded_specs.fetch(name)
     unless installed.full_gem_path.start_with?("#{ENV.fetch('GEM_HOME')}/")
       abort "#{name} loaded outside isolated GEM_HOME"

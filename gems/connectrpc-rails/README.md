@@ -2,14 +2,15 @@
 
 Optional native Rails controller execution for the experimental, unofficial
 ConnectRPC unary Ruby gem. The core gem remains independent of Rails and has
-zero runtime dependencies. This adapter reuses its Server invoker and Rack
-translation. It does not add another protocol implementation.
+zero runtime dependencies. This adapter reuses its Server invoker and the
+optional [connectrpc-rack](../connectrpc-rack/README.md) translation. It does not add another protocol implementation.
 
 ## Use a controller
 
 Add `connectrpc-rails` and your chosen protobuf binding dependency to your
 application Gemfile. Runtime dependencies are `connectrpc ~> 0.1.0`,
-`actionpack >= 8.0.5.1, < 8.2`, and `rack >= 3.2.7, < 4`. The application
+`connectrpc-rack ~> 0.1.0`, and `actionpack >= 8.0.5.1, < 8.2`.
+The Rack package supplies the `rack >= 3.2.7, < 4` requirement. The application
 chooses its controller base, binding, authentication, and security policy.
 Requiring `connectrpc/rails` loads neither `ActionController::Base` nor
 `ActionController::API`, and does not load Google protobuf.
@@ -184,7 +185,7 @@ uses root `vendor/bundle` by ABI; adapter artifacts and coverage live under
 `vendor/rails`. SimpleCov starts before adapter requires and includes every
 adapter library file, independently of core coverage.
 
-`check:package:rails` builds both archives, checks exact manifests and metadata,
+`check:package:rails` builds all three core/Rack/Rails archives, checks exact manifests and metadata,
 and installs them with conventional offline dependency resolution into fresh
 GEM_HOME/GEM_PATH outside the checkout. Installed generated clients perform
 binary/JSON success and structured error calls through a real Rails application
