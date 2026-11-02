@@ -15,8 +15,8 @@ mise exec -- bundle --version
 
 `mise.toml` pins CRuby 3.4.12 and 4.0.9, actionlint, and zizmor. Both Rubies
 compile from upstream source. Local setup installs both, with 3.4.12 first on
-PATH; CI selects one version per job with `MISE_RUBY_VERSION`. Run a targeted
-check on the other version with:
+PATH. CI uses official prebuilt runtimes instead; see [CI](ci.md). Run a
+targeted local check on the other version with:
 
 ```sh
 MISE_RUBY_VERSION=4.0.9 mise run test
@@ -50,7 +50,8 @@ Mise owns setup ordering and verification composition.
 | `mise run test -- spec/connectrpc_spec.rb` | Run focused RSpec examples; accepts `file:line` and RSpec options. |
 | `mise run test` | Run all specs and generate coverage. |
 | `mise run lint:workflows` | Run actionlint and offline zizmor. |
-| `mise run check` | Run format, lint, syntax, and workflow checks. |
+| `mise run check:static` | Run format, lint, and workflow checks once. |
+| `mise run check` | Run static checks and Ruby syntax checks. |
 | `mise run build` | Build `pkg/connectrpc-0.1.0.gem`. |
 | `mise run check:package` | Build, install, and require the gem in isolation. |
 | `mise run example` | Run a typed ephemeral localhost Rack/NetHTTP example in both codecs. |
@@ -67,9 +68,10 @@ Mise owns setup ordering and verification composition.
 Every entry point installs missing prerequisites through the same task graph.
 During Ruby iteration, use focused tests and relevant static checks. Run
 `check` for fast static feedback and `verify` for package/tooling changes and
-final implementation handoff. CI runs the same setup and verify commands on
-both pinned Rubies. Hosted clean-environment and matrix results remain CI
-evidence; a local pass cannot establish them.
+final implementation handoff. [CI](ci.md) splits the same canonical component
+tasks into nine independent checks, with syntax, specs, package isolation,
+interop and official conformance on both Rubies. Hosted clean-environment and
+matrix results remain CI evidence; a local pass cannot establish them.
 
 Markdown is maintained manually: check relative links, commands, and fenced
 examples when changing prose. There is no automatic Markdown formatter or

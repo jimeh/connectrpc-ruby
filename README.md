@@ -1,6 +1,6 @@
 # connectrpc-ruby
 
-A private, unofficial, experimental Ruby implementation of typed
+An unofficial, experimental Ruby implementation of typed
 [Connect](https://connectrpc.com/docs/protocol/) unary RPCs. It provides a
 configurable client, a Net::HTTP transport, and Rack middleware for reusable
 Ruby handlers. It is not production ready.
@@ -156,8 +156,9 @@ slice. Checks surround input, decode, and invocation; handlers must cooperate.
 Synchronous Rack cannot interrupt blocked reads or arbitrary handlers, or
 detect every disconnected peer. See [design](docs/design.md) for these limits.
 
-CRuby >= 3.4 is the baseline; project verification targets source-built Ruby
-3.4.12 and 4.0.9 on Linux x64. See [development](docs/development.md) for the
+CRuby >= 3.4 is the baseline; project verification targets Ruby 3.4.12 and
+4.0.9 on Linux x64. Local setup builds from source; CI uses official prebuilt
+runtimes. See [development](docs/development.md) for the
 commands, dependency policy, isolated installation and evidence scope. The
 interop fixture runs 18 cases: six Go-to-Go reference baseline cases and twelve
 Ruby-to-Go/Go-to-Ruby cases. Both codecs share typed success, deliberate error
@@ -171,9 +172,10 @@ API; both still execute real RPCs and are required to fail for the exact
 documented reason. Results are 92 client passes plus two expected failures, and
 88 server passes. This is a bounded profile, not full Connect conformance.
 
-## Private status and licensing
+## Status and licensing
 
-Licensing is undecided. `Nonstandard` gem metadata grants no new license.
+The source repository is public, but licensing is undecided. `Nonstandard` gem
+metadata grants no new license.
 The gem's `allowed_push_host` is `https://gems.invalid`, a reserved invalid
 domain, to guard against accidental public RubyGems pushes. It is not a
 publication destination or a complete access-control mechanism. Do not publish

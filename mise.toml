@@ -69,9 +69,13 @@ description = "Check GitHub Actions syntax and security offline"
 depends = ["setup:tools"]
 run = ["mise exec -- actionlint", "mise exec -- zizmor --offline .github/workflows"]
 
+[tasks."check:static"]
+description = "Run platform-independent format, lint, and workflow checks"
+depends = ["format:check", "lint", "lint:workflows"]
+
 [tasks.check]
 description = "Run fast static checks"
-depends = ["format:check", "lint", "syntax", "lint:workflows"]
+depends = ["check:static", "syntax"]
 
 [tasks."check:package"]
 description = "Install and require the built gem in isolation"
