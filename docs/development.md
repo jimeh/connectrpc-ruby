@@ -78,7 +78,7 @@ During Ruby iteration, use focused tests and relevant static checks. Run
 final implementation handoff. Run `mise run verify` and then `mise run rack:verify`
 for final handoff; moved middleware specs have their own canonical gate.
 [CI](https://github.com/jimeh/connectrpc-ruby/blob/main/docs/ci.md) splits the same
-canonical component tasks into nine core, three Rails, four optional HTTP/2 and two optional Rack checks, with syntax, specs, package isolation,
+canonical component tasks into nine core, three Rails, four optional HTTP/2, two optional Rack and two optional testing checks, with syntax, specs, package isolation,
 interop and official conformance on both Rubies. Hosted clean-environment and
 matrix results remain CI evidence; a local pass cannot establish them.
 
@@ -166,7 +166,7 @@ Core ships no `lib/connectrpc/rack.rb`. Only the remaining `lib/**/*.rb`,
 `exe/protoc-gen-connectrpc-ruby`, `LICENSE`, `README.md`, and the two
 design/development documents ship. The executable metadata and packaged execute
 bits are checked; syntax and RuboCop include the extensionless executable.
-The optional Rack, Rails and Async packages carry byte-identical copies of the root
+The optional Rack, Rails, Async and testing packages carry byte-identical copies of the root
 `LICENSE`; their package checks verify both the copies and archived notices.
 Keep these copies in sync when updating the canonical notice.
 The exact manifest in `scripts/check_package.rb` must be deliberately updated
@@ -404,3 +404,5 @@ Final local handoff requires `mise run verify` followed by `mise run rack:verify
 Root `verify` composition is unchanged. CI preserves the original 16 checks and
 adds two Rack specs/check/package lanes on the existing Rubies; clean-environment
 matrix evidence remains a hosted responsibility. No runtime savings are claimed.
+
+See the optional [in-process testing package](../gems/connectrpc-testing/README.md) for real encoded client/server round trips without sockets.

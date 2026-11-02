@@ -315,7 +315,7 @@ conformance.
 ## Status and licensing
 
 Original project work is licensed under the [MIT License](LICENSE), copyright
-2026 Jim Myhrberg. The core, Rails and Async gem archives each include the
+2026 Jim Myhrberg. The core, Rack, Rails, Async and testing gem archives each include the
 complete license. Third-party dependencies and imported fixtures retain their
 own licenses and notices, including the separately licensed
 [conformance schemas](conformance/README.md).
@@ -340,3 +340,5 @@ header normalization. `mise run async:example` runs the generated localhost
 example; `async:verify` checks the independent bundle, installed packages and
 connect-go interoperability. Core require and core/Rails dependencies stay
 independent.
+
+See the optional [in-process testing package](gems/connectrpc-testing/README.md) for real encoded client/server round trips without sockets.

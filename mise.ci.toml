@@ -28,3 +28,9 @@ description = "Validate exact action Ruby/Bundler and the independent middleware
 dir = "{{config_root}}/gems/connectrpc-rack"
 env = { BUNDLE_GEMFILE = "{{config_root}}/gems/connectrpc-rack/Gemfile", BUNDLE_PATH = "{{config_root}}/vendor/rack/bundle", BUNDLE_USER_HOME = "{{config_root}}/vendor/rack/bundler", BUNDLE_COOLDOWN = "7" }
 run = "ruby scripts/ci_runtime.rb"
+
+[tasks."testing:tools"]
+description = "Validate action Ruby/Bundler and independent testing bundle settings"
+dir = "{{config_root}}/gems/connectrpc-testing"
+env = { BUNDLE_GEMFILE = "{{config_root}}/gems/connectrpc-testing/Gemfile", BUNDLE_PATH = "{{config_root}}/vendor/testing/bundle", BUNDLE_USER_HOME = "{{config_root}}/vendor/testing/bundler", BUNDLE_COOLDOWN = "7" }
+run = "ruby scripts/ci_runtime.rb"

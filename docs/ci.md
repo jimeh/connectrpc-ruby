@@ -1,7 +1,8 @@
 # CI
 
 The workflow runs on pull requests and pushes to `main`, on Ubuntu 24.04.
-It has nine core, three optional Rails, four optional HTTP/2 and two optional Rack checks, with no serial cache primer or aggregate job:
+It has nine core, three optional Rails, four optional HTTP/2, two optional Rack
+and two optional in-process testing checks, with no serial cache primer or aggregate job:
 
 | Check | Ruby | Canonical commands |
 | --- | --- | --- |
@@ -15,6 +16,7 @@ It has nine core, three optional Rails, four optional HTTP/2 and two optional Ra
 | Async specs/package | 3.4.12, 4.0.9 | `mise run async:test`, then `mise run async:package` |
 | Async Go interoperability | 3.4.12, 4.0.9 | `mise run async:interop` |
 | Rack specs/check/package | 3.4.12, 4.0.9 | `mise run rack:test`, `mise run rack:check`, `mise run rack:package` |
+| In-process testing | 3.4.12, 4.0.9 | `mise run testing:verify` |
 
 Each matrix has `fail-fast: false`. Every check runs its commands on cache
 hits too. Package isolation still installs cached `.gem` artifacts offline and
@@ -174,3 +176,15 @@ replacement retains the whole local task context. Specs, lint and normal
 offline installed-package calls run on both Rubies, including source-owner
 assertions. Root `verify` keeps its composition; local handoff also runs
 `mise run rack:verify` for the moved middleware coverage.
+
+
+## Optional in-process testing lanes
+
+The [testing package](../gems/connectrpc-testing/README.md) has a separate
+checksummed bundle and native cache under `vendor/testing/bundle`, with Bundler
+user state under `vendor/testing/bundler`. Both Ruby lanes run package syntax,
+lint, behavior specs, the generated example and isolated offline installation.
+The complete `testing:tools` CI override validates the action runtime and actual
+testing Gemfile/cache directly, without assuming the root bundle path. Root
+`verify` composition remains unchanged. These calls do not provide network or
+independent-peer interoperability evidence.

@@ -29,6 +29,8 @@ Metrics/BlockLength:
     - gems/connectrpc-rack/scripts/**/*.rb
     - gems/connectrpc-rails/spec/**/*.rb
     - gems/connectrpc-async/spec/**/*.rb
+    - gems/connectrpc-testing/spec/**/*.rb
+    - gems/connectrpc-testing/scripts/**/*.rb
     - gems/connectrpc-async/scripts/**/*.rb
     - scripts/check_package.rb
     - scripts/build_generation.rb
@@ -51,6 +53,8 @@ Metrics/MethodLength:
     - gems/connectrpc-rack/scripts/**/*.rb
     - gems/connectrpc-rails/spec/**/*.rb
     - gems/connectrpc-async/spec/**/*.rb
+    - gems/connectrpc-testing/spec/**/*.rb
+    - gems/connectrpc-testing/scripts/**/*.rb
     - gems/connectrpc-async/scripts/**/*.rb
     - scripts/interop.rb
     - scripts/conformance.rb
@@ -67,6 +71,8 @@ Metrics/AbcSize:
     - gems/connectrpc-rack/scripts/**/*.rb
     - gems/connectrpc-rails/spec/**/*.rb
     - gems/connectrpc-async/spec/**/*.rb
+    - gems/connectrpc-testing/spec/**/*.rb
+    - gems/connectrpc-testing/scripts/**/*.rb
     - gems/connectrpc-async/scripts/**/*.rb
     - scripts/interop.rb
     - scripts/conformance.rb
