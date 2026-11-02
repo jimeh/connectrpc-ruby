@@ -1,0 +1,11 @@
+syntax = "proto3";
+package generation_fixture.v1;
+import "generation/public.proto";
+message Message { optional int32 count = 1; }
+message ConnectRPC { string value = 1; }
+service EchoService {
+  rpc Echo(Message) returns (Message);
+  rpc Fail(Message) returns (Message);
+  rpc GetHTTP(generation_types.outer_name._value) returns (generation_types.outer_name._value);
+}
+service EmptyService {}

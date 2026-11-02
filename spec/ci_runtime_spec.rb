@@ -86,7 +86,7 @@ RSpec.describe "CI check mapping" do
     commands = jobs.transform_values { |job| job.fetch("steps").filter_map { |step| step["run"] } }
     expect(commands.fetch("static")).to include("mise run check:static")
     expect(commands.fetch("specs").first(2)).to eq(["mise run syntax", "mise run test"])
-    expect(commands.fetch("package")).to include("mise run check:package")
+    expect(commands.fetch("package").first(2)).to eq(["mise run generation:check", "mise run check:package"])
     expect(commands.fetch("interop").first(2)).to eq(["mise run fixture:check", "mise run test:interop"])
     expect(commands.fetch("conformance")).to include("mise run test:conformance")
   end
@@ -112,9 +112,12 @@ RSpec.describe "CI check mapping" do
     expect(sets.fetch("conformance")).to include("install" => true, "cache" => true,
                                                  "install_args" => "github:connectrpc/conformance@1.0.6 " \
                                                                    "aqua:protocolbuffers/protobuf/protoc@36.2")
-    %w[specs package interop].each do |job|
+    %w[specs interop].each do |job|
       expect(sets.fetch(job)).to include("install" => false, "cache" => false)
     end
+    expect(sets.fetch("package")).to include("install" => true, "cache" => true,
+                                             "install_args" => "aqua:protocolbuffers/protobuf/protoc@36.2 " \
+                                                               "aqua:bufbuild/buf@1.75.0")
     interop = jobs.fetch("interop")
     expect(interop.fetch("env")).to include("GOMODCACHE" => "${{ github.workspace }}/vendor/interop/mod",
                                             "GOCACHE" => "${{ github.workspace }}/vendor/interop/build")
@@ -136,5 +139,16 @@ RSpec.describe "CI Mise task replacement" do
     expect(ci.fetch("description")).not_to be_empty
     expect(local.fetch("run")).to eq(["mise install --locked go@1.27.3", "go mod download"])
     expect(ci.fetch("run")).to eq(["ruby {{config_root}}/scripts/ci_runtime.rb interop", "go mod download"])
+  end
+end
+
+RSpec.describe "Task-local tool activation" do
+  it "runs tool-owning commands directly so nested Mise cannot remove their tools" do
+    output, error, status = Open3.capture3("mise", "tasks", "--json")
+    expect(status.success?).to be(true), error
+    tasks = JSON.parse(output)
+    tasks.reject { |task| task.fetch("tools", {}).empty? }.each do |task|
+      expect(task.fetch("run")).not_to include(a_string_matching(/\bmise exec\b/)), task.fetch("name")
+    end
   end
 end

@@ -1,0 +1,6 @@
+syntax = "proto3";
+package generation_google_ruby;
+option ruby_package = "Google::GenerationFixture::MappedV1";
+import "google/protobuf/empty.proto";
+message Message { google.protobuf.Empty value = 1; }
+service EchoService { rpc Echo(Message) returns (Message); }

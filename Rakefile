@@ -6,7 +6,7 @@ require "rubocop/rake_task"
 require "rspec/core/rake_task"
 
 specification = Gem::Specification.load("connectrpc.gemspec")
-desc "Build the private gem from the current exact manifest"
+desc "Build the experimental gem from the current exact manifest"
 task :build do
   mkdir_p "pkg"
   Gem::Package.build(specification, false, false, File.join("pkg", specification.file_name))
@@ -26,7 +26,7 @@ RSpec::Core::RakeTask.new(:test)
 desc "Parse every maintained Ruby source, spec, script, gemspec, and Rakefile"
 task :syntax do
   files = FileList["lib/**/*.rb", "spec/**/*.rb", "scripts/**/*.rb", "examples/**/*.rb", "conformance/**/*.rb",
-                   "*.gemspec", "Gemfile",
+                   "exe/*", "*.gemspec", "Gemfile",
                    "Rakefile"]
   files.each { |file| ruby "-c", file }
 end

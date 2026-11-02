@@ -6,6 +6,8 @@ AllCops:
     - vendor/**/*
     - pkg/**/*
     - coverage/**/*
+    # Official protoc output is checked by regeneration, not rewritten by lint.
+    - spec/fixtures/generation/**/*_pb.rb
 
 Style/StringLiterals:
   EnforcedStyle: double_quotes
@@ -22,12 +24,20 @@ Metrics/BlockLength:
   Exclude:
     - spec/**/*.rb
     - scripts/check_package.rb
+    - scripts/build_generation.rb
+    - scripts/generated_integration.rb
+    - scripts/generated_interop.rb
     - scripts/interop.rb
     - scripts/conformance.rb
     - conformance/**/*.rb
 
+# Descriptor validation keeps each related invariant together; emission methods
+# mirror generated Ruby blocks. These files still receive all syntax/style cops.
 Metrics/MethodLength:
   Exclude:
+    - lib/connectrpc/generator/schema.rb
+    - lib/connectrpc/generator/renderer.rb
+    - lib/connectrpc/generator/names.rb
     - spec/**/*.rb
     - scripts/interop.rb
     - scripts/conformance.rb
@@ -36,6 +46,8 @@ Metrics/MethodLength:
 
 Metrics/AbcSize:
   Exclude:
+    - lib/connectrpc/generator/schema.rb
+    - lib/connectrpc/generator/renderer.rb
     - spec/**/*.rb
     - scripts/interop.rb
     - scripts/conformance.rb
@@ -49,9 +61,11 @@ Metrics/ParameterLists:
 Metrics/ClassLength:
   Exclude:
     - conformance/ledger.rb
+    - lib/connectrpc/generator/schema.rb
 
 Metrics/CyclomaticComplexity:
   Exclude:
+    - lib/connectrpc/generator/schema.rb
     - spec/support/socket_peer.rb
     - conformance/ledger.rb
     - conformance/client.rb
@@ -59,6 +73,7 @@ Metrics/CyclomaticComplexity:
 
 Metrics/PerceivedComplexity:
   Exclude:
+    - lib/connectrpc/generator/schema.rb
     - spec/support/socket_peer.rb
     - conformance/ledger.rb
     - conformance/client.rb
@@ -69,3 +84,13 @@ Naming/VariableNumber:
   AllowedIdentifiers:
     - HTTP_VERSION_1
     - HTTP_VERSION_2
+
+# Service module names follow official RubifyConstant, which preserves underscores.
+Naming/ClassAndModuleCamelCase:
+  Exclude:
+    - spec/fixtures/generation/**/*_connect.rb
+
+# The generated public seam deliberately spells out the forwarded option bag.
+Style/ArgumentsForwarding:
+  Exclude:
+    - spec/fixtures/generation/**/*_connect.rb

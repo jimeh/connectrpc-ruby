@@ -1,0 +1,3 @@
+syntax = "proto3";
+package generation_public;
+import public "generation/types.proto";

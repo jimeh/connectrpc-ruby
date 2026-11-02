@@ -55,11 +55,15 @@ Mise owns setup ordering and verification composition.
 | `mise run check` | Run static checks and Ruby syntax checks. |
 | `mise run build` | Build `pkg/connectrpc-0.1.0.gem`. |
 | `mise run check:package` | Build, install, and require the gem in isolation. |
+| `mise run setup:generation` | Install task-local protoc 36.2 and development-only Buf 1.75.0. |
+| `mise run generation:build` | Regenerate checked-in official messages and service glue using protoc; verify actual Buf glue parity/runtime. |
+| `mise run generation:check` | Regenerate into temp trees, compare fixture bytes/glue parity, exercise both protoc and Buf output. |
+| `mise run example:generated` | Compile the greeting proto and run its generated localhost client/handlers in both codecs. |
 | `mise run example` | Run a typed ephemeral localhost Rack/NetHTTP example in both codecs. |
 | `mise run fixture:build` | Rebuild the shared descriptor fixture from its explicit Ruby schema builder. |
 | `mise run fixture:check` | Compare the checked-in descriptor bytes to the builder. |
 | `mise run setup:interop` | Install task-local Go 1.27.3 and download checksum-locked modules. |
-| `mise run test:interop` | Run the Go-to-Go reference baseline and both cross-language directions/codecs, 18 cases total. |
+| `mise run test:interop` | Run the Go-to-Go reference baseline and both cross-language directions/codecs, 18 original cases plus a separate generated Ruby process against the same peer. |
 | `mise run setup:conformance` | Install task-local official runner 1.0.6 and protoc 36.2 with locked checksums. |
 | `mise run conformance:build` | Generate descriptors from unchanged official schemas using protoc. |
 | `mise run conformance:check` | Verify schema hashes and byte-for-byte descriptor regeneration. |
@@ -117,7 +121,7 @@ proof. The separate Go peer tests establish the advertised unary subset.
 ### Package isolation
 
 `check:package` asserts an explicit reviewed package manifest, zero runtime
-dependencies, and the private push guard. It runs `gem install --norc --local`
+dependencies, and the publication guard. It runs `gem install --norc --local`
 from a separate temporary working directory inside `Bundler.with_unbundled_env`,
 with fresh `GEM_HOME`/`GEM_PATH` and cleared Ruby/Bundler options. It verifies
 core require without Google/Rack and useful missing-optional-require errors.
@@ -126,14 +130,54 @@ It then installs the cached, locked optional artifacts, including native
 WEBrick. The installed gem performs real typed Rack/NetHTTP calls with both
 binary and JSON scalar-wrapper payloads. The helper scripts are copied to the
 external cwd; library code loads exclusively from the fresh installed gem.
+The installed executable first proves missing Google fails helpfully with empty
+stdout. The task retains its task-local compiler activation, and the check
+requires `protoc --version` to report `libprotoc 36.2`. Missing executables and
+failed commands report the command and failure status. After the optional
+artifacts are installed, actual protoc invokes only
+`GEM_HOME/bin/protoc-gen-connectrpc-ruby` outside the checkout with cleared
+Ruby/Bundler source paths. The generated tree performs typed success/error,
+metadata/trailers, nested imported types and presence calls in both codecs.
+Google package and explicit Ruby package fixtures import ordinary WKTs, assert
+exact official message-class identity and perform typed calls in both codecs.
 The check does not install the development JSON gem: it exercises the Ruby
 default JSON and Net::HTTP gems. All installs are offline and temporary files
 are removed. Nothing is published.
 
-Only `lib/**/*.rb`, `README.md`, and the two design/development documents ship.
+Only `lib/**/*.rb`, `exe/protoc-gen-connectrpc-ruby`, `README.md`, and the two
+design/development documents ship. The executable metadata and packaged execute
+bits are checked; syntax and RuboCop include the extensionless executable.
 The exact manifest in `scripts/check_package.rb` must be deliberately updated
 when library files are added. Specs, fixtures, examples, peer code, tooling,
 coverage and installed development dependencies do not ship.
+
+### Generator provenance and tools
+
+Ordinary Specs load unique checked-in official outputs without installing
+protoc, Buf, Go or the conformance runner. `spec/fixtures/generation/proto/`
+owns unique schemas; `ruby/` contains protoc 36.2 message output and this
+plugin's glue. `echo/` contains official outputs for the existing shared
+`echo.proto`; these run in a separate process to avoid duplicate descriptor-pool
+registration with `EchoExample`. Never hand-edit generated files.
+
+`generation:check` regenerates messages/glue with protoc 36.2 and runs real Buf
+1.75.0 local plugins, including the official protoc Ruby builtin. Service glue
+must be byte-identical between compilers. Their official message descriptor bytes
+can differ, so each output tree is independently loaded and exercised. Compiler
+version, comments and source-code info do not affect glue. Official `_pb.rb`
+files alone are excluded from RuboCop; glue remains checked, with scoped naming
+and named-forwarding exceptions for the specified generated API.
+
+Mise locks Buf's Linux x64 archive SHA256
+`7168a06e29bd5eb8d1530848f242264f7a86b9b8af3b2e811570fbea0c929a30`,
+verified against upstream [sha256.txt](https://github.com/bufbuild/buf/releases/download/v1.75.0/sha256.txt).
+The stable [release API](https://api.github.com/repos/bufbuild/buf/releases/tags/v1.75.0)
+reports publication on 2026-10-22T01:02:29Z, over seven days before the
+2026-11-02 audit. Existing protoc and all other pins remain unchanged. Buf is
+development-only and uses ignored `vendor/buf/cache`, never global config/cache.
+Package CI installs both tools; Interop consumes checked-in output and needs
+neither compiler. `example:generated` generates temporary greeting output and
+cleans it up after observable localhost shutdown.
 
 ### Independent interoperability and fixture provenance
 
@@ -159,7 +203,11 @@ WEBrick coalescing expectations for those known fixture fields. Raw repeated Go
 response values remain separate at NetHTTP. NetHTTP joins outgoing request
 arrays with comma+space, and the WEBrick host also coalesces incoming and
 response values. Assertions preserve those observed semantics without splitting
-arbitrary comma-containing values. This is not the Connect conformance suite.
+arbitrary comma-containing values. The separate generated process adds Ruby->Go
+success/error calls and reuses
+the Go client's six existing success/error/limit scenarios against generated
+Ruby handler registration. Both codecs execute, retaining the original 18-case
+fixture result unchanged. This is not the Connect conformance suite.
 
 `spec/fixtures/echo.proto` documents the schema. `scripts/build_fixture.rb`
 explicitly builds a matching `FileDescriptorProto`; it is not protoc output or

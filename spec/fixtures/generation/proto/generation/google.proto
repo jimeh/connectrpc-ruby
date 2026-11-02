@@ -1,0 +1,8 @@
+syntax = "proto3";
+package google.generation_fixture.v1;
+import "google/protobuf/timestamp.proto";
+message Message { google.protobuf.Timestamp time = 1; }
+service EchoService {
+  rpc Echo(Message) returns (Message);
+  rpc Time(google.protobuf.Timestamp) returns (google.protobuf.Timestamp);
+}

@@ -1,0 +1,23 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+unless ARGV.empty?
+  warn "protoc-gen-connectrpc-ruby accepts no CLI arguments; invoke it through protoc or Buf"
+  exit 1
+end
+
+begin
+  require "connectrpc/generator"
+rescue LoadError => e
+  warn e.message
+  exit 1
+end
+
+begin
+  request = Google::Protobuf::Compiler::CodeGeneratorRequest.decode($stdin.binmode.read)
+rescue Google::Protobuf::ParseError => e
+  warn "Invalid CodeGeneratorRequest protobuf: #{e.message}"
+  exit 1
+end
+response = ConnectRPC::Generator.generate(request)
+$stdout.binmode.write(Google::Protobuf::Compiler::CodeGeneratorResponse.encode(response))

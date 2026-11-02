@@ -8,7 +8,7 @@ is `connectrpc`, and the Ruby namespace is `ConnectRPC`. The API is experimental
 
 `Method` holds validated service/method names, request/response binding types,
 `cardinality: :unary`, and a case-sensitive path. `Service` validates its method
-set. Other cardinalities are rejected. There are no generated stubs yet.
+set. Other cardinalities are rejected. Generated service glue reuses these objects.
 
 `Client` owns request encoding, protocol headers, response validation, errors,
 metadata, byte limits and the deadline. Base URL path prefixes are retained.
@@ -147,7 +147,7 @@ manifest with strict causal result checks. There is no full-conformance claim.
 
 Wire protocol, HTTP transport, and message binding remain separate choices.
 Streaming, GET, gzip, gRPC/gRPC-Web, interceptors, a production server, Rails,
-Faraday and generators are future work. Unsupported modes/options are rejected
+and Faraday are future work. Unsupported modes/options are rejected
 rather than represented as buffered streaming. Optional Rails execution should
 use the invoker boundary for callbacks, authentication, `rescue_from` and
 instrumentation, not claim a mounted Rack app supplies the controller lifecycle.
@@ -162,8 +162,54 @@ its body and does not require HTTP trailers; future gRPC has different
 APIs, not proof of RPC streaming. Each future [Faraday adapter](https://lostisland.github.io/faraday/#/adapters/index)
 needs capability verification.
 
-A future protoc plugin can generate service metadata/stubs with
-[Buf compatibility](https://buf.build/docs/generate/). A Rust descriptor-driven
+The explicit optional `connectrpc/generator` entry point implements the standard
+protoc request/response protocol through official `google/protobuf/plugin_pb`.
+The extensionless executable reads raw protobuf to EOF, with no conformance
+length framing. Malformed protobuf, missing/incompatible Google and CLI arguments
+fail on stderr with nonzero status and empty stdout. Unsupported descriptors
+return `CodeGeneratorResponse.error`, no partial files and exit zero. Unexpected
+implementation exceptions remain visible. Only `FEATURE_PROTO3_OPTIONAL` is
+advertised; editions are unsupported.
+
+Each service-bearing target emits `_connect.rb`, requiring core, its official
+`_pb.rb` and any additionally referenced message files. Imported streaming
+services are not targets and do not cause streaming rejection. Generated modules
+contain frozen RPC `Method` constants, `SERVICE`, a `Client` initialized with
+`client:`, and `.handlers` with required callable RPC keywords. The client only
+forwards `call(METHOD, request, **options)` and returns its result unchanged.
+Partial handlers/custom invocation remain core Server features. No framework,
+transport configuration, binding auto-require or static typing system is added.
+Concrete types come from the official generated descriptor pool, preserving
+nested classes, imports, proto2/proto3 presence and `ruby_package` mappings.
+
+Naming follows protoc 36.2's
+[RubifyConstant and PackageToModule](https://github.com/protocolbuffers/protobuf/blob/v36.2/src/google/protobuf/compiler/ruby/ruby_generator.cc):
+message/service names preserve underscores and use `PB_` for a nonalphabetic
+initial character; package underscores delimit capitalized words. An explicit
+`ruby_package` containing `::` is used component-wise; otherwise dot/package
+conversion applies. RPC names use the gRPC Ruby acronym and lower/digit-to-upper
+underscore rule. Keyword/inherited wrapper names (including private copy/object
+hooks and implicit conversions), leading-underscore RPCs,
+`BEGIN`/`END`, reserved constants, unsafe paths, unresolved/non-message types,
+duplicates and namespace/output collisions fail before emitting files.
+All runtime constant references are absolute. Namespace checks index the request's
+package/message/enum graph and target services, including Ruby aliases and
+class/module conflicts. Fixed runtime protection applies to package ancestors,
+official message/enum assignments and target service declarations in the loaded
+import/type closure. Compatible `Google`/`Google::Protobuf` package modules may
+be shared, including equivalent `ruby_package` mappings. Direct replacement of
+those modules, reserved roots such as `ConnectRPC`/`File`, and concrete protobuf
+runtime names such as `Google::Protobuf::DescriptorPool` are rejected. Known
+official protobuf types are accepted only under their canonical file, proto name
+and Ruby namespace, preserving WKT imports without allowing application types to
+replace them. The fixed policy follows the pinned protobuf sources, rather than
+reflecting the generator process's constants. A service cannot merge with
+another package. No global registry spans generator invocations.
+Generated files guard directly defined `SERVICE`, `Client` and RPC constants;
+normal `require` is idempotent, while deliberate `load`/redefinition fails clearly.
+Application constants outside the request still need compatible namespaces.
+
+A Rust descriptor-driven
 backend using [prost-reflect](https://docs.rs/prost-reflect/latest/prost_reflect/)
 remains an option; cross-backend message-class compatibility is not promised.
 No custom protobuf parser is implemented. See the
