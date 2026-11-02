@@ -173,7 +173,7 @@ RSpec.describe ConnectRPC::Client do
   end
 
   it "rejects unsupported profile, codecs, limits and URL components" do
-    [{ protocol: :grpc }, { mode: :stream }, { encoding: :gzip }, { codec: :xml }, { request_limit: 0 },
+    [{ protocol: :grpc }, { mode: :stream }, { encoding: :br }, { codec: :xml }, { request_limit: 0 },
      { response_limit: 1.5 }].each do |options|
       expect { client(**options) }.to raise_error(ArgumentError)
     end

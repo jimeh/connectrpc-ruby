@@ -100,6 +100,40 @@ RSpec.describe "official conformance adapters" do
     end
   end
 
+  it "executes gzip instructions with actual compressed wire in both codecs and matching receive caps" do
+    Dir.mktmpdir("conformance-gzip-spec-") do |temporary|
+      previous = ENV.fetch("CONFORMANCE_TELEMETRY", nil)
+      telemetry = File.join(temporary, "telemetry.jsonl")
+      ENV["CONFORMANCE_TELEMETRY"] = telemetry
+      with_server do |url|
+        uri = URI(url)
+        %i[CODEC_PROTO CODEC_JSON].each do |codec|
+          message = Conformance::UnaryRequest.new(response_definition: { response_data: "typed gzip" })
+          request = instruction(test_name: codec.to_s, host: uri.host, port: uri.port, codec: codec,
+                                compression: :COMPRESSION_GZIP, request_messages: [Conformance.pack(message)])
+          result = Conformance::ClientAdapter.new.perform(request)
+          expect(result.response.payloads.first.data).to eq("typed gzip")
+          request.message_receive_limit = 1
+          expect(Conformance::ClientAdapter.new.perform(request).response.error.code).to eq(:CODE_RESOURCE_EXHAUSTED)
+        end
+      end
+      events = File.readlines(telemetry).map { |line| JSON.parse(line) }
+      %i[CODEC_PROTO CODEC_JSON].each do |codec|
+        dispatch = events.find do |event|
+          event["event"] == "dispatch" && event["name"] == codec.to_s && event.key?("wire")
+        end
+        response = events.find { |event| event["event"] == "wire_response" && event["name"] == codec.to_s }
+        [dispatch, response].each do |event|
+          expect(event.fetch("wire")).to include("encoding" => "gzip", "gzip_magic" => true)
+          expect(event.fetch("wire").fetch("bytes")).to be_positive
+        end
+        expect(events.any? { |event| event["event"] == "dispatch" && event["response_limit"] == 1 }).to be(true)
+      end
+    ensure
+      ENV["CONFORMANCE_TELEMETRY"] = previous
+    end
+  end
+
   it "rejects unsupported setup distinctly from RPC errors and validates message types" do
     [%i[protocol PROTOCOL_GRPC], %i[http_version HTTP_VERSION_2], [:use_get_http_method, true]].each do |field, value|
       response = Conformance::ClientAdapter.new.perform(instruction(**{ field => value }))

@@ -74,7 +74,8 @@ before controller dispatch, so path acceptance differs from a direct Rack mount.
 Only `connect` is an action supplied by the concern. Keep the three required
 configuration hooks and typed handlers private, using prefixed handler names to
 avoid controller/Kernel method collisions. `connect_limits` is optional and
-accepts core `request_limit:` and `response_limit:` keywords; omitted options
+accepts core `request_limit:`, `response_limit:`, `request_wire_limit:`,
+`response_wire_limit:` and `encoding:` keywords; omitted options
 use core's 4 MiB defaults. Private `connect_request`, `connect_context`, and
 `connect_method` expose the same typed objects to callbacks and handlers.
 Handlers return typed messages. There is no render helper or routing DSL.
@@ -193,7 +194,16 @@ generation, Go interoperability and official conformance evidence.
 
 ## Status and licensing
 
-Experimental and not production ready. Streaming, GET, compression,
-gRPC/gRPC-Web and production hosting are outside this adapter. Publication
+Experimental and not production ready. Streaming, GET, gRPC/gRPC-Web and production hosting are outside this adapter. Publication
 and licensing remain undecided. Both gems retain the `Nonstandard` license and
 `https://gems.invalid` push guard. Verification authorizes no publication.
+
+
+To enable unary gzip, return `encoding: :gzip` from the private `connect_limits`
+hook. Core validates wire length, inflates under the decoded request limit, and
+decodes before callbacks and native instrumentation. JSON scalar bodies still
+bypass Rails body-parameter parsing. Negotiated success responses are compressed
+after native execution; errors remain identity. A compression/size failure after
+execution does not rerun callbacks, and native process-action instrumentation can
+record 200 before core replaces the response with its final error. Wire limits
+default to the corresponding message limits; gzip framing overhead must fit too.

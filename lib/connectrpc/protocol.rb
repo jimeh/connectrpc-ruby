@@ -7,7 +7,7 @@ module ConnectRPC
   TransportResponse = Struct.new(:status, :headers, :body, keyword_init: true)
   Response = Struct.new(:message, :metadata, :trailers, keyword_init: true)
 
-  module Protocol
+  module Protocol # rubocop:disable Metrics/ModuleLength
     DEFAULT_LIMIT = 4 * 1024 * 1024
     CONTENT_TYPES = { proto: "application/proto", json: "application/json" }.freeze
 
@@ -24,9 +24,9 @@ module ConnectRPC
     end
 
     def self.profile!(protocol, mode, encoding)
-      return if protocol == :connect && mode == :unary && encoding == :identity
+      return if protocol == :connect && mode == :unary && %i[identity gzip].include?(encoding)
 
-      raise ArgumentError, "Only Connect unary identity is supported"
+      raise ArgumentError, "Only Connect unary identity/gzip is supported"
     end
 
     def self.content_codec(value)
@@ -47,6 +47,34 @@ module ConnectRPC
 
     def self.identity_encoding?(headers)
       !headers.key?("content-encoding") || single(headers, "content-encoding")&.casecmp?("identity")
+    end
+
+    def self.content_encoding(headers)
+      return :identity unless headers.key?("content-encoding")
+
+      value = single(headers, "content-encoding")
+      return :identity if value&.casecmp?("identity")
+      return :gzip if value&.casecmp?("gzip")
+
+      nil
+    end
+
+    def self.accept_encoding!(value, encoding)
+      return [encoding, :identity].uniq if value.nil?
+      unless value.is_a?(Array) && !value.empty? && value.uniq.size == value.size &&
+             value.all? { |entry| %i[identity gzip].include?(entry) }
+        raise ArgumentError, "Response encodings must be distinct identity/gzip symbols"
+      end
+
+      (value - [:identity]) + [:identity]
+    end
+
+    def self.response_encoding(headers, request_encoding, enabled)
+      return :identity unless enabled == :gzip
+      return request_encoding unless headers.key?("accept-encoding")
+
+      tokens = headers.fetch("accept-encoding").flat_map { |entry| entry.split(",") }
+      tokens.any? { |token| token.strip.casecmp?("gzip") } ? :gzip : :identity
     end
 
     def self.metadata(headers, trailers: false)

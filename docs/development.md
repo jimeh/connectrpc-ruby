@@ -63,12 +63,12 @@ Mise owns setup ordering and verification composition.
 | `mise run fixture:build` | Rebuild the shared descriptor fixture from its explicit Ruby schema builder. |
 | `mise run fixture:check` | Compare the checked-in descriptor bytes to the builder. |
 | `mise run setup:interop` | Install task-local Go 1.27.3 and download checksum-locked modules. |
-| `mise run test:interop` | Run the Go-to-Go reference baseline and both cross-language directions/codecs, 18 original cases plus a separate generated Ruby process against the same peer. |
+| `mise run test:interop` | Run the Go-to-Go reference baseline and both cross-language directions/codecs, 18 original identity cases, the generated path, then 40 separate gzip cases. |
 | `mise run setup:conformance` | Install task-local official runner 1.0.6 and protoc 36.2 with locked checksums. |
 | `mise run conformance:build` | Generate descriptors from unchanged official schemas using protoc. |
 | `mise run conformance:check` | Verify schema hashes and byte-for-byte descriptor regeneration. |
-| `mise run test:conformance` | Run all 94 client and 88 server profile cases with strict logs/telemetry accounting. |
-| `mise run verify` | Run core checks, specs, packages, generation, Go interop, official conformance and the selected Rails lane plus the HTTP/2 backend. |
+| `mise run test:conformance` | Run identity (94/88) and gzip (88/82) client/server profiles with strict accounting. |
+| `mise run verify` | Run core checks, specs, packages, generation, Go interop, official conformance, the selected Rails lane and the HTTP/2 backend. |
 
 Every entry point installs missing prerequisites through the same task graph.
 During Ruby iteration, use focused tests and relevant static checks. Run
@@ -93,7 +93,10 @@ provenance, supported axes, lifecycle, named selectors and result artifacts.
 one exact case name from `conformance/cases.json` for troubleshooting. CI runs
 every configured case in both directions on both pinned Rubies; `verify` runs
 both directions on the active Ruby.
-The 18-case independent Go fixture stays unchanged.
+The 18-case independent Go identity fixture and generated baseline stay separate.
+Focused tasks are `test:interop:identity`, `test:interop:gzip`,
+`test:conformance:identity` and `test:conformance:gzip`. Exact conformance selectors
+automatically choose their inventory; explicit profile tasks keep runs bounded.
 
 The profile has 92 client passes and two expected caller-cancellation
 failures, plus 88 server passes. Both unsupported caller instructions still
@@ -101,7 +104,14 @@ invoke real uncanceled RPCs and return faithful results. Only the two exact
 caller-cancellation cases are marked known-failing, and every assertion and
 actual RPC result must match the documented limitation. Unexpected passes or
 unrelated failures still fail verification.
-Timeouts, duplicate metadata and remote canceled errors must pass normally.
+The additional gzip profile has 86 client passes and two executed expected
+caller-cancellation failures, plus 82 server passes. Its separate exact-name
+manifest was approved after live causal verification; the same strict checks
+reject an unexpected pass or unrelated failure. Neither discovery counts nor
+unsupported instructions are passes. Actual wire coding, byte counts,
+lengths and digests are recorded independently; ordinary reference error responses
+may be identity even for gzip requests. Timeouts, duplicate metadata and remote
+canceled errors must pass normally.
 Raw runner logs, JSON telemetry and strict JSON summaries are preserved under
 ignored `vendor/conformance/results/`. An accounting mismatch fails even if
 the official runner exits successfully. This evidence is distinct from full
@@ -129,7 +139,7 @@ core require without Google/Rack and useful missing-optional-require errors.
 It then installs the cached, locked optional artifacts, including native
 `bigdecimal`, Google protobuf and its `rake` dependency, Rack, rackup and
 WEBrick. The installed gem performs real typed Rack/NetHTTP calls with both
-binary and JSON scalar-wrapper payloads. The helper scripts are copied to the
+binary and JSON scalar-wrapper payloads with identity and gzip, including errors. The helper scripts are copied to the
 external cwd; library code loads exclusively from the fresh installed gem.
 The installed executable first proves missing Google fails helpfully with empty
 stdout. The task retains its task-local compiler activation, and the check

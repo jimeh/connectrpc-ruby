@@ -74,7 +74,7 @@ func message(desc protoreflect.MessageDescriptor) *dynamicpb.Message {
 	return msg
 }
 
-func serve(service protoreflect.ServiceDescriptor) {
+func serve(service protoreflect.ServiceDescriptor, gzip bool) {
 	mux := http.NewServeMux()
 	for _, name := range []protoreflect.Name{"Echo", "Fail"} {
 		desc := service.Methods().ByName(name)
@@ -102,8 +102,11 @@ func serve(service protoreflect.ServiceDescriptor) {
 			response.Trailer().Add("X-Tail", "four")
 			return response, nil
 		}
-		mux.Handle(prefix+string(name), connect.NewUnaryHandler(prefix+string(name), callback,
-			connect.WithSchema(desc), connect.WithRequestInitializer(initializer), connect.WithReadMaxBytes(1024)))
+		options := []connect.HandlerOption{connect.WithSchema(desc), connect.WithRequestInitializer(initializer), connect.WithReadMaxBytes(1024)}
+		if gzip {
+			options = append(options, connect.WithCompressMinBytes(0))
+		}
+		mux.Handle(prefix+string(name), connect.NewUnaryHandler(prefix+string(name), callback, options...))
 	}
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	must(err)
@@ -187,7 +190,11 @@ func main() {
 	service := schema()
 	switch os.Args[1] {
 	case "serve":
-		serve(service)
+		serve(service, false)
+	case "serve-gzip":
+		serve(service, true)
+	case "client-gzip":
+		gzipClient(service, os.Args[2], os.Args[3])
 	case "client":
 		client(service, os.Args[2], os.Args[3])
 	default:

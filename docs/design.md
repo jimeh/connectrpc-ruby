@@ -50,18 +50,26 @@ Handlers are reusable; application-owned shared state needs its own locking.
 ## Wire behavior
 
 The implemented [Connect profile](https://connectrpc.com/docs/protocol/) is
-unary POST, identity encoding, and `application/proto` or `application/json`.
+unary POST, identity or opt-in gzip encoding, and `application/proto` or `application/json`.
 JSON also accepts `charset=utf-8`. Clients send protocol version `1`; servers
 accept an absent version and reject any other supplied value. A 200 response
 must match the request codec. Non-application response types produce `unknown`;
-mismatched application codecs and nonidentity response encodings produce
+mismatched application codecs and unsupported/unadvertised response encodings produce
 `internal`. JSON errors are only parsed for an appropriate JSON content type.
-The single identity content coding is case-insensitive on requests and
-responses; duplicate or multiple codings are rejected.
+Single identity/gzip content codings are case-insensitive; empty, repeated,
+stacked and unknown content codings are rejected. Identity-only servers continue
+to reject gzip. Client response preferences use distinct symbol arrays and
+normalize identity to the last fallback. Server gzip capability negotiates
+supported nonidentity accept tokens before identity, ignoring unknown/quality
+value tokens. Absent accept inherits request coding; empty accept selects identity.
+Repeated accept fields combine in field order. Gzip-selected empty serialization
+produces a valid nonempty member; zero-length HTTP content bypasses inflation
+after header validation. Every concatenated member validates CRC/ISIZE/completion;
+truncation and trailing data fail under an aggregate decoded cap.
 
 Other verbs get bare 405 with `Allow: POST`; unsupported types, including
 Connect streaming and gRPC variants, get bare 415 with `Accept-Post`.
-Unsupported request encoding returns `unimplemented` listing identity. Invalid
+Unsupported request encoding returns `unimplemented` listing supported codings. Invalid
 version, timeout, or request decoding returns `invalid_argument`. Limits return
 `resource_exhausted`. Unexpected application exceptions return generic
 `internal`; deliberate `Error` messages are application-controlled safe text.
@@ -85,13 +93,30 @@ strictly validated.
 
 ## Bounds and lifecycle
 
-Default serialized request/response limits are 4 MiB each. Declared lengths
-are validated and oversized lengths rejected before input or decode.
-Unknown-length bodies are read with bounded chunks, stopping at the first
-excess byte. HTTP responses and error bodies are bounded before decode.
-Serialization can allocate before the output check. If a bounded error cannot
-fit, the server emits an empty 429 body. There is no independent header-size
-guarantee beyond the host and HTTP library.
+Default serialized/decompressed request/response limits are 4 MiB each.
+Independent wire limits default to the corresponding message limits, preserving
+both bounds for existing callers. `TransportRequest.response_limit` is the
+encoded response read cap. Declared lengths are validated against wire bytes and
+oversized lengths rejected before reading. Unknown-length input stops at the
+first excess byte. Identity satisfies both caps. Outgoing serialization is checked
+before compression; compressed output, including framing/footer, must fit its
+wire cap without fallback. Explicitly larger wire limits permit small-message
+expansion without increasing message bounds.
+
+Gzip uses default Zlib gzip-only streams with bounded input and block output,
+checking size before every append. At most one 16 KiB native output callback can
+exceed retained payload, plus native state. Every member/chunk checks cooperative
+expiry; streams close on every outcome. Wire and decoded buffers coexist, and
+native protobuf/JSON serialization can allocate before its output check. Custom
+transports may allocate before returning; core revalidation cannot undo that.
+There is no total allocation, hard CPU or independent header-size guarantee.
+
+Server errors remain identity and use the smaller response cap, including the
+safe replacement and empty-429 fallback. Valid gzip peer errors are decoded
+before JSON parsing. Malformed gzip or JSON on non-200 uses HTTP fallback with
+valid metadata/trailers; malformed gzip 200 is internal. Header rejection stays
+internal, local size excess stays resource_exhausted, and actual expiry stays
+deadline_exceeded. No generic error-body rescue changes those classifications.
 
 The default timeout is 30 seconds. Explicit `timeout: nil` means no logical
 client deadline, timeout header or expiry watchdog. Native operation waits still
@@ -122,7 +147,9 @@ implementation can itself use `Timeout.timeout` on Ruby 3.4; ConnectRPC never
 calls it or asynchronously interrupts application code. TLS handshake timeout
 uses the remaining budget after TCP/DNS. Peer/hostname verification stays on.
 There is no pooling, proxy-env routing, retries, redirect following, automatic
-decompression or compression negotiation beyond identity.
+decompression. NetHTTP constructs requests with the actual explicit accept
+advertisement so the default HTTP gem never transparently inflates or rewrites
+content encoding/length; transports carry opaque encoded bytes.
 
 Server timeout validation creates a per-call monotonic deadline. Checks run
 around input, decoding, handler execution and encoding. `cancelled?` means
@@ -143,10 +170,18 @@ baseline cases and twelve cross-language cases. This is a unary subset, not
 full conformance. The separate [official conformance harness](../conformance/README.md)
 executes 94 configured client and 88 server cases. Two caller-cancellation
 instructions remain executed expected failures under an exact-name limitation
-manifest with strict causal result checks. There is no full-conformance claim.
+manifest with strict causal result checks. A separate gzip inventory adds
+88 client and 82 server cases. Its two caller-cancellation failures remain
+executed expected failures under a separate exact-name manifest with strict
+causal and wire checks; all other cases pass. Separate Go gzip scenarios
+exercise both directions/codecs, negotiation, errors and bounds with wire
+observations. The pinned Go client rewrites accept preferences, so independent
+raw Go HTTP requests additionally prove gzip-request/identity-response behavior.
+The pinned Go server prefers request gzip over explicit identity acceptance;
+Ruby clients reject that unadvertised response. There is no full-conformance claim.
 
 Wire protocol, HTTP transport, and message binding remain separate choices.
-Streaming, GET, gzip, gRPC/gRPC-Web, interceptors, a production server,
+Streaming, GET, gRPC/gRPC-Web, interceptors, a production server,
 and Faraday are future work. Unsupported modes/options are rejected
 rather than represented as buffered streaming. The optional [connectrpc-rails gem](../gems/connectrpc-rails/README.md) uses
 the invoker boundary to run native controller callbacks, authentication,

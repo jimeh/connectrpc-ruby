@@ -14,19 +14,31 @@ module Conformance
       super()
     end
 
+    def call(request)
+      super
+    rescue ConnectRPC::Error => e
+      Telemetry.record("wire_failure", name: @test_name, code: e.code) unless @wire_observed
+      raise
+    end
+
     private
 
     def exchange(http, request, outgoing)
       Telemetry.record("dispatch", name: @test_name, deadline: !request.deadline.nil?,
-                                   response_limit: request.response_limit)
-      super
+                                   response_limit: request.response_limit, request_headers: outgoing.to_hash,
+                                   wire: Telemetry.wire(request.body, outgoing.to_hash))
+      response = super
+      @wire_observed = true
+      Telemetry.record("wire_response", name: @test_name, status: response.status,
+                                        wire: Telemetry.wire(response.body, response.headers))
+      response
     end
   end
 
   class ClientAdapter
     def run(input = $stdin, output = $stdout)
       while (request = Framing.read(input, ClientCompatRequest))
-        Telemetry.record("received", name: request.test_name)
+        Telemetry.record("received", name: request.test_name, compression: request.compression, codec: request.codec)
         response = perform(request)
         Framing.write(output, response)
         Telemetry.record("responded", name: request.test_name,
@@ -65,13 +77,16 @@ module Conformance
       client = ConnectRPC::Client.new(base_url: "http://#{request.host}:#{request.port}", binding: BINDING,
                                       transport: ObservedNetHTTP.new(request.test_name),
                                       codec: request.codec == :CODEC_PROTO ? :proto : :json,
+                                      encoding: request.compression == :COMPRESSION_GZIP ? :gzip : :identity,
                                       response_limit: Conformance.limit(request.message_receive_limit))
       [declaration, message, client, Conformance.metadata(request.request_headers)]
     end
 
     def validate!(request)
       supported = request.http_version == :HTTP_VERSION_1 && request.protocol == :PROTOCOL_CONNECT &&
-                  %i[CODEC_PROTO CODEC_JSON].include?(request.codec) && request.compression == :COMPRESSION_IDENTITY &&
+                  %i[CODEC_PROTO
+                     CODEC_JSON].include?(request.codec) && %i[COMPRESSION_IDENTITY
+                                                               COMPRESSION_GZIP].include?(request.compression) &&
                   request.stream_type == :STREAM_TYPE_UNARY && !request.use_get_http_method &&
                   request.server_tls_cert.empty? && !request.client_tls_creds && !request.raw_request &&
                   request.request_messages.size == 1 && request.request_delay_ms.zero? &&

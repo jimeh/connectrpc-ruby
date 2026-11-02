@@ -5,9 +5,9 @@ An unofficial, experimental Ruby implementation of typed
 configurable client, a Net::HTTP transport, and Rack middleware for reusable
 Ruby handlers. It is not production ready.
 
-The implemented profile is POST, identity encoding, and `application/proto` or
+The implemented profile is POST, identity or opt-in gzip encoding, and `application/proto` or
 protobuf `application/json`. The optional [connectrpc-rails gem](gems/connectrpc-rails/README.md)
-runs generated handlers through native Rails controllers. Streaming, GET, compression, gRPC, gRPC-Web,
+runs generated handlers through native Rails controllers. Streaming, GET, gRPC, gRPC-Web,
 Faraday and a production server are outside this slice.
 Unsupported profiles and streaming declarations fail explicitly.
 
@@ -172,6 +172,37 @@ failures. Transports implement `call(TransportRequest)` and return a
 `TransportResponse`. Their fields and responsibilities are documented in
 [design](docs/design.md). Neither seam requires Google or Rack types.
 
+## Unary gzip
+
+Identity is the default. Configure `encoding: :gzip` on the client to compress
+requests and advertise `gzip, identity` for responses. Configure it on the server
+to accept gzip requests and negotiate gzip success responses in both codecs:
+
+```ruby
+client = ConnectRPC::Client.new(base_url: "http://127.0.0.1:8080", binding: binding,
+                                encoding: :gzip)
+server = ConnectRPC::Server.new(services: [service], binding: binding,
+                                handlers: { method.path => handler }, encoding: :gzip)
+```
+
+Client `accept_encoding:` independently controls accepted responses. Its default
+is derived from request encoding. An explicit nonempty array contains distinct
+`:gzip`/`:identity` symbols; identity is always appended as the last fallback.
+For example, `accept_encoding: [:gzip]` permits identity requests with gzip
+responses; `encoding: :gzip, accept_encoding: [:identity]` permits gzip requests
+with identity responses. The server selects a supported compression coding from
+the ordered accept fields before identity. An absent field inherits the request
+coding; an explicitly empty field selects identity. Unknown tokens and quality
+values are ignored. Only one identity or gzip content coding is accepted.
+
+Empty serialized messages selected for gzip produce valid nonempty gzip members.
+Zero-length HTTP content is never inflated, after its coding header is validated.
+Concatenated members are supported under one aggregate decoded limit; every
+member's CRC, size and completion are validated. Truncation and trailing garbage
+are rejected. Server errors remain identity; clients can decode compressed peer
+errors, including typed details and metadata. Malformed compressed HTTP errors
+use HTTP fallback, while malformed compressed success responses return internal.
+
 ## Metadata and failures
 
 Metadata keys are normalized to lower case and values are arrays of printable
@@ -200,13 +231,23 @@ the class corresponding to `detail.type`.
 
 ## Limits and deadlines
 
-Request and response byte limits default to 4 MiB each. Set `request_limit:` and
-`response_limit:` on either `Client` or `Server` to positive integers. Inputs
-are bounded before decode, including unknown-length Rack input and HTTP error
-bodies. Serialization can allocate the whole message before checking its size.
-If even a minimal error exceeds the response limit, the server sends an empty
-body with status 429; clients then apply the protocol's HTTP fallback mapping.
-Header size limits belong to the HTTP library and host.
+Serialized/decompressed request and response limits default to 4 MiB each.
+Set `request_limit:` and `response_limit:` on either endpoint to positive integers.
+Separate `request_wire_limit:` and `response_wire_limit:` cap encoded HTTP bytes
+and default to their corresponding message limits. Identity must satisfy both
+caps. Gzip can expand small messages, including empty-message framing; explicitly
+increase the wire cap if that expansion is desired. Compression never silently
+falls back to identity after exceeding a cap. `TransportRequest.response_limit`
+remains the wire read cap for custom transports.
+
+Input is bounded before inflation and binding decode, including unknown-length
+Rack input and HTTP errors. Native gzip output is checked before each append,
+with at most one 16 KiB output callback beyond the retained limit. This is not a
+total allocation bound: wire and decoded buffers coexist, and native serialization
+can allocate the whole message before its size check. Server identity errors use
+the smaller response cap and safe replacement; if the replacement cannot fit,
+they send an empty 429 and clients apply HTTP fallback. Header size limits and
+HTTP input coalescing belong to the library and host.
 
 Client `timeout:` accepts finite positive seconds, defaulting to 30. Explicit
 `timeout: nil` sends no timeout header and creates no logical deadline or expiry
@@ -215,12 +256,13 @@ watchdog. Native TCP/TLS/read/write waits remain independently capped at
 can outlast that per-operation cap. For finite values, one monotonic
 budget starts before encoding and covers network I/O and checks around codec
 work. NetHTTP uses one connection per call, closes it on every outcome, sends
-`Accept-Encoding: identity`, ignores proxy environment variables, disables
+the configured `Accept-Encoding`, ignores proxy environment variables, disables
 retries and decompression, preserves TLS peer/hostname verification, and does
 not follow redirects. A transport-owned watchdog closes its socket at expiry,
 including during response-header trickle and blocked writes. Native DNS
 resolution may outlast the budget; expiry is checked when control returns.
-Codec work and request preparation are synchronous and checked before/after,
+Codec work and request preparation are synchronous and checked before/after;
+gzip work also checks each native input/output chunk and member boundary. They are
 not interrupted. Dispatch rechecks expiry and refreshes the wire timeout after
 connection setup; a closed socket cannot trigger an implicit reconnect. Native
 operations are independently capped at `9_999_999.999` seconds, the Connect
@@ -242,14 +284,20 @@ commands, dependency policy, isolated installation and evidence scope. The
 interop fixture runs 18 cases: six Go-to-Go reference baseline cases and twelve
 Ruby-to-Go/Go-to-Ruby cases. Both codecs share typed success, deliberate error
 and request-limit scenarios. This covers the advertised unary subset, not full
-conformance.
+conformance. A separate gzip portion adds 40 cases with actual wire observations,
+including asymmetric raw Go HTTP probes and documented reference-client quirks.
 
 The pinned [official conformance harness](conformance/README.md) independently
 executes 94 client and 88 server cases for the declared profile. Two client
 caller-cancellation instructions currently fail because there is no cancellation
 API; both still execute real RPCs and are required to fail for the exact
 documented reason. Results are 92 client passes plus two expected failures, and
-88 server passes. This is a bounded profile, not full Connect conformance.
+88 server passes. A disjoint gzip profile adds 88 client and 82 server cases.
+It has 86 client passes, two executed expected caller-cancellation failures,
+and 82 server passes. Separate exact-name manifests and strict causal checks
+require all four caller-cancellation failures across both profiles to remain
+expected failures, with 178 actual client passes across 182 executed cases. This is a bounded profile, not full Connect
+conformance.
 
 ## Status and licensing
 

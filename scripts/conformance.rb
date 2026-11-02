@@ -8,6 +8,9 @@ require "time"
 require_relative "../conformance/ledger"
 
 root = File.expand_path("..", __dir__)
+profile = ARGV.first&.start_with?("--profile=") ? ARGV.shift.delete_prefix("--profile=") : nil
+profiles = profile ? [profile] : %w[identity gzip]
+raise "Unknown profile" unless profiles.all? { |entry| Conformance::Ledger::PROFILES.key?(entry) }
 unless ARGV.size <= 2 && (ARGV.empty? || %w[client server].include?(ARGV.first))
   raise "Usage: conformance.rb [client|server] [exact test name]"
 end
@@ -18,24 +21,33 @@ unless status.success? && version.strip == "connectconformance v1.0.6"
 end
 
 directions = ARGV.first ? [ARGV.first] : %w[client server]
+if ARGV[1] && profile.nil?
+  profiles.select! { |entry| Conformance::Ledger::PROFILES.fetch(entry).fetch(ARGV.first).include?(ARGV[1]) }
+  raise "Selector must be an exact configured test name" if profiles.empty?
+end
 results = []
-directions.each do |direction|
-  Conformance::Ledger.new(direction: direction, selected: ARGV[1])
+profiles.product(directions).each do |profile_name, direction|
+  Conformance::Ledger.new(direction: direction, selected: ARGV[1], profile: profile_name)
+  stamp = "#{Time.now.utc.strftime('%Y%m%dT%H%M%S')}-#{Process.pid}-#{RUBY_VERSION}-#{profile_name}-#{direction}"
   artifacts = File.join(root, "vendor", "conformance", "results",
-                        "#{Time.now.utc.strftime('%Y%m%dT%H%M%S')}-#{Process.pid}-#{RUBY_VERSION}-#{direction}")
+                        stamp)
   FileUtils.mkdir_p(artifacts)
   telemetry = File.join(artifacts, "telemetry.jsonl")
-  command = ["connectconformance", "--mode", direction, "--conf", File.join(root, "conformance", "profile.yaml"),
+  profile_file = profile_name == "identity" ? "profile.yaml" : "profile-gzip.yaml"
+  command = ["connectconformance", "--mode", direction, "--conf", File.join(root, "conformance", profile_file),
              "--vv"]
-  command.push("--known-failing", "@#{Conformance::Ledger::MANIFEST}") if direction == "client"
+  if direction == "client"
+    command.push("--known-failing",
+                 "@#{Conformance::Ledger::MANIFESTS.fetch(profile_name)}")
+  end
   command.push("--run", ARGV[1]) if ARGV[1]
   command.push("--", RbConfig.ruby, "-I#{File.join(root, 'lib')}",
                File.join(root, "conformance", "#{direction}.rb"))
   raw, process = Open3.capture2e({ "CONFORMANCE_TELEMETRY" => telemetry }, *command)
   File.write(File.join(artifacts, "runner.log"), raw)
   puts raw
-  puts "Conformance #{direction} artifacts: #{artifacts}"
-  ledger = Conformance::Ledger.new(direction: direction, selected: ARGV[1])
+  puts "Conformance #{profile_name} #{direction} artifacts: #{artifacts}"
+  ledger = Conformance::Ledger.new(direction: direction, selected: ARGV[1], profile: profile_name)
   begin
     events = File.readlines(telemetry).map { |line| JSON.parse(line) }
     summary = ledger.parse(raw, events, process.exitstatus)

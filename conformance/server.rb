@@ -14,7 +14,7 @@ module Conformance
       end
 
       @server = ConnectRPC::Server.new(services: [SERVICE], binding: BINDING,
-                                       request_limit: Conformance.limit(config.message_receive_limit),
+                                       request_limit: Conformance.limit(config.message_receive_limit), encoding: :gzip,
                                        handlers: { UNARY.path => method(:unary) })
     end
 
@@ -22,9 +22,13 @@ module Conformance
       rack = ConnectRPC::Rack.new(server: @server)
       lambda do |env|
         name = env["HTTP_X_TEST_CASE_NAME"]
-        Telemetry.record("dispatch", name: name)
+        input = Telemetry::Input.new(env["rack.input"])
+        env["rack.input"] = input
+        Telemetry.record("dispatch", name: name, request_encoding: env.fetch("HTTP_CONTENT_ENCODING", "identity"),
+                                     content_length: env["CONTENT_LENGTH"], content_type: env["CONTENT_TYPE"])
         result = rack.call(env)
-        Telemetry.record("completed", name: name, status: result.first)
+        Telemetry.record("completed", name: name, status: result.first, request_wire: input.observation,
+                                      response_wire: Telemetry.wire(result[2].join, result[1]))
         result
       rescue StandardError => e
         Telemetry.record("adapter_error", name: name, error: "#{e.class}: #{e.message}")

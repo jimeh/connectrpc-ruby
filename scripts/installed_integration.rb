@@ -3,6 +3,7 @@
 # Copied beside localhost.rb into an external cwd by check_package.rb.
 require "connectrpc/bindings/google_protobuf"
 require "google/protobuf/wrappers_pb"
+require "connectrpc/transports/net_http"
 require_relative "localhost"
 
 type = Google::Protobuf::StringValue
@@ -17,14 +18,32 @@ handler = lambda do |request, context|
   context.response_trailers.add("x-installed", "yes")
   type.new(value: "installed #{request.value}")
 end
-server = ConnectRPC::Server.new(services: [service], binding: binding, handlers: { method.path => handler })
+server = ConnectRPC::Server.new(services: [service], binding: binding, handlers: { method.path => handler },
+                                encoding: :gzip)
 host = EchoExample::Localhost.new(ConnectRPC::Rack.new(server: server))
 begin
-  %i[proto json].each do |codec|
-    client = ConnectRPC::Client.new(base_url: host.url, binding: binding, codec: codec)
+  observed = []
+  http = ConnectRPC::Transports::NetHTTP.new
+  transport = lambda do |request|
+    response = http.call(request)
+    observed << [request, response]
+    response
+  end
+  %i[proto json].product(%i[identity gzip]).each do |codec, encoding|
+    client = ConnectRPC::Client.new(base_url: host.url, binding: binding, codec: codec, encoding: encoding,
+                                    transport: transport)
     result = client.call(method, type.new(value: "typed"), timeout: 2)
     abort "Installed typed integration failed" unless result.message.value == "installed typed"
     abort "Installed trailers failed" unless result.trailers["x-installed"] == ["yes"]
+    request, response = observed.last
+    if encoding == :gzip
+      unless request.headers["content-encoding"] == ["gzip"] && response.headers["content-encoding"] == ["gzip"] &&
+             !request.body.empty? && !response.body.empty?
+        abort "Installed gzip wire missing"
+      end
+      decoded = binding.decode(Zlib.gunzip(response.body), type: type, codec: codec)
+      abort "Installed gzip wire payload changed" unless decoded.value == "installed typed"
+    end
 
     begin
       client.call(method, type.new(value: "fail"), timeout: 2)
@@ -35,14 +54,14 @@ begin
       decoded = e.details.first.decode(binding: binding, type: type)
       abort "Installed typed error detail failed" unless decoded.value == "fail"
     end
-    puts "Installed typed #{codec} Rack/NetHTTP success/error/detail integration passed (Ruby #{RUBY_VERSION})"
+    puts "Installed typed #{codec}/#{encoding} Rack/NetHTTP success/error/detail passed (Ruby #{RUBY_VERSION})"
   end
   ["{", '{"code":null}', '{"code":"internal","details":[null]}',
    "{\"code\":\"internal\",\"message\":\"\xff\"}".b].each do |body|
     error = ConnectRPC::Protocol.parse_error(503, { "content-type" => ["application/json"] }, body)
     abort "Default JSON malformed error fallback failed" unless error.code == "unavailable"
   end
-  puts "Default libraries: JSON #{Gem.loaded_specs.fetch('json').version}, Net::HTTP #{Net::HTTP::VERSION}"
+  puts "Default libraries: JSON #{Gem.loaded_specs.fetch('json').version}, Net::HTTP #{Net::HTTP::VERSION}, Zlib #{Zlib::VERSION}"
   %w[connectrpc google-protobuf rack rackup webrick bigdecimal rake].each do |name|
     installed = Gem.loaded_specs.fetch(name)
     unless installed.full_gem_path.start_with?("#{ENV.fetch('GEM_HOME')}/")
