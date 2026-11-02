@@ -26,6 +26,8 @@ Metrics/BlockLength:
   Exclude:
     - spec/**/*.rb
     - gems/connectrpc-rails/spec/**/*.rb
+    - gems/connectrpc-async/spec/**/*.rb
+    - gems/connectrpc-async/scripts/**/*.rb
     - scripts/check_package.rb
     - scripts/build_generation.rb
     - scripts/generated_integration.rb
@@ -38,11 +40,14 @@ Metrics/BlockLength:
 # mirror generated Ruby blocks. These files still receive all syntax/style cops.
 Metrics/MethodLength:
   Exclude:
+    - gems/connectrpc-async/lib/connectrpc/async/*.rb
     - lib/connectrpc/generator/schema.rb
     - lib/connectrpc/generator/renderer.rb
     - lib/connectrpc/generator/names.rb
     - spec/**/*.rb
     - gems/connectrpc-rails/spec/**/*.rb
+    - gems/connectrpc-async/spec/**/*.rb
+    - gems/connectrpc-async/scripts/**/*.rb
     - scripts/interop.rb
     - scripts/conformance.rb
     - conformance/**/*.rb
@@ -50,10 +55,13 @@ Metrics/MethodLength:
 
 Metrics/AbcSize:
   Exclude:
+    - gems/connectrpc-async/lib/connectrpc/async/*.rb
     - lib/connectrpc/generator/schema.rb
     - lib/connectrpc/generator/renderer.rb
     - spec/**/*.rb
     - gems/connectrpc-rails/spec/**/*.rb
+    - gems/connectrpc-async/spec/**/*.rb
+    - gems/connectrpc-async/scripts/**/*.rb
     - scripts/interop.rb
     - scripts/conformance.rb
     - conformance/**/*.rb
@@ -65,21 +73,26 @@ Metrics/ParameterLists:
 # The version-pinned log parser keeps its complete protocol cases together.
 Metrics/ClassLength:
   Exclude:
+    - gems/connectrpc-async/lib/connectrpc/async/*.rb
     - conformance/ledger.rb
     - lib/connectrpc/generator/schema.rb
 
 Metrics/CyclomaticComplexity:
   Exclude:
+    - gems/connectrpc-async/lib/connectrpc/async/*.rb
     - lib/connectrpc/generator/schema.rb
     - spec/support/socket_peer.rb
+    - gems/connectrpc-async/spec/support/helpers.rb
     - conformance/ledger.rb
     - conformance/client.rb
     - conformance/server.rb
 
 Metrics/PerceivedComplexity:
   Exclude:
+    - gems/connectrpc-async/lib/connectrpc/async/*.rb
     - lib/connectrpc/generator/schema.rb
     - spec/support/socket_peer.rb
+    - gems/connectrpc-async/spec/support/helpers.rb
     - conformance/ledger.rb
     - conformance/client.rb
     - conformance/server.rb
@@ -99,3 +112,13 @@ Naming/ClassAndModuleCamelCase:
 Style/ArgumentsForwarding:
   Exclude:
     - spec/fixtures/generation/**/*_connect.rb
+
+# These scripts execute a bounded, standalone fixture scenario in one process.
+Style/MixinUsage:
+  Exclude:
+    - gems/connectrpc-async/scripts/integration.rb
+    - gems/connectrpc-async/scripts/interop.rb
+
+Naming/PredicateMethod:
+  AllowedMethods:
+    - drain_resources

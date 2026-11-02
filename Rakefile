@@ -29,6 +29,9 @@ task :syntax do
                    "gems/connectrpc-rails/lib/**/*.rb", "gems/connectrpc-rails/spec/**/*.rb",
                    "gems/connectrpc-rails/*.gemspec", "gems/connectrpc-rails/Gemfile",
                    "gems/connectrpc-rails/Appraisals",
+                   "gems/connectrpc-async/lib/**/*.rb", "gems/connectrpc-async/spec/**/*.rb",
+                   "gems/connectrpc-async/scripts/**/*.rb", "gems/connectrpc-async/*.gemspec",
+                   "gems/connectrpc-async/Gemfile",
                    "exe/*", "*.gemspec", "Gemfile",
                    "Rakefile"]
   files.each { |file| ruby "-c", file }

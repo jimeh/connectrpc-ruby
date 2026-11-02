@@ -157,14 +157,30 @@ generated files non-reloadable outside Zeitwerk paths. A mounted Rack app alone
 does not supply the Rails controller lifecycle.
 See the [Rails controller guide](https://guides.rubyonrails.org/action_controller_overview.html).
 
-A future standalone host will need verified HTTP/2 and duplex behavior. Start
-with an existing stack; [Async::HTTP](https://github.com/socketry/async-http) is
-a candidate, not a selection. Connect streaming carries end-stream metadata in
-its body and does not require HTTP trailers; future gRPC has different
-[trailer requirements](https://github.com/grpc/grpc/blob/master/doc/PROTOCOL-HTTP2.md).
-[Net::HTTP](https://docs.ruby-lang.org/en/3.4/Net/HTTP.html) provides HTTP/1.1
-APIs, not proof of RPC streaming. Each future [Faraday adapter](https://lostisland.github.io/faraday/#/adapters/index)
-needs capability verification.
+The optional [connectrpc-async package](../gems/connectrpc-async/README.md)
+selects Async HTTP/2 for a standalone unary host and matching pooled transport.
+It uses the existing transport/server seams, generated definitions and Google
+binding without changing core Context or wire contracts. The application owns
+the reactor and close lifecycle. Private, version-bounded wrappers own writes,
+stream cancellation, request tasks and wire-complete drain; no frame/HPACK
+engine or global monkeypatch is added. Real h2c and verified TLS `h2` are
+required. Full TLS snapshots enable required client authentication, same-listener
+credential reload and older-generation retirement. The exact-task client leaf
+accessor is the optional authorization seam; peer-presented chains are not
+claimed to be verified chains. See the package guide for session isolation,
+cleanup's 100ms allowance and deliberate whole-connection failure for a stuck
+frame. No streaming or production daemon claim is made.
+
+Connect streaming carries end-stream metadata in its body; future gRPC has
+different [trailer requirements](https://github.com/grpc/grpc/blob/master/doc/PROTOCOL-HTTP2.md).
+The Async backend preserves leading repeated fields and leading `trailer-*`
+metadata while ignoring actual trailing HEADERS after backend validation.
+It reconstructs lengths normalized by the backend; malformed lengths and some
+singleton repeats can fail before core. Conservative frame/window settings do
+not provide a hard process-memory/header-size guarantee. Independent connect-go
+unary h2c/TLS/mTLS results are separate from the unchanged core conformance
+profile. NetHTTP remains HTTP/1.1; each future transport needs its own verified
+capability scope.
 
 The explicit optional `connectrpc/generator` entry point implements the standard
 protoc request/response protocol through official `google/protobuf/plugin_pb`.

@@ -1,0 +1,150 @@
+# frozen_string_literal: true
+
+module ConnectRPC
+  module Async
+    module Internal
+      CLEANUP_SECONDS = 0.1
+      MAX_WAIT = 86_400
+
+      def self.now = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+
+      def self.positive_integer(value, name)
+        raise ArgumentError, "#{name} must be a positive integer" unless value.is_a?(Integer) && value.positive?
+
+        value
+      end
+
+      def self.seconds(value, name, zero: false)
+        unless value.is_a?(Numeric) && value.real? && value.finite? && (zero ? value >= 0 : value.positive?)
+          raise ArgumentError, "#{name} must be finite #{zero ? 'nonnegative' : 'positive'} seconds"
+        end
+
+        value
+      end
+
+      # Timeouts are injected only into a supervisor waiting on a private task.
+      def self.wait(task, expires = nil)
+        return task.wait unless expires
+
+        loop do
+          remaining = expires - now
+          raise ::Async::TimeoutError if remaining <= 0
+
+          begin
+            return ::Async::Task.current.with_timeout([remaining, MAX_WAIT].min) { task.wait }
+          rescue ::Async::TimeoutError
+            raise if now >= expires
+          end
+        end
+      end
+
+      def self.join(task)
+        task&.wait unless task&.current?
+      rescue StandardError
+        # The owner/supervisor reports the original failure.
+        nil
+      end
+
+      def self.cancel(task)
+        return unless task && !task.current? && !task.finished?
+
+        task.cancel
+        task.cancel if task.cancel_deferred?
+      end
+
+      def self.raw_close(raw)
+        raw.close if raw && !raw.closed?
+      rescue IOError, SystemCallError
+        nil
+      end
+
+      module Affinity
+        def initialize_affinity
+          @owner = ::Async::Task.current?
+          raise LifecycleError, "An application-owned Async task is required" unless @owner
+
+          @thread = Thread.current
+          @reactor = Fiber.scheduler
+          @progress = ::Async::Condition.new
+          @resources = []
+          @state = :new
+        end
+
+        def check_affinity!
+          return if Thread.current.equal?(@thread) && Fiber.scheduler.equal?(@reactor) && ::Async::Task.current?
+
+          raise LifecycleError, "Use the owning Async reactor and thread"
+        end
+
+        def install_owner_guard
+          @lifetime = @owner.async do
+            ::Async::Condition.new.wait
+          ensure
+            abort_owned unless @state == :closed
+          end
+        end
+
+        def close(grace: 5)
+          check_affinity!
+          Internal.seconds(grace, "grace", zero: true)
+          return @close_outcome if @state == :closed
+
+          if @state == :closing
+            @progress.wait while @state == :closing
+            return @close_outcome
+          end
+
+          @state = :closing
+          @closer = @owner.async(finished: false) do
+            begin
+              close_owned(Internal.now + grace)
+            ensure
+              abort_owned
+            end
+            @close_outcome
+          end
+          @closer.wait
+        end
+
+        def finish_closed(outcome)
+          @close_outcome = outcome
+          @state = :closed
+          @progress.signal
+        end
+
+        private :initialize_affinity, :check_affinity!, :install_owner_guard, :finish_closed
+      end
+
+      # Core reads at most n bytes. Keep only the remainder of the current
+      # backend chunk, including when a request crosses an exact chunk boundary.
+      class Input
+        def initialize(body)
+          @body = body
+          @remainder = nil
+        end
+
+        def read(length)
+          @remainder = @body&.read if @remainder.nil? || @remainder.empty?
+          return unless @remainder
+
+          result = @remainder.byteslice(0, length)
+          @remainder = @remainder.byteslice(result.bytesize..)
+          result
+        end
+      end
+
+      def self.headers(message)
+        result = {}
+        message.headers.header.each { |key, value| (result[key.downcase] ||= []) << value }
+        length = message.body&.length || message.stream.declared_length
+        result["content-length"] = [length.to_s] if length
+        result
+      end
+
+      def self.fields(headers)
+        headers.flat_map { |key, values| values.map { |value| [key, value] } }
+      end
+    end
+    private_constant :Internal
+  end
+end

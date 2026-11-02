@@ -76,10 +76,19 @@ RSpec.describe "CI check mapping" do
   let(:workflow) { YAML.load_file(File.expand_path("../.github/workflows/ci.yml", __dir__)) }
   let(:jobs) { workflow.fetch("jobs") }
 
-  it "runs nine core and three Rails checks with each Ruby syntax check separate from its specs" do
-    expect(jobs.values.sum do |job|
-      job.dig("strategy", "matrix", "ruby")&.size || job.dig("strategy", "matrix", "include")&.size || 1
-    end).to eq(12)
+  it "preserves nine core, three Rails and four independent async checks" do
+    core = %w[static specs package interop conformance]
+    backend = %w[async_specs async_interop]
+    expect(jobs.keys).to match_array([*core, "rails", *backend])
+    count = lambda do |names|
+      jobs.slice(*names).values.sum do |job|
+        job.dig("strategy", "matrix", "ruby")&.size || job.dig("strategy", "matrix", "include")&.size || 1
+      end
+    end
+    expect(count.call(core)).to eq(9)
+    expect(count.call(["rails"])).to eq(3)
+    expect(count.call(backend)).to eq(4)
+    expect(count.call(jobs.keys)).to eq(16)
     jobs.each_value { |job| expect(job).not_to have_key("needs") }
     jobs.except("static", "rails").each_value do |job|
       expect(job.dig("strategy", "fail-fast")).to be(false)
@@ -185,6 +194,75 @@ RSpec.describe "Task-local tool activation" do
     tasks = JSON.parse(output)
     tasks.reject { |task| task.fetch("tools", {}).empty? }.each do |task|
       expect(task.fetch("run")).not_to include(a_string_matching(/\bmise exec\b/)), task.fetch("name")
+    end
+  end
+end
+
+RSpec.describe "Optional Async CI boundary" do
+  let(:root) { File.expand_path("..", __dir__) }
+
+  it "uses independent frozen bundles and separate backend commands in both Ruby lanes" do
+    jobs = YAML.load_file(File.join(root, ".github/workflows/ci.yml")).fetch("jobs")
+    %w[async_specs async_interop].each do |name|
+      job = jobs.fetch(name)
+      expect(job.fetch("env")).to include(
+        "BUNDLE_GEMFILE" => "${{ github.workspace }}/gems/connectrpc-async/Gemfile",
+        "BUNDLE_PATH" => "${{ github.workspace }}/vendor/async/bundle",
+        "BUNDLE_USER_HOME" => "${{ github.workspace }}/vendor/async/bundler", "BUNDLE_COOLDOWN" => "7"
+      )
+    end
+    commands = jobs.transform_values { |job| job.fetch("steps").filter_map { |step| step["run"] } }
+    expect(commands.fetch("async_specs").first(2)).to eq(["mise run async:test", "mise run async:package"])
+    expect(commands.fetch("async_interop").first).to eq("mise run async:interop")
+    expect(jobs.fetch("async_interop").fetch("env")).to include(
+      "GOMODCACHE" => "${{ github.workspace }}/vendor/interop/mod",
+      "GOCACHE" => "${{ github.workspace }}/vendor/interop/build"
+    )
+  end
+
+  it "preserves complete backend Mise contexts while replacing only runtime setup in CI" do
+    %w[async:tools async:setup async:test async:check async:build async:package async:interop].each do |name|
+      local, ci = [nil, "ci"].map do |mode|
+        output, error, status = Open3.capture3({ "MISE_ENV" => mode }, "mise", "tasks", "info", name, "--json")
+        expect(status.success?).to be(true), error
+        JSON.parse(output)
+      end
+      %w[tools env dir depends depends_post].each { |key| expect(ci.fetch(key)).to eq(local.fetch(key)) }
+      if name == "async:tools"
+        expect(ci.fetch("run")).to eq(["ruby scripts/ci_runtime.rb"])
+        expect(local.fetch("run")).to eq(["mise install --locked ruby",
+                                          "mise exec -- ruby ../../scripts/setup_bundler.rb"])
+      else
+        expect(ci.fetch("run")).to eq(local.fetch("run"))
+      end
+      expect(local.fetch("depends")).to eq(["async:tools"]) if name == "async:setup"
+    end
+  end
+
+  it "accepts exact backend runtime paths and rejects bundle/Gemfile/directory drift" do
+    ruby = File.realpath(RbConfig.ruby)
+    backend = File.join(root, "gems/connectrpc-async")
+    environment = {
+      "RUNNER_TOOL_CACHE" => File.dirname(ruby, 2), "CI_EXPECTED_RUBY_VERSION" => RUBY_VERSION,
+      "PATH" => "#{File.dirname(ruby)}:#{ENV.fetch('PATH')}",
+      "BUNDLE_IGNORE_CONFIG" => "true", "BUNDLE_FROZEN" => "true", "BUNDLE_DISABLE_SHARED_GEMS" => "true",
+      "BUNDLE_VERSION" => "4.0.23", "BUNDLE_COOLDOWN" => "7",
+      "BUNDLE_PATH" => File.join(root, "vendor/async/bundle"), "BUNDLE_GEMFILE" => File.join(backend, "Gemfile"),
+      "BUNDLE_USER_HOME" => File.join(root, "vendor/async/bundler")
+    }
+    script = File.join(backend, "scripts/ci_runtime.rb")
+    Bundler.with_unbundled_env do
+      output, error, status = Open3.capture3(environment, ruby, script, chdir: backend)
+      expect(status.success?).to be(true), error
+      expect(output).to include("Async bundle path:", "/vendor/async/bundle")
+      %w[BUNDLE_GEMFILE BUNDLE_PATH BUNDLE_USER_HOME BUNDLE_COOLDOWN].each do |key|
+        _output, error, status = Open3.capture3(environment.merge(key => "/tmp/wrong"), ruby, script, chdir: backend)
+        expect(status.success?).to be(false)
+        expect(error).to include("unexpected #{key}")
+      end
+      _output, error, status = Open3.capture3(environment, ruby, script, chdir: root)
+      expect(status.success?).to be(false)
+      expect(error).to include("unexpected working directory")
     end
   end
 end
