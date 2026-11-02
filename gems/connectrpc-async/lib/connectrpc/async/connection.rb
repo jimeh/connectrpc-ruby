@@ -81,7 +81,7 @@ module ConnectRPC
         end
       end
 
-      module LeadingHeaders
+      module Stream
         attr_reader :declared_length
 
         def receive_initial_headers(...)
@@ -94,14 +94,22 @@ module ConnectRPC
           @headers.trailer!
           super
         end
+
+        def send_body(body, trailer = nil)
+          # A peer reset can close the stream while deferred headers flush.
+          # Upstream otherwise starts an output task on the closed stream.
+          return body.close if closed?
+
+          super
+        end
       end
 
       class RequestStream < ::Async::HTTP::Protocol::HTTP2::Request::Stream
-        include LeadingHeaders
+        include Stream
       end
 
       class ResponseStream < ::Async::HTTP::Protocol::HTTP2::Response::Stream
-        include LeadingHeaders
+        include Stream
       end
 
       class ClientConnection < ::Async::HTTP::Protocol::HTTP2::Client

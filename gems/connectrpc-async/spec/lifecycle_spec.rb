@@ -100,38 +100,52 @@ RSpec.describe "HTTP/2 ownership and setup bounds" do
     end
   end
 
-  it "times out client preface setup even with timeout nil and observes peer EOF without retry" do
-    reactor do |task|
-      bound = IO::Endpoint.tcp("127.0.0.1", 0).bound
-      listener = bound.sockets.first
-      accepted = Async::Queue.new
-      eof = Async::Queue.new
-      peer = task.async do
-        raw, = listener.accept
-        accepted.enqueue(true)
-        raw.readpartial(4096)
-        begin
-          loop { raw.readpartial(4096) }
-        rescue EOFError
-          eof.enqueue(true)
+  [nil, 2].each do |rpc_timeout|
+    it "bounds client preface setup with RPC timeout #{rpc_timeout.inspect} without blocking the reactor or retrying" do
+      reactor do |task|
+        bound = IO::Endpoint.tcp("127.0.0.1", 0).bound
+        listener = bound.sockets.first
+        accepted = Async::Queue.new
+        eof = Async::Queue.new
+        peer = task.async do
+          raw, = listener.accept
+          raw.readpartial(4096)
+          accepted.enqueue(true)
+          begin
+            loop { raw.readpartial(4096) }
+          rescue EOFError
+            eof.enqueue(true)
+          end
+        ensure
+          AsyncHelpers::INTERNAL.raw_close(raw)
         end
+        origin = "http://127.0.0.1:#{listener.local_address.ip_port}"
+        transport = ConnectRPC::Async::Transport.new(origin: origin, connect_timeout: 0.03)
+        started = AsyncHelpers::INTERNAL.now
+        call = task.async(finished: false) do
+          client(transport, origin).echo(AsyncHelpers::MESSAGE.new, timeout: rpc_timeout)
+        end
+        accepted.dequeue
+        # This independent reactor timer must run well before the RPC deadline.
+        # Its elapsed wait is the external timing behavior under test.
+        heartbeat = task.async do |timer|
+          timer.with_timeout(0.06) { Async::Condition.new.wait }
+        rescue Async::TimeoutError
+          AsyncHelpers::INTERNAL.now - started
+        end
+        expect { call.wait }.to raise_error(ConnectRPC::Error) { |e| expect(e.code).to eq("unavailable") }
+        expect(AsyncHelpers::INTERNAL.now - started).to be < 0.5
+        expect(heartbeat.wait).to be < 0.5
+        expect(eof.dequeue).to be(true)
+        record = transport.instance_variable_get(:@resources).first
+        expect(record.raw).to be_closed
+        expect(record.task).to be_finished
+        expect(listener.accept_nonblock(exception: false)).to eq(:wait_readable)
+        peer.wait
       ensure
-        AsyncHelpers::INTERNAL.raw_close(raw)
+        transport&.close(grace: 0)
+        bound&.close
       end
-      origin = "http://127.0.0.1:#{listener.local_address.ip_port}"
-      transport = ConnectRPC::Async::Transport.new(origin: origin, connect_timeout: 0.03)
-      call = task.async(finished: false) { client(transport, origin).echo(AsyncHelpers::MESSAGE.new, timeout: nil) }
-      accepted.dequeue
-      expect { call.wait }.to raise_error(ConnectRPC::Error) { |e| expect(e.code).to eq("unavailable") }
-      expect(eof.dequeue).to be(true)
-      record = transport.instance_variable_get(:@resources).first
-      expect(record.raw).to be_closed
-      expect(record.task).to be_finished
-      expect(listener.accept_nonblock(exception: false)).to eq(:wait_readable)
-      peer.wait
-    ensure
-      transport&.close(grace: 0)
-      bound&.close
     end
   end
 

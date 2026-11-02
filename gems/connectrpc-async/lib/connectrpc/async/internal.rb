@@ -6,6 +6,9 @@ module ConnectRPC
       CLEANUP_SECONDS = 0.1
       MAX_WAIT = 86_400
 
+      class WaitTimeout < ::Async::TimeoutError; end
+      private_constant :WaitTimeout
+
       def self.now = Process.clock_gettime(Process::CLOCK_MONOTONIC)
 
       def self.positive_integer(value, name)
@@ -31,9 +34,11 @@ module ConnectRPC
           raise ::Async::TimeoutError if remaining <= 0
 
           begin
-            return ::Async::Task.current.with_timeout([remaining, MAX_WAIT].min) { task.wait }
-          rescue ::Async::TimeoutError
-            raise if now >= expires
+            return ::Async::Task.current.with_timeout([remaining, MAX_WAIT].min, WaitTimeout) { task.wait }
+          rescue WaitTimeout
+            # Never mistake a child's timeout for this supervisor's timer, or
+            # expose our sentinel to a surrounding wait on this task.
+            raise ::Async::TimeoutError if now >= expires
           end
         end
       end
