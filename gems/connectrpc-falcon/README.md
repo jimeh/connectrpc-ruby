@@ -201,3 +201,16 @@ cancellation. Processing completion detaches the source independently of deliver
 
 Falcon HTTP/1 and portable Rack/Rails do not add peer detection or application
 token env injection. Application handlers remain cooperative.
+
+## Native streaming
+
+The core [streaming guide](../../docs/streaming.md) documents all three scoped
+Connect streaming shapes, typed generated clients/handlers, early headers,
+per-message limits and bounded ownership. Native Async/Falcon HTTP/2 supports
+both codecs and identity/gzip over h2c/TLS/mTLS. Falcon HTTP/1 remains unary.
+The client's one-second absolute HTTP tail policy applies even with a nil RPC
+deadline and can reject otherwise valid late EOF or slow intermediaries.
+
+`falcon:conformance` runs actual server profiles. `falcon:interop:streaming`
+exercises real workers with the pinned Go streaming client. Both belong to
+`falcon:verify`; duplicated native-client runs are not Falcon server evidence.

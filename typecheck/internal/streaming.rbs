@@ -1,0 +1,255 @@
+module ConnectRPC
+  type stream_declaration = ServerStreamMethod[untyped, untyped] | ClientStreamMethod[untyped, untyped] | BidiStreamMethod[untyped, untyped]
+  type stream_endpoint = ResponseReader[untyped] | RequestWriter[untyped] | ClientDuplex[untyped, untyped]
+  class Client
+    @terminal_wire_limit: Integer
+    @terminal_limit: Integer
+    private
+    def validate_stream_call!: (declaration, singleton(ServerStreamMethod) | singleton(ClientStreamMethod) | singleton(BidiStreamMethod), CancellationToken?, Proc?) -> nil
+    def stream_capability?: (declaration) -> bool
+    def stream_call: [Q, R] (ServerStreamMethod[Q, R], Q, metadata_input, Numeric?, CancellationToken?) { (ResponseReader[R]) -> void } -> nil
+      | [Q, R] (ClientStreamMethod[Q, R], nil, metadata_input, Numeric?, CancellationToken?) { (RequestWriter[Q]) -> void } -> Response[R]
+      | [Q, R] (BidiStreamMethod[Q, R], nil, metadata_input, Numeric?, CancellationToken?) { (ClientDuplex[Q, R]) -> void } -> nil
+    def run_stream: (declaration, untyped, metadata_input, timeout: Numeric?, cancellation: CancellationToken?, lifecycle: Instrumentation::Handle?, injection: metadata_input) { (stream_endpoint) -> void } -> Response[untyped]?
+    def stream_metadata: (metadata_input, metadata_input, Instrumentation::Handle?) -> Metadata
+    def stream_request: (declaration, Metadata, Deadline?, CallCancellation, Instrumentation::Handle?) -> StreamRequest
+    def new_client_stream_session: (declaration, CallCancellation, _StreamExchange, Instrumentation::Handle?) -> Streaming::Session
+    def with_stream_session: [T] (Streaming::Session, Streaming::ClientScope) { () -> T } -> T
+    def perform_stream_scope: (declaration, untyped, Streaming::Session, Streaming::ClientScope) { (stream_endpoint) -> void } -> void
+    def prepare_server_stream: (declaration, untyped, Streaming::Session) -> void
+    def yield_stream_endpoint: [T] (Streaming::Session, Streaming::ClientScope) { () -> T } -> T
+    def stream_endpoint: (declaration, Streaming::Session) -> stream_endpoint
+    def finish_stream_scope: (declaration, Streaming::Session) -> Response[untyped]?
+    def client_stream_response: (Streaming::Session) -> Response[untyped]
+  end
+  class Server
+    @terminal_wire_limit: Integer
+    @terminal_limit: Integer
+    private
+    def stream_preflight: (String, codec?, _Cancellation?) -> TransportResponse?
+    def execute_native_stream: (String, headers, codec, input: _StreamingInput, output: _StreamingOutput, publish: _PublishStreamHead | ^(StreamHead) -> void, lifecycle: Instrumentation::Handle?, cancellation: _Cancellation?) -> nil
+    def begin_native_processing: (String, headers, Instrumentation::Handle?) -> [Instrumentation::Handle?, bool]
+    def finish_native_processing: (Instrumentation::Handle?, bool?) -> void
+    def process_stream: (String, headers, codec, input: _StreamingInput, output: _StreamingOutput, publish: _PublishStreamHead | ^(StreamHead) -> void, lifecycle: Instrumentation::Handle?, cancellation: _Cancellation?) -> void
+    def capture_stream_error: (Streaming::ServerState) { () -> void } -> void
+    def execute_stream_handler: (Streaming::ServerState, String, _StreamingInput, _StreamingOutput) -> void
+    def stream_encoding: (headers) -> encoding
+    def streaming_declaration: (String) -> stream_declaration
+    def new_stream_session: (Streaming::ServerState, stream_declaration, _StreamingInput, _StreamingOutput) -> Streaming::Session
+    def invoke_stream_handler: (registered_handler, stream_declaration, Streaming::Session, StreamingContext) -> void
+    def invoke_bidi_stream: (registered_handler, Streaming::Session, StreamingContext) -> void
+    def single_stream_request: (Streaming::Session) -> untyped
+    def render_stream_terminal: (Streaming::ServerState, _StreamingOutput) -> void
+    def stream_terminal_bytes: (Streaming::ServerState, StreamingContext) -> [String, Error?]
+    def merge_stream_error_metadata: (Error?, StreamingContext) -> void
+    def stream_trailers: (Error?, StreamingContext) -> Metadata
+    def emit_stream_terminal: (String, _StreamingOutput) -> void
+    def observe_stream_result: (Streaming::ServerState, Error?) -> void
+    def streaming_context: (Streaming::ServerState, ?headers: headers) -> StreamingContext
+    def stream_head: (Metadata, codec, encoding) -> StreamHead
+  end
+  class StreamingContext
+    @publish: ^(Metadata) -> void
+    @headers_sent: bool
+    @owner_thread: Thread
+    @owner_scheduler: Object?
+    @stream_closed: bool
+    def initialize: (publish: ^(Metadata) -> void, ?request_metadata: metadata_input, ?deadline: Deadline?, ?lifecycle: Instrumentation::Handle?, ?cancellation: _Cancellation?) -> void
+    private
+    def check_headers_scope!: () -> nil
+    def publish_headers: (?check: bool) -> nil
+  end
+  class ResponseReader[Resp]
+    @session: Streaming::Session
+    def initialize: (Streaming::Session) -> void
+  end
+  class RequestWriter[Req]
+    @session: Streaming::Session
+    def initialize: (Streaming::Session) -> void
+  end
+  class ResponseWriter[Resp]
+    @session: Streaming::Session
+    @context: StreamingContext
+    def initialize: (Streaming::Session, StreamingContext) -> void
+  end
+  class ServerDuplex[Req, Resp]
+    @context: StreamingContext
+    def initialize: (Streaming::Session, StreamingContext) -> void
+  end
+  interface _StreamingWriter
+    def write: (String) -> nil
+  end
+  module Streaming
+    CONTENT_TYPES: Hash[codec, String]
+    TERMINAL_LIMIT: Integer
+    FRAGMENT_SIZE: Integer
+    RECOVERY_LIMIT: Integer
+    RECOVERY_SECONDS: Float
+    TAIL_SECONDS: Float
+    def self.codec: (String?) -> codec?
+    def self.coding_headers: (headers) -> headers
+    def self.parse_terminal: (String, ?metadata: metadata_input) -> [Error?, Metadata]
+    def self.terminal_bytes: (Error?, Metadata, wire_limit: Integer, limit: Integer) -> [String, Error?]
+    def self.terminal_metadata: (Hash[String, untyped]) -> Metadata
+    def self.terminal_error: (untyped, metadata_input, Metadata) -> Error?
+    def self.minimal_terminal: (Integer, Integer) -> [String, Error]
+    class ServerState
+      attr_reader headers: headers
+      attr_reader codec: codec
+      attr_reader publish: _PublishStreamHead | ^(StreamHead) -> void
+      attr_reader lifecycle: Instrumentation::Handle?
+      attr_reader cancellation: _Cancellation?
+      attr_accessor context: StreamingContext?
+      attr_accessor session: Session?
+      attr_accessor encoding: encoding
+      attr_accessor error: Error?
+      def initialize: (headers: headers, codec: codec, publish: _PublishStreamHead | ^(StreamHead) -> void, lifecycle: Instrumentation::Handle?, cancellation: _Cancellation?) -> void
+    end
+    class ClientScope
+      @state: CallCancellation?
+      @lifecycle: Instrumentation::Handle?
+      attr_accessor completed: bool
+      attr_accessor abandoned: bool
+      attr_accessor independent_error: Exception?
+      attr_accessor failure: StandardError?
+      attr_accessor result: Response[untyped]?
+      def initialize: (Instrumentation::Handle?) -> void
+      def run: (Numeric?, CancellationToken?) { (CallCancellation, Deadline?) -> void } -> Response[untyped]?
+      def cleanup: (Session) -> void
+      def record_user_error: (Exception) -> void
+      private
+      def finish: (Exception?) -> void
+      def finish_preserving_user: (Exception?) -> void
+      def start: (Numeric?, CancellationToken?) -> [CallCancellation, Deadline?]
+      def implicit_abandonment?: () -> bool
+      def success?: (Exception?) -> bool
+      def report_processing: (Instrumentation::Handle, Exception?) -> void
+      def normalized_error: (Exception?) -> Error?
+    end
+    class Direction
+      @lifecycle: Instrumentation::Handle?
+      attr_reader error: StandardError?
+      attr_reader busy: bool
+      def initialize: (Instrumentation::Handle?) -> void
+      def run: [T] () { () -> T } -> T
+      private
+      def record_failure: (StandardError) -> void
+    end
+    class Framing
+      @input: _StreamingInput?
+      @output: _StreamingWriter?
+      @request: bool
+      @wire_limit: Integer
+      @limit: Integer
+      @encoding: encoding
+      @terminal_wire_limit: Integer
+      @terminal_limit: Integer
+      @state: _Check?
+      attr_reader messages: Integer
+      attr_reader terminal: bool
+      attr_writer encoding: encoding
+      def initialize: (input: _StreamingInput?, ?output: _StreamingWriter?, request: bool, wire_limit: Integer, limit: Integer, ?encoding: encoding, ?terminal_wire_limit: Integer, ?terminal_limit: Integer, ?state: _Check?) -> void
+      def read_frame: (?timeout: Numeric?, ?skip_data: bool) -> [Integer, String]?
+      def emit: (String, ?terminal: bool) -> nil
+      private
+      def initialize_state: (_Check?) -> void
+      def validate_envelope: (Integer, Integer) -> void
+      def validate_flags: (Integer) -> void
+      def payload: (Integer, Integer, timeout: Numeric?, skip_data: bool) -> String
+      def inflate: (String, Integer) -> String
+      def skip_payload: (Integer, Numeric?) -> String
+      def prepare_payload: (String, bool) -> [Integer, String]
+      def check_output_size: (String, Integer) -> void
+      def emit_fragments: (String, _StreamingWriter) -> void
+      def read_chunk: (Integer, Numeric?) -> String?
+      def exact: (Integer, ?eof: bool, ?timeout: Numeric?) -> String?
+      def protocol_error: (String) -> bot
+    end
+    class Session
+      @binding: _Binding
+      @method: declaration
+      @codec: codec
+      @state: Context | CallCancellation
+      @input: _StreamingInput | _StreamExchange
+      @output: _StreamingOutput | _StreamExchange
+      @server: bool
+      @context: StreamingContext?
+      @lifecycle: Instrumentation::Handle?
+      @thread: Thread
+      @scheduler: Object?
+      @read_limit: Integer
+      @write_limit: Integer
+      @read_type: Object
+      @write_type: Object
+      @terminal_wire_limit: Integer
+      @terminal_limit: Integer
+      @reader: Framing
+      @writer: Framing
+      @closed: bool
+      @send_closed: bool
+      @eof: bool
+      @abandoned: bool
+      @recovering: bool?
+      @reading: Direction
+      @writing: Direction
+      @accept_encoding: Array[encoding]
+      @reading_error: StandardError?
+      @writing_error: StandardError?
+      @send_failure: StandardError?
+      @remote_error: Error?
+      @headers: Metadata?
+      @recovery_expires: Float?
+      @recovery_remaining: Integer?
+      attr_reader trailers: Metadata?
+      attr_reader received: Integer
+      attr_reader sent: Integer
+      def initialize: (binding: _Binding, method: declaration, codec: codec, state: Context | CallCancellation, input: _StreamingInput | _StreamExchange, output: _StreamingOutput | _StreamExchange, request_limit: Integer, response_limit: Integer, request_wire_limit: Integer, response_wire_limit: Integer, request_encoding: encoding, response_encoding: encoding, terminal_wire_limit: Integer, terminal_limit: Integer, ?server: bool, ?context: StreamingContext?, ?lifecycle: Instrumentation::Handle?, ?accept_encoding: Array[encoding]) -> void
+      def headers: () -> Metadata
+      def receive: () -> untyped
+      def send_message: (untyped) -> nil
+      def close_send: () -> nil
+      def abandon: () -> nil
+      def abandoned?: () -> bool
+      def consumed?: () -> bool
+      def owned_error?: (Exception) -> bool
+      def send_failure?: (Exception) -> bool
+      def close: () -> nil
+      def write: (String) -> nil
+      def read: (Integer, ?timeout: Numeric?) -> String?
+      def recover_send_failure: () -> Error?
+      private
+      def recovery_timeout: () -> Float
+      def initialize_owner: (_Binding, declaration, codec, Context | CallCancellation) -> void
+      def initialize_channels: (_StreamingInput | _StreamExchange, _StreamingOutput | _StreamExchange, bool, StreamingContext?, Instrumentation::Handle?) -> void
+      def initialize_messages: (Integer, Integer) -> void
+      def initialize_framing: (Integer, Integer, encoding, encoding, terminal_wire_limit: Integer, terminal_limit: Integer) -> void
+      def initialize_reader: (Integer, Integer, encoding, encoding, terminal_wire_limit: Integer, terminal_limit: Integer) -> void
+      def initialize_writer: (Integer, Integer, encoding, encoding, terminal_wire_limit: Integer, terminal_limit: Integer) -> void
+      def receive_message: () -> untyped
+      def receive_eof: () -> nil
+      def decode_message: (String) -> untyped
+      def validate_response_count: () -> void
+      def validate_send: (untyped) -> void
+      def encode_message: (untyped) -> nil
+      def write_chunk: (String) -> void
+      def record_send_failure: (StandardError) -> bot
+      def recovery_read_timeout: (Integer) -> Float
+      def count_recovery_bytes: (String?) -> void
+      def response_metadata: () -> Metadata
+      def validate_response_status: (Integer) -> void
+      def validate_response_headers: (headers) -> void
+      def recovery_available?: () -> bool
+      def recover_terminal: () -> Error?
+      def recovered_error: (String) -> Error?
+      def validate_terminal_count: () -> void
+      def verify_tail: (Float) -> void
+      def finish_transport: (Float) -> nil
+      def completion_timeout: (Float) -> Float
+      def now: () -> Float
+      def check_open!: () -> nil
+      def operation: [T] (:reading | :writing) { () -> T } -> T
+      def leading: () -> Metadata
+      def accept_terminal: (String) -> void
+    end
+  end
+end

@@ -11,10 +11,13 @@ module ConnectRPC
     def initialize(base_url:, binding:, transport: nil, codec: :proto, request_limit: Protocol::DEFAULT_LIMIT,
                    response_limit: Protocol::DEFAULT_LIMIT, request_wire_limit: request_limit,
                    response_wire_limit: response_limit, accept_encoding: nil, use_get: false, get_url_limit: 8192,
-                   protocol: :connect, mode: :unary, encoding: :identity, instrumentation: nil)
+                   protocol: :connect, mode: :unary, encoding: :identity, instrumentation: nil,
+                   terminal_wire_limit: 65_536, terminal_limit: 65_536)
       Protocol.profile!(protocol, mode, encoding)
       raise ArgumentError, "use_get must be true or false" unless [true, false].include?(use_get)
 
+      @terminal_wire_limit = Protocol.limit!(terminal_wire_limit)
+      @terminal_limit = Protocol.limit!(terminal_limit)
       @use_get = use_get
       @get_url_limit = Protocol.limit!(get_url_limit)
       @base_url = parse_base_url(base_url)
@@ -33,6 +36,8 @@ module ConnectRPC
     # rubocop:enable Metrics/MethodLength, Metrics/AbcSize
 
     def call(method, request, metadata: {}, timeout: 30, cancellation: nil)
+      raise ArgumentError, "call requires a unary Method" unless method.is_a?(Method)
+
       unless cancellation.nil? || cancellation.is_a?(CancellationToken)
         raise ArgumentError, "cancellation must be a CancellationToken or nil"
       end
@@ -62,7 +67,8 @@ module ConnectRPC
       outgoing.lifecycle = lifecycle if lifecycle
       active.check!
       lifecycle.request_bytes = outgoing.body.bytesize if lifecycle && outgoing.http_method != "GET"
-      response = @transport.call(outgoing)
+      transport = @transport #: _Transport
+      response = transport.call(outgoing)
       yield response if block_given?
       active.check!
       Protocol.check_size!(response.body, @response_wire_limit)

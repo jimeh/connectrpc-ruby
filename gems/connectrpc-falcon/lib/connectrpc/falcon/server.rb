@@ -26,7 +26,7 @@ module ConnectRPC
         @request_total = utilization_registry.metric(:requests_total)
         @request_active = utilization_registry.metric(:requests_active)
         @session = ::ConnectRPC::Async::ServerSession.new(
-          application: method(:call), lifecycle_factory: application.method(:start_call),
+          application: self, lifecycle_factory: application.method(:start_call),
           tls: tls, tls_provider: tls_provider,
           max_connections: max_connections, max_requests: max_requests,
           handshake_timeout: handshake_timeout, idle_timeout: idle_timeout,
@@ -64,11 +64,22 @@ module ConnectRPC
 
       def abort = @session.abort
 
+      def call_with_publication(request, publication:, lifecycle: nil)
+        publication.on_publish do |response|
+          response.body = ::Falcon::Body::RequestFinished.new(response.body, @request_active) if response&.body
+        end
+        call_native(request, lifecycle: lifecycle, publication: publication)
+      end
+
       def call(request, lifecycle: nil)
+        call_native(request, lifecycle: lifecycle)
+      end
+
+      def call_native(request, lifecycle: nil, publication: nil)
         @request_total.increment
         @request_active.increment
-        response = @listener_application.call(request, lifecycle: lifecycle)
-        if response&.body
+        response = @listener_application.call(request, lifecycle: lifecycle, publication: publication)
+        if response&.body && !publication
           # Empty bodies can still own completion callbacks. Preserve their
           # wire length while retaining the metric until close finishes.
           response.body = ::Falcon::Body::RequestFinished.new(response.body, @request_active)
@@ -76,8 +87,11 @@ module ConnectRPC
         end
         response
       ensure
-        @request_active.decrement unless wrapped
+        retained = publication && (publication.published? || response&.body)
+        @request_active.decrement unless wrapped || retained
       end
+
+      private :call_native
 
       def reload_tls(**) = @session.reload_tls(**)
       def refresh_tls = @session.refresh_tls

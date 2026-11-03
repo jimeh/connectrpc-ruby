@@ -54,10 +54,15 @@ module ConnectRPC
     private
 
     def validate_methods!(name, methods)
-      unless methods.is_a?(Array) && methods.all? { |method| method.is_a?(Method) && method.service == name }
+      unless methods.is_a?(Array) && methods.all? { |method| service_method?(method, name) }
         raise ArgumentError, "Methods must belong to this service"
       end
       raise ArgumentError, "Duplicate methods" unless methods.map(&:name).uniq.size == methods.size
+    end
+
+    def service_method?(method, name)
+      [Method, ServerStreamMethod, ClientStreamMethod, BidiStreamMethod].any? { |type| method.is_a?(type) } &&
+        method.service == name
     end
   end
 end

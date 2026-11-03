@@ -271,7 +271,10 @@ RSpec.shared_examples "Optional backend CI boundary" do |backend_name, label|
     commands = jobs.transform_values { |job| job.fetch("steps").filter_map { |step| step["run"] } }
     expected = ["mise run #{backend_name}:test", "mise run #{backend_name}:package"]
     expect(commands.fetch("#{backend_name}_specs").first(2)).to eq(expected)
-    expect(commands.fetch("#{backend_name}_interop").first).to eq("mise run #{backend_name}:interop")
+    expect(commands.fetch("#{backend_name}_specs")).to include("mise run #{backend_name}:conformance")
+    expect(commands.fetch("#{backend_name}_interop").first(2)).to eq(
+      ["mise run #{backend_name}:interop", "mise run #{backend_name}:interop:streaming"]
+    )
     expect(jobs.fetch("#{backend_name}_interop").fetch("env")).to include(
       "GOMODCACHE" => "${{ github.workspace }}/vendor/interop/mod",
       "GOCACHE" => "${{ github.workspace }}/vendor/interop/build"
@@ -279,7 +282,7 @@ RSpec.shared_examples "Optional backend CI boundary" do |backend_name, label|
   end
 
   it "preserves complete backend Mise contexts while replacing only runtime setup in CI" do
-    %w[tools setup test check build package interop].each do |task|
+    %w[tools setup test check build package interop interop:streaming conformance].each do |task|
       name = "#{backend_name}:#{task}"
       local, ci = [nil, "ci"].map do |mode|
         output, error, status = Open3.capture3({ "MISE_ENV" => mode }, "mise", "tasks", "info", name, "--json")

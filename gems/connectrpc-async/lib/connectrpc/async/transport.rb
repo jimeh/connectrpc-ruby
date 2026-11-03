@@ -36,7 +36,98 @@ module ConnectRPC
         CallCancellation.with_request(request) { |outgoing| perform_call(outgoing) }
       end
 
+      def streaming_capabilities = %i[server_stream client_stream bidi_stream].freeze
+
+      def open_stream(request)
+        raise ArgumentError, "A streaming block is required" unless block_given?
+
+        check_affinity!
+        raise ArgumentError, "Request URL must match the transport origin" unless same_origin?(request.url)
+        raise Error.new(:unavailable, "HTTP/2 transport admission is closed or full") unless
+          @state == :running && @calls.size < @max_requests
+
+        operation = { request: request, tasks: {} }
+        @calls[operation] = true
+        body = Internal::OutputBody.new
+        begin
+          stream_operation(operation) { dispatch_stream(operation, body) }
+          yield Internal::StreamExchange.new(self, operation, body)
+        ensure
+          body.close
+          cleanup(operation)
+          @calls.delete(operation)
+          @progress.signal
+        end
+      end
+
       private
+
+      def stream_operation(operation, timeout: nil, &work)
+        check_affinity!
+        request = operation.fetch(:request)
+        raise Error.new(:unavailable, "HTTP/2 exchange is retired"), cause: nil if operation[:cleaned]
+
+        check_request!(request)
+        event = ::Async::Promise.new
+        registration = request.cancellation&.on_cancel { event.resolve([:cancellation, nil]) }
+        child = @lifetime.async(finished: false) do
+          result = activate(request, &work)
+          event.resolve([:result, result])
+        rescue StandardError => e
+          request.lifecycle&.record_failure(e)
+          event.resolve([:error, e])
+        ensure
+          event.resolve([:stopped, nil])
+        end
+        operation.fetch(:tasks)[child] = true
+        expires = Internal.now + timeout if timeout
+        expires = [expires || Float::INFINITY, Internal.now + request.deadline.remaining].min if request.deadline
+        tag, result = wait_event(event, expires)
+        check_request!(request)
+        raise result if tag == :error
+        raise IOError, "HTTP/2 operation stopped" unless tag == :result
+
+        result
+      rescue StandardError => e
+        request.lifecycle&.record_failure(e)
+        check_request!(request)
+        raise if e.is_a?(ConnectRPC::Error)
+
+        raise Error.new(:unavailable, "HTTP/2 transport failed"), cause: nil
+      ensure
+        registration&.unregister
+        # The call's one cleanup budget owns stopping a still-blocked task.
+        if child && !child.finished? && !%i[result error].include?(tag)
+          cleanup(operation)
+        else
+          operation[:tasks]&.delete(child)
+        end
+      end
+
+      def dispatch_stream(operation, body)
+        request = operation.fetch(:request)
+        task = ::Async::Task.current
+        @acquiring[task] = operation
+        begin
+          connection = @pool.acquire
+          operation[:connection] = connection
+          operation[:resource] = connection.resource
+        ensure
+          @acquiring.delete(task)
+        end
+        connection.synchronize do
+          check_request!(request)
+          raise IOError, "Connection is not reusable" unless connection.reusable?
+
+          headers = request.headers.dup
+          headers["connect-timeout-ms"] = [request.deadline.timeout_ms] if request.deadline
+          outgoing = ::Protocol::HTTP::Request["POST", request.url.request_uri, Internal.fields(headers), body,
+                                               scheme: @origin.scheme, authority: @origin.authority]
+          response = connection.create_response
+          operation[:response] = response
+          task.defer_cancel { connection.write_request(response, outgoing) }
+        end
+      end
 
       def perform_call(request)
         raise ArgumentError, "Request URL must match the transport origin" unless same_origin?(request.url)
@@ -136,9 +227,20 @@ module ConnectRPC
         begin
           Internal.wait(setup, expires)
         rescue ::Async::Cancel, StandardError
-          resource.abort
+          abort_setup(resource)
           raise
         end
+      end
+
+      def abort_setup(resource)
+        raw = resource.raw
+        # Ruby 4 close may wait for the blocked SSL handshake. A non-flushing
+        # shutdown wakes that setup operation before the existing raw-first abort.
+        raw.shutdown(Socket::SHUT_RDWR) if raw && !raw.closed?
+      rescue IOError, SystemCallError
+        nil
+      ensure
+        resource.abort
       end
 
       def activate(request, &work)
@@ -218,10 +320,15 @@ module ConnectRPC
       end
 
       def cleanup(operation)
+        return if operation[:cleaned]
+
+        operation[:cleaned] = true
         expires = Internal.now + Internal::CLEANUP_SECONDS
         cleanup_task = ::Async::Task.current.async(finished: false) do
-          operation[:task]&.cancel unless operation[:task]&.finished?
-          Internal.join(operation[:task])
+          tasks = [operation[:task], operation[:resource]&.task, *operation.fetch(:tasks, {}).keys].compact.uniq
+          tasks.each { |task| task.cancel unless task.finished? }
+          # Cancel every task before joining in reverse ownership order.
+          tasks.reverse_each { |task| Internal.join(task) }
           response = operation[:response]
           if response
             stream = response.stream

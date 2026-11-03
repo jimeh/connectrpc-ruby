@@ -38,6 +38,23 @@ RSpec.describe ConnectRPC::Rack do
     [status, headers, bytes]
   end
 
+  it "rejects streaming media and declarations before reading Rack input or invoking binding or handlers" do
+    rpc = ConnectRPC::ServerStreamMethod.new(service: "rack.Streams", name: "Watch",
+                                             request_type: EchoExample::Message, response_type: EchoExample::Message)
+    target = ConnectRPC::Server.new(services: [ConnectRPC::Service.new(name: rpc.service, methods: [rpc])],
+                                    binding: binding, handlers: { rpc.path => ->(*) { raise "handler invoked" } })
+    middleware = described_class.new(server: target)
+    incoming = StringIO.new("must not read")
+    expect(incoming).not_to receive(:read)
+    expect(binding).not_to receive(:decode)
+    expect(binding).not_to receive(:encode)
+    { "application/connect+proto" => 415, "application/proto" => 501 }.each do |media, status|
+      env = Rack::MockRequest.env_for(rpc.path, method: "POST", "CONTENT_TYPE" => media)
+      env["rack.input"] = incoming
+      expect(middleware.call(env).first).to eq(status)
+    end
+  end
+
   it "loads middleware exclusively from the optional package" do
     owner = Gem.loaded_specs.fetch("connectrpc-rack")
     expect(owner.full_gem_path).to eq(File.expand_path("..", __dir__))

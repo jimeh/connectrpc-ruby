@@ -1,0 +1,85 @@
+# frozen_string_literal: true
+
+module ConnectRPC
+  module Streaming
+    class ClientScope
+      attr_accessor :completed, :abandoned, :independent_error, :failure, :result
+
+      def initialize(lifecycle)
+        @lifecycle = lifecycle
+        @completed = false
+        @abandoned = false
+      end
+
+      def run(timeout, cancellation)
+        active, deadline = start(timeout, cancellation)
+        yield active, deadline
+        active.commit! if @completed
+        @result
+      rescue StandardError
+        @state&.commit! unless @independent_error || @abandoned
+        raise
+      ensure
+        finish_preserving_user($ERROR_INFO)
+      end
+
+      def cleanup(session)
+        return if @completed
+
+        @abandoned = true if implicit_abandonment?
+        session.abandon unless session.abandoned?
+      rescue StandardError => e
+        @lifecycle&.record_failure(e)
+      end
+
+      def record_user_error(error)
+        @independent_error = error
+        @lifecycle&.record_failure(error)
+      end
+
+      private
+
+      def finish_preserving_user(error)
+        finish(error)
+      ensure
+        original = @independent_error
+        raise original, cause: original.cause if original && !original.equal?($ERROR_INFO)
+      end
+
+      def finish(error)
+        @state&.close
+        lifecycle = @lifecycle
+        return unless lifecycle
+
+        lifecycle.record_failure(error) if error
+        report_processing(lifecycle, error)
+        lifecycle.finish(delivery: success?(error) ? :completed : :aborted)
+      end
+
+      def start(timeout, cancellation)
+        deadline = Deadline.new(timeout) unless timeout.nil?
+        active = @state = CallCancellation.new(deadline: deadline, cancellation: cancellation)
+        active.check!
+        [active, deadline]
+      end
+
+      def implicit_abandonment?
+        !@independent_error && (@failure.nil? || @failure.is_a?(StreamNotConsumedError))
+      end
+
+      def success?(error) = @completed && error.nil?
+
+      def report_processing(lifecycle, error)
+        normalized = normalized_error(error)
+        lifecycle.processing_finished(code: normalized&.code || ("OK" if success?(error)),
+                                      error: error, normalized_error: normalized)
+      end
+
+      def normalized_error(error)
+        return Error.new(:canceled, "Stream abandoned") if @abandoned
+
+        error if error.is_a?(Error)
+      end
+    end
+  end
+end

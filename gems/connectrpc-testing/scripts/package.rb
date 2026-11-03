@@ -15,9 +15,16 @@ testing_archive = File.join(output, "connectrpc-testing-0.1.0.gem")
 core = Gem::Package.new(core_archive)
 testing = Gem::Package.new(testing_archive)
 expected_core = %w[
-  LICENSE README.md docs/development.md docs/design.md docs/rbs.md exe/protoc-gen-connectrpc-ruby
+  LICENSE README.md docs/development.md docs/design.md docs/rbs.md docs/streaming.md exe/protoc-gen-connectrpc-ruby
   sig/connectrpc.rbs sig/manifest.yaml rbs/google_protobuf_4_36/runtime.rbs
-  lib/connectrpc/generator/rbs_renderer.rb
+  lib/connectrpc/generator/rbs_renderer.rb lib/connectrpc/generator/streaming_methods.rb
+  lib/connectrpc/streaming/method.rb lib/connectrpc/streaming/framing.rb lib/connectrpc/streaming/streams.rb
+  lib/connectrpc/streaming/client.rb lib/connectrpc/streaming/server.rb
+  lib/connectrpc/streaming/client_execution.rb lib/connectrpc/streaming/client_scope.rb
+  lib/connectrpc/streaming/framing_io.rb lib/connectrpc/streaming/server_execution.rb
+  lib/connectrpc/streaming/server_terminal.rb lib/connectrpc/streaming/session.rb
+  lib/connectrpc/streaming/session_completion.rb lib/connectrpc/streaming/session_io.rb
+  lib/connectrpc/streaming/session_messages.rb lib/connectrpc/streaming/terminal.rb
   lib/connectrpc.rb lib/connectrpc/version.rb lib/connectrpc/method.rb lib/connectrpc/metadata.rb
   lib/connectrpc/error.rb lib/connectrpc/cancellation.rb
   lib/connectrpc/deadline.rb lib/connectrpc/compression.rb lib/connectrpc/message_io.rb

@@ -27,6 +27,17 @@ RSpec.describe ConnectRPC::Testing::Transport do
   end
   let(:transport) { described_class.new(server: server) }
 
+  it "rejects all streaming capabilities before binding or in-process dispatch" do
+    core = ConnectRPC::Client.new(base_url: "https://example.invalid", binding: binding, transport: transport)
+    expect(binding).not_to receive(:encode)
+    expect(transport).not_to receive(:call)
+    [ConnectRPC::ServerStreamMethod, ConnectRPC::ClientStreamMethod, ConnectRPC::BidiStreamMethod].each do |kind|
+      rpc = kind.new(service: "testing.Streams", name: "Run", request_type: type, response_type: type)
+      arguments = kind == ConnectRPC::ServerStreamMethod ? [rpc, type.new] : [rpc]
+      expect { core.public_send(rpc.cardinality, *arguments) { nil } }.to raise_error(ArgumentError)
+    end
+  end
+
   def request(**changes)
     ConnectRPC::TransportRequest.new(url: URI("https://example.invalid#{service::ECHO.path}"), http_method: "POST",
                                      headers: { "content-type" => ["application/proto"] }, body: "".b,

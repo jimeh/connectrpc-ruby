@@ -52,11 +52,11 @@ RSpec.describe "Opt-in service RBS generation" do
     other.name = "bad.proto"
     other.package = "bad"
     other.options = Google::Protobuf::FileOptions.new(ruby_package: "RbsSpec::Bad")
-    other.service.first["method"].first.server_streaming = true
+    other.service.first["method"].first.input_type = ".missing.Message"
     request.proto_file << other
     request.file_to_generate << other.name
     response = ConnectRPC::Generator.generate(request)
-    expect(response.error).to include("streaming")
+    expect(response.error).to include("Unresolved")
     expect(response.file).to be_empty
   end
 

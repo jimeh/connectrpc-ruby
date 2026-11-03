@@ -137,3 +137,18 @@ end
 class APIHeaderReader
   def self.names: (ConnectRPC::Async::_Headers) -> Array[String]
 end
+class APIStreamExchange
+  @input: StringIO
+  def initialize: () -> void
+  def response_head: (?timeout: Numeric?) -> ConnectRPC::StreamHead
+  def read: (Integer, ?timeout: Numeric?) -> String?
+  def write: (String) -> nil
+  def close_send: () -> nil
+  def finish: (?timeout: Numeric?) -> nil
+  def abort: () -> nil
+end
+class APIStreamingTransport
+  def initialize: () -> void
+  def streaming_capabilities: () -> Array[ConnectRPC::streaming_cardinality]
+  def open_stream: [T] (ConnectRPC::StreamRequest) { (APIStreamExchange) -> T } -> T
+end

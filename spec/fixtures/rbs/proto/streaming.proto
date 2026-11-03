@@ -1,0 +1,10 @@
+syntax = "proto3";
+package rbs_streaming.v1;
+option ruby_package = "RbsFixture::Streaming";
+import "types.proto";
+service Mixed {
+  rpc Lookup(rbs_types.v1.Envelope.Request) returns (rbs_types.v1.Envelope.Reply) { option idempotency_level = NO_SIDE_EFFECTS; }
+  rpc Watch(rbs_types.v1.Envelope.Request) returns (stream rbs_types.v1.Envelope.Reply);
+  rpc Collect(stream rbs_types.v1.Envelope.Request) returns (rbs_types.v1.Envelope.Reply);
+  rpc Chat(stream rbs_types.v1.Envelope.Request) returns (stream rbs_types.v1.Envelope.Reply);
+}

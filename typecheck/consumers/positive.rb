@@ -72,3 +72,34 @@ if handle
 end
 ConnectRPC::Context.new.record_failure(RuntimeError.new("local"))
 recorder.completions.each { |completion| completion.delivery.to_s }
+
+require "streaming_connect"
+stream_handlers = RbsFixture::Streaming::Mixed.handlers(
+  lookup: ->(request, _context) { RbsFixture::Messages::Envelope::Reply.new(count: request.text.size) },
+  watch: lambda { |request, writer, context|
+    context.send_headers(metadata: { "early" => ["yes"] })
+    writer.send_message(RbsFixture::Messages::Envelope::Reply.new(count: request.text.size))
+  },
+  collect: lambda { |reader, _context|
+    count = 0
+    reader.each { |message| count += message.text.size }
+    RbsFixture::Messages::Envelope::Reply.new(count: count)
+  },
+  chat: lambda { |duplex, _context|
+    duplex.each { |message| duplex.send_message(RbsFixture::Messages::Envelope::Reply.new(count: message.text.size)) }
+  }
+)
+ConnectRPC::Server.new(services: [RbsFixture::Streaming::Mixed::SERVICE], binding: binding, handlers: stream_handlers)
+stream_client = RbsFixture::Streaming::Mixed::Client.new(client: client)
+stream_client.lookup(request, timeout: nil).message.count.succ
+stream_client.watch(request, timeout: nil, cancellation: source.token) do |reader|
+  reader.headers.to_h
+  reader.each { |reply| reply.count.succ }
+  reader.trailers&.to_h
+end
+stream_client.collect(timeout: nil) { |writer| writer.send_message(request) }.message.count.succ
+stream_client.chat(timeout: nil) do |duplex|
+  duplex.send_message(request)
+  duplex.close_send
+  duplex.each { |reply| reply.count.succ }
+end

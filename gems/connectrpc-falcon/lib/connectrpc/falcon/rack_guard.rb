@@ -129,14 +129,21 @@ module ConnectRPC
         @scheme = scheme
       end
 
-      def call(request, lifecycle: nil)
+      def call(request, lifecycle: nil, publication: nil)
         request.scheme ||= @scheme
         if request.method == "CONNECT" || request.protocol || request.headers["upgrade"]
           lifecycle&.host_rejected!
           return ::Protocol::HTTP::Response[501, {}, nil]
         end
 
-        response = @application.call(request, lifecycle: lifecycle)
+        response = if publication
+                     publication.on_publish { |head| head.body = CloseOnce.new(head.body) if head&.body }
+                     @application.call_with_publication(request, lifecycle: lifecycle, publication: publication)
+                   else
+                     @application.call(request, lifecycle: lifecycle)
+                   end
+        return if publication && response.nil?
+
         if response.nil? || response.status == 101 || response.protocol
           response&.close
           return ::Protocol::HTTP::Response[501, {}, nil]

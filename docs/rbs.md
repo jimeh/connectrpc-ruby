@@ -1,7 +1,7 @@
 # Public API signatures
 
 Every package ships its own gem-discovered signatures and dependency manifest.
-Core also generates unary service signatures. RBS
+Core also generates mixed unary/streaming service signatures. RBS
 and Steep are development tools; neither is required by the runtime. Default
 Connect generation produces exactly the same Ruby files as before. Only the
 plugin parameter `rbs=true` adds `<stem>_connect.rbs` for each service-bearing
@@ -335,7 +335,7 @@ Bundles, Bundler state, compiler caches and local evidence live under
 normal installed signature/executable discovery outside the checkout. It clears
 checkout Ruby and Bundler load paths. Both Ruby lanes run these feature gates in
 CI. `rbs:check` includes strict source, inventory and all API consumers as well as
-the original generated positive/17 negative and nominal/bridge cases. The 17
+the generated positive/22 negative and nominal/bridge cases. The 17
 generated negatives and 26 API negatives each use one fresh Steep invocation
 with a single worker. Files remain separate, with independent inference contexts
 and unchanged strict signature inputs. The harness verifies the fixture inventory,
@@ -378,3 +378,22 @@ unions. `_Cancellation` is the read-only transport/host extension SPI, with
 `cancelled?`, `reason`, `check!` and `on_cancel`. Server/Context accept that SPI
 and own separate processing arbitration. Deadline remains an actual Deadline or
 nil. Runtime cancellation, reactor and blocking-I/O limits still apply.
+
+## Streaming types
+
+The invariant streaming declarations are siblings of unary Method. Generated
+mixed-service handlers carry concrete request/reply and StreamingContext types;
+readers, writers and duplex endpoints preserve those associations. Block-only
+`each` and required operation blocks are checked. StreamRequest/StreamHead fields,
+partial Structs and literal indices use the same precise record policy as unary.
+The records are named `StreamRequest` and `StreamHead` in Ruby/RBS.
+
+The typed `_StreamingTransport` explicitly declares finite cardinalities and
+provides a writable exchange before waiting for headers. `_StreamExchange`
+includes bounded response-head/read/finish waits. Existing unary `_Transport`
+consumers need no new method. New core streaming files participate in the strict
+implementation target, with private declarations outside gem archives. Installed
+checks generate real mixed services and run native Async/Falcon streaming over
+localhost with all seven normally installed packages, both composition orders,
+codecs and codings. These remain separate from independent Go/official evidence.
+See the [streaming guide](streaming.md) for state, ownership and timing policies.

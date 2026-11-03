@@ -14,13 +14,13 @@ serial cache primer or aggregate job:
 | Official conformance | 3.4.12, 4.0.9 | `mise run test:conformance` |
 | Rails 8.0.5.1 | 3.4.12 | `mise run test:rails`, `generation:check:rails`, `check:package:rails` with `RAILS_LANE=8.0` |
 | Rails 8.1.4 | 3.4.12, 4.0.9 | Same Rails commands with `RAILS_LANE=8.1` |
-| Async specs/package | 3.4.12, 4.0.9 | `mise run async:test`, then `mise run async:package` |
-| Async Go interoperability | 3.4.12, 4.0.9 | `mise run async:interop` |
+| Async specs/package | 3.4.12, 4.0.9 | `mise run async:test`, `mise run async:package`, `mise run async:conformance` |
+| Async Go interoperability | 3.4.12, 4.0.9 | `mise run async:interop`, `mise run async:interop:streaming` |
 | Rack specs/check/package | 3.4.12, 4.0.9 | `mise run rack:test`, `mise run rack:check`, `mise run rack:package` |
 | In-process testing | 3.4.12, 4.0.9 | `mise run testing:verify` |
 | RBS source/API/package | 3.4.12, 4.0.9 | `mise run rbs:check`, then `mise run rbs:package` |
-| Falcon specs/package | 3.4.12, 4.0.9 | `mise run falcon:test`, then `mise run falcon:package` |
-| Falcon Go interoperability | 3.4.12, 4.0.9 | `mise run falcon:interop` |
+| Falcon specs/package | 3.4.12, 4.0.9 | `mise run falcon:test`, `mise run falcon:package`, `mise run falcon:conformance` |
+| Falcon Go interoperability | 3.4.12, 4.0.9 | `mise run falcon:interop`, `mise run falcon:interop:streaming` |
 
 Each matrix has `fail-fast: false`. Every check runs its commands on cache
 hits too. Package isolation still installs cached `.gem` artifacts offline and
@@ -264,3 +264,22 @@ no lock, tool pin, runtime dependency or job/matrix axis is added. The workflow
 retains all 28 checks. Local `rbs:proof` verifies representative source and drift
 failures in an independent capture; a passing consumer alone is not strict source
 checking or backend interoperability evidence. See the [RBS guide](rbs.md).
+
+## Native streaming leaves
+
+The existing Async and Falcon specs/package jobs additionally run exact named
+native official profiles on each pinned Ruby. Async owns the native client once
+and its server profiles; Falcon runs separate server profiles. Their Mise action
+always installs the already pinned runner/protoc pair and caches only tools under
+the existing platform/image/config/lock key scheme. Existing check names, matrix
+axes, frozen bundle setup and clean-workspace assertions remain unchanged.
+
+The existing backend Go jobs additionally run `async:interop:streaming` and
+`falcon:interop:streaming`. The latter exercises real process workers. Original
+unary identity/gzip, GET, generated, native cancellation and typed tail-drain
+commands remain. OTel jobs collect the SDK streaming tests through their existing
+`otel:verify`; RBS jobs retain strict sources, batched exact per-file negatives,
+ABI/platform/image cache keys, unconditional installs and fresh external consumers.
+No result cache or known-failure selection is introduced. See
+[development](development.md#native-streaming-verification) for exact evidence
+ownership and the [streaming guide](streaming.md) for completion policies.

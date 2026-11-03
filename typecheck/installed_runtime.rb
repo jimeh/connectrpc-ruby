@@ -200,3 +200,5 @@ raise "SDK loaded late" if defined?(OpenTelemetry::SDK)
 puts "Installed optional runtime composition #{ARGV.first}: Rails subclass, Rack/Testing round trip, " \
      "native headers/session/TLS, callable stream, Struct pairs, Falcon inline DSL, " \
      "Rails callbacks, API-only OTel/default propagation"
+
+require_relative "installed_streaming"

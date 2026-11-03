@@ -18,10 +18,10 @@ module Conformance
     SERVER_CONFIG = Regexp.escape("{HTTP_VERSION_1, PROTOCOL_CONNECT, TLS:false}")
     attr_reader :summary
 
-    def initialize(direction:, selected: nil, profile: "identity")
+    def initialize(direction:, selected: nil, profile: "identity", inventory: nil)
       @direction = direction
       @profile = profile
-      all = PROFILES.fetch(profile).fetch(direction)
+      all = @inventory = (inventory || PROFILES.fetch(profile)).fetch(direction)
       raise "Selector must be an exact configured test name" if selected && !all.include?(selected)
 
       @expected = selected ? [selected] : all
@@ -98,12 +98,16 @@ module Conformance
           count(:could_not_run, Regexp.last_match(1))
         when /\AComputed \d+ config case permutations\.\z/,
              /\ALoaded \d+ test suite\(s\), \d+ test case template\(s\)\.\z/,
-             /\ARunning \d+ tests with reference-(?:client|server) for server config #1 #{SERVER_CONFIG}\.\.\.\z/, ""
+             runner_configuration_pattern, ""
           next
         else
           raise "Conformance accounting: Unrecognized runner output #{line.inspect}"
         end
       end
+    end
+
+    def runner_configuration_pattern
+      /\ARunning \d+ tests with reference-(?:client|server) for server config #1 #{SERVER_CONFIG}\.\.\.\z/
     end
 
     def exact_set!(actual, expected, label)
@@ -113,7 +117,7 @@ module Conformance
     end
 
     def validate_runner!
-      verify(@counts.fetch(:computed) == PROFILES.fetch(@profile).fetch(@direction).size,
+      verify(@counts.fetch(:computed) == @inventory.size,
              "Configured case count changed")
       verify(@counts.fetch(:filtered, @counts.fetch(:computed)) == @expected.size, "Filtered count mismatch")
       verify(!@selected || @counts.key?(:filtered), "Missing selector accounting")

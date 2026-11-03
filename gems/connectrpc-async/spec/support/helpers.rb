@@ -105,10 +105,11 @@ module AsyncHelpers
   end
 
   def wait_until(task, message = "condition")
+    last_observed = nil
     task.with_timeout(2) do
-      task.yield until yield
+      task.yield until (last_observed = yield)
     end
   rescue Async::TimeoutError
-    raise "Timed out waiting for #{message}"
+    raise "Timed out waiting for #{message}; last observed: #{last_observed.inspect}"
   end
 end

@@ -468,3 +468,33 @@ Package checks install normal dependencies offline into a fresh external
 GEM_HOME, then run copied generated callers with actual SDK in-memory exports.
 See the [package guide](../gems/connectrpc-otel/README.md) for the precise trace
 baseline and unknown-method default-redaction limitation.
+
+## Native streaming verification
+
+`async:test` and `falcon:test` include the incremental shape/codec/coding/security
+matrix, bounded output/ingress, healthy same-connection siblings and cancellation.
+`otel:test` includes actual SDK processor-task identity, mTLS peer identity,
+codec/handler cleanup and separate processing/HTTP completion evidence.
+
+`async:interop:streaming` uses the unchanged pinned connect-go graph in both
+directions for all three streaming shapes, both codecs and codings over
+h2c/TLS/mTLS. `falcon:interop:streaming` runs the Go client against actual Falcon
+process workers and checks worker shutdown. These supplement the original unary,
+GET, generated, cancellation and tail-drain leaves; they do not replace them.
+
+`async:conformance` executes native client and Async server profiles.
+`falcon:conformance` executes only Falcon server profiles. Exact inventories are
+290/262 identity client/server and 268/246 gzip client/server, with zero expected
+failures. Every run checks actual runner discovery, scheduled/received names,
+passes and closed library/transport/server lifetimes. Source transitions and
+actual canceled library results are recorded; socket interruption remains unknown
+without controlled wire evidence. Original unary profiles and their 5 ms before-call,
+200 ms response-delay and nil-deadline semantics remain independent and unchanged.
+Both native conformance and streaming Go leaves belong to each backend's verify
+aggregate and the existing two-Ruby CI jobs. No test results are cached.
+
+`rbs:check` includes concrete generated streaming positives and exact negative
+fixtures. `rbs:package` runs generated streaming network callers and a custom
+streaming SPI under normal installed discovery outside the checkout, in both
+package load orders. The [streaming guide](streaming.md) documents the fixed
+one-second tail policy and its compatibility tradeoff.

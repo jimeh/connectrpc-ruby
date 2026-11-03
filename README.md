@@ -1,16 +1,17 @@
 # connectrpc-ruby
 
 An unofficial, experimental Ruby implementation of typed
-[Connect](https://connectrpc.com/docs/protocol/) unary RPCs. It provides a
+[Connect](https://connectrpc.com/docs/protocol/) unary and native HTTP/2 streaming RPCs. It provides a
 configurable client, a Net::HTTP transport, and host-neutral servers for reusable
 Ruby handlers. The optional [connectrpc-rack gem](gems/connectrpc-rack/README.md)
 provides Rack middleware. It is not production ready.
 
 The implemented profile is POST and opt-in safe unary GET, identity or opt-in gzip encoding, and `application/proto` or
 protobuf `application/json`. The optional [connectrpc-rails gem](gems/connectrpc-rails/README.md)
-runs generated handlers through native Rails controllers. Streaming, gRPC, gRPC-Web,
-Faraday and a production server are outside this slice.
-Unsupported profiles and streaming declarations fail explicitly.
+runs generated unary handlers through native Rails controllers. Native streaming
+uses the optional Async transport and Async/Falcon HTTP/2 hosts. See the
+[streaming guide](docs/streaming.md), especially its one-second HTTP tail policy.
+gRPC, gRPC-Web and Faraday remain unsupported. The API is experimental.
 
 ## Try the localhost example
 
@@ -33,7 +34,7 @@ and final verification, and those tasks install its project pin separately.
 
 ## Generate services from protobuf
 
-`protoc-gen-connectrpc-ruby` generates unary service declarations, thin clients
+`protoc-gen-connectrpc-ruby` generates mixed unary/streaming declarations, thin clients
 and handler maps. Supply google-protobuf `>= 4.36.2, < 5` for the plugin and
 Google message integration. The core gem still has zero runtime dependencies.
 Run the complete `.proto` -> generated messages/service -> ephemeral localhost
@@ -451,3 +452,9 @@ lifecycle into real Connect CLIENT/SERVER traces using an application-owned
 OpenTelemetry SDK. Core has no OpenTelemetry dependency. See
 [design](docs/design.md#rpc-lifecycle-observation) for host ownership and
 `mise run otel:example` for a runnable generated caller with real SDK exports.
+
+## Native Connect streaming
+
+Async and Falcon native HTTP/2 support server, client and bidirectional streaming.
+See the [streaming guide](docs/streaming.md) for scoped APIs, mixed generated
+services, bounds and the one-second HTTP tail completion policy.

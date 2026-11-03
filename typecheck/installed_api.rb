@@ -71,7 +71,7 @@ module InstalledAPI # rubocop:disable Metrics/ModuleLength
     FileUtils.cp(artifacts, working)
     RBSHarness.capture!([RbConfig.ruby, "-S", "gem", "install", "--norc", "--local", "--no-document",
                          *packages.map(&:first)], working: working)
-    %w[api falcon api_check.rb installed_runtime.rb].each do |name|
+    %w[api falcon api_check.rb installed_runtime.rb installed_streaming.rb].each do |name|
       FileUtils.cp_r(File.join(root, "typecheck", name), working)
     end
     # Each library must resolve independently through its installed manifest.

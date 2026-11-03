@@ -145,3 +145,17 @@ See the [RBS guide](../../docs/rbs.md) for supported APIs, extension contracts,
 partial records, runtime validation and framework-signature limits.
 `mise run rbs:check` checks application callers for this package; strict core
 source checking is a separate target from backend implementation checking.
+
+## Native streaming
+
+The core [streaming guide](../../docs/streaming.md) documents all three scoped
+Connect streaming shapes, typed generated clients/handlers, early headers,
+per-message limits and bounded ownership. Native Async/Falcon HTTP/2 supports
+both codecs and identity/gzip over h2c/TLS/mTLS. Falcon HTTP/1 remains unary.
+The client's one-second absolute HTTP tail policy applies even with a nil RPC
+deadline and can reject otherwise valid late EOF or slow intermediaries.
+
+Streaming keeps one span and fixed lifecycle state per RPC, with no per-message
+events or payload capture. The original processor retains SDK context and peer
+identity through codecs and cleanup; publication, processing and full native
+wire completion remain independent. Late cleanup failure aborts delivery.

@@ -13,7 +13,8 @@ module ConnectRPC
   end
   class Service
     private
-    def validate_methods!: (String, Array[Method[untyped, untyped]]) -> nil
+    def validate_methods!: (String, Array[declaration]) -> nil
+    def service_method?: (declaration, String) -> bool
   end
   class Metadata
     RESERVED: Array[String]
@@ -52,7 +53,8 @@ module ConnectRPC
     def self.identity_encoding?: (headers) -> bool?
     def self.content_encoding: (headers) -> encoding?
     def self.accept_encoding!: (Array[encoding]?, encoding) -> Array[encoding]
-    def self.response_encoding: (headers, encoding?, encoding) -> encoding?
+    def self.response_encoding: (headers, encoding, encoding) -> encoding
+      | (headers, encoding?, encoding) -> encoding?
     def self.metadata: (headers, ?trailers: bool) -> Metadata
     def self.check_size!: (String, Integer) -> nil
     def self.content_length!: (Array[String]?, invalid_code: Symbol) -> Integer?
@@ -118,7 +120,7 @@ module ConnectRPC
     @get_url_limit: Integer
     @base_url: URI::Generic
     @binding: _Binding
-    @transport: _Transport
+    @transport: _Transport | _StreamingTransport
     @codec: codec
     @encoding: encoding
     @accept_encoding: Array[encoding]
@@ -145,8 +147,8 @@ module ConnectRPC
     def decode_response: [Req, Resp] (String, Method[Req, Resp], ?Instrumentation::Handle?) -> Resp
   end
   class Server
-    @methods: Hash[String, Method[untyped, untyped]]
-    @handlers: Hash[String, ^(untyped, Context) -> untyped | _Handler[untyped, untyped]]
+    @methods: Hash[String, declaration]
+    @handlers: Hash[String, registered_handler]
     @invoker: ^(Method[untyped, untyped], untyped, Context) -> untyped | _Invoker
     @instrumentation: Instrumentation?
     @binding: _Binding
@@ -163,7 +165,7 @@ module ConnectRPC
     def empty_get_body?: (headers, _Input?, _Check?) -> bool
     def get_headers: (headers, Hash[String, String]) -> headers
     def vary_get: (TransportResponse) -> void
-    def declarations: (Array[Service]) -> Hash[String, Method[untyped, untyped]]
+    def declarations: (Array[Service]) -> Hash[String, declaration]
     def invoke_handler: (Method[untyped, untyped], untyped, Context) -> untyped
     def dispatch: (String, headers, _Input?, codec, Context, ?lifecycle: Instrumentation::Handle?) -> TransportResponse
     def inflate_request: (String, headers, Context) -> String
@@ -184,7 +186,7 @@ module ConnectRPC
   class Instrumentation
     @subscribers: Array[_Subscriber]
     @on_error: (^(StandardError) -> void | _InstrumentationErrorHandler)?
-    def start: (owner: Object, role: :client | :server, method: Method[untyped, untyped]?, carrier: Hash[String, String | Array[String]], ?server_address: String?, ?server_port: Integer?, ?path: String?) -> Handle
+    def start: (owner: Object, role: :client | :server, method: declaration?, carrier: Hash[String, String | Array[String]], ?server_address: String?, ?server_port: Integer?, ?path: String?) -> Handle
     def safely: [T] () { () -> T } -> T?
     def self.carrier: (headers | metadata_input) -> headers
     # Reflection is erased here only, before each capability enters Callbacks.

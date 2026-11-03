@@ -90,6 +90,8 @@ module ConnectRPC
     end
     class Transport
       def initialize: (origin: String, ?ca_file: String?, ?certificate_chain: Array[String]?, ?private_key: String?, ?connection_limit: Integer, ?max_requests: Integer, ?connect_timeout: Numeric) -> void
+      def streaming_capabilities: () -> Array[streaming_cardinality]
+      def open_stream: [T] (StreamRequest) { (_StreamExchange) -> T } -> T
       def call: (TransportRequest) -> TransportResponse
       def close: (?grace: Numeric) -> bool
     end

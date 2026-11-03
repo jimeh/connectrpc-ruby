@@ -127,10 +127,6 @@ module ConnectRPC
       end
 
       def validate_method(method, origin)
-        if method.client_streaming || method.server_streaming
-          raise InvalidDescriptor, "Unsupported streaming RPC #{origin}.#{method.name}; only unary RPCs are supported"
-        end
-
         unless [nil, :IDEMPOTENCY_UNKNOWN, :NO_SIDE_EFFECTS, :IDEMPOTENT].include?(method.options&.idempotency_level)
           raise InvalidDescriptor, "Invalid idempotency level for #{origin}.#{method.name}"
         end

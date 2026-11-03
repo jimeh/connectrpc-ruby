@@ -190,7 +190,7 @@ Coalescing/copying can temporarily retain old and new bounded chunks. String byt
 length does not bound Ruby backing allocations or RSS. Caller-retained strings,
 buffered unary bodies, codecs/compression, socket/TLS buffers and HPACK/headers
 are separate allocations. These are ingress payload bounds, not a total memory
-or general denial-of-service guarantee. There is no public streaming API.
+or general denial-of-service guarantee. Streaming adds bounded output ownership without changing these ingress limits.
 
 Normal producer EOF drains preceding payload. Closing the consumer releases its
 queue once; later DATA is discarded while local output remains live, following
@@ -252,3 +252,16 @@ raw-first whole-connection cleanup fallback. Native HTTP/2 Context observes
 only an actual peer RST_STREAM(CANCEL), before input teardown. Other resets,
 normal half-close, connection loss and host shutdown do not fabricate explicit
 cancellation. Processing completion detaches the source independently of delivery.
+
+## Native streaming
+
+The core [streaming guide](../../docs/streaming.md) documents all three scoped
+Connect streaming shapes, typed generated clients/handlers, early headers,
+per-message limits and bounded ownership. Native Async/Falcon HTTP/2 supports
+both codecs and identity/gzip over h2c/TLS/mTLS. Falcon HTTP/1 remains unary.
+The client's one-second absolute HTTP tail policy applies even with a nil RPC
+deadline and can reject otherwise valid late EOF or slow intermediaries.
+
+Use `async:conformance` and `async:interop:streaming` for the exact official native
+client/server inventories and independent pinned Go streaming matrix. Both belong
+to `async:verify`; original unary interoperability remains separate.

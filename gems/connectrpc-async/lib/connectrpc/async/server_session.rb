@@ -239,20 +239,34 @@ module ConnectRPC
         end
 
         @admitted[key] = false
+        publication = Internal::Publication.new if request.respond_to?(:stream)
         begin
           handler = resource.track(@lifetime.async(finished: false) do |task|
             @identities[task] = resource.snapshot.authenticated_leaf
             begin
-              if lifecycle
-                lifecycle.activate { @application.call(request, lifecycle: lifecycle) }
-              else
-                @application.call(request)
+              work = lambda do
+                if publication && @application.respond_to?(:call_with_publication)
+                  @application.call_with_publication(request, lifecycle: lifecycle, publication: publication)
+                elsif lifecycle
+                  @application.call(request, lifecycle: lifecycle)
+                else
+                  @application.call(request)
+                end
               end
+              result = lifecycle ? lifecycle.activate(&work) : work.call
+              publication.publish(result) if publication && !publication.published?
+              result
+            rescue StandardError => e
+              raise unless publication
+
+              lifecycle&.record_failure(e)
+              publication.complete(e)
+              nil
             ensure
-              @identities.delete(task)
+              complete_processor(publication, task, key, resource)
             end
           end)
-          response = handler.wait
+          response = publication ? publication.response : handler.wait
           exchange.http_status = response&.status if exchange
           if !request.respond_to?(:stream) && response
             response.body = Internal::AdmissionBody.new(response.body) do
@@ -263,12 +277,22 @@ module ConnectRPC
           end
           response
         ensure
-          unless deferred
+          unless deferred || (publication && handler && !handler.finished?)
             @admitted[key] = true
-            @admitted.delete(key) if !key.respond_to?(:closed?) || key.closed?
+            @admitted.delete(key) if @aborting || !key.respond_to?(:closed?) || key.closed?
           end
           resource.changed
         end
+      end
+
+      def complete_processor(publication, task, key, resource)
+        @identities.delete(task)
+        if publication
+          @admitted[key] = true
+          @admitted.delete(key) if @aborting || key.closed?
+        end
+        resource.changed
+        publication&.complete($ERROR_INFO)
       end
 
       def drain_resources(resources, expires)
@@ -286,7 +310,9 @@ module ConnectRPC
         stop_accepting
         @tls.close
         @resources.each { |resource| resource.draining = true }
-        finish_closed(drain_resources(@resources, expires))
+        drained = drain_resources(@resources, expires)
+        @admitted.clear
+        finish_closed(drained)
       end
 
       def abort_owned
@@ -299,6 +325,7 @@ module ConnectRPC
         @resources.each { |resource| Internal.raw_close(resource.raw) }
         stop_accepting
         @resources.each(&:abort)
+        @admitted.clear
         @tls.close
         finish_closed(false) unless @state == :closed
         Internal.cancel(@lifetime)
