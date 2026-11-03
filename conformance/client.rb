@@ -26,7 +26,8 @@ module Conformance
     def exchange(http, request, outgoing)
       Telemetry.record("dispatch", name: @test_name, deadline: !request.deadline.nil?,
                                    response_limit: request.response_limit, request_headers: outgoing.to_hash,
-                                   wire: Telemetry.wire(request.body, outgoing.to_hash))
+                                   http_method: outgoing.method, query: Telemetry.query(request.url.query),
+                                   wire: Telemetry.wire(outgoing.body || "", outgoing.to_hash))
       response = super
       @wire_observed = true
       Telemetry.record("wire_response", name: @test_name, status: response.status,
@@ -67,7 +68,7 @@ module Conformance
 
     def prepare(request)
       validate!(request)
-      declaration = request["method"] == "Unimplemented" ? UNIMPLEMENTED : UNARY
+      declaration = SERVICE.methods.find { |rpc| rpc.name == request["method"] }
       wire = request.request_messages.first
       unless wire.type_url.split("/").last == declaration.request_type.descriptor.name
         raise "Unexpected request type: #{wire.type_url}"
@@ -76,6 +77,7 @@ module Conformance
       message = declaration.request_type.decode(wire.value)
       client = ConnectRPC::Client.new(base_url: "http://#{request.host}:#{request.port}", binding: BINDING,
                                       transport: ObservedNetHTTP.new(request.test_name),
+                                      use_get: request.use_get_http_method,
                                       codec: request.codec == :CODEC_PROTO ? :proto : :json,
                                       encoding: request.compression == :COMPRESSION_GZIP ? :gzip : :identity,
                                       response_limit: Conformance.limit(request.message_receive_limit))
@@ -87,17 +89,17 @@ module Conformance
                   %i[CODEC_PROTO
                      CODEC_JSON].include?(request.codec) && %i[COMPRESSION_IDENTITY
                                                                COMPRESSION_GZIP].include?(request.compression) &&
-                  request.stream_type == :STREAM_TYPE_UNARY && !request.use_get_http_method &&
+                  request.stream_type == :STREAM_TYPE_UNARY &&
                   request.server_tls_cert.empty? && !request.client_tls_creds && !request.raw_request &&
                   request.request_messages.size == 1 && request.request_delay_ms.zero? &&
-                  request.service == SERVICE_NAME && %w[Unary Unimplemented].include?(request["method"])
+                  request.service == SERVICE_NAME && %w[Unary IdempotentUnary Unimplemented].include?(request["method"])
       raise "Unsupported client instruction" unless supported
     end
 
     def invoke(client, declaration, message, metadata, request)
       timeout = request.has_timeout_ms? ? request.timeout_ms / 1000.0 : nil
       response = client.call(declaration, message, metadata: metadata, timeout: timeout)
-      payloads = declaration == UNARY ? [response.message.payload || ConformancePayload.new] : []
+      payloads = declaration == UNIMPLEMENTED ? [] : [response.message.payload || ConformancePayload.new]
       ClientResponseResult.new(payloads: payloads, response_headers: Conformance.headers(response.metadata),
                                response_trailers: Conformance.headers(response.trailers))
     rescue ConnectRPC::Error => e

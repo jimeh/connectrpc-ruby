@@ -6,9 +6,9 @@ configurable client, a Net::HTTP transport, and host-neutral servers for reusabl
 Ruby handlers. The optional [connectrpc-rack gem](gems/connectrpc-rack/README.md)
 provides Rack middleware. It is not production ready.
 
-The implemented profile is POST, identity or opt-in gzip encoding, and `application/proto` or
+The implemented profile is POST and opt-in safe unary GET, identity or opt-in gzip encoding, and `application/proto` or
 protobuf `application/json`. The optional [connectrpc-rails gem](gems/connectrpc-rails/README.md)
-runs generated handlers through native Rails controllers. Streaming, GET, gRPC, gRPC-Web,
+runs generated handlers through native Rails controllers. Streaming, gRPC, gRPC-Web,
 Faraday and a production server are outside this slice.
 Unsupported profiles and streaming declarations fail explicitly.
 
@@ -111,6 +111,50 @@ and `Google::...` Ruby package nesting is supported, including WKT imports;
 replacing `Google`, `ConnectRPC` or concrete protobuf runtime constants is rejected.
 Cross-invocation namespace conflicts cannot all be discovered; generated code
 also guards its directly defined constants at load time. See [design](docs/design.md).
+
+## Use unary GET
+
+Declare safe queries with the standard protobuf method option:
+
+```proto
+rpc Read(Request) returns (Reply) {
+  option idempotency_level = NO_SIDE_EFFECTS;
+}
+```
+
+The generator maps `NO_SIDE_EFFECTS` to `idempotency: :no_side_effects`,
+`IDEMPOTENT` to `:idempotent`, and an absent/unknown level to `:unknown`.
+Manual `Method.new` declarations accept the same three symbols.
+Enable GET on the core client; generated wrappers keep their existing API:
+
+```ruby
+core = ConnectRPC::Client.new(base_url: "https://api.example.com", binding: binding,
+                             use_get: true, get_url_limit: 8192)
+```
+
+Only `:no_side_effects` methods select GET. The default remains POST.
+The URL cap counts the complete absolute URI in bytes, including the base
+prefix and escaped query. Excess raises `resource_exhausted` before dispatch;
+there is no POST fallback, retry or replay. Binary and gzip payloads use
+unpadded URL-safe base64; identity JSON uses UTF-8 form encoding.
+
+Servers admit GET automatically for declared safe methods. Native hosts and
+Testing forward the raw query; direct `Server.call` callers pass `query: "..."`
+separately from `path:`. `Server.new(get_query_limit: nil)` derives its raw-query
+cap as `3 * (4 * ((request_wire_limit + 2) / 3)) + 1024` after validating the
+wire limit. An explicit cap must be a positive integer. Serialized/decompressed
+message bytes, decoded query payload bytes before inflation, and raw query/URL
+bytes have independent limits. Hosts have already allocated the incoming URL;
+these caps are not a total memory guarantee.
+
+GET URLs can appear in proxy/server logs, browser history and generic HTTP
+instrumentation. Choose safe request contents and application cache/security
+policy accordingly. All GET responses vary on `Accept-Encoding`, preserving
+application Vary tokens and `*`. The library never adds public Cache-Control.
+Authentication, cookies, sessions and CSRF remain application/framework policy.
+Official Ruby protobuf serialization is repeatable for the same exercised
+object within a process, including gzip. It has no deterministic flag or
+cross-process canonical cache-key guarantee, including for maps.
 
 ## Declare a unary method
 

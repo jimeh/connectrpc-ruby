@@ -8,7 +8,8 @@ require_relative "localhost"
 require "rack/lint"
 
 type = Google::Protobuf::StringValue
-method = ConnectRPC::Method.new(service: "installed.Echo", name: "Call", request_type: type, response_type: type)
+method = ConnectRPC::Method.new(service: "installed.Echo", name: "Call", request_type: type, response_type: type,
+                                idempotency: :no_side_effects)
 service = ConnectRPC::Service.new(name: method.service, methods: [method])
 binding = ConnectRPC::Bindings::GoogleProtobuf.new
 handler = lambda do |request, context|
@@ -31,6 +32,8 @@ begin
     observed << [request, response]
     response
   end
+  # Keep each installed codec/encoding scenario and its assertions together.
+  # rubocop:disable-next Metrics/BlockLength
   %i[proto json].product(%i[identity gzip]).each do |codec, encoding|
     client = ConnectRPC::Client.new(base_url: host.url, binding: binding, codec: codec, encoding: encoding,
                                     transport: transport)
@@ -56,6 +59,18 @@ begin
       abort "Installed error trailer failed" unless e.trailers["x-error"] == ["installed"]
       decoded = e.details.first.decode(binding: binding, type: type)
       abort "Installed typed error detail failed" unless decoded.value == "fail"
+    end
+    get_client = ConnectRPC::Client.new(base_url: host.url, binding: binding, codec: codec, encoding: encoding,
+                                        transport: transport, use_get: true)
+    get_result = get_client.call(method, type.new(value: "typed"), timeout: 2)
+    abort "Installed GET message" unless get_result.message.value == "installed typed"
+    abort "Installed GET selection" unless observed.last.first.http_method == "GET" && observed.last.first.body.empty?
+    abort "Installed GET Vary" unless get_result.metadata["vary"].any? { |value| value.casecmp?("Accept-Encoding") }
+    begin
+      get_client.call(method, type.new(value: "fail"), timeout: 2)
+      abort "Installed GET error missing"
+    rescue ConnectRPC::Error => e
+      abort "Installed GET error/trailer" unless e.code == "invalid_argument" && e.trailers["x-error"] == ["installed"]
     end
     puts "Installed typed #{codec}/#{encoding} Rack/NetHTTP success/error/detail passed (Ruby #{RUBY_VERSION})"
   end

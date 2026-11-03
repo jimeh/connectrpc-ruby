@@ -86,7 +86,12 @@ Custom attributes distinguish `connectrpc.processing.state`,
 
 `connectrpc.processing.duration` is monotonic processing seconds. Measured
 encoded sizes appear as `connectrpc.request.wire_bytes` and
-`connectrpc.response.wire_bytes`; unknown sizes are omitted. Successful
+`connectrpc.response.wire_bytes`; unknown sizes are omitted. For GET, request
+wire bytes measure the query transport payload after percent/base64 decoding
+and before inflation, independently of the empty HTTP body. Zero means measured
+empty; rejected requests before measurement remain unknown. RPC spans never
+capture request URLs, query controls or payloads. Generic HTTP instrumentation
+and host/proxy logs have their own application-owned redaction policies. Successful
 processing followed by delivery abort retains `OK` and ends ERROR.
 
 Configure native hosts through their Server. Lifecycle handles are passed

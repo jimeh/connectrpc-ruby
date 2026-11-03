@@ -169,6 +169,18 @@ fields, is an application escape boundary. Arbitrary computed member names,
 recursive `dig`, block-form `to_h` and custom Struct subclass behavior are outside
 this declared surface. These signatures do not change Ruby's runtime mutation.
 
+## Unary GET options
+
+`Method#idempotency` is the immutable `:unknown | :no_side_effects | :idempotent`
+enum. Generated constants preserve standard protobuf method options. Core
+Client accepts `use_get: bool` and `get_url_limit: Integer`; Server accepts
+`get_query_limit: Integer?` and `call(query: String)`. Runtime constructors still
+validate booleans and positive integer bounds. Rails `connect_limits` also
+accepts `get_query_limit`. Generated wrappers keep their existing call options.
+The strict implementation target includes the private GET parser and builder;
+manual/generated positive callers and exact negative diagnostics cover these
+options alongside installed package discovery.
+
 ## Package APIs and extension contracts
 
 Use the installed package names in a Steepfile:

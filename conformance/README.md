@@ -3,8 +3,8 @@
 This directory is test infrastructure and is excluded from the gem. The adapters
 exercise the real `ConnectRPC::Client`/NetHTTP and `Server`/Rack implementations
 on ephemeral loopback HTTP/1.1. `profile.yaml` explicitly selects Connect unary
-POST, identity, proto and JSON, and message receive limits. It disables TLS,
-client certificates, H2C, HTTP trailers, GET and half-duplex.
+POST and safe unary GET, identity, proto and JSON, and message receive limits. It disables TLS,
+client certificates, H2C, HTTP trailers and half-duplex.
 `profile-gzip.yaml` adds a separately executed gzip-only profile with the same axes. This plaintext
 host profile does not qualify the library's TLS behavior. Connect unary
 `trailer-` metadata is still tested.
@@ -40,7 +40,7 @@ Mise uses explicit task-local `github:connectrpc/conformance@1.0.6` and
 these SHA256 digests in [mise.lock](../mise.lock):
 
 - Runner: `803a9ed1778583f9b98f44b4b77ab06897d1027183ef2064de32a0fb7d688ab0`.
-- protoc: `121f6c7afe1d4d0e3ea6aab9432038599250134cbf4474cb1167d2c7decd4278`.
+- protoc: `121f6c7afe1d4d0e3ea6aab9632038599250134cbf4474cb1167d2c7decd4278`.
 
 The runner release was published on 2026-10-14 and protoc on 2026-09-17; both
 were over seven days old when pinned on 2026-11-02. No Ruby gems or Go modules
@@ -60,14 +60,14 @@ descriptor types. It preserves optional presence and native nested Any JSON.
 
 ## Execution and accounting
 
-The pinned runner discovers 94 configured client cases and 88 server cases.
-[cases.json](cases.json) freezes the complete observed names, including timeout,
+The pinned runner discovers 96 configured client cases and 90 server cases.
+[cases.json](cases.json) freezes the original 94/88 observed names; the ledger adds the two exact GET names per direction, including timeout,
 duplicate metadata and remote `canceled` error cases. These are configured and
 executed counts, not totals for unsupported protocol/configuration axes. The
 independent [Go fixture](../interop/) retains its 18 identity cases and adds
 40 separate gzip cases; neither is official conformance evidence. The exact
 gzip inventory has 88 client and 82 server cases, disjoint from identity. Their
-union is 182/170 configured cases, without implying that all pass. The dedicated
+expanded union is 184/172 configured cases, without implying that all pass. The dedicated
 compressed-error client case has no compression/codec suffix, so membership is
 never inferred from substrings.
 
@@ -128,3 +128,13 @@ fails verification. Across both profiles, 182 client cases execute with 178
 actual passes and four expected failures; all 170 server cases pass. Server errors remain identity by product policy;
 ordinary reference errors may do the same. Basic success separately requires
 actual gzip responses in both codecs and both directions.
+
+The retained identity inventory in `cases.json` has 94/88 baseline cases;
+`Ledger::GET_CASES` adds exactly the two official Connect-with-GET successes per
+direction, for 96/90. Gzip remains 88/82, yielding 184 client and 172 server
+cases. All four original caller-cancellation names/assertions remain unchanged.
+Actual GET method, controls and decoded query payload bytes/hash are recorded
+separately from measured HTTP body bytes. The fixture's request-local host query
+echo populates the official `ConnectGetInfo`; production RPC observation exposes
+no query or payload. These two identity success templates do not cover gzip GET
+or malformed-query/boundary behavior; focused Ruby and Go probes supply that.

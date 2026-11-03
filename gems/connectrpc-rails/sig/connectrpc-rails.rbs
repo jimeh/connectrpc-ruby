@@ -1,7 +1,7 @@
 module ConnectRPC
   module Rails
     module Controller
-      type limits = { ?request_limit: Integer, ?response_limit: Integer, ?request_wire_limit: Integer, ?response_wire_limit: Integer, ?encoding: :identity | :gzip }
+      type limits = { ?request_limit: Integer, ?response_limit: Integer, ?request_wire_limit: Integer, ?response_wire_limit: Integer, ?encoding: :identity | :gzip, ?get_query_limit: Integer? }
       def connect: () -> String
       private
       def connect_service: () -> Service

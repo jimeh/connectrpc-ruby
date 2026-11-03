@@ -58,6 +58,13 @@ end
     raise "Error metadata changed" unless e.metadata["x-leading"] == ["error"] &&
                                           e.trailers["x-error"] == %w[yes again]
   end
+  get_core = ConnectRPC::Client.new(base_url: "https://in-process.invalid", binding: binding, transport: transport,
+                                    codec: codec, encoding: encoding, use_get: true)
+  get_result = service::Client.new(client: get_core).echo(message, metadata: { "x-repeat" => ["one", "two,three"] })
+  raise "Installed generated GET" unless get_result.message == message && observed.last.first.http_method == "GET" &&
+                                         observed.last.first.body.empty? &&
+                                         get_result.metadata["vary"] == ["Accept-Encoding"]
+
   puts "Generated #{codec}/#{encoding}: typed success/error/details/metadata and opaque bytes passed " \
        "(Ruby #{RUBY_VERSION})"
 end

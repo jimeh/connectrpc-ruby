@@ -33,6 +33,27 @@ RSpec.describe "Service generation" do
     expect(response.supported_features).to eq(1)
   end
 
+  it "maps standard method options and rejects unknown idempotency enum values" do
+    { IDEMPOTENCY_UNKNOWN: nil, NO_SIDE_EFFECTS: :no_side_effects, IDEMPOTENT: :idempotent }.each do |level, ruby|
+      request = request_for
+      method = request.proto_file.first.service.first["method"].first
+      method.options = Google::Protobuf::MethodOptions.new(idempotency_level: level)
+      result = generate(request)
+      expect(result.error).to eq("")
+      if ruby
+        expect(result.file.first.content).to include("idempotency: :#{ruby}")
+      else
+        expect(result.file.first.content).not_to include("idempotency:")
+      end
+    end
+    request = request_for
+    request.proto_file.first.service.first["method"].first.options =
+      Google::Protobuf::MethodOptions.new(idempotency_level: 99)
+    result = generate(request)
+    expect(result.error).to include("idempotency")
+    expect(result.file).to be_empty
+  end
+
   it "returns no partial files for target streaming methods" do
     request = request_for
     %w[client_streaming server_streaming].each do |flag|

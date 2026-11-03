@@ -69,9 +69,28 @@ RSpec.describe ConnectRPC::Rack do
     expect(request(PATH_INFO: "/example.v1.EchoService").first).to eq(501)
   end
 
+  %i[proto json].each do |codec|
+    it "forwards raw #{codec} GET query under Rack::Lint without reading POST protocol headers" do
+      bytes = binding.encode(message, type: EchoExample::Message, codec: codec)
+      query = URI.encode_www_form("connect" => "v1", "base64" => "1", "encoding" => codec.to_s,
+                                  "message" => [bytes].pack("m0").tr("+/", "-_").delete("="))
+      env = Rack::MockRequest.env_for("#{method.path}?#{query}", method: "GET")
+      env["HTTP_X_REQUEST"] = "get"
+      status, headers, body = Rack::Lint.new(app).call(env)
+      received = +""
+      body.each { |chunk| received << chunk }
+      body.close if body.respond_to?(:close)
+      expect(status).to eq(200)
+      expect(binding.decode(received, type: EchoExample::Message, codec: codec)).to eq(message)
+      expect(headers).to include("vary" => ["Accept-Encoding"], "x-request" => ["get"],
+                                 "trailer-x-tail" => %w[four five])
+      expect(request(PATH_INFO: "/unrelated", REQUEST_METHOD: "GET", QUERY_STRING: query).first).to eq(202)
+    end
+  end
+
   it "uses a bare 405 with Allow for unsupported verbs" do
-    status, headers, body = request(REQUEST_METHOD: "GET", CONTENT_LENGTH: "0")
-    expect([status, headers["allow"], body]).to eq([405, ["POST"], ""])
+    status, headers, body = request(REQUEST_METHOD: "PUT", CONTENT_LENGTH: "0")
+    expect([status, headers["allow"], body]).to eq([405, ["GET, POST"], ""])
   end
 
   ["", "text/plain", "application/connect+proto", "application/grpc", "application/grpc-web+proto",

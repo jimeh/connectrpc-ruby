@@ -88,6 +88,32 @@ RSpec.describe ConnectRPC::Testing::Transport do
     end
   end
 
+  # Keep GET scenarios separately named from the baseline POST matrix.
+  # rubocop:disable-next Style/CombinableLoops
+  %i[proto json].product(%i[identity gzip]).each do |codec, encoding|
+    it "round trips generated GET #{codec}/#{encoding} and retains unsafe POST errors" do
+      outgoing = []
+      wrapped = lambda { |request|
+        outgoing << request
+        transport.call(request)
+      }
+      core = ConnectRPC::Client.new(base_url: "https://in-process.invalid", binding: binding, transport: wrapped,
+                                    codec: codec, encoding: encoding, use_get: true)
+      typed = service::Client.new(client: core)
+      message = type.new(name: "GET 雪 +", data: "\x00\xff".b)
+      response = typed.echo(message, metadata: { "x-repeat" => %w[a b] })
+      expect(response.message).to eq(message)
+      expect(response.metadata["x-leading"]).to eq(["one", "two,three"])
+      expect(response.trailers["x-trailing"]).to eq(%w[four five])
+      expect(response.metadata["vary"]).to eq(["Accept-Encoding"])
+      expect(calls.last.last.request_metadata["x-repeat"]).to eq(%w[a b])
+      expect(outgoing.last.http_method).to eq("GET")
+      expect(outgoing.last.body).to eq("")
+      error_code("invalid_argument") { typed.fail(message) }
+      expect(outgoing.last.http_method).to eq("POST")
+    end
+  end
+
   it "preserves frozen caller input and ignores query" do
     outgoing = request(url: URI("https://test.invalid#{service::ECHO.path}?anything=1").freeze,
                        headers: { "content-type" => ["application/proto"].freeze }.freeze, body: "".b.freeze).freeze
@@ -108,7 +134,8 @@ RSpec.describe ConnectRPC::Testing::Transport do
 
   it "passes the actual verb and preserves core validation precedence" do
     response = transport.call(request(http_method: "GET", headers: {}, url: URI("http://test.invalid/unknown")))
-    expect(response.to_h).to eq(status: 405, headers: { "allow" => ["POST"] }, body: "")
+    expect(response.to_h).to eq(status: 415, headers: { "accept-post" => ["application/proto, application/json"],
+                                                        "vary" => ["Accept-Encoding"] }, body: "")
     expect(transport.call(request(headers: {}, url: URI("http://test.invalid/unknown"))).status).to eq(415)
     expect(calls).to be_empty
   end

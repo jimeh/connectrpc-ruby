@@ -63,7 +63,11 @@ transport = lambda do |request|
   bytes = +""
   body.each { |chunk| bytes << chunk }
   body.close
-  expected = request.headers.fetch("content-type").first
+  expected = if request.http_method == "GET"
+               "application/#{URI.decode_www_form(request.url.query).to_h.fetch('encoding')}"
+             else
+               request.headers.fetch("content-type").first
+             end
   abort "Changed content type" unless headers["content-type"] == (status == 200 ? expected : "application/json")
   if request.headers["content-encoding"] == ["gzip"]
     abort "Installed request not gzip" unless request.body.b.start_with?("\x1f\x8b".b)
@@ -95,6 +99,12 @@ end
     detail = e.details.first.decode(binding: binding, type: Example::V1::EchoMessage)
     abort "Typed detail failed" unless detail.name == "detail"
   end
+  get_core = ConnectRPC::Client.new(base_url: "http://www.example.com/rpc", binding: binding, codec: codec,
+                                    transport: transport, encoding: encoding, use_get: true)
+  get_response = Example::V1::EchoService::Client.new(client: get_core).echo(Example::V1::EchoMessage.new(name: "GET"))
+  abort "Installed Rails GET" unless get_response.message.name == "GET" &&
+                                     get_response.metadata["vary"] == ["Accept-Encoding"]
+
   puts "Installed Rails #{Rails.version} Ruby #{RUBY_VERSION}: #{codec}/#{encoding} typed success/error/detail passed"
   puts "Installed metadata/trailers + Rack::Lint passed"
 end

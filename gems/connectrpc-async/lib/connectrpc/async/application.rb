@@ -18,13 +18,13 @@ module ConnectRPC
       end
 
       def call(request, lifecycle: nil)
-        path = request.path.split("?", 2).first
+        path, query = request.path.split("?", 2)
         unless @server.handles?(path)
           return @fallback ? @fallback.call(request) : ::Protocol::HTTP::Response[404, {}, nil]
         end
 
         response = @server.call(path: path, http_method: request.method, headers: Internal.headers(request),
-                                input: Internal::Input.new(request.body), lifecycle: lifecycle)
+                                input: Internal::Input.new(request.body), query: query || "", lifecycle: lifecycle)
         body = response.body.empty? ? nil : [response.body]
         ::Protocol::HTTP::Response[response.status, Internal.fields(response.headers), body]
       end

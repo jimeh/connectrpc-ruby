@@ -79,7 +79,7 @@ func serve(service protoreflect.ServiceDescriptor, gzip bool) {
 	for _, name := range []protoreflect.Name{"Echo", "Fail"} {
 		desc := service.Methods().ByName(name)
 		callback := func(ctx context.Context, request *connect.Request[dynamicpb.Message]) (*connect.Response[dynamicpb.Message], error) {
-			if name == "Fail" {
+			if name == "Fail" || request.Header().Get("X-Get-Fail") == "yes" {
 				detail, err := connect.NewErrorDetail(request.Msg)
 				must(err)
 				failure := connect.NewError(connect.CodeInvalidArgument, errors.New("deliberate"))
@@ -102,7 +102,7 @@ func serve(service protoreflect.ServiceDescriptor, gzip bool) {
 			response.Trailer().Add("X-Tail", "four")
 			return response, nil
 		}
-		options := []connect.HandlerOption{connect.WithSchema(desc), connect.WithRequestInitializer(initializer), connect.WithReadMaxBytes(1024)}
+		options := []connect.HandlerOption{connect.WithSchema(desc), connect.WithIdempotency(schemaIdempotency(desc)), connect.WithRequestInitializer(initializer), connect.WithReadMaxBytes(1024)}
 		if gzip {
 			options = append(options, connect.WithCompressMinBytes(0))
 		}
@@ -110,7 +110,13 @@ func serve(service protoreflect.ServiceDescriptor, gzip bool) {
 	}
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	must(err)
-	server := &http.Server{Handler: mux, ReadHeaderTimeout: 5 * time.Second}
+	observed := http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.Header.Get("X-Get-Probe") == "yes" {
+			writer.Header().Set("X-Observed-HTTP-Method", request.Method)
+		}
+		mux.ServeHTTP(writer, request)
+	})
+	server := &http.Server{Handler: observed, ReadHeaderTimeout: 5 * time.Second}
 	done := make(chan error, 1)
 	go func() { done <- server.Serve(listener) }()
 	fmt.Println("http://" + listener.Addr().String())
@@ -193,6 +199,8 @@ func main() {
 		serve(service, false)
 	case "serve-gzip":
 		serve(service, true)
+	case "client-get":
+		getClient(service, os.Args[2], os.Args[3])
 	case "client-gzip":
 		gzipClient(service, os.Args[2], os.Args[3])
 	case "client":

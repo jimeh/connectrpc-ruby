@@ -1,8 +1,11 @@
 # frozen_string_literal: true
 
 binding = APIBinding.new
-method = ConnectRPC::Method.new(service: "demo.Service", name: "Call", request_type: String, response_type: String)
+method = ConnectRPC::Method.new(service: "demo.Service", name: "Call", request_type: String, response_type: String,
+                                idempotency: :no_side_effects)
 service = ConnectRPC::Service.new(name: method.service, methods: [method])
+method.idempotency.to_s
+ConnectRPC::Client.new(base_url: "https://example.invalid", binding: binding, use_get: true, get_url_limit: 8192)
 service.methods.each { |rpc| rpc.path.size }
 metadata = ConnectRPC::Metadata.new("x-example" => ["value"])
 metadata.add("x-example", "next").add_binary("x-token-bin", "bytes")
@@ -21,7 +24,8 @@ bus = ConnectRPC::Instrumentation.new(subscribers: [APISubscriber.new], on_error
   failure.message
   nil
 })
-server = ConnectRPC::Server.new(services: [service], binding: binding, invoker: APIInvoker.new, instrumentation: bus)
+server = ConnectRPC::Server.new(services: [service], binding: binding, invoker: APIInvoker.new, instrumentation: bus,
+                                get_query_limit: nil)
 ConnectRPC::Server.new(services: [], binding: binding, invoker: lambda { |rpc, request, context|
   context.check!
   rpc.path
@@ -33,7 +37,8 @@ if handle
   handle.record_failure(RuntimeError.new("local"))
   handle.host_rejected!
   handle.host_rejected?
-  server.call(path: method.path, http_method: "POST", headers: {}, input: nil, lifecycle: handle).status.succ
+  server.call(path: method.path, http_method: "GET", query: "encoding=proto&message=", headers: {}, input: nil,
+              lifecycle: handle).status.succ
   handle.finish(delivery: :response_finished, decision: :host_rejected, http_status: 503)
 end
 ConnectRPC::Bindings::GoogleProtobuf.new

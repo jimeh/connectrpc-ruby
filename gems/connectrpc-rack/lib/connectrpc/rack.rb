@@ -23,7 +23,7 @@ module ConnectRPC
       headers = request_headers(env)
       lifecycle = @server.start_call(path: path, headers: headers)
       response = @server.call(path: path, http_method: env.fetch("REQUEST_METHOD"), headers: headers,
-                              input: env["rack.input"], lifecycle: lifecycle)
+                              input: env["rack.input"], query: env.fetch("QUERY_STRING", ""), lifecycle: lifecycle)
       body = [response.body]
       if lifecycle
         callbacks = env["rack.response_finished"]

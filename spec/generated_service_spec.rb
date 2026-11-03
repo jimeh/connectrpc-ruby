@@ -17,6 +17,13 @@ RSpec.describe "Generated service integration" do
   let(:type) { GenerationFixture::V1::Message }
   let(:binding) { ConnectRPC::Bindings::GoogleProtobuf.new }
 
+  it "retains schema safety without inferring GET safety from names" do
+    service = GenerationFixture::V1::EchoService
+    expect(service::ECHO.idempotency).to eq(:no_side_effects)
+    expect(service::FAIL.idempotency).to eq(:idempotent)
+    expect(service::GET_HTTP.idempotency).to eq(:unknown)
+  end
+
   it "uses concrete official message classes and frozen reusable declarations" do
     expect(service::ECHO.request_type).to equal(type)
     expect(service::ECHO.response_type).to equal(type)

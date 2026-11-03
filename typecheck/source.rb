@@ -4,7 +4,9 @@ require "yaml"
 require_relative "harness"
 
 module SourceCheck
-  FILES = %w[method metadata error deadline protocol client server instrumentation compression message_io].map do |name|
+  FILES = %w[
+    method metadata error deadline protocol client server instrumentation compression message_io get_query
+  ].map do |name|
     "lib/connectrpc/#{name}.rb"
   end.push("lib/connectrpc.rb", "lib/connectrpc/version.rb").sort.freeze
 

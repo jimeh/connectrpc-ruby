@@ -5,8 +5,8 @@ import "types.proto";
 import "ordinary.proto";
 import "google/protobuf/empty.proto";
 service Echo {
-  rpc Exchange(rbs_types.v1.Envelope.Request) returns (rbs_types.v1.Envelope.Reply);
-  rpc Plain(rbs_plain.v1.Request) returns (rbs_plain.v1.Outer.Reply);
+  rpc Exchange(rbs_types.v1.Envelope.Request) returns (rbs_types.v1.Envelope.Reply) { option idempotency_level = NO_SIDE_EFFECTS; }
+  rpc Plain(rbs_plain.v1.Request) returns (rbs_plain.v1.Outer.Reply) { option idempotency_level = IDEMPOTENT; }
   rpc Reset(google.protobuf.Empty) returns (google.protobuf.Empty);
 }
 service NoCalls {}

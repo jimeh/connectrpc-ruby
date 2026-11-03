@@ -10,7 +10,7 @@ RSpec.describe Conformance::Ledger do
   end
   let(:raw) do
     <<~LOG
-      Computed 94 test case permutation(s) across 1 server configuration(s).
+      Computed 96 test case permutation(s) across 1 server configuration(s).
       Loaded 2 known failing test case pattern(s) that match 2 test case permutation(s).
       Filtered tests to 1 test case permutation(s) across 1 server configuration(s).
       Sending request for #{JSON.generate(name)}...
@@ -31,7 +31,7 @@ RSpec.describe Conformance::Ledger do
 
   it "records discovered configured count separately from selected execution and outcomes" do
     result = parse
-    expect(result).to include(configured_discovered: 94, executed: 1, passed: 1, failed: 0, could_not_run: 0,
+    expect(result).to include(configured_discovered: 96, executed: 1, passed: 1, failed: 0, could_not_run: 0,
                               unsupported_instructions: 0, accounting_valid: true)
     expect(result.fetch(:outcomes)).to eq(name => "passed")
   end
@@ -39,7 +39,7 @@ RSpec.describe Conformance::Ledger do
   it "rejects reductions, missing responses, duplicates, unknown names and incorrect counts even with exit zero" do
     sending = "Sending request for #{JSON.generate(name)}...\n"
     receiving = "Received response for #{JSON.generate(name)}...\n"
-    [raw.sub("Computed 94", "Computed 93"), raw.sub(sending, ""), raw.sub(receiving, ""),
+    [raw.sub("Computed 96", "Computed 93"), raw.sub(sending, ""), raw.sub(receiving, ""),
      raw.sub(sending, sending * 2), raw.sub(receiving, receiving * 2), raw.sub("Total cases: 1", "Total cases: 0"),
      raw.sub(receiving, "Received response for \"different\"...\n"),
      "#{raw}Another 1 could not be run due to client timing out or exiting prematurely.\n"].each do |log|
@@ -74,6 +74,28 @@ RSpec.describe Conformance::Ledger do
     expect { parse(log, events, 0) }.to raise_error(RuntimeError, /Runner exit/)
   end
 
+  it "requires actual GET, separate query payload and measured-empty body for the named GET cases" do
+    get_name = described_class::GET_CASES.first
+    log = raw.gsub(name, get_name)
+    payload = { "bytes" => 30, "sha256" => "a" * 64, "encoding" => "identity", "gzip_magic" => false }
+    body = { "bytes" => 0, "sha256" => "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855" }
+    telemetry = events.map { |event| event.merge("name" => get_name) }
+    telemetry[1].merge!("http_method" => "GET", "request_headers" => {}, "wire" => body,
+                        "query" => { "controls" => { "encoding" => "json", "connect" => "v1" }, "payload" => payload })
+    telemetry[3]["result"] = { "testName" => get_name, "response" => {} }
+    telemetry.insert(2, { "event" => "wire_response", "name" => get_name, "status" => 200 })
+    check = ->(records) { described_class.new(direction: "client", selected: get_name).parse(log, records, 0) }
+    expect(check.call(telemetry)).to include(executed: 1, passed: 1)
+    [->(data) { data[1]["http_method"] = "POST" },
+     ->(data) { data[1]["query"]["payload"]["bytes"] = 0 },
+     ->(data) { data[1]["wire"]["bytes"] = 1 },
+     ->(data) { data[2]["status"] = 415 }].each do |mutate|
+      changed = Marshal.load(Marshal.dump(telemetry))
+      mutate.call(changed)
+      expect { check.call(changed) }.to raise_error(RuntimeError, /Conformance accounting/)
+    end
+  end
+
   def cancellation_fixture(profile = "identity")
     cancel_name = (profile == "gzip" ? described_class::GZIP_CANCELLATIONS : described_class::CANCELLATIONS).first
     assertions = described_class::CANCELLATION_FAILURE.join("\n\t")
@@ -102,7 +124,7 @@ RSpec.describe Conformance::Ledger do
     telemetry << { "event" => "unsupported_cancellation", "name" => cancel_name,
                    "instruction" => { "afterCloseSendMs" => 5 } }
     if profile == "gzip"
-      log = log.sub("Computed 94", "Computed 88")
+      log = log.sub("Computed 96", "Computed 88")
       telemetry[0]["compression"] = "COMPRESSION_GZIP"
       telemetry[1].merge!("monotonic" => 1.0, "request_headers" => {},
                           "wire" => { "encoding" => "gzip", "bytes" => 42, "gzip_magic" => true })

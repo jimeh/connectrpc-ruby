@@ -7,7 +7,7 @@ require 'google/protobuf'
 require 'generation/public_pb'
 
 
-descriptor_data = "\n\x18generation/service.proto\x12\x15generation_fixture.v1\x1a\x17generation/public.proto\"\'\n\x07Message\x12\x12\n\x05\x63ount\x18\x01 \x01(\x05H\x00\x88\x01\x01\x42\x08\n\x06_count\"\x1b\n\nConnectRPC\x12\r\n\x05value\x18\x01 \x01(\t2\xf2\x01\n\x0b\x45\x63hoService\x12\x46\n\x04\x45\x63ho\x12\x1e.generation_fixture.v1.Message\x1a\x1e.generation_fixture.v1.Message\x12\x46\n\x04\x46\x61il\x12\x1e.generation_fixture.v1.Message\x1a\x1e.generation_fixture.v1.Message\x12S\n\x07GetHTTP\x12#.generation_types.outer_name._value\x1a#.generation_types.outer_name._value2\x0e\n\x0c\x45mptyServiceb\x06proto3"
+descriptor_data = "\n\x18generation/service.proto\x12\x15generation_fixture.v1\x1a\x17generation/public.proto\"\'\n\x07Message\x12\x12\n\x05\x63ount\x18\x01 \x01(\x05H\x00\x88\x01\x01\x42\x08\n\x06_count\"\x1b\n\nConnectRPC\x12\r\n\x05value\x18\x01 \x01(\t2\xfc\x01\n\x0b\x45\x63hoService\x12K\n\x04\x45\x63ho\x12\x1e.generation_fixture.v1.Message\x1a\x1e.generation_fixture.v1.Message\"\x03\x90\x02\x01\x12K\n\x04\x46\x61il\x12\x1e.generation_fixture.v1.Message\x1a\x1e.generation_fixture.v1.Message\"\x03\x90\x02\x02\x12S\n\x07GetHTTP\x12#.generation_types.outer_name._value\x1a#.generation_types.outer_name._value2\x0e\n\x0c\x45mptyServiceb\x06proto3"
 
 pool = ::Google::Protobuf::DescriptorPool.generated_pool
 pool.add_serialized_file(descriptor_data)

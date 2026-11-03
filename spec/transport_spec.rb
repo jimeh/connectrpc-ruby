@@ -14,6 +14,27 @@ RSpec.describe ConnectRPC::Transports::NetHTTP do
     Thread.list.reject { |thread| thread.name == "Timeout stdlib thread" }
   end
 
+  it "sends actual GET without synthetic content headers or any body bytes" do
+    observed = Queue.new
+    peer = lambda do |socket|
+      headers = read_request(socket)
+      observed << headers
+      socket.write("HTTP/1.1 200 OK\r\nContent-Type: application/proto\r\nContent-Length: 0\r\n\r\n")
+      # The owned connection closes after response completion. Every byte after
+      # the header terminator would be an unwanted request body.
+      expect(socket.read).to eq("")
+    end
+    with_peer(peer) do |url|
+      outgoing = ConnectRPC::TransportRequest.new(url: URI("#{url}/read?encoding=proto&message="), http_method: "GET",
+                                                  headers: { "accept-encoding" => ["identity"] }, body: "",
+                                                  response_limit: 100, deadline: ConnectRPC::Deadline.new(1))
+      expect(transport.call(outgoing).status).to eq(200)
+      headers = observed.pop(timeout: 1)
+      expect(headers).to start_with("GET /read?encoding=proto&message= HTTP/1.1\r\n")
+      expect(headers).not_to match(/^(?:Content-Type|Content-Encoding|Content-Length|Connect-Protocol-Version):/i)
+    end
+  end
+
   it "captures separate repeated raw fields and explicitly asks for identity" do
     observed = Queue.new
     peer = lambda do |socket|

@@ -14,6 +14,6 @@ message EchoMessage {
   bytes data = 5;
 }
 service EchoService {
-  rpc Echo(EchoMessage) returns (EchoMessage);
+  rpc Echo(EchoMessage) returns (EchoMessage) { option idempotency_level = NO_SIDE_EFFECTS; }
   rpc Fail(EchoMessage) returns (EchoMessage);
 }

@@ -18,6 +18,10 @@ pairs.each do |method, (request, reply)|
   raise "Official request class mismatch" unless method.request_type.equal?(request)
   raise "Official reply class mismatch" unless method.response_type.equal?(reply)
 end
+raise "Generated safety mapping lost" unless RbsFixture::Api::Echo::EXCHANGE.idempotency == :no_side_effects &&
+                                             RbsFixture::Api::Echo::PLAIN.idempotency == :idempotent &&
+                                             RbsFixture::Api::Echo::RESET.idempotency == :unknown
+
 %w[proto json].each do |codec|
   handlers = RbsFixture::Api::Echo.handlers(
     exchange: lambda do |request, context|
@@ -35,7 +39,7 @@ end
   server = ConnectRPC::Server.new(services: [RbsFixture::Api::Echo::SERVICE], binding: binding, handlers: handlers,
                                   instrumentation: instrumentation)
   core = ConnectRPC::Client.new(base_url: "https://rbs.invalid", binding: binding,
-                                transport: LoopbackTransport.new(server), codec: codec.to_sym)
+                                transport: LoopbackTransport.new(server), codec: codec.to_sym, use_get: true)
   client = RbsFixture::Api::Echo::Client.new(client: core)
   request = RbsFixture::Messages::Envelope::Request.new(text: "hello", tags: ["a"], counts: { "a" => 1 })
   request.tags << "b"

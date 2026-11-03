@@ -24,7 +24,7 @@ module ConnectRPC
         headers = request.headers.dup
         headers["connect-timeout-ms"] = [request.deadline.timeout_ms] if request.deadline
         @server.call(path: request.url.path, http_method: request.http_method,
-                     headers: headers, input: BytesReader.new(request.body))
+                     headers: headers, input: BytesReader.new(request.body), query: request.url.query || "")
       end
 
       def validate!(request)
