@@ -32,8 +32,8 @@ module ConnectRPC
     end
 
     # Internal constructor shared by client processing and the server hosting SPI.
-    def start(owner:, role:, method:, carrier:, server_address: nil, server_port: nil, path: nil)
-      call = Call.new(role: role, protocol: :connect, method: method,
+    def start(owner:, role:, method:, carrier:, server_address: nil, server_port: nil, path: nil, protocol: :connect)
+      call = Call.new(role: role, protocol: protocol, method: method,
                       server_address: server_address, server_port: server_port, carrier: carrier)
       observers = @subscribers.filter_map { |subscriber| safely { subscriber.start(call) } }
       Handle.new(self, owner, path, observers)

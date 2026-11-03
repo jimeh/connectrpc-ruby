@@ -84,10 +84,10 @@ module ConnectRPC
     def initialize: (subscribers: Array[_Subscriber], ?on_error: (^(StandardError) -> void | _InstrumentationErrorHandler)?) -> void
 
     class Call
-      def initialize: (role: :client | :server, protocol: :connect, method: declaration?, server_address: String?, server_port: Integer?, carrier: Hash[String, String | Array[String]]) -> void
-        | (:client | :server, :connect, declaration?, String?, Integer?, Hash[String, String | Array[String]]) -> void
+      def initialize: (role: :client | :server, protocol: :connect | :grpc, method: declaration?, server_address: String?, server_port: Integer?, carrier: Hash[String, String | Array[String]]) -> void
+        | (:client | :server, :connect | :grpc, declaration?, String?, Integer?, Hash[String, String | Array[String]]) -> void
       attr_reader role: :client | :server
-      attr_reader protocol: :connect
+      attr_reader protocol: :connect | :grpc
       attr_reader method: declaration?
       attr_reader server_address: String?
       attr_reader server_port: Integer?
@@ -156,6 +156,8 @@ module ConnectRPC
 
   module Bindings
     class GoogleProtobuf
+      def encode_status: (Error) -> String
+      def decode_status: (String, code: Integer) -> Error
       def initialize: () -> void
       def encode: (untyped message, type: Object, codec: codec) -> String
       def decode: (String bytes, type: Object, codec: codec) -> untyped
@@ -170,14 +172,14 @@ module ConnectRPC
   end
 
   class Client
-    def initialize: (base_url: String, binding: _Binding, ?transport: (_Transport | _StreamingTransport)?, ?codec: codec, ?request_limit: Integer, ?response_limit: Integer, ?request_wire_limit: Integer, ?response_wire_limit: Integer, ?accept_encoding: Array[:identity | :gzip]?, ?use_get: bool, ?get_url_limit: Integer, ?protocol: :connect, ?mode: :unary, ?encoding: :identity | :gzip, ?instrumentation: Instrumentation?, ?terminal_wire_limit: Integer, ?terminal_limit: Integer) -> void
+    def initialize: (base_url: String, binding: _Binding, ?transport: (_Transport | _StreamingTransport | _GRPCTransport)?, ?codec: codec, ?request_limit: Integer, ?response_limit: Integer, ?request_wire_limit: Integer, ?response_wire_limit: Integer, ?accept_encoding: Array[:identity | :gzip]?, ?use_get: bool, ?get_url_limit: Integer, ?protocol: :connect | :grpc, ?mode: :unary, ?encoding: :identity | :gzip, ?instrumentation: Instrumentation?, ?terminal_wire_limit: Integer, ?terminal_limit: Integer, ?status_codec: _GRPCStatusCodec?, ?grpc_status_wire_limit: Integer, ?grpc_status_limit: Integer) -> void
     def call: [Req, Resp] (Method[Req, Resp], Req request, ?metadata: metadata_input, ?timeout: Numeric?, ?cancellation: CancellationToken?) -> Response[Resp]
   end
 
   class Server
     # Generated .handlers checks each concrete callable before this heterogeneous
     # registration map erases its individual request/response associations.
-    def initialize: (services: Array[Service], binding: _Binding, ?handlers: Hash[String, registered_handler], ?invoker: (^(Method[untyped, untyped], untyped, Context) -> untyped | _Invoker)?, ?request_limit: Integer, ?response_limit: Integer, ?request_wire_limit: Integer, ?response_wire_limit: Integer, ?protocol: :connect, ?mode: :unary, ?encoding: :identity | :gzip, ?instrumentation: Instrumentation?, ?get_query_limit: Integer?, ?terminal_wire_limit: Integer, ?terminal_limit: Integer) -> void
+    def initialize: (services: Array[Service], binding: _Binding, ?handlers: Hash[String, registered_handler], ?invoker: (^(Method[untyped, untyped], untyped, Context) -> untyped | _Invoker)?, ?request_limit: Integer, ?response_limit: Integer, ?request_wire_limit: Integer, ?response_wire_limit: Integer, ?protocol: :connect | :grpc | :auto, ?mode: :unary, ?encoding: :identity | :gzip, ?instrumentation: Instrumentation?, ?get_query_limit: Integer?, ?terminal_wire_limit: Integer, ?terminal_limit: Integer, ?status_codec: _GRPCStatusCodec?, ?grpc_status_wire_limit: Integer, ?grpc_status_limit: Integer) -> void
     attr_reader services: Array[Service]
     def handles?: (String path) -> bool
     def start_call: (path: String, headers: headers) -> Instrumentation::Handle?
@@ -706,5 +708,43 @@ module ConnectRPC
       | () -> Enumerator[[Symbol, Integer | headers], self]
     def deconstruct_keys: (Array[Symbol]?) -> Hash[Symbol, Integer | headers]
     def values_at: (*(Integer | Range[Integer])) -> Array[Integer | headers | nil]
+  end
+end
+
+module ConnectRPC
+  type grpc_cardinality = :unary | streaming_cardinality
+  interface _GRPCStatusCodec
+    def encode_status: (Error) -> String
+    def decode_status: (String, code: Integer) -> Error
+  end
+  interface _GRPCTransport
+    def grpc_capabilities: () -> Array[grpc_cardinality]
+    def open_grpc_stream: [T] (StreamRequest) { (_GRPCStreamExchange) -> T } -> T
+  end
+  interface _GRPCStreamExchange
+    def response_head: (?timeout: Numeric?) -> GRPCHead
+    def read: (Integer, ?timeout: Numeric?) -> String?
+    def write: (String) -> nil
+    def close_send: () -> nil
+    def response_trailers: () -> headers?
+    def finish: (?timeout: Numeric?) -> nil
+    def abort: () -> nil
+  end
+  interface _GRPCOutput
+    def write: (String, ?timeout: Numeric?) -> nil
+    def finish: (headers: headers) -> nil
+    def abort: () -> nil
+  end
+  interface _PublishGRPCHead
+    def call: (GRPCHead) -> void
+  end
+  class GRPCHead
+    def initialize: (status: Integer, headers: headers, end_stream: bool) -> void
+    attr_reader status: Integer
+    attr_reader headers: headers
+    attr_reader end_stream: bool
+  end
+  class Server
+    def call_grpc: (path: String, http_method: String, headers: headers, input: _StreamingInput, output: _GRPCOutput, publish: _PublishGRPCHead | ^(GRPCHead) -> void, ?lifecycle: Instrumentation::Handle?, ?cancellation: _Cancellation?, ?http2: bool) -> TransportResponse?
   end
 end

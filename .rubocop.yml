@@ -8,6 +8,7 @@ AllCops:
     - coverage/**/*
     # Official protoc output is checked by regeneration, not rewritten by lint.
     - spec/fixtures/generation/**/*_pb.rb
+    - interop/grpc/ruby/**/*.rb
     # Appraisal output is byte-checked with its actual generator.
     - gems/connectrpc-rails/gemfiles/**/*
 

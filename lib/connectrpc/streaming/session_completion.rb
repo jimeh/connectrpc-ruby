@@ -22,16 +22,47 @@ module ConnectRPC
 
       def recovery_available? = !@reading.busy && !@server && !@abandoned
 
-      def recover_terminal
+      def recover_terminal # rubocop:disable Metrics/MethodLength
         leading
         loop do
           frame = @reader.read_frame(skip_data: true)
-          return unless frame
+          unless frame
+            return recovered_grpc_error if @strategy.grpc?
+
+            return
+          end
           return recovered_error(frame.last) if frame.first.anybits?(2)
 
           @received += 1
-          return if @method.is_a?(ClientStreamMethod) && @received > 1
+          return if !@strategy.grpc? && @method.is_a?(ClientStreamMethod) && @received > 1
         end
+      end
+
+      def recovered_grpc_error
+        strategy = @strategy #: GRPCProtocol::Strategy
+        exchange = @input #: _GRPCStreamExchange
+        return unless strategy.recoverable?(exchange)
+
+        accept_grpc_terminal
+        nil
+      rescue Error => e
+        return e if e.equal?(@remote_error) && @eof
+
+        raise
+      end
+
+      def accept_grpc_terminal
+        strategy = @strategy #: GRPCProtocol::Strategy
+        exchange = @input #: _GRPCStreamExchange
+        @remote_error, @trailers = strategy.terminal(exchange, @headers || Metadata.new)
+        validate_terminal_count
+        expires = @recovery_expires || (now + Deadline::MAX_NATIVE_WAIT)
+        finish_transport(expires)
+        @eof = true
+        error = @remote_error
+        raise error, cause: nil if error
+
+        nil
       end
 
       def recovered_error(bytes)
@@ -62,7 +93,7 @@ module ConnectRPC
       end
 
       def validate_terminal_count
-        return unless !@remote_error && @method.is_a?(ClientStreamMethod) && @received != 1
+        return unless !@remote_error && @strategy.single_response?(@method) && @received != 1
 
         raise Error.new(:unimplemented, "Expected exactly one response"), cause: nil
       end

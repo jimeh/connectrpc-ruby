@@ -1,0 +1,15 @@
+
+‰
+google/protobuf/any.protogoogle.protobuf"6
+Any
+type_url (	RtypeUrl
+value (RvalueBv
+com.google.protobufBAnyProtoPZ,google.golang.org/protobuf/types/known/anypb¢GPB™Google.Protobuf.WellKnownTypesbproto3
+ê
+google/rpc/status.proto
+google.rpcgoogle/protobuf/any.proto"f
+Status
+code (Rcode
+message (	Rmessage.
+details (2.google.protobuf.AnyRdetailsB^
+com.google.rpcBStatusProtoPZ7google.golang.org/genproto/googleapis/rpc/status;status¢RPCbproto3

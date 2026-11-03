@@ -20,23 +20,30 @@ module ConnectRPC
       def call_with_publication(request, publication:, lifecycle: nil)
         path, = request.path.split("?", 2)
         headers = Internal.headers(request)
-        unless @server.handles?(path) && Streaming.codec(Protocol.single(headers, "content-type"))
+        grpc = GRPCProtocol.intent?(headers)
+        unless @server.handles?(path) && (grpc || Streaming.codec(Protocol.single(headers, "content-type")))
           return call(request, lifecycle: lifecycle)
         end
 
         body = Internal::OutputBody.new
-        output = Internal::ServerOutput.new(body)
+        trailers = ::Protocol::HTTP::Headers.new if grpc
+        output = grpc ? Internal::GRPCServerOutput.new(body, trailers) : Internal::ServerOutput.new(body)
         begin
-          input = Internal::Input.new(request.body, resource: request.stream.connection.resource)
-          response = @server.call_stream(path: path, http_method: request.method, headers: headers,
-                                         input: input,
-                                         output: output, http2: true,
-                                         lifecycle: lifecycle, cancellation: request.stream.processing_cancellation,
-                                         publish: lambda { |head|
-                                           publication.publish(::Protocol::HTTP::Response[
-                                             head.status, Internal.fields(head.headers), body
-                                           ])
-                                         })
+          input_type = grpc ? Internal::GRPCInput : Internal::Input
+          input = input_type.new(request.body, resource: request.stream.connection.resource)
+          entrypoint = grpc ? :call_grpc : :call_stream
+          response = @server.public_send(
+            entrypoint, path: path, http_method: request.method, headers: headers,
+                        input: input,
+                        output: output, http2: true,
+                        lifecycle: lifecycle, cancellation: request.stream.processing_cancellation,
+                        publish: lambda { |head|
+                          fields = ::Protocol::HTTP::Headers[Internal.fields(head.headers)]
+                          fields.trailer!
+                          output.headers = fields if grpc
+                          publication.publish(::Protocol::HTTP::Response[head.status, fields, body])
+                        }
+          )
           if response
             return ::Protocol::HTTP::Response[response.status, Internal.fields(response.headers),
                                               response.body.empty? ? nil : [response.body]]

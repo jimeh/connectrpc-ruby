@@ -1,4 +1,4 @@
-# Native Connect streaming
+# Native RPC streaming
 
 Connect server streaming, client streaming and bidirectional streaming use the
 same dependency-free core engine. The optional Async transport and Async/Falcon
@@ -7,6 +7,11 @@ TLS and mTLS. NetHTTP, Rack, Rails, Testing and Falcon HTTP/1 remain unary.
 Unsupported clients reject a streaming operation before encoding or I/O. Native
 listeners explicitly select HTTP/2 capability. Portable adapters reject streaming
 media before reading input or invoking handlers, including Rails callbacks.
+
+Native gRPC reuses the declarations and session engine below, including unary
+calls through the exchange SPI. Its protobuf-only negotiation, final HTTP/2
+HEADERS, status codec and independent bounds are described in [gRPC](grpc.md).
+The Connect terminal envelope and one-second tail policy below apply to Connect.
 
 ## Completion policy
 

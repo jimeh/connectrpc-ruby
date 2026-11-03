@@ -26,7 +26,7 @@ module Conformance
     end
 
     def native_declaration(request)
-      unless request.http_version == :HTTP_VERSION_2 && request.protocol == :PROTOCOL_CONNECT &&
+      unless request.http_version == :HTTP_VERSION_2 && %i[PROTOCOL_CONNECT PROTOCOL_GRPC].include?(request.protocol) &&
              %i[CODEC_PROTO CODEC_JSON].include?(request.codec) && !request.raw_request
         raise "Unsupported native client instruction"
       end
@@ -52,6 +52,7 @@ module Conformance
     def native_core(request, transport, origin)
       ObservedNativeClient.new(observation: @observation, base_url: origin, transport: transport, binding: BINDING,
                                codec: request.codec == :CODEC_PROTO ? :proto : :json,
+                               protocol: request.protocol == :PROTOCOL_GRPC ? :grpc : :connect,
                                encoding: request.compression == :COMPRESSION_GZIP ? :gzip : :identity,
                                response_limit: Conformance.limit(request.message_receive_limit))
     end

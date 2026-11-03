@@ -12,8 +12,14 @@ module ConnectRPC
                    response_limit: Protocol::DEFAULT_LIMIT, request_wire_limit: request_limit,
                    response_wire_limit: response_limit, accept_encoding: nil, use_get: false, get_url_limit: 8192,
                    protocol: :connect, mode: :unary, encoding: :identity, instrumentation: nil,
-                   terminal_wire_limit: 65_536, terminal_limit: 65_536)
+                   terminal_wire_limit: 65_536, terminal_limit: 65_536, status_codec: nil,
+                   grpc_status_wire_limit: 65_536, grpc_status_limit: 65_536)
       Protocol.profile!(protocol, mode, encoding)
+      @protocol = protocol
+      @grpc_status_wire_limit = Protocol.limit!(grpc_status_wire_limit)
+      @grpc_status_limit = Protocol.limit!(grpc_status_limit)
+      @status_codec = GRPCProtocol.status_codec!(binding, status_codec) if protocol == :grpc
+      raise ArgumentError, "gRPC requires protobuf POST" if protocol == :grpc && (codec != :proto || use_get)
       raise ArgumentError, "use_get must be true or false" unless [true, false].include?(use_get)
 
       @terminal_wire_limit = Protocol.limit!(terminal_wire_limit)
@@ -40,6 +46,12 @@ module ConnectRPC
 
       unless cancellation.nil? || cancellation.is_a?(CancellationToken)
         raise ArgumentError, "cancellation must be a CancellationToken or nil"
+      end
+
+      if @protocol == :grpc
+        raise ArgumentError, "Transport does not support unary gRPC" unless stream_capability?(method)
+
+        return stream_call(method, request, metadata, timeout, cancellation) { |_| nil }
       end
       return instrumented_call(method, request, metadata, timeout, cancellation) if @instrumentation
 

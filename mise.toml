@@ -154,7 +154,7 @@ run = "bundle _4.0.23_ exec ruby scripts/build_generation.rb"
 
 [tasks."generation:check"]
 description = "Check protoc/Buf output parity and checked-in generation fixtures"
-depends = ["setup", "setup:generation"]
+depends = ["setup", "setup:generation", "grpc:status:check"]
 tools."aqua:protocolbuffers/protobuf/protoc" = "36.2"
 tools."aqua:bufbuild/buf" = "1.75.0"
 env.BUF_CACHE_DIR = "{{config_root}}/vendor/buf/cache"
@@ -240,7 +240,7 @@ run = "ruby gems/connectrpc-async/scripts/run.rb interop"
 
 [tasks."async:verify"]
 description = "Verify optional HTTP/2 specs, source, packages and Go interoperability"
-depends = ["async:test", "async:check", "async:package", "async:interop", "async:interop:streaming", "async:conformance"]
+depends = ["async:test", "async:check", "async:package", "async:interop", "async:interop:streaming", "async:conformance", "async:conformance:grpc", "async:interop:grpc"]
 
 [tasks."async:tools"]
 description = "Prepare exact Ruby/Bundler for the independent backend bundle"
@@ -419,7 +419,7 @@ run = "ruby gems/connectrpc-falcon/scripts/run.rb interop"
 
 [tasks."falcon:verify"]
 description = "Verify Falcon specs, source, packages and Go interoperability"
-depends = ["falcon:test", "falcon:check", "falcon:package", "falcon:interop", "falcon:interop:streaming", "falcon:conformance"]
+depends = ["falcon:test", "falcon:check", "falcon:package", "falcon:interop", "falcon:interop:streaming", "falcon:conformance", "falcon:conformance:grpc", "falcon:interop:grpc"]
 
 [tasks."falcon:tools"]
 description = "Prepare exact Ruby/Bundler for the independent backend bundle"
@@ -521,3 +521,63 @@ depends = ["falcon:setup", "setup:interop"]
 tools.go = "1.27.3"
 env = { GOTOOLCHAIN = "local", GOWORK = "off", GOFLAGS = "-mod=readonly", GOMODCACHE = "{{config_root}}/vendor/interop/mod", GOCACHE = "{{config_root}}/vendor/interop/build" }
 run = "ruby gems/connectrpc-falcon/scripts/run.rb streaming_interop"
+
+[tasks."grpc:status:build"]
+description = "Reproduce canonical private gRPC Any and Status descriptors"
+depends = ["setup", "setup:generation"]
+tools."aqua:protocolbuffers/protobuf/protoc" = "36.2"
+run = "bundle _4.0.23_ exec ruby scripts/build_grpc_status.rb"
+
+[tasks."grpc:status:check"]
+description = "Check canonical private gRPC status descriptor reproducibility"
+depends = ["setup", "setup:generation"]
+tools."aqua:protocolbuffers/protobuf/protoc" = "36.2"
+run = "bundle _4.0.23_ exec ruby scripts/build_grpc_status.rb --check"
+
+[tasks."async:conformance:grpc"]
+description = "Run exact official gRPC client and Async server profiles"
+depends = ["async:setup", "setup:conformance"]
+tools."github:connectrpc/conformance" = "1.0.6"
+env.CONNECTRPC_CONFORMANCE_GRPC = "1"
+run = "ruby gems/connectrpc-async/scripts/run.rb conformance async"
+
+[tasks."falcon:conformance:grpc"]
+description = "Run exact official gRPC Falcon server profiles"
+depends = ["falcon:setup", "setup:conformance"]
+tools."github:connectrpc/conformance" = "1.0.6"
+env.CONNECTRPC_CONFORMANCE_GRPC = "1"
+run = "ruby gems/connectrpc-falcon/scripts/run.rb conformance falcon server"
+
+[tasks."grpc:setup"]
+description = "Prepare frozen official grpc-go peer and generator tools"
+depends = ["setup:generation"]
+tools.go = "1.27.3"
+dir = "{{config_root}}/interop/grpc"
+env = { GOTOOLCHAIN = "local", GOWORK = "off", GOFLAGS = "-mod=readonly", GOMODCACHE = "{{config_root}}/vendor/grpc/mod", GOCACHE = "{{config_root}}/vendor/grpc/build", GOBIN = "{{config_root}}/vendor/grpc/bin" }
+run = ["go mod download all", "go mod verify", "go install google.golang.org/protobuf/cmd/protoc-gen-go", "go install google.golang.org/grpc/cmd/protoc-gen-go-grpc", "ruby ../../scripts/check_grpc_artifacts.rb"]
+
+[tasks."grpc:generation:build"]
+description = "Generate official Go and Ruby gRPC peer messages and service wrappers"
+depends = ["setup", "grpc:setup"]
+tools."aqua:protocolbuffers/protobuf/protoc" = "36.2"
+run = "bundle _4.0.23_ exec ruby scripts/build_grpc_peer.rb"
+
+[tasks."grpc:generation:check"]
+description = "Check official grpc-go and Ruby peer generation parity"
+depends = ["setup", "grpc:setup"]
+tools."aqua:protocolbuffers/protobuf/protoc" = "36.2"
+run = "bundle _4.0.23_ exec ruby scripts/build_grpc_peer.rb --check"
+
+[tasks."async:interop:grpc"]
+description = "Run generated official grpc-go peers against async over h2c TLS and mTLS"
+depends = ["async:setup", "grpc:generation:check"]
+tools.go = "1.27.3"
+env = { GOTOOLCHAIN = "local", GOWORK = "off", GOFLAGS = "-mod=readonly", GOMODCACHE = "{{config_root}}/vendor/grpc/mod", GOCACHE = "{{config_root}}/vendor/grpc/build" }
+run = "ruby gems/connectrpc-async/scripts/run.rb grpc_interop async"
+
+[tasks."falcon:interop:grpc"]
+description = "Run generated official grpc-go peers against falcon over h2c TLS and mTLS"
+depends = ["falcon:setup", "grpc:generation:check"]
+tools.go = "1.27.3"
+env = { GOTOOLCHAIN = "local", GOWORK = "off", GOFLAGS = "-mod=readonly", GOMODCACHE = "{{config_root}}/vendor/grpc/mod", GOCACHE = "{{config_root}}/vendor/grpc/build" }
+run = "ruby gems/connectrpc-falcon/scripts/run.rb grpc_interop falcon"

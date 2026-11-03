@@ -1,6 +1,6 @@
 module ConnectRPC
   interface _StreamCapabilityProbe
-    def respond_to?: (:streaming_capabilities | :open_stream) -> bool
+    def respond_to?: (Symbol) -> bool
   end
   type stream_declaration = ServerStreamMethod[untyped, untyped] | ClientStreamMethod[untyped, untyped] | BidiStreamMethod[untyped, untyped]
   type stream_endpoint = ResponseReader[untyped] | RequestWriter[untyped] | ClientDuplex[untyped, untyped]
@@ -11,13 +11,14 @@ module ConnectRPC
     def validate_stream_call!: (declaration, singleton(ServerStreamMethod) | singleton(ClientStreamMethod) | singleton(BidiStreamMethod), CancellationToken?, Proc?) -> nil
     def stream_capability?: (declaration) -> bool
     def streaming_transport?: () -> bool
-    def stream_call: [Q, R] (ServerStreamMethod[Q, R], Q, metadata_input, Numeric?, CancellationToken?) { (ResponseReader[R]) -> void } -> nil
+    def stream_call: [Q, R] (Method[Q, R], Q, metadata_input, Numeric?, CancellationToken?) { (RequestWriter[Q]) -> void } -> Response[R]
+      | [Q, R] (ServerStreamMethod[Q, R], Q, metadata_input, Numeric?, CancellationToken?) { (ResponseReader[R]) -> void } -> nil
       | [Q, R] (ClientStreamMethod[Q, R], nil, metadata_input, Numeric?, CancellationToken?) { (RequestWriter[Q]) -> void } -> Response[R]
       | [Q, R] (BidiStreamMethod[Q, R], nil, metadata_input, Numeric?, CancellationToken?) { (ClientDuplex[Q, R]) -> void } -> nil
     def run_stream: (declaration, untyped, metadata_input, timeout: Numeric?, cancellation: CancellationToken?, lifecycle: Instrumentation::Handle?, injection: metadata_input) { (stream_endpoint) -> void } -> Response[untyped]?
     def stream_metadata: (metadata_input, metadata_input, Instrumentation::Handle?) -> Metadata
     def stream_request: (declaration, Metadata, Deadline?, CallCancellation, Instrumentation::Handle?) -> StreamRequest
-    def new_client_stream_session: (declaration, CallCancellation, _StreamExchange, Instrumentation::Handle?) -> Streaming::Session
+    def new_client_stream_session: (declaration, CallCancellation, (_StreamExchange | _GRPCStreamExchange), Instrumentation::Handle?) -> Streaming::Session
     def with_stream_session: [T] (Streaming::Session, Streaming::ClientScope) { () -> T } -> T
     def perform_stream_scope: (declaration, untyped, Streaming::Session, Streaming::ClientScope) { (stream_endpoint) -> void } -> void
     def prepare_server_stream: (declaration, untyped, Streaming::Session) -> void
@@ -35,7 +36,7 @@ module ConnectRPC
     def begin_native_processing: (String, headers, Instrumentation::Handle?) -> [Instrumentation::Handle?, bool]
     def finish_native_processing: (Instrumentation::Handle?, bool?) -> void
     def process_stream: (String, headers, codec, input: _StreamingInput, output: _StreamingOutput, publish: _PublishStreamHead | ^(StreamHead) -> void, lifecycle: Instrumentation::Handle?, cancellation: _Cancellation?) -> void
-    def capture_stream_error: (Streaming::ServerState) { () -> void } -> void
+    def capture_stream_error: (Streaming::ServerState | GRPCProtocol::ServerState) { () -> void } -> void
     def execute_stream_handler: (Streaming::ServerState, String, _StreamingInput, _StreamingOutput) -> void
     def stream_encoding: (headers) -> encoding
     def streaming_declaration: (String) -> stream_declaration
@@ -45,10 +46,10 @@ module ConnectRPC
     def single_stream_request: (Streaming::Session) -> untyped
     def render_stream_terminal: (Streaming::ServerState, _StreamingOutput) -> void
     def stream_terminal_bytes: (Streaming::ServerState, StreamingContext) -> [String, Error?]
-    def merge_stream_error_metadata: (Error?, StreamingContext) -> void
-    def stream_trailers: (Error?, StreamingContext) -> Metadata
+    def merge_stream_error_metadata: (Error?, Context) -> void
+    def stream_trailers: (Error?, Context) -> Metadata
     def emit_stream_terminal: (String, _StreamingOutput) -> void
-    def observe_stream_result: (Streaming::ServerState, Error?) -> void
+    def observe_stream_result: (Streaming::ServerState | GRPCProtocol::ServerState, Error?) -> void
     def streaming_context: (Streaming::ServerState, ?headers: headers) -> StreamingContext
     def stream_head: (Metadata, codec, encoding) -> StreamHead
   end
@@ -117,6 +118,7 @@ module ConnectRPC
       attr_accessor independent_error: Exception?
       attr_accessor failure: StandardError?
       attr_accessor result: Response[untyped]?
+      attr_accessor delivered_error: StandardError?
       def initialize: (Instrumentation::Handle?) -> void
       def run: (Numeric?, CancellationToken?) { (CallCancellation, Deadline?) -> void } -> Response[untyped]?
       def cleanup: (Session) -> void
@@ -128,6 +130,7 @@ module ConnectRPC
       def start: (Numeric?, CancellationToken?) -> [CallCancellation, Deadline?]
       def implicit_abandonment?: () -> bool
       def success?: (Exception?) -> bool
+      def delivery_completed?: (Exception?) -> bool
       def report_processing: (Instrumentation::Handle, Exception?) -> void
       def normalized_error: (Exception?) -> Error?
     end
@@ -168,14 +171,16 @@ module ConnectRPC
       def protocol_error: (String) -> bot
     end
     class Session
+      @strategy: ConnectStrategy | GRPCProtocol::Strategy
+      @publish: (^() -> void)?
       @binding: _Binding
       @method: declaration
       @codec: codec
       @state: Context | CallCancellation
-      @input: _StreamingInput | _StreamExchange
-      @output: _StreamingOutput | _StreamExchange
+      @input: _StreamingInput | (_StreamExchange | _GRPCStreamExchange)
+      @output: _StreamingOutput | (_StreamExchange | _GRPCStreamExchange)
       @server: bool
-      @context: StreamingContext?
+      @context: Context?
       @lifecycle: Instrumentation::Handle?
       @thread: Thread
       @scheduler: Object?
@@ -206,12 +211,13 @@ module ConnectRPC
       attr_reader trailers: Metadata?
       attr_reader received: Integer
       attr_reader sent: Integer
-      def initialize: (binding: _Binding, method: declaration, codec: codec, state: Context | CallCancellation, input: _StreamingInput | _StreamExchange, output: _StreamingOutput | _StreamExchange, request_limit: Integer, response_limit: Integer, request_wire_limit: Integer, response_wire_limit: Integer, request_encoding: encoding, response_encoding: encoding, terminal_wire_limit: Integer, terminal_limit: Integer, ?server: bool, ?context: StreamingContext?, ?lifecycle: Instrumentation::Handle?, ?accept_encoding: Array[encoding]) -> void
+      def initialize: (binding: _Binding, method: declaration, codec: codec, state: Context | CallCancellation, input: _StreamingInput | (_StreamExchange | _GRPCStreamExchange), output: _StreamingOutput | (_StreamExchange | _GRPCStreamExchange), request_limit: Integer, response_limit: Integer, request_wire_limit: Integer, response_wire_limit: Integer, request_encoding: encoding, response_encoding: encoding, terminal_wire_limit: Integer, terminal_limit: Integer, ?server: bool, ?context: Context?, ?lifecycle: Instrumentation::Handle?, ?accept_encoding: Array[encoding], ?strategy: ConnectStrategy | GRPCProtocol::Strategy, ?publish: (^() -> void)?) -> void
       def headers: () -> Metadata
       def receive: () -> untyped
       def send_message: (untyped) -> nil
       def close_send: () -> nil
       def abandon: () -> nil
+      def remote_completed?: (Exception) -> bool
       def abandoned?: () -> bool
       def consumed?: () -> bool
       def owned_error?: (Exception) -> bool
@@ -224,7 +230,7 @@ module ConnectRPC
       def record_operation_failure: (StandardError, :reading | :writing | :abandon) -> void
       def recovery_timeout: () -> Float
       def initialize_owner: (_Binding, declaration, codec, Context | CallCancellation) -> void
-      def initialize_channels: (_StreamingInput | _StreamExchange, _StreamingOutput | _StreamExchange, bool, StreamingContext?, Instrumentation::Handle?) -> void
+      def initialize_channels: (_StreamingInput | (_StreamExchange | _GRPCStreamExchange), _StreamingOutput | (_StreamExchange | _GRPCStreamExchange), bool, Context?, Instrumentation::Handle?) -> void
       def initialize_messages: (Integer, Integer) -> void
       def initialize_framing: (Integer, Integer, encoding, encoding, terminal_wire_limit: Integer, terminal_limit: Integer) -> void
       def initialize_reader: (Integer, Integer, encoding, encoding, terminal_wire_limit: Integer, terminal_limit: Integer) -> void
@@ -245,6 +251,8 @@ module ConnectRPC
       def validate_response_headers: (headers) -> void
       def recovery_available?: () -> bool
       def recover_terminal: () -> Error?
+      def accept_grpc_terminal: () -> nil
+      def recovered_grpc_error: () -> Error?
       def recovered_error: (String) -> Error?
       def validate_terminal_count: () -> void
       def verify_tail: (Float) -> void

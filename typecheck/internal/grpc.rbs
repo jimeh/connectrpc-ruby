@@ -1,0 +1,91 @@
+module ConnectRPC
+  interface _GRPCCapabilityProbe
+    def respond_to?: (Symbol) -> bool
+  end
+  class Client
+    private
+    def client_stream_strategy: (?Instrumentation::Handle?) -> (Streaming::ConnectStrategy | GRPCProtocol::Strategy)
+    def grpc_stream_request: (URI::Generic, Metadata, Deadline?, CallCancellation, Instrumentation::Handle?) -> StreamRequest
+  end
+  module GRPCProtocol
+    CONTENT_TYPE: String
+    FIELD_LIMIT: Integer
+    UINT32_MAX: Integer
+    CODES: Array[String]
+    TIME_UNITS: Hash[String, Float | Integer]
+    def self.media?: (String?) -> bool
+    def self.intent?: (headers) -> bool
+    def self.snapshot: (headers) -> headers
+    def self.field_size: (headers) -> Integer
+    def self.check_fields!: (headers, ?Integer) -> void
+    def self.status_number: (String) -> Integer?
+    def self.status_value: (headers) -> Integer?
+    def self.encode_message: (String) -> String
+    def self.decode_message: (String) -> String
+    def self.parse_status: (headers, codec: _GRPCStatusCodec?, ?http_status: Integer, ?metadata: Metadata, ?wire_limit: Integer, ?limit: Integer, ?on_error: (^(StandardError) -> void)?) -> [Error?, Metadata]
+    def self.status_error: (String, String, Array[ErrorDetail], Metadata, Metadata) -> Error
+    def self.decode_status: (Array[String], Integer?, _GRPCStatusCodec?, Integer, (^(StandardError) -> void)?) -> Error
+    def self.status_fields: (Error?, Metadata, _GRPCStatusCodec, Integer) -> headers
+    def self.terminal: (Error?, Metadata, codec: _GRPCStatusCodec, wire_limit: Integer, limit: Integer, ?on_error: (^(StandardError) -> void)?) -> [headers, Error?]
+    def self.request_deadline: (headers) -> Deadline?
+    def self.timeout: (Deadline) -> String
+    def self.encoding: (headers, ?request: bool, ?enabled: encoding) -> encoding
+    def self.response_encoding: (headers, encoding) -> encoding
+    def self.status_codec!: (_Binding, _GRPCStatusCodec?) -> _GRPCStatusCodec
+    class Framing < Streaming::Framing
+      private
+      def validate_flags: (Integer) -> void
+      def protocol_error: (String) -> bot
+    end
+    class Strategy
+      @on_error: (^(StandardError) -> void)?
+      @codec: _GRPCStatusCodec?
+      @wire_limit: Integer
+      @limit: Integer
+      @head: GRPCHead?
+      def initialize: (codec: _GRPCStatusCodec?, wire_limit: Integer, limit: Integer, ?on_error: (^(StandardError) -> void)?) -> void
+      def grpc?: () -> bool
+      def framing: () -> singleton(Framing)
+      def wait: (Numeric?) -> Numeric
+      def single_response?: (declaration) -> bool
+      def decode_error: (bool) -> :internal
+      def leading: (_GRPCStreamExchange, Streaming::Framing, Array[encoding], Numeric?, input: _StreamingInput) -> Metadata
+      def reject_media: (_StreamingInput, _GRPCStreamExchange, GRPCHead, Numeric?) -> bot
+      def recoverable?: (_GRPCStreamExchange) -> bool
+      def terminal: (_GRPCStreamExchange, Metadata) -> [Error?, Metadata]
+    end
+    class ServerState
+      attr_reader headers: headers
+      attr_reader codec: codec
+      attr_reader publish: _PublishGRPCHead | ^(GRPCHead) -> void
+      attr_reader lifecycle: Instrumentation::Handle?
+      attr_reader cancellation: _Cancellation?
+      attr_accessor published: bool
+      attr_accessor context: Context?
+      attr_accessor session: Streaming::Session?
+      attr_accessor encoding: encoding
+      attr_accessor error: Error?
+      def initialize: (headers: headers, codec: codec, publish: _PublishGRPCHead | ^(GRPCHead) -> void, lifecycle: Instrumentation::Handle?, cancellation: _Cancellation?) -> void
+    end
+  end
+  module Streaming
+    class ConnectStrategy
+      def grpc?: () -> bool
+      def framing: () -> singleton(Framing)
+      def wait: (Numeric?) -> Numeric?
+      def single_response?: (declaration) -> bool
+      def decode_error: (bool) -> (:invalid_argument | :internal)
+    end
+  end
+  class Server
+    private
+    def process_grpc: (String, headers, input: _StreamingInput, output: _GRPCOutput, publish: _PublishGRPCHead | ^(GRPCHead) -> void, lifecycle: Instrumentation::Handle?, cancellation: _Cancellation?) -> void
+    def execute_grpc_handler: (GRPCProtocol::ServerState, String, _StreamingInput, _GRPCOutput) -> void
+    def grpc_context: (GRPCProtocol::ServerState, ?declaration?, ?headers: headers) -> Context
+    def publish_grpc_snapshot: (GRPCProtocol::ServerState, Metadata) -> nil
+    def publish_grpc_head: (GRPCProtocol::ServerState) -> void
+    def grpc_head: (Metadata, encoding) -> GRPCHead
+    def grpc_terminal_fields: (GRPCProtocol::ServerState, Context) -> [headers, Error?]
+    def render_grpc_terminal: (GRPCProtocol::ServerState, _GRPCOutput) -> void
+  end
+end

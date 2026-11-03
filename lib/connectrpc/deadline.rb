@@ -14,6 +14,14 @@ module ConnectRPC
       @expires_at = @clock.call + timeout
     end
 
+    def self.expired
+      deadline = allocate
+      deadline.instance_variable_set(:@clock, -> { Process.clock_gettime(Process::CLOCK_MONOTONIC) })
+      deadline.instance_variable_set(:@expires_at, Process.clock_gettime(Process::CLOCK_MONOTONIC))
+      deadline
+    end
+    private_class_method :expired
+
     def remaining
       [@expires_at - @clock.call, 0.0].max
     end

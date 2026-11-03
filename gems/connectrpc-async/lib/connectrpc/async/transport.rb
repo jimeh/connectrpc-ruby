@@ -45,29 +45,50 @@ module ConnectRPC
         CallCancellation.with_request(request) { |outgoing| perform_stream(outgoing, &) }
       end
 
+      def grpc_capabilities = %i[unary server_stream client_stream bidi_stream].freeze
+
+      def open_grpc_stream(request, &)
+        raise ArgumentError, "A gRPC block is required" unless block_given?
+
+        check_affinity!
+        CallCancellation.with_request(request) { |outgoing| perform_stream(outgoing, grpc: true, &) }
+      end
+
       private
 
-      def perform_stream(request)
+      def perform_stream(request, grpc: false)
         raise ArgumentError, "Request URL must match the transport origin" unless same_origin?(request.url)
         raise Error.new(:unavailable, "HTTP/2 transport admission is closed or full") unless
           @state == :running && @calls.size < @max_requests
 
-        operation = { request: request, tasks: {} }
+        operation = { request: request, tasks: {}, grpc: grpc }
         @calls[operation] = true
         body = Internal::OutputBody.new
+        completed = false
         begin
           stream_operation(operation) { dispatch_stream(operation, body) }
-          yield Internal::StreamExchange.new(self, operation, body)
+          exchange = grpc ? Internal::GRPCStreamExchange : Internal::StreamExchange
+          result = yield exchange.new(self, operation, body)
+          completed = true
+          result
         ensure
           body.close
-          cleanup(operation)
-          @calls.delete(operation)
-          @progress.signal
+          begin
+            cleanup(operation)
+          ensure
+            @calls.delete(operation)
+            @progress.signal
+          end
+          if grpc && completed && operation[:cleanup_error]
+            check_request!(request)
+            raise Error.new(:unavailable, "HTTP/2 transport cleanup failed"), cause: nil
+          end
         end
       end
 
       def stream_operation(operation, timeout: nil, &work)
         check_affinity!
+        timeout = [timeout || Deadline::MAX_NATIVE_WAIT, Deadline::MAX_NATIVE_WAIT].min if operation[:grpc]
         request = operation.fetch(:request)
         raise Error.new(:unavailable, "HTTP/2 exchange is retired"), cause: nil if operation[:cleaned]
 
@@ -95,6 +116,9 @@ module ConnectRPC
       rescue StandardError => e
         request.lifecycle&.record_failure(e)
         check_request!(request)
+        if operation[:grpc] && (failure = operation[:response]&.stream&.grpc_error)
+          raise failure, cause: nil
+        end
         raise if e.is_a?(ConnectRPC::Error)
 
         raise Error.new(:unavailable, "HTTP/2 transport failed"), cause: nil
@@ -124,11 +148,16 @@ module ConnectRPC
           raise IOError, "Connection is not reusable" unless connection.reusable?
 
           headers = request.headers.dup
-          headers["connect-timeout-ms"] = [request.deadline.timeout_ms] if request.deadline
+          if request.deadline
+            key = operation[:grpc] ? "grpc-timeout" : "connect-timeout-ms"
+            headers[key] = [operation[:grpc] ? GRPCProtocol.timeout(request.deadline) : request.deadline.timeout_ms]
+          end
+          GRPCProtocol.check_fields!(headers) if operation[:grpc]
           outgoing = ::Protocol::HTTP::Request["POST", request.url.request_uri, Internal.fields(headers), body,
                                                scheme: @origin.scheme, authority: @origin.authority]
           response = connection.create_response
           operation[:response] = response
+          response.stream.grpc_mark! if operation[:grpc]
           task.defer_cancel { connection.write_request(response, outgoing) }
         end
       end
@@ -332,7 +361,9 @@ module ConnectRPC
           tasks = [operation[:task], operation[:resource]&.task, *operation.fetch(:tasks, {}).keys].compact.uniq
           tasks.each { |task| task.cancel unless task.finished? }
           # Cancel every task before joining in reverse ownership order.
-          tasks.reverse_each { |task| Internal.join(task) }
+          tasks.reverse_each do |task|
+            operation[:grpc] ? (task.wait unless task.current?) : Internal.join(task)
+          end
           response = operation[:response]
           if response
             stream = response.stream
@@ -346,17 +377,36 @@ module ConnectRPC
         end
         begin
           Internal.wait(cleanup_task, expires)
-        rescue StandardError
-          operation[:resource]&.abort
-          Internal.cancel(cleanup_task)
-          Internal.join(cleanup_task)
+        rescue StandardError => e
+          operation[:cleanup_error] ||= e
+          begin
+            operation[:resource]&.abort
+          rescue StandardError
+            raise unless operation[:grpc]
+          ensure
+            Internal.cancel(cleanup_task)
+            Internal.join(cleanup_task)
+          end
         ensure
           if (connection = operation.delete(:connection))
             begin
               @pool.release(connection)
-            rescue StandardError
-              operation[:resource]&.abort
+            rescue StandardError => e
+              operation[:cleanup_error] ||= e
+              begin
+                operation[:resource]&.abort
+                # A failed release may precede usage accounting. Retire the
+                # aborted connection without retrying release or cleanup.
+                @pool.retire(connection) if operation[:grpc]
+              rescue StandardError
+                raise unless operation[:grpc]
+              end
             end
+          end
+          if operation[:grpc] && (error = operation[:cleanup_error])
+            lifecycle = operation.fetch(:request).lifecycle
+            lifecycle&.record_failure(error)
+            lifecycle&.finish(delivery: :aborted, error: error)
           end
         end
       end

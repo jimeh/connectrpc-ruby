@@ -28,12 +28,16 @@ module ConnectRPC
                  else
                    OpenTelemetry::Context.current
                  end
-        name = call.method ? "#{call.method.service}/#{call.method.name}" : "connectrpc"
+        name = if call.method
+                 "#{call.method.service}/#{call.method.name}"
+               else
+                 (call.protocol == :grpc ? "grpc" : "connectrpc")
+               end
         span = @tracer.start_span(name, kind: call.role, with_parent: parent, attributes: attributes(call, name))
         context = OpenTelemetry::Trace.context_with_span(span, parent_context: parent)
         begin
           @propagator.inject(call.carrier, context: context) if call.role == :client
-          Observer.new(span, context, call.role, @request_metadata, @response_metadata)
+          Observer.new(span, context, call.role, @request_metadata, @response_metadata, call.protocol)
         rescue Exception # rubocop:disable Lint/RescueException -- release span and preserve fatal exceptions
           span.finish
           raise
@@ -43,7 +47,8 @@ module ConnectRPC
       private
 
       def attributes(call, name)
-        result = { "rpc.system.name" => "connectrpc", "rpc.method" => call.method ? name : "_OTHER" }
+        result = { "rpc.system.name" => call.protocol == :grpc ? "grpc" : "connectrpc",
+                   "rpc.method" => call.method ? name : "_OTHER" }
         if call.role == :client
           result["server.address"] = call.server_address if call.server_address
           result["server.port"] = call.server_port if call.server_port
@@ -81,7 +86,8 @@ module ConnectRPC
       private_constant :Getter
 
       class Observer
-        def initialize(span, context, role, request_keys, response_keys)
+        def initialize(span, context, role, request_keys, response_keys, protocol) # rubocop:disable Metrics/ParameterLists
+          @protocol = protocol
           @span = span
           @context = context
           @role = role
@@ -93,7 +99,7 @@ module ConnectRPC
         def detach(token) = OpenTelemetry::Context.detach(token)
 
         def processing_finished(outcome) # rubocop:disable Metrics/AbcSize
-          @span.set_attribute("rpc.response.status_code", outcome.code) if outcome.code
+          @span.set_attribute("rpc.response.status_code", status_code(outcome.code)) if outcome.code
           @span.set_attribute("http.response.status_code", outcome.http_status) if outcome.http_status
           @span.set_attribute("connectrpc.processing.duration", outcome.duration)
           @span.set_attribute("connectrpc.request.wire_bytes", outcome.request_bytes) if outcome.request_bytes
@@ -101,16 +107,18 @@ module ConnectRPC
           capture("request", outcome.request_metadata, @request_keys)
           capture("response", outcome.response_metadata, @response_keys)
           error = processing_error(outcome)
-          fail_span(error) if error
+          fail_span(status_code(error)) if error
         end
 
-        def finished(completion) # rubocop:disable Metrics/MethodLength, Metrics/AbcSize
+        def finished(completion) # rubocop:disable Metrics/MethodLength, Metrics/AbcSize, Metrics/CyclomaticComplexity, Metrics/PerceivedComplexity
           @span.set_attribute("connectrpc.processing.state", completion.processing_state.to_s)
           @span.set_attribute("connectrpc.decision", completion.decision.to_s)
           @span.set_attribute("connectrpc.delivery", completion.delivery.to_s)
           @span.set_attribute("http.response.status_code", completion.http_status) if completion.http_status
           if completion.delivery == :aborted
-            fail_span("delivery_aborted")
+            code = completion.outcome&.code
+            type = @protocol == :grpc && code && code != "OK" ? status_code(code) : "delivery_aborted"
+            fail_span(type)
           elsif completion.decision != :processed
             fail_span(completion.decision.to_s)
           end
@@ -142,7 +150,13 @@ module ConnectRPC
           @span.status = OpenTelemetry::Trace::Status.error
         end
 
-        def capture(direction, metadata, keys) # rubocop:disable Metrics/CyclomaticComplexity
+        def status_code(code)
+          return code unless @protocol == :grpc
+
+          code == "canceled" ? "CANCELLED" : code.upcase
+        end
+
+        def capture(direction, metadata, keys) # rubocop:disable Metrics/CyclomaticComplexity, Metrics/PerceivedComplexity
           keys.each do |key|
             values = metadata[key]
             next unless values
@@ -150,7 +164,8 @@ module ConnectRPC
             values = values.first(8).filter_map do |value|
               value.byteslice(0, 256) if value.is_a?(String) && value.ascii_only? && /\A[\x20-\x7e]*\z/.match?(value)
             end
-            @span.set_attribute("connectrpc.#{direction}.metadata.#{key}", values) unless values.empty?
+            prefix = @protocol == :grpc ? "rpc" : "connectrpc"
+            @span.set_attribute("#{prefix}.#{direction}.metadata.#{key}", values) unless values.empty?
           end
         end
       end

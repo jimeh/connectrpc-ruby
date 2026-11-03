@@ -32,5 +32,13 @@
   "streaming_each": "Ruby::RequiredBlockMissing",
   "streaming_record": "Ruby::NoMethod",
   "streaming_record_write": "Ruby::UnresolvedOverloading",
-  "streaming_timeout": "Ruby::ArgumentTypeMismatch"
+  "streaming_timeout": "Ruby::ArgumentTypeMismatch",
+  "grpc_protocol": "Ruby::ArgumentTypeMismatch",
+  "grpc_capabilities": "Ruby::ArgumentTypeMismatch",
+  "grpc_codec": "Ruby::ArgumentTypeMismatch",
+  "grpc_head": "Ruby::ArgumentTypeMismatch",
+  "grpc_immutable": "Ruby::NoMethod",
+  "grpc_block": "Ruby::RequiredBlockMissing",
+  "grpc_raw_code": "Ruby::ArgumentTypeMismatch",
+  "grpc_output": "Ruby::ArgumentTypeMismatch"
 }

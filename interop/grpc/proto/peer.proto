@@ -1,0 +1,13 @@
+syntax = "proto3";
+package connectrpc.grpcinterop.v1;
+option go_package = "github.com/jimeh/connectrpc-ruby/interop/grpc/gen;grpcinterop";
+message Message {
+  string value = 1;
+  bytes payload = 2;
+}
+service Peer {
+  rpc Unary(Message) returns (Message);
+  rpc ServerStream(Message) returns (stream Message);
+  rpc ClientStream(stream Message) returns (Message);
+  rpc Bidi(stream Message) returns (stream Message);
+}

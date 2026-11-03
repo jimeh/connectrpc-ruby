@@ -13,8 +13,9 @@ module Conformance
       [profile, JSON.parse(File.read(File.join(__dir__, "cases-native-#{profile}.json")))]
     end.freeze
 
-    def initialize(direction:, selected: nil, profile: "identity")
-      super(direction: direction, selected: selected, profile: profile, inventory: INVENTORIES.fetch(profile))
+    def initialize(direction:, selected: nil, profile: "identity", inventory: nil)
+      super(direction: direction, selected: selected, profile: profile,
+            inventory: inventory || INVENTORIES.fetch(profile))
     end
 
     private

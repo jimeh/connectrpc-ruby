@@ -48,7 +48,9 @@ RSpec.describe ConnectRPC::Rack do
     expect(incoming).not_to receive(:read)
     expect(binding).not_to receive(:decode)
     expect(binding).not_to receive(:encode)
-    { "application/connect+proto" => 415, "application/proto" => 501 }.each do |media, status|
+    { "application/connect+proto" => 415, "application/proto" => 501,
+      "application/grpc" => 415, "application/grpc+proto" => 415, "application/grpc+json" => 415 }
+      .each do |media, status|
       env = Rack::MockRequest.env_for(rpc.path, method: "POST", "CONTENT_TYPE" => media)
       env["rack.input"] = incoming
       expect(middleware.call(env).first).to eq(status)

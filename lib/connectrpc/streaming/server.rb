@@ -3,12 +3,14 @@
 module ConnectRPC
   class Server
     # Explicit native-host SPI. Portable adapters retain the unary entry point.
-    def call_stream(path:, http_method:, headers:, input:, output:, publish:, lifecycle: nil, cancellation: nil,
+    def call_stream(path:, http_method:, headers:, input:, output:, publish:, lifecycle: nil, cancellation: nil, # rubocop:disable Metrics/MethodLength
                     http2: false)
       unless http2
         return call(path: path, http_method: http_method, headers: headers, input: input,
                     lifecycle: lifecycle, cancellation: cancellation)
       end
+
+      return bare(415, {}, cancellation: cancellation) if @protocol == :grpc
 
       values = Protocol.headers(headers)
       codec = Streaming.codec(Protocol.single(values, "content-type"))

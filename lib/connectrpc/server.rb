@@ -11,8 +11,13 @@ module ConnectRPC
     def initialize(services:, binding:, handlers: {}, invoker: nil, request_limit: Protocol::DEFAULT_LIMIT,
                    response_limit: Protocol::DEFAULT_LIMIT, request_wire_limit: request_limit,
                    response_wire_limit: response_limit, protocol: :connect, mode: :unary, encoding: :identity,
-                   instrumentation: nil, get_query_limit: nil, terminal_wire_limit: 65_536, terminal_limit: 65_536)
-      Protocol.profile!(protocol, mode, encoding)
+                   instrumentation: nil, get_query_limit: nil, terminal_wire_limit: 65_536, terminal_limit: 65_536,
+                   status_codec: nil, grpc_status_wire_limit: 65_536, grpc_status_limit: 65_536)
+      Protocol.profile!(protocol, mode, encoding, server: true)
+      @protocol = protocol
+      @grpc_status_wire_limit = Protocol.limit!(grpc_status_wire_limit)
+      @grpc_status_limit = Protocol.limit!(grpc_status_limit)
+      @status_codec = GRPCProtocol.status_codec!(binding, status_codec) unless protocol == :connect
       @terminal_wire_limit = Protocol.limit!(terminal_wire_limit)
       @terminal_limit = Protocol.limit!(terminal_limit)
       @services = services.dup.freeze
@@ -44,7 +49,8 @@ module ConnectRPC
       return unless instrumentation
 
       instrumentation.start(owner: self, path: path.dup.freeze, role: :server, method: @methods[path],
-                            carrier: Instrumentation.carrier(headers))
+                            carrier: Instrumentation.carrier(headers),
+                            protocol: GRPCProtocol.intent?(Protocol.headers(headers)) ? :grpc : :connect)
     end
 
     # Keep processing and terminal ensures adjacent to their owner.
@@ -77,6 +83,8 @@ module ConnectRPC
       # @type var context: Context?
       context = nil
       cancellation&.check!
+      return response = bare(415, {}, cancellation: cancellation) if @protocol == :grpc
+
       method = @methods[path]
       safe = method.is_a?(Method) && method.idempotency == :no_side_effects
       unless http_method == "POST" || (http_method == "GET" && (!method || safe))

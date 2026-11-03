@@ -159,3 +159,15 @@ Streaming keeps one span and fixed lifecycle state per RPC, with no per-message
 events or payload capture. The original processor retains SDK context and peer
 identity through codecs and cleanup; publication, processing and full native
 wire completion remain independent. Late cleanup failure aborts delivery.
+
+## Native gRPC observation
+
+The actual protocol is fixed before subscriber start. gRPC uses the 1.44.0
+release-candidate conventions: `rpc.system.name=grpc`, uppercase
+`rpc.response.status_code` and code-based `error.type`, including `CANCELLED`.
+Client and Server retain the role-specific error policy above. Allowlisted gRPC
+metadata uses `rpc.request.metadata.<key>` and `rpc.response.metadata.<key>`.
+Connect keeps its existing names and lower-case codes. Unknown gRPC methods use
+span name `grpc` and `rpc.method=_OTHER`, with the same explicit privacy limit.
+Processing and delivery remain independent; successful handler processing cannot
+prove terminal HEADERS delivery. SDK configuration remains application-owned.

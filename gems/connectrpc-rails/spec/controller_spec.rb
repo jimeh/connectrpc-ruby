@@ -25,7 +25,9 @@ RSpec.describe ConnectRPC::Rails::Controller do
     expect_any_instance_of(EchoController).not_to receive(:connect)
     expect(binding).not_to receive(:decode)
     expect(binding).not_to receive(:encode)
-    { "application/connect+proto" => 415, "application/proto" => 501 }.each do |media, status|
+    { "application/connect+proto" => 415, "application/proto" => 501,
+      "application/grpc" => 415, "application/grpc+proto" => 415, "application/grpc+json" => 415 }
+      .each do |media, status|
       response = rpc(rpc.path, body: "must not read", "CONTENT_TYPE" => media)
       expect(response.status).to eq(status)
     end

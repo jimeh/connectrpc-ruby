@@ -25,10 +25,11 @@ module ConnectRPC
       codec
     end
 
-    def self.profile!(protocol, mode, encoding)
-      return if protocol == :connect && mode == :unary && %i[identity gzip].include?(encoding)
+    def self.profile!(protocol, mode, encoding, server: false)
+      return if (server ? %i[connect grpc auto] : %i[connect grpc]).include?(protocol) &&
+                mode == :unary && %i[identity gzip].include?(encoding)
 
-      raise ArgumentError, "Only Connect unary identity/gzip is supported"
+      raise ArgumentError, "Unsupported protocol, compatibility mode or encoding"
     end
 
     def self.content_codec(value)

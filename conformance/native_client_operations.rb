@@ -4,6 +4,12 @@ module Conformance
   class NativeClientAdapter < ClientAdapter
     def invoke_native(core, declaration, messages, request:, options:, result:, source:)
       case declaration
+      when ConnectRPC::Method
+        @timer = schedule_after_close(request, source)
+        response = core.call(declaration, messages.fetch(0), **options)
+        result.payloads << (response.message.payload || ConformancePayload.new)
+        result.response_headers.replace(Conformance.headers(response.metadata))
+        result.response_trailers.replace(Conformance.headers(response.trailers))
       when ConnectRPC::ServerStreamMethod
         invoke_server_stream(core, declaration, messages, request: request, options: options, result: result,
                                                           source: source)
