@@ -24,6 +24,11 @@ module Conformance
     end
 
     def self.close_native_host(host, bound)
+      if ENV["CONNECTRPC_NATIVE_HOST"] == "rack"
+        host&.close
+        return
+      end
+
       host&.close(grace: 0)
       observe_closed_host(host) if host
       bound&.close
@@ -56,8 +61,23 @@ module Conformance
     end
 
     def self.start_native_host(adapter, config)
+      if ENV["CONNECTRPC_NATIVE_HOST"] == "rack"
+        require_relative "../examples/localhost"
+        rack = ConnectRPC::Rack.new(server: adapter.server)
+        application = lambda do |env|
+          Telemetry.record("native_server_wire_headers", name: env["HTTP_X_TEST_CASE_NAME"],
+                                                         path: env["PATH_INFO"], stream: nil)
+          rack.call(env)
+        end
+        host = EchoExample::Localhost.new(application)
+        return [host, URI(host.url).port, nil]
+      end
+
       if ENV.fetch("CONNECTRPC_NATIVE_HOST", "async") == "falcon"
         require "connectrpc/falcon"
+        if ENV["CONNECTRPC_CONFORMANCE_WEB"] == "1"
+          ConnectRPC::Falcon.const_get(:HTTP1Connection).prepend(WebHTTP1Arrival)
+        end
         bound = ConnectRPC::Falcon::Endpoint.parse("#{config.use_tls ? 'https' : 'http'}://127.0.0.1:0").bound
         host = ConnectRPC::Falcon::Server.new(server: adapter.server, endpoint: bound, tls: native_tls(config))
         host.run

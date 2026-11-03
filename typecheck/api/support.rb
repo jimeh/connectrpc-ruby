@@ -240,3 +240,19 @@ class APIStreamingTransport
     yield APIStreamExchange.new
   end
 end
+
+class APIWebOutput
+  def write(_bytes, timeout: nil) # rubocop:disable Lint/UnusedMethodArgument -- structural consumer
+    nil
+  end
+
+  def finish(terminal:) # rubocop:disable Lint/UnusedMethodArgument -- structural consumer
+    nil
+  end
+
+  def abort = nil
+end
+
+class APIStreamPublisher
+  def call(_head) = nil
+end

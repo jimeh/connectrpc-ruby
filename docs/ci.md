@@ -39,8 +39,8 @@ part of Specs; CI guard specs cover task and runtime boundaries.
 CI pins `ruby/setup-ruby` v1.335.0 and `actions/setup-go` v7.0.0 by full commit,
 with exact Ruby 3.4.12/4.0.9, Bundler 4.0.23 and Go 1.27.3. These official
 actions use prebuilt runtimes instead of compiling Ruby in each job. Go is
-installed only in interoperability jobs. The action runtime downloads trust
-upstream HTTPS/release assets. Observed archive digests are audit evidence,
+installed in interoperability and browser reference jobs. The action runtime
+downloads trust upstream HTTPS/release assets. Observed archive digests are audit evidence,
 not enforced runtime checksum pins in these actions. This differs from local
 Mise source/archive installs, which retain their reviewed locks/checksums.
 
@@ -283,3 +283,11 @@ ABI/platform/image cache keys, unconditional installs and fresh external consume
 No result cache or known-failure selection is introduced. See
 [development](development.md#native-streaming-verification) for exact evidence
 ownership and the [streaming guide](streaming.md) for completion policies.
+
+The two Browser gRPC-Web leaves also receive Go 1.27.3 from the pinned
+`setup-go` action. Their reference task validates the action-owned runtime,
+`browser/reference/go.mod`, and `vendor/browser/go/{mod,build}` cache paths
+before downloading, verifying and building the independent reference. The local
+`browser:reference:setup` task explicitly installs locked Mise Go instead.
+Both task definitions retain `GOTOOLCHAIN=local`, `GOWORK=off` and
+`GOFLAGS=-mod=readonly`; CI does not install Go through Mise.

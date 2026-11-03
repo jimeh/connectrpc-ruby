@@ -24,7 +24,7 @@ module ConnectRPC
                   http2: false)
       # @type var owned: bool?
       owned = nil
-      return bare(415, {}, cancellation: cancellation) unless http2 && %i[grpc auto].include?(@protocol)
+      return bare(415, {}, cancellation: cancellation) unless http2 && @protocol.include?(:grpc)
       return bare(405, { "allow" => ["POST"] }, cancellation: cancellation) unless http_method == "POST"
 
       values = Protocol.headers(headers)
@@ -32,7 +32,7 @@ module ConnectRPC
         return bare(415, { "accept-post" => [GRPCProtocol::CONTENT_TYPE] }, cancellation: cancellation)
       end
 
-      lifecycle, owned = begin_native_processing(path, values, lifecycle)
+      lifecycle, owned = begin_native_processing(path, values, lifecycle, http_method)
       work = lambda do
         process_grpc(path, values, input: input, output: output, publish: publish,
                                    lifecycle: lifecycle, cancellation: cancellation)

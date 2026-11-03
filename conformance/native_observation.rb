@@ -8,11 +8,25 @@ module Conformance
   module NativeHeaderArrival
     def receive_initial_headers(headers, end_stream)
       name = headers.find { |key, _| key == "x-test-case-name" }&.last
-      Telemetry.record("native_server_wire_headers", name: name, stream: id) if name
+      if name
+        Telemetry.record("native_server_wire_headers", name: name, stream: id,
+                                                       path: headers.find { |key, _| key == ":path" }&.last)
+      end
       super
     end
   end
   ConnectRPC::Async.const_get(:Internal)::RequestStream.prepend(NativeHeaderArrival)
+
+  module WebHTTP1Arrival
+    def next_request
+      request = super
+      if request
+        name = request.headers.header.find { |key, _| key.casecmp?("x-test-case-name") }&.last
+        Telemetry.record("native_server_wire_headers", name: name, stream: nil, path: request.path) if name
+      end
+      request
+    end
+  end
 
   # Test-only telemetry around real library entry points. Returned close calls
   # never establish socket interruption or peer receipt.
@@ -131,10 +145,16 @@ module Conformance
 
   class ObservedNativeServer < ConnectRPC::Server
     def call(**options)
+      return super if ConnectRPC.const_get(:GRPCWeb).intent?(options.fetch(:headers))
+
       observe_dispatch(options) { super }
     end
 
     def call_grpc(**options)
+      observe_dispatch(options) { super }
+    end
+
+    def call_grpc_web(**options)
       observe_dispatch(options) { super }
     end
 

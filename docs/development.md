@@ -498,3 +498,41 @@ fixtures. `rbs:package` runs generated streaming network callers and a custom
 streaming SPI under normal installed discovery outside the checkout, in both
 package load orders. The [streaming guide](streaming.md) documents the fixed
 one-second tail policy and its compatibility tradeoff.
+
+## Official browser development
+
+`mise run browser:setup` installs development-only tools under `vendor/browser`;
+ordinary core setup installs no JS runtime or browser. Linux x86_64 on Ubuntu
+24.04 is the audited platform. Python 3's standard ZIP support and tar extract
+checksum-verified official archives without OS dependency installation. Exact
+artifact hashes and primary publication dates live in `browser/artifacts.json`.
+Bun 1.4.4 manages a frozen five-package lock and bundles an ESM entry to IIFE.
+Node 24.22.1 executes Playwright 1.64.1 with Chromium 156.0.8078.4. grpc-web 2.1.1
+and google-protobuf 4.0.3 are development-only. All pins exceed seven days.
+
+`browser:generation:build` and `browser:generation:check` use official protoc
+36.2, protoc-gen-grpc-web 2.1.1 and protoc-gen-js 4.0.3 binaries. Generated
+binary/text clients, protobuf messages and canonical Any/Status remain untouched
+by hand. `browser:test` exercises actual cross-origin generated browser clients
+against real Async, Falcon and native Rails fixtures. `browser:verify` combines
+generation parity and the collected browser suite. The two Browser gRPC-Web CI
+leaves run on Ruby 3.4.12 and 4.0.9 without replacing existing checks.
+
+Playwright explicitly uses `chromiumSandbox: false` for its owned local process
+and `ignoreHTTPSErrors: true` for fixture TLS. No host security or trust setting
+changes. These browser TLS calls do not establish verified authentication; the
+SDK/mTLS focused specs separately verify peer identity on native H2 and Falcon
+H1. No screenshots, shared browser sessions or uploads are required.
+
+The separate `browser/reference` Go module wraps the existing official generated
+grpc-go service with improbable-eng/grpc-web 0.15.0 for independent text browser
+controls. Audited compress 1.20.1/cors 1.11.1 pins keep its old default graph out
+of use; core and existing Go graphs are unchanged. The same executable uses
+existing connect-go 1.21.1 for independent binary unary/stream wire controls.
+Caches, executables, browser output and fixture logs stay in `vendor/browser`.
+
+`async:conformance:web`, `falcon:conformance:web` and `rack:conformance:web` run
+separate exact binary inventories of 138 H2 unary/SS, 276 H1/H2 unary/SS and 37
+portable plain-H1 unary cases. Each validates actual runner names, dispatch,
+wire arrivals, processing, observer completion and shutdown. The official runner
+has no text axis. Existing Connect/native-gRPC inventories remain independent.

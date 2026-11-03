@@ -5,7 +5,8 @@ require_relative "harness"
 
 module SourceCheck
   FILES = %w[
-    grpc grpc_client grpc_server method metadata error cancellation deadline protocol client server instrumentation
+    grpc grpc_client grpc_server grpc_web grpc_web_io grpc_web_cors grpc_web_server
+    method metadata error cancellation deadline protocol client server instrumentation
     compression message_io get_query
     streaming/client streaming/client_execution streaming/client_scope streaming/framing streaming/framing_io
     streaming/strategy streaming/method streaming/server streaming/server_execution streaming/server_terminal

@@ -129,7 +129,10 @@ module ConnectRPC
         @scheme = scheme
       end
 
-      def call(request, lifecycle: nil, publication: nil)
+      def web_publication?(request) = @application.web_publication?(request)
+      def admission_response(request) = @application.admission_response(request)
+
+      def call(request, lifecycle: nil, publication: nil, resource: nil)
         request.scheme ||= @scheme
         if request.method == "CONNECT" || request.protocol || request.headers["upgrade"]
           lifecycle&.host_rejected!
@@ -138,7 +141,8 @@ module ConnectRPC
 
         response = if publication
                      publication.on_publish { |head| head.body = CloseOnce.new(head.body) if head&.body }
-                     @application.call_with_publication(request, lifecycle: lifecycle, publication: publication)
+                     @application.call_with_publication(request, lifecycle: lifecycle, publication: publication,
+                                                                 resource: resource)
                    else
                      @application.call(request, lifecycle: lifecycle)
                    end

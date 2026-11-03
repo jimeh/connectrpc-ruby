@@ -16,12 +16,15 @@ module ConnectRPC
       @server = server
     end
 
-    def call(env) # rubocop:disable Metrics/AbcSize, Metrics/MethodLength
+    def call(env) # rubocop:disable Metrics/AbcSize, Metrics/MethodLength, Metrics/CyclomaticComplexity, Metrics/PerceivedComplexity
       path = env.fetch("PATH_INFO", "")
       return @app.call(env) unless @server.handles?(path)
 
       headers = request_headers(env)
-      lifecycle = @server.start_call(path: path, headers: headers)
+      early = @server.cors_response(path: path, http_method: env.fetch("REQUEST_METHOD"), headers: headers)
+      return [early.status, early.headers, [early.body]] if early
+
+      lifecycle = @server.start_call(path: path, headers: headers, http_method: env.fetch("REQUEST_METHOD"))
       response = @server.call(path: path, http_method: env.fetch("REQUEST_METHOD"), headers: headers,
                               input: env["rack.input"], query: env.fetch("QUERY_STRING", ""), lifecycle: lifecycle)
       body = [response.body]

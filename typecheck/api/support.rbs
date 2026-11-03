@@ -196,3 +196,14 @@ class APIGRPCPublisher
   def initialize: () -> void
   def call: (ConnectRPC::GRPCHead) -> nil
 end
+
+class APIWebOutput
+  def initialize: () -> void
+  def write: (String, ?timeout: Numeric?) -> nil
+  def finish: (terminal: String) -> nil
+  def abort: () -> nil
+end
+class APIStreamPublisher
+  def initialize: () -> void
+  def call: (ConnectRPC::StreamHead) -> nil
+end

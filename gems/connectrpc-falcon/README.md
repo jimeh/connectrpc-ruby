@@ -229,3 +229,8 @@ Use `falcon:conformance:grpc` for exact official inventories and
 `falcon:interop:grpc` for generated official grpc-go peer checks. Both belong
 to the owning verify task. `grpc:generation:check` reproduces official Go and
 Ruby peer outputs; `grpc:status:check` reproduces private Any/Status descriptors.
+
+## gRPC-Web
+
+Native H1 and H2 support explicitly enabled binary/text unary and server-stream gRPC-Web. H1 retains original processor identity and admission through wire/callback completion. Browser incremental delivery uses text.
+See the [Web guide](../../docs/grpc-web.md) for protocol, CORS, bounds and completion rules.

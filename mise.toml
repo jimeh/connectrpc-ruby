@@ -581,3 +581,54 @@ depends = ["falcon:setup", "grpc:generation:check"]
 tools.go = "1.27.3"
 env = { GOTOOLCHAIN = "local", GOWORK = "off", GOFLAGS = "-mod=readonly", GOMODCACHE = "{{config_root}}/vendor/grpc/mod", GOCACHE = "{{config_root}}/vendor/grpc/build" }
 run = "ruby gems/connectrpc-falcon/scripts/run.rb grpc_interop falcon"
+
+# Optional official browser clients. No global browser or OS provisioning.
+[tasks."browser:setup"]
+description = "Install checksum-pinned browser development tools in vendor/browser"
+run = "ruby scripts/browser.rb setup"
+
+[tasks."browser:generation:build"]
+description = "Generate official binary/text gRPC-Web JavaScript clients and canonical Status"
+depends = ["browser:setup", "setup:generation"]
+tools."aqua:protocolbuffers/protobuf/protoc" = "36.2"
+run = "ruby scripts/browser.rb generation:build"
+
+[tasks."browser:generation:check"]
+description = "Check official gRPC-Web JavaScript generation parity"
+depends = ["browser:setup", "setup:generation"]
+tools."aqua:protocolbuffers/protobuf/protoc" = "36.2"
+run = "ruby scripts/browser.rb generation:check"
+
+[tasks."browser:test"]
+description = "Run real cross-origin generated gRPC-Web Chromium clients against Ruby hosts"
+depends = ["browser:setup", "otel:setup", "browser:reference:setup"]
+run = "ruby scripts/browser.rb test"
+
+[tasks."browser:verify"]
+description = "Verify official browser generation and cross-origin Ruby RPCs"
+depends = ["browser:generation:check", "browser:test"]
+
+[tasks."async:conformance:web"]
+description = "Run exact official binary gRPC-Web unary/server-stream H2 inventory"
+depends = ["async:setup", "setup:conformance"]
+tools."github:connectrpc/conformance" = "1.0.6"
+run = "ruby gems/connectrpc-async/scripts/run.rb web_conformance async"
+
+[tasks."falcon:conformance:web"]
+description = "Run exact official binary gRPC-Web unary/server-stream H1/H2 inventory"
+depends = ["falcon:setup", "setup:conformance"]
+tools."github:connectrpc/conformance" = "1.0.6"
+run = "ruby gems/connectrpc-falcon/scripts/run.rb web_conformance falcon"
+
+[tasks."rack:conformance:web"]
+description = "Run exact official portable binary gRPC-Web unary inventory"
+depends = ["otel:setup", "setup:conformance"]
+tools."github:connectrpc/conformance" = "1.0.6"
+run = "ruby gems/connectrpc-otel/scripts/run.rb web_conformance rack"
+
+[tasks."browser:reference:setup"]
+description = "Build the audited dev-only independent gRPC-Web text reference"
+tools.go = "1.27.3"
+dir = "{{config_root}}/browser/reference"
+env = { GOTOOLCHAIN = "local", GOWORK = "off", GOFLAGS = "-mod=readonly", GOMODCACHE = "{{config_root}}/vendor/browser/go/mod", GOCACHE = "{{config_root}}/vendor/browser/go/build" }
+run = ["mise install --locked go@1.27.3", "go mod download all", "go mod verify", "ruby ../../scripts/check_web_reference.rb", "go build -o ../../vendor/browser/reference ."]

@@ -31,7 +31,7 @@ module ConnectRPC
         name = if call.method
                  "#{call.method.service}/#{call.method.name}"
                else
-                 (call.protocol == :grpc ? "grpc" : "connectrpc")
+                 (%i[grpc grpc_web].include?(call.protocol) ? "grpc" : "connectrpc")
                end
         span = @tracer.start_span(name, kind: call.role, with_parent: parent, attributes: attributes(call, name))
         context = OpenTelemetry::Trace.context_with_span(span, parent_context: parent)
@@ -47,8 +47,9 @@ module ConnectRPC
       private
 
       def attributes(call, name)
-        result = { "rpc.system.name" => call.protocol == :grpc ? "grpc" : "connectrpc",
+        result = { "rpc.system.name" => %i[grpc grpc_web].include?(call.protocol) ? "grpc" : "connectrpc",
                    "rpc.method" => call.method ? name : "_OTHER" }
+        result["connectrpc.protocol"] = "grpc_web" if call.protocol == :grpc_web
         if call.role == :client
           result["server.address"] = call.server_address if call.server_address
           result["server.port"] = call.server_port if call.server_port
@@ -117,7 +118,12 @@ module ConnectRPC
           @span.set_attribute("http.response.status_code", completion.http_status) if completion.http_status
           if completion.delivery == :aborted
             code = completion.outcome&.code
-            type = @protocol == :grpc && code && code != "OK" ? status_code(code) : "delivery_aborted"
+            type = if %i[grpc
+                         grpc_web].include?(@protocol) && code && code != "OK"
+                     status_code(code)
+                   else
+                     "delivery_aborted"
+                   end
             fail_span(type)
           elsif completion.decision != :processed
             fail_span(completion.decision.to_s)
@@ -151,7 +157,7 @@ module ConnectRPC
         end
 
         def status_code(code)
-          return code unless @protocol == :grpc
+          return code unless %i[grpc grpc_web].include?(@protocol)
 
           code == "canceled" ? "CANCELLED" : code.upcase
         end
@@ -164,7 +170,7 @@ module ConnectRPC
             values = values.first(8).filter_map do |value|
               value.byteslice(0, 256) if value.is_a?(String) && value.ascii_only? && /\A[\x20-\x7e]*\z/.match?(value)
             end
-            prefix = @protocol == :grpc ? "rpc" : "connectrpc"
+            prefix = %i[grpc grpc_web].include?(@protocol) ? "rpc" : "connectrpc"
             @span.set_attribute("#{prefix}.#{direction}.metadata.#{key}", values) unless values.empty?
           end
         end

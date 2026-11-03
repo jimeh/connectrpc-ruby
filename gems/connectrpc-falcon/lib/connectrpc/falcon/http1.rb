@@ -13,6 +13,15 @@ module ConnectRPC
         return if @resource.draining
 
         request = super
+        if request
+          fields = request.headers.header
+          if fields.any? do |key, value|
+            key.casecmp?("content-type") && value.downcase.start_with?("application/grpc-web")
+          end &&
+             fields.sum { |key, value| key.bytesize + value.bytesize + 32 } > GRPCProtocol::FIELD_LIMIT
+            raise Error.new(:resource_exhausted, "Web field block exceeds byte limit"), cause: nil
+          end
+        end
         # Retirement can happen while the upstream parser is blocked.
         return if @resource.draining
 

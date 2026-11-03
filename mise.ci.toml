@@ -17,6 +17,13 @@ env = { GOTOOLCHAIN = "local", GOWORK = "off", GOFLAGS = "-mod=readonly", GOMODC
 dir = "{{config_root}}/interop"
 run = ["ruby {{config_root}}/scripts/ci_runtime.rb interop", "go mod download"]
 
+[tasks."browser:reference:setup"]
+description = "Validate action-provided Go and build the audited gRPC-Web text reference"
+tools.go = "1.27.3"
+dir = "{{config_root}}/browser/reference"
+env = { GOTOOLCHAIN = "local", GOWORK = "off", GOFLAGS = "-mod=readonly", GOMODCACHE = "{{config_root}}/vendor/browser/go/mod", GOCACHE = "{{config_root}}/vendor/browser/go/build" }
+run = ["ruby {{config_root}}/scripts/ci_runtime.rb browser-reference", "go mod download all", "go mod verify", "ruby ../../scripts/check_web_reference.rb", "go build -o ../../vendor/browser/reference ."]
+
 [tasks."async:tools"]
 description = "Validate exact action Ruby/Bundler and the independent backend bundle"
 dir = "{{config_root}}/gems/connectrpc-async"

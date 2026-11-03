@@ -84,3 +84,8 @@ See the [RBS guide](../../docs/rbs.md) for supported APIs, extension contracts,
 partial records, runtime validation and framework-signature limits.
 `mise run rbs:check` checks application callers for this package; strict core
 source checking is a separate target from backend implementation checking.
+
+## gRPC-Web
+
+Explicitly enabled binary/text unary gRPC-Web runs through this middleware, including the rackup/WEBrick fixture. Streaming is rejected before input. Configure core CORS or keep it nil when outer middleware owns the mount.
+See the [Web guide](../../docs/grpc-web.md) for protocol, CORS, bounds and completion rules.

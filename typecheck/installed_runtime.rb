@@ -202,3 +202,5 @@ puts "Installed optional runtime composition #{ARGV.first}: Rails subclass, Rack
      "Rails callbacks, API-only OTel/default propagation"
 
 require_relative "installed_streaming"
+
+require_relative "installed_web"

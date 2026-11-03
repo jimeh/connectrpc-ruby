@@ -65,6 +65,7 @@ pool.lookup("rbs_types.v1.Envelope.Request").msgclass.new(text: "lookup").text.s
 RbsFixture::Messages::Envelope::Request::State.lookup(1)&.to_s
 RbsFixture::Messages::Envelope::Request::State.resolve(:READY)&.succ
 
+server.start_call(path: "/rbs_service.v1.Manual/Exchange", headers: {}, http_method: "GET")
 handle = server.start_call(path: "/rbs_service.v1.Manual/Exchange", headers: {})
 if handle
   handle.activate { 42 }.succ

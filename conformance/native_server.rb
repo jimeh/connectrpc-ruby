@@ -11,14 +11,20 @@ module Conformance
     attr_reader :server
 
     def initialize(config)
-      unless %i[PROTOCOL_CONNECT PROTOCOL_GRPC].include?(config.protocol) && config.http_version == :HTTP_VERSION_2
+      web = config.protocol == :PROTOCOL_GRPC_WEB && ENV["CONNECTRPC_CONFORMANCE_WEB"] == "1"
+      unless web || (%i[PROTOCOL_CONNECT PROTOCOL_GRPC].include?(config.protocol) &&
+                      config.http_version == :HTTP_VERSION_2)
         raise "Unsupported native server configuration"
       end
 
       instrumentation = ConnectRPC::Instrumentation.new(subscribers: [NativeSubscriber.new])
       @server = ObservedNativeServer.new(services: [NATIVE_SERVICE], binding: BINDING, encoding: :gzip,
                                          instrumentation: instrumentation,
-                                         protocol: config.protocol == :PROTOCOL_GRPC ? :grpc : :connect,
+                                         protocol: if web
+                                                     :grpc_web
+                                                   else
+                                                     (config.protocol == :PROTOCOL_GRPC ? :grpc : :connect)
+                                                   end,
                                          request_limit: Conformance.limit(config.message_receive_limit),
                                          handlers: { UNARY.path => method(:unary),
                                                      IDEMPOTENT_UNARY.path => method(:idempotent_unary),

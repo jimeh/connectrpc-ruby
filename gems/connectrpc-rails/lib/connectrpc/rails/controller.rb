@@ -24,6 +24,9 @@ module ConnectRPC
       def connect_handlers = raise NotImplementedError, "Implement private connect_handlers"
       def connect_limits = {}
       def connect_instrumentation = nil
+      def connect_protocol = :connect
+      def connect_status_codec = nil
+      def connect_cors = nil
 
       def process_action(name, ...)
         return super unless name.to_s == "connect"
@@ -41,7 +44,9 @@ module ConnectRPC
         service = connect_service
         env = connect_env(service)
         server = Server.new(services: [service], binding: connect_binding, handlers: @connect_handlers,
-                            invoker: invoker, instrumentation: connect_instrumentation, **connect_limits)
+                            invoker: invoker, instrumentation: connect_instrumentation,
+                            protocol: connect_protocol, status_codec: connect_status_codec, cors: connect_cors,
+                            **connect_limits)
         connect_apply_response(ConnectRPC::Rack.new(server: server).call(env))
       end
 
@@ -100,12 +105,17 @@ module ConnectRPC
         Error.new(code, code == "internal" ? "Internal error" : code.tr("_", " ").capitalize)
       end
 
-      def connect_apply_response(result)
+      def connect_apply_response(result) # rubocop:disable Metrics/AbcSize, Metrics/CyclomaticComplexity, Metrics/MethodLength
         status, headers, body = result
         %w[content-length content-encoding etag last-modified location].each { |key| response.delete_header(key) }
         self.status = status
         headers.each do |key, values|
-          values = connect_vary_header(values) if key == "vary" && request.get?
+          values = connect_vary_header(values) if key == "vary"
+          if key.start_with?("access-control-") && response.has_header?(key) &&
+             Array(response.get_header(key)) != values
+            raise Error.new(:internal, "Conflicting application CORS policy")
+          end
+
           # Rails parses Content-Type as a scalar. Repeated metadata remains Rack 3 arrays.
           response.set_header(key, key == "content-type" ? values.fetch(0) : values)
         end

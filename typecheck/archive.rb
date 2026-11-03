@@ -6,7 +6,8 @@ require "zlib"
 
 module SignatureArchive
   GRPC_MEMBERS = %w[lib/connectrpc/bindings/descriptors/status.bin third_party/google/rpc/status.proto
-                    third_party/google/LICENSE third_party/protobuf-LICENSE third_party/README.md docs/grpc.md].freeze
+                    third_party/google/LICENSE third_party/protobuf-LICENSE third_party/README.md
+                    docs/grpc.md docs/grpc-web.md].freeze
   def self.check(archive, root:)
     package = Gem::Package.new(archive)
     spec = package.spec

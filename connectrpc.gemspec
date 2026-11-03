@@ -17,7 +17,8 @@ Gem::Specification.new do |spec|
                Dir.glob("rbs/**/*.rbs") + %w[lib/connectrpc/bindings/descriptors/status.bin
                                              third_party/google/rpc/status.proto third_party/google/LICENSE
                                              third_party/protobuf-LICENSE third_party/README.md
-                                             docs/grpc.md LICENSE README.md docs/development.md docs/design.md
+                                             docs/grpc.md docs/grpc-web.md LICENSE README.md
+                                             docs/development.md docs/design.md
                                              docs/rbs.md
                                              docs/streaming.md]
   spec.require_paths = ["lib"]

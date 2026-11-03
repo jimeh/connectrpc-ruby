@@ -194,6 +194,45 @@ module ConnectRPC
         end
       end
 
+      # ALL terminal bytes wait for the original processor, including an outer
+      # application's ensure. The consumer only slices already prepared bytes.
+      class GRPCWebBody < OutputBody
+        def initialize(publication)
+          super()
+          @publication = publication
+          @terminal_offset = 0
+        end
+
+        def stage_terminal(bytes)
+          @terminal = bytes.dup.freeze
+          close_write
+          nil
+        end
+
+        def read
+          bytes = super
+          return bytes if bytes
+
+          @publication.wait
+          return unless @terminal && @terminal_offset < @terminal.bytesize
+
+          bytes = @terminal.byteslice(@terminal_offset, 16_384)
+          @terminal_offset += bytes.bytesize
+          bytes
+        end
+
+        def close(error = nil)
+          @terminal = nil
+          super
+        end
+      end
+
+      class GRPCWebServerOutput < ServerOutput
+        def finish(terminal:)
+          @body.stage_terminal(terminal)
+        end
+      end
+
       class StreamExchange
         def initialize(transport, operation, body)
           @transport = transport

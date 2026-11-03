@@ -10,14 +10,15 @@ module ConnectRPC
                     lifecycle: lifecycle, cancellation: cancellation)
       end
 
-      return bare(415, {}, cancellation: cancellation) if @protocol == :grpc
+      return bare(415, {}, cancellation: cancellation) unless @protocol.include?(:connect)
 
       values = Protocol.headers(headers)
       codec = Streaming.codec(Protocol.single(values, "content-type"))
       rejection = stream_preflight(http_method, codec, cancellation)
       return rejection if rejection || !codec
 
-      execute_native_stream(path, values, codec, input: input, output: output, publish: publish,
+      execute_native_stream(path, values, codec, http_method: http_method,
+                                                 input: input, output: output, publish: publish,
                                                  lifecycle: lifecycle, cancellation: cancellation)
     end
 
@@ -30,9 +31,9 @@ module ConnectRPC
       bare(415, { "accept-post" => [Streaming::CONTENT_TYPES.values.join(", ")] }, cancellation: cancellation)
     end
 
-    def execute_native_stream(path, headers, codec, input:, output:, publish:, lifecycle:, cancellation:)
+    def execute_native_stream(path, headers, codec, http_method:, input:, output:, publish:, lifecycle:, cancellation:)
       # @type var owned: bool?
-      lifecycle, owned = begin_native_processing(path, headers, lifecycle)
+      lifecycle, owned = begin_native_processing(path, headers, lifecycle, http_method)
       work = lambda {
         process_stream(path, headers, codec, input: input, output: output, publish: publish,
                                              lifecycle: lifecycle, cancellation: cancellation)
@@ -43,9 +44,9 @@ module ConnectRPC
       finish_native_processing(lifecycle, owned)
     end
 
-    def begin_native_processing(path, headers, lifecycle)
+    def begin_native_processing(path, headers, lifecycle, http_method)
       owned = lifecycle.nil?
-      lifecycle ||= start_call(path: path, headers: headers)
+      lifecycle ||= start_call(path: path, headers: headers, http_method: http_method)
       lifecycle&.begin_processing(self, path)
       [lifecycle, owned]
     end

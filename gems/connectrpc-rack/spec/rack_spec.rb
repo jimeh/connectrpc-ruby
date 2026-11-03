@@ -107,6 +107,33 @@ RSpec.describe ConnectRPC::Rack do
     end
   end
 
+  it "starts mixed safe GET as Connect before Web CORS and retains supplied carrier fields" do
+    calls = []
+    subscriber = Object.new
+    subscriber.define_singleton_method(:start) do |call|
+      calls << call
+      nil
+    end
+    target = ConnectRPC::Server.new(services: [EchoExample::SERVICE], binding: binding,
+                                    handlers: { method.path => handler }, protocol: %i[connect grpc_web],
+                                    cors: ConnectRPC::GRPCWebCORS.new(origins: ["https://allowed.example"]),
+                                    instrumentation: ConnectRPC::Instrumentation.new(subscribers: [subscriber]))
+    bytes = binding.encode(message, type: EchoExample::Message, codec: :proto)
+    query = "encoding=proto&base64=1&message=#{[bytes].pack('m0').tr('+/', '-_').delete('=')}"
+    env = Rack::MockRequest.env_for("#{method.path}?#{query}", method: "GET",
+                                                               "CONTENT_TYPE" => "application/grpc-web",
+                                                               "HTTP_ORIGIN" => "https://denied.example")
+    status, headers, body = Rack::Lint.new(described_class.new(server: target)).call(env)
+    received = +""
+    body.each { |chunk| received << chunk }
+    body.close if body.respond_to?(:close)
+    expect(status).to eq(200)
+    expect(binding.decode(received, type: EchoExample::Message, codec: :proto)).to eq(message)
+    expect(calls.map(&:protocol)).to eq([:connect])
+    expect(calls.first.carrier["content-type"]).to eq(["application/grpc-web"])
+    expect(headers).not_to have_key("access-control-allow-origin")
+  end
+
   it "uses a bare 405 with Allow for unsupported verbs" do
     status, headers, body = request(REQUEST_METHOD: "PUT", CONTENT_LENGTH: "0")
     expect([status, headers["allow"], body]).to eq([405, ["GET, POST"], ""])

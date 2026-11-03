@@ -2,6 +2,9 @@ module ConnectRPC
   VERSION: String
   type idempotency = :unknown | :no_side_effects | :idempotent
   type codec = :proto | :json
+  type server_protocol = :connect | :grpc | :grpc_web
+  type server_protocol_selection = server_protocol | :auto | Array[server_protocol]
+  type grpc_web_cardinality = :unary | :server_stream
   type headers = Hash[String, Array[String]]
   type metadata_input = Metadata | Hash[String, String | Array[String]]
 
@@ -84,10 +87,10 @@ module ConnectRPC
     def initialize: (subscribers: Array[_Subscriber], ?on_error: (^(StandardError) -> void | _InstrumentationErrorHandler)?) -> void
 
     class Call
-      def initialize: (role: :client | :server, protocol: :connect | :grpc, method: declaration?, server_address: String?, server_port: Integer?, carrier: Hash[String, String | Array[String]]) -> void
-        | (:client | :server, :connect | :grpc, declaration?, String?, Integer?, Hash[String, String | Array[String]]) -> void
+      def initialize: (role: :client | :server, protocol: :connect | :grpc | :grpc_web, method: declaration?, server_address: String?, server_port: Integer?, carrier: Hash[String, String | Array[String]]) -> void
+        | (:client | :server, :connect | :grpc | :grpc_web, declaration?, String?, Integer?, Hash[String, String | Array[String]]) -> void
       attr_reader role: :client | :server
-      attr_reader protocol: :connect | :grpc
+      attr_reader protocol: :connect | :grpc | :grpc_web
       attr_reader method: declaration?
       attr_reader server_address: String?
       attr_reader server_port: Integer?
@@ -179,10 +182,10 @@ module ConnectRPC
   class Server
     # Generated .handlers checks each concrete callable before this heterogeneous
     # registration map erases its individual request/response associations.
-    def initialize: (services: Array[Service], binding: _Binding, ?handlers: Hash[String, registered_handler], ?invoker: (^(Method[untyped, untyped], untyped, Context) -> untyped | _Invoker)?, ?request_limit: Integer, ?response_limit: Integer, ?request_wire_limit: Integer, ?response_wire_limit: Integer, ?protocol: :connect | :grpc | :auto, ?mode: :unary, ?encoding: :identity | :gzip, ?instrumentation: Instrumentation?, ?get_query_limit: Integer?, ?terminal_wire_limit: Integer, ?terminal_limit: Integer, ?status_codec: _GRPCStatusCodec?, ?grpc_status_wire_limit: Integer, ?grpc_status_limit: Integer) -> void
+    def initialize: (services: Array[Service], binding: _Binding, ?handlers: Hash[String, registered_handler], ?invoker: (^(Method[untyped, untyped], untyped, Context) -> untyped | _Invoker)?, ?request_limit: Integer, ?response_limit: Integer, ?request_wire_limit: Integer, ?response_wire_limit: Integer, ?protocol: server_protocol_selection, ?mode: :unary, ?encoding: :identity | :gzip, ?instrumentation: Instrumentation?, ?get_query_limit: Integer?, ?terminal_wire_limit: Integer, ?terminal_limit: Integer, ?status_codec: _GRPCStatusCodec?, ?grpc_status_wire_limit: Integer, ?grpc_status_limit: Integer, ?cors: GRPCWebCORS?) -> void
     attr_reader services: Array[Service]
     def handles?: (String path) -> bool
-    def start_call: (path: String, headers: headers) -> Instrumentation::Handle?
+    def start_call: (path: String, headers: headers, ?http_method: String) -> Instrumentation::Handle?
     def call: (path: String, http_method: String, headers: headers, input: _Input?, ?query: String, ?lifecycle: Instrumentation::Handle?, ?cancellation: _Cancellation?) -> TransportResponse
   end
 
@@ -746,5 +749,24 @@ module ConnectRPC
   end
   class Server
     def call_grpc: (path: String, http_method: String, headers: headers, input: _StreamingInput, output: _GRPCOutput, publish: _PublishGRPCHead | ^(GRPCHead) -> void, ?lifecycle: Instrumentation::Handle?, ?cancellation: _Cancellation?, ?http2: bool) -> TransportResponse?
+  end
+end
+
+module ConnectRPC
+  class GRPCWebCORS
+    def initialize: (origins: Array[String], ?credentials: bool, ?request_headers: Array[String], ?expose_headers: Array[String]) -> void
+    attr_reader origins: Array[String]
+    attr_reader credentials: bool
+    attr_reader request_headers: Array[String]
+    attr_reader expose_headers: Array[String]
+  end
+  interface _GRPCWebOutput
+    def write: (String, ?timeout: Numeric?) -> nil
+    def finish: (terminal: String) -> nil
+    def abort: () -> nil
+  end
+  class Server
+    def call_grpc_web: (path: String, http_method: String, headers: headers, input: _StreamingInput, output: _GRPCWebOutput, publish: _PublishStreamHead | ^(StreamHead) -> void, ?capabilities: Array[grpc_web_cardinality], ?lifecycle: Instrumentation::Handle?, ?cancellation: _Cancellation?) -> TransportResponse?
+    def cors_response: (path: String, http_method: String, headers: headers, ?response: TransportResponse?) -> TransportResponse?
   end
 end

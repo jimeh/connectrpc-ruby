@@ -31,6 +31,7 @@ module ConnectRPC
                                     on_error: on_tls_error, alpn_protocols: alpn_protocols)
         @retirement_floor = 0
         @admitted = {}
+        @h1_wire = {}
         @identities = {}
         install_owner_guard
       end
@@ -227,7 +228,7 @@ module ConnectRPC
             resource.exchange = exchange
           end
         end
-        @admitted.delete_if { |stream, completed| completed && (!stream.respond_to?(:closed?) || stream.closed?) }
+        @admitted.delete_if { |stream, completed| completed && stream.respond_to?(:closed?) && stream.closed? }
         key = request.respond_to?(:stream) ? request.stream : request
         if @state != :running || resource.draining || @admitted.size >= @max_requests
           if exchange
@@ -235,18 +236,23 @@ module ConnectRPC
             exchange.http_status = 503
           end
           @on_request_rejected&.call
+          return @application.admission_response(request) if @application.respond_to?(:admission_response)
+
           return ::Protocol::HTTP::Response[503, {}, nil]
         end
 
         @admitted[key] = false
-        publication = Internal::Publication.new if request.respond_to?(:stream)
+        publishes = request.respond_to?(:stream) ||
+                    (@application.respond_to?(:web_publication?) && @application.web_publication?(request))
+        publication = Internal::Publication.new if publishes
         begin
           handler = resource.track(@lifetime.async(finished: false) do |task|
             @identities[task] = resource.snapshot.authenticated_leaf
             begin
               work = lambda do
                 if publication && @application.respond_to?(:call_with_publication)
-                  @application.call_with_publication(request, lifecycle: lifecycle, publication: publication)
+                  @application.call_with_publication(request, lifecycle: lifecycle, publication: publication,
+                                                              resource: resource)
                 elsif lifecycle
                   @application.call(request, lifecycle: lifecycle)
                 else
@@ -272,7 +278,12 @@ module ConnectRPC
           exchange.http_status = response&.status if exchange
           if !request.respond_to?(:stream) && response
             response.body = Internal::AdmissionBody.new(response.body) do
-              @admitted.delete(key)
+              if publication
+                @h1_wire[key] = true
+                retire_http1(key) if @admitted[key]
+              else
+                retire_http1(key)
+              end
               resource.changed
             end
             deferred = true
@@ -291,10 +302,19 @@ module ConnectRPC
         @identities.delete(task)
         if publication
           @admitted[key] = true
-          @admitted.delete(key) if @aborting || key.closed?
+          if key.respond_to?(:closed?)
+            @admitted.delete(key) if @aborting || key.closed?
+          elsif @h1_wire[key] || @aborting
+            retire_http1(key)
+          end
         end
         resource.changed
         publication&.complete($ERROR_INFO)
+      end
+
+      def retire_http1(key)
+        @admitted.delete(key)
+        @h1_wire.delete(key)
       end
 
       def drain_resources(resources, expires)
@@ -314,6 +334,7 @@ module ConnectRPC
         @resources.each { |resource| resource.draining = true }
         drained = drain_resources(@resources, expires)
         @admitted.clear
+        @h1_wire.clear
         finish_closed(drained)
       end
 
@@ -328,6 +349,7 @@ module ConnectRPC
         stop_accepting
         @resources.each(&:abort)
         @admitted.clear
+        @h1_wire.clear
         @tls.close
         finish_closed(false) unless @state == :closed
         Internal.cancel(@lifetime)
