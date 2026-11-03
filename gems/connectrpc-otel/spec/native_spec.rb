@@ -189,6 +189,14 @@ RSpec.describe "Native host tracing" do
       origin = "http://127.0.0.1:#{host.port}"
       transport = ConnectRPC::Async::Transport.new(origin: origin)
       typed = client(transport, origin, instrumentation: bus)
+      server_context = nil
+      # Server wire milliseconds round up and start later. Establish actual
+      # server expiry/acceptance before the client's cleanup sends peer CANCEL.
+      allow(transport).to receive(:cleanup).and_wrap_original do |cleanup, operation|
+        wait_until(task, "server deadline before reset") { server_context&.deadline&.expired? }
+        expect(server_context.cancellation_reason).to eq(:deadline_exceeded)
+        cleanup.call(operation)
+      end
       call = task.async do
         typed.echo(AsyncHelpers::MESSAGE.new(name: "deadline"), timeout: 0.5)
       rescue ConnectRPC::Error => e
@@ -198,8 +206,8 @@ RSpec.describe "Native host tracing" do
       expect(call.wait.code).to eq("deadline_exceeded")
       # Wire milliseconds round up, and the server starts its own budget later.
       # Wait for that actual external deadline before releasing cooperative work.
-      wait_until(task, "server deadline expiry (cancelled?=#{server_context.cancelled?})") do
-        server_context.cancelled?
+      wait_until(task, "server deadline expiry") do
+        server_context.deadline.expired?
       end
       release.enqueue(true)
       wait_until(task, "deadline server completion") { rpc_spans(exporter).size == 2 }

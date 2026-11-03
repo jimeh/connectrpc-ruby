@@ -100,6 +100,81 @@ Async do
 
   tls.close
 end.wait
+# Installed callers use actual owned network APIs outside every checkout load path.
+require "connectrpc/transports/net_http"
+listener = TCPServer.new("127.0.0.1", 0)
+progress = Queue.new
+peer = Thread.new do
+  socket = listener.accept
+  headers = socket.gets("\r\n\r\n")
+  socket.read(headers[/Content-Length: ([0-9]+)/i, 1].to_i)
+  progress << true
+  raise "Installed NetHTTP socket not closed" unless socket.read == ""
+ensure
+  socket&.close
+end
+source = ConnectRPC::CancellationSource.new
+network_client = ConnectRPC::Client.new(base_url: "http://127.0.0.1:#{listener.addr[1]}", binding: InstalledBinding.new)
+caller = Thread.new do
+  network_client.call(method, "blocked", timeout: nil, cancellation: source.token)
+rescue ConnectRPC::Error => e
+  e
+end
+raise "Installed NetHTTP did not write request" unless progress.pop(timeout: 2)
+
+source.cancel
+raise "Installed NetHTTP did not finish" unless caller.join(2)
+unless caller.value.is_a?(ConnectRPC::Error) && caller.value.code == "canceled" && caller.value.cause.nil?
+  raise "Installed NetHTTP result"
+end
+raise "Installed NetHTTP peer not retired" unless peer.join(2)
+
+peer.value
+listener.close
+
+Async do |task| # rubocop:disable Metrics/BlockLength
+  entered = Async::Queue.new
+  release = Async::Queue.new
+  context = nil
+  native_server = ConnectRPC::Server.new(services: [service], binding: InstalledBinding.new,
+                                         handlers: { method.path => lambda { |message, current|
+                                           if message == "blocked"
+                                             context = current
+                                             entered.enqueue(true)
+                                             release.dequeue
+                                             current.check!
+                                           end
+                                           message
+                                         } })
+  host = ConnectRPC::Async::Host.new(server: native_server).start
+  origin = "http://127.0.0.1:#{host.port}"
+  native_transport = ConnectRPC::Async::Transport.new(origin: origin)
+  native_client = ConnectRPC::Client.new(base_url: origin, binding: InstalledBinding.new, transport: native_transport)
+  source = ConnectRPC::CancellationSource.new
+  pending = task.async(finished: false) do
+    native_client.call(method, "blocked", timeout: nil, cancellation: source.token)
+  end
+  entered.dequeue
+  Thread.new { source.cancel }.value
+  begin
+    pending.wait
+    raise "Installed native cancellation missing"
+  rescue ConnectRPC::Error => e
+    raise "Installed native cancellation result" unless e.code == "canceled" && e.cause.nil?
+  end
+  task.with_timeout(2) { task.yield until context.cancelled? }
+  raise "Installed native Context reason" unless context.cancellation_reason == :canceled
+
+  release.enqueue(true)
+  raise "Installed native pool reuse" unless native_client.call(method, "healthy").message == "healthy"
+ensure
+  release&.enqueue(true)
+  native_transport&.close(grace: 0)
+  host&.close(grace: 0)
+end.wait
+puts "Installed NetHTTP and native HTTP/2 cancellation: real request progress, " \
+     "foreign-thread source, socket/reset cleanup and pool reuse"
+
 records = [ConnectRPC::Response.new, ConnectRPC::Response.new(message: "reply", metadata: ConnectRPC::Metadata.new,
                                                               trailers: ConnectRPC::Metadata.new),
            ConnectRPC::TransportRequest.new, ConnectRPC::TransportResponse.new]

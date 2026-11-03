@@ -7,6 +7,7 @@ target :core do
   library "zlib"
   check "../lib/connectrpc.rb", "../lib/connectrpc/version.rb"
   check "../lib/connectrpc/method.rb", "../lib/connectrpc/metadata.rb", "../lib/connectrpc/error.rb"
+  check "../lib/connectrpc/cancellation.rb"
   check "../lib/connectrpc/deadline.rb", "../lib/connectrpc/protocol.rb", "../lib/connectrpc/client.rb"
   check "../lib/connectrpc/server.rb", "../lib/connectrpc/instrumentation.rb"
   check "../lib/connectrpc/compression.rb", "../lib/connectrpc/message_io.rb", "../lib/connectrpc/get_query.rb"

@@ -7,7 +7,9 @@ RSpec.shared_examples "HTTP/2 peer reset during headers" do
         with_ca do |ca_file|
           entered = Async::Queue.new
           release_handler = Async::Queue.new
-          host = cleanup_host(server: server(echo: lambda { |message, _|
+          contexts = {}
+          host = cleanup_host(server: server(echo: lambda { |message, context|
+            contexts[message.name] = context
             if message.name == "sibling"
               entered.enqueue(true)
               release_handler.dequeue
@@ -25,11 +27,14 @@ RSpec.shared_examples "HTTP/2 peer reset during headers" do
           gate.armed = true
           call = task.async { typed.echo(AsyncHelpers::MESSAGE.new(name: "cancel"), timeout: nil) }
           gate.started.dequeue
+          expect(contexts.fetch("cancel").cancellation_reason).to be_nil
           writer = resource.connection.writers.keys.first
           stream = resource.connection.streams.values.max_by(&:id)
           call.cancel
           call.wait
           wait_until(task, "peer reset during header flush") { stream.closed? }
+          expect(contexts.fetch("cancel").cancellation_reason).to be_nil
+          expect(stream.processing_cancellation).to be_nil
           gate.release.enqueue(true)
           wait_until(task, "response header writer completed") { writer.finished? }
           release_handler.enqueue(true)

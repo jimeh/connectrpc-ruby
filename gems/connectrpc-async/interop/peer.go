@@ -83,6 +83,12 @@ func serve(service protoreflect.ServiceDescriptor) {
 	for _, name := range []protoreflect.Name{"Echo", "Fail"} {
 		desc := service.Methods().ByName(name)
 		callback := func(ctx context.Context, request *connect.Request[dynamicpb.Message]) (*connect.Response[dynamicpb.Message], error) {
+			if request.Header().Get("X-Cancel-Probe") == "hold" {
+				fmt.Println("CANCEL_ENTERED")
+				<-ctx.Done()
+				fmt.Println("CANCEL_OBSERVED")
+				return nil, connect.NewError(connect.CodeCanceled, ctx.Err())
+			}
 			if name == "Fail" {
 				detail, err := connect.NewErrorDetail(request.Msg)
 				must(err)
@@ -224,6 +230,8 @@ func main() {
 		serve(service)
 	case "client":
 		client(service, os.Args[2], os.Args[3])
+	case "cancel":
+		cancelCall(service, os.Args[2], os.Args[3], os.Args[4])
 	case "tail":
 		tail(service, os.Args[2], os.Args[3], os.Args[4])
 	default:
@@ -346,4 +354,39 @@ func tail(service protoreflect.ServiceDescriptor, url, codec, directory string) 
 		panic("GOAWAY absent")
 	}
 	// The peer closes after GOAWAY. The host must see EOF before returning true.
+}
+
+// Cancellation is synchronized with the Ruby handler through stdin, after real
+// dispatch. This is independent connect-go context cancellation, not a timeout.
+func cancelCall(service protoreflect.ServiceDescriptor, url, directory, mode string) {
+	protocols := new(http.Protocols)
+	protocols.SetHTTP2(true)
+	protocols.SetUnencryptedHTTP2(true)
+	transport := &http.Transport{Proxy: nil, DisableCompression: true, Protocols: protocols}
+	if strings.HasPrefix(url, "https:") {
+		transport.TLSClientConfig = tlsConfig(directory, mode == "mtls", false)
+	}
+	defer transport.CloseIdleConnections()
+	desc := service.Methods().ByName("Echo")
+	client := connect.NewClient[dynamicpb.Message, dynamicpb.Message](&http.Client{Transport: checkedTransport{transport}}, url+prefix+"Echo", connect.WithSchema(desc), connect.WithResponseInitializer(initializer))
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { _, err := client.CallUnary(ctx, connect.NewRequest(message(desc.Input()))); done <- err }()
+	scanner := bufio.NewScanner(os.Stdin)
+	check(scanner.Scan() && scanner.Text() == "cancel", "missing cancellation barrier")
+	cancel()
+	select {
+	case err := <-done:
+		check(connect.CodeOf(err) == connect.CodeCanceled, "Go context cancellation code")
+	case <-time.After(5 * time.Second):
+		panic("Go cancellation did not return")
+	}
+	fmt.Println("GO_CANCELED")
+	healthy := message(desc.Input())
+	healthy.Set(desc.Input().Fields().ByName("name"), protoreflect.ValueOfString("after"))
+	response, err := client.CallUnary(context.Background(), connect.NewRequest(healthy))
+	must(err)
+	check(proto.Equal(response.Msg, healthy), "Go sibling after cancellation failed")
+	fmt.Println("GO_HEALTHY")
 }

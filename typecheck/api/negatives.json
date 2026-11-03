@@ -20,5 +20,9 @@
   "get_selection": "Ruby::ArgumentTypeMismatch",
   "get_url_limit": "Ruby::ArgumentTypeMismatch",
   "get_query_limit": "Ruby::ArgumentTypeMismatch",
-  "get_query": "Ruby::ArgumentTypeMismatch"
+  "get_query": "Ruby::ArgumentTypeMismatch",
+  "cancellation_source": "Ruby::ArgumentTypeMismatch",
+  "cancellation_readonly": "Ruby::NoMethod",
+  "cancellation_context": "Ruby::ArgumentTypeMismatch",
+  "cancellation_index": "Ruby::NoMethod"
 }

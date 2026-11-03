@@ -32,33 +32,52 @@ module ConnectRPC
 
     # rubocop:enable Metrics/MethodLength, Metrics/AbcSize
 
-    def call(method, request, metadata: {}, timeout: 30)
-      return instrumented_call(method, request, metadata, timeout) if @instrumentation
+    def call(method, request, metadata: {}, timeout: 30, cancellation: nil)
+      unless cancellation.nil? || cancellation.is_a?(CancellationToken)
+        raise ArgumentError, "cancellation must be a CancellationToken or nil"
+      end
+      return instrumented_call(method, request, metadata, timeout, cancellation) if @instrumentation
 
-      process_call(method, request, metadata, timeout)
+      process_call(method, request, metadata, timeout, cancellation)
     end
 
     private
 
-    # rubocop:disable Metrics/MethodLength, Metrics/AbcSize, Metrics/CyclomaticComplexity
-    def process_call(method, request, metadata, timeout, lifecycle: nil, injection: nil)
+    # rubocop:disable Metrics/MethodLength, Metrics/AbcSize, Metrics/CyclomaticComplexity, Metrics/PerceivedComplexity
+    def process_call(method, request, metadata, timeout, cancellation, lifecycle: nil, injection: nil)
+      # @type var state: CallCancellation?
+      state = nil
       deadline = Deadline.new(timeout) unless timeout.nil?
+      active = state = CallCancellation.new(deadline: deadline, cancellation: cancellation)
+      active.check!
       metadata = Metadata.new(metadata)
       if lifecycle
         metadata = injected_metadata(metadata, injection)
         lifecycle.request_metadata = Instrumentation.carrier(metadata)
       end
-      outgoing = build_request(method, request, metadata, deadline, lifecycle)
+      outgoing = build_request(method, request, metadata, active, lifecycle)
+      outgoing.deadline = deadline
+      outgoing.cancellation = state
+      outgoing.headers["connect-timeout-ms"] = [deadline.timeout_ms] if deadline
       outgoing.lifecycle = lifecycle if lifecycle
+      active.check!
       lifecycle.request_bytes = outgoing.body.bytesize if lifecycle && outgoing.http_method != "GET"
       response = @transport.call(outgoing)
       yield response if block_given?
-      deadline&.check!
+      active.check!
       Protocol.check_size!(response.body, @response_wire_limit)
-      read_response(response, method, deadline, lifecycle)
+      result = read_response(response, method, active, lifecycle)
+      active.commit!
+      result
+    rescue StandardError => e
+      lifecycle&.record_failure(e)
+      state&.commit!
+      raise
+    ensure
+      state&.close
     end
 
-    def instrumented_call(method, request, metadata, timeout)
+    def instrumented_call(method, request, metadata, timeout, cancellation)
       # @type var injection: Hash[String, String | Array[String]]
       injection = {}
       instrumentation = @instrumentation #: Instrumentation
@@ -70,7 +89,8 @@ module ConnectRPC
       response = nil
       begin
         result = lifecycle.activate do
-          process_call(method, request, metadata, timeout, lifecycle: lifecycle, injection: injection) do |received|
+          process_call(method, request, metadata, timeout, cancellation, lifecycle: lifecycle,
+                                                                         injection: injection) do |received|
             response = received
           end
         end
@@ -85,7 +105,7 @@ module ConnectRPC
       end
     end
 
-    # rubocop:enable Metrics/MethodLength, Metrics/AbcSize, Metrics/CyclomaticComplexity
+    # rubocop:enable Metrics/MethodLength, Metrics/AbcSize, Metrics/CyclomaticComplexity, Metrics/PerceivedComplexity
 
     def injected_metadata(metadata, injection)
       instrumentation = @instrumentation #: Instrumentation
@@ -133,8 +153,8 @@ module ConnectRPC
       lifecycle.request_bytes = body.bytesize if lifecycle && get
       GetQuery.build(url, body, codec: @codec, encoding: @encoding, limit: @get_url_limit, deadline: deadline) if get
       TransportRequest.new(url: url, http_method: get ? "GET" : "POST",
-                           headers: request_headers(metadata, deadline, get: get), body: get ? "" : body,
-                           response_limit: @response_wire_limit, deadline: deadline)
+                           headers: request_headers(metadata, nil, get: get), body: get ? "" : body,
+                           response_limit: @response_wire_limit, deadline: nil)
     end
 
     def request_headers(metadata, deadline, get: false)
@@ -148,7 +168,8 @@ module ConnectRPC
     end
 
     def compress_request(body, deadline, lifecycle = nil)
-      Compression.encode(body, limit: @request_wire_limit, deadline: deadline)
+      Compression.encode(body, limit: @request_wire_limit, deadline: deadline,
+                               on_error: ->(error) { lifecycle&.record_failure(error) })
     rescue Zlib::Error => e
       lifecycle&.record_failure(e)
       raise Error.new(:internal, "Cannot compress request")
@@ -165,7 +186,8 @@ module ConnectRPC
     end
 
     def inflate_response(body, status, deadline, lifecycle = nil)
-      Compression.decode(body, limit: @response_limit, deadline: deadline)
+      Compression.decode(body, limit: @response_limit, deadline: deadline,
+                               on_error: ->(error) { lifecycle&.record_failure(error) })
     rescue Compression::Malformed => e
       lifecycle&.record_failure(e)
       raise Error.new(:internal, "Cannot decompress response") if status == 200
@@ -194,7 +216,7 @@ module ConnectRPC
       raise Error.new(code, "Unexpected response content type")
     end
 
-    def read_response(response, method, deadline, lifecycle = nil) # rubocop:disable Metrics/MethodLength
+    def read_response(response, method, deadline, lifecycle = nil)
       headers = Protocol.headers(response.headers)
       body = response_body(response, headers, deadline, lifecycle)
       validate_response!(response.status, headers, body)
@@ -204,8 +226,6 @@ module ConnectRPC
     rescue ArgumentError => e
       lifecycle&.record_failure(e)
       raise Error.new(:internal, "Malformed response metadata")
-    ensure
-      deadline&.check!
     end
 
     def decode_response(bytes, method, lifecycle = nil)

@@ -112,3 +112,16 @@ See the [RBS guide](../../docs/rbs.md) for supported APIs, extension contracts,
 partial records, runtime validation and framework-signature limits.
 `mise run rbs:check` checks application callers for this package; strict core
 source checking is a separate target from backend implementation checking.
+
+## Explicit unary cancellation
+
+Pass `cancellation: source.token` to core or generated client calls, where
+`source = ConnectRPC::CancellationSource.new`. The source is permanent and
+shareable; only `source.cancel` initiates cancellation. `timeout: nil` keeps no
+RPC deadline or wire timeout. Context offers cooperative `cancelled?`,
+`cancellation_reason` and `check!`. See the [core guide](../../README.md) for
+listener, arbitration and registration lifetime rules.
+
+Testing forwards the read-only cancellation seam into a distinct server Context.
+Completing server processing cannot complete its client or shared source. Checks
+are cooperative; Testing does not interrupt a blocked handler.

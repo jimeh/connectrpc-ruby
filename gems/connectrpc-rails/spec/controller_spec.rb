@@ -216,4 +216,17 @@ RSpec.describe ConnectRPC::Rails::Controller do
       body.close
     end
   end
+  it "preserves real Rails Context execution without interpreting a token in the request env" do
+    source = ConnectRPC::CancellationSource.new
+    source.cancel
+    trace = []
+    response = rpc("/example.v1.EchoService/Echo", "connectrpc.test.trace" => trace,
+                                                   "connectrpc.cancellation" => source.token)
+    expect(response.status).to eq(200)
+    handler = trace.find { |entry| entry.first == :handler }
+    expect(handler).not_to be_nil
+    context = handler[2]
+    expect(context.cancellation_reason).to be_nil
+    expect { context.check! }.not_to raise_error
+  end
 end

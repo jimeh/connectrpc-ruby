@@ -3,6 +3,7 @@
 require "connectrpc"
 require "async"
 require "async/queue"
+require "async/promise"
 require "async/condition"
 require "async/pool/controller"
 require "async/http/protocol/http2"

@@ -4,6 +4,7 @@ require "json"
 
 module ConnectRPC
   TransportRequest = Struct.new(:url, :http_method, :headers, :body, :response_limit, :deadline, :lifecycle,
+                                :cancellation,
                                 keyword_init: true)
   TransportResponse = Struct.new(:status, :headers, :body, keyword_init: true)
   Response = Struct.new(:message, :metadata, :trailers, keyword_init: true)

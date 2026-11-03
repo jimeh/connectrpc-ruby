@@ -112,13 +112,25 @@ module ConnectRPC
         attr_accessor :exchange
         attr_reader :response_task
 
+        def initialize(...)
+          @cancellation_source = CancellationSource.new
+          super
+        end
+
+        def processing_cancellation = @cancellation_source&.token
+
+        def detach_cancellation
+          @cancellation_source = nil
+        end
+
         def response_written? = @response_written && !@response_reset
 
         def send_body(...)
           @response_task = super
         end
 
-        def receive_reset_stream(...)
+        def receive_reset_stream(frame)
+          @cancellation_source&.cancel if frame.unpack == ::Protocol::HTTP2::Error::CANCEL
           @response_reset = true
           super
         end

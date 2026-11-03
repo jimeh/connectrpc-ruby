@@ -18,15 +18,20 @@ module ConnectRPC
       end
 
       def call(request, lifecycle: nil)
+        stream = request.stream if request.respond_to?(:stream)
+        stream = nil unless stream.is_a?(Internal::RequestStream)
         path, query = request.path.split("?", 2)
         unless @server.handles?(path)
           return @fallback ? @fallback.call(request) : ::Protocol::HTTP::Response[404, {}, nil]
         end
 
         response = @server.call(path: path, http_method: request.method, headers: Internal.headers(request),
-                                input: Internal::Input.new(request.body), query: query || "", lifecycle: lifecycle)
+                                input: Internal::Input.new(request.body), query: query || "", lifecycle: lifecycle,
+                                cancellation: stream&.processing_cancellation)
         body = response.body.empty? ? nil : [response.body]
         ::Protocol::HTTP::Response[response.status, Internal.fields(response.headers), body]
+      ensure
+        stream&.detach_cancellation
       end
     end
   end

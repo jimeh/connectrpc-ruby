@@ -1,4 +1,0 @@
-# Executed caller-cancellation instructions. No public cancellation API exists.
-# Each must fail with the exact causal assertions verified by ledger.rb.
-Client Cancellation/HTTPVersion:1/Protocol:PROTOCOL_CONNECT/Codec:CODEC_PROTO/Compression:COMPRESSION_GZIP/TLS:false/unary/cancel-after-close-send
-Client Cancellation/HTTPVersion:1/Protocol:PROTOCOL_CONNECT/Codec:CODEC_JSON/Compression:COMPRESSION_GZIP/TLS:false/unary/cancel-after-close-send

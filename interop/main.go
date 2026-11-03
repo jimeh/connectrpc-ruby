@@ -79,6 +79,12 @@ func serve(service protoreflect.ServiceDescriptor, gzip bool) {
 	for _, name := range []protoreflect.Name{"Echo", "Fail"} {
 		desc := service.Methods().ByName(name)
 		callback := func(ctx context.Context, request *connect.Request[dynamicpb.Message]) (*connect.Response[dynamicpb.Message], error) {
+			if request.Header().Get("X-Cancel-Probe") == "hold" {
+				fmt.Println("CANCEL_ENTERED")
+				<-ctx.Done()
+				fmt.Println("CANCEL_OBSERVED")
+				return nil, connect.NewError(connect.CodeCanceled, ctx.Err())
+			}
 			if name == "Fail" || request.Header().Get("X-Get-Fail") == "yes" {
 				detail, err := connect.NewErrorDetail(request.Msg)
 				must(err)

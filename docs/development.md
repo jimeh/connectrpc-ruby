@@ -103,20 +103,18 @@ Focused tasks are `test:interop:identity`, `test:interop:gzip`,
 `test:conformance:identity` and `test:conformance:gzip`. Exact conformance selectors
 automatically choose their inventory; explicit profile tasks keep runs bounded.
 
-The profile has 92 client passes and two expected caller-cancellation
-failures, plus 88 server passes. Both unsupported caller instructions still
-invoke real uncanceled RPCs and return faithful results. Only the two exact
-caller-cancellation cases are marked known-failing, and every assertion and
-actual RPC result must match the documented limitation. Unexpected passes or
-unrelated failures still fail verification.
-The additional gzip profile has 86 client passes and two executed expected
-caller-cancellation failures, plus 82 server passes. Its separate exact-name
-manifest was approved after live causal verification; the same strict checks
-reject an unexpected pass or unrelated failure. Neither discovery counts nor
-unsupported instructions are passes. Actual wire coding, byte counts,
-lengths and digests are recorded independently; ordinary reference error responses
-may be identity even for gzip requests. Timeouts, duplicate metadata and remote
-canceled errors must pass normally.
+Identity requires 96 actual client and 90 server passes, including two exact
+GET names per direction. The disjoint gzip profile requires 88 client and 82
+server passes, for 184/172 in total. There are no expected-failure manifests or
+waivers. All four caller-cancellation cases use the original 5 ms timer armed
+before the blocking call, the original 200 ms response request, and no deadline.
+Their causal ledger requires actual successful socket writes, source
+cancellation, socket interruption/retirement and the actual library result.
+A source that fires before dispatch is valid library behavior but fails this
+wire-evidence requirement. Never gate/restart the timer after wire progress.
+Actual wire coding, byte counts, lengths and digests remain independently
+checked. Ordinary reference error responses may use identity for gzip requests.
+Timeouts, duplicate metadata and remote canceled errors must also pass normally.
 Raw runner logs, JSON telemetry and strict JSON summaries are preserved under
 ignored `vendor/conformance/results/`. An accounting mismatch fails even if
 the official runner exits successfully. This evidence is distinct from full

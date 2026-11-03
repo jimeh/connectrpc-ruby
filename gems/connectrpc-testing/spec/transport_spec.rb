@@ -368,3 +368,65 @@ RSpec.describe ConnectRPC::Testing::Transport do
     expect(calls.size).to eq(1)
   end
 end
+
+RSpec.describe "Testing cancellation forwarding" do
+  it "passes a distinct cooperative Context without committing its client or shared source" do
+    source = ConnectRPC::CancellationSource.new
+    contexts = []
+    binding = ConnectRPC::Bindings::GoogleProtobuf.new
+    service = Example::V1::EchoService
+    type = Example::V1::EchoMessage
+    handlers = service.handlers(echo: lambda { |message, context|
+      contexts << context
+      source.cancel if message.name == "cancel"
+      context.check!
+      message
+    }, fail: ->(*) { raise "unused" })
+    server = ConnectRPC::Server.new(services: [service::SERVICE], binding: binding, handlers: handlers)
+    client = ConnectRPC::Client.new(base_url: "http://in-process.invalid", binding: binding,
+                                    transport: ConnectRPC::Testing::Transport.new(server: server))
+    expect(client.call(service::ECHO, type.new(name: "first"), timeout: nil,
+                                                               cancellation: source.token).message.name).to eq("first")
+    expect(source.token).not_to be_cancelled
+    expect do
+      client.call(service::ECHO, type.new(name: "cancel"), timeout: nil, cancellation: source.token)
+    end.to raise_error(ConnectRPC::Error) { |e| expect(e.code).to eq("canceled") }
+    expect(contexts.map(&:cancellation_reason)).to eq([nil, :canceled])
+  end
+end
+
+RSpec.describe "Direct Testing cancellation and deadline composition" do
+  %i[expired_before expired_during canceled_before_expiry].each do |ordering|
+    it "arbitrates #{ordering} with a plain token and preserves its caller's request" do
+      now = 0.0
+      source = ConnectRPC::CancellationSource.new
+      deadline = ConnectRPC::Deadline.new(1, clock: -> { now })
+      service = Example::V1::EchoService
+      type = Example::V1::EchoMessage
+      binding = ConnectRPC::Bindings::GoogleProtobuf.new
+      invoked = false
+      target = ConnectRPC::Server.new(services: [service::SERVICE], binding: binding,
+                                      handlers: service.handlers(echo: lambda { |message, _|
+                                        invoked = true
+                                        source.cancel if ordering == :canceled_before_expiry
+                                        now = 2.0
+                                        message
+                                      }, fail: ->(*) { raise "unused" }))
+      headers = { "content-type" => ["application/proto"] }
+      outgoing = ConnectRPC::TransportRequest.new(url: URI("http://example.invalid#{service::ECHO.path}"),
+                                                  http_method: "POST", headers: headers,
+                                                  body: type.encode(type.new), response_limit: 4096,
+                                                  deadline: deadline, cancellation: source.token)
+      now = 2.0 if ordering == :expired_before
+      expected_code = ordering == :canceled_before_expiry ? "canceled" : "deadline_exceeded"
+      invoke = -> { ConnectRPC::Testing::Transport.new(server: target).call(outgoing) }
+      expect(&invoke).to raise_error(ConnectRPC::Error) do |error|
+        expect([error.code, error.cause]).to eq([expected_code, nil])
+      end
+      expect(invoked).to eq(ordering != :expired_before)
+      expect(outgoing.cancellation).to equal(source.token)
+      expect(outgoing.deadline).to equal(deadline)
+      expect(source.instance_variable_get(:@signal).instance_variable_get(:@registrations)).to be_empty
+    end
+  end
+end

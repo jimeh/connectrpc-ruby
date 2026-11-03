@@ -21,11 +21,8 @@ mise run test:conformance:gzip
 For troubleshooting, append one exact name from [cases.json](cases.json), quoted
 or [cases-gzip.json](cases-gzip.json), as a single argument after `client` or
 `server`. The exact inventory selects the profile automatically. Full verification and CI supply
-no selector. No skips, flakes or wildcards are enabled. The two exact
-identity caller-cancellation cases use [known-failing-client.txt](known-failing-client.txt).
-The two exact gzip cases use the separate
-[known-failing-gzip-client.txt](known-failing-gzip-client.txt), approved after
-live unwaived runs established the same caller-cancellation cause.
+no selector. No skips, flakes, wildcards, expected failures or known-failing
+manifests are enabled.
 
 ## Pins and provenance
 
@@ -67,7 +64,7 @@ executed counts, not totals for unsupported protocol/configuration axes. The
 independent [Go fixture](../interop/) retains its 18 identity cases and adds
 40 separate gzip cases; neither is official conformance evidence. The exact
 gzip inventory has 88 client and 82 server cases, disjoint from identity. Their
-expanded union is 184/172 configured cases, without implying that all pass. The dedicated
+expanded union requires 184 actual client and 172 server passes. The dedicated
 compressed-error client case has no compression/codec suffix, so membership is
 never inferred from substrings.
 
@@ -90,51 +87,37 @@ wakes the main loop, which closes the localhost host with bounded cleanup.
 Framing uses four-byte big-endian sizes, exact reads, flushes, a 16 MiB maximum,
 and explicit malformed/truncated errors. Protocol stdout contains frames only.
 
-## Explicit caller-cancellation limitation
+## Explicit caller cancellation
 
-There is no public caller-cancellation API. Each profile has two client
-`Client Cancellation/.../unary/cancel-after-close-send` instructions request
-cancellation after 5 ms against a response delayed 200 ms. The adapter records
-that the instruction is unsupported, executes the real uncanceled RPC normally,
-and returns its successful payload and metadata. It never synthesizes a canceled
-result or substitutes a deadline.
+All four `Client Cancellation/.../unary/cancel-after-close-send` cases must pass
+unwaived. The adapter arms the original 5 ms timer before invoking the blocking
+Client call, passes a real `CancellationToken`, keeps `timeout: nil`, and leaves
+the original 200 ms response definition unchanged. The reference implementation
+uses the same arrangement in
+[referenceclient/impl.go](https://github.com/connectrpc/conformance/blob/eaa97669854d500691a393033d15950895d6aff7/internal/app/referenceclient/impl.go).
+The local [client instruction schema](proto/connectrpc/conformance/v1/client_compat.proto)
+also specifies this blocking-client arrangement.
 
-Both cases must fail with these exact assertions:
+Fixture-only BufferedIO instrumentation captures successfully completed socket
+writes. After the exchange, it records the actual request bytes/digest/coding,
+decoded request, absence of wire timeout, source transition, owned socket
+interruption and retirement, and the real library canceled error. Prepared-body
+or pre-dispatch telemetry alone cannot pass this ledger. Serialization of this
+evidence stays outside the timed write path. A timer firing before dispatch is
+valid cancellation behavior but insufficient official wire-cancellation evidence;
+verification reports it instead of delaying or restarting the timer.
 
-```text
-expecting an error but received none
-expecting 0 response messages but instead got 1
-```
+Identity runs 96 client/90 server cases and gzip runs 88/82, with all 184 client
+and 172 server cases required to pass. The original four cancellation names and
+payloads remain unchanged. Missing/unexecuted/duplicate/setup/unknown outcomes,
+waiver output and a fabricated canceled result without wire progress fail the
+ledger's focused negative probes. Ordinary errors may use identity even for gzip
+requests; Basic success separately requires actual gzip responses in both codecs
+and directions.
 
-The identity run is 92 passed plus two expected failures for the client,
-and 88 passed with zero failures for the server. The two unsupported caller instructions are still
-dispatched and executed; they are not passes. The ledger verifies their actual
-success, echoed request, absence of timeout, payload, headers/trailers and exact
-failure reason. The exact-name `--known-failing` manifest requires these cases
-to fail, and the ledger independently rejects any different assertion or result.
-An unexpected pass, missing case, setup error or unrelated failure fails
-verification. Every timeout/deadline case remains a
-must-pass. This profile does not establish full Connect conformance.
-
-
-The gzip profile executes 88 client cases: 86 pass and the two exact
-proto/JSON gzip caller-cancellation cases are executed expected failures with
-the assertions above. All 82 gzip server cases pass. Its separate exact-name
-manifest was approved after live unwaived runs on both pinned Rubies. The ledger
-checks the uncanceled gzip calls' real successful delayed echo, payload,
-metadata/trailers, absence of deadline, actual wire coding and exact causal
-assertions. An unexpected pass, unrelated failure, setup error or missing case
-fails verification. Across both profiles, 182 client cases execute with 178
-actual passes and four expected failures; all 170 server cases pass. Server errors remain identity by product policy;
-ordinary reference errors may do the same. Basic success separately requires
-actual gzip responses in both codecs and both directions.
-
-The retained identity inventory in `cases.json` has 94/88 baseline cases;
-`Ledger::GET_CASES` adds exactly the two official Connect-with-GET successes per
-direction, for 96/90. Gzip remains 88/82, yielding 184 client and 172 server
-cases. All four original caller-cancellation names/assertions remain unchanged.
-Actual GET method, controls and decoded query payload bytes/hash are recorded
-separately from measured HTTP body bytes. The fixture's request-local host query
-echo populates the official `ConnectGetInfo`; production RPC observation exposes
-no query or payload. These two identity success templates do not cover gzip GET
-or malformed-query/boundary behavior; focused Ruby and Go probes supply that.
+The identity inventory retains its original 94/88 baseline; `Ledger::GET_CASES`
+adds exactly two official safe GET successes per direction. Actual GET method,
+controls and decoded query payload bytes/hash are recorded separately from the
+measured empty HTTP body. The fixture's request-local query echo populates
+`ConnectGetInfo`; production RPC observation exposes no query or payload.
+Focused Ruby and Go probes cover gzip GET and malformed-query/boundary behavior.

@@ -34,6 +34,33 @@ module ConnectRPC
     def call: (TransportRequest) -> TransportResponse
   end
 
+  type cancellation_reason = :canceled | :deadline_exceeded
+
+  # Read-only transport/host cancellation SPI. Each call owns its arbitration.
+  interface _Cancellation
+    def cancelled?: () -> bool
+    def reason: () -> cancellation_reason?
+    def check!: () -> nil
+    def on_cancel: () { () -> void } -> CancellationRegistration
+  end
+
+  class CancellationSource
+    def initialize: () -> void
+    attr_reader token: CancellationToken
+    def cancel: () -> bool
+  end
+
+  class CancellationToken
+    def cancelled?: () -> bool
+    def reason: () -> (:canceled | nil)
+    def check!: () -> nil
+    def on_cancel: () { () -> void } -> CancellationRegistration
+  end
+
+  class CancellationRegistration
+    def unregister: () -> bool
+  end
+
   interface _Input
     def read: (Integer) -> String?
   end
@@ -141,7 +168,7 @@ module ConnectRPC
 
   class Client
     def initialize: (base_url: String, binding: _Binding, ?transport: _Transport?, ?codec: codec, ?request_limit: Integer, ?response_limit: Integer, ?request_wire_limit: Integer, ?response_wire_limit: Integer, ?accept_encoding: Array[:identity | :gzip]?, ?use_get: bool, ?get_url_limit: Integer, ?protocol: :connect, ?mode: :unary, ?encoding: :identity | :gzip, ?instrumentation: Instrumentation?) -> void
-    def call: [Req, Resp] (Method[Req, Resp], Req request, ?metadata: metadata_input, ?timeout: Numeric?) -> Response[Resp]
+    def call: [Req, Resp] (Method[Req, Resp], Req request, ?metadata: metadata_input, ?timeout: Numeric?, ?cancellation: CancellationToken?) -> Response[Resp]
   end
 
   class Server
@@ -151,7 +178,7 @@ module ConnectRPC
     attr_reader services: Array[Service]
     def handles?: (String path) -> bool
     def start_call: (path: String, headers: headers) -> Instrumentation::Handle?
-    def call: (path: String, http_method: String, headers: headers, input: _Input?, ?query: String, ?lifecycle: Instrumentation::Handle?) -> TransportResponse
+    def call: (path: String, http_method: String, headers: headers, input: _Input?, ?query: String, ?lifecycle: Instrumentation::Handle?, ?cancellation: _Cancellation?) -> TransportResponse
   end
 
   # Complete records retain precise readers; partial construction admits nil defaults.
@@ -237,45 +264,49 @@ module ConnectRPC
     def deadline=: (Deadline?) -> Deadline?
     def lifecycle: () -> Instrumentation::Handle?
     def lifecycle=: (Instrumentation::Handle?) -> Instrumentation::Handle?
-    def []: (:url | "url" | 0 | -7) -> URI::Generic?
-      | (:http_method | "http_method" | 1 | -6) -> String?
-      | (:headers | "headers" | 2 | -5) -> headers?
-      | (:body | "body" | 3 | -4) -> String?
-      | (:response_limit | "response_limit" | 4 | -3) -> Integer?
-      | (:deadline | "deadline" | 5 | -2) -> Deadline?
-      | (:lifecycle | "lifecycle" | 6 | -1) -> Instrumentation::Handle?
-    def []=: (:url | "url" | 0 | -7, URI::Generic?) -> URI::Generic?
-      | (:http_method | "http_method" | 1 | -6, String?) -> String?
-      | (:headers | "headers" | 2 | -5, headers?) -> headers?
-      | (:body | "body" | 3 | -4, String?) -> String?
-      | (:response_limit | "response_limit" | 4 | -3, Integer?) -> Integer?
-      | (:deadline | "deadline" | 5 | -2, Deadline?) -> Deadline?
-      | (:lifecycle | "lifecycle" | 6 | -1, Instrumentation::Handle?) -> Instrumentation::Handle?
-    def to_h: () -> Hash[Symbol, URI::Generic? | String? | headers? | Integer? | Deadline? | Instrumentation::Handle?]
+    def cancellation: () -> _Cancellation?
+    def cancellation=: (_Cancellation?) -> _Cancellation?
+    def []: (:url | "url" | 0 | -8) -> URI::Generic?
+      | (:http_method | "http_method" | 1 | -7) -> String?
+      | (:headers | "headers" | 2 | -6) -> headers?
+      | (:body | "body" | 3 | -5) -> String?
+      | (:response_limit | "response_limit" | 4 | -4) -> Integer?
+      | (:deadline | "deadline" | 5 | -3) -> Deadline?
+      | (:lifecycle | "lifecycle" | 6 | -2) -> Instrumentation::Handle?
+      | (:cancellation | "cancellation" | 7 | -1) -> _Cancellation?
+    def []=: (:url | "url" | 0 | -8, URI::Generic?) -> URI::Generic?
+      | (:http_method | "http_method" | 1 | -7, String?) -> String?
+      | (:headers | "headers" | 2 | -6, headers?) -> headers?
+      | (:body | "body" | 3 | -5, String?) -> String?
+      | (:response_limit | "response_limit" | 4 | -4, Integer?) -> Integer?
+      | (:deadline | "deadline" | 5 | -3, Deadline?) -> Deadline?
+      | (:lifecycle | "lifecycle" | 6 | -2, Instrumentation::Handle?) -> Instrumentation::Handle?
+      | (:cancellation | "cancellation" | 7 | -1, _Cancellation?) -> _Cancellation?
+    def to_h: () -> Hash[Symbol, URI::Generic? | String? | headers? | Integer? | Deadline? | Instrumentation::Handle? | _Cancellation?]
     def members: () -> Array[Symbol]
     def size: () -> Integer
     def length: () -> Integer
-    def to_a: () -> Array[URI::Generic? | String? | headers? | Integer? | Deadline? | Instrumentation::Handle?]
-    def values: () -> Array[URI::Generic? | String? | headers? | Integer? | Deadline? | Instrumentation::Handle?]
-    def deconstruct: () -> Array[URI::Generic? | String? | headers? | Integer? | Deadline? | Instrumentation::Handle?]
-    def each: () { (URI::Generic | String | headers | Integer | Deadline | Instrumentation::Handle | nil) -> void } -> self
-            | () -> Enumerator[URI::Generic | String | headers | Integer | Deadline | Instrumentation::Handle | nil, self]
-    def each_pair: () { ([Symbol, URI::Generic | String | headers | Integer | Deadline | Instrumentation::Handle | nil]) -> void } -> self
-                 | () -> Enumerator[[Symbol, URI::Generic | String | headers | Integer | Deadline | Instrumentation::Handle | nil], self]
-    def deconstruct_keys: (Array[Symbol]?) -> Hash[Symbol, URI::Generic | String | headers | Integer | Deadline | Instrumentation::Handle | nil]
-    def values_at: (*(Integer | Range[Integer])) -> Array[URI::Generic | String | headers | Integer | Deadline | Instrumentation::Handle | nil | nil]
+    def to_a: () -> Array[URI::Generic? | String? | headers? | Integer? | Deadline? | Instrumentation::Handle? | _Cancellation?]
+    def values: () -> Array[URI::Generic? | String? | headers? | Integer? | Deadline? | Instrumentation::Handle? | _Cancellation?]
+    def deconstruct: () -> Array[URI::Generic? | String? | headers? | Integer? | Deadline? | Instrumentation::Handle? | _Cancellation?]
+    def each: () { (URI::Generic | String | headers | Integer | Deadline | Instrumentation::Handle | _Cancellation | nil) -> void } -> self
+            | () -> Enumerator[URI::Generic | String | headers | Integer | Deadline | Instrumentation::Handle | _Cancellation | nil, self]
+    def each_pair: () { ([Symbol, URI::Generic | String | headers | Integer | Deadline | Instrumentation::Handle | _Cancellation | nil]) -> void } -> self
+                 | () -> Enumerator[[Symbol, URI::Generic | String | headers | Integer | Deadline | Instrumentation::Handle | _Cancellation | nil], self]
+    def deconstruct_keys: (Array[Symbol]?) -> Hash[Symbol, URI::Generic | String | headers | Integer | Deadline | Instrumentation::Handle | _Cancellation | nil]
+    def values_at: (*(Integer | Range[Integer])) -> Array[URI::Generic | String | headers | Integer | Deadline | Instrumentation::Handle | _Cancellation | nil | nil]
 
   end
 
   class TransportRequest
-    def self.new: (url: URI::Generic, http_method: String, headers: headers, body: String, response_limit: Integer, ?deadline: Deadline?, ?lifecycle: Instrumentation::Handle?) -> TransportRequest
-      | ({ url: URI::Generic, http_method: String, headers: headers, body: String, response_limit: Integer, ?deadline: Deadline?, ?lifecycle: Instrumentation::Handle? }) -> TransportRequest
-      | (?url: URI::Generic?, ?http_method: String?, ?headers: headers?, ?body: String?, ?response_limit: Integer?, ?deadline: Deadline?, ?lifecycle: Instrumentation::Handle?) -> _PartialTransportRequest
-      | ({ ?url: URI::Generic?, ?http_method: String?, ?headers: headers?, ?body: String?, ?response_limit: Integer?, ?deadline: Deadline?, ?lifecycle: Instrumentation::Handle? }) -> _PartialTransportRequest
-    def self.[]: (url: URI::Generic, http_method: String, headers: headers, body: String, response_limit: Integer, ?deadline: Deadline?, ?lifecycle: Instrumentation::Handle?) -> TransportRequest
-      | ({ url: URI::Generic, http_method: String, headers: headers, body: String, response_limit: Integer, ?deadline: Deadline?, ?lifecycle: Instrumentation::Handle? }) -> TransportRequest
-      | (?url: URI::Generic?, ?http_method: String?, ?headers: headers?, ?body: String?, ?response_limit: Integer?, ?deadline: Deadline?, ?lifecycle: Instrumentation::Handle?) -> _PartialTransportRequest
-      | ({ ?url: URI::Generic?, ?http_method: String?, ?headers: headers?, ?body: String?, ?response_limit: Integer?, ?deadline: Deadline?, ?lifecycle: Instrumentation::Handle? }) -> _PartialTransportRequest
+    def self.new: (url: URI::Generic, http_method: String, headers: headers, body: String, response_limit: Integer, ?deadline: Deadline?, ?lifecycle: Instrumentation::Handle?, ?cancellation: _Cancellation?) -> TransportRequest
+      | ({ url: URI::Generic, http_method: String, headers: headers, body: String, response_limit: Integer, ?deadline: Deadline?, ?lifecycle: Instrumentation::Handle?, ?cancellation: _Cancellation? }) -> TransportRequest
+      | (?url: URI::Generic?, ?http_method: String?, ?headers: headers?, ?body: String?, ?response_limit: Integer?, ?deadline: Deadline?, ?lifecycle: Instrumentation::Handle?, ?cancellation: _Cancellation?) -> _PartialTransportRequest
+      | ({ ?url: URI::Generic?, ?http_method: String?, ?headers: headers?, ?body: String?, ?response_limit: Integer?, ?deadline: Deadline?, ?lifecycle: Instrumentation::Handle?, ?cancellation: _Cancellation? }) -> _PartialTransportRequest
+    def self.[]: (url: URI::Generic, http_method: String, headers: headers, body: String, response_limit: Integer, ?deadline: Deadline?, ?lifecycle: Instrumentation::Handle?, ?cancellation: _Cancellation?) -> TransportRequest
+      | ({ url: URI::Generic, http_method: String, headers: headers, body: String, response_limit: Integer, ?deadline: Deadline?, ?lifecycle: Instrumentation::Handle?, ?cancellation: _Cancellation? }) -> TransportRequest
+      | (?url: URI::Generic?, ?http_method: String?, ?headers: headers?, ?body: String?, ?response_limit: Integer?, ?deadline: Deadline?, ?lifecycle: Instrumentation::Handle?, ?cancellation: _Cancellation?) -> _PartialTransportRequest
+      | ({ ?url: URI::Generic?, ?http_method: String?, ?headers: headers?, ?body: String?, ?response_limit: Integer?, ?deadline: Deadline?, ?lifecycle: Instrumentation::Handle?, ?cancellation: _Cancellation? }) -> _PartialTransportRequest
     attr_accessor url: URI::Generic
     attr_accessor http_method: String
     attr_accessor headers: headers
@@ -283,33 +314,36 @@ module ConnectRPC
     attr_accessor response_limit: Integer
     attr_accessor deadline: Deadline?
     attr_accessor lifecycle: Instrumentation::Handle?
-    def []: (:url | "url" | 0 | -7) -> URI::Generic
-      | (:http_method | "http_method" | 1 | -6) -> String
-      | (:headers | "headers" | 2 | -5) -> headers
-      | (:body | "body" | 3 | -4) -> String
-      | (:response_limit | "response_limit" | 4 | -3) -> Integer
-      | (:deadline | "deadline" | 5 | -2) -> Deadline?
-      | (:lifecycle | "lifecycle" | 6 | -1) -> Instrumentation::Handle?
-    def []=: (:url | "url" | 0 | -7, URI::Generic) -> URI::Generic
-      | (:http_method | "http_method" | 1 | -6, String) -> String
-      | (:headers | "headers" | 2 | -5, headers) -> headers
-      | (:body | "body" | 3 | -4, String) -> String
-      | (:response_limit | "response_limit" | 4 | -3, Integer) -> Integer
-      | (:deadline | "deadline" | 5 | -2, Deadline?) -> Deadline?
-      | (:lifecycle | "lifecycle" | 6 | -1, Instrumentation::Handle?) -> Instrumentation::Handle?
-    def to_h: () -> Hash[Symbol, URI::Generic | String | headers | Integer | Deadline? | Instrumentation::Handle?]
+    attr_accessor cancellation: _Cancellation?
+    def []: (:url | "url" | 0 | -8) -> URI::Generic
+      | (:http_method | "http_method" | 1 | -7) -> String
+      | (:headers | "headers" | 2 | -6) -> headers
+      | (:body | "body" | 3 | -5) -> String
+      | (:response_limit | "response_limit" | 4 | -4) -> Integer
+      | (:deadline | "deadline" | 5 | -3) -> Deadline?
+      | (:lifecycle | "lifecycle" | 6 | -2) -> Instrumentation::Handle?
+      | (:cancellation | "cancellation" | 7 | -1) -> _Cancellation?
+    def []=: (:url | "url" | 0 | -8, URI::Generic) -> URI::Generic
+      | (:http_method | "http_method" | 1 | -7, String) -> String
+      | (:headers | "headers" | 2 | -6, headers) -> headers
+      | (:body | "body" | 3 | -5, String) -> String
+      | (:response_limit | "response_limit" | 4 | -4, Integer) -> Integer
+      | (:deadline | "deadline" | 5 | -3, Deadline?) -> Deadline?
+      | (:lifecycle | "lifecycle" | 6 | -2, Instrumentation::Handle?) -> Instrumentation::Handle?
+      | (:cancellation | "cancellation" | 7 | -1, _Cancellation?) -> _Cancellation?
+    def to_h: () -> Hash[Symbol, URI::Generic | String | headers | Integer | Deadline? | Instrumentation::Handle? | _Cancellation?]
     def members: () -> Array[Symbol]
     def size: () -> Integer
     def length: () -> Integer
-    def to_a: () -> Array[URI::Generic | String | headers | Integer | Deadline? | Instrumentation::Handle?]
-    def values: () -> Array[URI::Generic | String | headers | Integer | Deadline? | Instrumentation::Handle?]
-    def deconstruct: () -> Array[URI::Generic | String | headers | Integer | Deadline? | Instrumentation::Handle?]
-    def each: () { (URI::Generic | String | headers | Integer | Deadline | Instrumentation::Handle | nil) -> void } -> self
-            | () -> Enumerator[URI::Generic | String | headers | Integer | Deadline | Instrumentation::Handle | nil, self]
-    def each_pair: () { ([Symbol, URI::Generic | String | headers | Integer | Deadline | Instrumentation::Handle | nil]) -> void } -> self
-                 | () -> Enumerator[[Symbol, URI::Generic | String | headers | Integer | Deadline | Instrumentation::Handle | nil], self]
-    def deconstruct_keys: (Array[Symbol]?) -> Hash[Symbol, URI::Generic | String | headers | Integer | Deadline | Instrumentation::Handle | nil]
-    def values_at: (*(Integer | Range[Integer])) -> Array[URI::Generic | String | headers | Integer | Deadline | Instrumentation::Handle | nil | nil]
+    def to_a: () -> Array[URI::Generic | String | headers | Integer | Deadline? | Instrumentation::Handle? | _Cancellation?]
+    def values: () -> Array[URI::Generic | String | headers | Integer | Deadline? | Instrumentation::Handle? | _Cancellation?]
+    def deconstruct: () -> Array[URI::Generic | String | headers | Integer | Deadline? | Instrumentation::Handle? | _Cancellation?]
+    def each: () { (URI::Generic | String | headers | Integer | Deadline | Instrumentation::Handle | _Cancellation | nil) -> void } -> self
+            | () -> Enumerator[URI::Generic | String | headers | Integer | Deadline | Instrumentation::Handle | _Cancellation | nil, self]
+    def each_pair: () { ([Symbol, URI::Generic | String | headers | Integer | Deadline | Instrumentation::Handle | _Cancellation | nil]) -> void } -> self
+                 | () -> Enumerator[[Symbol, URI::Generic | String | headers | Integer | Deadline | Instrumentation::Handle | _Cancellation | nil], self]
+    def deconstruct_keys: (Array[Symbol]?) -> Hash[Symbol, URI::Generic | String | headers | Integer | Deadline | Instrumentation::Handle | _Cancellation | nil]
+    def values_at: (*(Integer | Range[Integer])) -> Array[URI::Generic | String | headers | Integer | Deadline | Instrumentation::Handle | _Cancellation | nil | nil]
 
   end
 
@@ -403,7 +437,7 @@ module ConnectRPC
   end
 
   class Context
-    def initialize: (?request_metadata: metadata_input, ?deadline: Deadline?, ?lifecycle: Instrumentation::Handle?) -> void
+    def initialize: (?request_metadata: metadata_input, ?deadline: Deadline?, ?lifecycle: Instrumentation::Handle?, ?cancellation: _Cancellation?) -> void
     attr_reader request_metadata: Metadata
     attr_reader response_metadata: Metadata
     attr_reader response_trailers: Metadata
@@ -411,6 +445,7 @@ module ConnectRPC
     def record_failure: (Exception error) -> nil
     def cancelled?: () -> bool
     def check!: () -> nil
+    def cancellation_reason: () -> cancellation_reason?
   end
 
   class CodecError < StandardError

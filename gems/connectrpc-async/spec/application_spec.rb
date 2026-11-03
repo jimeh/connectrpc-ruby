@@ -32,6 +32,25 @@ RSpec.describe "Native Protocol::HTTP application" do
     expect(application.call(Protocol::HTTP::Request["GET", "/other"]).status).to eq(404)
   end
 
+  it "preserves native request compatibility when another host exposes its own stream object" do
+    fallback = ->(_) { Protocol::HTTP::Response[204, {}, nil] }
+    application = ConnectRPC::Async::Application.new(server: server, fallback: fallback)
+    [["POST", AsyncHelpers::ECHO::ECHO.path, 200], ["GET", "/ordinary", 204]].each do |verb, target, status|
+      incoming = Protocol::HTTP::Request[verb, target, { "content-type" => "application/proto" }]
+      foreign_stream = Struct.new(:declared_length).new(nil)
+      incoming.define_singleton_method(:stream) { foreign_stream }
+      result = begin
+        application.call(incoming)
+      rescue StandardError => e
+        e
+      end
+      expect(result).to be_a(Protocol::HTTP::Response)
+      expect(result.status).to eq(status)
+    ensure
+      result.close if result.is_a?(Protocol::HTTP::Response)
+    end
+  end
+
   it "validates its server and optional fallback" do
     expect { ConnectRPC::Async::Application.new(server: Object.new) }.to raise_error(ArgumentError)
     expect { ConnectRPC::Async::Application.new(server: server, fallback: Object.new) }.to raise_error(ArgumentError)

@@ -44,7 +44,8 @@ module ConnectRPC
         methods.each do |method|
           request, reply = types(method)
           line(depth + 2, "def #{Names.rpc(method.name)}: (#{request} request, " \
-                          "?metadata: ::ConnectRPC::metadata_input, ?timeout: ::Numeric?) -> ::ConnectRPC::Response[#{reply}]")
+                          "?metadata: ::ConnectRPC::metadata_input, ?timeout: ::Numeric?, " \
+                          "?cancellation: ::ConnectRPC::CancellationToken?) -> ::ConnectRPC::Response[#{reply}]")
         end
         line(depth + 1, "end")
         keywords = methods.map { |method| "#{Names.rpc(method.name)}: (#{handler(method)})" }.join(", ")

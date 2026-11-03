@@ -11,7 +11,6 @@ RSpec.describe Conformance::Ledger do
   let(:raw) do
     <<~LOG
       Computed 96 test case permutation(s) across 1 server configuration(s).
-      Loaded 2 known failing test case pattern(s) that match 2 test case permutation(s).
       Filtered tests to 1 test case permutation(s) across 1 server configuration(s).
       Sending request for #{JSON.generate(name)}...
       Received response for #{JSON.generate(name)}...
@@ -22,7 +21,7 @@ RSpec.describe Conformance::Ledger do
   let(:events) do
     %w[received dispatch completed responded].map do |kind|
       { "event" => kind, "name" => name, "result" => { "testName" => name, "response" => {} } }
-    end + [{ "event" => "client_eof" }]
+    end + [{ "event" => "wire_response", "name" => name, "status" => 200 }, { "event" => "client_eof" }]
   end
 
   def parse(log = raw, telemetry = events, code = 0)
@@ -32,7 +31,7 @@ RSpec.describe Conformance::Ledger do
   it "records discovered configured count separately from selected execution and outcomes" do
     result = parse
     expect(result).to include(configured_discovered: 96, executed: 1, passed: 1, failed: 0, could_not_run: 0,
-                              unsupported_instructions: 0, accounting_valid: true)
+                              accounting_valid: true)
     expect(result.fetch(:outcomes)).to eq(name => "passed")
   end
 
@@ -83,6 +82,7 @@ RSpec.describe Conformance::Ledger do
     telemetry[1].merge!("http_method" => "GET", "request_headers" => {}, "wire" => body,
                         "query" => { "controls" => { "encoding" => "json", "connect" => "v1" }, "payload" => payload })
     telemetry[3]["result"] = { "testName" => get_name, "response" => {} }
+    telemetry.reject! { |event| event["event"] == "wire_response" }
     telemetry.insert(2, { "event" => "wire_response", "name" => get_name, "status" => 200 })
     check = ->(records) { described_class.new(direction: "client", selected: get_name).parse(log, records, 0) }
     expect(check.call(telemetry)).to include(executed: 1, passed: 1)
@@ -98,67 +98,59 @@ RSpec.describe Conformance::Ledger do
 
   def cancellation_fixture(profile = "identity")
     cancel_name = (profile == "gzip" ? described_class::GZIP_CANCELLATIONS : described_class::CANCELLATIONS).first
-    assertions = described_class::CANCELLATION_FAILURE.join("\n\t")
-    failure = "INFO: #{cancel_name} failed (as expected):\n\t#{assertions}\n\nTotal cases: 1"
-    log = raw.gsub(name, cancel_name).sub("Total cases: 1", failure)
-             .sub("1 passed, 0 failed", "0 passed, 0 failed")
-    log += "(Another 1 failed as expected due to being known failures/flakes.)\n"
+    log = raw.gsub(name, cancel_name)
+    log = log.sub("Computed 96", "Computed 88") if profile == "gzip"
     telemetry = events.map { |event| event.merge("name" => cancel_name) }
-    telemetry[1]["deadline"] = false
-    telemetry[2]["outcome"] = "success"
-    telemetry[3]["result"] = { "testName" => cancel_name, "response" => {
-      "payloads" => [{ "data" => "dGVzdCByZXNwb25zZQ==", "requestInfo" => {
-        "requestHeaders" => [{ "name" => "X-Test-Case-Name", "value" => [cancel_name] }],
-        "requests" => [{ "@type" => "type.googleapis.com/connectrpc.conformance.v1.UnaryRequest",
-                         "responseDefinition" => {
-                           "responseHeaders" => [{ "name" => "x-custom-header", "value" => ["foo"] }],
-                           "responseData" => "dGVzdCByZXNwb25zZQ==",
-                           "responseTrailers" => [{ "name" => "x-custom-trailer",
-                                                    "value" => ["bing"] }],
-                           "responseDelayMs" => 200
-                         } }]
-      } }],
+    wire = { "encoding" => profile == "gzip" ? "gzip" : "identity", "bytes" => 42,
+             "sha256" => "a" * 64, "gzip_magic" => profile == "gzip", "content_length" => "42" }
+    telemetry.reject! { |event| event["event"] == "wire_response" }
+    telemetry[0]["compression"] = profile == "gzip" ? "COMPRESSION_GZIP" : "COMPRESSION_IDENTITY"
+    telemetry[1].merge!("deadline" => false, "request_headers" => {}, "wire" => wire)
+    telemetry[2].merge!("outcome" => "error", "code" => "CODE_CANCELED")
+    telemetry[3]["result"] = { "testName" => cancel_name, "response" => { "error" => { "code" => "CODE_CANCELED" } } }
+    request = { "responseDefinition" => {
       "responseHeaders" => [{ "name" => "x-custom-header", "value" => ["foo"] }],
-      "responseTrailers" => [{ "name" => "x-custom-trailer", "value" => ["bing"] }]
+      "responseData" => "dGVzdCByZXNwb25zZQ==",
+      "responseTrailers" => [{ "name" => "x-custom-trailer", "value" => ["bing"] }], "responseDelayMs" => 200
     } }
-    telemetry << { "event" => "unsupported_cancellation", "name" => cancel_name,
-                   "instruction" => { "afterCloseSendMs" => 5 } }
-    if profile == "gzip"
-      log = log.sub("Computed 96", "Computed 88")
-      telemetry[0]["compression"] = "COMPRESSION_GZIP"
-      telemetry[1].merge!("monotonic" => 1.0, "request_headers" => {},
-                          "wire" => { "encoding" => "gzip", "bytes" => 42, "gzip_magic" => true })
-      telemetry[2]["monotonic"] = 1.201
-      headers = telemetry[3].fetch("result").fetch("response").fetch("payloads").first
-                            .fetch("requestInfo").fetch("requestHeaders")
-      headers.push({ "name" => "Content-Encoding", "value" => ["gzip"] },
-                   { "name" => "Content-Length", "value" => ["42"] })
-      telemetry.insert(2, { "event" => "wire_response", "name" => cancel_name, "status" => 200,
-                            "wire" => { "encoding" => "gzip", "bytes" => 200, "gzip_magic" => true,
-                                        "content_length" => "200" } })
-    end
+    extra_events = [
+      { "event" => "cancellation_instruction", "name" => cancel_name,
+        "instruction" => { "afterCloseSendMs" => 5 } },
+      { "event" => "request_written", "name" => cancel_name, "bytes" => 250,
+        "headers_complete" => true,
+        "body" => wire, "timeout_header" => false, "request" => request,
+        "test_name_header" => cancel_name,
+        "content_length" => "42", "written_at" => 1.0 },
+      { "event" => "cancellation_signal", "name" => cancel_name, "changed" => true,
+        "reason" => "canceled", "requested_at" => 1.005 },
+      { "event" => "socket_cleanup", "name" => cancel_name, "closed" => true, "interrupted" => true,
+        "retired" => true },
+      { "event" => "wire_failure", "name" => cancel_name, "code" => "canceled" }
+    ]
+    telemetry.concat(extra_events)
     [log, telemetry, cancel_name]
   end
 
-  it "requires actual uncanceled success, payload, metadata and only the exact cancellation assertion blocks" do
-    log, telemetry, cancel_name = cancellation_fixture
-    ledger = lambda { |text, records|
-      described_class.new(direction: "client", selected: cancel_name).parse(text, records, 0)
-    }
-    expect(ledger.call(log,
-                       telemetry)).to include(failed: 0, passed: 0, expected_failed: 1, unsupported_instructions: 1)
-    expect { ledger.call(log.sub("failed (as expected):", "was expected to fail but did not"), telemetry) }
-      .to raise_error(RuntimeError, /Conformance accounting/)
-    expect { ledger.call(log.sub("Another 1 failed as expected", "Another 0 failed as expected"), telemetry) }
-      .to raise_error(RuntimeError, /Expected failure count/)
-    expect { ledger.call(log.sub("expecting an error but received none", "deadline exceeded"), telemetry) }
-      .to raise_error(RuntimeError, /Cancellation failure assertions changed/)
-    altered = Marshal.load(Marshal.dump(telemetry))
-    altered[2]["outcome"] = "error"
-    expect { ledger.call(log, altered) }.to raise_error(RuntimeError, /Unrelated cancellation RPC error/)
-    altered[2]["outcome"] = "success"
-    altered[3]["result"]["response"]["payloads"][0]["data"] = "wrong"
-    expect { ledger.call(log, altered) }.to raise_error(RuntimeError, /Cancellation payload changed/)
+  %w[identity gzip].each do |profile|
+    it "requires actual wire cancellation and zero waived outcomes for #{profile}" do
+      log, telemetry, cancel_name = cancellation_fixture(profile)
+      check = lambda do |text, records|
+        described_class.new(direction: "client", selected: cancel_name, profile: profile).parse(text, records, 0)
+      end
+      expect(check.call(log, telemetry)).to include(passed: 1, failed: 0, expected_failed: 0, accounting_valid: true)
+      %w[request_written cancellation_signal socket_cleanup wire_failure].each do |kind|
+        expect { check.call(log, telemetry.reject { |event| event["event"] == kind }) }.to raise_error(RuntimeError)
+      end
+      %w[bytes headers_complete timeout_header request].each do |field|
+        changed = Marshal.load(Marshal.dump(telemetry))
+        write = changed.find { |event| event["event"] == "request_written" }
+        write[field] =
+          { "bytes" => 0, "headers_complete" => false, "timeout_header" => true, "request" => {} }.fetch(field)
+        expect { check.call(log, changed) }.to raise_error(RuntimeError, /Conformance accounting/)
+      end
+      expect { check.call("#{log}(Another 1 failed as expected due to being known failures/flakes.)\n", telemetry) }
+        .to raise_error(RuntimeError, /Unrecognized runner output/)
+    end
   end
 
   it "keeps the gzip inventory disjoint, exact and additional to identity" do
@@ -170,33 +162,7 @@ RSpec.describe Conformance::Ledger do
       expect(gzip.uniq).to eq(gzip)
       expect(identity & gzip).to be_empty
     end
-    expect(described_class::KNOWN_FAILURES & described_class::GZIP_CANCELLATIONS).to be_empty
-    expect(described_class::GZIP_KNOWN_FAILURES.sort).to eq(described_class::GZIP_CANCELLATIONS.sort)
-    expect(described_class::GZIP_KNOWN_FAILURES.size).to eq(2)
-  end
-
-  it "requires approved gzip expected failures to retain strict causal and wire proof" do
-    log, telemetry, name = cancellation_fixture("gzip")
-    ledger = lambda { |text, events|
-      described_class.new(direction: "client", profile: "gzip", selected: name).parse(text, events, 0)
-    }
-    summary = ledger.call(log, telemetry)
-    expect(summary).to include(executed: 1, failed: 0, passed: 0, expected_failed: 1, accounting_valid: true)
-    expect(summary.fetch(:outcomes)).to eq(name => "expected_failure")
-    expect { ledger.call(log.sub("expecting an error but received none", "different error"), telemetry) }
-      .to raise_error(RuntimeError, /Cancellation failure assertions/)
-    altered = Marshal.load(Marshal.dump(telemetry))
-    altered[1]["wire"]["gzip_magic"] = false
-    expect { ledger.call(log, altered) }.to raise_error(RuntimeError, /wire evidence/)
-    altered = Marshal.load(Marshal.dump(telemetry))
-    altered[1]["deadline"] = true
-    expect { ledger.call(log, altered) }.to raise_error(RuntimeError, /substituted a deadline/)
-    altered = Marshal.load(Marshal.dump(telemetry))
-    altered[3]["outcome"] = "error"
-    expect { ledger.call(log, altered) }.to raise_error(RuntimeError, /Unrelated cancellation RPC error/)
-    expect { ledger.call(log.sub("Another 1 failed as expected", "Another 0 failed as expected"), telemetry) }
-      .to raise_error(RuntimeError, /Expected failure count/)
-    expect { ledger.call(log.sub("failed (as expected):", "was expected to fail but did not"), telemetry) }
-      .to raise_error(RuntimeError, /Conformance accounting/)
+    expect(described_class::CANCELLATIONS.size).to eq(2)
+    expect(described_class::GZIP_CANCELLATIONS.size).to eq(2)
   end
 end

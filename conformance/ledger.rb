@@ -15,24 +15,6 @@ module Conformance
     PROFILES = { "identity" => WITH_GET, "gzip" => GZIP }.freeze
     GZIP_CANCELLATIONS = GZIP.fetch("client").select { |name| name.start_with?("Client Cancellation/") }.freeze
     CANCELLATIONS = BASELINE.fetch("client").select { |name| name.start_with?("Client Cancellation/") }.freeze
-    MANIFEST = File.join(__dir__, "known-failing-client.txt")
-    KNOWN_FAILURES = File.readlines(MANIFEST, chomp: true).reject { |line| line.empty? || line.start_with?("#") }.freeze
-    unless KNOWN_FAILURES.size == 2 && KNOWN_FAILURES.sort == CANCELLATIONS.sort
-      raise "Known failures must name exactly the two configured caller-cancellation cases"
-    end
-
-    GZIP_MANIFEST = File.join(__dir__, "known-failing-gzip-client.txt")
-    GZIP_KNOWN_FAILURES = File.readlines(GZIP_MANIFEST, chomp: true)
-                              .reject { |line| line.empty? || line.start_with?("#") }.freeze
-    unless GZIP_KNOWN_FAILURES.size == 2 && GZIP_KNOWN_FAILURES.sort == GZIP_CANCELLATIONS.sort
-      raise "Gzip known failures must name exactly the two approved caller-cancellation cases"
-    end
-
-    MANIFESTS = { "identity" => MANIFEST, "gzip" => GZIP_MANIFEST }.freeze
-    PROFILE_FAILURES = { "identity" => KNOWN_FAILURES, "gzip" => GZIP_KNOWN_FAILURES }.freeze
-
-    CANCELLATION_FAILURE = ["expecting an error but received none",
-                            "expecting 0 response messages but instead got 1"].freeze
     SERVER_CONFIG = Regexp.escape("{HTTP_VERSION_1, PROTOCOL_CONNECT, TLS:false}")
     attr_reader :summary
 
@@ -47,7 +29,6 @@ module Conformance
       @scheduled = []
       @received = []
       @failures = {}
-      @expected_failures = {}
       @counts = {}
     end
 
@@ -59,21 +40,14 @@ module Conformance
       @summary = { runner: "v1.0.6", ruby: RUBY_VERSION, direction: @direction, profile: @profile,
                    configured_discovered: @counts.fetch(:computed),
                    executed: @scheduled.size, passed: @counts.fetch(:passed), failed: @counts.fetch(:failed),
-                   expected_failed: @expected_failures.size, could_not_run: @counts.fetch(:could_not_run, 0),
-                   unsupported_instructions: events.count do |event|
-                     event.fetch("event") == "unsupported_cancellation"
-                   end,
+                   expected_failed: 0, could_not_run: @counts.fetch(:could_not_run, 0),
                    scheduled: @scheduled.sort, received: @received.sort,
                    dispatched: event_names(events, "dispatch").sort, completed: event_names(events, "completed").sort,
                    outcomes: @scheduled.sort.to_h do |name|
-                     outcome = if @expected_failures.key?(name)
-                                 "expected_failure"
-                               else
-                                 @failures.key?(name) ? "failed" : "passed"
-                               end
+                     outcome = @failures.key?(name) ? "failed" : "passed"
                      [name, outcome]
                    end,
-                   failure_assertions: @failures, expected_failure_assertions: @expected_failures,
+                   failure_assertions: @failures,
                    runner_exit: exit_code, accounting_valid: true }
     end
 
@@ -93,7 +67,7 @@ module Conformance
       raw.each_line(chomp: true) do |line|
         if line.start_with?("\t")
           verify(current, "Unattributed failure assertion")
-          (@failures[current] || @expected_failures.fetch(current)) << line.delete_prefix("\t")
+          @failures.fetch(current) << line.delete_prefix("\t")
           next
         end
         current = nil unless line.empty?
@@ -108,16 +82,8 @@ module Conformance
           count(:filtered, Regexp.last_match(1))
         when /\AFAILED: (.+):\z/
           current = Regexp.last_match(1)
-          verify(!@failures.key?(current) && !@expected_failures.key?(current), "Duplicate failure #{current}")
+          verify(!@failures.key?(current), "Duplicate failure #{current}")
           @failures[current] = []
-        when /\AINFO: (.+) failed \(as expected\):\z/
-          current = Regexp.last_match(1)
-          verify(!@failures.key?(current) && !@expected_failures.key?(current), "Duplicate failure #{current}")
-          @expected_failures[current] = []
-        when /\ALoaded (\d+) known failing test case pattern\(s\) that match (\d+) test case permutation\(s\)\.\z/
-          patterns, matches = Regexp.last_match.captures
-          count(:known_patterns, patterns)
-          count(:known_matches, matches)
         when /\ATotal cases: (\d+)\z/
           count(:total, Regexp.last_match(1))
         when /\A(\d+) passed, (\d+) failed\z/
@@ -126,8 +92,6 @@ module Conformance
           count(:failed, failed)
         when /\AAnother (\d+) could not be run due to client timing out or exiting prematurely\.\z/
           count(:could_not_run, Regexp.last_match(1))
-        when %r{\A\(Another (\d+) failed as expected due to being known failures/flakes\.\)\z}
-          count(:expected_failed, Regexp.last_match(1))
         when /\AComputed \d+ config case permutations\.\z/,
              /\ALoaded \d+ test suite\(s\), \d+ test case template\(s\)\.\z/,
              /\ARunning \d+ tests with reference-(?:client|server) for server config #1 #{SERVER_CONFIG}\.\.\.\z/, ""
@@ -151,19 +115,12 @@ module Conformance
       verify(!@selected || @counts.key?(:filtered), "Missing selector accounting")
       exact_set!(@scheduled, @expected, "scheduled")
       exact_set!(@received, @scheduled, "runner responses")
-      configured_failures = PROFILE_FAILURES.fetch(@profile)
-      known = @direction == "client" ? configured_failures & @scheduled : []
-      exact_set!(@expected_failures.keys, known, "expected failure outcomes")
-      manifest_size = @direction == "client" ? configured_failures.size : 0
-      verify(@counts.fetch(:known_patterns, 0) == manifest_size &&
-             @counts.fetch(:known_matches, 0) == manifest_size, "Known failure manifest accounting changed")
-      verify(@counts.fetch(:expected_failed, 0) == known.size, "Expected failure count mismatch")
       verify((@failures.keys - @scheduled).empty?, "Outcome outside scheduled set")
-      verify((@failures.values + @expected_failures.values).none?(&:empty?), "Missing failure assertion")
+      verify(@failures.values.none?(&:empty?), "Missing failure assertion")
       verify(@counts.fetch(:could_not_run, 0).zero?, "Some cases could not run")
       verify(@counts.fetch(:total) == @scheduled.size, "Total count mismatch")
       verify(@counts.fetch(:failed) == @failures.size, "Failure count mismatch")
-      verify(@counts.fetch(:passed) + @failures.size + known.size == @scheduled.size, "Pass count mismatch")
+      verify(@counts.fetch(:passed) + @failures.size == @scheduled.size, "Pass count mismatch")
     end
 
     def event_names(events, kind)
@@ -172,8 +129,8 @@ module Conformance
 
     def validate_events!(events)
       allowed = if @direction == "client"
-                  %w[received dispatch wire_response wire_failure completed responded unsupported_cancellation
-                     client_eof]
+                  %w[received dispatch wire_response wire_failure completed responded
+                     cancellation_instruction cancellation_signal request_written socket_cleanup client_eof]
                 else
                   %w[dispatch completed server_ready server_stdin_eof server_stopped]
                 end
@@ -206,9 +163,11 @@ module Conformance
     end
 
     def validate_client_results!(events)
+      exact_set!(event_names(events, "wire_response") + event_names(events, "wire_failure"),
+                 @scheduled, "wire terminal observations")
       expected_cancel = (CANCELLATIONS + GZIP_CANCELLATIONS) & @scheduled
-      exact_set!(event_names(events, "unsupported_cancellation"), expected_cancel,
-                 "unsupported cancellation instructions")
+      exact_set!(event_names(events, "cancellation_instruction"), expected_cancel,
+                 "cancellation instructions")
       events.select { |event| event.fetch("event") == "responded" }.each do |event|
         result = event.fetch("result")
         verify(result.fetch("testName") == event.fetch("name") && result.key?("response") && !result.key?("error"),
@@ -281,63 +240,45 @@ module Conformance
       end
     end
 
-    def validate_gzip_cancellation!(records, info)
-      dispatch = records.fetch("dispatch")
-      completed = records.fetch("completed")
-      response = records.fetch("wire_response")
-      verify(response.fetch("status") == 200, "Cancellation wire status changed")
-      verify(completed.fetch("monotonic") - dispatch.fetch("monotonic") >= 0.2,
-             "Cancellation did not complete the requested delay")
-      verify(!dispatch.fetch("request_headers").key?("connect-timeout-ms"), "Cancellation wire timeout added")
-      headers = info.fetch("requestHeaders").to_h { |header| [header.fetch("name").downcase, header.fetch("value")] }
-      verify(headers["content-encoding"] == ["gzip"], "Cancellation peer did not observe gzip")
-      verify(headers["content-length"] == [dispatch.fetch("wire").fetch("bytes").to_s],
-             "Cancellation peer wire length changed")
-      wire = response.fetch("wire")
-      verify(%w[gzip identity].include?(wire.fetch("encoding")) && wire.fetch("bytes").positive?,
-             "Cancellation response wire missing")
-      verify(wire.fetch("gzip_magic") == (wire.fetch("encoding") == "gzip"), "Cancellation response coding changed")
-      verify(wire.fetch("content_length").to_i == wire.fetch("bytes"), "Cancellation response length changed")
-    end
-
-    def validate_cancellation_echo!(info, name)
-      verify(!info.key?("timeoutMs"), "Cancellation sent a wire timeout")
-      headers = info.fetch("requestHeaders")
-      test_header = headers.select { |header| header.fetch("name").downcase == "x-test-case-name" }
-      verify(test_header.size == 1 && test_header.first.fetch("value") == [name], "Cancellation request name changed")
-      requests = info.fetch("requests")
-      expected = { "@type" => "type.googleapis.com/connectrpc.conformance.v1.UnaryRequest",
-                   "responseDefinition" => {
-                     "responseHeaders" => [{ "name" => "x-custom-header", "value" => ["foo"] }],
-                     "responseData" => "dGVzdCByZXNwb25zZQ==",
-                     "responseTrailers" => [{ "name" => "x-custom-trailer", "value" => ["bing"] }],
-                     "responseDelayMs" => 200
-                   } }
-      verify(requests == [expected], "Cancellation request roundtrip changed")
-    end
-
     def validate_cancellation!(events, name)
-      records = events.select { |event| event["name"] == name }.to_h { |event| [event.fetch("event"), event] }
-      verify(records.fetch("unsupported_cancellation").fetch("instruction") == { "afterCloseSendMs" => 5 },
-             "Cancellation timing changed")
-      verify(records.fetch("dispatch").fetch("deadline") == false, "Cancellation substituted a deadline")
-      verify(records.fetch("completed").fetch("outcome") == "success", "Unrelated cancellation RPC error")
-      response = records.fetch("responded").fetch("result").fetch("response")
-      verify(!response.key?("error"), "Synthetic cancellation error")
-      payloads = response.fetch("payloads")
-      verify(payloads.size == 1 && payloads.first.fetch("data") == "dGVzdCByZXNwb25zZQ==",
-             "Cancellation payload changed")
-      info = payloads.first.fetch("requestInfo")
-      validate_cancellation_echo!(info, name)
-      validate_gzip_cancellation!(records, info) if @profile == "gzip"
-      %w[responseHeaders responseTrailers].zip(%w[x-custom-header x-custom-trailer],
-                                               %w[foo bing]).each do |field, key, value|
-        entries = response.fetch(field).select { |header| header.fetch("name") == key }
-        verify(entries.size == 1 && entries.first.fetch("value") == [value], "Cancellation #{field} changed")
+      records = events.select { |event| event["name"] == name }
+      %w[cancellation_instruction cancellation_signal request_written socket_cleanup wire_failure].each do |kind|
+        verify(records.one? { |event| event["event"] == kind }, "Missing/duplicate cancellation #{kind}")
       end
-      assertions = @expected_failures[name] || @failures[name]
-      verify(assertions == CANCELLATION_FAILURE,
-             "Cancellation failure assertions changed: #{assertions}")
+      records = records.to_h { |event| [event.fetch("event"), event] }
+      verify(records.fetch("cancellation_instruction").fetch("instruction") == { "afterCloseSendMs" => 5 },
+             "Cancellation timing changed")
+      dispatch = records.fetch("dispatch")
+      verify(dispatch.fetch("deadline") == false, "Cancellation substituted a deadline")
+      verify(!dispatch.fetch("request_headers").key?("connect-timeout-ms"), "Cancellation wire timeout added")
+      written = records.fetch("request_written")
+      verify(written.fetch("bytes").positive? && written.fetch("headers_complete") &&
+             written.fetch("body").fetch("bytes").positive?, "Cancellation has no actual wire progress")
+      verify(written.fetch("body").except("content_length") == dispatch.fetch("wire").except("content_length"),
+             "Cancellation actual body changed")
+      verify(written.fetch("test_name_header") == name, "Cancellation wire name changed")
+      verify(written.fetch("content_length") == written.fetch("body").fetch("bytes").to_s,
+             "Cancellation wire length changed")
+      verify(written.fetch("timeout_header") == false, "Cancellation sent a wire timeout")
+      expected = { "responseDefinition" => {
+        "responseHeaders" => [{ "name" => "x-custom-header", "value" => ["foo"] }],
+        "responseData" => "dGVzdCByZXNwb25zZQ==",
+        "responseTrailers" => [{ "name" => "x-custom-trailer", "value" => ["bing"] }], "responseDelayMs" => 200
+      } }
+      verify(written.fetch("request") == expected, "Cancellation request changed")
+      signal = records.fetch("cancellation_signal")
+      verify(signal.fetch("changed") && signal.fetch("reason") == "canceled", "Source cancellation missing")
+      verify(written.fetch("written_at") <= signal.fetch("requested_at"), "Cancellation preceded actual request write")
+      cleanup = records.fetch("socket_cleanup")
+      verify(cleanup.fetch("closed") && cleanup.fetch("interrupted") && cleanup.fetch("retired"),
+             "Cancellation did not interrupt and retire its socket")
+      completed = records.fetch("completed")
+      verify(completed.fetch("outcome") == "error" && completed.fetch("code") == "CODE_CANCELED",
+             "Cancellation library result changed")
+      response = records.fetch("responded").fetch("result").fetch("response")
+      verify(response.fetch("error").fetch("code") == "CODE_CANCELED" && !response.key?("payloads"),
+             "Cancellation adapter result changed")
+      verify(records.fetch("wire_failure").fetch("code") == "canceled", "Cancellation transport result missing")
     end
   end
 end
