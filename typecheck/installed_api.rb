@@ -88,7 +88,9 @@ module InstalledAPI # rubocop:disable Metrics/ModuleLength
     [libraries, libraries.reverse].each do |order|
       command = [RbConfig.ruby, "-S", "rbs", *order.flat_map { |name| ["-r", name] }]
       RBSHarness.capture!([*command, "validate"], working: working)
-      RBSHarness.capture!([*command, *bridges.flat_map { |directory| ["-I", directory] }, "validate"], working: working)
+      bridge_order = order == libraries ? bridges : bridges.reverse
+      RBSHarness.capture!([*command, *bridge_order.flat_map { |directory| ["-I", directory] }, "validate"],
+                          working: working)
     end
     library_loading = libraries.map { |name| "loader.add(library: #{name.dump})" }.join("\n")
     isolation = <<~CODE

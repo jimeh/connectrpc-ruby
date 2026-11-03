@@ -1,7 +1,7 @@
 # frozen_string_literal: true
 
 # The application can supply the real loader without a file-level self override.
-class APIFalconConfiguration
+class ::APIFalconConfiguration
   def configure(loader) # rubocop:disable Metrics/MethodLength
     loader.service "typed-connectrpc" do
       include ConnectRPC::Falcon::Environment
