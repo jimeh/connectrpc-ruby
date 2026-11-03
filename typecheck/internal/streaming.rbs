@@ -1,4 +1,7 @@
 module ConnectRPC
+  interface _StreamCapabilityProbe
+    def respond_to?: (:streaming_capabilities | :open_stream) -> bool
+  end
   type stream_declaration = ServerStreamMethod[untyped, untyped] | ClientStreamMethod[untyped, untyped] | BidiStreamMethod[untyped, untyped]
   type stream_endpoint = ResponseReader[untyped] | RequestWriter[untyped] | ClientDuplex[untyped, untyped]
   class Client
@@ -7,6 +10,7 @@ module ConnectRPC
     private
     def validate_stream_call!: (declaration, singleton(ServerStreamMethod) | singleton(ClientStreamMethod) | singleton(BidiStreamMethod), CancellationToken?, Proc?) -> nil
     def stream_capability?: (declaration) -> bool
+    def streaming_transport?: () -> bool
     def stream_call: [Q, R] (ServerStreamMethod[Q, R], Q, metadata_input, Numeric?, CancellationToken?) { (ResponseReader[R]) -> void } -> nil
       | [Q, R] (ClientStreamMethod[Q, R], nil, metadata_input, Numeric?, CancellationToken?) { (RequestWriter[Q]) -> void } -> Response[R]
       | [Q, R] (BidiStreamMethod[Q, R], nil, metadata_input, Numeric?, CancellationToken?) { (ClientDuplex[Q, R]) -> void } -> nil
@@ -88,7 +92,7 @@ module ConnectRPC
     TAIL_SECONDS: Float
     def self.codec: (String?) -> codec?
     def self.coding_headers: (headers) -> headers
-    def self.parse_terminal: (String, ?metadata: metadata_input) -> [Error?, Metadata]
+    def self.parse_terminal: (String, ?metadata: metadata_input, ?on_error: (^(StandardError) -> void)?) -> [Error?, Metadata]
     def self.terminal_bytes: (Error?, Metadata, wire_limit: Integer, limit: Integer) -> [String, Error?]
     def self.terminal_metadata: (Hash[String, untyped]) -> Metadata
     def self.terminal_error: (untyped, metadata_input, Metadata) -> Error?
@@ -118,6 +122,7 @@ module ConnectRPC
       def cleanup: (Session) -> void
       def record_user_error: (Exception) -> void
       private
+      def execute: (Numeric?, CancellationToken?) { (CallCancellation, Deadline?) -> void } -> Response[untyped]?
       def finish: (Exception?) -> void
       def finish_preserving_user: (Exception?) -> void
       def start: (Numeric?, CancellationToken?) -> [CallCancellation, Deadline?]
@@ -127,13 +132,9 @@ module ConnectRPC
       def normalized_error: (Exception?) -> Error?
     end
     class Direction
-      @lifecycle: Instrumentation::Handle?
-      attr_reader error: StandardError?
       attr_reader busy: bool
-      def initialize: (Instrumentation::Handle?) -> void
+      def initialize: () -> void
       def run: [T] () { () -> T } -> T
-      private
-      def record_failure: (StandardError) -> void
     end
     class Framing
       @input: _StreamingInput?
@@ -145,10 +146,11 @@ module ConnectRPC
       @terminal_wire_limit: Integer
       @terminal_limit: Integer
       @state: _Check?
+      @on_error: (^(StandardError) -> void)?
       attr_reader messages: Integer
       attr_reader terminal: bool
       attr_writer encoding: encoding
-      def initialize: (input: _StreamingInput?, ?output: _StreamingWriter?, request: bool, wire_limit: Integer, limit: Integer, ?encoding: encoding, ?terminal_wire_limit: Integer, ?terminal_limit: Integer, ?state: _Check?) -> void
+      def initialize: (input: _StreamingInput?, ?output: _StreamingWriter?, request: bool, wire_limit: Integer, limit: Integer, ?encoding: encoding, ?terminal_wire_limit: Integer, ?terminal_limit: Integer, ?state: _Check?, ?on_error: (^(StandardError) -> void)?) -> void
       def read_frame: (?timeout: Numeric?, ?skip_data: bool) -> [Integer, String]?
       def emit: (String, ?terminal: bool) -> nil
       private
@@ -193,8 +195,7 @@ module ConnectRPC
       @reading: Direction
       @writing: Direction
       @accept_encoding: Array[encoding]
-      @reading_error: StandardError?
-      @writing_error: StandardError?
+      @operation_error: StandardError?
       @send_failure: StandardError?
       @remote_error: Error?
       @headers: Metadata?
@@ -218,6 +219,7 @@ module ConnectRPC
       def read: (Integer, ?timeout: Numeric?) -> String?
       def recover_send_failure: () -> Error?
       private
+      def record_operation_failure: (StandardError) -> void
       def recovery_timeout: () -> Float
       def initialize_owner: (_Binding, declaration, codec, Context | CallCancellation) -> void
       def initialize_channels: (_StreamingInput | _StreamExchange, _StreamingOutput | _StreamExchange, bool, StreamingContext?, Instrumentation::Handle?) -> void
@@ -226,6 +228,7 @@ module ConnectRPC
       def initialize_reader: (Integer, Integer, encoding, encoding, terminal_wire_limit: Integer, terminal_limit: Integer) -> void
       def initialize_writer: (Integer, Integer, encoding, encoding, terminal_wire_limit: Integer, terminal_limit: Integer) -> void
       def receive_message: () -> untyped
+      def completed_receive: () -> nil
       def receive_eof: () -> nil
       def decode_message: (String) -> untyped
       def validate_response_count: () -> void
@@ -250,6 +253,7 @@ module ConnectRPC
       def operation: [T] (:reading | :writing) { () -> T } -> T
       def leading: () -> Metadata
       def accept_terminal: (String) -> void
+      def parse_terminal: (String) -> [Error?, Metadata]
     end
   end
 end

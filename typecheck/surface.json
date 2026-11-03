@@ -258,9 +258,10 @@
     "ConnectRPC::Async::Transport#exchange": {"kind":"method","visibility":"private","parameters":"operation","classification":"internal"},
     "ConnectRPC::Async::Transport#initialize": {"kind":"method","visibility":"public","parameters":"origin:, ca_file: nil, certificate_chain: nil, private_key: nil, connection_limit: 1, max_requests: 128, connect_timeout: 10","classification":"supported"},
     "ConnectRPC::Async::Transport#inspect": {"kind":"method","visibility":"public","parameters":"","classification":"internal"},
-    "ConnectRPC::Async::Transport#open_stream": {"kind":"method","visibility":"public","parameters":"request","classification":"spi"},
+    "ConnectRPC::Async::Transport#open_stream": {"kind":"method","visibility":"public","parameters":"request, &","classification":"spi"},
     "ConnectRPC::Async::Transport#parse_origin": {"kind":"method","visibility":"private","parameters":"value","classification":"internal"},
     "ConnectRPC::Async::Transport#perform_call": {"kind":"method","visibility":"private","parameters":"request","classification":"internal"},
+    "ConnectRPC::Async::Transport#perform_stream": {"kind":"method","visibility":"private","parameters":"request","classification":"internal"},
     "ConnectRPC::Async::Transport#read_body": {"kind":"method","visibility":"private","parameters":"response, request","classification":"internal"},
     "ConnectRPC::Async::Transport#same_origin?": {"kind":"method","visibility":"private","parameters":"uri","classification":"internal"},
     "ConnectRPC::Async::Transport#setup_connection": {"kind":"method","visibility":"private","parameters":"resource","classification":"internal"},
@@ -629,6 +630,7 @@
     "ConnectRPC::Instrumentation::Handle#code": {"kind":"attribute","visibility":"public","classification":"internal"},
     "ConnectRPC::Instrumentation::Handle#code=": {"kind":"attribute","visibility":"public","classification":"internal"},
     "ConnectRPC::Instrumentation::Handle#complete": {"kind":"method","visibility":"private","parameters":"","classification":"internal"},
+    "ConnectRPC::Instrumentation::Handle#complete_processing": {"kind":"method","visibility":"private","parameters":"","classification":"internal"},
     "ConnectRPC::Instrumentation::Handle#finish": {"kind":"method","visibility":"public","parameters":"delivery:, error: nil, decision: :processed, http_status: nil","classification":"spi"},
     "ConnectRPC::Instrumentation::Handle#host_rejected!": {"kind":"method","visibility":"public","parameters":"","classification":"spi"},
     "ConnectRPC::Instrumentation::Handle#host_rejected?": {"kind":"method","visibility":"public","parameters":"","classification":"spi"},
@@ -645,6 +647,7 @@
     "ConnectRPC::Instrumentation::Handle#request_bytes=": {"kind":"attribute","visibility":"public","classification":"internal"},
     "ConnectRPC::Instrumentation::Handle#request_metadata": {"kind":"attribute","visibility":"public","classification":"internal"},
     "ConnectRPC::Instrumentation::Handle#request_metadata=": {"kind":"attribute","visibility":"public","classification":"internal"},
+    "ConnectRPC::Instrumentation::Handle#with_processing_completion": {"kind":"method","visibility":"private","parameters":"","classification":"internal"},
     "ConnectRPC::Instrumentation::Outcome": {"kind":"Data","visibility":"public","members":["code","http_status","error","normalized_error","duration","request_bytes","response_bytes","request_metadata","response_metadata"],"options":[],"classification":"spi"}
   },
   "lib/connectrpc/message_io.rb": {
@@ -744,6 +747,7 @@
     "ConnectRPC::Client#stream_capability?": {"kind":"method","visibility":"private","parameters":"method","classification":"internal"},
     "ConnectRPC::Client#stream_metadata": {"kind":"method","visibility":"private","parameters":"metadata, injection, lifecycle","classification":"internal"},
     "ConnectRPC::Client#stream_request": {"kind":"method","visibility":"private","parameters":"method, metadata, deadline, state, lifecycle","classification":"internal"},
+    "ConnectRPC::Client#streaming_transport?": {"kind":"method","visibility":"private","parameters":"","classification":"internal"},
     "ConnectRPC::Client#validate_stream_call!": {"kind":"method","visibility":"private","parameters":"method, type, cancellation, block","classification":"internal"}
   },
   "lib/connectrpc/streaming/client_execution.rb": {
@@ -762,6 +766,7 @@
     "ConnectRPC::Streaming::ClientScope#cleanup": {"kind":"method","visibility":"public","parameters":"session","classification":"internal"},
     "ConnectRPC::Streaming::ClientScope#completed": {"kind":"attribute","visibility":"public","classification":"internal"},
     "ConnectRPC::Streaming::ClientScope#completed=": {"kind":"attribute","visibility":"public","classification":"internal"},
+    "ConnectRPC::Streaming::ClientScope#execute": {"kind":"method","visibility":"private","parameters":"timeout, cancellation","classification":"internal"},
     "ConnectRPC::Streaming::ClientScope#failure": {"kind":"attribute","visibility":"public","classification":"internal"},
     "ConnectRPC::Streaming::ClientScope#failure=": {"kind":"attribute","visibility":"public","classification":"internal"},
     "ConnectRPC::Streaming::ClientScope#finish": {"kind":"method","visibility":"private","parameters":"error","classification":"internal"},
@@ -775,7 +780,7 @@
     "ConnectRPC::Streaming::ClientScope#report_processing": {"kind":"method","visibility":"private","parameters":"lifecycle, error","classification":"internal"},
     "ConnectRPC::Streaming::ClientScope#result": {"kind":"attribute","visibility":"public","classification":"internal"},
     "ConnectRPC::Streaming::ClientScope#result=": {"kind":"attribute","visibility":"public","classification":"internal"},
-    "ConnectRPC::Streaming::ClientScope#run": {"kind":"method","visibility":"public","parameters":"timeout, cancellation","classification":"internal"},
+    "ConnectRPC::Streaming::ClientScope#run": {"kind":"method","visibility":"public","parameters":"timeout, cancellation, &","classification":"internal"},
     "ConnectRPC::Streaming::ClientScope#start": {"kind":"method","visibility":"private","parameters":"timeout, cancellation","classification":"internal"},
     "ConnectRPC::Streaming::ClientScope#success?": {"kind":"method","visibility":"private","parameters":"error","classification":"internal"}
   },
@@ -785,7 +790,7 @@
     "ConnectRPC::Streaming::Framing#emit": {"kind":"method","visibility":"public","parameters":"bytes, terminal: false","classification":"internal"},
     "ConnectRPC::Streaming::Framing#encoding=": {"kind":"attribute","visibility":"public","classification":"internal"},
     "ConnectRPC::Streaming::Framing#inflate": {"kind":"method","visibility":"private","parameters":"bytes, bound","classification":"internal"},
-    "ConnectRPC::Streaming::Framing#initialize": {"kind":"method","visibility":"public","parameters":"input:, request:, wire_limit:, limit:, output: nil, encoding: :identity, terminal_wire_limit: TERMINAL_LIMIT, terminal_limit: TERMINAL_LIMIT, state: nil","classification":"internal"},
+    "ConnectRPC::Streaming::Framing#initialize": {"kind":"method","visibility":"public","parameters":"input:, request:, wire_limit:, limit:, output: nil, encoding: :identity, terminal_wire_limit: TERMINAL_LIMIT, terminal_limit: TERMINAL_LIMIT, state: nil, on_error: nil","classification":"internal"},
     "ConnectRPC::Streaming::Framing#initialize_state": {"kind":"method","visibility":"private","parameters":"state","classification":"internal"},
     "ConnectRPC::Streaming::Framing#messages": {"kind":"attribute","visibility":"public","classification":"internal"},
     "ConnectRPC::Streaming::Framing#payload": {"kind":"method","visibility":"private","parameters":"flags, length, timeout:, skip_data:","classification":"internal"},
@@ -859,9 +864,7 @@
   },
   "lib/connectrpc/streaming/session.rb": {
     "ConnectRPC::Streaming::Direction#busy": {"kind":"attribute","visibility":"public","classification":"internal"},
-    "ConnectRPC::Streaming::Direction#error": {"kind":"attribute","visibility":"public","classification":"internal"},
-    "ConnectRPC::Streaming::Direction#initialize": {"kind":"method","visibility":"public","parameters":"lifecycle","classification":"internal"},
-    "ConnectRPC::Streaming::Direction#record_failure": {"kind":"method","visibility":"private","parameters":"error","classification":"internal"},
+    "ConnectRPC::Streaming::Direction#initialize": {"kind":"method","visibility":"public","parameters":"","classification":"internal"},
     "ConnectRPC::Streaming::Direction#run": {"kind":"method","visibility":"public","parameters":"","classification":"internal"},
     "ConnectRPC::Streaming::Session#abandoned?": {"kind":"method","visibility":"public","parameters":"","classification":"internal"},
     "ConnectRPC::Streaming::Session#check_open!": {"kind":"method","visibility":"private","parameters":"","classification":"internal"},
@@ -877,6 +880,7 @@
     "ConnectRPC::Streaming::Session#operation": {"kind":"method","visibility":"private","parameters":"direction","classification":"internal"},
     "ConnectRPC::Streaming::Session#owned_error?": {"kind":"method","visibility":"public","parameters":"error","classification":"internal"},
     "ConnectRPC::Streaming::Session#received": {"kind":"attribute","visibility":"public","classification":"internal"},
+    "ConnectRPC::Streaming::Session#record_operation_failure": {"kind":"method","visibility":"private","parameters":"error","classification":"internal"},
     "ConnectRPC::Streaming::Session#send_failure?": {"kind":"method","visibility":"public","parameters":"error","classification":"internal"},
     "ConnectRPC::Streaming::Session#sent": {"kind":"attribute","visibility":"public","classification":"internal"},
     "ConnectRPC::Streaming::Session#trailers": {"kind":"attribute","visibility":"public","classification":"internal"}
@@ -886,6 +890,7 @@
     "ConnectRPC::Streaming::Session#completion_timeout": {"kind":"method","visibility":"private","parameters":"expires","classification":"internal"},
     "ConnectRPC::Streaming::Session#finish_transport": {"kind":"method","visibility":"private","parameters":"expires","classification":"internal"},
     "ConnectRPC::Streaming::Session#now": {"kind":"method","visibility":"private","parameters":"","classification":"internal"},
+    "ConnectRPC::Streaming::Session#parse_terminal": {"kind":"method","visibility":"private","parameters":"bytes","classification":"internal"},
     "ConnectRPC::Streaming::Session#recover_send_failure": {"kind":"method","visibility":"public","parameters":"","classification":"internal"},
     "ConnectRPC::Streaming::Session#recover_terminal": {"kind":"method","visibility":"private","parameters":"","classification":"internal"},
     "ConnectRPC::Streaming::Session#recovered_error": {"kind":"method","visibility":"private","parameters":"bytes","classification":"internal"},
@@ -909,6 +914,7 @@
   "lib/connectrpc/streaming/session_messages.rb": {
     "ConnectRPC::Streaming::Session#abandon": {"kind":"method","visibility":"public","parameters":"","classification":"internal"},
     "ConnectRPC::Streaming::Session#close_send": {"kind":"method","visibility":"public","parameters":"","classification":"internal"},
+    "ConnectRPC::Streaming::Session#completed_receive": {"kind":"method","visibility":"private","parameters":"","classification":"internal"},
     "ConnectRPC::Streaming::Session#decode_message": {"kind":"method","visibility":"private","parameters":"bytes","classification":"internal"},
     "ConnectRPC::Streaming::Session#encode_message": {"kind":"method","visibility":"private","parameters":"message","classification":"internal"},
     "ConnectRPC::Streaming::Session#headers": {"kind":"method","visibility":"public","parameters":"","classification":"internal"},
@@ -948,7 +954,7 @@
   },
   "lib/connectrpc/streaming/terminal.rb": {
     "ConnectRPC::Streaming.minimal_terminal": {"kind":"method","visibility":"public","parameters":"wire_limit, limit","classification":"internal"},
-    "ConnectRPC::Streaming.parse_terminal": {"kind":"method","visibility":"public","parameters":"bytes, metadata: Metadata.new","classification":"internal"},
+    "ConnectRPC::Streaming.parse_terminal": {"kind":"method","visibility":"public","parameters":"bytes, metadata: Metadata.new, on_error: nil","classification":"internal"},
     "ConnectRPC::Streaming.terminal_bytes": {"kind":"method","visibility":"public","parameters":"error, trailers, wire_limit:, limit:","classification":"internal"},
     "ConnectRPC::Streaming.terminal_error": {"kind":"method","visibility":"public","parameters":"error, metadata, trailers","classification":"internal"},
     "ConnectRPC::Streaming.terminal_metadata": {"kind":"method","visibility":"public","parameters":"object","classification":"internal"}

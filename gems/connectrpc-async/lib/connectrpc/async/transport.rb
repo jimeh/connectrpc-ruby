@@ -38,10 +38,16 @@ module ConnectRPC
 
       def streaming_capabilities = %i[server_stream client_stream bidi_stream].freeze
 
-      def open_stream(request)
+      def open_stream(request, &)
         raise ArgumentError, "A streaming block is required" unless block_given?
 
         check_affinity!
+        CallCancellation.with_request(request) { |outgoing| perform_stream(outgoing, &) }
+      end
+
+      private
+
+      def perform_stream(request)
         raise ArgumentError, "Request URL must match the transport origin" unless same_origin?(request.url)
         raise Error.new(:unavailable, "HTTP/2 transport admission is closed or full") unless
           @state == :running && @calls.size < @max_requests
@@ -59,8 +65,6 @@ module ConnectRPC
           @progress.signal
         end
       end
-
-      private
 
       def stream_operation(operation, timeout: nil, &work)
         check_affinity!

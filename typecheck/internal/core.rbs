@@ -211,6 +211,7 @@ module ConnectRPC
       @pending: pending?
       @terminal: bool?
       @notifying_processing: bool?
+      @processing_held: bool?
       @host_rejected: bool?
       @error: Exception?
       def initialize: (Instrumentation, Object, String?, Array[Object]) -> void
@@ -222,10 +223,16 @@ module ConnectRPC
       def begin_processing: (Object, ?String?) -> Float
       def processing_finished: (code: String?, ?http_status: Integer?, ?normalized_error: Exception?, ?error: Exception?, ?response_bytes: Integer?, ?response_metadata: headers) -> nil
       private
+      def with_processing_completion: [T] () { () -> T } -> T
+      def complete_processing: () -> nil
       def now: () -> Float
       def notify_processing: (Outcome) -> Array[Callbacks]
       def notify_finished: (Completion) -> Array[Callbacks]
       def complete: () -> Array[Callbacks]
+    end
+    class Outcome
+      # Existing Data#with is used only by private processing finalization.
+      def with: (duration: Float, error: Exception?) -> Outcome
     end
   end
 end

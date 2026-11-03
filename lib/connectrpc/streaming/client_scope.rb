@@ -11,17 +11,28 @@ module ConnectRPC
         @abandoned = false
       end
 
-      def run(timeout, cancellation)
+      def run(timeout, cancellation, &)
+        # @type var error: Exception?
+        error = nil
+        execute(timeout, cancellation, &)
+      rescue Exception => e # rubocop:disable Lint/RescueException -- Finalization needs the actual escape, including fatal exceptions.
+        error = e
+        raise
+      ensure
+        finish_preserving_user(error)
+      end
+
+      def execute(timeout, cancellation)
         active, deadline = start(timeout, cancellation)
         yield active, deadline
         active.commit! if @completed
         @result
-      rescue StandardError
+      rescue StandardError => e
+        @lifecycle&.record_failure(e)
         @state&.commit! unless @independent_error || @abandoned
         raise
-      ensure
-        finish_preserving_user($ERROR_INFO)
       end
+      private :execute
 
       def cleanup(session)
         return if @completed
@@ -40,10 +51,10 @@ module ConnectRPC
       private
 
       def finish_preserving_user(error)
-        finish(error)
+        finish(@independent_error || error)
       ensure
         original = @independent_error
-        raise original, cause: original.cause if original && !original.equal?($ERROR_INFO)
+        raise original, cause: original.cause if original
       end
 
       def finish(error)

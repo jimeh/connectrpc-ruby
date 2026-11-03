@@ -126,7 +126,7 @@ module ConnectRPC
     # already supply their arbiter, which must stay open through message decode.
     def self.with_request(request) # rubocop:disable Metrics/MethodLength
       cancellation = request.cancellation
-      return yield request unless cancellation
+      return yield request unless cancellation || request.deadline
 
       case cancellation
       when CallCancellation then return yield request

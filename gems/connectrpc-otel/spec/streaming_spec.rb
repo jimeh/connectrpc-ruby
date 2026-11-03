@@ -136,6 +136,117 @@ RSpec.describe "Streaming SDK context and native completion" do
       end
     end
 
+    [false, true].each do |handler_failure|
+      it "gates #{backend} peer-reset observation on original cleanup, handler failure #{handler_failure}" do
+        facts = []
+        cleanup_done = false
+        processor = nil
+        context = nil
+        host = nil
+        observer = Object.new
+        observer.define_singleton_method(:start) { |_| observer }
+        observer.define_singleton_method(:processing_finished) do |outcome|
+          facts << [:processing, cleanup_done, Async::Task.current, OpenTelemetry::Trace.current_span.context,
+                    host.peer_certificate&.serial&.to_i, outcome]
+        end
+        observer.define_singleton_method(:finished) do |completion|
+          facts << [:finished, cleanup_done, Async::Task.current, OpenTelemetry::Trace.current_span.context,
+                    host.peer_certificate&.serial&.to_i, completion]
+        end
+        provider, exporter, bus = tracing(subscribers: [observer])
+        reactor do |task|
+          entered = Async::Queue.new
+          release = Async::Queue.new
+          resets = Async::Queue.new
+          original_error = ConnectRPC::Error.new(:not_found, "original handler failure")
+          handlers = { methods[0].path => lambda { |message, writer, active|
+            context = active
+            writer.send_message(message)
+            raise original_error if handler_failure
+          } }
+          host, origin, bound = host_for(backend, target(handlers, instrumentation: bus),
+                                         tls: host_tls(anchors: [tls_material.fetch(:client_ca)]))
+          session = host_session(host)
+          application = session.instance_variable_get(:@application)
+          allow(application).to receive(:call_with_publication).and_wrap_original do |original, *args, **options|
+            processor = Async::Task.current
+            stream = args.first.stream
+            allow(stream).to receive(:receive_reset_stream).and_wrap_original do |receive, frame|
+              result = receive.call(frame)
+              resets.enqueue(frame.unpack)
+              result
+            end
+            begin
+              original.call(*args, **options)
+            ensure
+              entered.enqueue([Async::Task.current, current_span.context, host.peer_certificate&.serial&.to_i])
+              release.dequeue
+              expect(Async::Task.current).to equal(processor)
+              expect(current_span.context).to be_valid
+              expect(host.peer_certificate.serial.to_i).to eq(201)
+              cleanup_done = true
+            end
+          end
+          with_ca do |ca_file|
+            certificate, key = tls_material.fetch(:identity)
+            transport = ConnectRPC::Async::Transport.new(origin: origin, ca_file: ca_file,
+                                                         certificate_chain: [certificate.to_pem],
+                                                         private_key: key.private_to_pem)
+            core = ConnectRPC::Client.new(base_url: origin, transport: transport,
+                                          binding: ConnectRPC::Bindings::GoogleProtobuf.new)
+            source = ConnectRPC::CancellationSource.new
+            payload = Async::Queue.new
+            call = task.async do
+              message = AsyncHelpers::MESSAGE.new(name: "reset")
+              core.server_stream(methods[0], message, timeout: nil, cancellation: source.token) do |reader|
+                expect(reader.receive.name).to eq("reset")
+                payload.enqueue(true)
+                reader.receive
+              end
+            rescue ConnectRPC::Error => e
+              e
+            end
+            cleanup_entry = entered.dequeue
+            payload.dequeue
+            expect(cleanup_entry[0]).to equal(processor)
+            expect(cleanup_entry[1]).to be_valid
+            expect(cleanup_entry[2]).to eq(201)
+            source.cancel
+            expect(call.wait.code).to eq("canceled")
+            expect(resets.dequeue).to eq(Protocol::HTTP2::Error::CANCEL)
+            # Call completion and actual peer reset establish the negative boundary.
+            expect(facts).to be_empty
+            expect(rpc_spans(exporter)).to be_empty
+            expect(processor).not_to be_finished
+            release.enqueue(true)
+            processor.wait
+            wait_until(task, "exactly one server completion after original cleanup") { facts.size == 2 }
+            expect(facts.map(&:first)).to eq(%i[processing finished])
+            expect(facts.map { |entry| entry[1] }).to eq([true, true])
+            expect(facts.map { |entry| entry[2] }).to eq([processor, processor])
+            expect(facts.map { |entry| entry[3].span_id }).to eq([cleanup_entry[1].span_id] * 2)
+            expect(facts.map { |entry| entry[4] }).to eq([201, 201])
+            outcome = facts.first.last
+            expect(outcome.code).to eq(handler_failure ? "not_found" : "OK")
+            expect(outcome.error).to equal(handler_failure ? original_error : nil)
+            expect(facts.last.last.delivery).to eq(:aborted)
+            expect(context).to be_a(ConnectRPC::StreamingContext)
+            expect(rpc_spans(exporter).size).to eq(1)
+            expect(Array(rpc_spans(exporter).first.events)).to be_empty
+            expect(current_span.context).not_to be_valid
+          ensure
+            release.enqueue(true)
+            transport&.close(grace: 0)
+          end
+        ensure
+          release&.enqueue(true)
+          host&.close(grace: 0)
+          bound&.close
+          provider.shutdown
+        end
+      end
+    end
+
     it "retains #{backend} SDK spans and managed graceful drain through an actual final DATA flush" do
       provider, exporter, bus = tracing
       reactor do |task|

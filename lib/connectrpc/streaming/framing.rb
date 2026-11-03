@@ -32,7 +32,7 @@ module ConnectRPC
       attr_writer :encoding
 
       def initialize(input:, request:, wire_limit:, limit:, output: nil, encoding: :identity,
-                     terminal_wire_limit: TERMINAL_LIMIT, terminal_limit: TERMINAL_LIMIT, state: nil)
+                     terminal_wire_limit: TERMINAL_LIMIT, terminal_limit: TERMINAL_LIMIT, state: nil, on_error: nil)
         @input = input
         @output = output
         @request = request
@@ -41,6 +41,7 @@ module ConnectRPC
         @encoding = encoding
         @terminal_wire_limit = terminal_wire_limit
         @terminal_limit = terminal_limit
+        @on_error = on_error
         initialize_state(state)
       end
 
@@ -98,8 +99,9 @@ module ConnectRPC
 
       def inflate(bytes, bound)
         protocol_error("Empty compressed envelope") if bytes.empty?
-        Compression.decode(bytes, limit: bound, deadline: @state)
-      rescue Compression::Malformed, Zlib::Error
+        Compression.decode(bytes, limit: bound, deadline: @state, on_error: @on_error)
+      rescue Compression::Malformed, Zlib::Error => e
+        @on_error&.call(e)
         protocol_error("Malformed compressed envelope")
       end
 

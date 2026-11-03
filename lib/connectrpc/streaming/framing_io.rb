@@ -10,7 +10,7 @@ module ConnectRPC
         Protocol.check_size!(bytes, terminal ? @terminal_limit : @limit)
         flags = terminal ? 2 : 0
         if !terminal && @encoding == :gzip
-          bytes = Compression.encode(bytes, limit: bound, deadline: @state)
+          bytes = Compression.encode(bytes, limit: bound, deadline: @state, on_error: @on_error)
           flags = 1
         end
         check_output_size(bytes, bound)

@@ -44,9 +44,9 @@ module ConnectRPC
 
     def yield_stream_endpoint(session, scope)
       yield
-    ensure
-      error = $ERROR_INFO
-      scope.record_user_error(error) if error && !session.owned_error?(error)
+    rescue Exception => e # rubocop:disable Lint/RescueException -- Preserve fatal user exceptions through transport cleanup.
+      scope.record_user_error(e) unless session.owned_error?(e)
+      raise
     end
 
     def stream_endpoint(method, session)
@@ -59,7 +59,8 @@ module ConnectRPC
 
     def finish_stream_scope(method, session)
       return client_stream_response(session) if method.is_a?(ClientStreamMethod)
-      return if session.abandoned? || session.consumed?
+      return if session.abandoned?
+      return session.receive if session.consumed?
 
       raise StreamNotConsumedError, "Response stream was not consumed"
     end

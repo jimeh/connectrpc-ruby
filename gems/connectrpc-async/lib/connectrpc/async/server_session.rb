@@ -253,6 +253,8 @@ module ConnectRPC
                   @application.call(request)
                 end
               end
+              application_work = work
+              work = -> { lifecycle.send(:with_processing_completion, &application_work) } if lifecycle && publication
               result = lifecycle ? lifecycle.activate(&work) : work.call
               publication.publish(result) if publication && !publication.published?
               result

@@ -67,9 +67,8 @@ module ConnectRPC
     def each
       raise ArgumentError, "A block is required" unless block_given?
 
-      loop do
-        message = receive
-        case message
+      while true # rubocop:disable Style/InfiniteLoop -- Kernel.loop swallows application StopIteration.
+        case message = receive
         when nil then break
         else yield message
         end

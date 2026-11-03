@@ -32,8 +32,13 @@ module ConnectRPC
 
     def stream_capability?(method)
       capability = @transport #: _StreamingTransport
-      @transport.respond_to?(:streaming_capabilities) && @transport.respond_to?(:open_stream) &&
-        capability.streaming_capabilities.include?(method.cardinality)
+      streaming_transport? && capability.streaming_capabilities.include?(method.cardinality)
+    end
+
+    def streaming_transport?
+      # Runtime reflection is confined here; unary structural callers need only call.
+      transport = @transport #: (_Transport | _StreamingTransport) & _StreamCapabilityProbe
+      transport.respond_to?(:streaming_capabilities) && transport.respond_to?(:open_stream)
     end
 
     def stream_call(method, request, metadata, timeout, cancellation, &)

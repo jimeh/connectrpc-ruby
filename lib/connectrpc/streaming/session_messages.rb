@@ -34,13 +34,17 @@ module ConnectRPC
         @abandoned = true
         @output.abort
         nil
+      rescue StandardError => e
+        record_operation_failure(e)
+        raise
       end
 
       private
 
       def receive_message
         raise StreamStateError, "Normal response consumption was relinquished" if @recovering
-        return nil if @eof
+
+        return completed_receive if @eof
 
         leading
         frame = @reader.read_frame
@@ -48,6 +52,13 @@ module ConnectRPC
         return accept_terminal(frame.last) if frame.first.anybits?(2)
 
         decode_message(frame.last)
+      end
+
+      def completed_receive
+        error = @remote_error
+        raise error, cause: nil if error
+
+        nil
       end
 
       def receive_eof

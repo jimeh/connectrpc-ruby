@@ -2,34 +2,24 @@
 
 module ConnectRPC
   module Streaming
-    # One guard per direction retains operation origin without class/message guesses.
+    # Read and write guards release only their own accepted operation.
     class Direction
-      attr_reader :error, :busy
+      attr_reader :busy
 
-      def initialize(lifecycle)
-        @lifecycle = lifecycle
+      def initialize
         @busy = false
       end
 
       def run
-        raise StreamStateError, "Overlapping stream operation" if @busy
-
-        @busy = true
+        entered = false
         begin
+          raise StreamStateError, "Overlapping stream operation" if @busy
+
+          @busy = entered = true
           yield
-        rescue StandardError => e
-          record_failure(e)
-          raise
         ensure
-          @busy = false
+          @busy = false if entered
         end
-      end
-
-      private
-
-      def record_failure(error)
-        @error = error
-        @lifecycle&.record_failure(error)
       end
     end
 
@@ -51,7 +41,7 @@ module ConnectRPC
       def abandoned? = @abandoned
       def consumed? = @eof
       def send_failure?(error) = error.equal?(@send_failure)
-      def owned_error?(error) = error.equal?(@reading.error) || error.equal?(@writing.error)
+      def owned_error?(error) = error.equal?(@operation_error)
 
       def close
         @closed = true
@@ -76,8 +66,8 @@ module ConnectRPC
         @server = server
         @context = context
         @lifecycle = lifecycle
-        @reading = Direction.new(lifecycle)
-        @writing = Direction.new(lifecycle)
+        @reading = Direction.new
+        @writing = Direction.new
       end
 
       def initialize_messages(request_limit, response_limit)
@@ -101,7 +91,8 @@ module ConnectRPC
         @reader = Framing.new(input: self, request: @server, limit: @read_limit, state: @state,
                               wire_limit: @server ? request_wire : response_wire,
                               encoding: @server ? request_encoding : response_encoding,
-                              terminal_wire_limit:, terminal_limit:)
+                              terminal_wire_limit:, terminal_limit:,
+                              on_error: ->(error) { @lifecycle&.record_failure(error) })
       end
 
       def initialize_writer(request_wire, response_wire, request_encoding, response_encoding,
@@ -110,7 +101,8 @@ module ConnectRPC
                               wire_limit: @server ? response_wire : request_wire,
                               encoding: @server ? response_encoding : request_encoding,
                               terminal_wire_limit: terminal_wire_limit,
-                              terminal_limit: terminal_limit)
+                              terminal_limit: terminal_limit,
+                              on_error: ->(error) { @lifecycle&.record_failure(error) })
       end
 
       def check_open!
@@ -121,12 +113,20 @@ module ConnectRPC
       end
 
       def operation(direction)
-        check_open!
         guard = direction == :reading ? @reading : @writing
         guard.run do
+          check_open!
           @state.check!
           yield
         end
+      rescue StandardError => e
+        record_operation_failure(e)
+        raise
+      end
+
+      def record_operation_failure(error)
+        @operation_error = error
+        @lifecycle&.record_failure(error)
       end
     end
   end

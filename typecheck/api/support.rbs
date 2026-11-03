@@ -152,3 +152,10 @@ class APIStreamingTransport
   def streaming_capabilities: () -> Array[ConnectRPC::streaming_cardinality]
   def open_stream: [T] (ConnectRPC::StreamRequest) { (APIStreamExchange) -> T } -> T
 end
+
+interface _APILegacyUnaryTransport
+  def call: (ConnectRPC::TransportRequest) -> ConnectRPC::TransportResponse
+end
+class APILegacyUnaryConsumer
+  def self.build: (_APILegacyUnaryTransport) -> ConnectRPC::Client
+end

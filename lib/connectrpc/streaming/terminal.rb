@@ -2,13 +2,14 @@
 
 module ConnectRPC
   module Streaming
-    def self.parse_terminal(bytes, metadata: Metadata.new)
+    def self.parse_terminal(bytes, metadata: Metadata.new, on_error: nil)
       object = JSON.parse(bytes, max_nesting: 64)
       raise ArgumentError unless object.is_a?(Hash)
 
       trailers = terminal_metadata(object)
       [terminal_error(object["error"], metadata, trailers), trailers]
-    rescue JSON::ParserError, ArgumentError, TypeError, EncodingError
+    rescue JSON::ParserError, ArgumentError, TypeError, EncodingError => e
+      on_error&.call(e)
       raise Error.new(:internal, "Malformed streaming terminal"), cause: nil
     end
 

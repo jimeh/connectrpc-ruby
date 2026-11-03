@@ -34,7 +34,6 @@ module ConnectRPC
   end
 
   interface _Transport
-    def respond_to?: (Symbol, ?bool) -> bool
     def call: (TransportRequest) -> TransportResponse
   end
 

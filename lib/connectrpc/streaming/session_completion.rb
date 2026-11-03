@@ -44,7 +44,7 @@ module ConnectRPC
       end
 
       def accept_terminal(bytes)
-        @remote_error, @trailers = Streaming.parse_terminal(bytes, metadata: @headers || Metadata.new)
+        @remote_error, @trailers = parse_terminal(bytes)
         validate_terminal_count
         expires = @recovery_expires || (now + TAIL_SECONDS)
         verify_tail(expires)
@@ -54,6 +54,11 @@ module ConnectRPC
         raise error, cause: nil if error
 
         nil
+      end
+
+      def parse_terminal(bytes)
+        Streaming.parse_terminal(bytes, metadata: @headers || Metadata.new,
+                                        on_error: ->(error) { @lifecycle&.record_failure(error) })
       end
 
       def validate_terminal_count
