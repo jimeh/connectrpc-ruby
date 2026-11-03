@@ -3,6 +3,8 @@
 module ConnectRPC
   module Generator
     class RBSRenderer
+      include StreamingMethods
+
       def initialize(schema, file)
         @schema = schema
         @file = file
@@ -29,27 +31,59 @@ module ConnectRPC
 
       def handler(method)
         request, reply = types(method)
-        "(^(#{request}, ::ConnectRPC::Context) -> #{reply}) | ::ConnectRPC::_Handler[#{request}, #{reply}]"
+        case declaration_type(method)
+        when "ServerStreamMethod"
+          "(^(#{request}, ::ConnectRPC::ResponseWriter[#{reply}], ::ConnectRPC::StreamingContext) -> void) | " \
+          "::ConnectRPC::_ServerStreamHandler[#{request}, #{reply}]"
+        when "ClientStreamMethod"
+          "(^(::ConnectRPC::RequestReader[#{request}], ::ConnectRPC::StreamingContext) -> #{reply}) | " \
+          "::ConnectRPC::_ClientStreamHandler[#{request}, #{reply}]"
+        when "BidiStreamMethod"
+          "(^(::ConnectRPC::ServerDuplex[#{request}, #{reply}], ::ConnectRPC::StreamingContext) -> void) | " \
+          "::ConnectRPC::_BidiStreamHandler[#{request}, #{reply}]"
+        else
+          "(^(#{request}, ::ConnectRPC::Context) -> #{reply}) | ::ConnectRPC::_Handler[#{request}, #{reply}]"
+        end
+      end
+
+      def render_client_signature(method, depth)
+        request, reply = types(method)
+        options = "?metadata: ::ConnectRPC::metadata_input, ?timeout: ::Numeric?, " \
+                  "?cancellation: ::ConnectRPC::CancellationToken?"
+        name = Names.rpc(method.name)
+        case declaration_type(method)
+        when "ServerStreamMethod"
+          line(depth + 2,
+               "def #{name}: (#{request} request, #{options}) " \
+               "{ (::ConnectRPC::ResponseReader[#{reply}]) -> void } -> nil")
+        when "ClientStreamMethod"
+          line(depth + 2, "def #{name}: (#{options}) { (::ConnectRPC::RequestWriter[#{request}]) -> void } " \
+                          "-> ::ConnectRPC::Response[#{reply}]")
+        when "BidiStreamMethod"
+          line(depth + 2,
+               "def #{name}: (#{options}) { (::ConnectRPC::ClientDuplex[#{request}, #{reply}]) -> void } -> nil")
+        else
+          line(depth + 2, "def #{name}: (#{request} request, #{options}) -> ::ConnectRPC::Response[#{reply}]")
+        end
       end
 
       def render_service(service, depth)
         line(depth, "module #{Names.rubify(service.name)}")
         methods = service["method"]
         methods.each do |method|
-          line(depth + 1, "#{Names.rpc(method.name).upcase}: ::ConnectRPC::Method[#{types(method).join(', ')}]")
+          line(depth + 1,
+               "#{Names.rpc(method.name).upcase}: " \
+               "::ConnectRPC::#{declaration_type(method)}[#{types(method).join(', ')}]")
         end
         line(depth + 1, "SERVICE: ::ConnectRPC::Service")
         line(depth + 1, "class Client")
         line(depth + 2, "def initialize: (client: ::ConnectRPC::Client) -> void")
-        methods.each do |method|
-          request, reply = types(method)
-          line(depth + 2, "def #{Names.rpc(method.name)}: (#{request} request, " \
-                          "?metadata: ::ConnectRPC::metadata_input, ?timeout: ::Numeric?, " \
-                          "?cancellation: ::ConnectRPC::CancellationToken?) -> ::ConnectRPC::Response[#{reply}]")
-        end
+        methods.each { |method| render_client_signature(method, depth) }
         line(depth + 1, "end")
         keywords = methods.map { |method| "#{Names.rpc(method.name)}: (#{handler(method)})" }.join(", ")
-        values = methods.map { |method| "::ConnectRPC::_Handler[#{types(method).join(', ')}]" }.uniq
+        values = methods.map do |method|
+          "::ConnectRPC::#{handler_type(method)}[#{types(method).join(', ')}]"
+        end.uniq
         line(depth + 1,
              "def self.handlers: (#{keywords}) -> ::Hash[::String, #{values.empty? ? 'bot' : values.join(' | ')}]")
         line(depth, "end")

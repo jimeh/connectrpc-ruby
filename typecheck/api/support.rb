@@ -199,3 +199,44 @@ class APIHeaderReader
     headers.header.map { |key, value| "#{key}:#{value}" }
   end
 end
+
+# A custom typed SPI with opaque String binding tokens. This fixture's finite
+# response is protocol evidence; installed network evidence uses the native SPI.
+class APIStreamExchange
+  def initialize
+    payload = "typed"
+    terminal = "{}"
+    @input = StringIO.new([0, payload.bytesize].pack("CN") + payload + [2, terminal.bytesize].pack("CN") + terminal)
+  end
+
+  def response_head(timeout: nil)
+    raise ArgumentError if timeout&.negative?
+
+    ConnectRPC::StreamHead.new(status: 200, headers: { "content-type" => ["application/connect+proto"] })
+  end
+
+  def read(length, timeout: nil)
+    raise ArgumentError if timeout&.negative?
+
+    @input.read(length)
+  end
+
+  def write(_bytes) = nil
+  def close_send = nil
+
+  def finish(timeout: nil)
+    raise ArgumentError if timeout&.negative?
+
+    nil
+  end
+
+  def abort = nil
+end
+
+class APIStreamingTransport
+  def streaming_capabilities = %i[server_stream client_stream bidi_stream]
+
+  def open_stream(_request)
+    yield APIStreamExchange.new
+  end
+end

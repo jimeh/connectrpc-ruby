@@ -1,6 +1,6 @@
 # Design and implemented profile
 
-The gem implements a first typed Connect unary slice. Shared protocol code is
+The gem implements typed Connect unary RPCs and native HTTP/2 streaming. Shared protocol code is
 independent of HTTP hosting and concrete protobuf classes. The public require
 is `connectrpc`, and the Ruby namespace is `ConnectRPC`. The API is experimental.
 
@@ -9,7 +9,10 @@ is `connectrpc`, and the Ruby namespace is `ConnectRPC`. The API is experimental
 `Method` holds validated service/method names, request/response binding types,
 `cardinality: :unary`, `idempotency: :unknown` (or `:no_side_effects` / `:idempotent`),
 and a case-sensitive path. Only `:no_side_effects` admits GET. `Service` validates its method
-set. Other cardinalities are rejected. Generated service glue reuses these objects.
+set. Streaming uses invariant sibling declarations, keeping unary Method
+assignability intact. Generated service glue reuses these objects.
+The [streaming guide](streaming.md) owns its scoped APIs, publication/completion
+boundaries, finite transport SPI and absolute recovery/tail policies.
 
 `Client` owns request encoding, protocol headers, response validation, errors,
 metadata, byte limits and the deadline. Base URL path prefixes are retained.
@@ -284,7 +287,7 @@ The pinned Go server prefers request gzip over explicit identity acceptance;
 Ruby clients reject that unadvertised response. There is no full-conformance claim.
 
 Wire protocol, HTTP transport, and message binding remain separate choices.
-Streaming, gRPC/gRPC-Web, interceptors, a production server,
+gRPC/gRPC-Web, interceptors, a production server,
 and Faraday are future work. Unsupported modes/options are rejected
 rather than represented as buffered streaming. The optional [connectrpc-rails gem](../gems/connectrpc-rails/README.md) uses
 the invoker boundary to run native controller callbacks, authentication,
@@ -296,7 +299,7 @@ does not supply the Rails controller lifecycle.
 See the [Rails controller guide](https://guides.rubyonrails.org/action_controller_overview.html).
 
 The optional [connectrpc-async package](../gems/connectrpc-async/README.md)
-selects Async HTTP/2 for a standalone unary host and matching pooled transport.
+selects Async HTTP/2 for standalone unary/streaming hosting and a matching pooled transport.
 It uses the existing transport/server seams, generated definitions and Google
 binding without changing core Context or wire contracts. The application owns
 the reactor and close lifecycle. Private, version-bounded wrappers own writes,
@@ -307,7 +310,7 @@ credential reload and older-generation retirement. The exact-task client leaf
 accessor is the optional authorization seam; peer-presented chains are not
 claimed to be verified chains. See the package guide for session isolation,
 cleanup's 100ms allowance and deliberate whole-connection failure for a stuck
-frame. No streaming or production daemon claim is made.
+frame. Native streaming uses the same ingress and cleanup boundaries. No production daemon claim is made.
 
 Connect streaming carries end-stream metadata in its body; future gRPC has
 different [trailer requirements](https://github.com/grpc/grpc/blob/master/doc/PROTOCOL-HTTP2.md).
@@ -345,10 +348,10 @@ advertised; editions are unsupported.
 
 Each service-bearing target emits `_connect.rb`, requiring core, its official
 `_pb.rb` and any additionally referenced message files. Imported streaming
-services are not targets and do not cause streaming rejection. Generated modules
-contain frozen RPC `Method` constants, `SERVICE`, a `Client` initialized with
-`client:`, and `.handlers` with required callable RPC keywords. The client only
-forwards `call(METHOD, request, **options)` and returns its result unchanged.
+services are not targets. Generated modules
+contain frozen RPC declaration constants, `SERVICE`, a `Client` initialized with
+`client:`, and `.handlers` with required callable RPC keywords. Unary wrappers forward `call(METHOD, request, **options)` unchanged. Streaming
+wrappers forward the matching scoped operation, its required block and all options.
 Partial handlers/custom invocation remain core Server features. No framework,
 transport configuration or binding auto-require is added.
 Optional [RBS signatures](rbs.md) preserve these runtime boundaries and require

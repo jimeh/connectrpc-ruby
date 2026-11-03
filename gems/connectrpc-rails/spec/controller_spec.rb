@@ -16,6 +16,21 @@ RSpec.describe ConnectRPC::Rails::Controller do
                                             "HTTP_HOST" => "www.example.com", input: body }.merge(options))
   end
 
+  it "rejects streaming media and declarations before binding or entering the Rails action lifecycle" do
+    rpc = ConnectRPC::ServerStreamMethod.new(service: service::SERVICE.name, name: "Watch",
+                                             request_type: type, response_type: type)
+    mixed = ConnectRPC::Service.new(name: rpc.service, methods: [*service::SERVICE.methods, rpc])
+    allow_any_instance_of(EchoController).to receive(:connect_service).and_return(mixed)
+    allow_any_instance_of(EchoController).to receive(:connect_binding).and_return(binding)
+    expect_any_instance_of(EchoController).not_to receive(:connect)
+    expect(binding).not_to receive(:decode)
+    expect(binding).not_to receive(:encode)
+    { "application/connect+proto" => 415, "application/proto" => 501 }.each do |media, status|
+      response = rpc(rpc.path, body: "must not read", "CONTENT_TYPE" => media)
+      expect(response.status).to eq(status)
+    end
+  end
+
   it "runs generated typed binary and JSON clients through real Rails with presence, metadata and details" do
     transport = lambda do |request|
       env = Rack::MockRequest.env_for(request.url.to_s, method: request.http_method, input: request.body)

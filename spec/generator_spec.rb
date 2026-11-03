@@ -54,15 +54,19 @@ RSpec.describe "Service generation" do
     expect(result.file).to be_empty
   end
 
-  it "returns no partial files for target streaming methods" do
-    request = request_for
-    %w[client_streaming server_streaming].each do |flag|
+  it "emits all streaming declarations and forwards required blocks/options" do
+    [[true, false, "ClientStreamMethod", "client_stream", ""],
+     [false, true, "ServerStreamMethod", "server_stream", "request, "],
+     [true, true, "BidiStreamMethod", "bidi_stream", ""]].each do |cs, ss, type, operation, argument|
+      request = request_for
       method = request.proto_file.first.service.first["method"].first
-      method[flag] = true
+      method.client_streaming = cs
+      method.server_streaming = ss
       response = generate(request)
-      expect(response.error).to include("sample.proto", "EchoService", "GetHTTP", "streaming")
-      expect(response.file).to be_empty
-      method[flag] = false
+      expect(response.error).to eq("")
+      expect(response.file.first.content).to include("::ConnectRPC::#{type}.new",
+                                                     "def get_http(#{argument}**options, &)",
+                                                     "@client.#{operation}(GET_HTTP, #{argument}**options, &)")
     end
   end
 

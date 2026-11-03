@@ -9,9 +9,17 @@ root = File.expand_path("../../..", __dir__)
 archives = %w[connectrpc connectrpc-async].map { |name| File.join(root, "vendor/async/pkg/#{name}-0.1.0.gem") }
 core, backend = archives.map { |archive| Gem::Package.new(archive) }
 core_expected = %w[
-  LICENSE README.md docs/development.md docs/design.md docs/rbs.md lib/connectrpc.rb lib/connectrpc/version.rb
+  LICENSE README.md docs/development.md docs/design.md docs/rbs.md docs/streaming.md lib/connectrpc.rb
+  lib/connectrpc/version.rb
   sig/connectrpc.rbs sig/manifest.yaml rbs/google_protobuf_4_36/runtime.rbs
-  lib/connectrpc/generator/rbs_renderer.rb
+  lib/connectrpc/generator/rbs_renderer.rb lib/connectrpc/generator/streaming_methods.rb
+  lib/connectrpc/streaming/method.rb lib/connectrpc/streaming/framing.rb lib/connectrpc/streaming/streams.rb
+  lib/connectrpc/streaming/client.rb lib/connectrpc/streaming/server.rb
+  lib/connectrpc/streaming/client_execution.rb lib/connectrpc/streaming/client_scope.rb
+  lib/connectrpc/streaming/framing_io.rb lib/connectrpc/streaming/server_execution.rb
+  lib/connectrpc/streaming/server_terminal.rb lib/connectrpc/streaming/session.rb
+  lib/connectrpc/streaming/session_completion.rb lib/connectrpc/streaming/session_io.rb
+  lib/connectrpc/streaming/session_messages.rb lib/connectrpc/streaming/terminal.rb
   exe/protoc-gen-connectrpc-ruby lib/connectrpc/generator.rb lib/connectrpc/generator/names.rb
   lib/connectrpc/generator/schema.rb lib/connectrpc/generator/renderer.rb lib/connectrpc/generator/runtime_names.rb
   lib/connectrpc/method.rb lib/connectrpc/metadata.rb lib/connectrpc/error.rb lib/connectrpc/cancellation.rb
@@ -25,6 +33,7 @@ abort "Core package changed" unless core.contents.sort == core_expected && core.
 expected = %w[LICENSE README.md lib/connectrpc/async.rb sig/connectrpc-async.rbs sig/manifest.yaml
               lib/connectrpc/async/internal.rb lib/connectrpc/async/ingress.rb lib/connectrpc/async/tls.rb
               lib/connectrpc/async/connection.rb lib/connectrpc/async/application.rb
+              lib/connectrpc/async/stream_exchange.rb
               lib/connectrpc/async/tls_configuration.rb lib/connectrpc/async/server_session.rb
               lib/connectrpc/async/host.rb lib/connectrpc/async/transport.rb].sort
 abort "Backend manifest changed" unless backend.contents.sort == expected

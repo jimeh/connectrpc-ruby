@@ -139,12 +139,36 @@ module ConnectRPC
       # Core reads at most n bytes. Keep only the remainder of the current
       # backend chunk, including when a request crosses an exact chunk boundary.
       class Input
-        def initialize(body)
+        def initialize(body, resource: nil)
           @body = body
+          @resource = resource
           @remainder = nil
         end
 
-        def read(length)
+        def read(length, timeout: nil)
+          return read_fragment(length) unless timeout
+
+          task = ::Async::Task.current.async(finished: false) { read_fragment(length) }
+          Internal.wait(task, Internal.now + timeout)
+        ensure
+          if task && !task.finished?
+            cleanup = ::Async::Task.current.async(finished: false) do
+              task.cancel
+              Internal.join(task)
+            end
+            begin
+              Internal.wait(cleanup, Internal.now + CLEANUP_SECONDS)
+            rescue StandardError
+              @resource&.abort
+              Internal.cancel(cleanup)
+              Internal.join(cleanup)
+            end
+          end
+        end
+
+        private
+
+        def read_fragment(length)
           @remainder = @body&.read if @remainder.nil? || @remainder.empty?
           return unless @remainder
 

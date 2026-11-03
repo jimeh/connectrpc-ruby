@@ -1,0 +1,10 @@
+syntax = "proto3";
+package generation_streaming.v1;
+option ruby_package = "GenerationFixture::Streaming";
+message Item { string name = 1; }
+service Mixed {
+  rpc Lookup(Item) returns (Item) { option idempotency_level = NO_SIDE_EFFECTS; }
+  rpc Watch(Item) returns (stream Item);
+  rpc Collect(stream Item) returns (Item);
+  rpc Chat(stream Item) returns (stream Item);
+}

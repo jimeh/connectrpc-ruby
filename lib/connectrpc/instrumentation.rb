@@ -113,7 +113,7 @@ module ConnectRPC
         return if @terminal || @pending
 
         @pending = { delivery: delivery, error: error, decision: decision, http_status: http_status }
-        complete unless @processing_state == :running || @notifying_processing
+        complete unless @processing_held || @processing_state == :running || @notifying_processing
         nil
       end
 
@@ -138,36 +138,54 @@ module ConnectRPC
         @processing_at = now
       end
 
-      # Commit the snapshot/state before callbacks can request terminal completion.
-      # rubocop:disable Metrics/MethodLength
+      # Prepare immutable facts; the original processor owns their final notification.
       def processing_finished(code:, http_status: nil, normalized_error: nil, error: nil,
                               response_bytes: nil, response_metadata: {})
         record_failure(error) if error
         processing_at = @processing_at #: Float
-        outcome = @outcome = Outcome.new(code: code, http_status: http_status, error: @error,
-                                         normalized_error: normalized_error, duration: now - processing_at,
-                                         request_bytes: @request_bytes, response_bytes: response_bytes,
-                                         request_metadata: Instrumentation.carrier(@request_metadata),
-                                         response_metadata: Instrumentation.carrier(response_metadata))
-        @processing_state = :finished
-        @notifying_processing = true
-        begin
-          notify_processing(outcome)
-        ensure
-          @notifying_processing = false
-          complete if @pending
-        end
-        nil
+        @outcome = Outcome.new(code: code, http_status: http_status, error: @error,
+                               normalized_error: normalized_error, duration: now - processing_at,
+                               request_bytes: @request_bytes, response_bytes: response_bytes,
+                               request_metadata: Instrumentation.carrier(@request_metadata),
+                               response_metadata: Instrumentation.carrier(response_metadata))
+        complete_processing unless @processing_held
       end
 
-      # rubocop:enable Metrics/MethodLength
-
       private
+
+      # Native hosts hold preparation through the original application's cleanup.
+      # Delivery can arrive meanwhile, but neither observer callback can run yet.
+      def with_processing_completion
+        @processing_held = true
+        yield
+      rescue Exception => e # rubocop:disable Lint/RescueException -- Retain fatal cleanup failures without swallowing them.
+        record_failure(e)
+        raise
+      ensure
+        @processing_held = false
+        complete_processing if @outcome
+        complete if @pending && !@outcome && !@terminal
+      end
+
+      def complete_processing
+        return if @processing_state == :finished
+
+        prepared = @outcome #: Outcome
+        processing_at = @processing_at #: Float
+        outcome = @outcome = prepared.with(duration: now - processing_at, error: @error)
+        @processing_state = :finished
+        notify_processing(outcome)
+        nil
+      end
 
       def now = Process.clock_gettime(Process::CLOCK_MONOTONIC)
 
       def notify_processing(outcome)
+        @notifying_processing = true
         @observers.each { |callbacks| @bus.safely { callbacks.processing_finished&.call(outcome) } }
+      ensure
+        @notifying_processing = false
+        complete if @pending
       end
 
       def notify_finished(completion)

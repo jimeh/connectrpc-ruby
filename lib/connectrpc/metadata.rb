@@ -62,6 +62,11 @@ module ConnectRPC
       @values.each(&block)
     end
 
+    def freeze
+      @values.freeze
+      super
+    end
+
     def to_h
       @values.dup
     end

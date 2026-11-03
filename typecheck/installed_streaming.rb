@@ -1,0 +1,117 @@
+# frozen_string_literal: true
+
+$LOAD_PATH.unshift(File.join(__dir__, "generated"))
+require "connectrpc/bindings/google_protobuf"
+require "streaming_connect"
+
+service = RbsFixture::Streaming::Mixed
+request_type = RbsFixture::Messages::Envelope::Request
+reply_type = RbsFixture::Messages::Envelope::Reply
+binding = ConnectRPC::Bindings::GoogleProtobuf.new
+handlers = service.handlers(
+  lookup: ->(request, _) { reply_type.new(count: request.text.size) },
+  watch: lambda { |request, writer, context|
+    context.send_headers(metadata: { "x-installed" => "early" })
+    2.times { writer.send_message(reply_type.new(count: request.text.size)) }
+  },
+  collect: lambda { |reader, _|
+    size = 0
+    reader.each { |request| size += request.text.size }
+    reply_type.new(count: size)
+  },
+  chat: ->(duplex, _) { duplex.each { |request| duplex.send_message(reply_type.new(count: request.text.size)) } }
+)
+class InstalledStreamingNetwork
+  def initialize(service, binding, handlers, request_type)
+    @service = service
+    @binding = binding
+    @handlers = handlers
+    @request_type = request_type
+  end
+
+  def run(backend)
+    server = ConnectRPC::Server.new(services: [@service::SERVICE], binding: @binding, handlers: @handlers,
+                                    encoding: :gzip)
+    host, origin, bound = make_host(backend, server)
+    transport = ConnectRPC::Async::Transport.new(origin: origin)
+    %i[proto json].product(%i[identity gzip]).each { |codec, coding| probe(transport, origin, backend, codec, coding) }
+  ensure
+    transport&.close(grace: 0)
+    host&.close(grace: 0)
+    bound&.close
+  end
+
+  private
+
+  def make_host(backend, server)
+    return make_falcon(server) if backend == :falcon
+
+    host = ConnectRPC::Async::Host.new(server: server).start
+    [host, "http://127.0.0.1:#{host.port}", nil]
+  end
+
+  def make_falcon(server)
+    bound = ConnectRPC::Falcon::Endpoint.parse("http://127.0.0.1:0").bound
+    host = ConnectRPC::Falcon::Server.new(server: server, endpoint: bound)
+    host.run
+    [host, "http://127.0.0.1:#{bound.sockets.first.local_address.ip_port}", bound]
+  end
+
+  def probe(transport, origin, backend, codec, coding)
+    core = ConnectRPC::Client.new(base_url: origin, binding: @binding, transport: transport, use_get: true,
+                                  codec: codec, encoding: coding)
+    typed = @service::Client.new(client: core)
+    request = @request_type.new(text: "installed")
+    check(typed.lookup(request, timeout: nil).message.count == 9, "mixed GET")
+    watch(typed, request)
+    collect(typed, request)
+    chat(typed, request)
+    puts "PASS installed generated streaming #{backend}/#{codec}/#{coding}: mixed GET/POST SS/CS/bidi nil deadlines"
+  end
+
+  def watch(typed, request)
+    replies = []
+    typed.watch(request, timeout: nil) do |reader|
+      check(reader.headers["x-installed"] == ["early"], "early metadata")
+      reader.each { |reply| replies << reply.count }
+    end
+    check(replies == [9, 9], "typed SS")
+  end
+
+  def collect(typed, request)
+    response = typed.collect(timeout: nil) { |writer| writer.send_message(request) }
+    check(response.message.count == 9, "typed CS")
+  end
+
+  def chat(typed, request)
+    typed.chat(timeout: nil) do |duplex|
+      duplex.send_message(request)
+      check(duplex.receive.count == 9, "bidi incrementality")
+      duplex.close_send
+      check(duplex.receive.nil?, "bidi completion")
+    end
+  end
+
+  def check(condition, message)
+    raise "Installed streaming #{message} failed" unless condition
+  end
+end
+network = InstalledStreamingNetwork.new(service, binding, handlers, request_type)
+Async { %i[async falcon].each { |backend| network.run(backend) } }.wait
+custom = ConnectRPC::Client.new(base_url: "https://installed.invalid", binding: InstalledBinding.new,
+                                transport: APIStreamingTransport.new)
+method = ConnectRPC::ServerStreamMethod.new(service: "installed.Custom", name: "Watch",
+                                            request_type: String, response_type: String)
+custom.server_stream(method, "q") do |reader|
+  raise "Installed custom typed SPI payload" unless reader.receive == "typed" && reader.receive.nil?
+end
+raise "SDK runtime dependency leaked" if defined?(OpenTelemetry::SDK)
+
+Gem.loaded_specs.each_value do |spec|
+  next if spec.default_gem?
+
+  unless spec.full_gem_path.start_with?("#{ENV.fetch('GEM_HOME')}/")
+    raise "Streaming library escaped installation: #{spec.name}"
+  end
+end
+puts "Installed seven-package composition: generated streaming network and custom SPI passed with no SDK"

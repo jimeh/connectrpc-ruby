@@ -19,6 +19,27 @@ class FalconFallbackController < ActionController::Base
 end
 
 RSpec.describe "Falcon Rack/Rails fallback boundary" do
+  it "keeps actual HTTP/1 streaming requests outside binding, input reads and handler execution" do
+    reactor do
+      rpc = ConnectRPC::ServerStreamMethod.new(service: "fallback.Streams", name: "Watch",
+                                               request_type: AsyncHelpers::MESSAGE, response_type: AsyncHelpers::MESSAGE)
+      binding = ConnectRPC::Bindings::GoogleProtobuf.new
+      target = ConnectRPC::Server.new(services: [ConnectRPC::Service.new(name: rpc.service, methods: [rpc])],
+                                      binding: binding, handlers: { rpc.path => ->(*) { raise "handler invoked" } })
+      expect(binding).not_to receive(:encode)
+      expect(binding).not_to receive(:decode)
+      allow(AsyncHelpers::INTERNAL::Input).to receive(:new).and_wrap_original do |original, *args, **options|
+        original.call(*args, **options).tap { |input| expect(input).not_to receive(:read) }
+      end
+      falcon(server: target) do |_host, origin|
+        { "application/connect+proto" => 415, "application/proto" => 501 }.each do |media, status|
+          expect(http1(origin, rpc.path, method: "POST", headers: { "content-type" => media },
+                                         body: "must not read").first).to eq(status)
+        end
+      end
+    end
+  end
+
   it "executes ordinary Rails authentication and CSRF without imposing either on native RPC" do
     routes = ActionDispatch::Routing::RouteSet.new
     routes.draw { match "/rails", to: "falcon_fallback#index", via: %i[get post] }

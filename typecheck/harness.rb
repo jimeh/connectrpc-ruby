@@ -25,7 +25,12 @@ module RBSHarness
     "map" => "Ruby::ArgumentTypeMismatch",
     "lifecycle_delivery" => "Ruby::ArgumentTypeMismatch",
     "lifecycle_failure" => "Ruby::ArgumentTypeMismatch",
-    "struct" => "Ruby::UnresolvedOverloading"
+    "struct" => "Ruby::UnresolvedOverloading",
+    "streaming_request" => "Ruby::ArgumentTypeMismatch",
+    "streaming_block" => "Ruby::RequiredBlockMissing",
+    "streaming_reply" => "Ruby::NoMethod",
+    "streaming_unary" => "Ruby::IncompatibleAssignment",
+    "streaming_handler" => "Ruby::ArgumentTypeMismatch"
   }.freeze
 
   def self.capture!(command, working:, environment: {})

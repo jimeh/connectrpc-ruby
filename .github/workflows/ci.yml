@@ -304,12 +304,16 @@ jobs:
           add_shims_to_path: false
           env: false
           export_path: false
-          install: false
-          cache: false
+          install: true
+          install_args: github:connectrpc/conformance@1.0.6 aqua:protocolbuffers/protobuf/protoc@36.2
+          cache: true
+          cache_key_prefix: connectrpc-ci-tools-v1
       - name: Run async:test
         run: mise run async:test
       - name: Run async:package
         run: mise run async:package
+      - name: Run async:conformance
+        run: mise run async:conformance
       - name: Check workspace stayed clean
         if: always()
         run: |
@@ -362,6 +366,8 @@ jobs:
           cache: false
       - name: Run async:interop
         run: mise run async:interop
+      - name: Run async:interop:streaming
+        run: mise run async:interop:streaming
       - name: Check workspace stayed clean
         if: always()
         run: |
@@ -541,12 +547,16 @@ jobs:
           add_shims_to_path: false
           env: false
           export_path: false
-          install: false
-          cache: false
+          install: true
+          install_args: github:connectrpc/conformance@1.0.6 aqua:protocolbuffers/protobuf/protoc@36.2
+          cache: true
+          cache_key_prefix: connectrpc-ci-tools-v1
       - name: Run falcon:test
         run: mise run falcon:test
       - name: Run falcon:package
         run: mise run falcon:package
+      - name: Run falcon:conformance
+        run: mise run falcon:conformance
       - name: Check workspace stayed clean
         if: always()
         run: |
@@ -599,6 +609,8 @@ jobs:
           cache: false
       - name: Run falcon:interop
         run: mise run falcon:interop
+      - name: Run falcon:interop:streaming
+        run: mise run falcon:interop:streaming
       - name: Check workspace stayed clean
         if: always()
         run: |

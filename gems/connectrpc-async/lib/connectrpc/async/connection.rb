@@ -223,6 +223,10 @@ module ConnectRPC
         end
 
         def finish_output(error = nil)
+          # Raw abort has already retired the connection. Its owned tasks must
+          # finish locally rather than attempting another reset on that socket.
+          return if @connection.closed?
+
           writable = !closed? && !@response_reset && error.nil?
           super
           @response_written = true if writable && !@response_reset
@@ -231,6 +235,12 @@ module ConnectRPC
 
       class ResponseStream < ::Async::HTTP::Protocol::HTTP2::Response::Stream
         include Stream
+
+        attr_reader :output_task
+
+        def send_body(...)
+          @output_task = super
+        end
       end
 
       class ClientConnection < ::Async::HTTP::Protocol::HTTP2::Client

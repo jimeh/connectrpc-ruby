@@ -3,6 +3,8 @@
 module ConnectRPC
   module Generator
     class Renderer
+      include StreamingMethods
+
       def initialize(schema, file)
         @schema = schema
         @file = file
@@ -59,7 +61,7 @@ module ConnectRPC
       def render_method(service, method, ruby, depth)
         name = [@file.package, service.name].reject(&:empty?).join(".")
         line(depth, "")
-        line(depth, "#{ruby.upcase} = ::ConnectRPC::Method.new(")
+        line(depth, "#{ruby.upcase} = ::ConnectRPC::#{declaration_type(method)}.new(")
         line(depth + 1, "service: #{name.dump}, name: #{method.name.dump},")
         render_type("request_type", method.input_type, depth + 1, comma: true)
         idempotency = { NO_SIDE_EFFECTS: :no_side_effects, IDEMPOTENT: :idempotent }[method.options&.idempotency_level]
@@ -81,10 +83,14 @@ module ConnectRPC
         line(depth + 2, "@client = client")
         line(depth + 1, "end")
         methods.each do |entry|
-          ruby = entry.last
+          method, ruby = entry
           line(depth, "")
-          line(depth + 1, "def #{ruby}(request, **options)")
-          line(depth + 2, "@client.call(#{ruby.upcase}, request, **options)")
+          if method.client_streaming || method.server_streaming
+            render_streaming_client(method, ruby, depth)
+          else
+            line(depth + 1, "def #{ruby}(request, **options)")
+            line(depth + 2, "@client.call(#{ruby.upcase}, request, **options)")
+          end
           line(depth + 1, "end")
         end
         line(depth, "end")

@@ -1,0 +1,143 @@
+# Native Connect streaming
+
+Connect server streaming, client streaming and bidirectional streaming use the
+same dependency-free core engine. The optional Async transport and Async/Falcon
+native HTTP/2 hosts support protobuf and ProtoJSON, identity/gzip, h2c, verified
+TLS and mTLS. NetHTTP, Rack, Rails, Testing and Falcon HTTP/1 remain unary.
+Unsupported clients reject a streaming operation before encoding or I/O. Native
+listeners explicitly select HTTP/2 capability. Portable adapters reject streaming
+media before reading input or invoking handlers, including Rails callbacks.
+
+## Completion policy
+
+After a terminal envelope, the client requires HTTP EOF and transport completion
+within one **absolute second**, with at most one extra byte read. Any extra byte
+is a protocol error. A stalled tail is `unavailable`, including with `timeout: nil`.
+A shorter real RPC deadline or explicit cancellation can win first. Otherwise
+valid responses with late EOF or slow intermediaries can be rejected. This is
+this library's interoperability policy, not a Connect requirement, RPC deadline,
+wire timeout header or general stream watchdog.
+
+An incidental send I/O failure permits terminal-only recovery of at most 262,144
+additional wire body bytes in one absolute 100 ms, including response headers,
+buffered remainders, prefixes, skipped data, terminal tail and transport finish.
+Recovery skips data incrementally without decoding or inflating it. It cannot
+steal a live reader or resume normal reading after discarding data. Only a valid
+remote error with verified HTTP tail can replace the generic write failure.
+Remote success cannot erase an unhandled send failure; an application may handle
+a send failure and complete its normal response path. Recovery and the existing
+100 ms destructive cleanup stage are separate, up to 200 ms together. Native or
+application code that blocks the reactor remains outside hard timing guarantees.
+
+## Clients and declarations
+
+`ServerStreamMethod[Q,R]`, `ClientStreamMethod[Q,R]` and `BidiStreamMethod[Q,R]`
+are invariant siblings of unary `Method[Q,R]`. A mixed `Service` can contain all
+four. Each operation requires a block:
+
+```ruby
+client.server_stream(watch, request, timeout: nil) do |reader|
+  reader.headers # Waits for leading metadata without consuming a message.
+  reader.each { |message| consume(message) }
+  reader.trailers
+end # => nil
+
+response = client.client_stream(collect) do |writer|
+  inputs.each { |message| writer.send_message(message) }
+end # Auto close_send, exactly one response, terminal and tail, then Response[R].
+
+client.bidi_stream(chat, cancellation: source.token) do |duplex|
+  duplex.send_message(request)
+  reply = duplex.receive
+  duplex.close_send
+  duplex.each { |message| consume(message) }
+end # => nil
+```
+
+Generated mixed-service wrappers preserve these blocks, all options, actual nil
+timeouts and cancellation tokens. The same configured `Client(use_get: true)`
+uses GET for eligible unary calls and POST for streaming, without mode changes,
+retry, fallback or resend. Legacy `mode: :unary` remains accepted.
+
+`send_message` returns nil after bounded local ownership transfer, not wire
+flush or peer receipt. Nil is forbidden as a streaming message. `receive` returns
+nil only after successful validated EOF; an empty/default protobuf is a message.
+`each` is block-only. `close_send` is idempotent and sends HTTP END_STREAM, never
+a request terminal. Sending afterward fails locally before codecs or I/O.
+
+One reader and one writer may run concurrently on the owning reactor/thread.
+Overlapping operations in the same direction fail locally. Applications own
+explicit Async concurrency; no hidden producer thread or stream Enumerator is
+created. SS/bidi ordinary exit without EOF raises `StreamNotConsumedError` and
+aborts. Explicit `abandon` allows intentional SS/bidi exit without claiming
+success; CS abandonment raises because no Response exists. Nonlocal break/return
+keeps Ruby semantics and runs bounded abandonment. No abandonment drain occurs.
+Escaped I/O fails locally; already captured metadata remains readable. Independent
+user exceptions retain identity/backtrace over cancellation or cleanup. SDK
+operation failures retain call arbitration. A call never completes its shared
+application cancellation source.
+
+## Handlers and publication
+
+Handlers receive `(Q, ResponseWriter[R], StreamingContext)` for SS,
+`(RequestReader[Q], StreamingContext) -> R` for CS, and
+`(ServerDuplex[Q,R], StreamingContext)` for bidi. SS/bidi return values are ignored;
+only `send_message` emits a response. SS validates exactly one input and request
+EOF before invocation. CS success requires exactly one response. Cardinality
+violations are `unimplemented`.
+
+`context.send_headers(metadata: {})`, also delegated by response writers and
+server duplexes, publishes once. It can precede a handler delay or CS input.
+First payload/terminal implicitly publishes. Leading metadata is deeply frozen
+at publication; trailers remain mutable until terminal serialization, then freeze.
+There is no synthetic nil message for publishing headers.
+
+The original processor task owns authenticated peer identity, cancellation and
+instrumentation through handlers, codecs and cleanup. A separate publication
+promise exposes response headers while processing continues. Body tasks consume
+prepared bytes. Successful HTTP EOF waits for original processor completion;
+late cleanup failure aborts/reset. Admission and graceful drain include processing,
+wire tail and cleanup. Only actual peer RST_STREAM(CANCEL) signals explicit server
+Context cancellation. EOF, half-close, other reset codes and host shutdown do not.
+
+## Bounds and protocol
+
+Each direction retains at most one queued 16,384-byte output fragment and one
+writer-owned in-flight fragment. One current encoded and decoded message,
+5-byte prefix and at most one 16 KiB input remainder are separate allocations.
+Native ingress retains at most 65,536 bytes in at most five entries, with chunks
+at most 16,384 bytes. Stream credit follows consumption/discard; connection credit
+allows healthy siblings/control traffic to advance. These are payload accounting
+bounds, not RSS, CPU, HPACK, socket/TLS, caller retention or native codec guarantees.
+
+`request_limit`, `response_limit` and their independent wire limits apply per
+message (default 4 MiB). `terminal_wire_limit` and `terminal_limit` independently
+default to 65,536 bytes, excluding prefix; JSON nesting is limited to 64. Lengths
+are checked before payload allocation. Oversized terminals become a bounded
+`resource_exhausted` without details/trailers, or reset if the minimal error cannot
+fit. Observation retains original and actual replacement failures separately.
+
+Flags 0/1 carry data, flag 2 an uncompressed response terminal. Compressed terminal
+3 is accepted only with negotiated gzip. Request terminal and reserved bits are
+`invalid_argument` before compression checks. The chosen pinned-reference policy
+maps request DATA flag 1 under identity/absent coding to `internal`. Other malformed
+request framing/truncation/gzip is `invalid_argument`; malformed responses are
+`internal`. Bounds remain `resource_exhausted`. Per-message gzip state is independent.
+
+Bounded tolerant terminal input accepts `error: null`, and maps absent/null/unknown
+string codes to `unknown`, preserving valid message/details. Numeric codes,
+nonobjects, malformed details and metadata containers fail. Invalid individual
+metadata fields are omitted. Output always uses valid Connect terminal errors.
+A terminal is only a candidate until its HTTP tail and transport cleanup succeed.
+
+## Custom transport SPI
+
+Unary `_Transport#call`, `TransportRequest`, `TransportResponse` and `Client#call`
+remain compatible. Streaming requires explicit `streaming_capabilities` and
+`open_stream(StreamRequest) { |exchange| ... }`. The exchange is writable after
+request-head dispatch **before** waiting for response headers. It provides
+`response_head(timeout: nil)`, bounded `read(n, timeout: nil)`, `write(bytes)`,
+`close_send`, `finish(timeout: nil)` and `abort`. Timeouts cap each requested wait;
+the core retains the absolute budget across calls. `finish` attests owned transport
+completion and cleanup, never peer receipt. See [RBS](rbs.md) for the typed SPI,
+records, normal package discovery and explicit framework compatibility bridges.

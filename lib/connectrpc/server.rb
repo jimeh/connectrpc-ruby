@@ -11,8 +11,10 @@ module ConnectRPC
     def initialize(services:, binding:, handlers: {}, invoker: nil, request_limit: Protocol::DEFAULT_LIMIT,
                    response_limit: Protocol::DEFAULT_LIMIT, request_wire_limit: request_limit,
                    response_wire_limit: response_limit, protocol: :connect, mode: :unary, encoding: :identity,
-                   instrumentation: nil, get_query_limit: nil)
+                   instrumentation: nil, get_query_limit: nil, terminal_wire_limit: 65_536, terminal_limit: 65_536)
       Protocol.profile!(protocol, mode, encoding)
+      @terminal_wire_limit = Protocol.limit!(terminal_wire_limit)
+      @terminal_limit = Protocol.limit!(terminal_limit)
       @services = services.dup.freeze
       @methods = declarations(services)
       raise ArgumentError, "Handler path is not declared" unless handlers.keys.all? { |key| @methods.key?(key) }
@@ -76,7 +78,7 @@ module ConnectRPC
       context = nil
       cancellation&.check!
       method = @methods[path]
-      safe = method&.idempotency == :no_side_effects
+      safe = method.is_a?(Method) && method.idempotency == :no_side_effects
       unless http_method == "POST" || (http_method == "GET" && (!method || safe))
         return response = bare(405, { "allow" => [safe ? "GET, POST" : "POST"] }, cancellation: cancellation)
       end
@@ -148,7 +150,7 @@ module ConnectRPC
       metadata.each { |key, values| context.request_metadata[key] = values }
       context.check!
       method = @methods[path]
-      raise Error.new(:unimplemented, "Unknown method") unless method
+      raise Error.new(:unimplemented, "Unknown method") unless method.is_a?(Method)
 
       bytes = GetQuery.payload(values, limit: @request_wire_limit, deadline: context)
       lifecycle.request_bytes = bytes.bytesize if lifecycle
@@ -204,13 +206,14 @@ module ConnectRPC
       handler = @handlers[method.path]
       raise Error.new(:unimplemented, "Unknown method") unless handler
 
-      handler.call(request, context)
+      unary = handler #: _Handler[untyped, untyped]
+      unary.call(request, context)
     end
 
     def dispatch(path, headers, input, codec, context, lifecycle: nil) # rubocop:disable Metrics/MethodLength, Metrics/AbcSize
       context.check!
       method = @methods[path]
-      raise Error.new(:unimplemented, "Unknown method") unless method
+      raise Error.new(:unimplemented, "Unknown method") unless method.is_a?(Method)
 
       length = Protocol.content_length!(headers["content-length"], invalid_code: :invalid_argument)
       bytes = MessageIO.new(input, @request_wire_limit, context).read(length)

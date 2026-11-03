@@ -24,5 +24,13 @@
   "cancellation_source": "Ruby::ArgumentTypeMismatch",
   "cancellation_readonly": "Ruby::NoMethod",
   "cancellation_context": "Ruby::ArgumentTypeMismatch",
-  "cancellation_index": "Ruby::NoMethod"
+  "cancellation_index": "Ruby::NoMethod",
+  "streaming_unary": "Ruby::ArgumentTypeMismatch",
+  "streaming_block": "Ruby::RequiredBlockMissing",
+  "streaming_reader": "Ruby::NoMethod",
+  "streaming_writer": "Ruby::ArgumentTypeMismatch",
+  "streaming_each": "Ruby::RequiredBlockMissing",
+  "streaming_record": "Ruby::NoMethod",
+  "streaming_record_write": "Ruby::UnresolvedOverloading",
+  "streaming_timeout": "Ruby::ArgumentTypeMismatch"
 }

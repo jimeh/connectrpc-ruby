@@ -18,10 +18,13 @@ module ConnectRPC
     def cardinality: () -> :unary
   end
 
+  type declaration = Method[untyped, untyped] | ServerStreamMethod[untyped, untyped] | ClientStreamMethod[untyped, untyped] | BidiStreamMethod[untyped, untyped]
+  type streaming_cardinality = :server_stream | :client_stream | :bidi_stream
+
   class Service
-    def initialize: (name: String, methods: Array[Method[untyped, untyped]]) -> void
+    def initialize: (name: String, methods: Array[declaration]) -> void
     attr_reader name: String
-    attr_reader methods: Array[Method[untyped, untyped]]
+    attr_reader methods: Array[declaration]
   end
 
   # Custom token-based codecs erase message identity at this boundary.
@@ -81,11 +84,11 @@ module ConnectRPC
     def initialize: (subscribers: Array[_Subscriber], ?on_error: (^(StandardError) -> void | _InstrumentationErrorHandler)?) -> void
 
     class Call
-      def initialize: (role: :client | :server, protocol: :connect, method: Method[untyped, untyped]?, server_address: String?, server_port: Integer?, carrier: Hash[String, String | Array[String]]) -> void
-        | (:client | :server, :connect, Method[untyped, untyped]?, String?, Integer?, Hash[String, String | Array[String]]) -> void
+      def initialize: (role: :client | :server, protocol: :connect, method: declaration?, server_address: String?, server_port: Integer?, carrier: Hash[String, String | Array[String]]) -> void
+        | (:client | :server, :connect, declaration?, String?, Integer?, Hash[String, String | Array[String]]) -> void
       attr_reader role: :client | :server
       attr_reader protocol: :connect
-      attr_reader method: Method[untyped, untyped]?
+      attr_reader method: declaration?
       attr_reader server_address: String?
       attr_reader server_port: Integer?
       attr_reader carrier: Hash[String, String | Array[String]]
@@ -167,14 +170,14 @@ module ConnectRPC
   end
 
   class Client
-    def initialize: (base_url: String, binding: _Binding, ?transport: _Transport?, ?codec: codec, ?request_limit: Integer, ?response_limit: Integer, ?request_wire_limit: Integer, ?response_wire_limit: Integer, ?accept_encoding: Array[:identity | :gzip]?, ?use_get: bool, ?get_url_limit: Integer, ?protocol: :connect, ?mode: :unary, ?encoding: :identity | :gzip, ?instrumentation: Instrumentation?) -> void
+    def initialize: (base_url: String, binding: _Binding, ?transport: (_Transport | _StreamingTransport)?, ?codec: codec, ?request_limit: Integer, ?response_limit: Integer, ?request_wire_limit: Integer, ?response_wire_limit: Integer, ?accept_encoding: Array[:identity | :gzip]?, ?use_get: bool, ?get_url_limit: Integer, ?protocol: :connect, ?mode: :unary, ?encoding: :identity | :gzip, ?instrumentation: Instrumentation?, ?terminal_wire_limit: Integer, ?terminal_limit: Integer) -> void
     def call: [Req, Resp] (Method[Req, Resp], Req request, ?metadata: metadata_input, ?timeout: Numeric?, ?cancellation: CancellationToken?) -> Response[Resp]
   end
 
   class Server
     # Generated .handlers checks each concrete callable before this heterogeneous
     # registration map erases its individual request/response associations.
-    def initialize: (services: Array[Service], binding: _Binding, ?handlers: Hash[String, ^(untyped, Context) -> untyped | _Handler[untyped, untyped]], ?invoker: (^(Method[untyped, untyped], untyped, Context) -> untyped | _Invoker)?, ?request_limit: Integer, ?response_limit: Integer, ?request_wire_limit: Integer, ?response_wire_limit: Integer, ?protocol: :connect, ?mode: :unary, ?encoding: :identity | :gzip, ?instrumentation: Instrumentation?, ?get_query_limit: Integer?) -> void
+    def initialize: (services: Array[Service], binding: _Binding, ?handlers: Hash[String, registered_handler], ?invoker: (^(Method[untyped, untyped], untyped, Context) -> untyped | _Invoker)?, ?request_limit: Integer, ?response_limit: Integer, ?request_wire_limit: Integer, ?response_wire_limit: Integer, ?protocol: :connect, ?mode: :unary, ?encoding: :identity | :gzip, ?instrumentation: Instrumentation?, ?get_query_limit: Integer?, ?terminal_wire_limit: Integer, ?terminal_limit: Integer) -> void
     attr_reader services: Array[Service]
     def handles?: (String path) -> bool
     def start_call: (path: String, headers: headers) -> Instrumentation::Handle?
@@ -467,5 +470,241 @@ module ConnectRPC
     attr_reader trailers: Metadata
     def http_status: () -> Integer
     def to_h: () -> Hash[String, String | Array[Hash[String, String]]]
+  end
+end
+
+module ConnectRPC
+
+  class StreamStateError < StandardError
+  end
+  class StreamNotConsumedError < StreamStateError
+  end
+
+  class StreamDeclaration[Req, Resp]
+    def initialize: (service: String, name: String, request_type: Object, response_type: Object, ?idempotency: idempotency) -> void
+    attr_reader service: String
+    attr_reader name: String
+    attr_reader idempotency: idempotency
+    attr_reader path: String
+    attr_reader request_type: Object
+    attr_reader response_type: Object
+  end
+  class ServerStreamMethod[Req, Resp] < StreamDeclaration[Req, Resp]
+    def cardinality: () -> :server_stream
+  end
+  class ClientStreamMethod[Req, Resp] < StreamDeclaration[Req, Resp]
+    def cardinality: () -> :client_stream
+  end
+  class BidiStreamMethod[Req, Resp] < StreamDeclaration[Req, Resp]
+    def cardinality: () -> :bidi_stream
+  end
+
+  interface _StreamingTransport
+    def respond_to?: (Symbol, ?bool) -> bool
+    def streaming_capabilities: () -> Array[streaming_cardinality]
+    def open_stream: [T] (StreamRequest) { (_StreamExchange) -> T } -> T
+  end
+  interface _StreamExchange
+    def response_head: (?timeout: Numeric?) -> StreamHead
+    def read: (Integer, ?timeout: Numeric?) -> String?
+    def write: (String) -> nil
+    def close_send: () -> nil
+    def finish: (?timeout: Numeric?) -> nil
+    def abort: () -> nil
+  end
+  interface _StreamingInput
+    def read: (Integer, ?timeout: Numeric?) -> String?
+  end
+  interface _StreamingOutput
+    def write: (String, ?timeout: Numeric?) -> nil
+    def abort: () -> nil
+  end
+  interface _PublishStreamHead
+    def call: (StreamHead) -> void
+  end
+
+  class StreamingContext < Context
+    def send_headers: (?metadata: metadata_input) -> nil
+  end
+  class ResponseReader[Resp]
+    def receive: () -> Resp?
+    def each: () { (Resp) -> void } -> nil
+    def headers: () -> Metadata
+    def trailers: () -> Metadata?
+    def abandon: () -> nil
+  end
+  class RequestWriter[Req]
+    def send_message: (Req) -> nil
+    def close_send: () -> nil
+    def abandon: () -> nil
+  end
+  class ClientDuplex[Req, Resp] < ResponseReader[Resp]
+    def send_message: (Req) -> nil
+    def close_send: () -> nil
+  end
+  class RequestReader[Req] < ResponseReader[Req]
+  end
+  class ResponseWriter[Resp]
+    def send_message: (Resp) -> nil
+    def send_headers: (?metadata: metadata_input) -> nil
+  end
+  class ServerDuplex[Req, Resp] < RequestReader[Req]
+    def send_message: (Resp) -> nil
+    def send_headers: (?metadata: metadata_input) -> nil
+  end
+
+  interface _ServerStreamHandler[Req, Resp]
+    def call: (Req, ResponseWriter[Resp], StreamingContext) -> void
+  end
+  interface _ClientStreamHandler[Req, Resp]
+    def call: (RequestReader[Req], StreamingContext) -> Resp
+  end
+  interface _BidiStreamHandler[Req, Resp]
+    def call: (ServerDuplex[Req, Resp], StreamingContext) -> void
+  end
+  type registered_handler = _Handler[untyped, untyped] | ^(untyped, Context) -> untyped
+    | _ServerStreamHandler[untyped, untyped] | ^(untyped, ResponseWriter[untyped], StreamingContext) -> void
+    | _ClientStreamHandler[untyped, untyped] | ^(RequestReader[untyped], StreamingContext) -> untyped
+    | _BidiStreamHandler[untyped, untyped] | ^(ServerDuplex[untyped, untyped], StreamingContext) -> void
+
+  class Client
+    def server_stream: [Req, Resp] (ServerStreamMethod[Req, Resp], Req, ?metadata: metadata_input, ?timeout: Numeric?, ?cancellation: CancellationToken?) { (ResponseReader[Resp]) -> void } -> nil
+    def client_stream: [Req, Resp] (ClientStreamMethod[Req, Resp], ?metadata: metadata_input, ?timeout: Numeric?, ?cancellation: CancellationToken?) { (RequestWriter[Req]) -> void } -> Response[Resp]
+    def bidi_stream: [Req, Resp] (BidiStreamMethod[Req, Resp], ?metadata: metadata_input, ?timeout: Numeric?, ?cancellation: CancellationToken?) { (ClientDuplex[Req, Resp]) -> void } -> nil
+  end
+  class Server
+    def call_stream: (path: String, http_method: String, headers: headers, input: _StreamingInput, output: _StreamingOutput, publish: _PublishStreamHead | ^(StreamHead) -> void, ?lifecycle: Instrumentation::Handle?, ?cancellation: _Cancellation?, ?http2: bool) -> TransportResponse?
+  end
+  interface _PartialStreamRequest
+    def url: () -> URI::Generic?
+    def url=: (URI::Generic?) -> URI::Generic?
+    def http_method: () -> String?
+    def http_method=: (String?) -> String?
+    def headers: () -> headers?
+    def headers=: (headers?) -> headers?
+    def deadline: () -> Deadline?
+    def deadline=: (Deadline?) -> Deadline?
+    def lifecycle: () -> Instrumentation::Handle?
+    def lifecycle=: (Instrumentation::Handle?) -> Instrumentation::Handle?
+    def cancellation: () -> _Cancellation?
+    def cancellation=: (_Cancellation?) -> _Cancellation?
+    def []: (:url | "url" | 0 | -6) -> URI::Generic?
+      | (:http_method | "http_method" | 1 | -5) -> String?
+      | (:headers | "headers" | 2 | -4) -> headers?
+      | (:deadline | "deadline" | 3 | -3) -> Deadline?
+      | (:lifecycle | "lifecycle" | 4 | -2) -> Instrumentation::Handle?
+      | (:cancellation | "cancellation" | 5 | -1) -> _Cancellation?
+    def []=: (:url | "url" | 0 | -6, URI::Generic?) -> URI::Generic?
+      | (:http_method | "http_method" | 1 | -5, String?) -> String?
+      | (:headers | "headers" | 2 | -4, headers?) -> headers?
+      | (:deadline | "deadline" | 3 | -3, Deadline?) -> Deadline?
+      | (:lifecycle | "lifecycle" | 4 | -2, Instrumentation::Handle?) -> Instrumentation::Handle?
+      | (:cancellation | "cancellation" | 5 | -1, _Cancellation?) -> _Cancellation?
+    def to_h: () -> Hash[Symbol, URI::Generic | String | headers | Deadline? | Instrumentation::Handle? | _Cancellation? | nil]
+    def members: () -> Array[Symbol]
+    def size: () -> Integer
+    def length: () -> Integer
+    def to_a: () -> Array[URI::Generic | String | headers | Deadline? | Instrumentation::Handle? | _Cancellation? | nil]
+    def values: () -> Array[URI::Generic | String | headers | Deadline? | Instrumentation::Handle? | _Cancellation? | nil]
+    def deconstruct: () -> Array[URI::Generic | String | headers | Deadline? | Instrumentation::Handle? | _Cancellation? | nil]
+    def each: () { (URI::Generic | String | headers | Deadline? | Instrumentation::Handle? | _Cancellation? | nil) -> void } -> self
+      | () -> Enumerator[URI::Generic | String | headers | Deadline? | Instrumentation::Handle? | _Cancellation? | nil, self]
+    def each_pair: () { ([Symbol, URI::Generic | String | headers | Deadline? | Instrumentation::Handle? | _Cancellation? | nil]) -> void } -> self
+      | () -> Enumerator[[Symbol, URI::Generic | String | headers | Deadline? | Instrumentation::Handle? | _Cancellation? | nil], self]
+    def deconstruct_keys: (Array[Symbol]?) -> Hash[Symbol, URI::Generic | String | headers | Deadline? | Instrumentation::Handle? | _Cancellation? | nil]
+    def values_at: (*(Integer | Range[Integer])) -> Array[URI::Generic | String | headers | Deadline? | Instrumentation::Handle? | _Cancellation? | nil | nil]
+  end
+  class StreamRequest
+    def self.new: (url: URI::Generic, http_method: String, headers: headers, ?deadline: Deadline?, ?lifecycle: Instrumentation::Handle?, ?cancellation: _Cancellation?) -> StreamRequest
+      | ({ url: URI::Generic, http_method: String, headers: headers, ?deadline: Deadline?, ?lifecycle: Instrumentation::Handle?, ?cancellation: _Cancellation? }) -> StreamRequest
+      | (?url: URI::Generic?, ?http_method: String?, ?headers: headers?, ?deadline: Deadline?, ?lifecycle: Instrumentation::Handle?, ?cancellation: _Cancellation?) -> _PartialStreamRequest
+      | ({ ?url: URI::Generic?, ?http_method: String?, ?headers: headers?, ?deadline: Deadline?, ?lifecycle: Instrumentation::Handle?, ?cancellation: _Cancellation? }) -> _PartialStreamRequest
+    def self.[]: (url: URI::Generic, http_method: String, headers: headers, ?deadline: Deadline?, ?lifecycle: Instrumentation::Handle?, ?cancellation: _Cancellation?) -> StreamRequest
+      | ({ url: URI::Generic, http_method: String, headers: headers, ?deadline: Deadline?, ?lifecycle: Instrumentation::Handle?, ?cancellation: _Cancellation? }) -> StreamRequest
+      | (?url: URI::Generic?, ?http_method: String?, ?headers: headers?, ?deadline: Deadline?, ?lifecycle: Instrumentation::Handle?, ?cancellation: _Cancellation?) -> _PartialStreamRequest
+      | ({ ?url: URI::Generic?, ?http_method: String?, ?headers: headers?, ?deadline: Deadline?, ?lifecycle: Instrumentation::Handle?, ?cancellation: _Cancellation? }) -> _PartialStreamRequest
+    attr_accessor url: URI::Generic
+    attr_accessor http_method: String
+    attr_accessor headers: headers
+    attr_accessor deadline: Deadline?
+    attr_accessor lifecycle: Instrumentation::Handle?
+    attr_accessor cancellation: _Cancellation?
+    def []: (:url | "url" | 0 | -6) -> URI::Generic
+      | (:http_method | "http_method" | 1 | -5) -> String
+      | (:headers | "headers" | 2 | -4) -> headers
+      | (:deadline | "deadline" | 3 | -3) -> Deadline?
+      | (:lifecycle | "lifecycle" | 4 | -2) -> Instrumentation::Handle?
+      | (:cancellation | "cancellation" | 5 | -1) -> _Cancellation?
+    def []=: (:url | "url" | 0 | -6, URI::Generic) -> URI::Generic
+      | (:http_method | "http_method" | 1 | -5, String) -> String
+      | (:headers | "headers" | 2 | -4, headers) -> headers
+      | (:deadline | "deadline" | 3 | -3, Deadline?) -> Deadline?
+      | (:lifecycle | "lifecycle" | 4 | -2, Instrumentation::Handle?) -> Instrumentation::Handle?
+      | (:cancellation | "cancellation" | 5 | -1, _Cancellation?) -> _Cancellation?
+    def to_h: () -> Hash[Symbol, URI::Generic | String | headers | Deadline? | Instrumentation::Handle? | _Cancellation?]
+    def members: () -> Array[Symbol]
+    def size: () -> Integer
+    def length: () -> Integer
+    def to_a: () -> Array[URI::Generic | String | headers | Deadline? | Instrumentation::Handle? | _Cancellation?]
+    def values: () -> Array[URI::Generic | String | headers | Deadline? | Instrumentation::Handle? | _Cancellation?]
+    def deconstruct: () -> Array[URI::Generic | String | headers | Deadline? | Instrumentation::Handle? | _Cancellation?]
+    def each: () { (URI::Generic | String | headers | Deadline? | Instrumentation::Handle? | _Cancellation?) -> void } -> self
+      | () -> Enumerator[URI::Generic | String | headers | Deadline? | Instrumentation::Handle? | _Cancellation?, self]
+    def each_pair: () { ([Symbol, URI::Generic | String | headers | Deadline? | Instrumentation::Handle? | _Cancellation?]) -> void } -> self
+      | () -> Enumerator[[Symbol, URI::Generic | String | headers | Deadline? | Instrumentation::Handle? | _Cancellation?], self]
+    def deconstruct_keys: (Array[Symbol]?) -> Hash[Symbol, URI::Generic | String | headers | Deadline? | Instrumentation::Handle? | _Cancellation?]
+    def values_at: (*(Integer | Range[Integer])) -> Array[URI::Generic | String | headers | Deadline? | Instrumentation::Handle? | _Cancellation? | nil]
+  end
+  interface _PartialStreamHead
+    def status: () -> Integer?
+    def status=: (Integer?) -> Integer?
+    def headers: () -> headers?
+    def headers=: (headers?) -> headers?
+    def []: (:status | "status" | 0 | -2) -> Integer?
+      | (:headers | "headers" | 1 | -1) -> headers?
+    def []=: (:status | "status" | 0 | -2, Integer?) -> Integer?
+      | (:headers | "headers" | 1 | -1, headers?) -> headers?
+    def to_h: () -> Hash[Symbol, Integer | headers | nil]
+    def members: () -> Array[Symbol]
+    def size: () -> Integer
+    def length: () -> Integer
+    def to_a: () -> Array[Integer | headers | nil]
+    def values: () -> Array[Integer | headers | nil]
+    def deconstruct: () -> Array[Integer | headers | nil]
+    def each: () { (Integer | headers | nil) -> void } -> self
+      | () -> Enumerator[Integer | headers | nil, self]
+    def each_pair: () { ([Symbol, Integer | headers | nil]) -> void } -> self
+      | () -> Enumerator[[Symbol, Integer | headers | nil], self]
+    def deconstruct_keys: (Array[Symbol]?) -> Hash[Symbol, Integer | headers | nil]
+    def values_at: (*(Integer | Range[Integer])) -> Array[Integer | headers | nil | nil]
+  end
+  class StreamHead
+    def self.new: (status: Integer, headers: headers) -> StreamHead
+      | ({ status: Integer, headers: headers }) -> StreamHead
+      | (?status: Integer?, ?headers: headers?) -> _PartialStreamHead
+      | ({ ?status: Integer?, ?headers: headers? }) -> _PartialStreamHead
+    def self.[]: (status: Integer, headers: headers) -> StreamHead
+      | ({ status: Integer, headers: headers }) -> StreamHead
+      | (?status: Integer?, ?headers: headers?) -> _PartialStreamHead
+      | ({ ?status: Integer?, ?headers: headers? }) -> _PartialStreamHead
+    attr_accessor status: Integer
+    attr_accessor headers: headers
+    def []: (:status | "status" | 0 | -2) -> Integer
+      | (:headers | "headers" | 1 | -1) -> headers
+    def []=: (:status | "status" | 0 | -2, Integer) -> Integer
+      | (:headers | "headers" | 1 | -1, headers) -> headers
+    def to_h: () -> Hash[Symbol, Integer | headers]
+    def members: () -> Array[Symbol]
+    def size: () -> Integer
+    def length: () -> Integer
+    def to_a: () -> Array[Integer | headers]
+    def values: () -> Array[Integer | headers]
+    def deconstruct: () -> Array[Integer | headers]
+    def each: () { (Integer | headers) -> void } -> self
+      | () -> Enumerator[Integer | headers, self]
+    def each_pair: () { ([Symbol, Integer | headers]) -> void } -> self
+      | () -> Enumerator[[Symbol, Integer | headers], self]
+    def deconstruct_keys: (Array[Symbol]?) -> Hash[Symbol, Integer | headers]
+    def values_at: (*(Integer | Range[Integer])) -> Array[Integer | headers | nil]
   end
 end

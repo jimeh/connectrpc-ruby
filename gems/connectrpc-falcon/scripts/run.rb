@@ -13,10 +13,12 @@ environment = {
 }
 command = ARGV.shift
 arguments = case command
+            when "conformance" then ["exec", "ruby", File.join(root, "scripts/native_conformance.rb"), *ARGV]
             when "setup" then ["install"]
             when "test" then ["exec", "rspec", *ARGV]
             when "check" then ["exec", "rubocop", ".", "--config", File.join(root, ".rubocop.yml"), *ARGV]
-            when "build", "package", "example", "interop" then ["exec", "ruby", "scripts/#{command}.rb", *ARGV]
+            when "build", "package", "example", "interop", "streaming_interop" then ["exec", "ruby",
+                                                                                     "scripts/#{command}.rb", *ARGV]
             else abort "Usage: run.rb setup|test|check|build|package|example|interop"
             end
 puts "Falcon backend; Ruby #{RUBY_VERSION}; Bundler 4.0.23; Gemfile #{environment.fetch('BUNDLE_GEMFILE')}"
