@@ -27,6 +27,7 @@ end
 require_relative "async/internal"
 require_relative "async/tls"
 require_relative "async/tls_configuration"
+require_relative "async/ingress"
 require_relative "async/connection"
 require_relative "async/application"
 require_relative "async/server_session"

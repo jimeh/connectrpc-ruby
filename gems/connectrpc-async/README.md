@@ -172,6 +172,32 @@ are not a full protocol conformance claim. Settings use 16KiB frames, 64KiB
 stream windows and bounded stream admission; they do not bound total process
 memory or HPACK/header-continuation buffering.
 
+Native HTTP/2 request and response inputs use a private coalescing queue. Stream
+WINDOW_UPDATE replenishes only application-consumed or deliberately discarded
+DATA bytes. Padding, including its length octet, uses wire credit and is discarded
+without entering body bytes or Content-Length. Connection credit is independent,
+so unread bodies do not prevent healthy streams or control frames from advancing.
+The shared reader never waits for application consumption; serialized socket writes
+can still block. Stream over-credit resets that stream with FLOW_CONTROL_ERROR;
+connection over-credit fails the connection and its siblings. Upstream parsing and
+stream-state errors remain authoritative. This follows [HTTP/2 flow control](https://www.rfc-editor.org/rfc/rfc9113.html#section-5.2).
+
+With the current settings, each queue retains at most 65,536 payload bytes in at
+most five data entries, independent of frame count. Each returned native chunk is
+at most 16,384 bytes. The core input adapter can retain one such chunk's remainder;
+the shared reader can hold one decoded DATA frame of at most 16,384 bytes.
+Coalescing/copying can temporarily retain old and new bounded chunks. String byte
+length does not bound Ruby backing allocations or RSS. Caller-retained strings,
+buffered unary bodies, codecs/compression, socket/TLS buffers and HPACK/headers
+are separate allocations. These are ingress payload bounds, not a total memory
+or general denial-of-service guarantee. There is no public streaming API.
+
+Normal producer EOF drains preceding payload. Closing the consumer releases its
+queue once; later DATA is discarded while local output remains live, following
+the pinned backend's finish-input and NO_ERROR policy. Reset/error/owned teardown
+wakes readers and retires input references. Only peer CANCEL signals explicit
+RPC cancellation; credit accounting adds no lifecycle instrumentation.
+
 Discover `async:setup`, `async:test`, `async:check`, `async:build`, `async:package`,
 `async:example`, `async:interop`, and `async:verify` with `mise tasks`. The separate
 checksummed bundle uses `vendor/async` and coverage uses `coverage/async`.
