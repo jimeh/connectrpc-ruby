@@ -11,7 +11,10 @@ protobuf `application/json`. The optional [connectrpc-rails gem](gems/connectrpc
 runs generated unary handlers through native Rails controllers. Native streaming
 uses the optional Async transport and Async/Falcon HTTP/2 hosts. See the
 [streaming guide](docs/streaming.md), especially its one-second HTTP tail policy.
-gRPC, gRPC-Web and Faraday remain unsupported. The API is experimental.
+Native [gRPC](docs/grpc.md) supports unary, server streaming, client streaming and
+bidi through the same core declarations and Async/Falcon HTTP/2 engine, with
+protobuf, identity/gzip, h2c, verified TLS and mTLS. Connect remains the default.
+gRPC-Web and Faraday remain unsupported. The API is experimental.
 
 ## Try the localhost example
 

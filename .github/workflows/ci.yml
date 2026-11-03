@@ -314,6 +314,8 @@ jobs:
         run: mise run async:package
       - name: Run async:conformance
         run: mise run async:conformance
+      - name: Run async:conformance:grpc
+        run: mise run async:conformance:grpc
       - name: Check workspace stayed clean
         if: always()
         run: |
@@ -368,6 +370,8 @@ jobs:
         run: mise run async:interop
       - name: Run async:interop:streaming
         run: mise run async:interop:streaming
+      - name: Run async:interop:grpc
+        run: mise run async:interop:grpc
       - name: Check workspace stayed clean
         if: always()
         run: |
@@ -557,6 +561,8 @@ jobs:
         run: mise run falcon:package
       - name: Run falcon:conformance
         run: mise run falcon:conformance
+      - name: Run falcon:conformance:grpc
+        run: mise run falcon:conformance:grpc
       - name: Check workspace stayed clean
         if: always()
         run: |
@@ -611,6 +617,8 @@ jobs:
         run: mise run falcon:interop
       - name: Run falcon:interop:streaming
         run: mise run falcon:interop:streaming
+      - name: Run falcon:interop:grpc
+        run: mise run falcon:interop:grpc
       - name: Check workspace stayed clean
         if: always()
         run: |

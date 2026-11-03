@@ -38,6 +38,15 @@ RSpec.describe ConnectRPC::Testing::Transport do
     end
   end
 
+  it "rejects gRPC unary before encoding or in-process dispatch" do
+    core = ConnectRPC::Client.new(base_url: "https://example.invalid", binding: binding, transport: transport,
+                                  protocol: :grpc)
+    expect(binding).not_to receive(:encode)
+    expect(transport).not_to receive(:call)
+    expect { core.call(service::ECHO, type.new) }.to raise_error(ArgumentError)
+    expect(calls).to be_empty
+  end
+
   def request(**changes)
     ConnectRPC::TransportRequest.new(url: URI("https://example.invalid#{service::ECHO.path}"), http_method: "POST",
                                      headers: { "content-type" => ["application/proto"] }, body: "".b,

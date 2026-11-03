@@ -7,21 +7,43 @@ require_relative "native"
 require_relative "native_observation"
 
 module Conformance
-  class NativeServerAdapter
+  class NativeServerAdapter # rubocop:disable Metrics/ClassLength
     attr_reader :server
 
     def initialize(config)
-      unless config.protocol == :PROTOCOL_CONNECT && config.http_version == :HTTP_VERSION_2
+      unless %i[PROTOCOL_CONNECT PROTOCOL_GRPC].include?(config.protocol) && config.http_version == :HTTP_VERSION_2
         raise "Unsupported native server configuration"
       end
 
       instrumentation = ConnectRPC::Instrumentation.new(subscribers: [NativeSubscriber.new])
       @server = ObservedNativeServer.new(services: [NATIVE_SERVICE], binding: BINDING, encoding: :gzip,
                                          instrumentation: instrumentation,
+                                         protocol: config.protocol == :PROTOCOL_GRPC ? :grpc : :connect,
                                          request_limit: Conformance.limit(config.message_receive_limit),
-                                         handlers: { SERVER_STREAM.path => method(:server_stream),
+                                         handlers: { UNARY.path => method(:unary),
+                                                     IDEMPOTENT_UNARY.path => method(:idempotent_unary),
+                                                     SERVER_STREAM.path => method(:server_stream),
                                                      CLIENT_STREAM.path => method(:client_stream),
                                                      BIDI_STREAM.path => method(:bidi_stream) })
+    end
+
+    def unary(request, context)
+      UnaryResponse.new(payload: unary_payload(request, context))
+    end
+
+    def idempotent_unary(request, context)
+      IdempotentUnaryResponse.new(payload: unary_payload(request, context))
+    end
+
+    def unary_payload(request, context)
+      definition = request.response_definition || UnaryResponseDefinition.new
+      Conformance.metadata(definition.response_headers).each { |key, values| context.response_metadata[key] = values }
+      Conformance.metadata(definition.response_trailers).each { |key, values| context.response_trailers[key] = values }
+      info = request_info(context, [Conformance.pack(request)])
+      Conformance.delay(definition.response_delay_ms)
+      context.check!
+      emit_error(definition.error, info) if definition.error
+      ConformancePayload.new(data: definition.response_data, request_info: info)
     end
 
     def request_info(context, requests)

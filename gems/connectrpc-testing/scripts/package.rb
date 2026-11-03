@@ -25,6 +25,9 @@ expected_core = %w[
   lib/connectrpc/streaming/server_terminal.rb lib/connectrpc/streaming/session.rb
   lib/connectrpc/streaming/session_completion.rb lib/connectrpc/streaming/session_io.rb
   lib/connectrpc/streaming/session_messages.rb lib/connectrpc/streaming/terminal.rb
+  lib/connectrpc/grpc.rb lib/connectrpc/grpc_client.rb lib/connectrpc/grpc_server.rb
+  lib/connectrpc/streaming/strategy.rb lib/connectrpc/bindings/descriptors/status.bin docs/grpc.md
+  third_party/google/rpc/status.proto third_party/google/LICENSE third_party/protobuf-LICENSE third_party/README.md
   lib/connectrpc.rb lib/connectrpc/version.rb lib/connectrpc/method.rb lib/connectrpc/metadata.rb
   lib/connectrpc/error.rb lib/connectrpc/cancellation.rb
   lib/connectrpc/deadline.rb lib/connectrpc/compression.rb lib/connectrpc/message_io.rb

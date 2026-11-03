@@ -265,3 +265,18 @@ deadline and can reject otherwise valid late EOF or slow intermediaries.
 Use `async:conformance` and `async:interop:streaming` for the exact official native
 client/server inventories and independent pinned Go streaming matrix. Both belong
 to `async:verify`; original unary interoperability remains separate.
+
+## Native gRPC
+
+Native HTTP/2 supports unary, server streaming, client streaming and bidi gRPC
+with protobuf, identity/gzip, h2c, verified TLS and mTLS. Configure the core
+Client with `protocol: :grpc` and the Server with `:grpc` or `:auto`. Generated
+clients and handlers reuse the existing declarations. Portable HTTP/1 execution
+retains its early rejection guard. See the [gRPC guide](../../docs/grpc.md) for
+status codecs, actual final HEADERS, independent status bounds and native field
+retention limits. Connect's one-second terminal tail policy remains Connect-only.
+
+Use `async:conformance:grpc` for exact official inventories and
+`async:interop:grpc` for generated official grpc-go peer checks. Both belong
+to the owning verify task. `grpc:generation:check` reproduces official Go and
+Ruby peer outputs; `grpc:status:check` reproduces private Any/Status descriptors.

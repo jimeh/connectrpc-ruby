@@ -159,3 +159,40 @@ end
 class APILegacyUnaryConsumer
   def self.build: (_APILegacyUnaryTransport) -> ConnectRPC::Client
 end
+
+class APIStatusCodec
+  def initialize: () -> void
+  def encode_status: (ConnectRPC::Error) -> String
+  def decode_status: (String, code: Integer) -> ConnectRPC::Error
+end
+class APIGRPCOnlyTransport
+  def initialize: () -> void
+  def grpc_capabilities: () -> Array[ConnectRPC::grpc_cardinality]
+  def open_grpc_stream: [T] (ConnectRPC::StreamRequest) { (ConnectRPC::_GRPCStreamExchange) -> T } -> T
+end
+class BadGRPCTransport
+  def initialize: () -> void
+  def grpc_capabilities: () -> Array[String]
+  def open_grpc_stream: [T] (ConnectRPC::StreamRequest) { (ConnectRPC::_GRPCStreamExchange) -> T } -> T
+end
+class BadStatusCodec
+  def initialize: () -> void
+  def encode_status: (ConnectRPC::Error) -> Integer
+  def decode_status: (String, code: Integer) -> ConnectRPC::Error
+end
+class APIGRPCOutput
+  def initialize: () -> void
+  def write: (String, ?timeout: Numeric?) -> nil
+  def finish: (headers: ConnectRPC::headers) -> nil
+  def abort: () -> nil
+end
+class BadGRPCOutput
+  def initialize: () -> void
+  def write: (String, ?timeout: Numeric?) -> nil
+  def finish: (headers: ConnectRPC::headers) -> String
+  def abort: () -> nil
+end
+class APIGRPCPublisher
+  def initialize: () -> void
+  def call: (ConnectRPC::GRPCHead) -> nil
+end

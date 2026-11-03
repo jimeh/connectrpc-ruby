@@ -31,6 +31,13 @@ module ConnectRPC
     end
 
     def stream_capability?(method)
+      if @protocol == :grpc
+        candidate = @transport #: (_Transport | _StreamingTransport | _GRPCTransport) & _GRPCCapabilityProbe
+        return false unless candidate.respond_to?(:grpc_capabilities) && candidate.respond_to?(:open_grpc_stream)
+
+        grpc = @transport #: _GRPCTransport
+        return grpc.grpc_capabilities.include?(method.cardinality)
+      end
       capability = @transport #: _StreamingTransport
       streaming_transport? && capability.streaming_capabilities.include?(method.cardinality)
     end
@@ -44,6 +51,7 @@ module ConnectRPC
     def stream_call(method, request, metadata, timeout, cancellation, &)
       injection = {} #: headers
       lifecycle = @instrumentation&.start(owner: self, role: :client, method: method, carrier: injection,
+                                          protocol: @protocol,
                                           server_address: @base_url.hostname.freeze, server_port: @base_url.port)
       lifecycle&.begin_processing(self)
       work = lambda do
@@ -53,14 +61,20 @@ module ConnectRPC
       lifecycle ? lifecycle.activate(&work) : work.call
     end
 
-    def run_stream(method, request, metadata, timeout:, cancellation:, lifecycle:, injection:, &)
+    def run_stream(method, request, metadata, timeout:, cancellation:, lifecycle:, injection:, &) # rubocop:disable Metrics/MethodLength
       scope = Streaming::ClientScope.new(lifecycle)
       scope.run(timeout, cancellation) do |state, deadline|
         outgoing = stream_request(method, stream_metadata(metadata, injection, lifecycle), deadline, state, lifecycle)
         transport = @transport #: _StreamingTransport
-        transport.open_stream(outgoing) do |exchange|
+        work = lambda do |exchange|
           session = new_client_stream_session(method, state, exchange, lifecycle)
           with_stream_session(session, scope) { perform_stream_scope(method, request, session, scope, &) }
+        end
+        if @protocol == :grpc
+          grpc = @transport #: _GRPCTransport
+          grpc.open_grpc_stream(outgoing, &work)
+        else
+          transport.open_stream(outgoing, &work)
         end
       end
     end
@@ -72,10 +86,12 @@ module ConnectRPC
       metadata
     end
 
-    def stream_request(method, metadata, deadline, state, lifecycle)
+    def stream_request(method, metadata, deadline, state, lifecycle) # rubocop:disable Metrics/MethodLength
       url = @base_url.dup
       base_path = @base_url.path #: String
       url.path = base_path.delete_suffix("/") + method.path
+      return grpc_stream_request(url, metadata, deadline, state, lifecycle) if @protocol == :grpc
+
       headers = metadata.to_h.merge("content-type" => [Streaming::CONTENT_TYPES.fetch(@codec)],
                                     "connect-protocol-version" => ["1"],
                                     "connect-accept-encoding" => [@accept_encoding.join(", ")])

@@ -214,3 +214,18 @@ deadline and can reject otherwise valid late EOF or slow intermediaries.
 `falcon:conformance` runs actual server profiles. `falcon:interop:streaming`
 exercises real workers with the pinned Go streaming client. Both belong to
 `falcon:verify`; duplicated native-client runs are not Falcon server evidence.
+
+## Native gRPC
+
+Native HTTP/2 supports unary, server streaming, client streaming and bidi gRPC
+with protobuf, identity/gzip, h2c, verified TLS and mTLS. Configure the core
+Client with `protocol: :grpc` and the Server with `:grpc` or `:auto`. Generated
+clients and handlers reuse the existing declarations. Portable HTTP/1 execution
+retains its early rejection guard. See the [gRPC guide](../../docs/grpc.md) for
+status codecs, actual final HEADERS, independent status bounds and native field
+retention limits. Connect's one-second terminal tail policy remains Connect-only.
+
+Use `falcon:conformance:grpc` for exact official inventories and
+`falcon:interop:grpc` for generated official grpc-go peer checks. Both belong
+to the owning verify task. `grpc:generation:check` reproduces official Go and
+Ruby peer outputs; `grpc:status:check` reproduces private Any/Status descriptors.

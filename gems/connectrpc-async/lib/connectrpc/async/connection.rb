@@ -91,16 +91,65 @@ module ConnectRPC
         end
       end
 
-      module Stream
-        attr_reader :declared_length
+      class GRPCHeaderError < ::Protocol::HTTP2::HeaderError
+        def initialize(message, code)
+          super(message)
+          @code = code
+        end
+      end
 
-        def receive_initial_headers(...)
+      module Stream # rubocop:disable Metrics/ModuleLength
+        attr_reader :grpc_initial_headers, :grpc_initial_end_stream, :grpc_trailers, :grpc_error, :grpc_reset,
+                    :declared_length
+
+        def grpc_mark! = @grpc = true
+        def grpc? = !!@grpc
+
+        def grpc_fields(headers)
+          size = headers.sum { |key, value| key.bytesize + value.bytesize + 32 }
+          if size > GRPCProtocol::FIELD_LIMIT
+            @grpc_error = Error.new(:resource_exhausted, "gRPC field block exceeds byte limit")
+            raise GRPCHeaderError.new("gRPC field block exceeds byte limit", ::Protocol::HTTP2::Error::ENHANCE_YOUR_CALM)
+          end
+          values = {}
+          headers.each { |key, value| (values[key] ||= []) << value unless key.start_with?(":") }
+          GRPCProtocol.snapshot(values)
+        end
+
+        def receive_initial_headers(headers, end_stream)
+          @grpc ||= headers.any? do |key, value|
+            key.casecmp?("content-type") && value.downcase.start_with?("application/grpc")
+          end
+          if @grpc
+            fields = grpc_fields(headers)
+            status = headers.find { |key, _value| key == ":status" }&.last.to_i
+            informational = status.between?(100, 199)
+            if informational && end_stream
+              @grpc_error = Error.new(:internal, "Informational gRPC HEADERS ended the stream")
+              raise GRPCHeaderError.new("Informational END_STREAM", ::Protocol::HTTP2::Error::PROTOCOL_ERROR)
+            end
+            if @grpc_initial_headers
+              @grpc_error = Error.new(:internal, "Nonfinal second gRPC HEADERS")
+              raise GRPCHeaderError.new("Nonfinal second gRPC HEADERS", ::Protocol::HTTP2::Error::PROTOCOL_ERROR)
+            end
+            unless informational
+              @grpc_initial_headers = fields
+              @grpc_initial_end_stream = end_stream
+            end
+          end
           super
         ensure
           @declared_length = @length
         end
 
-        def receive_trailing_headers(...)
+        def receive_trailing_headers(headers, end_stream)
+          if @grpc
+            @grpc_trailers = grpc_fields(headers)
+            unless end_stream
+              @grpc_error = Error.new(:internal, "Nonfinal gRPC trailing HEADERS")
+              raise GRPCHeaderError.new("Nonfinal gRPC trailing HEADERS", ::Protocol::HTTP2::Error::PROTOCOL_ERROR)
+            end
+          end
           @headers.trailer!
           super
         end
@@ -123,6 +172,20 @@ module ConnectRPC
         end
 
         def receive_reset_stream(frame)
+          if @grpc
+            @grpc_reset = frame.unpack
+            if @grpc_reset == ::Protocol::HTTP2::Error::NO_ERROR
+              fields = @grpc_initial_end_stream ? @grpc_initial_headers : @grpc_trailers
+              statuses = fields && fields["grpc-status"]
+              unless statuses && statuses.size == 1 && !GRPCProtocol.status_number(statuses.first).nil?
+                @grpc_error ||= Error.new(:internal, "HTTP/2 NO_ERROR reset without gRPC status")
+              end
+            else
+              code = { 3 => :resource_exhausted, 7 => :unavailable, 8 => :canceled,
+                       11 => :resource_exhausted, 12 => :permission_denied }.fetch(@grpc_reset, :internal)
+              @grpc_error ||= Error.new(code, "HTTP/2 stream reset")
+            end
+          end
           unless @state == :idle || frame.unpack == ::Protocol::HTTP2::Error::NO_ERROR
             @input&.retire(nil, discard: true)
           end
@@ -130,6 +193,7 @@ module ConnectRPC
         end
 
         def process_data(frame)
+          @grpc_data_end_stream = true if @grpc && frame.end_stream?
           data = frame.unpack
           if (input = @input)
             input.write(data) unless data.empty?
@@ -179,6 +243,15 @@ module ConnectRPC
           super
         end
 
+        def finish_output(error = nil)
+          if @grpc && error.is_a?(ConnectRPC::Error) && error.code == "resource_exhausted"
+            @output = nil
+            send_reset_stream(::Protocol::HTTP2::Error::ENHANCE_YOUR_CALM) unless closed?
+            return
+          end
+          super
+        end
+
         def send_body(body, trailer = nil)
           # A peer reset can close the stream while deferred headers flush.
           # Upstream otherwise starts an output task on the closed stream.
@@ -205,7 +278,7 @@ module ConnectRPC
           @cancellation_source = nil
         end
 
-        def response_written? = @response_written && !@response_reset
+        def response_written? = @response_written && !@response_reset && (!@grpc || @grpc_terminal_written)
 
         def send_body(...)
           @response_task = super
@@ -218,7 +291,13 @@ module ConnectRPC
         end
 
         def send_headers(headers, flags = 0)
+          if @grpc
+            values = {}
+            headers.each { |key, value| (values[key] ||= []) << value.to_s }
+            GRPCProtocol.check_fields!(values)
+          end
           super
+          @grpc_terminal_written = true if @grpc && flags.anybits?(::Protocol::HTTP2::END_STREAM)
           @response_written = true if flags.anybits?(::Protocol::HTTP2::END_STREAM) && !@response_reset
         end
 
@@ -237,6 +316,14 @@ module ConnectRPC
         include Stream
 
         attr_reader :output_task
+
+        # A raw-first destructive abort has already retired this connection.
+        # Output unwinding must not attempt another reset on its closed socket.
+        def finish_output(error = nil)
+          return if @connection.closed?
+
+          super
+        end
 
         def send_body(...)
           @output_task = super
@@ -282,7 +369,7 @@ module ConnectRPC
                 end
               rescue StandardError => e
                 error = e
-                reset(incoming.stream)
+                reset(incoming.stream, e)
               ensure
                 error ||= $ERROR_INFO
                 begin
@@ -309,8 +396,13 @@ module ConnectRPC
           nil
         end
 
-        def reset(stream)
-          stream.send_reset_stream(::Protocol::HTTP2::Error::INTERNAL_ERROR) unless stream.closed?
+        def reset(stream, error)
+          code = if stream.grpc? && error.is_a?(ConnectRPC::Error) && error.code == "resource_exhausted"
+                   ::Protocol::HTTP2::Error::ENHANCE_YOUR_CALM
+                 else
+                   ::Protocol::HTTP2::Error::INTERNAL_ERROR
+                 end
+          stream.send_reset_stream(code) unless stream.closed?
         rescue ::Protocol::HTTP2::ProtocolError, IOError, SystemCallError
           nil
         end

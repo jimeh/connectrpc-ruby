@@ -5,6 +5,9 @@ require "json"
 require "open3"
 require "rbconfig"
 require_relative "../conformance/native_ledger"
+require_relative "../conformance/grpc_ledger"
+
+grpc = ENV["CONNECTRPC_CONFORMANCE_GRPC"] == "1"
 
 root = File.expand_path("..", __dir__)
 host = ARGV.shift || "async"
@@ -21,9 +24,9 @@ end
 version, status = Open3.capture2("connectconformance", "--version")
 raise "Wrong conformance runner" unless status.success? && version.strip == "connectconformance v1.0.6"
 
-def native_command(root, profile, direction, selector)
+def native_command(root, profile, direction, selector, grpc)
   command = ["connectconformance", "--mode", direction, "--conf",
-             File.join(root, "conformance/profile-native-#{profile}.yaml"), "--vv"]
+             File.join(root, "conformance/profile-#{grpc ? 'grpc' : 'native'}-#{profile}.yaml"), "--vv"]
   command.push("--run", selector) if selector
   command.push("--", RbConfig.ruby, "-I#{File.join(root, 'lib')}",
                File.join(root, "conformance/native_#{direction}.rb"))
@@ -41,16 +44,17 @@ def native_environment(telemetry, host, artifacts)
 end
 
 success = true
-%w[identity gzip].product(directions).each do |profile, direction|
-  inventory = Conformance::NativeLedger::INVENTORIES.fetch(profile).fetch(direction)
+%w[identity gzip].product(directions).each do |profile, direction| # rubocop:disable Metrics/BlockLength
+  inventory = (grpc ? Conformance::GRPCLedger : Conformance::NativeLedger)::INVENTORIES.fetch(profile).fetch(direction)
   next if selector && !inventory.include?(selector)
 
-  ledger = Conformance::NativeLedger.new(profile: profile, direction: direction, selected: selector)
+  ledger = (grpc ? Conformance::GRPCLedger : Conformance::NativeLedger).new(profile: profile, direction: direction,
+                                                                            selected: selector)
   stamp = "#{Time.now.utc.strftime('%Y%m%dT%H%M%S')}-#{Process.pid}-#{RUBY_VERSION}-" \
-          "#{host}-native-#{profile}-#{direction}"
+          "#{host}-#{grpc ? 'grpc' : 'native'}-#{profile}-#{direction}"
   artifacts = File.join(root, "vendor/conformance/results", stamp)
   telemetry = native_telemetry(artifacts)
-  command = native_command(root, profile, direction, selector)
+  command = native_command(root, profile, direction, selector, grpc)
   raw, process = Open3.capture2e(native_environment(telemetry, host, artifacts), *command)
   File.write(File.join(artifacts, "runner.log"), raw)
   puts raw

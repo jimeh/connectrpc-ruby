@@ -29,12 +29,15 @@ class InstalledStreamingNetwork
     @request_type = request_type
   end
 
-  def run(backend)
+  def run(backend, protocol = :connect) # rubocop:disable Metrics/MethodLength
     server = ConnectRPC::Server.new(services: [@service::SERVICE], binding: @binding, handlers: @handlers,
-                                    encoding: :gzip)
+                                    encoding: :gzip, protocol: protocol)
     host, origin, bound = make_host(backend, server)
     transport = ConnectRPC::Async::Transport.new(origin: origin)
-    %i[proto json].product(%i[identity gzip]).each { |codec, coding| probe(transport, origin, backend, codec, coding) }
+    codecs = protocol == :grpc ? [:proto] : %i[proto json]
+    codecs.product(%i[identity gzip]).each do |codec, coding|
+      probe(transport, origin, backend, codec, coding, protocol)
+    end
   ensure
     transport&.close(grace: 0)
     host&.close(grace: 0)
@@ -57,8 +60,9 @@ class InstalledStreamingNetwork
     [host, "http://127.0.0.1:#{bound.sockets.first.local_address.ip_port}", bound]
   end
 
-  def probe(transport, origin, backend, codec, coding)
-    core = ConnectRPC::Client.new(base_url: origin, binding: @binding, transport: transport, use_get: true,
+  def probe(transport, origin, backend, codec, coding, protocol) # rubocop:disable Metrics/ParameterLists, Metrics/MethodLength
+    core = ConnectRPC::Client.new(base_url: origin, binding: @binding, transport: transport,
+                                  use_get: protocol == :connect, protocol: protocol,
                                   codec: codec, encoding: coding)
     typed = @service::Client.new(client: core)
     request = @request_type.new(text: "installed")
@@ -66,7 +70,8 @@ class InstalledStreamingNetwork
     watch(typed, request)
     collect(typed, request)
     chat(typed, request)
-    puts "PASS installed generated streaming #{backend}/#{codec}/#{coding}: mixed GET/POST SS/CS/bidi nil deadlines"
+    puts "PASS installed generated streaming #{backend}/#{protocol}/#{codec}/#{coding}: " \
+         "mixed GET/POST SS/CS/bidi nil deadlines"
   end
 
   def watch(typed, request)
@@ -97,7 +102,7 @@ class InstalledStreamingNetwork
   end
 end
 network = InstalledStreamingNetwork.new(service, binding, handlers, request_type)
-Async { %i[async falcon].each { |backend| network.run(backend) } }.wait
+Async { %i[async falcon].product(%i[connect grpc]).each { |backend, protocol| network.run(backend, protocol) } }.wait
 custom = ConnectRPC::Client.new(base_url: "https://installed.invalid", binding: InstalledBinding.new,
                                 transport: APIStreamingTransport.new)
 method = ConnectRPC::ServerStreamMethod.new(service: "installed.Custom", name: "Watch",

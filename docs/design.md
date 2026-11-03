@@ -1,6 +1,6 @@
 # Design and implemented profile
 
-The gem implements typed Connect unary RPCs and native HTTP/2 streaming. Shared protocol code is
+The gem implements typed Connect RPCs and native HTTP/2 gRPC in all four RPC shapes. Shared protocol code is
 independent of HTTP hosting and concrete protobuf classes. The public require
 is `connectrpc`, and the Ruby namespace is `ConnectRPC`. The API is experimental.
 
@@ -58,6 +58,10 @@ request metadata, response leading/trailing metadata, and optional deadline.
 Handlers are reusable; application-owned shared state needs its own locking.
 
 ## Wire behavior
+
+The [native gRPC guide](grpc.md) describes protobuf-only native HTTP/2 execution,
+protocol configuration and status/trailer policies. The behavior below describes
+the default Connect profile; portable adapters remain Connect-only.
 
 The implemented [Connect profile](https://connectrpc.com/docs/protocol/) is
 unary POST and safe unary GET, identity or opt-in gzip encoding, and `application/proto` or `application/json`.

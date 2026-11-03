@@ -3,6 +3,17 @@
 require_relative "cancellation_observation"
 
 module Conformance
+  # Observe the real native receive boundary too: two official malformed-header
+  # requests are rejected by the pinned backend before application dispatch.
+  module NativeHeaderArrival
+    def receive_initial_headers(headers, end_stream)
+      name = headers.find { |key, _| key == "x-test-case-name" }&.last
+      Telemetry.record("native_server_wire_headers", name: name, stream: id) if name
+      super
+    end
+  end
+  ConnectRPC::Async.const_get(:Internal)::RequestStream.prepend(NativeHeaderArrival)
+
   # Test-only telemetry around real library entry points. Returned close calls
   # never establish socket interruption or peer receipt.
   class NativeObservation
@@ -48,6 +59,10 @@ module Conformance
       super(**)
     end
 
+    def open_grpc_stream(request, &)
+      @observation.observe(:transport) { super }
+    end
+
     def open_stream(request, &)
       @observation.observe(:transport) { super }
     end
@@ -87,6 +102,10 @@ module Conformance
       super(**)
     end
 
+    def call(...)
+      @observation.observe(:library) { super }
+    end
+
     def server_stream(...)
       @observation.observe(:library) { super }
     end
@@ -112,6 +131,10 @@ module Conformance
 
   class ObservedNativeServer < ConnectRPC::Server
     def call(**options)
+      observe_dispatch(options) { super }
+    end
+
+    def call_grpc(**options)
       observe_dispatch(options) { super }
     end
 

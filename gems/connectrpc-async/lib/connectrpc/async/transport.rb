@@ -45,19 +45,29 @@ module ConnectRPC
         CallCancellation.with_request(request) { |outgoing| perform_stream(outgoing, &) }
       end
 
+      def grpc_capabilities = %i[unary server_stream client_stream bidi_stream].freeze
+
+      def open_grpc_stream(request, &)
+        raise ArgumentError, "A gRPC block is required" unless block_given?
+
+        check_affinity!
+        CallCancellation.with_request(request) { |outgoing| perform_stream(outgoing, grpc: true, &) }
+      end
+
       private
 
-      def perform_stream(request)
+      def perform_stream(request, grpc: false)
         raise ArgumentError, "Request URL must match the transport origin" unless same_origin?(request.url)
         raise Error.new(:unavailable, "HTTP/2 transport admission is closed or full") unless
           @state == :running && @calls.size < @max_requests
 
-        operation = { request: request, tasks: {} }
+        operation = { request: request, tasks: {}, grpc: grpc }
         @calls[operation] = true
         body = Internal::OutputBody.new
         begin
           stream_operation(operation) { dispatch_stream(operation, body) }
-          yield Internal::StreamExchange.new(self, operation, body)
+          exchange = grpc ? Internal::GRPCStreamExchange : Internal::StreamExchange
+          yield exchange.new(self, operation, body)
         ensure
           body.close
           cleanup(operation)
@@ -68,6 +78,7 @@ module ConnectRPC
 
       def stream_operation(operation, timeout: nil, &work)
         check_affinity!
+        timeout = [timeout || Deadline::MAX_NATIVE_WAIT, Deadline::MAX_NATIVE_WAIT].min if operation[:grpc]
         request = operation.fetch(:request)
         raise Error.new(:unavailable, "HTTP/2 exchange is retired"), cause: nil if operation[:cleaned]
 
@@ -95,6 +106,9 @@ module ConnectRPC
       rescue StandardError => e
         request.lifecycle&.record_failure(e)
         check_request!(request)
+        if operation[:grpc] && (failure = operation[:response]&.stream&.grpc_error)
+          raise failure, cause: nil
+        end
         raise if e.is_a?(ConnectRPC::Error)
 
         raise Error.new(:unavailable, "HTTP/2 transport failed"), cause: nil
@@ -124,11 +138,16 @@ module ConnectRPC
           raise IOError, "Connection is not reusable" unless connection.reusable?
 
           headers = request.headers.dup
-          headers["connect-timeout-ms"] = [request.deadline.timeout_ms] if request.deadline
+          if request.deadline
+            key = operation[:grpc] ? "grpc-timeout" : "connect-timeout-ms"
+            headers[key] = [operation[:grpc] ? GRPCProtocol.timeout(request.deadline) : request.deadline.timeout_ms]
+          end
+          GRPCProtocol.check_fields!(headers) if operation[:grpc]
           outgoing = ::Protocol::HTTP::Request["POST", request.url.request_uri, Internal.fields(headers), body,
                                                scheme: @origin.scheme, authority: @origin.authority]
           response = connection.create_response
           operation[:response] = response
+          response.stream.grpc_mark! if operation[:grpc]
           task.defer_cancel { connection.write_request(response, outgoing) }
         end
       end

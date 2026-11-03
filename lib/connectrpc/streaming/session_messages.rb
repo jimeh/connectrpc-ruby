@@ -3,6 +3,10 @@
 module ConnectRPC
   module Streaming
     class Session
+      def remote_completed?(error)
+        @strategy.grpc? && @eof && error.equal?(@remote_error)
+      end
+
       def headers
         @headers || operation(:reading) { leading }
       end
@@ -62,6 +66,8 @@ module ConnectRPC
       end
 
       def receive_eof
+        return accept_grpc_terminal unless @server || !@strategy.grpc?
+
         raise Error.new(:internal, "Missing streaming terminal"), cause: nil unless @server
 
         @eof = true
@@ -70,7 +76,7 @@ module ConnectRPC
 
       def decode_message(bytes)
         @received += 1
-        validate_response_count
+        validate_response_count unless @strategy.grpc?
         message = @binding.decode(bytes, type: @read_type, codec: @codec)
         @state.check!
         raise Error.new(:internal, "Binding decoded a nil streaming message"), cause: nil if message.nil?
@@ -78,7 +84,7 @@ module ConnectRPC
         message
       rescue CodecError => e
         @lifecycle&.record_failure(e)
-        raise Error.new(@server ? :invalid_argument : :internal, "Cannot decode streaming message"), cause: nil
+        raise Error.new(@strategy.decode_error(@server), "Cannot decode streaming message"), cause: nil
       end
 
       def validate_response_count
@@ -95,11 +101,12 @@ module ConnectRPC
         raise StreamStateError, "Server streaming accepts one request"
       end
 
-      def encode_message(message)
+      def encode_message(message) # rubocop:disable Metrics/MethodLength
         bytes = @binding.encode(message, type: @write_type, codec: @codec)
         @state.check!
         Protocol.check_size!(bytes, @write_limit)
-        @context&.send(:publish_headers)
+        publisher = @publish
+        publisher ? publisher.call : @context&.send(:publish_headers)
         @writer.emit(bytes)
         @sent += 1
         nil

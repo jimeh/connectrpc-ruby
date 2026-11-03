@@ -17,7 +17,7 @@ module ConnectRPC
         timeout = recovery_read_timeout(length) if @recovery_expires
         deadline = @context&.deadline
         timeout = deadline.remaining if @server && deadline
-        bytes = @input.read(length, timeout: timeout)
+        bytes = @input.read(length, timeout: @strategy.wait(timeout))
         check_open!
         count_recovery_bytes(bytes)
         bytes
@@ -28,7 +28,7 @@ module ConnectRPC
       def write_chunk(bytes)
         if @server
           output = @output #: _StreamingOutput
-          output.write(bytes, timeout: @context&.deadline&.remaining)
+          output.write(bytes, timeout: @strategy.wait(@context&.deadline&.remaining))
         else
           @output.write(bytes)
         end
@@ -69,8 +69,14 @@ module ConnectRPC
                    end
       end
 
-      def response_metadata
+      def response_metadata # rubocop:disable Metrics/MethodLength
         exchange = @input #: _StreamExchange
+        strategy = @strategy
+        if strategy.is_a?(GRPCProtocol::Strategy)
+          grpc = @input #: _GRPCStreamExchange
+          return strategy.leading(grpc, @reader, @accept_encoding, @recovery_expires ? recovery_timeout : nil,
+                                  input: self)
+        end
         head = @recovery_expires ? exchange.response_head(timeout: recovery_timeout) : exchange.response_head
         validate_response_status(head.status)
         values = Protocol.headers(head.headers)

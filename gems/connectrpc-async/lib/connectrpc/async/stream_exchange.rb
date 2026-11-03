@@ -165,6 +165,35 @@ module ConnectRPC
         def abort = @body.close(IOError.new("Processing abandoned"))
       end
 
+      class GRPCInput < Input
+        def read(length, timeout: nil)
+          super
+        rescue ::Async::TimeoutError
+          raise Error.new(:unavailable, "gRPC input operation expired"), cause: nil
+        end
+      end
+
+      class GRPCServerOutput < ServerOutput
+        attr_writer :headers
+
+        def initialize(body, _trailers)
+          super(body)
+        end
+
+        def write(bytes, timeout: nil)
+          super
+        rescue ::Async::TimeoutError
+          raise Error.new(:unavailable, "gRPC output operation expired"), cause: nil
+        end
+
+        def finish(headers:)
+          GRPCProtocol.check_fields!(headers)
+          headers.each { |key, values| values.each { |value| @headers.add(key, value, trailer: true) } }
+          @body.close_write
+          nil
+        end
+      end
+
       class StreamExchange
         def initialize(transport, operation, body)
           @transport = transport
@@ -210,6 +239,45 @@ module ConnectRPC
 
         def perform(timeout: nil, &)
           @transport.send(:stream_operation, @operation, timeout: timeout, &)
+        end
+      end
+
+      class GRPCStreamExchange < StreamExchange
+        def response_head(timeout: nil)
+          @response_head ||= perform(timeout: timeout) do
+            @operation.fetch(:connection).read_response(@response)
+            @input = Input.new(@response.body)
+            stream = @response.stream
+            raise stream.grpc_error if stream.grpc_error
+
+            GRPCHead.new(status: @response.status, headers: stream.grpc_initial_headers,
+                         end_stream: stream.grpc_initial_end_stream)
+          end
+        end
+
+        def read(length, timeout: nil)
+          bytes = super
+          @read_eof = true if bytes.nil? || bytes.empty?
+          raise @response.stream.grpc_error if @response.stream.grpc_error
+
+          bytes
+        end
+
+        def response_trailers
+          raise StreamStateError, "Trailers require response EOF" unless @read_eof
+
+          @response.stream.grpc_trailers
+        end
+
+        def finish(timeout: nil)
+          super
+          stream = @response.stream
+          raise stream.grpc_error if stream.grpc_error
+          unless stream.grpc_initial_end_stream || stream.grpc_trailers
+            raise Error.new(:internal, "Missing final gRPC HEADERS"), cause: nil
+          end
+
+          nil
         end
       end
     end

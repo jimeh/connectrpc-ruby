@@ -397,3 +397,17 @@ checks generate real mixed services and run native Async/Falcon streaming over
 localhost with all seven normally installed packages, both composition orders,
 codecs and codings. These remain separate from independent Go/official evidence.
 See the [streaming guide](streaming.md) for state, ownership and timing policies.
+
+## Native gRPC types
+
+Client accepts `protocol: :connect | :grpc`; Server additionally accepts `:auto`.
+`GRPCHead` is deeply immutable and separate from the existing Struct records.
+The independent `_GRPCTransport` advertises all four finite RPC shapes and yields
+`_GRPCStreamExchange`; it needs no unary `call`. Existing `_Transport`,
+`_StreamingTransport`, `_StreamExchange` and `_Binding` requirements are unchanged.
+
+A separate `_GRPCStatusCodec` supports composed custom binding tokens. Its
+`decode_status(String, code: Integer)` compares the raw numeric code before
+normalizing unknown codes. Native `Server#call_grpc` requires explicit HTTP/2,
+`_GRPCOutput.finish(headers:)` and a `_PublishGRPCHead` callback. See the
+[gRPC guide](grpc.md) for publication, EOF and transport completion semantics.

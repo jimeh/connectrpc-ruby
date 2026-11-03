@@ -13,9 +13,21 @@ module Conformance
         %w[tasks_finished streams_closed resources_finished lifetime_children_finished].each do |fact|
           verify(event.fetch(fact), "Native cleanup incomplete: #{fact}")
         end
-        counts = event.fetch("counts")
-        verify(counts.fetch("library") == { "entries" => 1, "exits" => 1 }, "Native library invocation missing")
-        counts.each_value { |edges| verify(edges.fetch("entries") == edges.fetch("exits"), "Unbalanced native scope") }
+        validate_client_scope_counts!(event, events)
+      end
+    end
+
+    def validate_client_scope_counts!(event, events)
+      counts = event.fetch("counts")
+      verify(counts.fetch("library") == { "entries" => 1, "exits" => 1 }, "Native library invocation missing")
+      counts.each do |phase, edges|
+        actual = %w[enter exit].map do |edge|
+          events.count do |item|
+            item["event"] == "native_scope_#{edge}" && item["name"] == event["name"] && item["phase"] == phase
+          end
+        end
+        verify(actual == [edges.fetch("entries"), edges.fetch("exits")], "Native scope counts lack actual events")
+        verify(actual.first == actual.last, "Unbalanced native scope")
       end
     end
 

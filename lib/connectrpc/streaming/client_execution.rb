@@ -11,15 +11,19 @@ module ConnectRPC
                              response_wire_limit: @response_wire_limit, request_encoding: @encoding,
                              response_encoding: :identity, accept_encoding: @accept_encoding,
                              terminal_wire_limit: @terminal_wire_limit, terminal_limit: @terminal_limit,
-                             lifecycle: lifecycle)
+                             lifecycle: lifecycle, strategy: client_stream_strategy(lifecycle))
     end
 
-    def with_stream_session(session, scope)
+    def with_stream_session(session, scope) # rubocop:disable Metrics/MethodLength
       yield
     rescue StandardError => e
       scope.failure = e
+      scope.delivered_error = e if session.remote_completed?(e)
       recovered = session.recover_send_failure if session.send_failure?(e)
-      raise recovered, cause: nil if recovered
+      if recovered
+        scope.delivered_error = recovered if session.remote_completed?(recovered)
+        raise recovered, cause: nil
+      end
 
       raise
     ensure
@@ -36,7 +40,7 @@ module ConnectRPC
     end
 
     def prepare_server_stream(method, request, session)
-      return unless method.is_a?(ServerStreamMethod)
+      return unless method.is_a?(ServerStreamMethod) || method.is_a?(Method)
 
       session.send_message(request)
       session.close_send
@@ -58,7 +62,7 @@ module ConnectRPC
     end
 
     def finish_stream_scope(method, session)
-      return client_stream_response(session) if method.is_a?(ClientStreamMethod)
+      return client_stream_response(session) if method.is_a?(ClientStreamMethod) || method.is_a?(Method)
       return if session.abandoned?
       return session.receive if session.consumed?
 
@@ -72,7 +76,11 @@ module ConnectRPC
       message = session.receive
       raise Error.new(:unimplemented, "Expected exactly one response"), cause: nil if message.nil?
 
-      session.receive
+      if @protocol == :grpc
+        session.receive until session.consumed?
+      else
+        session.receive
+      end
       Response.new(message: message, metadata: session.headers, trailers: session.trailers || Metadata.new)
     end
   end

@@ -1,6 +1,6 @@
 # frozen_string_literal: true
 
-RSpec.shared_examples "native streaming bounds and cancellation" do
+RSpec.shared_examples "native streaming bounds and cancellation" do |protocol = :connect|
   %i[request response].product(%i[token deadline]).each do |direction, reason|
     it "bounds nonreading #{direction} ownership and advances a same-connection sibling through #{reason}" do
       reactor do |task|
@@ -30,7 +30,7 @@ RSpec.shared_examples "native streaming bounds and cancellation" do
         }
         host, origin, listener = build_stream_host(streaming_server(handlers), nil, "http")
         transport = ConnectRPC::Async::Transport.new(origin: origin)
-        core = ConnectRPC::Client.new(base_url: origin, transport: transport,
+        core = ConnectRPC::Client.new(base_url: origin, transport: transport, protocol: protocol,
                                       binding: ConnectRPC::Bindings::GoogleProtobuf.new)
         source = ConnectRPC::CancellationSource.new
         call = task.async do
@@ -122,7 +122,7 @@ RSpec.shared_examples "native streaming bounds and cancellation" do
         }
         host, origin, listener = build_stream_host(streaming_server(handlers), nil, "http")
         transport = ConnectRPC::Async::Transport.new(origin: origin)
-        core = ConnectRPC::Client.new(base_url: origin, transport: transport,
+        core = ConnectRPC::Client.new(base_url: origin, transport: transport, protocol: protocol,
                                       binding: ConnectRPC::Bindings::GoogleProtobuf.new)
         source = ConnectRPC::CancellationSource.new
         progress = Async::Queue.new

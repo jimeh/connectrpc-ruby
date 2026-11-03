@@ -11,6 +11,6 @@ target :core do
   check "../lib/connectrpc/deadline.rb", "../lib/connectrpc/protocol.rb", "../lib/connectrpc/client.rb"
   check "../lib/connectrpc/server.rb", "../lib/connectrpc/instrumentation.rb"
   check "../lib/connectrpc/compression.rb", "../lib/connectrpc/message_io.rb", "../lib/connectrpc/get_query.rb"
-  check "../lib/connectrpc/streaming/*.rb"
+  check "../lib/connectrpc/streaming/*.rb", "../lib/connectrpc/grpc*.rb"
   configure_code_diagnostics(Steep::Diagnostic::Ruby.strict)
 end

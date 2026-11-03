@@ -3,7 +3,7 @@
 module ConnectRPC
   module Streaming
     class ClientScope
-      attr_accessor :completed, :abandoned, :independent_error, :failure, :result
+      attr_accessor :completed, :abandoned, :independent_error, :failure, :result, :delivered_error
 
       def initialize(lifecycle)
         @lifecycle = lifecycle
@@ -35,7 +35,7 @@ module ConnectRPC
       private :execute
 
       def cleanup(session)
-        return if @completed
+        return if @completed || @delivered_error
 
         @abandoned = true if implicit_abandonment?
         session.abandon unless session.abandoned?
@@ -64,7 +64,7 @@ module ConnectRPC
 
         lifecycle.record_failure(error) if error
         report_processing(lifecycle, error)
-        lifecycle.finish(delivery: success?(error) ? :completed : :aborted)
+        lifecycle.finish(delivery: delivery_completed?(error) ? :completed : :aborted)
       end
 
       def start(timeout, cancellation)
@@ -79,6 +79,15 @@ module ConnectRPC
       end
 
       def success?(error) = @completed && error.nil?
+
+      def delivery_completed?(error)
+        return true if success?(error)
+
+        delivered = @delivered_error
+        return false unless delivered
+
+        delivered.equal?(error)
+      end
 
       def report_processing(lifecycle, error)
         normalized = normalized_error(error)

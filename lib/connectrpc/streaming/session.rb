@@ -29,7 +29,9 @@ module ConnectRPC
       def initialize(binding:, method:, codec:, state:, input:, output:, request_limit:, response_limit:,
                      request_wire_limit:, response_wire_limit:, request_encoding:, response_encoding:,
                      terminal_wire_limit:, terminal_limit:, server: false, context: nil, lifecycle: nil,
-                     accept_encoding: [:identity])
+                     accept_encoding: [:identity], strategy: ConnectStrategy.new, publish: nil)
+        @strategy = strategy
+        @publish = publish
         initialize_owner(binding, method, codec, state)
         initialize_channels(input, output, server, context, lifecycle)
         @accept_encoding = accept_encoding
@@ -91,21 +93,21 @@ module ConnectRPC
 
       def initialize_reader(request_wire, response_wire, request_encoding, response_encoding,
                             terminal_wire_limit:, terminal_limit:)
-        @reader = Framing.new(input: self, request: @server, limit: @read_limit, state: @state,
-                              wire_limit: @server ? request_wire : response_wire,
-                              encoding: @server ? request_encoding : response_encoding,
-                              terminal_wire_limit:, terminal_limit:,
-                              on_error: ->(error) { @lifecycle&.record_failure(error) })
+        @reader = @strategy.framing.new(input: self, request: @server, limit: @read_limit, state: @state,
+                                        wire_limit: @server ? request_wire : response_wire,
+                                        encoding: @server ? request_encoding : response_encoding,
+                                        terminal_wire_limit:, terminal_limit:,
+                                        on_error: ->(error) { @lifecycle&.record_failure(error) })
       end
 
       def initialize_writer(request_wire, response_wire, request_encoding, response_encoding,
                             terminal_wire_limit:, terminal_limit:)
-        @writer = Framing.new(input: nil, output: self, request: !@server, limit: @write_limit, state: @state,
-                              wire_limit: @server ? response_wire : request_wire,
-                              encoding: @server ? response_encoding : request_encoding,
-                              terminal_wire_limit: terminal_wire_limit,
-                              terminal_limit: terminal_limit,
-                              on_error: ->(error) { @lifecycle&.record_failure(error) })
+        @writer = @strategy.framing.new(input: nil, output: self, request: !@server, limit: @write_limit, state: @state,
+                                        wire_limit: @server ? response_wire : request_wire,
+                                        encoding: @server ? response_encoding : request_encoding,
+                                        terminal_wire_limit: terminal_wire_limit,
+                                        terminal_limit: terminal_limit,
+                                        on_error: ->(error) { @lifecycle&.record_failure(error) })
       end
 
       def check_open!
