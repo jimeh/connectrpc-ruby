@@ -118,6 +118,9 @@ validated/decoded it or interrupted its socket. Completed writes
 retain actual byte/body/name/no-timeout checks; interrupted writes leave byte
 delivery unknown. Dedicated synchronized real-wire tests prove request progress,
 interruption/retirement and cleanup separately from the official timer scenario.
+Lifecycle close-call telemetry leaves interruption causality unknown because
+NetHTTP can independently close the socket; it still requires observed closure
+and retirement for attached sockets.
 Never gate/restart the official timer after wire progress.
 Actual wire coding, byte counts, lengths and digests remain independently
 checked. Ordinary reference error responses may use identity for gzip requests.

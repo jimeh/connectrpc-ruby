@@ -196,7 +196,7 @@ RSpec.describe "conformance cancellation evidence" do
         expect(write.fetch("attempts")).to eq(write.fetch("completed_writes"))
         expect(write.fetch("body").except("content_length")).to eq(dispatch.fetch("wire").except("content_length"))
         expect(events.find { |event| event["event"] == "socket_cleanup" }).to include(
-          "closed" => true, "interrupted" => true, "retired" => true, "attached" => 1
+          "closed" => true, "interrupted" => nil, "close_calls" => 1, "retired" => true, "attached" => 1
         )
         expect(events.count { |event| event["event"] == "dispatch" }).to eq(1)
         expect(events.count { |event| event["event"] == "wire_failure" }).to eq(1)
@@ -244,6 +244,70 @@ RSpec.describe "conformance cancellation evidence" do
     expect(source.instance_variable_get(:@signal).instance_variable_get(:@registrations)).to be_empty
   ensure
     host&.close
+  end
+
+  it "keeps interruption unknown when NetHTTP closes the real socket while native cancellation close is pending" do
+    progress = Queue.new
+    send_response = Queue.new
+    peer_closed = Queue.new
+    close_entered = Queue.new
+    release_close = Queue.new
+    source = ConnectRPC::CancellationSource.new
+    adapter = Conformance::ClientAdapter.new
+    allow(adapter).to receive(:with_cancellation) { |_request, _instruction, &call| call.call(source.token) }
+    # Pause at entry into the unchanged native close. NetHTTP remains able to
+    # close its own socket after reading the peer's response. The peer's EOF,
+    # not a private lifecycle flag or elapsed delay, establishes that closure.
+    trace = TracePoint.new(:call) do |event|
+      next unless event.defined_class == ConnectRPC::Transports::NetHTTP::SocketLifecycle && event.method_id == :close
+
+      close_entered << true
+      raise "Native close gate timed out" unless release_close.pop(timeout: 2)
+    end
+    peer = lambda do |socket|
+      read_request(socket)
+      progress << true
+      raise "Response gate timed out" unless send_response.pop(timeout: 2)
+
+      body = Conformance::UnaryResponse.new(payload: { data: "test response" }).to_json
+      socket.write("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n" \
+                   "Content-Length: #{body.bytesize}\r\nConnection: close\r\n\r\n#{body}")
+      expect(socket.read).to eq("")
+      peer_closed << true
+    end
+    caller = canceler = nil
+    with_peer(peer) do |url, listener|
+      request = cancellation_request(port: URI(url).port)
+      trace.enable
+      events = capture_events do
+        caller = Thread.new { run_adapter(adapter, request) }
+        expect(progress.pop(timeout: 2)).to be(true)
+        canceler = Thread.new { source.cancel }
+        expect(close_entered.pop(timeout: 2)).to be(true)
+        send_response << true
+        expect(peer_closed.pop(timeout: 2)).to be(true)
+        release_close << true
+        expect(canceler.join(2)).to equal(canceler)
+        expect(canceler.value).to be(true)
+        expect(caller.join(2)).to equal(caller)
+        caller.value
+      end
+      trace.disable
+      expect(events.find { |event| event["event"] == "socket_cleanup" }).to include(
+        "attached" => 1, "closed" => true, "close_calls" => 1, "retired" => true, "interrupted" => nil
+      )
+      expect(events.find { |event| event["event"] == "call_finished" }).to include("code" => "canceled", "cause" => nil)
+      expect(listener.wait_readable(0)).to be_nil
+      expect(source.instance_variable_get(:@signal).instance_variable_get(:@registrations)).to be_empty
+    ensure
+      trace&.disable
+      send_response << true
+      release_close << true
+      canceler&.join(2)
+      caller&.join(2)
+    end
+  ensure
+    trace&.disable
   end
 
   it "distinguishes a completed BufferedIO write from an attempted write whose byte delivery is unknown" do

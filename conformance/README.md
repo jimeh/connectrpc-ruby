@@ -114,10 +114,18 @@ with zero attempts proves no request write started. An attempted write that did
 not return leaves partial byte delivery unknown. Successful write prefixes are
 compared with the prepared body; complete requests additionally require the
 original decoded body, codec/compression, name, length and no wire timeout.
+A completed header write still requires the correct name and Content-Length
+against the prepared body when a later body write is interrupted. Unknown
+remaining delivery never exempts known completed-write facts.
 Raw I/O failures and the transport's normalized canceled result are recorded
-separately. Socket lifecycle attachment, interruption and retirement are observed
-at their actual boundaries. Closure is unknown when no raw socket was attached,
-rather than reported as an observed open or closed socket.
+separately. Socket lifecycle attachment, close calls and retirement are observed
+at their actual boundaries. NetHTTP can independently close the same socket
+while a lifecycle close runs, so a close call reports `interrupted: null`.
+A scope with no observed close calls reports `interrupted: false`; the fixture
+never claims proven interruption from before/after socket state. Final closure
+is unknown when no raw socket was attached, rather than reported as an observed
+open or closed socket. Dedicated controlled-peer tests establish real wire
+interruption separately from this concurrent observer.
 
 Summaries retain scheduled/completed cases, actual dispatches, cancellation
 stages and cancellations before transport separately. The stages are

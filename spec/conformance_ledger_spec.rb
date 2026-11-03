@@ -134,7 +134,7 @@ RSpec.describe Conformance::Ledger do
     telemetry[1]["request"] = request
     extra_events[1].merge!("attempts" => 2, "completed_writes" => 2, "observer_complete" => true,
                            "prepared_body_prefix" => wire)
-    extra_events[3].merge!("attached" => 1, "close_calls" => 1)
+    extra_events[3].merge!("attached" => 1, "close_calls" => 1, "interrupted" => nil)
     extra_events[4].merge!("cause" => nil, "error_class" => "ConnectRPC::Error")
     finish = terminal.merge("event" => "call_finished", "name" => cancel_name, "observer_complete" => true)
     %w[transport setup exchange].each do |phase|
@@ -148,7 +148,7 @@ RSpec.describe Conformance::Ledger do
                  scoped.call("exchange_started"), telemetry[1], extra_events[2], extra_events[4], extra_events[1],
                  scoped.call("exchange_finished"), extra_events[3], scoped.call("setup_finished"),
                  scoped.call("transport_finished"), finish, telemetry[2], telemetry[3], { "event" => "client_eof" }]
-    telemetry.each { |event| event["monotonic"] = event["event"] == "call_started" ? 1.0 : 1.006 }
+    telemetry.each { |event| event["monotonic"] = event["event"].end_with?("_started") ? 1.0 : 1.006 }
     [log, telemetry, cancel_name]
   end
 
@@ -227,6 +227,30 @@ RSpec.describe Conformance::Ledger do
     end
   end
 
+  %w[identity gzip].each do |profile|
+    it "checks completed headers while retaining unknown interrupted body delivery for #{profile}" do
+      log, telemetry, cancel_name = cancellation_fixture(profile)
+      write = telemetry.find { |event| event["event"] == "request_written" }
+      empty = write.fetch("body").merge("bytes" => 0, "gzip_magic" => false,
+                                        "sha256" => "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855")
+      write.merge!("attempts" => 2, "completed_writes" => 1, "body" => empty,
+                   "prepared_body_prefix" => empty.dup, "request" => nil, "bytes" => 208)
+      check = lambda do |data|
+        described_class.new(direction: "client", selected: cancel_name, profile: profile).parse(log, data, 0)
+      end
+      expect(check.call(telemetry).fetch(:cancellation_stages)).to eq(cancel_name => "write_incomplete")
+      { "test_name_header" => ["unrelated-case", nil], "content_length" => ["999999", nil],
+        "timeout_header" => [true], "request" => [{}], "written_at" => [999.0] }.each do |field, values|
+        values.each do |value|
+          changed = Marshal.load(Marshal.dump(telemetry))
+          changed.find { |event| event["event"] == "request_written" }[field] = value
+          expect { check.call(changed) }.to raise_error(RuntimeError, /Conformance accounting/),
+                                            "accepted known partial-write header #{field}=#{value.inspect}"
+        end
+      end
+    end
+  end
+
   it "rejects body, deadline, terminal, cleanup and write lifetime contradictions on dispatched cancellation" do
     log, telemetry, cancel_name = cancellation_fixture
     mutations = {
@@ -235,7 +259,7 @@ RSpec.describe Conformance::Ledger do
       "transport_finished" => { "code" => nil, "cause" => "IOError" },
       "request_written" => { "attempts" => 1, "observer_complete" => false,
                              "body" => { "bytes" => 41 }, "test_name_header" => "wrong", "written_at" => nil },
-      "socket_cleanup" => { "closed" => false, "interrupted" => false, "retired" => false, "attached" => 0 }
+      "socket_cleanup" => { "closed" => false, "interrupted" => true, "retired" => false, "attached" => 0 }
     }
     mutations.each do |kind, fields|
       fields.each do |field, value|

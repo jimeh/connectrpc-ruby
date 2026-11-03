@@ -53,26 +53,20 @@ module Conformance
         @observation_mutex = Mutex.new
         @observed_sockets = []
         @observed_close_calls = 0
-        @observed_retired = @observed_interrupted = false
+        @observed_retired = false
       end
 
       def attach(socket)
         @observation_mutex.synchronize do
           @observed_sockets << socket
-          was_open = !socket.closed?
           super
-          @observed_interrupted = true if was_open && socket.closed? && @observed_close_calls.positive?
         end
       end
 
       def close
         @observation_mutex.synchronize do
-          was_open = @observed_sockets.any? { |socket| !socket.closed? }
           super
-          unless @observed_retired
-            @observed_close_calls += 1
-            @observed_interrupted = true if was_open && @observed_sockets.all?(&:closed?)
-          end
+          @observed_close_calls += 1 unless @observed_retired
         end
       end
 
@@ -87,7 +81,10 @@ module Conformance
         @observation_mutex.synchronize do
           { attached: @observed_sockets.size,
             closed: @observed_sockets.empty? ? nil : @observed_sockets.all?(&:closed?),
-            close_calls: @observed_close_calls, interrupted: @observed_interrupted, retired: @observed_retired }
+            close_calls: @observed_close_calls,
+            # NetHTTP can independently close the same socket while native close
+            # runs. A returned close call cannot establish interruption causality.
+            interrupted: @observed_close_calls.zero? ? false : nil, retired: @observed_retired }
         end
       end
     end

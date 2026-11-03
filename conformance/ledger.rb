@@ -333,11 +333,9 @@ module Conformance
         verify(cleanup.fetch("retired") == true, "Cancellation did not retire socket ownership")
         closes = cleanup.fetch("close_calls")
         verify(closes.is_a?(Integer) && closes.between?(0, 1), "Invalid socket close calls")
-        verify([true, false].include?(cleanup.fetch("interrupted")), "Unknown socket interruption")
+        verify(cleanup.fetch("interrupted") == (closes.zero? ? false : nil), "False socket interruption claim")
         attached = cleanup.fetch("attached")
         verify(attached.is_a?(Integer) && attached.between?(0, 1), "Invalid attached socket count")
-        verify(!cleanup.fetch("interrupted") || (closes == 1 && attached == 1 && cleanup.fetch("closed") == true),
-               "False socket interruption claim")
         verify(attached.zero? ? cleanup.fetch("closed").nil? : cleanup.fetch("closed") == true,
                "Cancellation socket closure unproven")
       end
@@ -405,6 +403,30 @@ module Conformance
              "Invalid direct I/O terminal")
     end
 
+    # An unfinished write leaves its own bytes unknown, not the facts established
+    # by earlier successful writes. Check those facts before selecting any branch.
+    def validate_written_facts!(written, records, name, expected)
+      prepared = records.fetch("dispatch").fetch("wire")
+      body_bytes = written.fetch("body").fetch("bytes")
+      complete = written.fetch("headers_complete")
+      verify([true, false].include?(complete) && body_bytes <= prepared.fetch("bytes") &&
+             (complete || body_bytes.zero?), "Inconsistent written request boundaries")
+      if complete || written.fetch("test_name_header")
+        verify(written.fetch("test_name_header") == name, "Cancellation wire name changed")
+      end
+      if complete || written.fetch("content_length")
+        verify(written.fetch("content_length") == prepared.fetch("bytes").to_s, "Cancellation wire length changed")
+      end
+      verify(!complete || written.fetch("timeout_header") == false, "Cancellation sent a wire timeout")
+      message = complete && body_bytes == prepared.fetch("bytes") ? expected : nil
+      verify(written.fetch("request") == message, "Cancellation actual request changed")
+      return if written.fetch("completed_writes").zero?
+
+      time = written.fetch("written_at")
+      verify(time.is_a?(Numeric) && time >= records.fetch("exchange_started").fetch("monotonic") &&
+             time <= written.fetch("monotonic"), "Write outside observed exchange lifetime")
+    end
+
     def validate_cancellation_write!(records, name, expected, signal, response_observed)
       dispatch = records.fetch("dispatch")
       verify(dispatch.fetch("deadline") == false, "Cancellation substituted a deadline")
@@ -429,8 +451,8 @@ module Conformance
       verify(body == written.fetch("prepared_body_prefix"), "Cancellation written prefix changed")
       verify(written.fetch("timeout_header") != true, "Cancellation sent a wire timeout")
       cleanup = records.fetch("socket_cleanup")
-      verify(cleanup.fetch("attached") == 1 && cleanup.fetch("closed") &&
-             (response_observed || cleanup.fetch("interrupted")), "Cancellation socket cleanup unproven")
+      verify(cleanup.fetch("attached") == 1 && cleanup.fetch("closed"), "Cancellation socket cleanup unproven")
+      validate_written_facts!(written, records, name, expected)
       if completed.zero?
         verify(bytes.zero? && body.fetch("bytes").zero? && written.fetch("written_at").nil? &&
                written.fetch("headers_complete") == false && written.fetch("request").nil? &&
@@ -447,10 +469,6 @@ module Conformance
       verify(written.fetch("headers_complete") && body.fetch("bytes").positive?, "Incomplete request write")
       verify(body.except("content_length") == dispatch.fetch("wire").except("content_length"),
              "Cancellation actual body changed")
-      verify(written.fetch("test_name_header") == name, "Cancellation wire name changed")
-      verify(written.fetch("content_length") == body.fetch("bytes").to_s, "Cancellation wire length changed")
-      verify(written.fetch("timeout_header") == false, "Cancellation sent a wire timeout")
-      verify(written.fetch("request") == expected, "Cancellation actual request changed")
       return "response_observed" if response_observed
 
       written.fetch("written_at") <= signal.fetch("requested_at") ? "request_written" : "write_overlapped_signal"
