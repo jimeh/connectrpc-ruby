@@ -41,7 +41,10 @@ module ConnectRPC
       def abandoned? = @abandoned
       def consumed? = @eof
       def send_failure?(error) = error.equal?(@send_failure)
-      def owned_error?(error) = error.equal?(@operation_error)
+
+      def owned_error?(error)
+        error.equal?(@reading_error) || error.equal?(@writing_error) || error.equal?(@abandon_error)
+      end
 
       def close
         @closed = true
@@ -120,12 +123,17 @@ module ConnectRPC
           yield
         end
       rescue StandardError => e
-        record_operation_failure(e)
+        record_operation_failure(e, direction)
         raise
       end
 
-      def record_operation_failure(error)
-        @operation_error = error
+      def record_operation_failure(error, direction)
+        # Independent directions retain one failure each across application unwind.
+        case direction
+        when :reading then @reading_error = error
+        when :writing then @writing_error = error
+        when :abandon then @abandon_error = error
+        end
         @lifecycle&.record_failure(error)
       end
     end

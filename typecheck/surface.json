@@ -880,7 +880,7 @@
     "ConnectRPC::Streaming::Session#operation": {"kind":"method","visibility":"private","parameters":"direction","classification":"internal"},
     "ConnectRPC::Streaming::Session#owned_error?": {"kind":"method","visibility":"public","parameters":"error","classification":"internal"},
     "ConnectRPC::Streaming::Session#received": {"kind":"attribute","visibility":"public","classification":"internal"},
-    "ConnectRPC::Streaming::Session#record_operation_failure": {"kind":"method","visibility":"private","parameters":"error","classification":"internal"},
+    "ConnectRPC::Streaming::Session#record_operation_failure": {"kind":"method","visibility":"private","parameters":"error, direction","classification":"internal"},
     "ConnectRPC::Streaming::Session#send_failure?": {"kind":"method","visibility":"public","parameters":"error","classification":"internal"},
     "ConnectRPC::Streaming::Session#sent": {"kind":"attribute","visibility":"public","classification":"internal"},
     "ConnectRPC::Streaming::Session#trailers": {"kind":"attribute","visibility":"public","classification":"internal"}

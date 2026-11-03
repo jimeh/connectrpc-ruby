@@ -35,7 +35,7 @@ module ConnectRPC
         @output.abort
         nil
       rescue StandardError => e
-        record_operation_failure(e)
+        record_operation_failure(e, :abandon)
         raise
       end
 

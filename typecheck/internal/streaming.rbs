@@ -195,7 +195,9 @@ module ConnectRPC
       @reading: Direction
       @writing: Direction
       @accept_encoding: Array[encoding]
-      @operation_error: StandardError?
+      @reading_error: StandardError?
+      @writing_error: StandardError?
+      @abandon_error: StandardError?
       @send_failure: StandardError?
       @remote_error: Error?
       @headers: Metadata?
@@ -219,7 +221,7 @@ module ConnectRPC
       def read: (Integer, ?timeout: Numeric?) -> String?
       def recover_send_failure: () -> Error?
       private
-      def record_operation_failure: (StandardError) -> void
+      def record_operation_failure: (StandardError, :reading | :writing | :abandon) -> void
       def recovery_timeout: () -> Float
       def initialize_owner: (_Binding, declaration, codec, Context | CallCancellation) -> void
       def initialize_channels: (_StreamingInput | _StreamExchange, _StreamingOutput | _StreamExchange, bool, StreamingContext?, Instrumentation::Handle?) -> void

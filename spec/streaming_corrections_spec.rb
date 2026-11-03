@@ -320,6 +320,84 @@ RSpec.describe "Streaming exception ownership and completion" do
       end
     end
   end
+  %i[reading writing].each do |first|
+    %i[canceled deadline_exceeded].each do |reason|
+      %i[ensure reraise].each do |unwind|
+        it "preserves SDK provenance across #{first} then the opposite direction, #{unwind}, #{reason}" do
+          source = ConnectRPC::CancellationSource.new
+          clock = 0.0
+          allow(Process).to receive(:clock_gettime).and_call_original
+          allow(Process).to receive(:clock_gettime).with(Process::CLOCK_MONOTONIC) { clock }
+          binding.define_singleton_method(:decode) { |*, **| raise ConnectRPC::CodecError, "original decode failure" }
+          client, = core
+          expect do
+            client.bidi_stream(rpc(:bidi_stream), timeout: 1, cancellation: source.token) do |duplex|
+              fail_direction = ->(direction) { direction == :reading ? duplex.receive : duplex.send_message(nil) }
+              fail_other = lambda do
+                expect { fail_direction.call(first == :reading ? :writing : :reading) }
+                  .to raise_error(ConnectRPC::Error)
+                reason == :canceled ? source.cancel : clock = 2.0
+              end
+              if unwind == :ensure
+                begin
+                  fail_direction.call(first)
+                ensure
+                  fail_other.call
+                end
+              else
+                primary = begin
+                  fail_direction.call(first)
+                rescue ConnectRPC::Error => e
+                  e
+                end
+                fail_other.call
+                raise primary
+              end
+            end
+          end.to raise_error(ConnectRPC::Error) { |error|
+            expect(error.code).to eq(reason.to_s)
+            expect(error.cause).to be_nil
+          }
+          expect(observer.outcome.code).to eq(reason.to_s)
+        end
+      end
+    end
+
+    it "preserves SDK provenance across #{first} and a handled abandon failure" do
+      source = ConnectRPC::CancellationSource.new
+      binding.define_singleton_method(:decode) { |*, **| raise ConnectRPC::CodecError, "original decode failure" }
+      client, exchange = core
+      exchange.define_singleton_method(:abort) { raise IOError, "abort failure" }
+      expect do
+        invoke(client, :bidi_stream, cancellation: source.token) do |duplex|
+          first == :reading ? duplex.receive : duplex.send_message(nil)
+        ensure
+          expect { duplex.abandon }.to raise_error(IOError, "abort failure")
+          source.cancel
+        end
+      end.to raise_error(ConnectRPC::Error) { |error|
+        expect(error.code).to eq("canceled")
+        expect(error.cause).to be_nil
+      }
+    end
+  end
+
+  it "retains an independent user error after both SDK directions fail" do
+    source = ConnectRPC::CancellationSource.new
+    binding.define_singleton_method(:decode) { |*, **| raise ConnectRPC::CodecError, "original decode failure" }
+    client, = core
+    original = ConnectRPC::Error.new(:unknown, "independent application failure")
+    expect do
+      invoke(client, :bidi_stream, cancellation: source.token) do |duplex|
+        expect { duplex.receive }.to raise_error(ConnectRPC::Error)
+        expect { duplex.send_message(nil) }.to raise_error(ConnectRPC::Error)
+        source.cancel
+        raise original
+      end
+    end.to raise_error(ConnectRPC::Error) { |error| expect(error).to equal(original) }
+    expect(observer.outcome.code).to eq("unknown")
+  end
+
   { gzip_data: ["malformed", 1, "gzip", ConnectRPC::Compression::Malformed],
     gzip_terminal: ["malformed", 3, "gzip", ConnectRPC::Compression::Malformed],
     json: ["{", 2, nil, JSON::ParserError],
