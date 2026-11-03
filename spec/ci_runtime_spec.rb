@@ -108,7 +108,8 @@ RSpec.describe "CI check mapping" do
     expect(commands.fetch("interop").first(2)).to eq(["mise run fixture:check", "mise run test:interop"])
     expect(commands.fetch("conformance")).to include("mise run test:conformance")
     expect(commands.fetch("otel").first).to eq("mise run otel:verify")
-    expect(commands.fetch("rbs").first(2)).to eq(["mise run rbs:check", "mise run rbs:package"])
+    expect(commands.fetch("rbs").first(3)).to eq(["mise run rbs:cache-platform", "mise run rbs:check",
+                                                  "mise run rbs:package"])
   end
 
   it "pins the three Rails Appraisal lanes and caches the selected frozen lock" do
@@ -129,10 +130,10 @@ RSpec.describe "CI check mapping" do
   end
 
   it "keeps shared complete bundle keys and prevents Mise from shadowing action runtimes" do
-    jobs.each_value do |job|
+    jobs.each do |name, job|
       steps = job.fetch("steps")
       ruby = steps.find { |step| step.fetch("uses", "").start_with?("ruby/setup-ruby@") }
-      expect(ruby.fetch("with")).to include("bundler" => "4.0.23", "bundler-cache" => true,
+      expect(ruby.fetch("with")).to include("bundler" => "4.0.23", "bundler-cache" => name != "rbs",
                                             "cache-version" => "bundler-4.0.23-v1")
       mise = steps.find { |step| step.fetch("uses", "").start_with?("jdx/mise-action@") }
       expect(mise.fetch("with")).to include("add_shims_to_path" => false, "env" => false, "export_path" => false)
@@ -149,18 +150,65 @@ RSpec.describe "CI check mapping" do
     expect(sets.fetch("conformance")).to include("install" => true, "cache" => true,
                                                  "install_args" => "github:connectrpc/conformance@1.0.6 " \
                                                                    "aqua:protocolbuffers/protobuf/protoc@36.2")
-    %w[specs interop rbs].each do |job|
+    %w[specs interop].each do |job|
       expect(sets.fetch(job)).to include("install" => false, "cache" => false)
     end
     expect(sets.fetch("package")).to include("install" => true, "cache" => true,
                                              "install_args" => "aqua:protocolbuffers/protobuf/protoc@36.2 " \
                                                                "aqua:bufbuild/buf@1.75.0")
+    expect(sets.fetch("rbs")).to eq(sets.fetch("package"))
     interop = jobs.fetch("interop")
     expect(interop.fetch("env")).to include("GOMODCACHE" => "${{ github.workspace }}/vendor/interop/mod",
                                             "GOCACHE" => "${{ github.workspace }}/vendor/interop/build")
     go = interop.fetch("steps").find { |step| step.fetch("uses", "").start_with?("actions/setup-go@") }
     expect(go.fetch("with")).to include("go-version" => "1.27.3", "check-latest" => false, "cache" => true,
                                         "cache-dependency-path" => "interop/go.sum")
+  end
+
+  it "caches RBS dependency inputs while always running fresh source and installed checks" do
+    steps = jobs.fetch("rbs").fetch("steps")
+    cache = steps.find { |step| step.fetch("uses", "").start_with?("actions/cache@") }
+    expect(cache.fetch("uses")).to eq("actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9")
+    settings = cache.fetch("with")
+    expect(settings.fetch("path").lines.map(&:strip)).to eq(
+      %w[vendor/bundle vendor/rbs/bundle vendor/rack/bundle vendor/testing/bundle
+         vendor/async/bundle vendor/falcon/bundle vendor/otel/bundle]
+    )
+    expect(settings).not_to have_key("restore-keys")
+    expect(settings.fetch("key")).to include("rbs-bundles-v1", "runner.os", "runner.arch",
+                                             "steps.rbs-platform.outputs.platform", "bundler-4.0.23", "hashFiles(",
+                                             "'Gemfile*'", "'connectrpc.gemspec'", "'typecheck/Gemfile*'",
+                                             "'gems/**/Gemfile*'", "'gems/**/*.gemfile*'", "'gems/**/*.gemspec'")
+    checks = steps.select { |step| step.fetch("name", "").start_with?("Run rbs:") }
+    expect(checks.map { |step| step.fetch("run") }).to eq(["mise run rbs:check", "mise run rbs:package"])
+    checks.each { |step| expect(step).not_to have_key("if") }
+    expect(cache).not_to have_key("env")
+    ruby = steps.find { |step| step.fetch("uses", "").start_with?("ruby/setup-ruby@") }
+    expect(ruby).not_to have_key("env")
+  end
+end
+
+RSpec.describe "RBS native cache platform" do
+  it "binds the actual Ruby ABI/platform and requires the actual runner image version" do
+    script = File.expand_path("../typecheck/cache_platform.rb", __dir__)
+    Dir.mktmpdir("connectrpc-cache-platform-") do |working|
+      destination = File.join(working, "outputs")
+      environment = { "CI_EXPECTED_RUBY_VERSION" => RUBY_VERSION, "ImageOS" => "ubuntu24",
+                      "ImageVersion" => "20261026.354.1", "GITHUB_OUTPUT" => destination }
+      _output, error, status = Open3.capture3(environment, RbConfig.ruby, script)
+      expect(status.success?).to be(true), error
+      expected = [RUBY_VERSION, RbConfig::CONFIG.fetch("ruby_version"), Gem::Platform.local.to_s,
+                  "ubuntu24", "20261026.354.1"].join("-")
+      expect(File.read(destination)).to eq("platform=#{expected}\n")
+      [{ "ImageVersion" => nil }, { "ImageVersion" => "" }, { "ImageOS" => "ubuntu\n24" },
+       { "CI_EXPECTED_RUBY_VERSION" => "0.0.0" }].each do |override|
+        File.unlink(destination)
+        _output, _error, status = Open3.capture3(environment.merge(override), RbConfig.ruby, script)
+        expect(status.success?).to be(false)
+        expect(File.exist?(destination)).to be(false)
+        File.write(destination, "")
+      end
+    end
   end
 end
 

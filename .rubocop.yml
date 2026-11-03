@@ -58,6 +58,7 @@ Metrics/MethodLength:
     - typecheck/surface.rb
     - typecheck/installed_api.rb
     - typecheck/harness.rb
+    - typecheck/negative_check.rb
     - gems/connectrpc-async/lib/connectrpc/async/*.rb
     - gems/connectrpc-falcon/lib/connectrpc/falcon/*.rb
     - lib/connectrpc/generator/schema.rb
@@ -90,6 +91,7 @@ Metrics/AbcSize:
     - typecheck/surface.rb
     - typecheck/installed_api.rb
     - typecheck/harness.rb
+    - typecheck/negative_check.rb
     - gems/connectrpc-async/lib/connectrpc/async/*.rb
     - gems/connectrpc-falcon/lib/connectrpc/falcon/*.rb
     - lib/connectrpc/generator/schema.rb
@@ -132,6 +134,7 @@ Metrics/CyclomaticComplexity:
     - typecheck/surface.rb
     - typecheck/installed_api.rb
     - typecheck/harness.rb
+    - typecheck/negative_check.rb
     - gems/connectrpc-async/lib/connectrpc/async/*.rb
     - gems/connectrpc-falcon/lib/connectrpc/falcon/*.rb
     - lib/connectrpc/generator/schema.rb
@@ -144,6 +147,7 @@ Metrics/CyclomaticComplexity:
 
 Metrics/PerceivedComplexity:
   Exclude:
+    - typecheck/negative_check.rb
     - typecheck/source.rb
     - typecheck/capture.rb
     - typecheck/archive.rb

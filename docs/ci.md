@@ -65,12 +65,13 @@ coverage and harness outputs are allowed.
 
 ## Native caches and invalidation
 
-There is no separate `actions/cache` step and no cached test result.
+RBS uses an explicit dependency-bundle cache described below. Other lanes use
+their native setup-action caches. No lane caches test results.
 Cache misses, eviction or denied saves leave installation and verification
 required. Shared-key save reservation collisions are safe: saves happen only
 after complete installs/builds, with no partial primer job.
 
-- Ruby caches `vendor/bundle`. Absolute workflow `BUNDLE_PATH` points there
+- Outside RBS, Ruby caches `vendor/bundle`. Absolute workflow `BUNDLE_PATH` points there
   before the action runs, with frozen/ignore-config/shared-gem settings matching
   Mise. This matters because `BUNDLE_IGNORE_CONFIG` ignores the action's local
   Bundler config. The native key includes full Ruby/engine, OS version,
@@ -197,18 +198,43 @@ independent-peer interoperability evidence.
 
 The independent RBS matrix adds two checks, one per exact Ruby. Each runs real
 protoc/Buf service RBS generation, unchanged official message RBS, strict
-positive and separately asserted negative Steep consumers, and installed
+positive and per-file asserted negative Steep consumers, and installed
 gem/executable discovery outside the checkout. Root runtime-generation fixtures
 remain under the existing Package job. The RBS tools use a separate frozen
 checksummed `typecheck/Gemfile.lock` and worktree-local `vendor/rbs/` bundle,
 Bundler state, caches and per-Ruby package outputs. No additional runtime
 dependency enters core, Rails or Async bundles.
 
-The job reuses the pinned Ruby/Bundler action and root development-bundle cache.
-Its RBS tool bundle is installed independently without an additional cache action;
-task-local protoc/Buf installation retains the existing locked versions. These
-checks remain independent of the aggregate local `verify` task. See the
-[RBS guide](rbs.md) for bridge selection and strict diagnostic requirements.
+The pinned Ruby/Bundler action prepares the runtime with its bundle cache disabled
+only in this lane. One explicit `actions/cache` v6.1.0 step, pinned to
+`55cc8345863c7cc4c66a329aec7e433d2d1c52a9`, owns `vendor/bundle` and the independent
+`vendor/{rbs,rack,testing,async,falcon,otel}/bundle` directories. Rails Appraisal
+needs the root bundle directory. There are no overlapping bundle-cache owners or
+bundle-specific setup-action environment overrides. The action release was
+published on 2026-06-26, satisfying the seven-day age policy.
+
+Its key includes OS, architecture, exact Ruby, Bundler 4.0.23, actual runner
+`ImageOS`/`ImageVersion`, every affected Gemfile/lock and gemspec, and a versioned
+cache schema. There are no fallback restore keys or cross-OS restores. Weekly
+image changes invalidate native extensions too. Restored extracted gems are
+trusted cache contents; frozen checksummed installs still run unconditionally.
+Misses and eviction require normal setup, and a successful job saves a complete
+bundle union. Generated files, diagnostic results, Bundler configuration and the
+fresh external GEM_HOME are never cached.
+
+The existing pinned Mise action also caches the exact protoc/Buf tool set used
+by Package, under the same platform/tool/config/lock invalidation rules above.
+Each source and installed negative set shares one fresh single-worker Steep
+invocation while requiring the same exact diagnostic for every separate file.
+All positive, strict source, inventory, RBS validation, Falcon-only, normal
+installed discovery and runtime checks still execute on cache hits. The same 28
+CI check names and matrices remain. These checks remain independent of aggregate
+local `verify`. See the [RBS guide](rbs.md) for parser guards and proof boundaries.
+
+The cache behavior is grounded in the pinned action's
+[restore implementation](https://github.com/actions/cache/blob/55cc8345863c7cc4c66a329aec7e433d2d1c52a9/src/restoreImpl.ts),
+[save implementation](https://github.com/actions/cache/blob/55cc8345863c7cc4c66a329aec7e433d2d1c52a9/src/saveImpl.ts)
+and [successful-job post condition](https://github.com/actions/cache/blob/55cc8345863c7cc4c66a329aec7e433d2d1c52a9/action.yml).
 
 ## Optional Falcon lanes
 
