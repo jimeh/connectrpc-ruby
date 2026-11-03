@@ -119,4 +119,15 @@ RSpec.describe RBSNegativeCheck do
       end
     end
   end
+
+  it "accepts a working directory alias while rejecting aliases inside the consumer tree" do
+    with_consumers do |working|
+      aliased = File.join(working, "alias")
+      File.symlink(working, aliased)
+      expect { check(aliased) }.not_to raise_error
+      File.rename(File.join(working, "api"), File.join(working, "original_api"))
+      File.symlink(File.join(working, "original_api"), File.join(working, "api"))
+      expect { check(aliased) }.to raise_error(/inventory mismatch/)
+    end
+  end
 end

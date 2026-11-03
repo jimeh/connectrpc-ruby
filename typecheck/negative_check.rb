@@ -44,6 +44,7 @@ module RBSNegativeCheck
   end
 
   def self.inventory(working:, directory:, cases:)
+    working = File.realpath(working)
     unless directory.match?(%r{\A[a-z_]+/negative\z}) && !cases.empty? &&
            cases.keys.all? { |name| name.match?(/\A[a-z_]+\z/) }
       raise "Invalid negative consumer manifest"
