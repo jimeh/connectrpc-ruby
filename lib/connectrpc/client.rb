@@ -168,7 +168,8 @@ module ConnectRPC
     end
 
     def compress_request(body, deadline, lifecycle = nil)
-      Compression.encode(body, limit: @request_wire_limit, deadline: deadline)
+      Compression.encode(body, limit: @request_wire_limit, deadline: deadline,
+                               on_error: ->(error) { lifecycle&.record_failure(error) })
     rescue Zlib::Error => e
       lifecycle&.record_failure(e)
       raise Error.new(:internal, "Cannot compress request")
@@ -185,7 +186,8 @@ module ConnectRPC
     end
 
     def inflate_response(body, status, deadline, lifecycle = nil)
-      Compression.decode(body, limit: @response_limit, deadline: deadline)
+      Compression.decode(body, limit: @response_limit, deadline: deadline,
+                               on_error: ->(error) { lifecycle&.record_failure(error) })
     rescue Compression::Malformed => e
       lifecycle&.record_failure(e)
       raise Error.new(:internal, "Cannot decompress response") if status == 200

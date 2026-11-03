@@ -78,7 +78,7 @@ module ConnectRPC
       method = @methods[path]
       safe = method&.idempotency == :no_side_effects
       unless http_method == "POST" || (http_method == "GET" && (!method || safe))
-        return response = bare(405, "allow" => [safe ? "GET, POST" : "POST"])
+        return response = bare(405, { "allow" => [safe ? "GET, POST" : "POST"] }, cancellation: cancellation)
       end
       if http_method == "GET"
         return response = process_get(path, headers, input, query, lifecycle, cancellation) do |created|
@@ -88,7 +88,10 @@ module ConnectRPC
 
       headers = Protocol.headers(headers)
       codec = Protocol.content_codec(Protocol.single(headers, "content-type"))
-      return response = bare(415, "accept-post" => ["application/proto, application/json"]) unless codec
+      unless codec
+        return response = bare(415, { "accept-post" => ["application/proto, application/json"] },
+                               cancellation: cancellation)
+      end
 
       decoded_context = context = request_context(headers, lifecycle, cancellation)
       response = dispatch(path, headers, input, codec, decoded_context, lifecycle: lifecycle)
@@ -131,9 +134,10 @@ module ConnectRPC
       values = GetQuery.parse(query, limit: @get_query_limit, wire_limit: @request_wire_limit, deadline: context)
       codecs = { "proto" => :proto, "json" => :json } #: Hash[String, codec]
       codec = codecs[values["encoding"] || ""]
-      return bare(415, "accept-post" => ["application/proto, application/json"]) unless codec
-      return bare(415, "accept-post" => ["application/proto, application/json"]) unless empty_get_body?(headers, input,
-                                                                                                        context)
+      return bare(415, { "accept-post" => ["application/proto, application/json"] }, context: context) unless codec
+      unless empty_get_body?(headers, input, context)
+        return bare(415, { "accept-post" => ["application/proto, application/json"] }, context: context)
+      end
 
       negotiated = get_headers(headers, values)
       raise Error.new(:invalid_argument, "Missing GET message") unless values.key?("message")
@@ -220,7 +224,8 @@ module ConnectRPC
 
     def inflate_request(bytes, headers, context)
       if Protocol.content_encoding(headers) == :gzip && !bytes.empty?
-        bytes = Compression.decode(bytes, limit: @request_limit, deadline: context)
+        bytes = Compression.decode(bytes, limit: @request_limit, deadline: context,
+                                          on_error: ->(error) { context.record_failure(error) })
       end
       Protocol.check_size!(bytes, @request_limit)
       bytes
@@ -239,11 +244,12 @@ module ConnectRPC
       raise Error.new(:invalid_argument, "Cannot decode request")
     end
 
-    def encode_response(message, method, codec, context, encoding)
+    def encode_response(message, method, codec, context, encoding) # rubocop:disable Metrics/MethodLength
       body = serialize_response(message, method, codec, context)
       headers = response_headers(context, Protocol::CONTENT_TYPES.fetch(codec))
       if encoding == :gzip
-        body = Compression.encode(body, limit: @response_wire_limit, deadline: context)
+        body = Compression.encode(body, limit: @response_wire_limit, deadline: context,
+                                        on_error: ->(error) { context.record_failure(error) })
         headers["content-encoding"] = ["gzip"]
       end
       Protocol.check_size!(body, @response_wire_limit)
@@ -260,7 +266,10 @@ module ConnectRPC
       body
     end
 
-    def bare(status, headers) = TransportResponse.new(status: status, headers: headers, body: "")
+    def bare(status, headers, context: nil, cancellation: nil)
+      context ? context.commit! : cancellation&.check!
+      TransportResponse.new(status: status, headers: headers, body: "")
+    end
 
     def request_context(headers, lifecycle = nil, cancellation = nil)
       validate_headers!(headers)

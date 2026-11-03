@@ -33,6 +33,12 @@ module ConnectRPC
 
       def call(request)
         check_affinity!
+        CallCancellation.with_request(request) { |outgoing| perform_call(outgoing) }
+      end
+
+      private
+
+      def perform_call(request)
         raise ArgumentError, "Request URL must match the transport origin" unless same_origin?(request.url)
 
         check_request!(request)
@@ -75,8 +81,6 @@ module ConnectRPC
           @progress.signal
         end
       end
-
-      private
 
       def check_request!(request)
         request.cancellation ? request.cancellation.check! : request.deadline&.check!

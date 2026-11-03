@@ -6,7 +6,7 @@ require_relative "../../connectrpc"
 
 module ConnectRPC
   module Transports
-    class NetHTTP
+    class NetHTTP # rubocop:disable Metrics/ClassLength
       # Net::HTTP uses the open timeout again for TLS. Recompute it from the
       # original deadline after TCP/DNS, rather than starting another budget.
       class Connection < Net::HTTP
@@ -123,7 +123,13 @@ module ConnectRPC
         end
       end
 
-      def call(request) # rubocop:disable Metrics/MethodLength
+      def call(request)
+        CallCancellation.with_request(request) { |outgoing| perform_call(outgoing) }
+      end
+
+      private
+
+      def perform_call(request) # rubocop:disable Metrics/MethodLength
         deadline = request.deadline
         outgoing = prepare_request(request)
         http = connection(request.url, deadline)
@@ -136,8 +142,6 @@ module ConnectRPC
         check_request!(request)
         raise Error.new(:unavailable, "HTTP transport failed"), cause: nil
       end
-
-      private
 
       def check_request!(request)
         request.cancellation ? request.cancellation.check! : request.deadline&.check!

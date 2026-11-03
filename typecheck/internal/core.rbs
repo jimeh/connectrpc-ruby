@@ -68,12 +68,13 @@ module ConnectRPC
     CHUNK_SIZE: Integer
     @limit: Integer
     @deadline: _Check?
+    @on_error: (^(StandardError) -> void)?
     @output: String
     class Malformed < StandardError
     end
-    def self.encode: (String, limit: Integer, ?deadline: _Check?) -> String
-    def self.decode: (String, limit: Integer, ?deadline: _Check?) -> String
-    def initialize: (Integer, _Check?) -> void
+    def self.encode: (String, limit: Integer, ?deadline: _Check?, ?on_error: (^(StandardError) -> void)?) -> String
+    def self.decode: (String, limit: Integer, ?deadline: _Check?, ?on_error: (^(StandardError) -> void)?) -> String
+    def initialize: (Integer, _Check?, ?on_error: (^(StandardError) -> void)?) -> void
     def encode: (String) -> String
     def decode: (String) -> String
     private
@@ -81,6 +82,8 @@ module ConnectRPC
     def member: (String, Integer) -> Integer
     def inflate_chunk: (Zlib::Inflate, String) -> Integer
     def step: [T] () { () -> T } -> T
+    def check_after_failure: (StandardError) -> void
+    def record_failure: (StandardError) -> void
     def append: (String) -> nil
   end
   class GetQuery
@@ -167,7 +170,7 @@ module ConnectRPC
     def decode_request: (String, Method[untyped, untyped], codec, Context) -> untyped
     def encode_response: (untyped, Method[untyped, untyped], codec, Context, encoding?) -> TransportResponse
     def serialize_response: (untyped, Method[untyped, untyped], codec, Context) -> String
-    def bare: (Integer, headers) -> TransportResponse
+    def bare: (Integer, headers, ?context: Context?, ?cancellation: _Cancellation?) -> TransportResponse
     def request_context: (headers, ?Instrumentation::Handle?, ?_Cancellation?) -> Context
     def validate_headers!: (headers) -> nil
     def request_deadline: (headers) -> Deadline?
@@ -255,6 +258,7 @@ module ConnectRPC
     def initialize: (CancellationSignal) -> void
   end
   class CallCancellation
+    def self.with_request: [T] (TransportRequest) { (TransportRequest) -> T } -> T
     @deadline: Deadline?
     @source: _Cancellation?
     @mutex: Mutex

@@ -122,6 +122,31 @@ module ConnectRPC
   # One owner arbitrates a call's terminal outcome. Source cancellation requests
   # acceptance; it never completes another call that shares the source.
   class CallCancellation
+    # Direct transports accept a token and deadline separately. Core clients
+    # already supply their arbiter, which must stay open through message decode.
+    def self.with_request(request) # rubocop:disable Metrics/MethodLength
+      cancellation = request.cancellation
+      return yield request unless cancellation
+
+      case cancellation
+      when CallCancellation then return yield request
+      end
+
+      state = new(deadline: request.deadline, cancellation: cancellation)
+      outgoing = request.dup
+      outgoing.cancellation = state
+      begin
+        result = yield outgoing
+        state.commit!
+        result
+      rescue StandardError
+        state.commit!
+        raise
+      ensure
+        state.close
+      end
+    end
+
     def initialize(deadline: nil, cancellation: nil)
       @deadline = deadline
       @source = cancellation

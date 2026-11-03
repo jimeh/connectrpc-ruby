@@ -10,17 +10,18 @@ module ConnectRPC
 
     CHUNK_SIZE = 16_384
 
-    def self.encode(bytes, limit:, deadline: nil)
-      new(limit, deadline).encode(bytes)
+    def self.encode(bytes, limit:, deadline: nil, on_error: nil)
+      new(limit, deadline, on_error: on_error).encode(bytes)
     end
 
-    def self.decode(bytes, limit:, deadline: nil)
-      new(limit, deadline).decode(bytes)
+    def self.decode(bytes, limit:, deadline: nil, on_error: nil)
+      new(limit, deadline, on_error: on_error).decode(bytes)
     end
 
-    def initialize(limit, deadline)
+    def initialize(limit, deadline, on_error: nil)
       @limit = limit
       @deadline = deadline
+      @on_error = on_error
       @output = +"".b
     end
 
@@ -84,11 +85,28 @@ module ConnectRPC
 
     def step
       @deadline&.check!
-      begin
+      result = begin
         yield
-      ensure
-        @deadline&.check!
+      rescue StandardError => e
+        check_after_failure(e)
+        raise
       end
+      @deadline&.check!
+      result
+    end
+
+    def check_after_failure(error)
+      @deadline&.check!
+    rescue StandardError
+      # Ordinary gzip normalization belongs to the owner unless this check wins.
+      record_failure(error)
+      raise
+    end
+
+    def record_failure(error)
+      @on_error&.call(error)
+    rescue StandardError
+      nil
     end
 
     def append(chunk)

@@ -132,3 +132,44 @@ RSpec.describe "Owned socket retirement" do
     right&.close unless right&.closed?
   end
 end
+
+RSpec.describe "Direct NetHTTP cancellation and deadline composition" do
+  include SocketPeer
+
+  it "keeps a real deadline authoritative during I/O with a plain live token" do
+    progress = Queue.new
+    peer = lambda do |socket|
+      read_request(socket)
+      progress << true
+      expect(socket.read).to eq("")
+    end
+    with_peer(peer) do |url|
+      source = ConnectRPC::CancellationSource.new
+      outgoing = transport_request(url, timeout: 0.2)
+      outgoing.cancellation = source.token
+      # Elapsed time is the actual external socket deadline, not a readiness delay.
+      expect { ConnectRPC::Transports::NetHTTP.new.call(outgoing) }.to raise_error(ConnectRPC::Error) do |error|
+        expect([error.code, error.cause]).to eq(["deadline_exceeded", nil])
+      end
+      expect(progress.pop(timeout: 1)).to be(true)
+      expect(outgoing.cancellation).to equal(source.token)
+      expect(source.instance_variable_get(:@signal).instance_variable_get(:@registrations)).to be_empty
+    end
+  end
+
+  it "rejects an already-expired direct request before connecting even with a live token" do
+    now = 0.0
+    deadline = ConnectRPC::Deadline.new(1, clock: -> { now })
+    source = ConnectRPC::CancellationSource.new
+    outgoing = transport_request("http://example.invalid")
+    outgoing.deadline = deadline
+    outgoing.cancellation = source.token
+    now = 2.0
+    transport = ConnectRPC::Transports::NetHTTP.new
+    allow(transport).to receive(:connection).and_raise(IOError, "connection attempted")
+    expect { transport.call(outgoing) }.to raise_error(ConnectRPC::Error) do |error|
+      expect(error.code).to eq("deadline_exceeded")
+    end
+    expect(transport).not_to have_received(:connection)
+  end
+end

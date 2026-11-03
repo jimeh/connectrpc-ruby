@@ -254,3 +254,36 @@ RSpec.describe "Explicit HTTP/2 pool-wait cancellation" do
     end
   end
 end
+
+RSpec.describe "Direct HTTP/2 cancellation and deadline composition" do
+  it "keeps a real deadline authoritative during I/O with a plain live token" do
+    reactor do |task|
+      entered = Async::Queue.new
+      release = Async::Queue.new
+      host = ConnectRPC::Async::Host.new(server: server(echo: lambda { |message, _|
+        entered.enqueue(true)
+        release.dequeue
+        message
+      })).start
+      origin = "http://127.0.0.1:#{host.port}"
+      transport = ConnectRPC::Async::Transport.new(origin: origin)
+      source = ConnectRPC::CancellationSource.new
+      outgoing = request("#{origin}#{AsyncHelpers::ECHO::ECHO.path}",
+                         headers: { "content-type" => ["application/proto"] }, deadline: ConnectRPC::Deadline.new(0.2))
+      outgoing.cancellation = source.token
+      pending = task.async(finished: false) { transport.call(outgoing) }
+      entered.dequeue
+      # The real socket deadline is the external behavior under test.
+      expect { pending.wait }.to raise_error(ConnectRPC::Error) do |error|
+        expect([error.code, error.cause]).to eq(["deadline_exceeded", nil])
+      end
+      expect(outgoing.cancellation).to equal(source.token)
+      expect(source.instance_variable_get(:@signal).instance_variable_get(:@registrations)).to be_empty
+      expect(transport.instance_variable_get(:@calls)).to be_empty
+    ensure
+      release&.enqueue(true)
+      transport&.close(grace: 0)
+      host&.close(grace: 0)
+    end
+  end
+end

@@ -11,14 +11,18 @@ module ConnectRPC
 
       def call(request)
         validate!(request)
+        CallCancellation.with_request(request) { |outgoing| perform_call(outgoing) }
+      end
+
+      private
+
+      def perform_call(request)
         request.cancellation ? request.cancellation.check! : request.deadline&.check!
         response = dispatch(request)
         request.cancellation ? request.cancellation.check! : request.deadline&.check!
         Protocol.check_size!(response.body, request.response_limit)
         response
       end
-
-      private
 
       def dispatch(request)
         headers = request.headers.dup
