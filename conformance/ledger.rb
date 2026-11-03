@@ -42,6 +42,10 @@ module Conformance
                    executed: @scheduled.size, passed: @counts.fetch(:passed), failed: @counts.fetch(:failed),
                    expected_failed: 0, could_not_run: @counts.fetch(:could_not_run, 0),
                    scheduled: @scheduled.sort, received: @received.sort,
+                   canceled_before_transport: @cancel_stages.select do |_, stage|
+                     stage == "before_transport"
+                   end.keys.sort,
+                   cancellation_stages: @cancel_stages,
                    dispatched: event_names(events, "dispatch").sort, completed: event_names(events, "completed").sort,
                    outcomes: @scheduled.sort.to_h do |name|
                      outcome = @failures.key?(name) ? "failed" : "passed"
@@ -128,21 +132,26 @@ module Conformance
     end
 
     def validate_events!(events)
+      @cancel_stages = {}
       allowed = if @direction == "client"
                   %w[received dispatch wire_response wire_failure completed responded
-                     cancellation_instruction cancellation_signal request_written socket_cleanup client_eof]
+                     cancellation_instruction cancellation_signal cancellation_armed call_admitted
+                     call_started call_finished transport_started transport_finished setup_started setup_finished
+                     exchange_started exchange_finished
+                     request_written socket_cleanup client_eof]
                 else
                   %w[dispatch completed server_ready server_stdin_eof server_stopped]
                 end
       verify(events.all? do |event|
         allowed.include?(event.fetch("event"))
       end, "Adapter/setup error or unknown telemetry event")
-      %w[dispatch completed].each { |kind| exact_set!(event_names(events, kind), @scheduled, kind) }
+      exact_set!(event_names(events, "completed"), @scheduled, "completed")
       if @direction == "client"
         %w[received responded].each { |kind| exact_set!(event_names(events, kind), @scheduled, kind) }
         verify(events.one? { |event| event.fetch("event") == "client_eof" }, "Missing client EOF")
         validate_client_results!(events)
       else
+        exact_set!(event_names(events, "dispatch"), @scheduled, "dispatch")
         %w[server_ready server_stdin_eof server_stopped].each do |kind|
           verify(events.one? { |event| event.fetch("event") == kind }, "Missing/duplicate #{kind}")
         end
@@ -158,13 +167,19 @@ module Conformance
         observed = events.filter_map do |event|
           event["event"] if event["name"] == name && sequence.include?(event["event"])
         end
-        verify(observed == sequence, "Event ordering #{name}: #{observed}")
+        expected = sequence
+        expected = sequence - ["dispatch"] if @direction == "client" && !@dispatched.include?(name)
+        verify(observed == expected, "Event ordering #{name}: #{observed}")
+        next unless @direction == "client" && @dispatched.include?(name)
+
+        kinds = events.select { |event| event["name"] == name }.map { |event| event["event"] }
+        terminal = (kinds & %w[wire_response wire_failure]).first
+        verify(kinds.index("dispatch") < kinds.index(terminal) && kinds.index(terminal) < kinds.index("completed"),
+               "Wire terminal ordering #{name}")
       end
     end
 
     def validate_client_results!(events)
-      exact_set!(event_names(events, "wire_response") + event_names(events, "wire_failure"),
-                 @scheduled, "wire terminal observations")
       expected_cancel = (CANCELLATIONS + GZIP_CANCELLATIONS) & @scheduled
       exact_set!(event_names(events, "cancellation_instruction"), expected_cancel,
                  "cancellation instructions")
@@ -174,12 +189,26 @@ module Conformance
                "Invalid adapter result")
       end
       expected_cancel.each { |name| validate_cancellation!(events, name) }
+      @dispatched = (@scheduled - expected_cancel) + expected_cancel.select do |name|
+        finish = events.find { |event| event["event"] == "call_finished" && event["name"] == name }
+        finish.fetch("exchange_entries") == 1
+      end
+      exact_set!(event_names(events, "dispatch"), @dispatched, "dispatch")
+      exact_set!(event_names(events, "wire_response") + event_names(events, "wire_failure"),
+                 @dispatched, "wire terminal observations")
+      cancellation_events = %w[call_admitted cancellation_armed cancellation_signal call_started call_finished
+                               transport_started transport_finished setup_started setup_finished
+                               exchange_started exchange_finished request_written socket_cleanup]
+      cancellation_events.each do |kind|
+        names = event_names(events, kind)
+        verify((names - expected_cancel).empty?, "Unexplained cancellation #{kind}")
+      end
     end
 
     def validate_wire!(events)
       if @direction == "client"
         exact_set!(event_names(events, "wire_response") + event_names(events, "wire_failure"),
-                   @scheduled, "wire terminal observations")
+                   @dispatched, "wire terminal observations")
         events.select { |event| event["event"] == "dispatch" }.each do |event|
           wire = event.fetch("wire")
           instruction = events.find { |entry| entry["name"] == event["name"] && entry["event"] == "received" }
@@ -242,43 +271,207 @@ module Conformance
 
     def validate_cancellation!(events, name)
       records = events.select { |event| event["name"] == name }
-      %w[cancellation_instruction cancellation_signal request_written socket_cleanup wire_failure].each do |kind|
-        verify(records.one? { |event| event["event"] == kind }, "Missing/duplicate cancellation #{kind}")
+      verify(records.map { |event| event.fetch("event") }.uniq.size == records.size,
+             "Duplicate cancellation observation #{name}")
+      indexed = records.to_h { |event| [event.fetch("event"), event] }
+      %w[call_admitted cancellation_armed cancellation_signal call_started call_finished].each do |kind|
+        verify(indexed.key?(kind), "Missing cancellation #{kind}")
       end
-      records = records.to_h { |event| [event.fetch("event"), event] }
-      verify(records.fetch("cancellation_instruction").fetch("instruction") == { "afterCloseSendMs" => 5 },
+      verify(indexed.fetch("cancellation_instruction").fetch("instruction") == { "afterCloseSendMs" => 5 },
              "Cancellation timing changed")
-      dispatch = records.fetch("dispatch")
-      verify(dispatch.fetch("deadline") == false, "Cancellation substituted a deadline")
-      verify(!dispatch.fetch("request_headers").key?("connect-timeout-ms"), "Cancellation wire timeout added")
-      written = records.fetch("request_written")
-      verify(written.fetch("bytes").positive? && written.fetch("headers_complete") &&
-             written.fetch("body").fetch("bytes").positive?, "Cancellation has no actual wire progress")
-      verify(written.fetch("body").except("content_length") == dispatch.fetch("wire").except("content_length"),
-             "Cancellation actual body changed")
-      verify(written.fetch("test_name_header") == name, "Cancellation wire name changed")
-      verify(written.fetch("content_length") == written.fetch("body").fetch("bytes").to_s,
-             "Cancellation wire length changed")
-      verify(written.fetch("timeout_header") == false, "Cancellation sent a wire timeout")
+      admission = indexed.fetch("call_admitted")
+      verify(admission.fetch("timeout_present") == false && indexed.fetch("call_started").fetch("timeout").nil?,
+             "Cancellation substituted a deadline")
       expected = { "responseDefinition" => {
         "responseHeaders" => [{ "name" => "x-custom-header", "value" => ["foo"] }],
         "responseData" => "dGVzdCByZXNwb25zZQ==",
         "responseTrailers" => [{ "name" => "x-custom-trailer", "value" => ["bing"] }], "responseDelayMs" => 200
       } }
-      verify(written.fetch("request") == expected, "Cancellation request changed")
-      signal = records.fetch("cancellation_signal")
-      verify(signal.fetch("changed") && signal.fetch("reason") == "canceled", "Source cancellation missing")
-      verify(written.fetch("written_at") <= signal.fetch("requested_at"), "Cancellation preceded actual request write")
-      cleanup = records.fetch("socket_cleanup")
-      verify(cleanup.fetch("closed") && cleanup.fetch("interrupted") && cleanup.fetch("retired"),
-             "Cancellation did not interrupt and retire its socket")
-      completed = records.fetch("completed")
+      verify(admission.fetch("request") == expected, "Cancellation request changed")
+      armed = indexed.fetch("cancellation_armed")
+      signal = indexed.fetch("cancellation_signal")
+      verify((armed.fetch("expires") - armed.fetch("armed_at") - 0.005).abs < 0.00000001,
+             "Cancellation timer changed")
+      verify(signal.fetch("requested_at") >= armed.fetch("expires"), "Cancellation timer fired early")
+      verify(armed.fetch("armed_at") <= indexed.fetch("call_started").fetch("monotonic") &&
+             signal.fetch("requested_at") <= indexed.fetch("call_finished").fetch("monotonic"),
+             "Cancellation timer outside call lifetime")
+      verify(signal.fetch("changed") == true && signal.fetch("reason") == "canceled", "Source cancellation missing")
+      finish = indexed.fetch("call_finished")
+      verify(finish.fetch("observer_complete") == true, "Incomplete call observer lifetime")
+      canceled_terminal!(finish)
+      response_observed = indexed.key?("wire_response")
+      sequence = %w[received cancellation_instruction call_admitted cancellation_armed call_started]
+      %w[transport setup exchange].each_with_index do |phase, index|
+        entries = finish.fetch("#{phase}_entries")
+        exits = finish.fetch("#{phase}_exits")
+        verify([0, 1].include?(entries) && entries == exits, "Incomplete/duplicate #{phase} lifetime")
+        if index.positive?
+          parent = %w[transport setup exchange][index - 1]
+          verify(entries <= finish.fetch("#{parent}_entries"), "Unexplained #{phase} lifetime")
+        end
+        exact_set!(event_names(records, "#{phase}_started"), entries == 1 ? [name] : [], "#{phase} start")
+        exact_set!(event_names(records, "#{phase}_finished"), entries == 1 ? [name] : [], "#{phase} finish")
+        sequence << "#{phase}_started" if entries == 1
+        next unless entries == 1
+
+        terminal = indexed.fetch("#{phase}_finished")
+        if response_observed
+          successful_terminal!(terminal)
+        else
+          phase == "transport" ? canceled_terminal!(terminal) : interrupted_terminal!(terminal)
+        end
+      end
+      setup = finish.fetch("setup_entries") == 1
+      exchange = finish.fetch("exchange_entries") == 1
+      exact_set!(event_names(records, "socket_cleanup"), setup ? [name] : [], "socket cleanup")
+      exact_set!(event_names(records, "request_written"), exchange ? [name] : [], "write observation")
+      exact_set!(event_names(records, "wire_failure") + event_names(records, "wire_response"),
+                 exchange ? [name] : [], "cancellation wire terminal")
+      if setup
+        cleanup = indexed.fetch("socket_cleanup")
+        verify(cleanup.fetch("retired") == true, "Cancellation did not retire socket ownership")
+        closes = cleanup.fetch("close_calls")
+        verify(closes.is_a?(Integer) && closes.between?(0, 1), "Invalid socket close calls")
+        verify(cleanup.fetch("interrupted") == (closes.zero? ? false : nil), "False socket interruption claim")
+        attached = cleanup.fetch("attached")
+        verify(attached.is_a?(Integer) && attached.between?(0, 1), "Invalid attached socket count")
+        verify(attached.zero? ? cleanup.fetch("closed").nil? : cleanup.fetch("closed") == true,
+               "Cancellation socket closure unproven")
+      end
+      stage = if exchange
+                validate_cancellation_write!(indexed, name, expected, signal, response_observed)
+              elsif setup
+                "during_setup"
+              elsif finish.fetch("transport_entries") == 1
+                "before_setup"
+              else
+                "before_transport"
+              end
+      @cancel_stages[name] = stage
+      if exchange
+        kind = response_observed ? "wire_response" : "wire_failure"
+        sequence.push("dispatch", kind, "request_written", "exchange_finished")
+        if response_observed
+          validate_cancellation_response!(indexed.fetch(kind))
+        else
+          wire = indexed.fetch(kind)
+          terminal = indexed.fetch("exchange_finished")
+          verify(wire.slice("code", "cause", "error_class") == terminal.slice("code", "cause", "error_class"),
+                 "Cancellation direct wire result disagrees with exchange")
+        end
+      end
+      sequence.push("socket_cleanup", "setup_finished") if setup
+      sequence << "transport_finished" if finish.fetch("transport_entries") == 1
+      sequence.push("call_finished", "completed", "responded")
+      observed = records.reject { |event| event["event"] == "cancellation_signal" }.map { |event| event.fetch("event") }
+      verify(observed == sequence, "Cancellation causal ordering #{name}: #{observed}")
+      verify(records.index(signal) < records.index(indexed.fetch("completed")), "Source signal after completion")
+      completed = indexed.fetch("completed")
       verify(completed.fetch("outcome") == "error" && completed.fetch("code") == "CODE_CANCELED",
              "Cancellation library result changed")
-      response = records.fetch("responded").fetch("result").fetch("response")
+      response = indexed.fetch("responded").fetch("result").fetch("response")
       verify(response.fetch("error").fetch("code") == "CODE_CANCELED" && !response.key?("payloads"),
              "Cancellation adapter result changed")
-      verify(records.fetch("wire_failure").fetch("code") == "canceled", "Cancellation transport result missing")
+    end
+
+    def canceled_terminal!(event)
+      verify(event.fetch("code") == "canceled" && event.fetch("cause").nil? &&
+             event.fetch("error_class") == "ConnectRPC::Error", "Cancellation library terminal unproven")
+    end
+
+    def successful_terminal!(event)
+      verify(event.fetch("code").nil? && event.fetch("cause").nil? && event.fetch("error_class").nil?,
+             "Transport response did not complete successfully")
+    end
+
+    def validate_cancellation_response!(event)
+      wire = event.fetch("wire")
+      compressed = @profile == "gzip"
+      verify(event.fetch("status") == 200 && wire.fetch("bytes").positive? &&
+             wire.fetch("sha256").match?(/\A[0-9a-f]{64}\z/) &&
+             wire.fetch("encoding") == (compressed ? "gzip" : "identity") && wire.fetch("gzip_magic") == compressed,
+             "Incomplete cancellation response wire evidence")
+    end
+
+    def interrupted_terminal!(event)
+      return canceled_terminal!(event) if event.fetch("error_class") == "ConnectRPC::Error"
+
+      network_error = /\A(?:EOFError|IOError|SocketError|Errno::[A-Z0-9]+|Net::(?:OpenTimeout|ReadTimeout|WriteTimeout|
+                          HTTPBadResponse|HTTPHeaderSyntaxError)|OpenSSL::SSL::SSLError)\z/x
+      verify(event.fetch("code").nil? && event.fetch("error_class").match?(network_error),
+             "Invalid direct I/O terminal")
+    end
+
+    # An unfinished write leaves its own bytes unknown, not the facts established
+    # by earlier successful writes. Check those facts before selecting any branch.
+    def validate_written_facts!(written, records, name, expected)
+      prepared = records.fetch("dispatch").fetch("wire")
+      body_bytes = written.fetch("body").fetch("bytes")
+      complete = written.fetch("headers_complete")
+      verify([true, false].include?(complete) && body_bytes <= prepared.fetch("bytes") &&
+             (complete || body_bytes.zero?), "Inconsistent written request boundaries")
+      if complete || written.fetch("test_name_header")
+        verify(written.fetch("test_name_header") == name, "Cancellation wire name changed")
+      end
+      if complete || written.fetch("content_length")
+        verify(written.fetch("content_length") == prepared.fetch("bytes").to_s, "Cancellation wire length changed")
+      end
+      verify(!complete || written.fetch("timeout_header") == false, "Cancellation sent a wire timeout")
+      message = complete && body_bytes == prepared.fetch("bytes") ? expected : nil
+      verify(written.fetch("request") == message, "Cancellation actual request changed")
+      return if written.fetch("completed_writes").zero?
+
+      time = written.fetch("written_at")
+      verify(time.is_a?(Numeric) && time >= records.fetch("exchange_started").fetch("monotonic") &&
+             time <= written.fetch("monotonic"), "Write outside observed exchange lifetime")
+    end
+
+    def validate_cancellation_write!(records, name, expected, signal, response_observed)
+      dispatch = records.fetch("dispatch")
+      verify(dispatch.fetch("deadline") == false, "Cancellation substituted a deadline")
+      verify(!dispatch.fetch("request_headers").key?("connect-timeout-ms"), "Cancellation wire timeout added")
+      verify(dispatch.fetch("request") == expected, "Cancellation encoded request changed")
+      instruction = records.fetch("received")
+      codec = instruction.fetch("codec") == "CODEC_JSON" ? "json" : "proto"
+      encoding = instruction.fetch("compression") == "COMPRESSION_GZIP" ? "gzip" : "identity"
+      verify(dispatch.fetch("http_method") == "POST" &&
+             dispatch.fetch("request_headers").fetch("content-type") == ["application/#{codec}"] &&
+             dispatch.fetch("wire").fetch("encoding") == encoding &&
+             dispatch.fetch("wire").fetch("gzip_magic") == (encoding == "gzip"), "Cancellation coding changed")
+      written = records.fetch("request_written")
+      verify(written.fetch("observer_complete") == true, "Incomplete write observer lifetime")
+      attempts = written.fetch("attempts")
+      completed = written.fetch("completed_writes")
+      verify(attempts.is_a?(Integer) && completed.is_a?(Integer) && attempts >= completed && completed >= 0,
+             "Invalid write counts")
+      bytes = written.fetch("bytes")
+      body = written.fetch("body")
+      verify(bytes.is_a?(Integer) && bytes >= 0 && body.fetch("bytes").between?(0, bytes), "Invalid written bytes")
+      verify(body == written.fetch("prepared_body_prefix"), "Cancellation written prefix changed")
+      verify(written.fetch("timeout_header") != true, "Cancellation sent a wire timeout")
+      cleanup = records.fetch("socket_cleanup")
+      verify(cleanup.fetch("attached") == 1 && cleanup.fetch("closed"), "Cancellation socket cleanup unproven")
+      validate_written_facts!(written, records, name, expected)
+      if completed.zero?
+        verify(bytes.zero? && body.fetch("bytes").zero? && written.fetch("written_at").nil? &&
+               written.fetch("headers_complete") == false && written.fetch("request").nil? &&
+               written.fetch("test_name_header").nil? && written.fetch("content_length").nil?,
+               "Unexplained written bytes")
+      else
+        verify(bytes.positive? && written.fetch("written_at").is_a?(Numeric), "Missing completed write bytes")
+      end
+      verify(!response_observed || (attempts == completed && completed.positive?),
+             "Response without complete request write")
+      return "write_incomplete" if attempts > completed
+      return "before_write" if attempts.zero?
+
+      verify(written.fetch("headers_complete") && body.fetch("bytes").positive?, "Incomplete request write")
+      verify(body.except("content_length") == dispatch.fetch("wire").except("content_length"),
+             "Cancellation actual body changed")
+      return "response_observed" if response_observed
+
+      written.fetch("written_at") <= signal.fetch("requested_at") ? "request_written" : "write_overlapped_signal"
     end
   end
 end

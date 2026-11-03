@@ -21,7 +21,7 @@ RSpec.describe Conformance::Ledger do
   let(:events) do
     %w[received dispatch completed responded].map do |kind|
       { "event" => kind, "name" => name, "result" => { "testName" => name, "response" => {} } }
-    end + [{ "event" => "wire_response", "name" => name, "status" => 200 }, { "event" => "client_eof" }]
+    end.insert(2, { "event" => "wire_response", "name" => name, "status" => 200 }) + [{ "event" => "client_eof" }]
   end
 
   def parse(log = raw, telemetry = events, code = 0)
@@ -81,7 +81,7 @@ RSpec.describe Conformance::Ledger do
     telemetry = events.map { |event| event.merge("name" => get_name) }
     telemetry[1].merge!("http_method" => "GET", "request_headers" => {}, "wire" => body,
                         "query" => { "controls" => { "encoding" => "json", "connect" => "v1" }, "payload" => payload })
-    telemetry[3]["result"] = { "testName" => get_name, "response" => {} }
+    telemetry[4]["result"] = { "testName" => get_name, "response" => {} }
     telemetry.reject! { |event| event["event"] == "wire_response" }
     telemetry.insert(2, { "event" => "wire_response", "name" => get_name, "status" => 200 })
     check = ->(records) { described_class.new(direction: "client", selected: get_name).parse(log, records, 0) }
@@ -96,7 +96,7 @@ RSpec.describe Conformance::Ledger do
     end
   end
 
-  def cancellation_fixture(profile = "identity")
+  def cancellation_fixture(profile = "identity") # rubocop:disable Metrics/CyclomaticComplexity, Metrics/PerceivedComplexity
     cancel_name = (profile == "gzip" ? described_class::GZIP_CANCELLATIONS : described_class::CANCELLATIONS).first
     log = raw.gsub(name, cancel_name)
     log = log.sub("Computed 96", "Computed 88") if profile == "gzip"
@@ -105,7 +105,9 @@ RSpec.describe Conformance::Ledger do
              "sha256" => "a" * 64, "gzip_magic" => profile == "gzip", "content_length" => "42" }
     telemetry.reject! { |event| event["event"] == "wire_response" }
     telemetry[0]["compression"] = profile == "gzip" ? "COMPRESSION_GZIP" : "COMPRESSION_IDENTITY"
-    telemetry[1].merge!("deadline" => false, "request_headers" => {}, "wire" => wire)
+    telemetry[0]["codec"] = "CODEC_JSON"
+    telemetry[1].merge!("deadline" => false, "http_method" => "POST",
+                        "request_headers" => { "content-type" => ["application/json"] }, "wire" => wire)
     telemetry[2].merge!("outcome" => "error", "code" => "CODE_CANCELED")
     telemetry[3]["result"] = { "testName" => cancel_name, "response" => { "error" => { "code" => "CODE_CANCELED" } } }
     request = { "responseDefinition" => {
@@ -127,12 +129,31 @@ RSpec.describe Conformance::Ledger do
         "retired" => true },
       { "event" => "wire_failure", "name" => cancel_name, "code" => "canceled" }
     ]
-    telemetry.concat(extra_events)
+    terminal = { "code" => "canceled", "cause" => nil, "error_class" => "ConnectRPC::Error" }
+    admission = { "event" => "call_admitted", "name" => cancel_name, "timeout_present" => false, "request" => request }
+    telemetry[1]["request"] = request
+    extra_events[1].merge!("attempts" => 2, "completed_writes" => 2, "observer_complete" => true,
+                           "prepared_body_prefix" => wire)
+    extra_events[3].merge!("attached" => 1, "close_calls" => 1, "interrupted" => nil)
+    extra_events[4].merge!("cause" => nil, "error_class" => "ConnectRPC::Error")
+    finish = terminal.merge("event" => "call_finished", "name" => cancel_name, "observer_complete" => true)
+    %w[transport setup exchange].each do |phase|
+      finish["#{phase}_entries"] = 1
+      finish["#{phase}_exits"] = 1
+    end
+    scoped = ->(kind) { terminal.merge("event" => kind, "name" => cancel_name, "timeout" => nil) }
+    telemetry = [telemetry[0], extra_events[0], admission,
+                 { "event" => "cancellation_armed", "name" => cancel_name, "armed_at" => 1.0, "expires" => 1.005 },
+                 scoped.call("call_started"), scoped.call("transport_started"), scoped.call("setup_started"),
+                 scoped.call("exchange_started"), telemetry[1], extra_events[2], extra_events[4], extra_events[1],
+                 scoped.call("exchange_finished"), extra_events[3], scoped.call("setup_finished"),
+                 scoped.call("transport_finished"), finish, telemetry[2], telemetry[3], { "event" => "client_eof" }]
+    telemetry.each { |event| event["monotonic"] = event["event"].end_with?("_started") ? 1.0 : 1.006 }
     [log, telemetry, cancel_name]
   end
 
   %w[identity gzip].each do |profile|
-    it "requires actual wire cancellation and zero waived outcomes for #{profile}" do
+    it "requires complete evidence for fully written cancellation and zero waived outcomes for #{profile}" do
       log, telemetry, cancel_name = cancellation_fixture(profile)
       check = lambda do |text, records|
         described_class.new(direction: "client", selected: cancel_name, profile: profile).parse(text, records, 0)
@@ -151,6 +172,153 @@ RSpec.describe Conformance::Ledger do
       expect { check.call("#{log}(Another 1 failed as expected due to being known failures/flakes.)\n", telemetry) }
         .to raise_error(RuntimeError, /Unrecognized runner output/)
     end
+  end
+
+  %w[before_transport before_setup during_setup before_write write_incomplete].each do |stage|
+    it "accepts positively closed #{stage} evidence and rejects missing or contradictory observations" do
+      log, telemetry, cancel_name = cancellation_fixture
+      finish = telemetry.find { |event| event["event"] == "call_finished" }
+      stages = { "before_transport" => 0, "before_setup" => 1, "during_setup" => 2,
+                 "before_write" => 3, "write_incomplete" => 3 }
+      depth = stages.fetch(stage)
+      %w[transport setup exchange].each_with_index do |phase, index|
+        present = depth > index
+        finish["#{phase}_entries"] = present ? 1 : 0
+        finish["#{phase}_exits"] = present ? 1 : 0
+        telemetry.reject! { |event| ["#{phase}_started", "#{phase}_finished"].include?(event["event"]) } unless present
+      end
+      telemetry.reject! { |event| event["event"] == "socket_cleanup" } if depth < 2
+      telemetry.reject! { |event| %w[dispatch wire_failure request_written].include?(event["event"]) } if depth < 3
+      if depth == 3
+        write = telemetry.find { |event| event["event"] == "request_written" }
+        write.merge!("attempts" => stage == "before_write" ? 0 : 1, "completed_writes" => 0,
+                     "bytes" => 0, "written_at" => nil, "headers_complete" => false,
+                     "body" => { "bytes" => 0 }, "prepared_body_prefix" => { "bytes" => 0 }, "request" => nil,
+                     "test_name_header" => nil, "content_length" => nil)
+      end
+      check = ->(data) { described_class.new(direction: "client", selected: cancel_name).parse(log, data, 0) }
+      result = check.call(telemetry)
+      expect(result.fetch(:cancellation_stages)).to eq(cancel_name => stage)
+      expect(result.fetch(:dispatched)).to eq(depth == 3 ? [cancel_name] : [])
+      # Every retained event is required. A removed event is never early-cancel proof.
+      telemetry.each_index do |index|
+        expect { check.call(telemetry.each_with_index.reject { |_, i| index == i }.map(&:first)) }
+          .to raise_error(StandardError), "accepted missing #{telemetry[index].fetch('event')} for #{stage}"
+      end
+      telemetry.each do |event|
+        expect { check.call(telemetry + [event]) }.to raise_error(StandardError)
+      end
+      [->(data) { data.find { |event| event["event"] == "call_finished" }["observer_complete"] = false },
+       ->(data) { data.find { |event| event["event"] == "call_finished" }["transport_exits"] = 2 },
+       ->(data) { data.find { |event| event["event"] == "call_finished" }["cause"] = "IOError" },
+       ->(data) { data.find { |event| event["event"] == "call_admitted" }["timeout_present"] = true },
+       ->(data) { data.find { |event| event["event"] == "call_started" }["timeout"] = 30 },
+       ->(data) { data.find { |event| event["event"] == "call_admitted" }["request"] = {} },
+       ->(data) { data.find { |event| event["event"] == "cancellation_armed" }["expires"] = 1.2 },
+       ->(data) { data.find { |event| event["event"] == "cancellation_signal" }["requested_at"] = 1.001 },
+       lambda do |data|
+         completed = data.find { |event| event["event"] == "completed" }
+         completed["code"] = "CODE_DEADLINE_EXCEEDED"
+       end].each do |mutate|
+        changed = Marshal.load(Marshal.dump(telemetry))
+        mutate.call(changed)
+        expect { check.call(changed) }.to raise_error(StandardError)
+      end
+    end
+  end
+
+  %w[identity gzip].each do |profile|
+    it "checks completed headers while retaining unknown interrupted body delivery for #{profile}" do
+      log, telemetry, cancel_name = cancellation_fixture(profile)
+      write = telemetry.find { |event| event["event"] == "request_written" }
+      empty = write.fetch("body").merge("bytes" => 0, "gzip_magic" => false,
+                                        "sha256" => "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855")
+      write.merge!("attempts" => 2, "completed_writes" => 1, "body" => empty,
+                   "prepared_body_prefix" => empty.dup, "request" => nil, "bytes" => 208)
+      check = lambda do |data|
+        described_class.new(direction: "client", selected: cancel_name, profile: profile).parse(log, data, 0)
+      end
+      expect(check.call(telemetry).fetch(:cancellation_stages)).to eq(cancel_name => "write_incomplete")
+      { "test_name_header" => ["unrelated-case", nil], "content_length" => ["999999", nil],
+        "timeout_header" => [true], "request" => [{}], "written_at" => [999.0] }.each do |field, values|
+        values.each do |value|
+          changed = Marshal.load(Marshal.dump(telemetry))
+          changed.find { |event| event["event"] == "request_written" }[field] = value
+          expect { check.call(changed) }.to raise_error(RuntimeError, /Conformance accounting/),
+                                            "accepted known partial-write header #{field}=#{value.inspect}"
+        end
+      end
+    end
+  end
+
+  it "rejects body, deadline, terminal, cleanup and write lifetime contradictions on dispatched cancellation" do
+    log, telemetry, cancel_name = cancellation_fixture
+    mutations = {
+      "dispatch" => { "deadline" => true, "request" => {}, "request_headers" => { "connect-timeout-ms" => ["1"] } },
+      "wire_failure" => { "code" => "unavailable" },
+      "transport_finished" => { "code" => nil, "cause" => "IOError" },
+      "request_written" => { "attempts" => 1, "observer_complete" => false,
+                             "body" => { "bytes" => 41 }, "test_name_header" => "wrong", "written_at" => nil },
+      "socket_cleanup" => { "closed" => false, "interrupted" => true, "retired" => false, "attached" => 0 }
+    }
+    mutations.each do |kind, fields|
+      fields.each do |field, value|
+        changed = Marshal.load(Marshal.dump(telemetry))
+        changed.find { |event| event["event"] == kind }[field] = value
+        expect { described_class.new(direction: "client", selected: cancel_name).parse(log, changed, 0) }
+          .to raise_error(StandardError), "accepted #{kind}.#{field}=#{value.inspect}"
+      end
+    end
+  end
+
+  %w[identity gzip].each do |profile|
+    it "requires a complete observed transport response separately from the canceled Client for #{profile}" do
+      log, telemetry, cancel_name = cancellation_fixture(profile)
+      %w[transport_finished setup_finished exchange_finished].each do |kind|
+        telemetry.find { |event| event["event"] == kind }.merge!("code" => nil, "cause" => nil, "error_class" => nil)
+      end
+      wire = telemetry.find { |event| event["event"] == "dispatch" }.fetch("wire")
+      telemetry.find { |event| event["event"] == "wire_failure" }.replace(
+        "event" => "wire_response", "name" => cancel_name, "status" => 200, "wire" => wire
+      )
+      telemetry.find { |event| event["event"] == "socket_cleanup" }.merge!("interrupted" => false, "close_calls" => 0)
+      check = lambda do |data|
+        described_class.new(direction: "client", selected: cancel_name, profile: profile).parse(log, data, 0)
+      end
+      expect(check.call(telemetry).fetch(:cancellation_stages)).to eq(cancel_name => "response_observed")
+      telemetry.each_index do |index|
+        expect { check.call(telemetry.each_with_index.reject { |_, i| index == i }.map(&:first)) }
+          .to raise_error(StandardError), "accepted missing #{telemetry[index].fetch('event')}"
+      end
+      mutations = {
+        "wire_response" => { "status" => 503, "wire" => { "bytes" => 0 } },
+        "call_finished" => { "code" => nil, "cause" => "IOError" },
+        "completed" => { "outcome" => "success", "code" => nil },
+        "request_written" => { "attempts" => 3, "observer_complete" => false, "bytes" => 0 },
+        "socket_cleanup" => { "retired" => false, "closed" => false, "interrupted" => true },
+        "transport_finished" => { "code" => "canceled", "error_class" => "ConnectRPC::Error" },
+        "setup_finished" => { "cause" => "IOError" },
+        "exchange_finished" => { "error_class" => "EOFError" },
+        "responded" => { "result" => { "testName" => cancel_name, "response" => { "payloads" => [{}] } } }
+      }
+      mutations.each do |kind, fields|
+        fields.each do |field, value|
+          changed = Marshal.load(Marshal.dump(telemetry))
+          changed.find { |event| event["event"] == kind }[field] = value
+          expect { check.call(changed) }.to raise_error(StandardError), "accepted #{kind}.#{field}=#{value.inspect}"
+        end
+      end
+      contradiction = { "event" => "wire_failure", "name" => cancel_name, "code" => "canceled" }
+      expect { check.call(telemetry + [contradiction]) }.to raise_error(StandardError)
+    end
+  end
+
+  it "rejects cancellation-only proof or late wire outcomes on ordinary cases" do
+    changed = events + [{ "event" => "call_finished", "name" => name, "observer_complete" => true }]
+    expect { parse(raw, changed) }.to raise_error(RuntimeError, /Unexplained cancellation/)
+    late = events.reject { |event| event["event"] == "wire_response" }
+    late << events.find { |event| event["event"] == "wire_response" }
+    expect { parse(raw, late) }.to raise_error(RuntimeError, /Wire terminal ordering/)
   end
 
   it "keeps the gzip inventory disjoint, exact and additional to identity" do

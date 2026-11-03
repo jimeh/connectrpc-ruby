@@ -108,10 +108,20 @@ GET names per direction. The disjoint gzip profile requires 88 client and 82
 server passes, for 184/172 in total. There are no expected-failure manifests or
 waivers. All four caller-cancellation cases use the original 5 ms timer armed
 before the blocking call, the original 200 ms response request, and no deadline.
-Their causal ledger requires actual successful socket writes, source
-cancellation, socket interruption/retirement and the actual library result.
-A source that fires before dispatch is valid library behavior but fails this
-wire-evidence requirement. Never gate/restart the timer after wire progress.
+Their causal ledger distinguishes positively observed cancellation before
+transport, during setup and during exchange using closed call/transport scope
+counts, source transition and the actual library canceled/nil-cause result.
+Missing dispatch alone cannot establish an early cancellation. A separately
+proved `response_observed` branch allows explicit cancellation before Client's
+terminal commit after a complete transport response, without claiming Client
+validated/decoded it or interrupted its socket. Completed writes
+retain actual byte/body/name/no-timeout checks; interrupted writes leave byte
+delivery unknown. Dedicated synchronized real-wire tests prove request progress,
+interruption/retirement and cleanup separately from the official timer scenario.
+Lifecycle close-call telemetry leaves interruption causality unknown because
+NetHTTP can independently close the socket; it still requires observed closure
+and retirement for attached sockets.
+Never gate/restart the official timer after wire progress.
 Actual wire coding, byte counts, lengths and digests remain independently
 checked. Ordinary reference error responses may use identity for gzip requests.
 Timeouts, duplicate metadata and remote canceled errors must also pass normally.
