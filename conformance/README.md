@@ -71,8 +71,8 @@ never inferred from substrings.
 Each run preserves `runner.log`, `telemetry.jsonl` and `summary.json` beneath
 ignored `vendor/conformance/results/`, with Ruby version and direction in the
 run directory name, together with profile identity. Raw `--vv` logs retain complete assertion blocks. The
-version-specific ledger requires exact scheduled, response, actual dispatch
-and completion sets, and checks totals, duplicates, missing outcomes, setup
+version-specific ledger requires exact scheduled, response and completion sets,
+and branch-specific actual dispatch sets. It checks totals, duplicates, missing outcomes, setup
 errors, could-not-run cases, unknown output and runner exit status. The client
 records receipt, actual NetHTTP exchange, completion and emitted framed result.
 Wire observations retain coding, encoded byte counts, Content-Length when
@@ -98,20 +98,62 @@ uses the same arrangement in
 The local [client instruction schema](proto/connectrpc/conformance/v1/client_compat.proto)
 also specifies this blocking-client arrangement.
 
-Fixture-only BufferedIO instrumentation captures successfully completed socket
-writes. After the exchange, it records the actual request bytes/digest/coding,
-decoded request, absence of wire timeout, source transition, owned socket
-interruption and retirement, and the real library canceled error. Prepared-body
-or pre-dispatch telemetry alone cannot pass this ledger. Serialization of this
-evidence stays outside the timed write path. A timer firing before dispatch is
-valid cancellation behavior but insufficient official wire-cancellation evidence;
-verification reports it instead of delaying or restarting the timer.
+A call-owned observer covers the real Client invocation, transport entry,
+connection setup and exchange. Each entered scope must exit exactly once, and
+the closed call's entry/exit counts must match its emitted events in causal
+order. Cancellation before transport or during setup therefore needs positive
+lifetime evidence, the real source transition, and the actual library canceled
+error with no cause. Missing dispatch alone is never evidence of early
+cancellation. The original request and actual nil timeout argument are checked
+independently of whether transport starts. The timer's arming, expiry and source
+request times are recorded without restarting or waiting for wire readiness.
+
+Fixture-only BufferedIO instrumentation counts attempted writes and captures
+successfully completed writes through exchange completion. A closed observer
+with zero attempts proves no request write started. An attempted write that did
+not return leaves partial byte delivery unknown. Successful write prefixes are
+compared with the prepared body; complete requests additionally require the
+original decoded body, codec/compression, name, length and no wire timeout.
+Raw I/O failures and the transport's normalized canceled result are recorded
+separately. Socket lifecycle attachment, interruption and retirement are observed
+at their actual boundaries. Closure is unknown when no raw socket was attached,
+rather than reported as an observed open or closed socket.
+
+Summaries retain scheduled/completed cases, actual dispatches, cancellation
+stages and cancellations before transport separately. The stages are
+`before_transport`, `before_setup`, `during_setup`, `before_write`,
+`write_incomplete`, `request_written`, `write_overlapped_signal` and
+`response_observed`. The `write_overlapped_signal` stage means a completed-write
+timestamp followed the source request timestamp; it does not establish whether
+each byte preceded cancellation. Every normal
+case still requires its complete dispatch and wire-terminal observations.
+
+`response_observed` requires a complete transport response, complete actual
+request writes, successful balanced nested scopes, the source's first transition
+and the real Client canceled/nil-cause outcome before its terminal commit. It
+means the transport observed a response, without claiming that Client validated
+or decoded it successfully. Resource retirement and closure are checked
+separately; this branch does not require or imply socket interruption or server
+cancellation. Both a response and a failure, missing scope exits, a fabricated
+adapter result, unrelated errors or an already committed Client success fail.
+
+Dedicated synchronized tests in
+[conformance_cancellation_spec.rb](../spec/conformance_cancellation_spec.rb)
+prove actual full-request cancellation in both codecs and compression modes,
+with a real peer observing request progress before cancellation. They check the
+library canceled/nil-cause outcome, actual body bytes, owned socket cleanup,
+no retry/late send and registration cleanup. These deliberately controlled
+cancellation tests are separate from the unmodified official 5 ms cases.
+[NetHTTP cancellation tests](../spec/net_http_cancellation_spec.rb) and the
+[native HTTP/2 cancellation tests](../gems/connectrpc-async/spec/cancellation_spec.rb)
+retain their real I/O and handler-progress coverage. Official case passes do not
+claim that every timer necessarily fired after a request write.
 
 Identity runs 96 client/90 server cases and gzip runs 88/82, with all 184 client
 and 172 server cases required to pass. The original four cancellation names and
 payloads remain unchanged. Missing/unexecuted/duplicate/setup/unknown outcomes,
-waiver output and a fabricated canceled result without wire progress fail the
-ledger's focused negative probes. Ordinary errors may use identity even for gzip
+waiver output and a canceled adapter result without a complete causal observer
+fail the ledger's focused negative probes. Ordinary errors may use identity even for gzip
 requests; Basic success separately requires actual gzip responses in both codecs
 and directions.
 
