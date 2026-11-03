@@ -2,6 +2,9 @@
 
 require "bundler"
 require_relative "harness"
+require_relative "source"
+require_relative "surface"
+require_relative "api_check"
 
 root = File.expand_path("..", __dir__)
 working = File.join(root, "vendor/rbs/check", RUBY_VERSION)
@@ -21,3 +24,7 @@ Bundler.with_unbundled_env do
 end
 RBSHarness.check(working: working, core: File.join(root, "sig"), bridge: File.join(root, "rbs/google_protobuf_4_36"),
                  generated: File.join(working, "generation/protoc"))
+
+SourceCheck.check(root)
+APISurface.check(root)
+APICheck.check(root: root, working: File.join(root, "vendor/rbs/api", RUBY_VERSION))

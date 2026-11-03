@@ -1,0 +1,14 @@
+# frozen_string_literal: true
+
+target :core do
+  signature "../sig", "internal"
+  library "uri"
+  library "json"
+  library "zlib"
+  check "../lib/connectrpc.rb", "../lib/connectrpc/version.rb"
+  check "../lib/connectrpc/method.rb", "../lib/connectrpc/metadata.rb", "../lib/connectrpc/error.rb"
+  check "../lib/connectrpc/deadline.rb", "../lib/connectrpc/protocol.rb", "../lib/connectrpc/client.rb"
+  check "../lib/connectrpc/server.rb", "../lib/connectrpc/instrumentation.rb"
+  check "../lib/connectrpc/compression.rb", "../lib/connectrpc/message_io.rb"
+  configure_code_diagnostics(Steep::Diagnostic::Ruby.strict)
+end

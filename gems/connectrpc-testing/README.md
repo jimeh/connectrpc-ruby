@@ -103,3 +103,12 @@ Configure `instrumentation:` on the core Client/Server to enable the fixed
 neutral per-call lifecycle or the optional [OpenTelemetry adapter](../connectrpc-otel/README.md).
 The server always extracts serialized propagation headers, even while a client
 context is ambient. Direct processing ends with delivery `unobserved`.
+
+## Static signatures
+
+This package owns `sig/` and its discovery manifest. Add
+`library "connectrpc-testing"` to a strict Steep target with this gem installed.
+See the [RBS guide](../../docs/rbs.md) for supported APIs, extension contracts,
+partial records, runtime validation and framework-signature limits.
+`mise run rbs:check` checks application callers for this package; strict core
+source checking is a separate target from backend implementation checking.

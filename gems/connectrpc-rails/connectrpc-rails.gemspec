@@ -11,7 +11,9 @@ Gem::Specification.new do |spec|
   spec.required_ruby_version = ">= 3.4"
   spec.metadata["allowed_push_host"] = "https://gems.invalid"
   spec.metadata["source_code_uri"] = spec.homepage
-  spec.files = Dir.chdir(__dir__) { Dir.glob("lib/**/*.rb") + %w[LICENSE README.md] }
+  spec.files = Dir.chdir(__dir__) do
+    Dir.glob("sig/**/*.{rbs,yaml}") + Dir.glob("rbs/**/*.rbs") + Dir.glob("lib/**/*.rb") + %w[LICENSE README.md]
+  end
   spec.require_paths = ["lib"]
   spec.add_dependency "actionpack", ">= 8.0.5.1", "< 8.2"
   spec.add_dependency "connectrpc", "~> 0.1.0"

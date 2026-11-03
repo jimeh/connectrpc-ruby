@@ -1,0 +1,197 @@
+# Ruby's Numeric base signature omits arithmetic supplied by concrete real numeric types.
+# Deadline requires that arithmetic at runtime too; this does not validate custom numerics.
+class Numeric
+  def *: (Numeric) -> Numeric
+end
+$ERROR_INFO: Exception?
+# Implementation-only contracts. This directory is never included in a gem.
+module ConnectRPC
+  class Method[Req, Resp]
+    IDENTIFIER: Regexp
+    QUALIFIED_NAME: Regexp
+    def self.validate_name!: (String, ?qualified: bool) -> nil
+  end
+  class Service
+    private
+    def validate_methods!: (String, Array[Method[untyped, untyped]]) -> nil
+  end
+  class Metadata
+    RESERVED: Array[String]
+    @values: headers
+    def self.base64_payload: (String) -> String
+    private
+    def validate_key: (String) -> String
+    def validate_value: (String) -> String
+  end
+  class Error
+    HTTP_STATUS: Hash[String, Integer]
+    HTTP_FALLBACK: Hash[Integer, String]
+    private
+    def safe_message: (String) -> String
+  end
+  class Deadline
+    @clock: ^() -> Numeric | _Clock
+    @expires_at: Numeric
+  end
+  class Context
+    @lifecycle: Instrumentation::Handle?
+  end
+  module Protocol
+    DEFAULT_LIMIT: Integer
+    CONTENT_TYPES: Hash[Symbol, String]
+    type wire_error = { code: String, message: String, details: Array[ErrorDetail] }
+    def self.limit!: (Integer) -> Integer
+    def self.codec!: (codec) -> codec
+    def self.profile!: (:connect, :unary, encoding) -> nil
+    def self.content_codec: (String?) -> codec?
+    def self.headers: (headers | Metadata) -> headers
+    def self.single: (headers, String) -> String?
+    def self.identity_encoding?: (headers) -> bool?
+    def self.content_encoding: (headers) -> encoding?
+    def self.accept_encoding!: (Array[encoding]?, encoding) -> Array[encoding]
+    def self.response_encoding: (headers, encoding?, encoding) -> encoding?
+    def self.metadata: (headers, ?trailers: bool) -> Metadata
+    def self.check_size!: (String, Integer) -> nil
+    def self.content_length!: (Array[String]?, invalid_code: Symbol) -> Integer?
+    def self.error_body: (Error, Integer) ?{ (Error, String?) -> void } -> [String, Integer]
+    def self.parse_error: (Integer, headers, String) -> Error
+    # JSON is untrusted external data. Only the validated wire record leaves parsing.
+    def self.wire_error: (String, fallback: String) -> wire_error?
+    def self.valid_wire_error?: (untyped) -> bool
+    def self.wire_details: (untyped) -> Array[ErrorDetail]
+  end
+  type encoding = :identity | :gzip
+  class Compression
+    CHUNK_SIZE: Integer
+    @limit: Integer
+    @deadline: Deadline?
+    @output: String
+    class Malformed < StandardError
+    end
+    def self.encode: (String, limit: Integer, ?deadline: Deadline?) -> String
+    def self.decode: (String, limit: Integer, ?deadline: Deadline?) -> String
+    def initialize: (Integer, Deadline?) -> void
+    def encode: (String) -> String
+    def decode: (String) -> String
+    private
+    def chunks: (String) { (String) -> void } -> nil
+    def member: (String, Integer) -> Integer
+    def inflate_chunk: (Zlib::Inflate, String) -> Integer
+    def step: [T] () { () -> T } -> T
+    def append: (String) -> nil
+  end
+  class MessageIO
+    @input: _Input?
+    @limit: Integer
+    @context: Context
+    def initialize: (_Input?, Integer, Context) -> void
+    def read: (Integer?) -> String
+    private
+    def read_chunks: (String) -> nil
+  end
+  class Client
+    @base_url: URI::Generic
+    @binding: _Binding
+    @transport: _Transport
+    @codec: codec
+    @encoding: encoding
+    @accept_encoding: Array[encoding]
+    @request_limit: Integer
+    @response_limit: Integer
+    @request_wire_limit: Integer
+    @response_wire_limit: Integer
+    @instrumentation: Instrumentation?
+    private
+    def process_call: [Req, Resp] (Method[Req, Resp], Req, metadata_input, Numeric?, ?lifecycle: Instrumentation::Handle?, ?injection: metadata_input?) ?{ (TransportResponse) -> void } -> Response[Resp]
+    def instrumented_call: [Req, Resp] (Method[Req, Resp], Req, metadata_input, Numeric?) -> Response[Resp]
+    def injected_metadata: (Metadata, metadata_input?) -> Metadata
+    def parse_base_url: (String) -> URI::Generic
+    def default_transport: () -> Transports::NetHTTP
+    def encode_request: [Req, Resp] (Method[Req, Resp], Req, Deadline?, ?Instrumentation::Handle?) -> String
+    def build_request: [Req, Resp] (Method[Req, Resp], Req, Metadata, Deadline?, ?Instrumentation::Handle?) -> TransportRequest
+    def request_headers: (Metadata, Deadline?) -> headers
+    def compress_request: (String, Deadline?, ?Instrumentation::Handle?) -> String
+    def response_body: (TransportResponse, headers, Deadline?, ?Instrumentation::Handle?) -> String
+    def inflate_response: (String, Integer, Deadline?, ?Instrumentation::Handle?) -> String
+    def response_encoding!: (headers) -> encoding
+    def validate_response!: (Integer, headers, String) -> nil
+    def read_response: [Req, Resp] (TransportResponse, Method[Req, Resp], Deadline?, ?Instrumentation::Handle?) -> Response[Resp]
+    def decode_response: [Req, Resp] (String, Method[Req, Resp], ?Instrumentation::Handle?) -> Resp
+  end
+  class Server
+    @methods: Hash[String, Method[untyped, untyped]]
+    @handlers: Hash[String, ^(untyped, Context) -> untyped | _Handler[untyped, untyped]]
+    @invoker: ^(Method[untyped, untyped], untyped, Context) -> untyped | _Invoker
+    @instrumentation: Instrumentation?
+    @binding: _Binding
+    @encoding: encoding
+    @request_limit: Integer
+    @response_limit: Integer
+    @request_wire_limit: Integer
+    @response_wire_limit: Integer
+    @error_limit: Integer
+    private
+    def process_call: (path: String, http_method: String, headers: headers, input: _Input?, ?lifecycle: Instrumentation::Handle?) -> TransportResponse
+    def declarations: (Array[Service]) -> Hash[String, Method[untyped, untyped]]
+    def invoke_handler: (Method[untyped, untyped], untyped, Context) -> untyped
+    def dispatch: (String, headers, _Input?, codec, Context, ?lifecycle: Instrumentation::Handle?) -> TransportResponse
+    def inflate_request: (String, headers, Context) -> String
+    def decode_request: (String, Method[untyped, untyped], codec, Context) -> untyped
+    def encode_response: (untyped, Method[untyped, untyped], codec, Context, encoding?) -> TransportResponse
+    def serialize_response: (untyped, Method[untyped, untyped], codec, Context) -> String
+    def bare: (Integer, headers) -> TransportResponse
+    def request_context: (headers, ?Instrumentation::Handle?) -> Context
+    def validate_headers!: (headers) -> nil
+    def request_deadline: (headers) -> Deadline?
+    def response_headers: (Context?, String) -> headers
+    def error_response: (Error, Context?, ?Instrumentation::Handle?) -> TransportResponse
+  end
+end
+
+module ConnectRPC
+  class Instrumentation
+    @subscribers: Array[_Subscriber]
+    @on_error: (^(StandardError) -> void | _InstrumentationErrorHandler)?
+    def start: (owner: Object, role: :client | :server, method: Method[untyped, untyped]?, carrier: Hash[String, String | Array[String]], ?server_address: String?, ?server_port: Integer?, ?path: String?) -> Handle
+    def safely: [T] () { () -> T } -> T?
+    def self.carrier: (headers | metadata_input) -> headers
+    # Reflection is erased here only, before each capability enters Callbacks.
+    class Callbacks
+      def self.discover: (Object, Instrumentation) -> Callbacks
+      def self.callback: (Object, Symbol, Instrumentation) -> untyped
+      def initialize: (attach: (^() -> Object?)?, detach: (^(Object?) -> void)?, processing_finished: (^(Outcome) -> void)?, finished: (^(Completion) -> void)?) -> void
+      attr_reader attach: (^() -> Object?)?
+      attr_reader detach: (^(Object?) -> void)?
+      attr_reader processing_finished: (^(Outcome) -> void)?
+      attr_reader finished: (^(Completion) -> void)?
+    end
+    class Handle
+      type pending = { delivery: delivery, error: Exception?, decision: decision, http_status: Integer? }
+      @bus: Instrumentation
+      @owner: Object
+      @path: String?
+      @observers: Array[Callbacks]
+      @started_at: Float
+      @processing_at: Float?
+      @processing_state: :not_started | :running | :finished
+      @pending: pending?
+      @terminal: bool?
+      @notifying_processing: bool?
+      @host_rejected: bool?
+      @error: Exception?
+      def initialize: (Instrumentation, Object, String?, Array[Object]) -> void
+      attr_reader outcome: Outcome?
+      attr_accessor request_bytes: Integer?
+      attr_accessor request_metadata: headers
+      attr_accessor code: String?
+      attr_accessor normalized_error: Exception?
+      def begin_processing: (Object, ?String?) -> Float
+      def processing_finished: (code: String?, ?http_status: Integer?, ?normalized_error: Exception?, ?error: Exception?, ?response_bytes: Integer?, ?response_metadata: headers) -> nil
+      private
+      def now: () -> Float
+      def notify_processing: (Outcome) -> Array[Callbacks]
+      def notify_finished: (Completion) -> Array[Callbacks]
+      def complete: () -> Array[Callbacks]
+    end
+  end
+end

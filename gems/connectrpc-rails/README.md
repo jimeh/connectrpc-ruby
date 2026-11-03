@@ -219,3 +219,17 @@ Native controllers override private `connect_instrumentation` (default nil),
 separately from `connect_limits`. Escaping original failures are captured before
 reporting/normalization; successfully handled `rescue_from` exceptions are not
 automatically failures. Configuration before Server construction is outside it.
+
+## Static signatures
+
+This package owns `sig/` and its discovery manifest. Add
+`library "connectrpc-rails"` to a strict Steep target with this gem installed.
+See the [RBS guide](../../docs/rbs.md) for supported APIs, extension contracts,
+partial records, runtime validation and framework-signature limits.
+`mise run rbs:check` checks application callers for this package; strict core
+source checking is a separate target from backend implementation checking.
+
+The finite upstream compatibility signatures in `rbs/action_controller_8` are explicit
+opt-ins, separate from normal gem discovery. See the [RBS guide](../../docs/rbs.md#opt-in-framework-compatibility)
+for tested versions, supported framework forms and how to avoid duplicate
+application-owned declarations.

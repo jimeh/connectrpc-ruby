@@ -11,7 +11,7 @@ Gem::Specification.new do |spec|
   spec.required_ruby_version = ">= 3.4"
   spec.metadata["allowed_push_host"] = "https://gems.invalid"
   spec.metadata["source_code_uri"] = spec.homepage
-  spec.files = Dir.chdir(__dir__) { Dir.glob("lib/**/*.rb") + %w[README.md LICENSE] }
+  spec.files = Dir.chdir(__dir__) { Dir.glob("sig/**/*.{rbs,yaml}") + Dir.glob("lib/**/*.rb") + %w[README.md LICENSE] }
   spec.require_paths = ["lib"]
   spec.add_dependency "connectrpc", "~> 0.1.0"
   spec.add_dependency "rack", ">= 3.2.7", "< 4"

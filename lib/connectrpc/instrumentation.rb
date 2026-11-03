@@ -9,6 +9,23 @@ module ConnectRPC
                           :request_bytes, :response_bytes, :request_metadata, :response_metadata)
     Completion = Data.define(:outcome, :processing_state, :decision, :delivery, :error, :http_status, :duration)
 
+    Callbacks = Data.define(:attach, :detach, :processing_finished, :finished)
+    private_constant :Callbacks
+
+    class Callbacks
+      def self.discover(observer, bus)
+        new(attach: callback(observer, :attach, bus), detach: callback(observer, :detach, bus),
+            processing_finished: callback(observer, :processing_finished, bus),
+            finished: callback(observer, :finished, bus))
+      end
+
+      # Reflection ends here; only typed callback records reach lifecycle work.
+      def self.callback(observer, name, bus)
+        bus.safely { observer.public_method(name).to_proc if observer.respond_to?(name) }
+      end
+      private_class_method :callback
+    end
+
     def initialize(subscribers:, on_error: nil)
       @subscribers = subscribers.dup.freeze
       @on_error = on_error
@@ -34,51 +51,55 @@ module ConnectRPC
     end
 
     # Defensive read-only snapshot. Extraction must not validate/reorder protocol work.
+    # rubocop:disable-next Metrics/AbcSize, Metrics/MethodLength, Metrics/PerceivedComplexity
     def self.carrier(headers) # rubocop:disable Metrics/CyclomaticComplexity
-      values = headers.each_with_object({}) do |(key, entries), result|
+      # @type var result: headers
+      # @type var empty: headers
+      empty = {}
+      values = headers.each_with_object(empty) do |(key, entries), result|
         next unless key.is_a?(String)
 
-        entries = Array(entries)
+        # Preserve Array coercion; the split lets Steep resolve Kernel.Array on each arm.
+        entries = entries.is_a?(Array) ? entries : Array(entries) # rubocop:disable Style/RedundantSelfAssignmentBranch
         next unless entries.all?(String)
 
         (result[key.downcase] ||= []).concat(entries.map { |entry| entry.dup.freeze })
       end
       values.transform_values!(&:freeze).freeze
     rescue StandardError
-      {}.freeze
+      empty = {} #: headers
+      empty.freeze
     end
 
     class Handle
       attr_reader :outcome
       attr_accessor :request_bytes, :request_metadata, :code, :normalized_error
 
-      def initialize(bus, owner, path, observers) # rubocop:disable Metrics/MethodLength
+      def initialize(bus, owner, path, observers)
         @bus = bus
         @owner = owner
         @path = path
         # Resolve the optional callback surface once per observer.
-        @observers = observers.map do |observer|
-          %i[attach detach processing_finished finished].to_h do |name|
-            [name, @bus.safely { observer.public_method(name) if observer.respond_to?(name) }]
-          end
-        end
+        @observers = observers.map { |observer| Callbacks.discover(observer, @bus) }
         @started_at = now
         @processing_state = :not_started
-        @request_metadata = {}.freeze
+        request_metadata = {} #: headers
+        @request_metadata = request_metadata.freeze
       end
 
       # Keep the application yield and reverse unwind in one exception boundary.
       def activate # rubocop:disable Metrics/MethodLength
         return yield if @terminal
 
+        # @type var tokens: Array[[(^(Object?) -> void)?, Object?]]
         tokens = []
         begin
           @observers.each do |callbacks|
-            next unless callbacks[:attach]
+            next unless callbacks.attach
 
             @bus.safely do
-              token = callbacks[:attach].call
-              tokens << [callbacks[:detach], token]
+              token = callbacks.attach.call
+              tokens << [callbacks.detach, token]
             end
           end
           yield
@@ -122,15 +143,16 @@ module ConnectRPC
       def processing_finished(code:, http_status: nil, normalized_error: nil, error: nil,
                               response_bytes: nil, response_metadata: {})
         record_failure(error) if error
-        @outcome = Outcome.new(code: code, http_status: http_status, error: @error,
-                               normalized_error: normalized_error, duration: now - @processing_at,
-                               request_bytes: @request_bytes, response_bytes: response_bytes,
-                               request_metadata: Instrumentation.carrier(@request_metadata),
-                               response_metadata: Instrumentation.carrier(response_metadata))
+        processing_at = @processing_at #: Float
+        outcome = @outcome = Outcome.new(code: code, http_status: http_status, error: @error,
+                                         normalized_error: normalized_error, duration: now - processing_at,
+                                         request_bytes: @request_bytes, response_bytes: response_bytes,
+                                         request_metadata: Instrumentation.carrier(@request_metadata),
+                                         response_metadata: Instrumentation.carrier(response_metadata))
         @processing_state = :finished
         @notifying_processing = true
         begin
-          notify(:processing_finished, @outcome)
+          notify_processing(outcome)
         ensure
           @notifying_processing = false
           complete if @pending
@@ -144,15 +166,21 @@ module ConnectRPC
 
       def now = Process.clock_gettime(Process::CLOCK_MONOTONIC)
 
-      def notify(name, value)
-        @observers.each { |callbacks| @bus.safely { callbacks[name]&.call(value) } }
+      def notify_processing(outcome)
+        @observers.each { |callbacks| @bus.safely { callbacks.processing_finished&.call(outcome) } }
+      end
+
+      def notify_finished(completion)
+        @observers.each { |callbacks| @bus.safely { callbacks.finished&.call(completion) } }
       end
 
       def complete
         @terminal = true
+        pending = @pending #: pending
         completion = Completion.new(outcome: @outcome, processing_state: @processing_state,
-                                    duration: now - @started_at, **@pending)
-        notify(:finished, completion)
+                                    duration: now - @started_at, delivery: pending[:delivery], error: pending[:error],
+                                    decision: pending[:decision], http_status: pending[:http_status])
+        notify_finished(completion)
       end
     end
   end

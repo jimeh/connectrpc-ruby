@@ -195,3 +195,12 @@ neutral per-call lifecycle or the optional [OpenTelemetry adapter](../connectrpc
 Native hosts create explicit handles before request admission, activate the
 actual handler tasks, and finish after full-write/reset/cleanup evidence.
 Connection-level setup/admission before an RPC exists is outside this lifecycle.
+
+## Static signatures
+
+This package owns `sig/` and its discovery manifest. Add
+`library "connectrpc-async"` to a strict Steep target with this gem installed.
+See the [RBS guide](../../docs/rbs.md) for supported APIs, extension contracts,
+partial records, runtime validation and framework-signature limits.
+`mise run rbs:check` checks application callers for this package; strict core
+source checking is a separate target from backend implementation checking.

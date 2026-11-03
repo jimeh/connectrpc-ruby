@@ -18,7 +18,8 @@ module ConnectRPC
 
     def self.decode_binary(value)
       raw = base64_payload(value)
-      bytes = (raw + ("=" * ((4 - (raw.size % 4)) % 4))).unpack1("m0")
+      # @type var bytes: String
+      bytes = (raw + ("=" * ((4 - (raw.size % 4)) % 4))).unpack1("m0") #: String
       raise ArgumentError, "Noncanonical base64" unless encode_binary(bytes) == raw
 
       bytes
@@ -37,7 +38,7 @@ module ConnectRPC
 
     def initialize(values = {})
       @values = {}
-      values.each { |key, entries| self[key] = entries }
+      values.each { |(key, entries)| self[key] = entries }
     end
 
     def [](key)
@@ -46,7 +47,8 @@ module ConnectRPC
 
     def []=(key, entries)
       key = validate_key(key)
-      @values[key] = Array(entries).map { |value| validate_value(value) }.freeze
+      values = entries.is_a?(Array) ? entries : Array(entries)
+      @values[key] = values.map { |value| validate_value(value) }.freeze
     end
 
     def add(key, value)
@@ -54,8 +56,10 @@ module ConnectRPC
       self
     end
 
-    def each(&)
-      @values.each(&)
+    def each(&block)
+      return @values.each unless block
+
+      @values.each(&block)
     end
 
     def to_h

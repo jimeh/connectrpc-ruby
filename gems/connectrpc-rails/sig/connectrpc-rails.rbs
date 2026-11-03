@@ -1,0 +1,18 @@
+module ConnectRPC
+  module Rails
+    module Controller
+      type limits = { ?request_limit: Integer, ?response_limit: Integer, ?request_wire_limit: Integer, ?response_wire_limit: Integer, ?encoding: :identity | :gzip }
+      def connect: () -> String
+      private
+      def connect_service: () -> Service
+      def connect_binding: () -> _Binding
+      def connect_handlers: () -> Hash[String, ^(untyped, Context) -> untyped | _Handler[untyped, untyped]]
+      def connect_limits: () -> limits
+      def connect_instrumentation: () -> Instrumentation?
+      # Outside active decoded execution these readers have no established value.
+      attr_reader connect_request: Object?
+      attr_reader connect_context: Context?
+      attr_reader connect_method: Method[untyped, untyped]?
+    end
+  end
+end

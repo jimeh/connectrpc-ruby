@@ -1,0 +1,115 @@
+module ConnectRPC
+  module Async
+    type tls = { certificate_chain: Array[String], private_key: String, client_ca: Array[String]? }
+    type tls_snapshot = { version: String, certificate_chain: Array[String], private_key: String, client_ca: Array[String]? }
+    type tls_category = :invalid | :source | :version_conflict | :timeout | :closed
+    type tls_status = { state: :new | :starting | :running | :closing | :closed, generation: Integer?, category: tls_category?, source_check_age: Float?, publication_age: Float? }
+    type tls_event = { category: tls_category, status: tls_status }
+    interface _TLSProvider
+      def call: () -> tls_snapshot
+    end
+    interface _TLSErrorHandler
+      def call: (tls_event) -> void
+    end
+    interface _Callback
+      def call: () -> void
+    end
+    interface _Headers
+      def header: () -> Array[[String, String]]
+    end
+    interface _Body
+      def read: () -> String?
+      def length: () -> Integer?
+      def close: (?Exception?) -> void
+    end
+    interface _Request
+      def path: () -> String
+      def method: () -> String
+      def headers: () -> _Headers
+      def body: () -> _Body?
+    end
+    interface _Response
+      def status: () -> Integer
+      def headers: () -> _Headers
+      def body: () -> _Body?
+      def body=: (_Body?) -> _Body?
+    end
+    interface _Application
+      def call: (_Request, ?lifecycle: Instrumentation::Handle?) -> _Response?
+    end
+    interface _LifecycleFactory
+      def call: (_Request) -> Instrumentation::Handle?
+    end
+    # A scheduled task is opaque apart from its supported wait/stop operations.
+    interface _Task
+      def wait: () -> top
+      def stop: () -> void
+    end
+    interface _Socket
+      def close: () -> void
+      def closed?: () -> bool
+      def remote_address: () -> Addrinfo
+    end
+    interface _Accepted
+      def serve: () -> void
+      def close: () -> void
+      def wait_closed: () -> nil
+      def timeout=: (Numeric?) -> Numeric?
+      def remote_address: () -> Addrinfo
+    end
+    class Application
+      def initialize: (server: Server, ?fallback: (_Application | ^(_Request) -> _Response?)?) -> void
+      def start_call: (_Request) -> Instrumentation::Handle?
+      def call: (_Request, ?lifecycle: Instrumentation::Handle?) -> _Response?
+    end
+    class TLSConfiguration
+      class Error < ArgumentError
+        def initialize: (tls_category) -> void
+        attr_reader category: tls_category
+      end
+      def initialize: (?tls: tls?, ?tls_provider: (_TLSProvider | ^() -> tls_snapshot)?, ?refresh_interval: Numeric, ?refresh_jitter: Numeric, ?refresh_timeout: Numeric, ?on_error: (_TLSErrorHandler | ^(tls_event) -> void)?, ?alpn_protocols: Array[String]) -> void
+      attr_reader generation: Integer?
+      def status: () -> tls_status
+      def start: () -> self
+      def refresh: () -> Integer
+      def reload: (certificate_chain: Array[String], private_key: String, client_ca: Array[String]?) -> Integer
+      def close: () -> self
+    end
+    class Host
+      def initialize: (server: Server, ?host: String, ?port: Integer, ?tls: tls?, ?tls_provider: (_TLSProvider | ^() -> tls_snapshot)?, ?max_connections: Integer, ?max_requests: Integer, ?handshake_timeout: Numeric, ?idle_timeout: Numeric?, ?refresh_interval: Numeric, ?refresh_jitter: Numeric, ?refresh_timeout: Numeric, ?on_tls_error: (_TLSErrorHandler | ^(tls_event) -> void)?) -> void
+      attr_reader port: Integer?
+      attr_reader addresses: Array[Addrinfo]
+      def start: () -> self
+      def close: (?grace: Numeric) -> bool
+      def reload_tls: (certificate_chain: Array[String], private_key: String, client_ca: Array[String]?) -> Integer
+      def refresh_tls: () -> Integer
+      def drain_tls: (?grace: Numeric) -> bool
+      def tls_generation: () -> Integer?
+      def tls_status: () -> tls_status
+      def peer_certificate: () -> OpenSSL::X509::Certificate?
+    end
+    class Transport
+      def initialize: (origin: String, ?ca_file: String?, ?certificate_chain: Array[String]?, ?private_key: String?, ?connection_limit: Integer, ?max_requests: Integer, ?connect_timeout: Numeric) -> void
+      def call: (TransportRequest) -> TransportResponse
+      def close: (?grace: Numeric) -> bool
+    end
+    class ServerSession
+      # http1 is a backend resource-construction boundary, deliberately opaque.
+      interface _HTTP1Factory
+        def call: (Object, progress: Object, generation: Integer?) -> Object
+      end
+      def initialize: (application: _Application | ^(_Request, ?lifecycle: Instrumentation::Handle?) -> _Response?, ?tls: tls?, ?tls_provider: (_TLSProvider | ^() -> tls_snapshot)?, ?max_connections: Integer, ?max_requests: Integer, ?handshake_timeout: Numeric, ?idle_timeout: Numeric?, ?refresh_interval: Numeric, ?refresh_jitter: Numeric, ?refresh_timeout: Numeric, ?on_tls_error: (_TLSErrorHandler | ^(tls_event) -> void)?, ?alpn_protocols: Array[String], ?http1: _HTTP1Factory?, ?stop_accepting: (_Callback | ^() -> void)?, ?on_request_rejected: (_Callback | ^() -> void)?, ?lifecycle_factory: (_LifecycleFactory | ^(_Request) -> Instrumentation::Handle?)?) -> void
+      def start: () -> self
+      def close: (?grace: Numeric) -> bool
+      def abort: () -> self
+      def accept: (_Socket) -> _Accepted?
+      def schedule: () { (_Task) -> top } -> _Task
+      def reload_tls: (certificate_chain: Array[String], private_key: String, client_ca: Array[String]?) -> Integer
+      def refresh_tls: () -> Integer
+      def drain_tls: (?grace: Numeric) -> bool
+      def tls_generation: () -> Integer?
+      def tls_status: () -> tls_status
+      def peer_certificate: () -> OpenSSL::X509::Certificate?
+    end
+  end
+end

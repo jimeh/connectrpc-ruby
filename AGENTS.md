@@ -77,3 +77,9 @@ lifecycle and has no OTel dependency. The separate `otel:` bundle owns real
 SDK-backed cross-package specs and packages, using `vendor/otel` and
 `coverage/otel`. Preserve independent admission, processing and delivery facts;
 never infer HTTP/2 completion from `send_response` return or Rack body close.
+
+Public API changes must update the owning gem's signatures, the supported/SPI
+inventory and focused caller evidence. Read [RBS guidance](docs/rbs.md) before
+changing those surfaces; run `rbs:check` for consumers, inventory and strict core
+implementation checking, and `rbs:package` for installed discovery. Framework
+compatibility declarations outside `sig/` remain explicit opt-ins.

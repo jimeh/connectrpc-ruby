@@ -1,0 +1,8 @@
+module ConnectRPC
+  module Testing
+    class Transport
+      def initialize: (server: Server) -> void
+      def call: (TransportRequest) -> TransportResponse
+    end
+  end
+end

@@ -365,7 +365,7 @@ run = "ruby typecheck/run.rb check"
 
 [tasks."rbs:package"]
 description = "Check installed RBS discovery and consumers outside the checkout"
-depends = ["rbs:runtime", "rbs:setup", "setup:generation"]
+depends = ["rbs:runtime", "rbs:setup", "setup:generation", "rack:setup", "testing:setup", "setup:rails", "async:setup", "falcon:setup", "otel:setup"]
 tools."aqua:protocolbuffers/protobuf/protoc" = "36.2"
 tools."aqua:bufbuild/buf" = "1.75.0"
 run = "ruby typecheck/run.rb package"
@@ -464,3 +464,23 @@ run = "mise exec -- ruby gems/connectrpc-otel/scripts/run.rb example"
 [tasks."otel:verify"]
 description = "Verify API-only packages and SDK-backed cross-package tracing"
 depends = ["otel:test", "otel:check", "otel:package", "otel:example"]
+
+[tasks."rbs:source"]
+description = "Strictly check the ten core implementation files and private state"
+depends = ["rbs:setup"]
+run = "mise exec -- ruby typecheck/run.rb source"
+
+[tasks."rbs:api"]
+description = "Check supported core and every optional package API and exact negative diagnostics"
+depends = ["rbs:setup"]
+run = "mise exec -- ruby typecheck/run.rb api"
+
+[tasks."rbs:inventory"]
+description = "Detect unclassified source methods, changed options/records and signature omissions"
+depends = ["rbs:setup"]
+run = "mise exec -- ruby typecheck/run.rb inventory"
+
+[tasks."rbs:proof"]
+description = "Prove strict source and API drift diagnostics in an independent source capture"
+depends = ["rbs:setup"]
+run = "mise exec -- ruby typecheck/run.rb proof"

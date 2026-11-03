@@ -13,7 +13,7 @@ core = Gem::Package.new(File.join(output, "connectrpc-0.1.0.gem"))
 otel = Gem::Package.new(File.join(output, "connectrpc-otel-0.1.0.gem"))
 expected_core = %w[
   LICENSE README.md docs/development.md docs/design.md docs/rbs.md exe/protoc-gen-connectrpc-ruby
-  sig/connectrpc.rbs sig/manifest.yaml rbs/google_protobuf_4_36/runtime.rbs rbs/google_protobuf_4_36/binding.rbs
+  sig/connectrpc.rbs sig/manifest.yaml rbs/google_protobuf_4_36/runtime.rbs
   lib/connectrpc/generator/rbs_renderer.rb
   lib/connectrpc.rb lib/connectrpc/version.rb lib/connectrpc/method.rb lib/connectrpc/metadata.rb
   lib/connectrpc/error.rb lib/connectrpc/deadline.rb lib/connectrpc/compression.rb lib/connectrpc/message_io.rb
@@ -23,7 +23,8 @@ expected_core = %w[
   lib/connectrpc/generator/renderer.rb lib/connectrpc/generator/runtime_names.rb
 ].sort
 abort "Core manifest changed" unless core.contents.sort == expected_core && core.spec.runtime_dependencies.empty?
-expected_otel = %w[LICENSE README.md lib/connectrpc/otel.rb lib/connectrpc/otel/subscriber.rb].sort
+expected_otel = %w[LICENSE README.md lib/connectrpc/otel.rb sig/connectrpc-otel.rbs sig/manifest.yaml
+                   lib/connectrpc/otel/subscriber.rb].sort
 abort "OTel manifest changed" unless otel.contents.sort == expected_otel
 expected_dependencies = { "connectrpc" => "~> 0.1.0", "opentelemetry-api" => ">= 1.11.1, < 2" }
 abort "OTel runtime closure changed" unless otel.spec.runtime_dependencies.to_h do |dep|

@@ -1,0 +1,29 @@
+# Explicit opt-in for Falcon 0.57.0 / async-service 0.25.0 service configuration.
+# These are the documented ConnectRPC DSL forms, not general method_missing.
+module Async
+  module Service
+    class Loader
+      def service: (?String?) { () [self: Environment::Builder] -> void } -> void
+    end
+    class Environment
+      class Builder < BasicObject
+        def include: (Module) -> void
+        def url: (String) -> void
+               | () { () [self: ConnectRPC::Falcon::Environment] -> String } -> void
+        def count: (Integer) -> void
+                 | () { () [self: ConnectRPC::Falcon::Environment] -> Integer } -> void
+        def prepare!: () { (Object) [self: ConnectRPC::Falcon::Environment] -> void } -> void
+        def connectrpc_server: (ConnectRPC::Server) -> void
+                            | () { () [self: ConnectRPC::Falcon::Environment] -> ConnectRPC::Server } -> void
+        def rack_app: (ConnectRPC::Falcon::_RackFallback?) -> void
+                    | () { () [self: ConnectRPC::Falcon::Environment] -> ConnectRPC::Falcon::_RackFallback? } -> void
+        def tls: (ConnectRPC::Async::tls?) -> void
+               | () { () [self: ConnectRPC::Falcon::Environment] -> ConnectRPC::Async::tls? } -> void
+        def tls_provider: (ConnectRPC::Async::_TLSProvider?) -> void
+                        | () { () [self: ConnectRPC::Falcon::Environment] -> ConnectRPC::Async::_TLSProvider? } -> void
+        def server_options: (ConnectRPC::Falcon::server_options) -> void
+                          | () { () [self: ConnectRPC::Falcon::Environment] -> ConnectRPC::Falcon::server_options } -> void
+      end
+    end
+  end
+end

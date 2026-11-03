@@ -9,7 +9,7 @@ Gem::Specification.new do |spec|
   spec.license = "MIT"
   spec.required_ruby_version = ">= 3.4"
   spec.metadata["allowed_push_host"] = "https://gems.invalid"
-  spec.files = Dir["lib/**/*.rb", "LICENSE", "README.md"].sort
+  spec.files = Dir.glob("sig/**/*.{rbs,yaml}") + Dir["lib/**/*.rb", "LICENSE", "README.md"].sort
   spec.require_paths = ["lib"]
   {
     "connectrpc" => "~> 0.1.0", "async-http" => "~> 0.105.0", "async" => "~> 2.46.0",

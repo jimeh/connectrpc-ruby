@@ -24,6 +24,7 @@ Gemspec/RequireMFA:
 # Scenario harnesses keep setup, assertions and deterministic cleanup together.
 Metrics/BlockLength:
   Exclude:
+    - typecheck/prove.rb
     - typecheck/package.rb
     - typecheck/runtime.rb
     - spec/**/*.rb
@@ -50,6 +51,12 @@ Metrics/BlockLength:
 # mirror generated Ruby blocks. These files still receive all syntax/style cops.
 Metrics/MethodLength:
   Exclude:
+    - typecheck/source.rb
+    - typecheck/capture.rb
+    - typecheck/archive.rb
+    - typecheck/api_check.rb
+    - typecheck/surface.rb
+    - typecheck/installed_api.rb
     - typecheck/harness.rb
     - gems/connectrpc-async/lib/connectrpc/async/*.rb
     - gems/connectrpc-falcon/lib/connectrpc/falcon/*.rb
@@ -76,6 +83,12 @@ Metrics/MethodLength:
 
 Metrics/AbcSize:
   Exclude:
+    - typecheck/source.rb
+    - typecheck/capture.rb
+    - typecheck/archive.rb
+    - typecheck/api_check.rb
+    - typecheck/surface.rb
+    - typecheck/installed_api.rb
     - typecheck/harness.rb
     - gems/connectrpc-async/lib/connectrpc/async/*.rb
     - gems/connectrpc-falcon/lib/connectrpc/falcon/*.rb
@@ -112,6 +125,12 @@ Metrics/ClassLength:
 
 Metrics/CyclomaticComplexity:
   Exclude:
+    - typecheck/source.rb
+    - typecheck/capture.rb
+    - typecheck/archive.rb
+    - typecheck/api_check.rb
+    - typecheck/surface.rb
+    - typecheck/installed_api.rb
     - typecheck/harness.rb
     - gems/connectrpc-async/lib/connectrpc/async/*.rb
     - gems/connectrpc-falcon/lib/connectrpc/falcon/*.rb
@@ -125,6 +144,12 @@ Metrics/CyclomaticComplexity:
 
 Metrics/PerceivedComplexity:
   Exclude:
+    - typecheck/source.rb
+    - typecheck/capture.rb
+    - typecheck/archive.rb
+    - typecheck/api_check.rb
+    - typecheck/surface.rb
+    - typecheck/installed_api.rb
     - gems/connectrpc-async/lib/connectrpc/async/*.rb
     - gems/connectrpc-falcon/lib/connectrpc/falcon/*.rb
     - lib/connectrpc/generator/schema.rb
@@ -168,3 +193,9 @@ Naming/PredicateMethod:
 Style/OneClassPerFile:
   Exclude:
     - typecheck/consumers/support.rb
+    - typecheck/api/support.rb
+    - typecheck/installed_runtime.rb
+
+# Keep Steep/RBS assertions recognizable during ordinary formatting.
+Layout/LeadingCommentSpace:
+  AllowRBSInlineAnnotation: true

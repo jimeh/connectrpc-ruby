@@ -36,10 +36,11 @@ module ConnectRPC
     end
 
     def start_call(path:, headers:)
-      return unless @instrumentation
+      instrumentation = @instrumentation
+      return unless instrumentation
 
-      @instrumentation.start(owner: self, path: path.dup.freeze, role: :server, method: @methods[path],
-                             carrier: Instrumentation.carrier(headers))
+      instrumentation.start(owner: self, path: path.dup.freeze, role: :server, method: @methods[path],
+                            carrier: Instrumentation.carrier(headers))
     end
 
     # Keep processing and terminal ensures adjacent to their owner.
@@ -51,28 +52,31 @@ module ConnectRPC
 
       owned = lifecycle.nil?
       lifecycle ||= start_call(path: path, headers: headers)
-      lifecycle.begin_processing(self, path)
+      active = lifecycle #: Instrumentation::Handle
+      active.begin_processing(self, path)
       begin
-        lifecycle.activate do
-          process_call(path: path, http_method: http_method, headers: headers, input: input, lifecycle: lifecycle)
+        active.activate do
+          process_call(path: path, http_method: http_method, headers: headers, input: input, lifecycle: active)
         end
       ensure
-        lifecycle.processing_finished(code: nil, error: $ERROR_INFO) unless lifecycle.outcome
-        lifecycle.finish(delivery: :unobserved) if owned
+        active.processing_finished(code: nil, error: $ERROR_INFO) unless active.outcome
+        active.finish(delivery: :unobserved) if owned
       end
     end
 
     private
 
     def process_call(path:, http_method:, headers:, input:, lifecycle: nil)
+      # @type var response: TransportResponse?
+      # @type var context: Context?
       return response = bare(405, "allow" => ["POST"]) unless http_method == "POST"
 
       headers = Protocol.headers(headers)
       codec = Protocol.content_codec(Protocol.single(headers, "content-type"))
       return response = bare(415, "accept-post" => ["application/proto, application/json"]) unless codec
 
-      context = request_context(headers, lifecycle)
-      response = dispatch(path, headers, input, codec, context, lifecycle: lifecycle)
+      decoded_context = context = request_context(headers, lifecycle)
+      response = dispatch(path, headers, input, codec, decoded_context, lifecycle: lifecycle)
     rescue Error => e
       lifecycle&.record_failure(e)
       response = error_response(e, context, lifecycle)
@@ -196,6 +200,7 @@ module ConnectRPC
     end
 
     def response_headers(context, content_type)
+      # @type var headers: headers
       headers = context ? context.response_metadata.to_h : {}
       context&.response_trailers&.each { |key, values| headers["trailer-#{key}"] = values }
       headers["accept-encoding"] = ["gzip, identity"] if @encoding == :gzip
@@ -203,6 +208,8 @@ module ConnectRPC
     end
 
     def error_response(error, context, lifecycle = nil) # rubocop:disable Metrics/MethodLength, Metrics/AbcSize
+      # @type var effective: Error?
+      # @type var code: String?
       effective = code = nil
       body, status = if lifecycle
                        Protocol.error_body(error, @error_limit) do |selected, emitted|

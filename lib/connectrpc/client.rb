@@ -55,11 +55,14 @@ module ConnectRPC
     end
 
     def instrumented_call(method, request, metadata, timeout)
+      # @type var injection: Hash[String, String | Array[String]]
       injection = {}
-      lifecycle = @instrumentation.start(owner: self, role: :client, method: method.is_a?(Method) ? method : nil,
-                                         carrier: injection, server_address: @base_url.hostname.freeze,
-                                         server_port: @base_url.port)
+      instrumentation = @instrumentation #: Instrumentation
+      lifecycle = instrumentation.start(owner: self, role: :client, method: method.is_a?(Method) ? method : nil,
+                                        carrier: injection, server_address: @base_url.hostname.freeze,
+                                        server_port: @base_url.port)
       lifecycle.begin_processing(self)
+      # @type var response: TransportResponse?
       response = nil
       begin
         result = lifecycle.activate do
@@ -81,8 +84,10 @@ module ConnectRPC
     # rubocop:enable Metrics/MethodLength, Metrics/AbcSize
 
     def injected_metadata(metadata, injection)
-      @instrumentation.safely do
-        validated = Metadata.new(injection)
+      instrumentation = @instrumentation #: Instrumentation
+      carrier = injection #: metadata_input
+      instrumentation.safely do
+        validated = Metadata.new(carrier)
         return Metadata.new(metadata.to_h.merge(validated.to_h))
       end
       metadata
@@ -118,7 +123,8 @@ module ConnectRPC
       body = compress_request(body, deadline, lifecycle) if @encoding == :gzip
       Protocol.check_size!(body, @request_wire_limit)
       url = @base_url.dup
-      url.path = @base_url.path.delete_suffix("/") + method.path
+      base_path = @base_url.path #: String
+      url.path = base_path.delete_suffix("/") + method.path
       TransportRequest.new(url: url, http_method: "POST", headers: request_headers(metadata, deadline), body: body,
                            response_limit: @response_wire_limit, deadline: deadline)
     end

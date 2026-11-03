@@ -4,6 +4,8 @@ require "bundler"
 require "rubygems/package"
 require "tmpdir"
 require_relative "harness"
+require_relative "installed_api"
+require_relative "archive"
 
 root = File.expand_path("..", __dir__)
 specification = Gem::Specification.load(File.join(root, "connectrpc.gemspec"))
@@ -11,8 +13,9 @@ output = File.join(root, "vendor/rbs/pkg", RUBY_VERSION)
 FileUtils.mkdir_p(output)
 archive = File.join(output, specification.file_name)
 Dir.chdir(root) { Gem::Package.build(specification, false, false, archive) }
+SignatureArchive.check(archive, root: root)
 package = Gem::Package.new(archive)
-expected = %w[sig/connectrpc.rbs sig/manifest.yaml rbs/google_protobuf_4_36/binding.rbs
+expected = %w[sig/connectrpc.rbs sig/manifest.yaml
               rbs/google_protobuf_4_36/runtime.rbs].sort
 raise "Signature package manifest changed" unless package.contents.grep(%r{\A(?:sig|rbs)/}).sort == expected
 raise "Runtime dependency added" unless package.spec.runtime_dependencies.empty?
@@ -87,6 +90,7 @@ Bundler.with_unbundled_env do
       CODE
       File.write(File.join(working, "installed_check.rb"), runner)
       puts RBSHarness.capture!([RbConfig.ruby, "installed_check.rb"], working: working)
+      InstalledAPI.check(root: root, working: working, output: output)
       evidence = File.join(root, "vendor/rbs/installed", RUBY_VERSION)
       FileUtils.mkdir_p(evidence)
       FileUtils.cp(Dir.glob(File.join(working, "*.{json,log}")), evidence)

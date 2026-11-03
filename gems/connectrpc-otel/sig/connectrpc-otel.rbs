@@ -1,0 +1,31 @@
+module ConnectRPC
+  module OTel
+    VERSION: String
+    SEMCONV_VERSION: String
+    type attributes = Hash[String, String | Integer | Float | bool | Array[String]]
+    interface _Span
+      def set_attribute: (String, String | Integer | Float | bool | Array[String]) -> void
+      def status=: (Object) -> void
+      def finish: () -> void
+    end
+    interface _Tracer
+      def start_span: (String, kind: :client | :server, with_parent: Object, attributes: attributes) -> _Span
+    end
+    interface _TracerProvider
+      def tracer: (String, String, attributes: attributes) -> _Tracer
+    end
+    interface _Getter
+      def get: (Hash[String, String | Array[String]], String) -> String?
+      def keys: (Hash[String, String | Array[String]]) -> Array[String]
+    end
+    interface _Propagator
+      def extract: (Hash[String, String | Array[String]], context: Object, getter: _Getter) -> Object
+      def inject: (Hash[String, String | Array[String]], context: Object) -> void
+    end
+    class Subscriber
+      def initialize: (?tracer_provider: _TracerProvider, ?propagator: _Propagator?, ?request_metadata: Array[String], ?response_metadata: Array[String]) -> void
+      # The adapter's observer is private and discovered by the neutral lifecycle.
+      def start: (Instrumentation::Call) -> Object?
+    end
+  end
+end
