@@ -11,9 +11,9 @@ RSpec.describe "gRPC native bounds and cancellation" do
     end
   end
 
-  def streaming_server(handlers)
+  def streaming_server(handlers, **)
     ConnectRPC::Server.new(services: [ConnectRPC::Service.new(name: "test.Streams", methods: stream_methods)],
-                           binding: ConnectRPC::Bindings::GoogleProtobuf.new, handlers: handlers, protocol: :grpc)
+                           binding: ConnectRPC::Bindings::GoogleProtobuf.new, handlers: handlers, protocol: :grpc, **)
   end
 
   def build_stream_host(target, tls, scheme)

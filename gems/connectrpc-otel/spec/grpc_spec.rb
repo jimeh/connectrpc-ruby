@@ -179,3 +179,41 @@ RSpec.describe "gRPC local transport error conventions" do
     provider.shutdown
   end
 end
+
+RSpec.describe "gRPC SDK owned cleanup observation" do
+  [false, true].each do |failure|
+    it "finishes the client span after owned cleanup with failure #{failure}" do
+      provider, exporter, bus = tracing
+      reactor do
+        host = ConnectRPC::Async::Host.new(server: server(protocol: :grpc)).start
+        origin = "http://127.0.0.1:#{host.port}"
+        transport = ConnectRPC::Async::Transport.new(origin: origin)
+        allow(transport).to receive(:dispatch_stream).and_wrap_original do |dispatch, operation, body|
+          dispatch.call(operation, body)
+          allow(operation.fetch(:response)).to receive(:close).and_wrap_original do |close|
+            expect(rpc_spans(exporter)).to be_empty
+            close.call
+            raise IOError, "private cleanup secret" if failure
+          end
+        end
+        core = ConnectRPC::Client.new(base_url: origin, transport: transport, protocol: :grpc,
+                                      instrumentation: bus, binding: ConnectRPC::Bindings::GoogleProtobuf.new)
+        if failure
+          expect { core.call(AsyncHelpers::ECHO::ECHO, AsyncHelpers::MESSAGE.new) }.to raise_error(ConnectRPC::Error)
+        else
+          core.call(AsyncHelpers::ECHO::ECHO, AsyncHelpers::MESSAGE.new)
+        end
+        span = rpc_spans(exporter).fetch(0)
+        expect(span.attributes["rpc.response.status_code"]).to eq(failure ? "UNAVAILABLE" : "OK")
+        expect(span.attributes["connectrpc.delivery"]).to eq(failure ? "aborted" : "completed")
+        expect(span.status.code).to eq(failure ? OpenTelemetry::Trace::Status::ERROR : OpenTelemetry::Trace::Status::UNSET)
+        expect(span.events || []).to be_empty
+        expect(span.attributes.to_s).not_to include("private cleanup secret")
+      ensure
+        transport&.close(grace: 0)
+        host&.close(grace: 0)
+        provider.shutdown
+      end
+    end
+  end
+end

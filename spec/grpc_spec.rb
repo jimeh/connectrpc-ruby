@@ -405,3 +405,44 @@ RSpec.describe "gRPC bounded framing and negotiation" do
     expect(grpc.response_encoding({ "grpc-accept-encoding" => ["unknown", "gzip,identity"] }, :gzip)).to eq(:gzip)
   end
 end
+
+RSpec.describe "gRPC complete response publication budget" do
+  [-1, 0, 1].each do |delta|
+    it "includes :status before publishing a head at limit #{delta}" do
+      binding = Object.new
+      binding.define_singleton_method(:encode) { |value, **| value }
+      binding.define_singleton_method(:decode) { |value, **| value }
+      binding.define_singleton_method(:encode_status) { |_| "" }
+      binding.define_singleton_method(:decode_status) { |*, **| ConnectRPC::Error.new(:unknown) }
+      method = ConnectRPC::Method.new(service: "test.Headers", name: "Call", request_type: String,
+                                      response_type: String)
+      base = { ":status" => ["200"], "content-type" => ["application/grpc+proto"],
+               "grpc-accept-encoding" => ["identity"] }
+      size = ConnectRPC.const_get(:GRPCProtocol).field_size(base)
+      target = ConnectRPC::Server.new(services: [ConnectRPC::Service.new(name: method.service, methods: [method])],
+                                      binding: binding, protocol: :grpc,
+                                      handlers: { method.path => lambda { |message, context|
+                                        context.response_metadata["x-pad"] = ["x" * (65_536 + delta - size - 37)]
+                                        message
+                                      } })
+      input = StringIO.new("#{[0, 1].pack('CN')}q")
+      input.define_singleton_method(:read) { |length, **| super(length) }
+      output = Object.new
+      output.define_singleton_method(:write) { |*, **| nil }
+      output.define_singleton_method(:finish) { |**| nil }
+      output.define_singleton_method(:abort) { nil }
+      published = []
+      work = lambda {
+        target.call_grpc(path: method.path, http_method: "POST", headers: { "content-type" => ["application/grpc"] },
+                         input: input, output: output, publish: ->(head) { published << head }, http2: true)
+      }
+      if delta.positive?
+        expect(&work).to raise_error(ConnectRPC::Error) { |error| expect(error.code).to eq("resource_exhausted") }
+        expect(published).to be_empty
+      else
+        work.call
+        expect(published.size).to eq(1)
+      end
+    end
+  end
+end

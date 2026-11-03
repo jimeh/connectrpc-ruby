@@ -57,11 +57,14 @@ module ConnectRPC
                              lifecycle: state.lifecycle)
     end
 
-    def invoke_stream_handler(handler, declaration, session, context)
+    def invoke_stream_handler(handler, declaration, session, context) # rubocop:disable Metrics/MethodLength
+      context.check!
       case declaration
       when ServerStreamMethod
         ss = handler #: _ServerStreamHandler[untyped, untyped]
-        ss.call(single_stream_request(session), ResponseWriter.new(session, context), context)
+        request = single_stream_request(session)
+        context.check!
+        ss.call(request, ResponseWriter.new(session, context), context)
       when ClientStreamMethod
         cs = handler #: _ClientStreamHandler[untyped, untyped]
         session.send_message(cs.call(RequestReader.new(session), context))

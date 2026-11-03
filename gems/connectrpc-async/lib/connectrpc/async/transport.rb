@@ -64,15 +64,25 @@ module ConnectRPC
         operation = { request: request, tasks: {}, grpc: grpc }
         @calls[operation] = true
         body = Internal::OutputBody.new
+        completed = false
         begin
           stream_operation(operation) { dispatch_stream(operation, body) }
           exchange = grpc ? Internal::GRPCStreamExchange : Internal::StreamExchange
-          yield exchange.new(self, operation, body)
+          result = yield exchange.new(self, operation, body)
+          completed = true
+          result
         ensure
           body.close
-          cleanup(operation)
-          @calls.delete(operation)
-          @progress.signal
+          begin
+            cleanup(operation)
+          ensure
+            @calls.delete(operation)
+            @progress.signal
+          end
+          if grpc && completed && operation[:cleanup_error]
+            check_request!(request)
+            raise Error.new(:unavailable, "HTTP/2 transport cleanup failed"), cause: nil
+          end
         end
       end
 
@@ -351,7 +361,9 @@ module ConnectRPC
           tasks = [operation[:task], operation[:resource]&.task, *operation.fetch(:tasks, {}).keys].compact.uniq
           tasks.each { |task| task.cancel unless task.finished? }
           # Cancel every task before joining in reverse ownership order.
-          tasks.reverse_each { |task| Internal.join(task) }
+          tasks.reverse_each do |task|
+            operation[:grpc] ? (task.wait unless task.current?) : Internal.join(task)
+          end
           response = operation[:response]
           if response
             stream = response.stream
@@ -365,17 +377,36 @@ module ConnectRPC
         end
         begin
           Internal.wait(cleanup_task, expires)
-        rescue StandardError
-          operation[:resource]&.abort
-          Internal.cancel(cleanup_task)
-          Internal.join(cleanup_task)
+        rescue StandardError => e
+          operation[:cleanup_error] ||= e
+          begin
+            operation[:resource]&.abort
+          rescue StandardError
+            raise unless operation[:grpc]
+          ensure
+            Internal.cancel(cleanup_task)
+            Internal.join(cleanup_task)
+          end
         ensure
           if (connection = operation.delete(:connection))
             begin
               @pool.release(connection)
-            rescue StandardError
-              operation[:resource]&.abort
+            rescue StandardError => e
+              operation[:cleanup_error] ||= e
+              begin
+                operation[:resource]&.abort
+                # A failed release may precede usage accounting. Retire the
+                # aborted connection without retrying release or cleanup.
+                @pool.retire(connection) if operation[:grpc]
+              rescue StandardError
+                raise unless operation[:grpc]
+              end
             end
+          end
+          if operation[:grpc] && (error = operation[:cleanup_error])
+            lifecycle = operation.fetch(:request).lifecycle
+            lifecycle&.record_failure(error)
+            lifecycle&.finish(delivery: :aborted, error: error)
           end
         end
       end

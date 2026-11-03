@@ -252,6 +252,20 @@ module ConnectRPC
           super
         end
 
+        def send_headers(headers, flags = 0)
+          if @grpc
+            values = {}
+            headers.each { |key, value| (values[key] ||= []) << value.to_s }
+            begin
+              GRPCProtocol.check_fields!(values)
+            rescue Error => e
+              @grpc_error = e
+              raise
+            end
+          end
+          super
+        end
+
         def send_body(body, trailer = nil)
           # A peer reset can close the stream while deferred headers flush.
           # Upstream otherwise starts an output task on the closed stream.
@@ -291,11 +305,6 @@ module ConnectRPC
         end
 
         def send_headers(headers, flags = 0)
-          if @grpc
-            values = {}
-            headers.each { |key, value| (values[key] ||= []) << value.to_s }
-            GRPCProtocol.check_fields!(values)
-          end
           super
           @grpc_terminal_written = true if @grpc && flags.anybits?(::Protocol::HTTP2::END_STREAM)
           @response_written = true if flags.anybits?(::Protocol::HTTP2::END_STREAM) && !@response_reset

@@ -91,6 +91,7 @@
     "ConnectRPC::Async::Internal::Stream#receive_trailing_headers": {"kind":"method","visibility":"public","parameters":"headers, end_stream","classification":"internal"},
     "ConnectRPC::Async::Internal::Stream#reclaim_input": {"kind":"method","visibility":"public","parameters":"amount","classification":"internal"},
     "ConnectRPC::Async::Internal::Stream#request_window_update": {"kind":"method","visibility":"public","parameters":"","classification":"internal"},
+    "ConnectRPC::Async::Internal::Stream#send_headers": {"kind":"method","visibility":"public","parameters":"headers, flags = 0","classification":"internal"},
     "ConnectRPC::Async::Internal::Stream#send_body": {"kind":"method","visibility":"public","parameters":"body, trailer = nil","classification":"internal"}
   },
   "gems/connectrpc-async/lib/connectrpc/async/host.rb": {

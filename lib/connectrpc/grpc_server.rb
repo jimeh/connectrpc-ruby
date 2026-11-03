@@ -78,7 +78,9 @@ module ConnectRPC
                                              limit: @grpc_status_limit)
       )
       if declaration.is_a?(Method)
-        session.send_message(@invoker.call(declaration, single_stream_request(session), context))
+        request = single_stream_request(session)
+        context.check!
+        session.send_message(@invoker.call(declaration, request, context))
       else
         streaming = context #: StreamingContext
         invoke_stream_handler(@handlers.fetch(path), declaration, session, streaming)
@@ -120,7 +122,7 @@ module ConnectRPC
                                      @encoding == :gzip ? "gzip,identity" : "identity"
                                    ])
       fields["grpc-encoding"] = ["gzip"] if encoding == :gzip
-      GRPCProtocol.check_fields!(fields)
+      GRPCProtocol.check_fields!(fields.merge(":status" => ["200"]))
       GRPCHead.new(status: 200, headers: fields, end_stream: false)
     end
 
