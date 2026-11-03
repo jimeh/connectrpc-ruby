@@ -339,6 +339,7 @@
     "ConnectRPC::Rails::Controller#connect_run_lifecycle": {"kind":"method","visibility":"private","parameters":"","classification":"internal"},
     "ConnectRPC::Rails::Controller#connect_service": {"kind":"method","visibility":"private","parameters":"","classification":"spi"},
     "ConnectRPC::Rails::Controller#connect_status_error": {"kind":"method","visibility":"private","parameters":"status","classification":"internal"},
+    "ConnectRPC::Rails::Controller#connect_vary_header": {"kind":"method","visibility":"private","parameters":"values","classification":"internal"},
     "ConnectRPC::Rails::Controller#process_action": {"kind":"method","visibility":"private","parameters":"name, ...","classification":"internal"}
   },
   "gems/connectrpc-testing/lib/connectrpc/testing.rb": {

@@ -279,12 +279,15 @@ RSpec.describe "Connect unary GET" do
     encoded = [compressed + compressed].pack("m0").tr("+/", "-_").delete("=")
     result = get("encoding=proto&base64=1&compression=GZIP&message=#{encoded}", target: target)
     expect(ConnectRPC::Compression.decode(result.body, limit: 1000)).to eq("hellohello")
-    expect(get("encoding=proto&base64=1&compression=gzip&message=bad", target: target).status).to eq(400)
+    malformed = get("encoding=proto&base64=1&compression=gzip&message=bm90IGd6aXA", target: target)
+    expect(malformed.status).to eq(400)
+    expect(JSON.parse(malformed.body)).to include("code" => "invalid_argument",
+                                                  "message" => "Cannot decompress request")
     expect(get("encoding=proto&base64=1&compression=gzip&message=", target: target).status).to eq(200)
     expect(get("encoding=proto&compression=gzip&message=").status).to eq(501)
   end
 
-  it "keeps valid deadlines active during parser, body, decode and encoding work" do
+  it "keeps valid deadlines active during parser and body work" do
     now = 0.0
     allow(Process).to receive(:clock_gettime).with(Process::CLOCK_MONOTONIC) { now }
     input = double("progress")

@@ -35,6 +35,7 @@ class EchoController < ActionController::API
   def rpc_before
     trace = request.get_header("connectrpc.test.trace")
     trace&.push([:before, connect_request, connect_context, connect_method])
+    rpc_vary
     case request.headers["x-case"]
     when "auth" then raise ConnectRPC::Error.new(:unauthenticated, "Sign in")
     when "raw" then render plain: "private Rails body", status: request.headers.fetch("x-status").to_i
@@ -46,6 +47,16 @@ class EchoController < ActionController::API
       response.set_header("content-security-policy", "default-src 'none'")
       %w[content-length content-encoding etag last-modified location].each { |key| response.set_header(key, "stale") }
       response.set_header("content-type", "text/plain; charset=utf-8")
+    end
+  end
+
+  def rpc_vary
+    if (vary = request.get_header("connectrpc.test.native_vary"))
+      response.set_header("vary", vary)
+      response.set_header("cache-control", "public, max-age=60")
+    end
+    if (vary = request.get_header("connectrpc.test.rpc_vary"))
+      connect_context.response_metadata["vary"] = vary
     end
   end
 

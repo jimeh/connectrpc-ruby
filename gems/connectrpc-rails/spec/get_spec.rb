@@ -62,4 +62,38 @@ RSpec.describe "Rails native Connect GET" do
     expect(response["allow"]).to eq(["POST"])
     expect(trace).to be_empty
   end
+
+  { "success" => [nil, 200], "handler error" => ["argument", 400],
+    "callback error" => ["auth", 401] }.each do |outcome, (scenario, status)|
+    it "preserves native Vary and cache policy on GET #{outcome}" do
+      cases = [
+        ["Origin", %w[X-Region origin], %w[Origin X-Region Accept-Encoding]],
+        ["*", ["X-Region"], ["*"]],
+        ["ORIGIN, accept-ENCODING", ["Origin"], %w[ORIGIN accept-ENCODING]],
+        [%w[Origin X-Tenant], ["X-Region"], %w[Origin X-Tenant X-Region Accept-Encoding]],
+        ["Origin", ["*"], ["Origin", "*"]]
+      ]
+      mock = Rack::MockRequest.new(RailsIntegration::APP)
+      cases.each do |native, rpc, expected|
+        response = mock.get("/rpc#{service::ECHO.path}?encoding=proto&message=",
+                            "HTTP_HOST" => "www.example.com", "HTTP_X_CASE" => scenario,
+                            "connectrpc.test.native_vary" => native, "connectrpc.test.rpc_vary" => rpc)
+        expect(response.status).to eq(status)
+        expect(response["vary"]).to eq(expected)
+        expect(response["cache-control"].split(",").map(&:strip)).to contain_exactly("public", "max-age=60")
+      end
+    end
+  end
+
+  it "preserves native POST Vary fields without introducing GET negotiation" do
+    mock = Rack::MockRequest.new(RailsIntegration::APP)
+    ["Origin", "*", "ORIGIN, accept-ENCODING", %w[Origin X-Tenant]].each do |native|
+      response = mock.post("/rpc#{service::ECHO.path}", "HTTP_HOST" => "www.example.com",
+                                                        "CONTENT_TYPE" => "application/proto",
+                                                        "connectrpc.test.native_vary" => native, input: "")
+      expect(response.status).to eq(200)
+      expect(response["vary"]).to eq(native)
+      expect(response["cache-control"].split(",").map(&:strip)).to contain_exactly("public", "max-age=60")
+    end
+  end
 end
