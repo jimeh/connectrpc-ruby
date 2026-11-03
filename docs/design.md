@@ -7,7 +7,8 @@ is `connectrpc`, and the Ruby namespace is `ConnectRPC`. The API is experimental
 ## Shared boundaries
 
 `Method` holds validated service/method names, request/response binding types,
-`cardinality: :unary`, and a case-sensitive path. `Service` validates its method
+`cardinality: :unary`, `idempotency: :unknown` (or `:no_side_effects` / `:idempotent`),
+and a case-sensitive path. Only `:no_side_effects` admits GET. `Service` validates its method
 set. Other cardinalities are rejected. Generated service glue reuses these objects.
 
 `Client` owns request encoding, protocol headers, response validation, errors,
@@ -55,7 +56,7 @@ Handlers are reusable; application-owned shared state needs its own locking.
 ## Wire behavior
 
 The implemented [Connect profile](https://connectrpc.com/docs/protocol/) is
-unary POST, identity or opt-in gzip encoding, and `application/proto` or `application/json`.
+unary POST and safe unary GET, identity or opt-in gzip encoding, and `application/proto` or `application/json`.
 JSON also accepts `charset=utf-8`. Clients send protocol version `1`; servers
 accept an absent version and reject any other supplied value. A 200 response
 must match the request codec. Non-application response types produce `unknown`;
@@ -72,7 +73,7 @@ produces a valid nonempty member; zero-length HTTP content bypasses inflation
 after header validation. Every concatenated member validates CRC/ISIZE/completion;
 truncation and trailing data fail under an aggregate decoded cap.
 
-Other verbs get bare 405 with `Allow: POST`; unsupported types, including
+Other verbs get bare 405 with `Allow: GET, POST` for safe methods, otherwise `POST`; unsupported types, including
 Connect streaming and gRPC variants, get bare 415 with `Accept-Post`.
 Unsupported request encoding returns `unimplemented` listing supported codings. Invalid
 version, timeout, or request decoding returns `invalid_argument`. Limits return
@@ -95,6 +96,49 @@ name/printable-ASCII contract are omitted during extraction, including an
 entire field with any invalid repeated value. Valid adjacent leading/trailing
 fields survive. Protocol validation is separate, and outbound metadata remains
 strictly validated.
+
+GET uses the existing codec, compression, deadline and metadata paths. The
+client opts in with `use_get: true`; `get_url_limit: 8192` bounds the complete
+absolute URI before transport dispatch, without fallback. Canonical controls
+are `connect=v1`, optional `base64=1`, optional `compression=gzip`, `encoding`,
+and `message`. Binary/gzip use unpadded URL-safe base64; JSON identity uses
+UTF-8 form encoding. Input accepts padded URL-safe base64, arbitrary parameter
+order, unknown/repeated unknown fields and binary unknown values. Form decoding
+happens once: `+` is space, `%2B` is plus, and `;` is literal data.
+
+The bounded parser validates escapes everywhere and rejects duplicate known
+names after name decoding as a local ambiguity policy. Only text message values
+require UTF-8. Query syntax errors can precede codec rejection. Missing or
+unsupported query encoding gets bare 415. Content-Length syntax follows, then
+positive declared/actual content gets bare 415 after at most one requested
+byte. Query compression, version, message presence and deferred timeout errors
+follow in that order. Missing/empty compression means identity; missing/empty
+connect version is accepted. Other supplied versions must be `v1`. Query
+controls supersede irrelevant POST protocol headers. Valid deadlines start
+before parsing and are checked cooperatively throughout processing.
+
+Unsafe GET gets bare 405 before query/header/input work. An unknown owned
+suffix can negotiate GET and then return `unimplemented`; it never invokes a
+handler or supplies a fabricated safe Method to observation. Every GET response,
+including bare errors, merges Vary after application/error metadata, preserving
+case-insensitive tokens and wildcard `*`. Cache-Control belongs to the app.
+Native NetHTTP/Async requests have no body or synthetic content headers.
+
+`Server.call(query: "")` keeps path and raw query separate. The raw-query default
+is `3 * (4 * ((validated_request_wire_limit + 2) / 3)) + 1024`, including fully
+percent-escaped padded base64 and bounded parameter overhead. It is independent
+of decoded query payload and inflated message caps. Parsing retains only five
+controls, validates ignored values without storing them, and checks expansion
+before appending. Incoming URLs and native serialization already exist before
+these checks; no total allocation bound is claimed.
+
+GET request byte observation measures the percent/base64-decoded transport
+payload before inflation. Unknown measurements stay nil; only measured empty
+payloads are zero. No URL, query or payload enters RPC observation. Host/proxy
+logs and generic HTTP tracing remain application-owned. Ruby's official native
+protobuf encoder has no deterministic flag; same-object within-process encoding
+and gzip are tested, but map encodings vary across processes. No semantic or
+cross-process canonical cache-key promise is made.
 
 ## Bounds and lifecycle
 
@@ -173,7 +217,7 @@ run against the Go server as a reference baseline, with raw repeated Go fields
 instead of WEBrick's coalesced values. There are 18 fixture cases: six reference
 baseline cases and twelve cross-language cases. This is a unary subset, not
 full conformance. The separate [official conformance harness](../conformance/README.md)
-executes 94 configured client and 88 server cases. Two caller-cancellation
+executes 96 configured client and 90 server cases, including two GET successes in each direction. Two caller-cancellation
 instructions remain executed expected failures under an exact-name limitation
 manifest with strict causal result checks. A separate gzip inventory adds
 88 client and 82 server cases. Its two caller-cancellation failures remain
@@ -186,7 +230,7 @@ The pinned Go server prefers request gzip over explicit identity acceptance;
 Ruby clients reject that unadvertised response. There is no full-conformance claim.
 
 Wire protocol, HTTP transport, and message binding remain separate choices.
-Streaming, GET, gRPC/gRPC-Web, interceptors, a production server,
+Streaming, gRPC/gRPC-Web, interceptors, a production server,
 and Faraday are future work. Unsupported modes/options are rejected
 rather than represented as buffered streaming. The optional [connectrpc-rails gem](../gems/connectrpc-rails/README.md) uses
 the invoker boundary to run native controller callbacks, authentication,

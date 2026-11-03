@@ -1,5 +1,6 @@
 module ConnectRPC
   VERSION: String
+  type idempotency = :unknown | :no_side_effects | :idempotent
   type codec = :proto | :json
   type headers = Hash[String, Array[String]]
   type metadata_input = Metadata | Hash[String, String | Array[String]]
@@ -7,9 +8,10 @@ module ConnectRPC
   # Tokens belong to the binding. Only schema facts or an application assertion
   # associate them with instance types; the constructor cannot infer that link.
   class Method[Req, Resp]
-    def initialize: (service: String, name: String, request_type: Object, response_type: Object, ?cardinality: :unary) -> void
+    def initialize: (service: String, name: String, request_type: Object, response_type: Object, ?cardinality: :unary, ?idempotency: idempotency) -> void
     attr_reader service: String
     attr_reader name: String
+    attr_reader idempotency: idempotency
     attr_reader path: String
     attr_reader request_type: Object
     attr_reader response_type: Object
@@ -138,18 +140,18 @@ module ConnectRPC
   end
 
   class Client
-    def initialize: (base_url: String, binding: _Binding, ?transport: _Transport?, ?codec: codec, ?request_limit: Integer, ?response_limit: Integer, ?request_wire_limit: Integer, ?response_wire_limit: Integer, ?accept_encoding: Array[:identity | :gzip]?, ?protocol: :connect, ?mode: :unary, ?encoding: :identity | :gzip, ?instrumentation: Instrumentation?) -> void
+    def initialize: (base_url: String, binding: _Binding, ?transport: _Transport?, ?codec: codec, ?request_limit: Integer, ?response_limit: Integer, ?request_wire_limit: Integer, ?response_wire_limit: Integer, ?accept_encoding: Array[:identity | :gzip]?, ?use_get: bool, ?get_url_limit: Integer, ?protocol: :connect, ?mode: :unary, ?encoding: :identity | :gzip, ?instrumentation: Instrumentation?) -> void
     def call: [Req, Resp] (Method[Req, Resp], Req request, ?metadata: metadata_input, ?timeout: Numeric?) -> Response[Resp]
   end
 
   class Server
     # Generated .handlers checks each concrete callable before this heterogeneous
     # registration map erases its individual request/response associations.
-    def initialize: (services: Array[Service], binding: _Binding, ?handlers: Hash[String, ^(untyped, Context) -> untyped | _Handler[untyped, untyped]], ?invoker: (^(Method[untyped, untyped], untyped, Context) -> untyped | _Invoker)?, ?request_limit: Integer, ?response_limit: Integer, ?request_wire_limit: Integer, ?response_wire_limit: Integer, ?protocol: :connect, ?mode: :unary, ?encoding: :identity | :gzip, ?instrumentation: Instrumentation?) -> void
+    def initialize: (services: Array[Service], binding: _Binding, ?handlers: Hash[String, ^(untyped, Context) -> untyped | _Handler[untyped, untyped]], ?invoker: (^(Method[untyped, untyped], untyped, Context) -> untyped | _Invoker)?, ?request_limit: Integer, ?response_limit: Integer, ?request_wire_limit: Integer, ?response_wire_limit: Integer, ?protocol: :connect, ?mode: :unary, ?encoding: :identity | :gzip, ?instrumentation: Instrumentation?, ?get_query_limit: Integer?) -> void
     attr_reader services: Array[Service]
     def handles?: (String path) -> bool
     def start_call: (path: String, headers: headers) -> Instrumentation::Handle?
-    def call: (path: String, http_method: String, headers: headers, input: _Input?, ?lifecycle: Instrumentation::Handle?) -> TransportResponse
+    def call: (path: String, http_method: String, headers: headers, input: _Input?, ?query: String, ?lifecycle: Instrumentation::Handle?) -> TransportResponse
   end
 
   # Complete records retain precise readers; partial construction admits nil defaults.

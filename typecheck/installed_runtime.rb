@@ -74,13 +74,14 @@ class InstalledBinding
   end
 end
 
-method = ConnectRPC::Method.new(service: "installed.Echo", name: "Call", request_type: String, response_type: String)
+method = ConnectRPC::Method.new(service: "installed.Echo", name: "Call", request_type: String, response_type: String,
+                                idempotency: :no_side_effects)
 service = ConnectRPC::Service.new(name: method.service, methods: [method])
 server = ConnectRPC::Server.new(services: [service], binding: InstalledBinding.new,
                                 handlers: { method.path => ->(message, _context) { message } })
 transport = ConnectRPC::Testing::Transport.new(server: server)
 client = ConnectRPC::Client.new(base_url: "https://in-process.invalid", binding: InstalledBinding.new,
-                                transport: transport)
+                                transport: transport, use_get: true, get_url_limit: 8192)
 raise "Installed round trip failed" unless client.call(method, "installed").message == "installed"
 
 status, = ConnectRPC::Rack.new(server: server).call("PATH_INFO" => "/other")

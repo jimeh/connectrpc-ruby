@@ -105,10 +105,19 @@ module ConnectRPC
         %w[content-length content-encoding etag last-modified location].each { |key| response.delete_header(key) }
         self.status = status
         headers.each do |key, values|
+          values = connect_vary_header(values) if key == "vary" && request.get?
           # Rails parses Content-Type as a scalar. Repeated metadata remains Rack 3 arrays.
           response.set_header(key, key == "content-type" ? values.fetch(0) : values)
         end
         self.response_body = body
+      end
+
+      def connect_vary_header(values)
+        native = Array(response.get_header("vary")).flat_map { |value| value.split(",").map(&:strip) }
+        return native if native.include?("*")
+
+        incoming = values.flat_map { |value| value.split(",").map(&:strip) }
+        (native + incoming).uniq(&:downcase)
       end
     end
   end

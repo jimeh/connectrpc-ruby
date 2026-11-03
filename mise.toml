@@ -484,3 +484,10 @@ run = "mise exec -- ruby typecheck/run.rb inventory"
 description = "Prove strict source and API drift diagnostics in an independent source capture"
 depends = ["rbs:setup"]
 run = "mise exec -- ruby typecheck/run.rb proof"
+
+[tasks."test:interop:get"]
+description = "Run independent Connect unary GET interoperability"
+depends = ["setup", "setup:interop", "fixture:check"]
+tools.go = "1.27.3"
+env = { GOTOOLCHAIN = "local", GOWORK = "off", GOFLAGS = "-mod=readonly", GOMODCACHE = "{{config_root}}/vendor/interop/mod", GOCACHE = "{{config_root}}/vendor/interop/build" }
+run = "bundle _4.0.23_ exec ruby scripts/interop.rb get"

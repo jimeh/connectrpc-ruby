@@ -48,7 +48,7 @@ RSpec.describe "HTTP/2 unary product integration" do
       expect(transport.call(request("#{origin}/example.v1.EchoService/Unknown", headers: headers)).status).to eq(501)
       expect(transport.call(request("#{origin}#{AsyncHelpers::ECHO::ECHO.path}?x=1",
                                     headers: headers)).status).to eq(200)
-      expect(transport.call(request("#{origin}#{AsyncHelpers::ECHO::ECHO.path}", method: "GET",
+      expect(transport.call(request("#{origin}#{AsyncHelpers::ECHO::ECHO.path}", method: "PUT",
                                                                                  headers: headers)).status).to eq(405)
       expect(transport.call(request("#{origin}#{AsyncHelpers::ECHO::ECHO.path}")).status).to eq(415)
     ensure

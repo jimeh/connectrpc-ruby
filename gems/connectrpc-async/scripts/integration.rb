@@ -69,6 +69,14 @@ Dir.mktmpdir("integration-", Dir.pwd) do |directory|
         end
         raise "Installed error coding changed" if exchanges.last.last.headers.key?("content-encoding")
 
+        get_typed = client(observed, origin, codec: codec, encoding: encoding, use_get: true)
+        get_result = get_typed.echo(message, metadata: { "x-request" => %w[a b] })
+        unless get_result.message == message && exchanges.last.first.http_method == "GET" &&
+               exchanges.last.first.body.empty? && get_result.trailers["x-tail"] == %w[three four]
+          raise "Installed generated native GET"
+        end
+
+        puts "PASS installed generated GET #{tls ? 'mTLS h2' : 'h2c'} #{codec}/#{encoding}"
         puts "PASS installed generated #{tls ? 'mTLS h2' : 'h2c'} #{codec}/#{encoding} success/error/details/metadata"
       end
     ensure

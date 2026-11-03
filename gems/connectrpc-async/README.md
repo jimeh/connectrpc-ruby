@@ -112,7 +112,7 @@ There are no file watchers, ACME, secret services or authentication policy DSLs.
 ## Native application and managed TLS
 
 `Application.new(server:, fallback: nil)` is a reusable Protocol::HTTP callable.
-It routes whole registered service prefixes to core, strips queries and returns
+It routes whole registered service prefixes to core, splits the request target once, forwards the raw query to core, and returns
 bare 404 or calls the native fallback for unrelated paths. HTTP/1 requests do
 not need a stream object. Keep generic compression/cache middleware on fallback
 so core owns RPC encoded bytes and limits.
@@ -204,3 +204,8 @@ See the [RBS guide](../../docs/rbs.md) for supported APIs, extension contracts,
 partial records, runtime validation and framework-signature limits.
 `mise run rbs:check` checks application callers for this package; strict core
 source checking is a separate target from backend implementation checking.
+
+Safe unary GET uses core `Client.new(use_get: true)` and declared
+`:no_side_effects` methods. Native HTTP/2 requests carry HEADERS with END_STREAM
+and a nil body; core owns query encoding, parsing and independent URL/payload
+limits. The transport never retries or falls back to POST.

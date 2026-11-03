@@ -19,7 +19,7 @@ service "connectrpc-echo" do
   connectrpc_server do
     method = ConnectRPC::Method.new(service: "demo.EchoService", name: "Echo",
                                     request_type: Google::Protobuf::StringValue,
-                                    response_type: Google::Protobuf::StringValue)
+                                    response_type: Google::Protobuf::StringValue, idempotency: :no_side_effects)
     service = ConnectRPC::Service.new(name: "demo.EchoService", methods: [method])
     ConnectRPC::Server.new(services: [service], binding: ConnectRPC::Bindings::GoogleProtobuf.new,
                            handlers: { method.path => ->(message, _context) { message } })

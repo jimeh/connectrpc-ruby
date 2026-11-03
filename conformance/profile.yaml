@@ -9,5 +9,5 @@ features:
   supportsTlsClientCerts: false
   supportsTrailers: false
   supportsHalfDuplexBidiOverHttp1: false
-  supportsConnectGet: false
+  supportsConnectGet: true
   supportsMessageReceiveLimit: true

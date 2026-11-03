@@ -4,8 +4,8 @@ import "generation/public.proto";
 message Message { optional int32 count = 1; }
 message ConnectRPC { string value = 1; }
 service EchoService {
-  rpc Echo(Message) returns (Message);
-  rpc Fail(Message) returns (Message);
+  rpc Echo(Message) returns (Message) { option idempotency_level = NO_SIDE_EFFECTS; }
+  rpc Fail(Message) returns (Message) { option idempotency_level = IDEMPOTENT; }
   rpc GetHTTP(generation_types.outer_name._value) returns (generation_types.outer_name._value);
 }
 service EmptyService {}

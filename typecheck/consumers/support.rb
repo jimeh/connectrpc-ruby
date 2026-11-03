@@ -8,7 +8,7 @@ class LoopbackTransport
   end
 
   def call(request)
-    @server.call(path: request.url.path || "/", http_method: request.http_method,
+    @server.call(path: request.url.path || "/", http_method: request.http_method, query: request.url.query || "",
                  headers: request.headers, input: StringIO.new(request.body))
   end
 end

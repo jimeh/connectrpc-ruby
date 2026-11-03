@@ -15,7 +15,8 @@ module Conformance
 
       @server = ConnectRPC::Server.new(services: [SERVICE], binding: BINDING,
                                        request_limit: Conformance.limit(config.message_receive_limit), encoding: :gzip,
-                                       handlers: { UNARY.path => method(:unary) })
+                                       handlers: { UNARY.path => method(:unary),
+                                                   IDEMPOTENT_UNARY.path => method(:idempotent_unary) })
     end
 
     def app
@@ -24,8 +25,13 @@ module Conformance
         name = env["HTTP_X_TEST_CASE_NAME"]
         input = Telemetry::Input.new(env["rack.input"])
         env["rack.input"] = input
-        Telemetry.record("dispatch", name: name, request_encoding: env.fetch("HTTP_CONTENT_ENCODING", "identity"),
+        Telemetry.record("dispatch", name: name, http_method: env["REQUEST_METHOD"],
+                                     query: Telemetry.query(env["QUERY_STRING"]),
+                                     request_encoding: env.fetch("HTTP_CONTENT_ENCODING", "identity"),
                                      content_length: env["CONTENT_LENGTH"], content_type: env["CONTENT_TYPE"])
+        previous = Thread.current[:conformance_get_query]
+        query = env["REQUEST_METHOD"] == "GET" ? env.fetch("QUERY_STRING", "") : nil
+        Thread.current[:conformance_get_query] = query
         result = rack.call(env)
         Telemetry.record("completed", name: name, status: result.first, request_wire: input.observation,
                                       response_wire: Telemetry.wire(result[2].join, result[1]))
@@ -33,13 +39,27 @@ module Conformance
       rescue StandardError => e
         Telemetry.record("adapter_error", name: name, error: "#{e.class}: #{e.message}")
         raise
+      ensure
+        Thread.current[:conformance_get_query] = previous
       end
     end
 
     def unary(request, context)
+      UnaryResponse.new(payload: unary_payload(request, context))
+    end
+
+    def idempotent_unary(request, context)
+      IdempotentUnaryResponse.new(payload: unary_payload(request, context))
+    end
+
+    def unary_payload(request, context)
       context.check!
       info = RequestInfo.new(request_headers: Conformance.headers(context.request_metadata),
                              requests: [Conformance.pack(request)])
+      if (query = Thread.current[:conformance_get_query])
+        params = URI.decode_www_form(query).each_with_object({}) { |(key, value), all| (all[key] ||= []) << value }
+        info.connect_get_info = ConformancePayload::ConnectGetInfo.new(query_params: Conformance.headers(params))
+      end
       info.timeout_ms = (context.deadline.remaining * 1000).floor if context.deadline
       definition = request.response_definition || UnaryResponseDefinition.new
       raise "Raw responses belong only to reference servers" if definition.raw_response
@@ -50,7 +70,7 @@ module Conformance
       sleep(definition.response_delay_ms / 1000.0) if definition.response_delay_ms.positive?
       context.check!
       raise_error(definition.error, info) if definition.error
-      UnaryResponse.new(payload: ConformancePayload.new(data: definition.response_data, request_info: info))
+      ConformancePayload.new(data: definition.response_data, request_info: info)
     end
 
     def raise_error(error, info)

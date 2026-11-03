@@ -21,8 +21,9 @@ module FalconHelpers
       socket.connect
     end
     connection = Async::HTTP::Protocol::HTTP1.client(socket)
-    response = connection.call(Protocol::HTTP::Request[method, route, headers, [body], scheme: uri.scheme,
-                                                                                       authority: uri.authority])
+    native = Protocol::HTTP::Request[method, route, headers, body.nil? ? nil : [body], scheme: uri.scheme,
+                                                                                       authority: uri.authority]
+    response = connection.call(native)
     [response.status, response.headers.to_h, response.read]
   ensure
     AsyncHelpers::INTERNAL.raw_close(raw)

@@ -11,7 +11,7 @@ module ConnectRPC
     def initialize(services:, binding:, handlers: {}, invoker: nil, request_limit: Protocol::DEFAULT_LIMIT,
                    response_limit: Protocol::DEFAULT_LIMIT, request_wire_limit: request_limit,
                    response_wire_limit: response_limit, protocol: :connect, mode: :unary, encoding: :identity,
-                   instrumentation: nil)
+                   instrumentation: nil, get_query_limit: nil)
       Protocol.profile!(protocol, mode, encoding)
       @services = services.dup.freeze
       @methods = declarations(services)
@@ -23,6 +23,8 @@ module ConnectRPC
       @binding = binding
       @encoding = encoding
       @request_wire_limit = Protocol.limit!(request_wire_limit)
+      query_limit = (3 * (4 * ((@request_wire_limit + 2) / 3))) + 1024
+      @get_query_limit = Protocol.limit!(get_query_limit.nil? ? query_limit : get_query_limit)
       @response_wire_limit = Protocol.limit!(response_wire_limit)
       @request_limit = Protocol.limit!(request_limit)
       @response_limit = Protocol.limit!(response_limit)
@@ -45,9 +47,9 @@ module ConnectRPC
 
     # Keep processing and terminal ensures adjacent to their owner.
     # rubocop:disable Metrics/MethodLength, Metrics/AbcSize, Metrics/CyclomaticComplexity, Metrics/PerceivedComplexity
-    def call(path:, http_method:, headers:, input:, lifecycle: nil)
+    def call(path:, http_method:, headers:, input:, query: "", lifecycle: nil)
       unless lifecycle || @instrumentation
-        return process_call(path: path, http_method: http_method, headers: headers, input: input)
+        return process_call(path: path, http_method: http_method, headers: headers, input: input, query: query)
       end
 
       owned = lifecycle.nil?
@@ -56,7 +58,8 @@ module ConnectRPC
       active.begin_processing(self, path)
       begin
         active.activate do
-          process_call(path: path, http_method: http_method, headers: headers, input: input, lifecycle: active)
+          process_call(path: path, http_method: http_method, headers: headers, input: input, query: query,
+                       lifecycle: active)
         end
       ensure
         active.processing_finished(code: nil, error: $ERROR_INFO) unless active.outcome
@@ -66,10 +69,18 @@ module ConnectRPC
 
     private
 
-    def process_call(path:, http_method:, headers:, input:, lifecycle: nil)
+    def process_call(path:, http_method:, headers:, input:, query:, lifecycle: nil)
       # @type var response: TransportResponse?
       # @type var context: Context?
-      return response = bare(405, "allow" => ["POST"]) unless http_method == "POST"
+      context = nil
+      method = @methods[path]
+      safe = method&.idempotency == :no_side_effects
+      unless http_method == "POST" || (http_method == "GET" && (!method || safe))
+        return response = bare(405, "allow" => [safe ? "GET, POST" : "POST"])
+      end
+      if http_method == "GET"
+        return response = process_get(path, headers, input, query, lifecycle) { |created| context = created }
+      end
 
       headers = Protocol.headers(headers)
       codec = Protocol.content_codec(Protocol.single(headers, "content-type"))
@@ -84,6 +95,7 @@ module ConnectRPC
       lifecycle&.record_failure(e)
       response = error_response(Error.new(:internal, "Internal error"), context, lifecycle)
     ensure
+      vary_get(response) if http_method == "GET" && response
       if lifecycle && !lifecycle.outcome
         lifecycle.processing_finished(code: response&.status == 200 ? "OK" : lifecycle.code, error: $ERROR_INFO,
                                       normalized_error: lifecycle.normalized_error,
@@ -93,6 +105,82 @@ module ConnectRPC
     end
 
     # rubocop:enable Metrics/MethodLength, Metrics/AbcSize, Metrics/CyclomaticComplexity, Metrics/PerceivedComplexity
+
+    # GET negotiation and dispatch preserve the specified rejection order.
+    # rubocop:disable Metrics/MethodLength, Metrics/AbcSize, Metrics/CyclomaticComplexity, Metrics/PerceivedComplexity
+    def process_get(path, headers, input, query, lifecycle)
+      Protocol.check_size!(query, @get_query_limit)
+      headers = Protocol.headers(headers)
+      # Start valid deadlines before query work, but defer invalid timeout errors
+      # until after codec/body/compression/version negotiation.
+      timeout_error = nil #: Error?
+      deadline = begin
+        request_deadline(headers)
+      rescue Error => e
+        timeout_error = e
+        nil
+      end
+      values = GetQuery.parse(query, limit: @get_query_limit, wire_limit: @request_wire_limit, deadline: deadline)
+      codecs = { "proto" => :proto, "json" => :json } #: Hash[String, codec]
+      codec = codecs[values["encoding"] || ""]
+      return bare(415, "accept-post" => ["application/proto, application/json"]) unless codec
+      return bare(415, "accept-post" => ["application/proto, application/json"]) unless empty_get_body?(headers, input,
+                                                                                                        deadline)
+
+      negotiated = get_headers(headers, values)
+      raise Error.new(:invalid_argument, "Missing GET message") unless values.key?("message")
+      raise timeout_error if timeout_error
+
+      metadata = Protocol.metadata(headers)
+      lifecycle.request_metadata = Instrumentation.carrier(metadata) if lifecycle
+      context = Context.new(request_metadata: metadata, deadline: deadline, lifecycle: lifecycle)
+      yield context
+      context.check!
+      method = @methods[path]
+      raise Error.new(:unimplemented, "Unknown method") unless method
+
+      bytes = GetQuery.payload(values, limit: @request_wire_limit, deadline: deadline)
+      lifecycle.request_bytes = bytes.bytesize if lifecycle
+      bytes = inflate_request(bytes, negotiated, context)
+      request = decode_request(bytes, method, codec, context)
+      response = @invoker.call(method, request, context)
+      encoding = Protocol.response_encoding(negotiated, Protocol.content_encoding(negotiated), @encoding)
+      encode_response(response, method, codec, context, encoding)
+    end
+
+    # rubocop:enable Metrics/MethodLength, Metrics/AbcSize, Metrics/CyclomaticComplexity, Metrics/PerceivedComplexity
+
+    def empty_get_body?(headers, input, deadline)
+      deadline&.check!
+      length = Protocol.content_length!(headers["content-length"], invalid_code: :invalid_argument)
+      return false if length&.positive?
+
+      bytes = input&.read(1)
+      deadline&.check!
+      bytes.nil? || bytes.empty?
+    end
+
+    def get_headers(headers, values)
+      negotiated = headers.except("content-type", "content-encoding", "connect-protocol-version")
+      coding = values["compression"]
+      negotiated["content-encoding"] = [coding] if coding && !coding.empty?
+      # Validate coding before version, matching the GET negotiation order.
+      validate_headers!(negotiated)
+      version = values["connect"]
+      if version && !version.empty? && version != "v1"
+        raise Error.new(:invalid_argument, "Unsupported Connect protocol version")
+      end
+
+      negotiated
+    end
+
+    def vary_get(response)
+      values = response.headers.fetch("vary", [])
+      tokens = values.flat_map { |value| value.split(",").map(&:strip) }
+      return if tokens.any? { |token| token == "*" || token.casecmp?("accept-encoding") }
+
+      response.headers["vary"] = values + ["Accept-Encoding"]
+    end
 
     def declarations(services)
       raise ArgumentError, "Invalid service declarations" unless services.is_a?(Array) && services.all?(Service)

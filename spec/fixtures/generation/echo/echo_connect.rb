@@ -22,7 +22,8 @@ module Example
         ).msgclass,
         response_type: ::Google::Protobuf::DescriptorPool.generated_pool.lookup(
           "example.v1.EchoMessage"
-        ).msgclass
+        ).msgclass,
+        idempotency: :no_side_effects
       )
 
       FAIL = ::ConnectRPC::Method.new(

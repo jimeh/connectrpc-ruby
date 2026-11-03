@@ -113,7 +113,9 @@ and `OP_NO_TICKET`. This does not claim that OpenSSL emits zero TLS 1.3 tickets.
 ## Routing and shutdown
 
 The native application owns each registered service prefix, including unknown
-methods. It strips the query before core dispatch. Native RPC retains the core
+methods. It separates the raw query from the path for core dispatch. Safe unary GET
+uses the same application over HTTP/1 and HTTP/2; the app must route intended
+GET calls and own cache/security policy. Native RPC retains the core
 opaque identity/gzip bytes, wire/inflated caps, deadlines, metadata and errors.
 Falcon's generic content encoding/cache middleware wraps only `rack_app`.
 Native handlers do not inherit Rails callbacks/authentication. Ordinary Rails

@@ -13,7 +13,7 @@ server = ConnectRPC::Server.new(services: [EchoExample::SERVICE], binding: EchoE
 host = EchoExample::Localhost.new(ConnectRPC::Rack.new(server: server))
 begin
   %i[proto json].each do |codec|
-    client = ConnectRPC::Client.new(base_url: host.url, binding: EchoExample::BINDING, codec: codec)
+    client = ConnectRPC::Client.new(base_url: host.url, binding: EchoExample::BINDING, codec: codec, use_get: true)
     response = client.call(EchoExample::ECHO, EchoExample::Message.new(name: "Ruby", count: 9_007_199_254_740_993),
                            timeout: 2)
     puts "#{codec}: #{response.message.name} count=#{response.message.count} trailers=#{response.trailers.to_h}"

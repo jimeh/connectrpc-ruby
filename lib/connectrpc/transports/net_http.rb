@@ -121,17 +121,18 @@ module ConnectRPC
         raise Error.new(:resource_exhausted, "Response exceeds byte limit") if length && length > limit
       end
 
-      def outgoing_request(request)
+      def outgoing_request(request) # rubocop:disable Metrics/MethodLength, Metrics/AbcSize
         headers = request.headers.merge("connection" => ["close"])
         accept = request.headers.fetch("accept-encoding", ["identity"]).join(", ")
-        outgoing = Net::HTTPGenericRequest.new(request.http_method, true, true, request.url.request_uri,
+        has_body = request.http_method != "GET"
+        outgoing = Net::HTTPGenericRequest.new(request.http_method, has_body, true, request.url.request_uri,
                                                "accept-encoding" => accept)
         headers.each do |key, values|
           next if key == "accept-encoding"
 
           values.each { |value| outgoing.add_field(key, value) }
         end
-        outgoing.body = request.body
+        outgoing.body = request.body unless request.http_method == "GET"
         outgoing
       end
 

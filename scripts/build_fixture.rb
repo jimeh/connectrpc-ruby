@@ -28,8 +28,12 @@ message = Google::Protobuf::DescriptorProto.new(
                                                         ])]
 )
 methods = %w[Echo Fail].map do |name|
+  options = Google::Protobuf::MethodOptions.new(
+    idempotency_level: name == "Echo" ? :NO_SIDE_EFFECTS : :IDEMPOTENCY_UNKNOWN
+  )
   Google::Protobuf::MethodDescriptorProto.new(name: name, input_type: ".example.v1.EchoMessage",
-                                              output_type: ".example.v1.EchoMessage")
+                                              output_type: ".example.v1.EchoMessage",
+                                              options: options)
 end
 file = Google::Protobuf::FileDescriptorProto.new(
   name: "echo.proto", package: "example.v1", syntax: "proto3", dependency: ["google/protobuf/timestamp.proto"],

@@ -47,12 +47,18 @@ Async do |task|
     transport = ConnectRPC::Async::Transport.new(origin: origin)
     method = ConnectRPC::Method.new(service: "demo.EchoService", name: "Echo",
                                     request_type: Google::Protobuf::StringValue,
-                                    response_type: Google::Protobuf::StringValue)
+                                    response_type: Google::Protobuf::StringValue, idempotency: :no_side_effects)
     %i[proto json].each do |codec|
       client = ConnectRPC::Client.new(base_url: origin, transport: transport, codec: codec,
                                       binding: ConnectRPC::Bindings::GoogleProtobuf.new)
       response = client.call(method, Google::Protobuf::StringValue.new(value: "installed Falcon DSL"))
       raise "Installed DSL typed response" unless response.message.value == "installed Falcon DSL"
+
+      get_client = ConnectRPC::Client.new(base_url: origin, transport: transport, codec: codec, use_get: true,
+                                          binding: ConnectRPC::Bindings::GoogleProtobuf.new)
+      get_response = get_client.call(method, Google::Protobuf::StringValue.new(value: "installed GET"))
+      raise "Installed Falcon GET" unless get_response.message.value == "installed GET" &&
+                                          get_response.metadata["vary"] == ["Accept-Encoding"]
     end
     raw = IO::Endpoint.tcp("127.0.0.1", service.port).connect
     connection = Async::HTTP::Protocol::HTTP1.client(raw)

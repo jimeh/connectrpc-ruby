@@ -76,7 +76,7 @@ Only `connect` is an action supplied by the concern. Keep the three required
 configuration hooks and typed handlers private, using prefixed handler names to
 avoid controller/Kernel method collisions. `connect_limits` is optional and
 accepts core `request_limit:`, `response_limit:`, `request_wire_limit:`,
-`response_wire_limit:` and `encoding:` keywords; omitted options
+`response_wire_limit:`, `get_query_limit:` and `encoding:` keywords; omitted options
 use core's 4 MiB defaults. Private `connect_request`, `connect_context`, and
 `connect_method` expose the same typed objects to callbacks and handlers.
 Handlers return typed messages. There is no render helper or routing DSL.
@@ -136,7 +136,9 @@ non-Connect actions retain normal body parsing and format negotiation.
 
 The adapter does not skip CSRF protection, disable sessions, or alter cookie
 policy. A dedicated API controller suits token-authenticated RPC. Base
-controllers with forgery protection still require a valid token/session. An
+controllers use Rails' native safe-verb policy: GET does not require a CSRF
+token; POST retains its configured token/session checks. The application must
+explicitly route desired GET calls and preserve authentication/authorization. An
 application may choose a narrowly scoped exemption according to its security
 model; inclusion alone grants none.
 
@@ -195,7 +197,7 @@ generation, Go interoperability and official conformance evidence.
 
 ## Status and licensing
 
-Experimental and not production ready. Streaming, GET, gRPC/gRPC-Web and production hosting are outside this adapter.
+Experimental and not production ready. Streaming, gRPC/gRPC-Web and production hosting are outside this adapter.
 Original project work is [MIT licensed](LICENSE), copyright 2026 Jim Myhrberg.
 Both gem archives include the complete license and retain the
 `https://gems.invalid` push guard. Publishing, releasing or deploying requires

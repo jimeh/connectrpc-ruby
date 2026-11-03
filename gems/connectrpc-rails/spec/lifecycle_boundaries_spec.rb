@@ -30,7 +30,7 @@ RSpec.describe "Rails lifecycle boundaries" do
     end
     cases = [
       [{ "CONTENT_TYPE" => "application/grpc" }, 415, nil],
-      [{ "REQUEST_METHOD" => "GET" }, 405, nil],
+      [{ "REQUEST_METHOD" => "PUT" }, 405, nil],
       [{ "HTTP_CONTENT_ENCODING" => "gzip" }, 501, "unimplemented"],
       [{ "HTTP_CONNECT_PROTOCOL_VERSION" => "2" }, 400, "invalid_argument"],
       [{ "HTTP_CONNECT_TIMEOUT_MS" => "bad" }, 400, "invalid_argument"]

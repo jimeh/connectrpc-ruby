@@ -7,12 +7,16 @@ require "uri"
 module ConnectRPC
   class Client # rubocop:disable Metrics/ClassLength
     # Configuration validates each independent public bound eagerly.
-    # rubocop:disable Metrics/MethodLength
+    # rubocop:disable Metrics/MethodLength, Metrics/AbcSize
     def initialize(base_url:, binding:, transport: nil, codec: :proto, request_limit: Protocol::DEFAULT_LIMIT,
                    response_limit: Protocol::DEFAULT_LIMIT, request_wire_limit: request_limit,
-                   response_wire_limit: response_limit, accept_encoding: nil,
+                   response_wire_limit: response_limit, accept_encoding: nil, use_get: false, get_url_limit: 8192,
                    protocol: :connect, mode: :unary, encoding: :identity, instrumentation: nil)
       Protocol.profile!(protocol, mode, encoding)
+      raise ArgumentError, "use_get must be true or false" unless [true, false].include?(use_get)
+
+      @use_get = use_get
+      @get_url_limit = Protocol.limit!(get_url_limit)
       @base_url = parse_base_url(base_url)
       @instrumentation = instrumentation
       @binding = binding
@@ -26,7 +30,7 @@ module ConnectRPC
       @response_limit = Protocol.limit!(response_limit)
     end
 
-    # rubocop:enable Metrics/MethodLength
+    # rubocop:enable Metrics/MethodLength, Metrics/AbcSize
 
     def call(method, request, metadata: {}, timeout: 30)
       return instrumented_call(method, request, metadata, timeout) if @instrumentation
@@ -36,7 +40,7 @@ module ConnectRPC
 
     private
 
-    # rubocop:disable Metrics/MethodLength, Metrics/AbcSize
+    # rubocop:disable Metrics/MethodLength, Metrics/AbcSize, Metrics/CyclomaticComplexity
     def process_call(method, request, metadata, timeout, lifecycle: nil, injection: nil)
       deadline = Deadline.new(timeout) unless timeout.nil?
       metadata = Metadata.new(metadata)
@@ -46,7 +50,7 @@ module ConnectRPC
       end
       outgoing = build_request(method, request, metadata, deadline, lifecycle)
       outgoing.lifecycle = lifecycle if lifecycle
-      lifecycle.request_bytes = outgoing.body.bytesize if lifecycle
+      lifecycle.request_bytes = outgoing.body.bytesize if lifecycle && outgoing.http_method != "GET"
       response = @transport.call(outgoing)
       yield response if block_given?
       deadline&.check!
@@ -81,7 +85,7 @@ module ConnectRPC
       end
     end
 
-    # rubocop:enable Metrics/MethodLength, Metrics/AbcSize
+    # rubocop:enable Metrics/MethodLength, Metrics/AbcSize, Metrics/CyclomaticComplexity
 
     def injected_metadata(metadata, injection)
       instrumentation = @instrumentation #: Instrumentation
@@ -118,22 +122,27 @@ module ConnectRPC
       raise Error.new(:invalid_argument, "Cannot encode request")
     end
 
-    def build_request(method, request, metadata, deadline, lifecycle = nil)
+    def build_request(method, request, metadata, deadline, lifecycle = nil) # rubocop:disable Metrics/MethodLength, Metrics/AbcSize, Metrics/CyclomaticComplexity
       body = encode_request(method, request, deadline, lifecycle)
       body = compress_request(body, deadline, lifecycle) if @encoding == :gzip
       Protocol.check_size!(body, @request_wire_limit)
       url = @base_url.dup
       base_path = @base_url.path #: String
       url.path = base_path.delete_suffix("/") + method.path
-      TransportRequest.new(url: url, http_method: "POST", headers: request_headers(metadata, deadline), body: body,
+      get = @use_get && method.idempotency == :no_side_effects
+      lifecycle.request_bytes = body.bytesize if lifecycle && get
+      GetQuery.build(url, body, codec: @codec, encoding: @encoding, limit: @get_url_limit, deadline: deadline) if get
+      TransportRequest.new(url: url, http_method: get ? "GET" : "POST",
+                           headers: request_headers(metadata, deadline, get: get), body: get ? "" : body,
                            response_limit: @response_wire_limit, deadline: deadline)
     end
 
-    def request_headers(metadata, deadline)
+    def request_headers(metadata, deadline, get: false)
       headers = metadata.to_h.merge("content-type" => [Protocol::CONTENT_TYPES.fetch(@codec)],
                                     "accept-encoding" => [@accept_encoding.join(", ")],
                                     "connect-protocol-version" => ["1"])
       headers["content-encoding"] = ["gzip"] if @encoding == :gzip
+      %w[content-type content-encoding connect-protocol-version].each { |key| headers.delete(key) } if get
       headers["connect-timeout-ms"] = [deadline.timeout_ms] if deadline
       headers
     end

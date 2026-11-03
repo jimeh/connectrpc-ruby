@@ -8,7 +8,11 @@ module Conformance
   class Ledger
     BASELINE = JSON.parse(File.read(File.join(__dir__, "cases.json"))).freeze
     GZIP = JSON.parse(File.read(File.join(__dir__, "cases-gzip.json"))).freeze
-    PROFILES = { "identity" => BASELINE, "gzip" => GZIP }.freeze
+    GET_CASES = %w[JSON PROTO].map do |codec|
+      "Connect with GET/HTTPVersion:1/Codec:CODEC_#{codec}/TLS:false/success"
+    end.freeze
+    WITH_GET = BASELINE.transform_values { |names| (names + GET_CASES).sort.freeze }.freeze
+    PROFILES = { "identity" => WITH_GET, "gzip" => GZIP }.freeze
     GZIP_CANCELLATIONS = GZIP.fetch("client").select { |name| name.start_with?("Client Cancellation/") }.freeze
     CANCELLATIONS = BASELINE.fetch("client").select { |name| name.start_with?("Client Cancellation/") }.freeze
     MANIFEST = File.join(__dir__, "known-failing-client.txt")
@@ -187,6 +191,7 @@ module Conformance
         end
       end
       validate_wire!(events) if @profile == "gzip"
+      validate_get!(events)
       validate_order!(events)
     end
 
@@ -241,6 +246,38 @@ module Conformance
         wire = event.fetch(@direction == "client" ? "wire" : "response_wire")
         verify(wire.fetch("encoding") == "gzip" && wire.fetch("gzip_magic") && wire.fetch("bytes").positive?,
                "Missing actual gzip success response")
+      end
+    end
+
+    def validate_get!(events)
+      (@scheduled & GET_CASES).each do |name|
+        dispatch = events.find { |event| event["name"] == name && event["event"] == "dispatch" }
+        verify(dispatch.fetch("http_method") == "GET", "GET case did not dispatch GET")
+        query = dispatch.fetch("query")
+        controls = query.fetch("controls")
+        codec = name.include?("CODEC_JSON") ? "json" : "proto"
+        verify(controls.fetch("encoding") == codec && controls.fetch("connect") == "v1", "GET controls changed")
+        payload = query.fetch("payload")
+        verify(payload.fetch("bytes").positive? && payload.fetch("sha256").match?(/\A[0-9a-f]{64}\z/) &&
+               payload.fetch("encoding") == "identity" && !payload.fetch("gzip_magic"), "Missing GET payload evidence")
+        if @direction == "client"
+          headers = dispatch.fetch("request_headers")
+          verify(!headers.keys.intersect?(%w[content-type content-encoding content-length connect-protocol-version]),
+                 "GET sent synthetic content headers")
+          body = dispatch.fetch("wire")
+        else
+          verify(dispatch.fetch("content_type").nil? && dispatch.fetch("content_length").nil?,
+                 "Reference GET content headers changed")
+          completed = events.find { |event| event["name"] == name && event["event"] == "completed" }
+          body = completed.fetch("request_wire")
+        end
+        empty_hash = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        terminal = events.find do |event|
+          event["name"] == name && event["event"] == (@direction == "client" ? "wire_response" : "completed")
+        end
+        verify(terminal && terminal.fetch("status") == 200, "Missing successful GET wire response")
+        verify(body.fetch("bytes").zero? && body.fetch("sha256") == empty_hash,
+               "GET HTTP body was not measured empty")
       end
     end
 

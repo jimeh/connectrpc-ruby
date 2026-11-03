@@ -5,7 +5,7 @@ module ConnectRPC
     IDENTIFIER = /\A[A-Za-z_][A-Za-z_0-9]*\z/
     QUALIFIED_NAME = /\A[A-Za-z_][A-Za-z_0-9]*(?:\.[A-Za-z_][A-Za-z_0-9]*)*\z/
 
-    attr_reader :service, :name, :request_type, :response_type, :path
+    attr_reader :service, :name, :request_type, :response_type, :path, :idempotency
 
     def cardinality = :unary
 
@@ -14,13 +14,20 @@ module ConnectRPC
       raise ArgumentError, "Invalid protobuf name" unless value.is_a?(String) && pattern.match?(value)
     end
 
-    def initialize(service:, name:, request_type:, response_type:, cardinality: :unary)
+    # Validate and assign the immutable declaration together.
+    # rubocop:disable Metrics/MethodLength, Metrics/AbcSize
+    def initialize(service:, name:, request_type:, response_type:, cardinality: :unary, idempotency: :unknown)
       raise ArgumentError, "Only unary methods are supported" unless cardinality == :unary
+
+      unless %i[unknown no_side_effects idempotent].include?(idempotency)
+        raise ArgumentError, "Invalid method idempotency"
+      end
 
       self.class.validate_name!(service, qualified: true)
       self.class.validate_name!(name)
       raise ArgumentError, "Message types are required" if request_type.nil? || response_type.nil?
 
+      @idempotency = idempotency
       @service = service.dup.freeze
       @name = name.dup.freeze
       @request_type = request_type
@@ -29,6 +36,8 @@ module ConnectRPC
       freeze
     end
   end
+
+  # rubocop:enable Metrics/MethodLength, Metrics/AbcSize
 
   class Service
     attr_reader :name, :methods

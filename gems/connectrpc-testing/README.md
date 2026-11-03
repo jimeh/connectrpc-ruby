@@ -3,7 +3,7 @@
 A synchronous in-process transport for real Connect unary round trips. The
 application supplies a core `Server`, its binding, services and handlers. The
 ordinary core or generated client still encodes requests and decodes responses,
-including protocol errors, metadata and compression. No sockets are opened.
+including protocol errors, metadata, safe unary GET and compression. No sockets are opened.
 
 Add `gem "connectrpc-testing", path: "gems/connectrpc-testing"` to a development
 or test bundle in this repository. For another local application, point `path:`
@@ -41,7 +41,7 @@ raise "Missing trailer" unless response.trailers["x-tested"] == ["yes"]
 ```
 
 The hostname is validated but never resolved. URLs must be absolute HTTP(S) URIs
-without credentials or fragments. Queries are ignored. The literal URI path
+without credentials or fragments. Raw URI queries are forwarded to core, including safe unary GET. The literal URI path
 identifies the method: a base URL prefix is retained and will normally produce
 core's unknown-method response. There is no mount-prefix stripping or Rack
 fallthrough. The actual HTTP method and repeated leading header arrays pass to

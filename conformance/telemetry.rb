@@ -12,6 +12,21 @@ module Conformance
         gzip_magic: body.b.start_with?("\x1f\x8b".b) }
     end
 
+    # Fixture-only observation, independent of the core parser. Official runner
+    # requests are valid forms; retain payload hashes separately from HTTP bodies.
+    def self.query(query)
+      return unless query && !query.empty?
+
+      values = URI.decode_www_form(query).to_h
+      message = values.fetch("message")
+      if values["base64"] == "1"
+        message += "=" * ((4 - (message.bytesize % 4)) % 4)
+        message = message.tr("-_", "+/").unpack1("m0")
+      end
+      { controls: values.except("message"),
+        payload: wire(message, "content-encoding" => [values.fetch("compression", "identity")]) }
+    end
+
     class Input
       attr_reader :bytes
 

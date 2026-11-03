@@ -143,8 +143,9 @@ module ConnectRPC
 
           headers = request.headers.dup
           headers["connect-timeout-ms"] = [request.deadline.timeout_ms] if request.deadline
+          body = request.http_method == "GET" ? nil : [request.body]
           outgoing = ::Protocol::HTTP::Request[request.http_method, request.url.request_uri, Internal.fields(headers),
-                                               [request.body], scheme: @origin.scheme, authority: @origin.authority]
+                                               body, scheme: @origin.scheme, authority: @origin.authority]
           # Stream ID allocation shares the wire dispatch guard.
           response = connection.create_response
           operation[:response] = response

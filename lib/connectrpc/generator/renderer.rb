@@ -62,7 +62,9 @@ module ConnectRPC
         line(depth, "#{ruby.upcase} = ::ConnectRPC::Method.new(")
         line(depth + 1, "service: #{name.dump}, name: #{method.name.dump},")
         render_type("request_type", method.input_type, depth + 1, comma: true)
-        render_type("response_type", method.output_type, depth + 1, comma: false)
+        idempotency = { NO_SIDE_EFFECTS: :no_side_effects, IDEMPOTENT: :idempotent }[method.options&.idempotency_level]
+        render_type("response_type", method.output_type, depth + 1, comma: !idempotency.nil?)
+        line(depth + 1, "idempotency: :#{idempotency}") if idempotency
         line(depth, ")")
       end
 

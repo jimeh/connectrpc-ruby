@@ -41,6 +41,13 @@ Open3.popen2(binary, "serve") do |input, output, process|
       decoded = e.details.first.decode(binding: EchoExample::BINDING, type: EchoExample::Message)
       Interop.check(decoded == message, "Generated Ruby->Go #{codec} typed detail")
     end
+    get_core = ConnectRPC::Client.new(base_url: url, binding: EchoExample::BINDING, codec: codec, use_get: true)
+    generated_get = service::Client.new(client: get_core)
+    get_result = generated_get.echo(message, metadata: { "x-get-probe" => "yes", "x-request" => "generated GET" })
+    Interop.check(get_result.message == message && get_result.metadata["x-observed-http-method"] == ["GET"],
+                  "Generated Ruby->Go GET #{codec} actual method/message")
+    Interop.check(get_result.trailers["x-tail"] == %w[three four], "Generated GET trailers")
+    puts "PASS generated GET Ruby->Go #{codec} actual-verb/message/metadata/trailers"
     puts "PASS generated Ruby->Go #{codec} success/error/detail/presence/metadata/trailers"
   end
 ensure

@@ -31,7 +31,7 @@ app = ConnectRPC::Rack.new(downstream_app, server: server)
 ```
 
 Supply the app to your Rack host. This package does not start a production host.
-It translates `PATH_INFO`, request headers and `rack.input` into core Server
+It translates `PATH_INFO`, raw `QUERY_STRING`, request headers and `rack.input` into core Server
 calls and returns Rack status, headers and body. Mount prefixes use `SCRIPT_NAME`;
 registered service paths belong to ConnectRPC, including unknown methods.
 Unrelated paths call the downstream app, or return 404 when none was supplied.

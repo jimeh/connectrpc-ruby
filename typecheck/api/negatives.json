@@ -15,5 +15,10 @@
   "falcon_dsl": "Ruby::ArgumentTypeMismatch",
   "struct_pair": "Ruby::NoMethod",
   "native_headers": "Ruby::NoMethod",
-  "otel_span": "Ruby::IncompatibleAssignment"
+  "otel_span": "Ruby::IncompatibleAssignment",
+  "get_safety": "Ruby::ArgumentTypeMismatch",
+  "get_selection": "Ruby::ArgumentTypeMismatch",
+  "get_url_limit": "Ruby::ArgumentTypeMismatch",
+  "get_query_limit": "Ruby::ArgumentTypeMismatch",
+  "get_query": "Ruby::ArgumentTypeMismatch"
 }

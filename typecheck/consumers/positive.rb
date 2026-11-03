@@ -31,8 +31,9 @@ instrumentation = ConnectRPC::Instrumentation.new(subscribers: [recorder], on_er
 server = ConnectRPC::Server.new(services: [RbsFixture::Api::Echo::SERVICE], binding: binding, handlers: handlers,
                                 instrumentation: instrumentation)
 client = ConnectRPC::Client.new(base_url: "https://rbs.invalid", binding: binding,
-                                transport: LoopbackTransport.new(server))
+                                transport: LoopbackTransport.new(server), use_get: true, get_url_limit: 8192)
 generated = RbsFixture::Api::Echo::Client.new(client: client)
+RbsFixture::Api::Echo::EXCHANGE.idempotency.to_s
 request = RbsFixture::Messages::Envelope::Request.new(text: "hello", tags: ["a"], counts: { "a" => 1 }, state: :READY)
 request.tags << "b"
 # @type var write_result: nil
@@ -53,7 +54,7 @@ RbsFixture::Api::NoCalls.handlers
 # @type var manual: ConnectRPC::Method[RbsFixture::Messages::Envelope::Request, RbsFixture::Messages::Envelope::Reply]
 manual = ConnectRPC::Method.new(service: "rbs_service.v1.Manual", name: "Exchange",
                                 request_type: RbsFixture::Messages::Envelope::Request,
-                                response_type: RbsFixture::Messages::Envelope::Reply)
+                                response_type: RbsFixture::Messages::Envelope::Reply, idempotency: :no_side_effects)
 client.call(manual, request).message.count.succ
 
 # Official descriptor overloads preserve class tokens and constructor fields.

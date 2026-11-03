@@ -23,7 +23,8 @@ module GenerationFixture
         ).msgclass,
         response_type: ::Google::Protobuf::DescriptorPool.generated_pool.lookup(
           "generation_fixture.v1.Message"
-        ).msgclass
+        ).msgclass,
+        idempotency: :no_side_effects
       )
 
       FAIL = ::ConnectRPC::Method.new(
@@ -33,7 +34,8 @@ module GenerationFixture
         ).msgclass,
         response_type: ::Google::Protobuf::DescriptorPool.generated_pool.lookup(
           "generation_fixture.v1.Message"
-        ).msgclass
+        ).msgclass,
+        idempotency: :idempotent
       )
 
       GET_HTTP = ::ConnectRPC::Method.new(

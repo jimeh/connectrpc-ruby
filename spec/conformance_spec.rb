@@ -135,13 +135,39 @@ RSpec.describe "official conformance adapters" do
   end
 
   it "rejects unsupported setup distinctly from RPC errors and validates message types" do
-    [%i[protocol PROTOCOL_GRPC], %i[http_version HTTP_VERSION_2], [:use_get_http_method, true]].each do |field, value|
+    [%i[protocol PROTOCOL_GRPC], %i[http_version HTTP_VERSION_2]].each do |field, value|
       response = Conformance::ClientAdapter.new.perform(instruction(**{ field => value }))
       expect(response.response).to be_nil
       expect(response.error.message).to include("Unsupported client instruction")
     end
     request = instruction(request_messages: [Conformance.pack(Conformance::UnaryResponse.new)])
     expect(Conformance::ClientAdapter.new.perform(request).error.message).to include("Unexpected request type")
+  end
+
+  [["IdempotentUnary", Conformance::IdempotentUnaryRequest, true],
+   ["Unary", Conformance::UnaryRequest, false]].each do |rpc, type, safe|
+    it "executes supported GET preference for #{rpc} with its declared safety" do
+      with_server do |url|
+        uri = URI(url)
+        %i[CODEC_PROTO CODEC_JSON].each do |codec|
+          message = type.new(response_definition: { response_data: "selected" })
+          request = instruction(host: uri.host, port: uri.port, method: rpc, codec: codec,
+                                use_get_http_method: true, request_messages: [Conformance.pack(message)])
+          result = Conformance::ClientAdapter.new.perform(request)
+          expect(result.error).to be_nil
+          expect(result.response.error).to be_nil
+          payload = result.response.payloads.first
+          expect(payload.data).to eq("selected")
+          info = payload.request_info.connect_get_info
+          if safe
+            params = info.query_params.to_h { |header| [header.name, header.value.to_a] }
+            expect(params).to include("connect" => ["v1"], "encoding" => [codec == :CODEC_PROTO ? "proto" : "json"])
+          else
+            expect(info).to be_nil
+          end
+        end
+      end
+    end
   end
 
   it "writes framed results for every input and exits promptly on EOF" do

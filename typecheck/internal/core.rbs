@@ -80,6 +80,23 @@ module ConnectRPC
     def step: [T] () { () -> T } -> T
     def append: (String) -> nil
   end
+  class GetQuery
+    KEYS: Array[String]
+    @wire_limit: Integer
+    @deadline: Deadline?
+    def self.parse: (String, limit: Integer, wire_limit: Integer, ?deadline: Deadline?) -> Hash[String, String]
+    def initialize: (Integer, Deadline?) -> void
+    def parse: (String) -> Hash[String, String]
+    def self.payload: (Hash[String, String], limit: Integer, ?deadline: Deadline?) -> String
+    def self.decode_base64: (String, Integer) -> String
+    def self.build: (URI::Generic, String, codec: codec, encoding: encoding, limit: Integer, ?deadline: Deadline?) -> URI::Generic
+    def self.form_size: (String, Deadline?) -> Integer
+    def self.form_safe?: (Integer) -> bool
+    private
+    def field: (String, Integer) -> [Integer, Integer]
+    def component: (String, Integer, Integer, Integer, ?payload: bool) -> String
+    def hex: (Integer?) -> Integer
+  end
   class MessageIO
     @input: _Input?
     @limit: Integer
@@ -90,6 +107,8 @@ module ConnectRPC
     def read_chunks: (String) -> nil
   end
   class Client
+    @use_get: bool
+    @get_url_limit: Integer
     @base_url: URI::Generic
     @binding: _Binding
     @transport: _Transport
@@ -109,7 +128,7 @@ module ConnectRPC
     def default_transport: () -> Transports::NetHTTP
     def encode_request: [Req, Resp] (Method[Req, Resp], Req, Deadline?, ?Instrumentation::Handle?) -> String
     def build_request: [Req, Resp] (Method[Req, Resp], Req, Metadata, Deadline?, ?Instrumentation::Handle?) -> TransportRequest
-    def request_headers: (Metadata, Deadline?) -> headers
+    def request_headers: (Metadata, Deadline?, ?get: bool) -> headers
     def compress_request: (String, Deadline?, ?Instrumentation::Handle?) -> String
     def response_body: (TransportResponse, headers, Deadline?, ?Instrumentation::Handle?) -> String
     def inflate_response: (String, Integer, Deadline?, ?Instrumentation::Handle?) -> String
@@ -129,9 +148,14 @@ module ConnectRPC
     @response_limit: Integer
     @request_wire_limit: Integer
     @response_wire_limit: Integer
+    @get_query_limit: Integer
     @error_limit: Integer
     private
-    def process_call: (path: String, http_method: String, headers: headers, input: _Input?, ?lifecycle: Instrumentation::Handle?) -> TransportResponse
+    def process_call: (path: String, http_method: String, headers: headers, input: _Input?, query: String, ?lifecycle: Instrumentation::Handle?) -> TransportResponse
+    def process_get: (String, headers, _Input?, String, Instrumentation::Handle?) { (Context) -> void } -> TransportResponse
+    def empty_get_body?: (headers, _Input?, Deadline?) -> bool
+    def get_headers: (headers, Hash[String, String]) -> headers
+    def vary_get: (TransportResponse) -> void
     def declarations: (Array[Service]) -> Hash[String, Method[untyped, untyped]]
     def invoke_handler: (Method[untyped, untyped], untyped, Context) -> untyped
     def dispatch: (String, headers, _Input?, codec, Context, ?lifecycle: Instrumentation::Handle?) -> TransportResponse

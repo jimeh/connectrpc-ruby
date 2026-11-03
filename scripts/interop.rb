@@ -124,8 +124,15 @@ end
 
 if $PROGRAM_NAME == __FILE__
   require_relative "interop_gzip"
-  profiles = ARGV.empty? ? %w[identity gzip] : ARGV
-  raise "Usage: interop.rb [identity|gzip]" unless profiles.all? { |entry| %w[identity gzip].include?(entry) }
+  profiles = ARGV.empty? ? %w[identity gzip get] : ARGV
+  raise "Usage: interop.rb [identity|gzip|get]" unless profiles.all? { |entry| %w[identity gzip get].include?(entry) }
 
-  profiles.each { |profile| Interop.run(profile: profile) }
+  profiles.each do |profile|
+    if profile == "get"
+      require_relative "interop_get"
+      GetInterop.run
+    else
+      Interop.run(profile: profile)
+    end
+  end
 end

@@ -131,6 +131,10 @@ module ConnectRPC
           raise InvalidDescriptor, "Unsupported streaming RPC #{origin}.#{method.name}; only unary RPCs are supported"
         end
 
+        unless [nil, :IDEMPOTENCY_UNKNOWN, :NO_SIDE_EFFECTS, :IDEMPOTENT].include?(method.options&.idempotency_level)
+          raise InvalidDescriptor, "Invalid idempotency level for #{origin}.#{method.name}"
+        end
+
         [method.input_type, method.output_type].each do |name|
           entry = types[name]
           unless entry && !entry.last.options&.map_entry
