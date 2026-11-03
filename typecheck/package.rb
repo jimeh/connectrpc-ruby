@@ -53,7 +53,9 @@ Bundler.with_unbundled_env do
     working = File.join(temporary, "consumer")
     home = File.join(temporary, "gems")
     FileUtils.mkdir_p(working)
-    %w[consumers nominal runtime.rb harness.rb].each { |name| FileUtils.cp_r(File.join(__dir__, name), working) }
+    %w[consumers nominal runtime.rb harness.rb negative_check.rb].each do |name|
+      FileUtils.cp_r(File.join(__dir__, name), working)
+    end
     FileUtils.cp_r(File.join(root, "spec/fixtures/rbs/proto"), working)
     FileUtils.cp(artifacts, working)
     environment = { "GEM_HOME" => home, "GEM_PATH" => home, "RUBYLIB" => nil, "RUBYOPT" => nil,
@@ -91,12 +93,16 @@ Bundler.with_unbundled_env do
       File.write(File.join(working, "installed_check.rb"), runner)
       puts RBSHarness.capture!([RbConfig.ruby, "installed_check.rb"], working: working)
       InstalledAPI.check(root: root, working: working, output: output)
-      evidence = File.join(root, "vendor/rbs/installed", RUBY_VERSION)
-      FileUtils.mkdir_p(evidence)
-      FileUtils.cp(Dir.glob(File.join(working, "*.{json,log}")), evidence)
       puts "Installed executable #{plugin}; core/bridge discovered from #{installed}"
     ensure
       previous.each { |name, value| value ? ENV[name] = value : ENV.delete(name) }
+      # Preserve complete batch output, including a failed installed API check,
+      # before the external temporary consumer is removed.
+      Dir.glob("{,installed-api/}*.{json,log}", base: working).each do |relative|
+        target = File.join(root, "vendor/rbs/installed", RUBY_VERSION, relative)
+        FileUtils.mkdir_p(File.dirname(target))
+        FileUtils.cp(File.join(working, relative), target)
+      end
     end
   end
 end

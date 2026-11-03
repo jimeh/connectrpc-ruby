@@ -473,7 +473,7 @@ jobs:
         with:
           ruby-version: ${{ matrix.ruby }}
           bundler: "4.0.23"
-          bundler-cache: true
+          bundler-cache: false
           cache-version: bundler-4.0.23-v1
       - uses: jdx/mise-action@82a612c5ab8bcda7cc5db6b7e81a8e7584c3dc6e # v5.2.3
         with:
@@ -481,8 +481,25 @@ jobs:
           add_shims_to_path: false
           env: false
           export_path: false
-          install: false
-          cache: false
+          install: true
+          install_args: aqua:protocolbuffers/protobuf/protoc@36.2 aqua:bufbuild/buf@1.75.0
+          cache: true
+          cache_key_prefix: connectrpc-ci-tools-v1
+      - name: Identify RBS native cache platform
+        id: rbs-platform
+        run: mise run rbs:cache-platform
+      - name: Cache RBS and installed-package dependency bundles
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            vendor/bundle
+            vendor/rbs/bundle
+            vendor/rack/bundle
+            vendor/testing/bundle
+            vendor/async/bundle
+            vendor/falcon/bundle
+            vendor/otel/bundle
+          key: rbs-bundles-v1-${{ runner.os }}-${{ runner.arch }}-${{ steps.rbs-platform.outputs.platform }}-bundler-4.0.23-${{ hashFiles('Gemfile*', 'connectrpc.gemspec', 'typecheck/Gemfile*', 'gems/**/Gemfile*', 'gems/**/*.gemfile*', 'gems/**/*.gemspec') }}
       - name: Run rbs:check
         run: mise run rbs:check
       - name: Run rbs:package

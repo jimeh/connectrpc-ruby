@@ -63,14 +63,8 @@ module APICheck
 
     File.write(File.join(working, "api-positive.log"), positive)
     cases = JSON.parse(File.read(File.join(working, "api/negatives.json")))
-    cases.each do |name, diagnostic|
-      output, status = Open3.capture2e(*command, "api/negative/#{name}.rb", chdir: working)
-      File.write(File.join(working, "api-#{name}.log"), output)
-      actual = output.scan(/Diagnostic ID: (\S+)/).flatten
-      unless status.exitstatus == 1 && actual == [diagnostic]
-        raise "Expected exactly #{diagnostic} for #{name}; exit #{status.exitstatus}, #{actual.inspect}\n#{output}"
-      end
-    end
+    RBSNegativeCheck.check(command: command, working: working, directory: "api/negative",
+                           cases: cases, log: "api-negative.log")
     count = Dir.glob("api/*.rb", base: working).size
     puts "Public API consumers: #{count} positive files, #{cases.size} exact negative diagnostics " \
          "(Ruby #{RUBY_VERSION})"

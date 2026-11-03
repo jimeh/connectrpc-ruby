@@ -5,6 +5,7 @@ require "json"
 require "open3"
 require "pathname"
 require "rbconfig"
+require_relative "negative_check"
 
 module RBSHarness
   NEGATIVES = {
@@ -53,16 +54,8 @@ module RBSHarness
     command = [*tools, "steep", "check", "--jobs=1"]
     positive = capture!([*command, "consumers/positive.rb", "consumers/support.rb"], working: working)
     File.write(File.join(working, "positive.log"), positive)
-    results = NEGATIVES.map do |name, expected|
-      output, status = Open3.capture2e(*command, "consumers/negative/#{name}.rb", chdir: working)
-      File.write(File.join(working, "#{name}.log"), output)
-      diagnostics = output.scan(/Diagnostic ID: (\S+)/).flatten
-      unless status.exitstatus == 1 && diagnostics == [expected]
-        raise "Expected #{expected} for #{name}: exit #{status.exitstatus}, #{diagnostics.inspect}\n#{output}"
-      end
-
-      { case: name, exit: status.exitstatus, diagnostics: diagnostics }
-    end
+    results = RBSNegativeCheck.check(command: command, working: working, directory: "consumers/negative",
+                                     cases: NEGATIVES, log: "negative.log")
     service = File.join(working, "service-signatures")
     FileUtils.mkdir_p(service)
     FileUtils.cp(Dir.glob(File.join(generated, "**/*_connect.rbs")), service)
@@ -88,7 +81,8 @@ module RBSHarness
       puts 'Core signature loading introduces no optional namespaces'
     RUBY_CODE
     puts capture!([RbConfig.ruby, "-e", isolation], working: working)
-    File.write(File.join(working, "results.json"), JSON.pretty_generate(ruby: RUBY_VERSION, cases: results))
+    File.write(File.join(working, "results.json"),
+               JSON.pretty_generate(ruby: RUBY_VERSION, batch_exit: 1, cases: results))
     puts "Strict positive, nominal field extension, RBS validation and #{results.size} negative consumers " \
          "passed (Ruby #{RUBY_VERSION})"
   end

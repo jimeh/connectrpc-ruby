@@ -352,6 +352,10 @@ description = "Verify testing transport source, specs, installed package and exa
 depends = ["testing:test", "testing:check", "testing:package", "testing:example"]
 
 # Optional static typing tools never enter a runtime or adapter bundle.
+[tasks."rbs:cache-platform"]
+description = "Report exact CI Ruby ABI, native platform and runner image for dependency caching"
+run = "ruby typecheck/cache_platform.rb"
+
 [tasks."rbs:setup"]
 description = "Install the independent frozen Steep/RBS development bundle"
 run = "mise exec -- ruby typecheck/run.rb setup"

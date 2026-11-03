@@ -69,8 +69,9 @@ end
 Run `bundle exec steep check` with your application's development bundle.
 Strict diagnostics are required: Steep's defaults classify some incorrect
 request constraints and assignments as hints, which do not fail a normal check.
-The repository's `typecheck/consumers/` has executable positive and separately
-checked negative examples, including concrete callable objects and inline lambdas.
+The repository's `typecheck/consumers/` has executable positive and negative
+examples, including concrete callable objects and inline lambdas. Each negative
+file must produce exactly its expected diagnostic at its own source path.
 
 The bridge is deliberately limited to the shapes emitted by protoc 36.2:
 `AbstractMessage`, the empty `_MessageClass[T]` compatibility marker,
@@ -334,14 +335,27 @@ Bundles, Bundler state, compiler caches and local evidence live under
 normal installed signature/executable discovery outside the checkout. It clears
 checkout Ruby and Bundler load paths. Both Ruby lanes run these feature gates in
 CI. `rbs:check` includes strict source, inventory and all API consumers as well as
-the original generated positive/17 negative and nominal/bridge cases.
+the original generated positive/17 negative and nominal/bridge cases. The 17
+generated negatives and 26 API negatives each use one fresh Steep invocation
+with a single worker. Files remain separate, with independent inference contexts
+and unchanged strict signature inputs. The harness verifies the fixture inventory,
+normal exit 1, complete checker progress/summary and exactly one expected error
+per known path. Missing, extra, duplicate, malformed and wrong-severity records
+fail. Parsing uses the pinned formatter's raw record boundaries; escaped message
+newlines cannot introduce diagnostics. Controlled fixture paths cannot contain
+ambiguous annotation properties. Positives, strict implementation, RBS validation
+and Falcon-only checks remain separate.
 `rbs:package` uses the existing frozen optional bundle setups for offline runtime
 archives, builds every owned signature package and checks each library through
 normal installed discovery. It checks composed environments in both load orders,
 real Rails subclass inclusion, Rack/Testing calls, native session/TLS operations,
 Falcon endpoint integration and API-only OTel without loading an SDK. The original
-package guards and generated installed callers remain. Core, optional and tool
-bundles stay independent; this feature adds no dependency or pin.
+package guards and generated installed callers remain. Complete negative batch
+logs are retained under `vendor/rbs/`, including nested installed API logs on
+failure. Core, optional and tool bundles stay independent; gem dependencies and
+pins remain unchanged. CI caches dependency installations, always reruns frozen
+setup and every check, and never caches the fresh external consumer. See
+[CI cache ownership and invalidation](ci.md#optional-rbs-lanes).
 
 `rbs:proof` captures independent source inodes without Git metadata, proves wrong
 return/data/callback diagnostics and source-addition/signature-omission drift,
