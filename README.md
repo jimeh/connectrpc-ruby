@@ -331,11 +331,48 @@ operation timeout before logical expiry returns `unavailable`; actual expiry
 returns `deadline_exceeded`. The logical deadline stays unchanged, and the
 watchdog rechecks it after each capped wait.
 
-Server contexts expose `deadline`, `cancelled?`, and `check!`. With no inbound
-timeout, there is no server expiry. Cancellation means deadline expiry in this
-slice. Checks surround input, decode, and invocation; handlers must cooperate.
-Synchronous Rack cannot interrupt blocked reads or arbitrary handlers, or
-detect every disconnected peer. See [design](docs/design.md) for these limits.
+Explicit unary cancellation uses a permanent, shareable token:
+
+```ruby
+source = ConnectRPC::CancellationSource.new
+# Pass source.token to each call that should share cancellation.
+response = client.call(method, message, timeout: nil, cancellation: source.token)
+# Another thread or reactor task can call source.cancel while the call blocks.
+```
+
+`source.cancel` returns true only for its first transition. A token exposes
+`cancelled?`, `reason` (`:canceled` or nil), `check!`, and
+`on_cancel { ... }`. Registration returns an object with `unregister`, which
+returns true only when it prevents an invocation that has not started. It never
+waits for a running listener. Listeners run in the cancelling thread, must be
+short and nonblocking, and isolate `StandardError`. Unregistering releases the
+callback; completing a call releases its internal registrations. Sources cannot
+be reset, and a call never completes or changes another call's shared token.
+
+Each call accepts one terminal outcome. An already-expired deadline takes
+precedence while the call is open, followed by observed explicit cancellation.
+Accepted cancellation stays canceled through later expiry. A committed response
+or error stays final after later source cancellation. Source transition time is
+not acceptance time: a slow earlier listener may delay acceptance until expiry.
+Final decoding/error commit checks the source directly, even if notification is
+delayed. Cancellation never substitutes a timeout header for `timeout: nil`.
+
+NetHTTP closes only its call-owned socket to interrupt exposed TLS, writes,
+headers and body reads. Native DNS/TCP before socket exposure remains
+cooperative; cancellation is checked on return before any later dispatch.
+The optional Async transport wakes its owner reactor and resets its stream.
+Healthy multiplexed siblings survive; a stuck frame retains the documented
+connection-wide cleanup fallback. Neither backend retries or replays a call.
+
+Server contexts expose `deadline`, `cancelled?`, `cancellation_reason`
+(`:canceled`, `:deadline_exceeded`, or nil), and `check!`. Handlers cooperate at
+application boundaries. Low-level `Server#call(cancellation:)` and the Testing
+transport accept explicit cancellation. Native HTTP/2 publishes peer
+`RST_STREAM(CANCEL)` before input teardown; normal END_STREAM/half-close, other
+reset codes, connection loss and host shutdown do not manufacture explicit
+cancellation. Rack/Rails and Falcon HTTP/1 add no peer detection or token env
+injection. Synchronous adapters cannot interrupt blocked application code.
+See [design](docs/design.md) for ownership and transport limits.
 
 CRuby >= 3.4 is the baseline; project verification targets Ruby 3.4.12 and
 4.0.9 on Linux x64. Local setup builds from source; CI uses official prebuilt
@@ -348,16 +385,13 @@ conformance. A separate gzip portion adds 40 cases with actual wire observations
 including asymmetric raw Go HTTP probes and documented reference-client quirks.
 
 The pinned [official conformance harness](conformance/README.md) independently
-executes 94 client and 88 server cases for the declared profile. Two client
-caller-cancellation instructions currently fail because there is no cancellation
-API; both still execute real RPCs and are required to fail for the exact
-documented reason. Results are 92 client passes plus two expected failures, and
-88 server passes. A disjoint gzip profile adds 88 client and 82 server cases.
-It has 86 client passes, two executed expected caller-cancellation failures,
-and 82 server passes. Separate exact-name manifests and strict causal checks
-require all four caller-cancellation failures across both profiles to remain
-expected failures, with 178 actual client passes across 182 executed cases. This is a bounded profile, not full Connect
-conformance.
+executes 96 client and 90 server identity cases, including two safe GET cases
+per direction. The disjoint gzip profile adds 88 client and 82 server cases.
+All 184 client and 172 server cases must pass with zero expected failures.
+The four caller-cancellation cases use their original 5 ms asynchronous timer,
+200 ms response request and no RPC deadline. The ledger requires actual request
+writes, source cancellation, owned socket cleanup and the library's canceled
+result. This is a bounded profile, not full Connect conformance.
 
 ## Status and licensing
 

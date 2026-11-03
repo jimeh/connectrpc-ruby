@@ -192,4 +192,15 @@ RSpec.describe ConnectRPC::Rack do
     expect(status).to eq(504)
     expect(JSON.parse(body)["code"]).to eq("deadline_exceeded")
   end
+  it "keeps portable Context cooperative without treating an application env value as a token seam" do
+    source = ConnectRPC::CancellationSource.new
+    source.cancel
+    allow(handler).to receive(:call).and_wrap_original do |original, message, context|
+      expect(context.cancellation_reason).to be_nil
+      expect(context).not_to be_cancelled
+      expect { context.check! }.not_to raise_error
+      original.call(message, context)
+    end
+    expect(request("connectrpc.cancellation" => source.token).first).to eq(200)
+  end
 end

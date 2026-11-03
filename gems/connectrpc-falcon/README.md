@@ -175,3 +175,23 @@ The finite upstream compatibility signatures in `rbs/async_service_0_25` are exp
 opt-ins, separate from normal gem discovery. See the [RBS guide](../../docs/rbs.md#opt-in-framework-compatibility)
 for tested versions, supported framework forms and how to avoid duplicate
 application-owned declarations.
+
+## Explicit unary cancellation
+
+Pass `cancellation: source.token` to core or generated client calls, where
+`source = ConnectRPC::CancellationSource.new`. The source is permanent and
+shareable; only `source.cancel` initiates cancellation. `timeout: nil` keeps no
+RPC deadline or wire timeout. Context offers cooperative `cancelled?`,
+`cancellation_reason` and `check!`. See the [core guide](../../README.md) for
+listener, arbitration and registration lifetime rules.
+
+The Async transport accepts foreign-thread cancellation through a Promise;
+only the owner reactor stops private SDK tasks and performs stream cleanup.
+Healthy multiplexed siblings survive. A stuck frame retains the one 100 ms
+raw-first whole-connection cleanup fallback. Native HTTP/2 Context observes
+only an actual peer RST_STREAM(CANCEL), before input teardown. Other resets,
+normal half-close, connection loss and host shutdown do not fabricate explicit
+cancellation. Processing completion detaches the source independently of delivery.
+
+Falcon HTTP/1 and portable Rack/Rails do not add peer detection or application
+token env injection. Application handlers remain cooperative.

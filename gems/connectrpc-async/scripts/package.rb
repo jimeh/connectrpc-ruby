@@ -14,7 +14,8 @@ core_expected = %w[
   lib/connectrpc/generator/rbs_renderer.rb
   exe/protoc-gen-connectrpc-ruby lib/connectrpc/generator.rb lib/connectrpc/generator/names.rb
   lib/connectrpc/generator/schema.rb lib/connectrpc/generator/renderer.rb lib/connectrpc/generator/runtime_names.rb
-  lib/connectrpc/method.rb lib/connectrpc/metadata.rb lib/connectrpc/error.rb lib/connectrpc/deadline.rb
+  lib/connectrpc/method.rb lib/connectrpc/metadata.rb lib/connectrpc/error.rb lib/connectrpc/cancellation.rb
+  lib/connectrpc/deadline.rb
   lib/connectrpc/compression.rb lib/connectrpc/message_io.rb
   lib/connectrpc/get_query.rb lib/connectrpc/protocol.rb
   lib/connectrpc/client.rb lib/connectrpc/server.rb lib/connectrpc/instrumentation.rb

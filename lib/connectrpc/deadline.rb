@@ -27,7 +27,7 @@ module ConnectRPC
     end
 
     def check!
-      raise Error.new(:deadline_exceeded, "Deadline exceeded") if expired?
+      raise Error.new(:deadline_exceeded, "Deadline exceeded"), cause: nil if expired?
     end
 
     def timeout_ms
@@ -39,12 +39,16 @@ module ConnectRPC
   class Context
     attr_reader :request_metadata, :response_metadata, :response_trailers, :deadline
 
-    def initialize(request_metadata: {}, deadline: nil, lifecycle: nil)
+    def initialize(request_metadata: {}, deadline: nil, lifecycle: nil, cancellation: nil)
+      @cancellation = CallCancellation.new(deadline: deadline, cancellation: cancellation)
       @request_metadata = Metadata.new(request_metadata)
       @response_metadata = Metadata.new
       @response_trailers = Metadata.new
       @deadline = deadline
       @lifecycle = lifecycle
+    rescue StandardError
+      @cancellation&.close
+      raise
     end
 
     # Framework invokers record escaping application failures before normalizing them.
@@ -54,11 +58,16 @@ module ConnectRPC
     end
 
     def cancelled?
-      deadline&.expired? || false
+      @cancellation.cancelled?
     end
 
     def check!
-      deadline&.check!
+      @cancellation.check!
     end
+
+    def cancellation_reason = @cancellation.reason
+
+    def commit! = @cancellation.commit!
+    def close = @cancellation.close
   end
 end

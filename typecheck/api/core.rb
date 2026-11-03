@@ -67,3 +67,18 @@ outcome.request_bytes&.succ
 outcome.response_bytes&.succ
 outcome.request_metadata.each_value(&:size)
 outcome.response_metadata.each_value(&:size)
+
+source = ConnectRPC::CancellationSource.new
+token = source.token
+registration = token.on_cancel { token.cancelled? }
+registration.unregister
+source.cancel
+token.reason&.to_s
+token.check!
+ConnectRPC::Client.new(base_url: "https://example.invalid", binding: binding)
+                  .call(method, "request", timeout: nil, cancellation: token).message
+context = ConnectRPC::Context.new(cancellation: token)
+context.cancellation_reason&.to_s
+context.cancelled?
+context.check!
+server.call(path: method.path, http_method: "POST", headers: {}, input: nil, cancellation: token)

@@ -36,10 +36,6 @@ profiles.product(directions).each do |profile_name, direction|
   profile_file = profile_name == "identity" ? "profile.yaml" : "profile-gzip.yaml"
   command = ["connectconformance", "--mode", direction, "--conf", File.join(root, "conformance", profile_file),
              "--vv"]
-  if direction == "client"
-    command.push("--known-failing",
-                 "@#{Conformance::Ledger::MANIFESTS.fetch(profile_name)}")
-  end
   command.push("--run", ARGV[1]) if ARGV[1]
   command.push("--", RbConfig.ruby, "-I#{File.join(root, 'lib')}",
                File.join(root, "conformance", "#{direction}.rb"))
@@ -53,9 +49,7 @@ profiles.product(directions).each do |profile_name, direction|
     summary = ledger.parse(raw, events, process.exitstatus)
     File.write(File.join(artifacts, "summary.json"), "#{JSON.pretty_generate(summary)}\n")
     puts "#{direction}: #{summary.fetch(:executed)} executed, #{summary.fetch(:passed)} passed, " \
-         "#{summary.fetch(:failed)} failed, #{summary.fetch(:unsupported_instructions)} " \
-         "unsupported caller instructions " \
-         "(still executed), #{summary.fetch(:expected_failed)} failed as expected"
+         "#{summary.fetch(:failed)} failed, #{summary.fetch(:expected_failed)} expected failures"
     results << process.success?
   rescue StandardError => e
     File.write(File.join(artifacts, "summary.json"),

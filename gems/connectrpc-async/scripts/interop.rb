@@ -33,7 +33,7 @@ Dir.mktmpdir("interop-", File.join(root, "vendor/async")) do |fixtures|
       origin = output.gets&.strip
       raise "Invalid Go peer origin" unless origin&.match?(%r{\Ahttps?://127\.0\.0\.1:\d+\z})
 
-      reactor do
+      reactor do |task|
         options = { origin: origin }
         options[:ca_file] = File.join(fixtures, "ca.pem") unless mode == "h2c"
         options.merge!(host_tls(client_identity).except(:client_ca)) if mode == "mtls"
@@ -65,6 +65,26 @@ Dir.mktmpdir("interop-", File.join(root, "vendor/async")) do |fixtures|
           end
           puts "PASS generated Ruby->Go #{mode} #{codec} success/presence/types/errors/details/metadata/trailers/limit"
         end
+        source = ConnectRPC::CancellationSource.new
+        pending = task.async(finished: false) do
+          client(transport, origin).echo(AsyncHelpers::MESSAGE.new, timeout: nil, cancellation: source.token,
+                                                                    metadata: { "x-cancel-probe" => "hold" })
+        end
+        raise "Go handler not entered" unless task.with_timeout(5) { output.gets&.strip } == "CANCEL_ENTERED"
+
+        source.cancel
+        begin
+          pending.wait
+          raise "Expected Ruby token cancellation"
+        rescue ConnectRPC::Error => e
+          raise "Wrong cancellation result" unless e.code == "canceled"
+        end
+        raise "Go context not cancelled" unless task.with_timeout(5) { output.gets&.strip } == "CANCEL_OBSERVED"
+
+        healthy = client(transport, origin).echo(AsyncHelpers::MESSAGE.new(name: "after"))
+        raise "Go healthy call failed" unless healthy.message.name == "after"
+
+        puts "PASS Ruby token->Go context #{mode} cancellation, healthy stream and pooled connection"
       ensure
         transport&.close
       end
@@ -86,6 +106,48 @@ Dir.mktmpdir("interop-", File.join(root, "vendor/async")) do |fixtures|
         system(binary, "client", origin, "Async", fixtures, mode, chdir: File.join(root, "interop"), exception: true)
       end
       peer.wait
+    ensure
+      host&.close(grace: 0)
+    end
+  end
+  # Run reverse cancellation independently of the unchanged baseline peers.
+  # rubocop:disable-next Style/CombinableLoops
+  %w[h2c tls mtls].each do |mode|
+    reactor do |task|
+      entered = Async::Queue.new
+      cancelled = Async::Queue.new
+      target = server(echo: lambda { |message, context|
+        unless message.name == "after"
+          entered.enqueue(context)
+          task.with_timeout(5) { Async::Task.current.yield until context.cancelled? }
+          raise "Wrong native cancellation reason" unless context.cancellation_reason == :canceled
+
+          cancelled.enqueue(true)
+          context.check!
+        end
+        message
+      })
+      host = ConnectRPC::Async::Host.new(server: target,
+                                         tls: if mode == "h2c"
+                                                nil
+                                              else
+                                                host_tls(
+                                                  server_identity, anchors: mode == "mtls" ? [ca] : nil
+                                                )
+                                              end).start
+      origin = "#{mode == 'h2c' ? 'http' : 'https'}://127.0.0.1:#{host.port}"
+      Open3.popen2(binary, "cancel", origin, fixtures, mode,
+                   chdir: File.join(root, "interop")) do |input, output, process|
+        entered.dequeue
+        input.puts("cancel")
+        input.flush
+        raise "Go cancellation result missing" unless task.with_timeout(5) { output.gets&.strip } == "GO_CANCELED"
+
+        cancelled.dequeue
+        raise "Go healthy sibling missing" unless task.with_timeout(5) { output.gets&.strip } == "GO_HEALTHY"
+        raise "Go cancellation peer failed" unless process.value.success?
+      end
+      puts "PASS Go context->Ruby Context #{mode} actual peer CANCEL and healthy sibling"
     ensure
       host&.close(grace: 0)
     end

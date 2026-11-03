@@ -1,4 +1,0 @@
-# Unsupported explicit caller cancellation. These RPCs still execute.
-# Both exact assertion lines and faithful uncanceled results are checked by ledger.rb.
-Client Cancellation/HTTPVersion:1/Protocol:PROTOCOL_CONNECT/Codec:CODEC_JSON/Compression:COMPRESSION_IDENTITY/TLS:false/unary/cancel-after-close-send
-Client Cancellation/HTTPVersion:1/Protocol:PROTOCOL_CONNECT/Codec:CODEC_PROTO/Compression:COMPRESSION_IDENTITY/TLS:false/unary/cancel-after-close-send

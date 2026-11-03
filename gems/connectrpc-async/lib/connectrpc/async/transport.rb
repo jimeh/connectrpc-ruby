@@ -35,30 +35,41 @@ module ConnectRPC
         check_affinity!
         raise ArgumentError, "Request URL must match the transport origin" unless same_origin?(request.url)
 
-        request.deadline&.check!
+        check_request!(request)
         unless @state == :running && @calls.size < @max_requests
           raise Error.new(:unavailable, "HTTP/2 transport admission is closed or full")
         end
 
+        event = ::Async::Promise.new
         operation = { request: request }
         @calls[operation] = true
+        registration = request.cancellation&.on_cancel { event.resolve([:cancellation, nil]) }
         begin
+          check_request!(request)
           operation[:task] = @lifetime.async(finished: false) do
-            activate(request) { exchange(operation) }
+            result = activate(request) { exchange(operation) }
+            event.resolve([:response, result])
+          rescue StandardError => e
+            request.lifecycle&.record_failure(e)
+            event.resolve([:error, e])
+          ensure
+            event.resolve([:stopped, nil])
           end
           expires = Internal.now + request.deadline.remaining if request.deadline
-          result = Internal.wait(operation[:task], expires)
-          request.deadline&.check!
+          tag, result = wait_event(event, expires)
+          check_request!(request)
+          raise result if tag == :error
           raise Error.new(:unavailable, "HTTP/2 connection closed") unless result
 
           result
         rescue ::Async::TimeoutError, StandardError => e
           request.lifecycle&.record_failure(e)
-          request.deadline&.check!
+          check_request!(request)
           raise e if e.is_a?(ConnectRPC::Error)
 
           raise Error.new(:unavailable, "HTTP/2 transport failed"), cause: nil
         ensure
+          registration&.unregister
           cleanup(operation)
           @calls.delete(operation)
           @progress.signal
@@ -66,6 +77,25 @@ module ConnectRPC
       end
 
       private
+
+      def check_request!(request)
+        request.cancellation ? request.cancellation.check! : request.deadline&.check!
+      end
+
+      def wait_event(event, expires)
+        loop do
+          return event.wait unless expires
+
+          remaining = expires - Internal.now
+          raise ::Async::TimeoutError if remaining <= 0
+
+          begin
+            return event.wait(timeout: [remaining, Internal::MAX_WAIT].min)
+          rescue ::Async::TimeoutError
+            raise if Internal.now >= expires
+          end
+        end
+      end
 
       def parse_origin(value)
         uri = URI(value)
@@ -89,8 +119,14 @@ module ConnectRPC
         expires = Internal.now + @connect_timeout
         deadline = operation.fetch(:request).deadline
         expires = [expires, Internal.now + deadline.remaining].min if deadline
+        check_request!(operation.fetch(:request))
         setup = @lifetime.async(finished: false) do
-          activate(operation.fetch(:request)) { setup_connection(resource) }
+          activate(operation.fetch(:request)) do
+            check_request!(operation.fetch(:request))
+            setup_connection(resource)
+            check_request!(operation.fetch(:request))
+            resource.connection
+          end
         end
         resource.task = setup
         begin
@@ -128,6 +164,7 @@ module ConnectRPC
 
       def exchange(operation)
         request = operation.fetch(:request)
+        check_request!(request)
         task = ::Async::Task.current
         @acquiring[task] = operation
         begin
@@ -138,7 +175,7 @@ module ConnectRPC
           @acquiring.delete(task)
         end
         connection.synchronize do
-          request.deadline&.check!
+          check_request!(request)
           raise IOError, "Connection is not reusable" unless connection.reusable?
 
           headers = request.headers.dup
@@ -167,7 +204,7 @@ module ConnectRPC
         bytes = +"".b
         input = Internal::Input.new(body)
         while (chunk = input.read([16_384, limit + 1 - bytes.bytesize].min))
-          request.deadline&.check!
+          check_request!(request)
           bytes << chunk
           raise Error.new(:resource_exhausted, "Response exceeds byte limit") if bytes.bytesize > limit
         end

@@ -368,3 +368,29 @@ RSpec.describe ConnectRPC::Testing::Transport do
     expect(calls.size).to eq(1)
   end
 end
+
+RSpec.describe "Testing cancellation forwarding" do
+  it "passes a distinct cooperative Context without committing its client or shared source" do
+    source = ConnectRPC::CancellationSource.new
+    contexts = []
+    binding = ConnectRPC::Bindings::GoogleProtobuf.new
+    service = Example::V1::EchoService
+    type = Example::V1::EchoMessage
+    handlers = service.handlers(echo: lambda { |message, context|
+      contexts << context
+      source.cancel if message.name == "cancel"
+      context.check!
+      message
+    }, fail: ->(*) { raise "unused" })
+    server = ConnectRPC::Server.new(services: [service::SERVICE], binding: binding, handlers: handlers)
+    client = ConnectRPC::Client.new(base_url: "http://in-process.invalid", binding: binding,
+                                    transport: ConnectRPC::Testing::Transport.new(server: server))
+    expect(client.call(service::ECHO, type.new(name: "first"), timeout: nil,
+                                                               cancellation: source.token).message.name).to eq("first")
+    expect(source.token).not_to be_cancelled
+    expect do
+      client.call(service::ECHO, type.new(name: "cancel"), timeout: nil, cancellation: source.token)
+    end.to raise_error(ConnectRPC::Error) { |e| expect(e.code).to eq("canceled") }
+    expect(contexts.map(&:cancellation_reason)).to eq([nil, :canceled])
+  end
+end

@@ -45,6 +45,31 @@ module Interop # rubocop:disable Metrics/ModuleLength
     end
   end
 
+  # Keep observed peer barriers and worker cleanup together.
+  # rubocop:disable Metrics/CyclomaticComplexity, Metrics/PerceivedComplexity
+  def self.cancellation(url, output)
+    source = ConnectRPC::CancellationSource.new
+    client = ConnectRPC::Client.new(base_url: url, binding: EchoExample::BINDING)
+    worker = Thread.new do
+      client.call(EchoExample::ECHO, EchoExample::Message.new, timeout: nil, cancellation: source.token,
+                                                               metadata: { "x-cancel-probe" => "hold" })
+    rescue ConnectRPC::Error => e
+      e
+    end
+    check(output.wait_readable(5) && output.gets&.strip == "CANCEL_ENTERED", "Go cancellation handler not entered")
+    source.cancel
+    check(worker.join(2) && worker.value.code == "canceled", "NetHTTP cancellation failed")
+    check(output.wait_readable(5) && output.gets&.strip == "CANCEL_OBSERVED", "Go context did not observe disconnect")
+    check(client.call(EchoExample::ECHO, EchoExample::Message.new(name: "after")).message.name == "after",
+          "Later Go call failed")
+    puts "PASS Ruby token->Go context cancellation over NetHTTP, with subsequent healthy call"
+  ensure
+    source&.cancel
+    worker&.join(2)
+  end
+
+  # rubocop:enable Metrics/CyclomaticComplexity, Metrics/PerceivedComplexity
+
   def self.ruby_handlers
     handler = lambda do |request, context|
       context.response_metadata["x-echo"] = context.request_metadata["x-request"] || []
@@ -94,6 +119,7 @@ module Interop # rubocop:disable Metrics/ModuleLength
         check(url&.start_with?("http://127.0.0.1:"), "Invalid Go peer readiness: #{url.inspect}")
         system(binary, client_mode, url, "Go", chdir: peer_dir, exception: true)
         ruby_peer.ruby_clients(url)
+        cancellation(url, output) if profile == "identity"
       ensure
         input.close
         unless process.join(10)

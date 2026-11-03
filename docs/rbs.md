@@ -207,8 +207,8 @@ optional runtime require.
 
 | Owner | Supported API and extension SPI |
 | --- | --- |
-| Core | Method, non-generic Service, Client/Server options and calls, records, Metadata, Deadline/Context, Error/ErrorDetail, explicit NetHTTP and Google binding entry points |
-| Core SPI | `_Binding`, `_Transport`, `_Input`, `_Handler`, `_Invoker`, callable clocks/error handlers, `_Subscriber`, four separate optional observer callback capabilities, host lifecycle Handle |
+| Core | Method, non-generic Service, Client/Server options and calls, records, Metadata, CancellationSource/Token/Registration, Deadline/Context, Error/ErrorDetail, explicit NetHTTP and Google binding entry points |
+| Core SPI | `_Cancellation`, `_Binding`, `_Transport`, `_Input`, `_Handler`, `_Invoker`, callable clocks/error handlers, `_Subscriber`, four separate optional observer callback capabilities, host lifecycle Handle |
 | Rack | Middleware constructor/call and shared `_App`, `_Body`, `_CallableBody`, `_Stream`, env and response contracts |
 | Testing | In-process Transport constructor/call, reusable as the core transport |
 | Rails | Controller inclusion, `connect`, documented private service/binding/handlers/limits/instrumentation overrides and nullable request/context/method readers |
@@ -263,7 +263,7 @@ schema-generated service APIs retain their existing contract and parity checks.
 
 `typecheck/Steepfile` checks actual core source and private state under
 `Steep::Diagnostic::Ruby.strict`: method, metadata, error, deadline, protocol,
-client, server, instrumentation, compression and message_io, plus entry/version.
+client, server, instrumentation, compression message_io, cancellation and get_query, plus entry/version.
 `rbs:source` validates the resolved source list and Ruby syntax before checking.
 Its implementation-only declarations live outside every gem's `sig/` directory.
 Erasure is limited to custom bindings/heterogeneous messages, external JSON and
@@ -348,3 +348,19 @@ return/data/callback diagnostics and source-addition/signature-omission drift,
 restores every captured byte, and reruns green. It never mutates delivery source.
 The captured executable alone uses 0755 for existing archive guards; source modes
 remain unchanged. Logs and capture bindings live under ignored `vendor/rbs/`.
+
+## Cancellation types
+
+Client and generated unary methods accept `cancellation: CancellationToken?`.
+Pass `CancellationSource.new.token`; the source itself is rejected. Tokens expose
+only observation and listener registration. `CancellationRegistration#unregister`
+returns bool. Token reasons are `:canceled | nil`; Context's combined
+`cancellation_reason` also admits `:deadline_exceeded`.
+
+`TransportRequest` appends `cancellation: _Cancellation?` after `lifecycle`;
+negative indices shift accordingly (`-1` is cancellation, `-2` is lifecycle).
+Complete and partial Structs retain their precise field contracts and aggregate
+unions. `_Cancellation` is the read-only transport/host extension SPI, with
+`cancelled?`, `reason`, `check!` and `on_cancel`. Server/Context accept that SPI
+and own separate processing arbitration. Deadline remains an actual Deadline or
+nil. Runtime cancellation, reactor and blocking-I/O limits still apply.

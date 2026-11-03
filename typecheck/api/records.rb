@@ -32,3 +32,16 @@ ConnectRPC::TransportRequest.new(url: URI("https://example.invalid"), http_metho
 ConnectRPC::TransportRequest.new.each_pair { |pair| pair[0].id2name }
 ConnectRPC::TransportResponse.new(status: 200, headers: {}, body: "").each_pair { |pair| pair[0].id2name }
 ConnectRPC::TransportResponse.new.each_pair { |pair| pair[0].id2name }
+
+source = ConnectRPC::CancellationSource.new
+outgoing = ConnectRPC::TransportRequest.new(url: URI("http://example.invalid"), http_method: "POST", headers: {},
+                                            body: "", response_limit: 10, cancellation: source.token)
+outgoing[-8].host
+outgoing[-2]&.host_rejected?
+outgoing[-1]&.check!
+outgoing["cancellation"] = source.token
+outgoing[:cancellation]&.on_cancel { nil }&.unregister
+partial_request = ConnectRPC::TransportRequest[cancellation: source.token]
+partial_request[-1]&.reason
+partial_request[-8]&.host
+partial_request[:cancellation] = nil

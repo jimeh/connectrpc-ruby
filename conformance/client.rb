@@ -4,13 +4,16 @@ require_relative "schema"
 require_relative "framing"
 require_relative "telemetry"
 require "connectrpc/transports/net_http"
+require "stringio"
+require "zlib"
 
 module Conformance
   # Instrument the actual transport exchange, after connection setup. No request
   # headers or results are repaired by this adapter.
   class ObservedNetHTTP < ConnectRPC::Transports::NetHTTP
-    def initialize(name)
+    def initialize(name, cancellation: false)
       @test_name = name
+      @cancellation_case = cancellation
       super()
     end
 
@@ -23,7 +26,45 @@ module Conformance
 
     private
 
+    # Observe only successful BufferedIO writes, after the underlying socket
+    # accepted all bytes. Keep telemetry serialization outside the timed write.
+    module WrittenBytes
+      attr_accessor :observed_writes, :last_write_at
+
+      def write(*parts)
+        count = super
+        if observed_writes
+          observed_writes << parts.join.b
+          self.last_write_at = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+        end
+        count
+      end
+    end
+
+    def with_connection(http, deadline, cancellation = nil, &)
+      super
+    ensure
+      if @cancellation_case
+        Telemetry.record("socket_cleanup", name: @test_name, closed: @raw_socket&.closed? == true,
+                                           interrupted: http.socket_lifecycle&.instance_variable_get(:@closed) == true,
+                                           retired: http.socket_lifecycle&.instance_variable_get(:@retired) == true)
+      end
+    end
+
+    def written_header(leading, name)
+      return unless leading
+
+      line = leading.lines.find { |field| field.downcase.start_with?("#{name}:") }
+      line.split(":", 2).last.strip if line
+    end
+
     def exchange(http, request, outgoing)
+      if @cancellation_case
+        @raw_socket = http.instance_variable_get(:@socket).io.to_io
+        buffered = http.instance_variable_get(:@socket)
+        buffered.extend(WrittenBytes)
+        buffered.observed_writes = []
+      end
       Telemetry.record("dispatch", name: @test_name, deadline: !request.deadline.nil?,
                                    response_limit: request.response_limit, request_headers: outgoing.to_hash,
                                    http_method: outgoing.method, query: Telemetry.query(request.url.query),
@@ -33,6 +74,30 @@ module Conformance
       Telemetry.record("wire_response", name: @test_name, status: response.status,
                                         wire: Telemetry.wire(response.body, response.headers))
       response
+    ensure
+      if buffered
+        raw = buffered.observed_writes.join.b
+        leading, body = raw.split("\r\n\r\n", 2)
+        headers = outgoing.to_hash
+        decoded = if body && headers["content-encoding"] == ["gzip"]
+                    Zlib::GzipReader.new(StringIO.new(body)).read
+                  else
+                    body
+                  end
+        message = if decoded
+                    type = request.url.path.end_with?("/IdempotentUnary") ? IdempotentUnaryRequest : UnaryRequest
+                    json = headers["content-type"] == ["application/json"]
+                    value = json ? type.decode_json(decoded) : type.decode(decoded)
+                    JSON.parse(type.encode_json(value))
+                  end
+        Telemetry.record("request_written", name: @test_name, bytes: raw.bytesize,
+                                            written_at: buffered.last_write_at,
+                                            headers_complete: !body.nil?, body: Telemetry.wire(body || "", headers),
+                                            test_name_header: written_header(leading, "x-test-case-name"),
+                                            content_length: written_header(leading, "content-length"),
+                                            request: message,
+                                            timeout_header: leading&.downcase&.include?("connect-timeout-ms:"))
+      end
     end
   end
 
@@ -50,13 +115,15 @@ module Conformance
 
     def perform(request)
       declaration, message, client, metadata = prepare(request)
-      if request.cancel
-        instruction = JSON.parse(request.cancel.class.encode_json(request.cancel))
-        Telemetry.record("unsupported_cancellation", name: request.test_name, instruction: instruction)
-      end
-      # Caller cancellation has no library API. Execute the real, uncanceled
-      # RPC and faithfully return its outcome for the runner to judge.
-      result = invoke(client, declaration, message, metadata, request)
+      result = if request.cancel
+                 instruction = JSON.parse(request.cancel.class.encode_json(request.cancel))
+                 Telemetry.record("cancellation_instruction", name: request.test_name, instruction: instruction)
+                 with_cancellation(request, instruction) do |token|
+                   invoke(client, declaration, message, metadata, request, cancellation: token)
+                 end
+               else
+                 invoke(client, declaration, message, metadata, request)
+               end
       Telemetry.record("completed", name: request.test_name, outcome: result.error ? "error" : "success",
                                     code: result.error&.code)
       ClientCompatResponse.new(test_name: request.test_name, response: result)
@@ -75,8 +142,9 @@ module Conformance
       end
 
       message = declaration.request_type.decode(wire.value)
+      transport = ObservedNetHTTP.new(request.test_name, cancellation: !request.cancel.nil?)
       client = ConnectRPC::Client.new(base_url: "http://#{request.host}:#{request.port}", binding: BINDING,
-                                      transport: ObservedNetHTTP.new(request.test_name),
+                                      transport: transport,
                                       use_get: request.use_get_http_method,
                                       codec: request.codec == :CODEC_PROTO ? :proto : :json,
                                       encoding: request.compression == :COMPRESSION_GZIP ? :gzip : :identity,
@@ -96,9 +164,42 @@ module Conformance
       raise "Unsupported client instruction" unless supported
     end
 
-    def invoke(client, declaration, message, metadata, request)
+    def with_cancellation(request, instruction)
+      source = ConnectRPC::CancellationSource.new
+      mutex = Mutex.new
+      condition = ConditionVariable.new
+      done = false
+      # Arm before the blocking Client call, exactly as the reference client.
+      expires = Process.clock_gettime(Process::CLOCK_MONOTONIC) + (instruction.fetch("afterCloseSendMs") / 1000.0)
+      timer = Thread.new do
+        fire = mutex.synchronize do
+          until done
+            remaining = expires - Process.clock_gettime(Process::CLOCK_MONOTONIC)
+            break unless remaining.positive?
+
+            condition.wait(mutex, remaining)
+          end
+          !done
+        end
+        if fire
+          requested_at = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+          changed = source.cancel
+          Telemetry.record("cancellation_signal", name: request.test_name, requested_at: requested_at, changed: changed,
+                                                  reason: source.token.reason)
+        end
+      end
+      yield source.token
+    ensure
+      mutex&.synchronize do
+        done = true
+        condition.signal
+      end
+      timer&.join
+    end
+
+    def invoke(client, declaration, message, metadata, request, cancellation: nil)
       timeout = request.has_timeout_ms? ? request.timeout_ms / 1000.0 : nil
-      response = client.call(declaration, message, metadata: metadata, timeout: timeout)
+      response = client.call(declaration, message, metadata: metadata, timeout: timeout, cancellation: cancellation)
       payloads = declaration == UNIMPLEMENTED ? [] : [response.message.payload || ConformancePayload.new]
       ClientResponseResult.new(payloads: payloads, response_headers: Conformance.headers(response.metadata),
                                response_trailers: Conformance.headers(response.trailers))

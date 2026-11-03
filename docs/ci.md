@@ -27,10 +27,10 @@ hits too. Package isolation still installs cached `.gem` artifacts offline and
 exercises default JSON and Net::HTTP. Interop still verifies modules and builds
 with readonly dependencies before its 18 original identity cases, separate generated
 Ruby path and 40 gzip cases. Conformance regenerates descriptors and separately
-executes the identity profile (94 client: 92 passes, two exact expected failures;
-88 server passes) and gzip profile (88 client: 86 passes, two exact expected
-caller-cancellation failures; 82 server passes). All four failures remain
-executed under separate exact-name manifests and strict causal checks. Existing canonical commands
+executes the identity profile (96 client/90 server actual passes, including GET)
+and gzip profile (88 client/82 server actual passes). All 184 client and 172 server
+cases must pass with zero expected failures; cancellation uses actual source,
+request-write and socket cleanup evidence. Existing canonical commands
 cover both portions without new jobs or matrix axes. Product, generator and harness specs remain
 part of Specs; CI guard specs cover task and runtime boundaries.
 

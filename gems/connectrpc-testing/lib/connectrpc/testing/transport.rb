@@ -11,9 +11,9 @@ module ConnectRPC
 
       def call(request)
         validate!(request)
-        request.deadline&.check!
+        request.cancellation ? request.cancellation.check! : request.deadline&.check!
         response = dispatch(request)
-        request.deadline&.check!
+        request.cancellation ? request.cancellation.check! : request.deadline&.check!
         Protocol.check_size!(response.body, request.response_limit)
         response
       end
@@ -24,7 +24,8 @@ module ConnectRPC
         headers = request.headers.dup
         headers["connect-timeout-ms"] = [request.deadline.timeout_ms] if request.deadline
         @server.call(path: request.url.path, http_method: request.http_method,
-                     headers: headers, input: BytesReader.new(request.body), query: request.url.query || "")
+                     headers: headers, input: BytesReader.new(request.body), query: request.url.query || "",
+                     cancellation: request.cancellation)
       end
 
       def validate!(request)

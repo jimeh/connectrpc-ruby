@@ -25,12 +25,13 @@ A transport provides `call(request)` with these host-neutral value objects:
 
 | Object | Fields |
 | --- | --- |
-| `TransportRequest` | `url` (URI), `http_method`, `headers` (lower-case keys, string arrays), `body` (bytes), `response_limit`, `deadline` |
+| `TransportRequest` | `url` (URI), `http_method`, `headers` (lower-case keys, string arrays), `body` (bytes), `response_limit`, `deadline`, `lifecycle`, `cancellation` |
 | `TransportResponse` | `status` (integer), `headers` (repeated string arrays), `body` (bounded bytes) |
 | `Response` | `message` (binding type), `metadata`, `trailers` (Metadata objects) |
 
 `TransportRequest.deadline` is a `Deadline` or `nil`. Custom transports must
-enforce a supplied deadline during their I/O and bound the body incrementally.
+enforce a supplied deadline and read-only `cancellation` SPI during their owned
+I/O and bound the body incrementally.
 An absent deadline means no aggregate RPC expiry or wire timeout. Client validation checks their output again but
 cannot undo an oversized allocation or interrupt their work.
 
@@ -201,10 +202,64 @@ advertisement so the default HTTP gem never transparently inflates or rewrites
 content encoding/length; transports carry opaque encoded bytes.
 
 Server timeout validation creates a per-call monotonic deadline. Checks run
-around input, decoding, handler execution and encoding. `cancelled?` means
-expiry, and handlers can call `check!` cooperatively. No header means no server
+around input, decoding, handler execution and encoding. `cancelled?` combines explicit cancellation and expiry;
+`cancellation_reason` identifies `:canceled` or `:deadline_exceeded`, and handlers
+can call `check!` cooperatively. No header means no server
 expiry. Synchronous Rack cannot interrupt blocked input, arbitrary handlers or
 codec work, or detect every disconnect. No hard server cancellation is claimed.
+
+## Explicit cancellation ownership
+
+`CancellationSource` alone initiates permanent cancellation. Its read-only
+`CancellationToken` can be shared across calls. `cancel` returns true only on
+its first transition. Registration and invocation claims are synchronized;
+callbacks run outside locks in the cancelling thread. Already-cancelled
+registration invokes before returning. `unregister` returns true only for a
+pending registration, suppresses even snapshotted pending callbacks and releases
+references. Running/finished/unregistered listeners return false without waiting.
+Listeners must be short and nonblocking; `StandardError` does not stop siblings.
+Internal resource retirement separately guards callbacks that already started.
+
+Client and Context each own distinct terminal arbitration. While open, they
+accept an already-expired real deadline first, then directly observed source
+cancellation, then a result/error. Accepted reasons never flip. A source's
+transition requests cancellation; its timestamp does not determine the call's
+serialized winner. Completion directly rechecks source state, including after
+decoding or exceptional codec/transport paths. HTTP response receipt alone
+cannot complete the client. Instrumentation and callbacks run outside state
+locks, and only the executing fibers complete instrumentation. Original failures
+remain available to lifecycle observers; normalized canceled/deadline/transport
+errors have fixed safe messages and no sensitive rescued cause.
+
+`TransportRequest.deadline` remains the actual Deadline or nil.
+`TransportRequest.cancellation` implements `_Cancellation`: `cancelled?`,
+`reason`, `check!`, and `on_cancel`. Transports only observe this call-owned SPI;
+they cannot complete the client. Server accepts the same read-only seam and
+creates its own processing arbitration. Testing forwards it without completing
+the client's state. Context exposes its combined reason, with no token reader.
+
+NetHTTP installs socket ownership before startup, attaches raw TCP at the TLS
+hook or after plain startup, and closes a newly exposed socket immediately if
+cancellation already won. TLS/read/write/header waits are interruptible; native
+DNS/TCP before exposure remains cooperative. Per-call retirement prevents late
+callbacks from accessing completed/recycled resources. Nil deadlines have no
+watchdog or wire timeout; the exact independent native cap remains
+`9_999_999.999`. Retry/reconnect guards and TLS verification remain enabled.
+
+Async foreign-thread listeners only resolve a tagged Promise. Its owner reactor
+arbitrates, stops private operation/setup tasks and performs bounded cleanup.
+Promise resolution order does not decide the RPC outcome. Healthy stream reset
+preserves the shared pool and siblings; a stuck deferred frame retains the one
+100 ms cleanup budget and raw-first whole-connection fallback.
+
+Native HTTP/2 creates a request cancellation source before processing,
+independently of instrumentation. Only peer RST_STREAM with CANCEL (0x8) signals
+it, before upstream input teardown can resume reads. Exceptional input paths
+record their original failure and check cancellation before normalization.
+Processing detaches this source at completion; delivery observation continues
+independently. NO_ERROR/other resets, END_STREAM, half-close, EOF, connection loss
+and host/fatal-owner abort add no explicit cancellation guarantee. Portable
+Rack/Rails and native Falcon HTTP/1 add no token injection or peer detection.
 
 ## Evidence and future direction
 
@@ -217,12 +272,11 @@ run against the Go server as a reference baseline, with raw repeated Go fields
 instead of WEBrick's coalesced values. There are 18 fixture cases: six reference
 baseline cases and twelve cross-language cases. This is a unary subset, not
 full conformance. The separate [official conformance harness](../conformance/README.md)
-executes 96 configured client and 90 server cases, including two GET successes in each direction. Two caller-cancellation
-instructions remain executed expected failures under an exact-name limitation
-manifest with strict causal result checks. A separate gzip inventory adds
-88 client and 82 server cases. Its two caller-cancellation failures remain
-executed expected failures under a separate exact-name manifest with strict
-causal and wire checks; all other cases pass. Separate Go gzip scenarios
+requires 96 client and 90 server identity passes, including two GET successes
+in each direction. A separate gzip inventory requires 88 client and 82 server
+passes. All four caller-cancellation cases pass unwaived with actual request
+writes and socket cleanup, for 184 client and 172 server passes in total.
+Separate Go gzip scenarios
 exercise both directions/codecs, negotiation, errors and bounds with wire
 observations. The pinned Go client rewrites accept preferences, so independent
 raw Go HTTP requests additionally prove gzip-request/identity-response behavior.

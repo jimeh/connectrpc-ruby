@@ -42,7 +42,9 @@ write_result.nil?
 request.counts["b"] = 2
 request.sent_at = Google::Protobuf::Timestamp.new(seconds: 1)
 request.limit = 3
-response = generated.exchange(request, metadata: { "caller" => ["typecheck"] }, timeout: nil)
+source = ConnectRPC::CancellationSource.new
+response = generated.exchange(request, metadata: { "caller" => ["typecheck"] }, timeout: nil,
+                                       cancellation: source.token)
 response.message.count.succ
 response.message = RbsFixture::Messages::Envelope::Reply.new(count: 9)
 client.call(RbsFixture::Api::Echo::EXCHANGE, request).message.count.succ

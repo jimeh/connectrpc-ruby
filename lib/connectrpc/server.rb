@@ -47,9 +47,10 @@ module ConnectRPC
 
     # Keep processing and terminal ensures adjacent to their owner.
     # rubocop:disable Metrics/MethodLength, Metrics/AbcSize, Metrics/CyclomaticComplexity, Metrics/PerceivedComplexity
-    def call(path:, http_method:, headers:, input:, query: "", lifecycle: nil)
+    def call(path:, http_method:, headers:, input:, query: "", lifecycle: nil, cancellation: nil)
       unless lifecycle || @instrumentation
-        return process_call(path: path, http_method: http_method, headers: headers, input: input, query: query)
+        return process_call(path: path, http_method: http_method, headers: headers, input: input, query: query,
+                            cancellation: cancellation)
       end
 
       owned = lifecycle.nil?
@@ -59,7 +60,7 @@ module ConnectRPC
       begin
         active.activate do
           process_call(path: path, http_method: http_method, headers: headers, input: input, query: query,
-                       lifecycle: active)
+                       lifecycle: active, cancellation: cancellation)
         end
       ensure
         active.processing_finished(code: nil, error: $ERROR_INFO) unless active.outcome
@@ -69,32 +70,37 @@ module ConnectRPC
 
     private
 
-    def process_call(path:, http_method:, headers:, input:, query:, lifecycle: nil)
+    def process_call(path:, http_method:, headers:, input:, query:, lifecycle: nil, cancellation: nil)
       # @type var response: TransportResponse?
       # @type var context: Context?
       context = nil
+      cancellation&.check!
       method = @methods[path]
       safe = method&.idempotency == :no_side_effects
       unless http_method == "POST" || (http_method == "GET" && (!method || safe))
         return response = bare(405, "allow" => [safe ? "GET, POST" : "POST"])
       end
       if http_method == "GET"
-        return response = process_get(path, headers, input, query, lifecycle) { |created| context = created }
+        return response = process_get(path, headers, input, query, lifecycle, cancellation) do |created|
+          context = created
+        end
       end
 
       headers = Protocol.headers(headers)
       codec = Protocol.content_codec(Protocol.single(headers, "content-type"))
       return response = bare(415, "accept-post" => ["application/proto, application/json"]) unless codec
 
-      decoded_context = context = request_context(headers, lifecycle)
+      decoded_context = context = request_context(headers, lifecycle, cancellation)
       response = dispatch(path, headers, input, codec, decoded_context, lifecycle: lifecycle)
     rescue Error => e
       lifecycle&.record_failure(e)
-      response = error_response(e, context, lifecycle)
+      response = error_response(terminal_error(e, context, cancellation), context, lifecycle)
     rescue StandardError => e
       lifecycle&.record_failure(e)
-      response = error_response(Error.new(:internal, "Internal error"), context, lifecycle)
+      response = error_response(terminal_error(Error.new(:internal, "Internal error"), context, cancellation), context,
+                                lifecycle)
     ensure
+      context&.close
       vary_get(response) if http_method == "GET" && response
       if lifecycle && !lifecycle.outcome
         lifecycle.processing_finished(code: response&.status == 200 ? "OK" : lifecycle.code, error: $ERROR_INFO,
@@ -108,7 +114,7 @@ module ConnectRPC
 
     # GET negotiation and dispatch preserve the specified rejection order.
     # rubocop:disable Metrics/MethodLength, Metrics/AbcSize, Metrics/CyclomaticComplexity, Metrics/PerceivedComplexity
-    def process_get(path, headers, input, query, lifecycle)
+    def process_get(path, headers, input, query, lifecycle, state) # rubocop:disable Metrics/ParameterLists
       Protocol.check_size!(query, @get_query_limit)
       headers = Protocol.headers(headers)
       # Start valid deadlines before query work, but defer invalid timeout errors
@@ -120,12 +126,14 @@ module ConnectRPC
         timeout_error = e
         nil
       end
-      values = GetQuery.parse(query, limit: @get_query_limit, wire_limit: @request_wire_limit, deadline: deadline)
+      context = Context.new(deadline: deadline, lifecycle: lifecycle, cancellation: state)
+      yield context
+      values = GetQuery.parse(query, limit: @get_query_limit, wire_limit: @request_wire_limit, deadline: context)
       codecs = { "proto" => :proto, "json" => :json } #: Hash[String, codec]
       codec = codecs[values["encoding"] || ""]
       return bare(415, "accept-post" => ["application/proto, application/json"]) unless codec
       return bare(415, "accept-post" => ["application/proto, application/json"]) unless empty_get_body?(headers, input,
-                                                                                                        deadline)
+                                                                                                        context)
 
       negotiated = get_headers(headers, values)
       raise Error.new(:invalid_argument, "Missing GET message") unless values.key?("message")
@@ -133,13 +141,12 @@ module ConnectRPC
 
       metadata = Protocol.metadata(headers)
       lifecycle.request_metadata = Instrumentation.carrier(metadata) if lifecycle
-      context = Context.new(request_metadata: metadata, deadline: deadline, lifecycle: lifecycle)
-      yield context
+      metadata.each { |key, values| context.request_metadata[key] = values }
       context.check!
       method = @methods[path]
       raise Error.new(:unimplemented, "Unknown method") unless method
 
-      bytes = GetQuery.payload(values, limit: @request_wire_limit, deadline: deadline)
+      bytes = GetQuery.payload(values, limit: @request_wire_limit, deadline: context)
       lifecycle.request_bytes = bytes.bytesize if lifecycle
       bytes = inflate_request(bytes, negotiated, context)
       request = decode_request(bytes, method, codec, context)
@@ -213,7 +220,7 @@ module ConnectRPC
 
     def inflate_request(bytes, headers, context)
       if Protocol.content_encoding(headers) == :gzip && !bytes.empty?
-        bytes = Compression.decode(bytes, limit: @request_limit, deadline: context.deadline)
+        bytes = Compression.decode(bytes, limit: @request_limit, deadline: context)
       end
       Protocol.check_size!(bytes, @request_limit)
       bytes
@@ -236,11 +243,12 @@ module ConnectRPC
       body = serialize_response(message, method, codec, context)
       headers = response_headers(context, Protocol::CONTENT_TYPES.fetch(codec))
       if encoding == :gzip
-        body = Compression.encode(body, limit: @response_wire_limit, deadline: context.deadline)
+        body = Compression.encode(body, limit: @response_wire_limit, deadline: context)
         headers["content-encoding"] = ["gzip"]
       end
       Protocol.check_size!(body, @response_wire_limit)
       context.check!
+      context.commit!
       TransportResponse.new(status: 200, headers: headers, body: body)
     end
 
@@ -254,11 +262,12 @@ module ConnectRPC
 
     def bare(status, headers) = TransportResponse.new(status: status, headers: headers, body: "")
 
-    def request_context(headers, lifecycle = nil)
+    def request_context(headers, lifecycle = nil, cancellation = nil)
       validate_headers!(headers)
       metadata = Protocol.metadata(headers)
       lifecycle.request_metadata = Instrumentation.carrier(metadata) if lifecycle
-      Context.new(request_metadata: metadata, deadline: request_deadline(headers), lifecycle: lifecycle)
+      Context.new(request_metadata: metadata, deadline: request_deadline(headers), lifecycle: lifecycle,
+                  cancellation: cancellation)
     rescue ArgumentError => e
       lifecycle&.record_failure(e)
       raise Error.new(:invalid_argument, "Malformed request metadata")
@@ -293,6 +302,17 @@ module ConnectRPC
       context&.response_trailers&.each { |key, values| headers["trailer-#{key}"] = values }
       headers["accept-encoding"] = ["gzip, identity"] if @encoding == :gzip
       headers.merge("content-type" => [content_type])
+    end
+
+    def terminal_error(error, context, cancellation)
+      if context
+        context.commit!
+      else
+        cancellation&.check!
+      end
+      error
+    rescue Error => e
+      e
     end
 
     def error_response(error, context, lifecycle = nil) # rubocop:disable Metrics/MethodLength, Metrics/AbcSize

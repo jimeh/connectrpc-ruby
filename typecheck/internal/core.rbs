@@ -34,6 +34,9 @@ module ConnectRPC
     @expires_at: Numeric
   end
   class Context
+    @cancellation: CallCancellation
+    def commit!: () -> nil
+    def close: () -> nil
     @lifecycle: Instrumentation::Handle?
   end
   module Protocol
@@ -64,13 +67,13 @@ module ConnectRPC
   class Compression
     CHUNK_SIZE: Integer
     @limit: Integer
-    @deadline: Deadline?
+    @deadline: _Check?
     @output: String
     class Malformed < StandardError
     end
-    def self.encode: (String, limit: Integer, ?deadline: Deadline?) -> String
-    def self.decode: (String, limit: Integer, ?deadline: Deadline?) -> String
-    def initialize: (Integer, Deadline?) -> void
+    def self.encode: (String, limit: Integer, ?deadline: _Check?) -> String
+    def self.decode: (String, limit: Integer, ?deadline: _Check?) -> String
+    def initialize: (Integer, _Check?) -> void
     def encode: (String) -> String
     def decode: (String) -> String
     private
@@ -83,14 +86,14 @@ module ConnectRPC
   class GetQuery
     KEYS: Array[String]
     @wire_limit: Integer
-    @deadline: Deadline?
-    def self.parse: (String, limit: Integer, wire_limit: Integer, ?deadline: Deadline?) -> Hash[String, String]
-    def initialize: (Integer, Deadline?) -> void
+    @deadline: _Check?
+    def self.parse: (String, limit: Integer, wire_limit: Integer, ?deadline: _Check?) -> Hash[String, String]
+    def initialize: (Integer, _Check?) -> void
     def parse: (String) -> Hash[String, String]
-    def self.payload: (Hash[String, String], limit: Integer, ?deadline: Deadline?) -> String
+    def self.payload: (Hash[String, String], limit: Integer, ?deadline: _Check?) -> String
     def self.decode_base64: (String, Integer) -> String
-    def self.build: (URI::Generic, String, codec: codec, encoding: encoding, limit: Integer, ?deadline: Deadline?) -> URI::Generic
-    def self.form_size: (String, Deadline?) -> Integer
+    def self.build: (URI::Generic, String, codec: codec, encoding: encoding, limit: Integer, ?deadline: _Check?) -> URI::Generic
+    def self.form_size: (String, _Check?) -> Integer
     def self.form_safe?: (Integer) -> bool
     private
     def field: (String, Integer) -> [Integer, Integer]
@@ -104,6 +107,7 @@ module ConnectRPC
     def initialize: (_Input?, Integer, Context) -> void
     def read: (Integer?) -> String
     private
+    def read_chunk: (_Input, Integer) -> String?
     def read_chunks: (String) -> nil
   end
   class Client
@@ -121,20 +125,20 @@ module ConnectRPC
     @response_wire_limit: Integer
     @instrumentation: Instrumentation?
     private
-    def process_call: [Req, Resp] (Method[Req, Resp], Req, metadata_input, Numeric?, ?lifecycle: Instrumentation::Handle?, ?injection: metadata_input?) ?{ (TransportResponse) -> void } -> Response[Resp]
-    def instrumented_call: [Req, Resp] (Method[Req, Resp], Req, metadata_input, Numeric?) -> Response[Resp]
+    def process_call: [Req, Resp] (Method[Req, Resp], Req, metadata_input, Numeric?, CancellationToken?, ?lifecycle: Instrumentation::Handle?, ?injection: metadata_input?) ?{ (TransportResponse) -> void } -> Response[Resp]
+    def instrumented_call: [Req, Resp] (Method[Req, Resp], Req, metadata_input, Numeric?, CancellationToken?) -> Response[Resp]
     def injected_metadata: (Metadata, metadata_input?) -> Metadata
     def parse_base_url: (String) -> URI::Generic
     def default_transport: () -> Transports::NetHTTP
-    def encode_request: [Req, Resp] (Method[Req, Resp], Req, Deadline?, ?Instrumentation::Handle?) -> String
-    def build_request: [Req, Resp] (Method[Req, Resp], Req, Metadata, Deadline?, ?Instrumentation::Handle?) -> TransportRequest
+    def encode_request: [Req, Resp] (Method[Req, Resp], Req, _Check?, ?Instrumentation::Handle?) -> String
+    def build_request: [Req, Resp] (Method[Req, Resp], Req, Metadata, _Check?, ?Instrumentation::Handle?) -> TransportRequest
     def request_headers: (Metadata, Deadline?, ?get: bool) -> headers
-    def compress_request: (String, Deadline?, ?Instrumentation::Handle?) -> String
-    def response_body: (TransportResponse, headers, Deadline?, ?Instrumentation::Handle?) -> String
-    def inflate_response: (String, Integer, Deadline?, ?Instrumentation::Handle?) -> String
+    def compress_request: (String, _Check?, ?Instrumentation::Handle?) -> String
+    def response_body: (TransportResponse, headers, _Check?, ?Instrumentation::Handle?) -> String
+    def inflate_response: (String, Integer, _Check?, ?Instrumentation::Handle?) -> String
     def response_encoding!: (headers) -> encoding
     def validate_response!: (Integer, headers, String) -> nil
-    def read_response: [Req, Resp] (TransportResponse, Method[Req, Resp], Deadline?, ?Instrumentation::Handle?) -> Response[Resp]
+    def read_response: [Req, Resp] (TransportResponse, Method[Req, Resp], _Check?, ?Instrumentation::Handle?) -> Response[Resp]
     def decode_response: [Req, Resp] (String, Method[Req, Resp], ?Instrumentation::Handle?) -> Resp
   end
   class Server
@@ -151,9 +155,9 @@ module ConnectRPC
     @get_query_limit: Integer
     @error_limit: Integer
     private
-    def process_call: (path: String, http_method: String, headers: headers, input: _Input?, query: String, ?lifecycle: Instrumentation::Handle?) -> TransportResponse
-    def process_get: (String, headers, _Input?, String, Instrumentation::Handle?) { (Context) -> void } -> TransportResponse
-    def empty_get_body?: (headers, _Input?, Deadline?) -> bool
+    def process_call: (path: String, http_method: String, headers: headers, input: _Input?, query: String, ?lifecycle: Instrumentation::Handle?, ?cancellation: _Cancellation?) -> TransportResponse
+    def process_get: (String, headers, _Input?, String, Instrumentation::Handle?, _Cancellation?) { (Context) -> void } -> TransportResponse
+    def empty_get_body?: (headers, _Input?, _Check?) -> bool
     def get_headers: (headers, Hash[String, String]) -> headers
     def vary_get: (TransportResponse) -> void
     def declarations: (Array[Service]) -> Hash[String, Method[untyped, untyped]]
@@ -164,10 +168,11 @@ module ConnectRPC
     def encode_response: (untyped, Method[untyped, untyped], codec, Context, encoding?) -> TransportResponse
     def serialize_response: (untyped, Method[untyped, untyped], codec, Context) -> String
     def bare: (Integer, headers) -> TransportResponse
-    def request_context: (headers, ?Instrumentation::Handle?) -> Context
+    def request_context: (headers, ?Instrumentation::Handle?, ?_Cancellation?) -> Context
     def validate_headers!: (headers) -> nil
     def request_deadline: (headers) -> Deadline?
     def response_headers: (Context?, String) -> headers
+    def terminal_error: (Error, Context?, _Cancellation?) -> Error
     def error_response: (Error, Context?, ?Instrumentation::Handle?) -> TransportResponse
   end
 end
@@ -217,5 +222,54 @@ module ConnectRPC
       def notify_finished: (Completion) -> Array[Callbacks]
       def complete: () -> Array[Callbacks]
     end
+  end
+end
+
+module ConnectRPC
+  interface _Check
+    def check!: () -> nil
+  end
+  class CancellationRegistration
+    @owner: CancellationSignal
+    @callback: (^() -> void)?
+    @mutex: Mutex
+    @state: :registered | :running | :finished | :unregistered
+    def initialize: (CancellationSignal) { () -> void } -> void
+    def invoke: () -> void
+  end
+  class CancellationSignal
+    @mutex: Mutex
+    @cancelled: bool
+    @registrations: Array[CancellationRegistration]
+    def initialize: () -> void
+    def cancelled?: () -> bool
+    def cancel: () -> bool
+    def on_cancel: () { () -> void } -> CancellationRegistration
+    def remove: (CancellationRegistration) -> nil
+  end
+  class CancellationSource
+    @signal: CancellationSignal
+  end
+  class CancellationToken
+    @signal: CancellationSignal
+    def initialize: (CancellationSignal) -> void
+  end
+  class CallCancellation
+    @deadline: Deadline?
+    @source: _Cancellation?
+    @mutex: Mutex
+    @terminal: :finished | cancellation_reason | nil
+    @signal: CancellationSignal
+    @registration: CancellationRegistration?
+    def initialize: (?deadline: Deadline?, ?cancellation: _Cancellation?) -> void
+    def reason: () -> cancellation_reason?
+    def cancelled?: () -> bool
+    def check!: () -> nil
+    def on_cancel: () { () -> void } -> CancellationRegistration
+    def commit!: () -> nil
+    def close: () -> nil
+    private
+    def observe: (bool) -> cancellation_reason?
+    def raise_reason: (cancellation_reason?) -> nil
   end
 end
