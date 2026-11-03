@@ -1,6 +1,7 @@
-# Optional RBS
+# Public API signatures
 
-The gem ships core signatures and can generate unary service signatures. RBS
+Every package ships its own gem-discovered signatures and dependency manifest.
+Core also generates unary service signatures. RBS
 and Steep are development tools; neither is required by the runtime. Default
 Connect generation produces exactly the same Ruby files as before. Only the
 plugin parameter `rbs=true` adds `<stem>_connect.rbs` for each service-bearing
@@ -142,18 +143,174 @@ method = ConnectRPC::Method.new(service: "example.API", name: "Call",
 This annotation asserts the association; it does not prove that a custom
 binding honors it. Generated constants establish it from schema information.
 
-The mutable Response, TransportRequest and TransportResponse signatures cover
-fully initialized keyword constructors only. Supply every member, including
-Metadata objects and an explicit nil deadline where applicable. Ordinary Ruby
-Struct construction also permits omitted members that default to nil; that
-construction is outside the precise typed subset. Generic covariance and broad
-Struct indexing are intentionally absent.
+Response, TransportRequest and TransportResponse remain mutable Ruby Structs.
+Fully initialized `new` and class `[]` calls return precise records. Response's
+message type is inferred, and Client still returns `Response[Reply]` with
+non-null Metadata and trailers. Omitted or nil fields produce a partial-record
+interface with nullable readers; a supplied Response message retains its own
+type. Keyword arguments and positional keyword Hashes are both accepted.
+
+```ruby
+complete = ConnectRPC::Response.new(message: reply,
+  metadata: ConnectRPC::Metadata.new, trailers: ConnectRPC::Metadata.new)
+complete[:metadata].to_h
+partial = ConnectRPC::Response[message: reply]
+partial.metadata&.to_h
+partial[:metadata] = nil
+# complete[:metadata] = nil # Rejected: precise records retain their field types.
+```
+
+Field readers, writers and literal Symbol/String/integer indexing preserve each
+field's type, including negative indices. Common read-only Struct operations
+(`to_h`, `members`, `size`, `length`, `to_a`, `values`, `each`, `each_pair`,
+`values_at`, `deconstruct`, `deconstruct_keys`) are declared. Unrestricted
+reflection, such as `send` or `instance_variable_set` that invalidates precise
+fields, is an application escape boundary. Arbitrary computed member names,
+recursive `dig`, block-form `to_h` and custom Struct subclass behavior are outside
+this declared surface. These signatures do not change Ruby's runtime mutation.
+
+## Package APIs and extension contracts
+
+Use the installed package names in a Steepfile:
+
+```ruby
+target :app do
+  library "connectrpc"
+  library "connectrpc-rack" # Only the integrations in your application bundle.
+  library "connectrpc-testing"
+  library "connectrpc-rails"
+  library "connectrpc-async"
+  library "connectrpc-falcon"
+  library "connectrpc-otel"
+  check "app"
+  configure_code_diagnostics(Steep::Diagnostic::Ruby.strict)
+end
+```
+
+Each optional manifest resolves only its dependency closure. Core declares no
+Google runtime or optional hosting/tracing namespace and has no runtime tool
+dependencies. Its GoogleProtobuf binding class signature is available without
+the explicit message-runtime bridge; the binding itself still requires the
+optional runtime require.
+
+| Owner | Supported API and extension SPI |
+| --- | --- |
+| Core | Method, non-generic Service, Client/Server options and calls, records, Metadata, Deadline/Context, Error/ErrorDetail, explicit NetHTTP and Google binding entry points |
+| Core SPI | `_Binding`, `_Transport`, `_Input`, `_Handler`, `_Invoker`, callable clocks/error handlers, `_Subscriber`, four separate optional observer callback capabilities, host lifecycle Handle |
+| Rack | Middleware constructor/call and shared `_App`, `_Body`, `_CallableBody`, `_Stream`, env and response contracts |
+| Testing | In-process Transport constructor/call, reusable as the core transport |
+| Rails | Controller inclusion, `connect`, documented private service/binding/handlers/limits/instrumentation overrides and nullable request/context/method readers |
+| Async | Application/native HTTP capabilities, Host, Transport, ServerSession/accepted handles, TLSConfiguration, complete static/provider record shapes, status/error callbacks, rotation/drain/identity |
+| Falcon | Endpoint's supported operations, Environment overrides and Server/native application/TLS lifecycle |
+| OTel | Subscriber configuration and narrow tracer-provider/tracer/span/propagator capabilities; SDK and context implementation remain application owned |
+
+Constructors include their actual options and return types. Type checks reject
+wrong field, callback and configuration types. Runtime checks still enforce
+names, byte limits, finite numeric ranges, required TLS key presence, TLS/wire
+validity, reactor affinity, admission and lifecycle ordering. RBS records with
+nullable fields do not prove those keys were explicitly present. There is no
+claim of fully type-safe RPC execution.
+
+Instrumentation subscribers return an opaque object or nil. They may implement
+any subset of attach, detach, processing_finished and finished. The separate
+`_ObserverAttach`, `_ObserverDetach`, `_ObserverProcessingFinished` and
+`_ObserverFinished` interfaces let applications deliberately check a capability;
+returning an arbitrary object from `start` does not automatically validate all
+its optional callbacks. Core resolves methods once into private typed callback
+records at one reflection boundary. Call, Outcome and Completion are shallowly
+immutable Data values. In particular, the client Call's carrier remains mutable
+for validated propagation injection. Handle exposes `activate`, `finish`,
+`record_failure`, `host_rejected!` and `host_rejected?` for hosting. Construction,
+processing bookkeeping and Instrumentation.start/safely/carrier are internal.
+
+Optional class signatures describe ConnectRPC-owned supported operations. They
+do not promise full upstream framework inheritance or describe all Rack/Rails,
+Async/Falcon or OpenTelemetry APIs. No broad external namespace declarations are
+shipped through normal discovery. Falcon checks fallback status, scalar/repeated
+headers and enumerable/callable response bodies using small local structural
+capabilities. These also accept `ConnectRPC::Rack::_App`; the Falcon closure does
+not require the `connectrpc-rack` gem. Async owns shared native HTTP/TLS
+capabilities reused by Falcon.
+
+## Source inventory and implementation checks
+
+The reviewed `typecheck/surface.json` records definitions, attributes, visibility,
+constructor parameters/defaults and Struct/Data members across all maintained
+library source. Each entry is explicitly supported, extension SPI or internal.
+`rbs:inventory` checks the syntax tree against that inventory and requires shipped
+declarations for supported members, including record readers/writers. A new
+source method, changed option/visibility/member or omitted signature fails.
+Review source and docs before updating an inventory entry; Ruby-public helpers
+are not automatically compatibility promises. This is a practical source drift
+check, not semantic proof of arbitrary Ruby metaprogramming.
+
+Protocol, Compression, MessageIO, Method.validate_name!, private callback records,
+core processing helpers, socket internals, framework glue internals and generator
+implementation helpers stay outside the supported API. Generator invocation and
+schema-generated service APIs retain their existing contract and parity checks.
+
+`typecheck/Steepfile` checks actual core source and private state under
+`Steep::Diagnostic::Ruby.strict`: method, metadata, error, deadline, protocol,
+client, server, instrumentation, compression and message_io, plus entry/version.
+`rbs:source` validates the resolved source list and Ruby syntax before checking.
+Its implementation-only declarations live outside every gem's `sig/` directory.
+Erasure is limited to custom bindings/heterogeneous messages, external JSON and
+optional observer discovery. The internal Numeric arithmetic declaration fills
+a missing upstream base signature; custom numeric arithmetic remains a runtime
+requirement. Narrow assertions record established phase, slice and format facts.
+
+NetHTTP socket/watchdog implementation, Google codec internals, generator
+internals and optional backend/framework implementation checking are later stages.
+Their supported public signatures and consumer checks are included here.
+
+Callable-body stream capabilities include the standard Rack read, write, `<<`,
+flush, close, half-close and closed-state operations. Native HTTP header
+capabilities return an Enumerator of name/value tuples. Struct `each_pair`
+yields one name/value tuple, which a block may explicitly destructure.
+
+Custom OpenTelemetry providers must supply the finite span-context capabilities
+used by the default W3C propagator: valid state, raw trace/span ids, sampled
+flags and serialized tracestate. These declarations introduce no SDK or upstream
+namespace; static types do not prove valid id lengths or sampling policy.
+
+### Opt-in framework compatibility
+
+Rails inheritance and Falcon's configuration DSL need declarations for upstream
+classes that currently ship no RBS. Each integration packages a finite bridge
+outside its automatically loaded `sig/`:
+
+| Package | Explicit signature directory | Tested upstream versions |
+| --- | --- | --- |
+| `connectrpc-rails` | `rbs/action_controller_8` | actionpack 8.0.5.1 and 8.1.4 |
+| `connectrpc-falcon` | `rbs/async_service_0_25` | Falcon 0.57.0, async-service 0.25.0 |
+
+Add only the selected bridge paths to an application's Steep target, using the
+same gem-relative `Pathname` pattern as the Google bridge above. Omit these
+bridges when the application already supplies declarations for those upstream
+classes. Normal library discovery introduces neither `ActionController` nor
+`Async::Service` declarations.
+
+The Rails bridge covers nominal `ActionController::API` and `Base` inheritance
+and `before_action` with named Symbol callbacks. It does not type the rest of
+Rails or its callback option/block forms. The Falcon bridge covers
+`Loader#service(name)` with a builder block, `include`, String `url`, Integer
+`count`, block `prepare!`, and value/block forms of `connectrpc_server`,
+`rack_app`, `tls`, `tls_provider` and `server_options`. Deferred option blocks
+have the ConnectRPC Environment capabilities. No general `method_missing`
+acceptance or complete upstream inheritance is declared. The repository checks
+actual Rails subclasses and a real Falcon-loaded service configuration with
+these declarations and runtime counterparts. The Falcon fixture accepts the real loader as a typed method argument, letting
+Steep infer the builder block's self type without a file-level self override.
 
 ## Repository checks
 
 ```sh
 mise run rbs:setup
 mise run rbs:check
+mise run rbs:source    # Focused strict implementation leaf.
+mise run rbs:api       # Focused supported API callers.
+mise run rbs:inventory # Source/signature drift.
+mise run rbs:proof     # Independent capture red/green probes.
 mise run rbs:package
 MISE_RUBY_VERSION=4.0.9 mise run rbs:check
 MISE_RUBY_VERSION=4.0.9 mise run rbs:package
@@ -164,4 +321,18 @@ Bundles, Bundler state, compiler caches and local evidence live under
 `vendor/rbs/`. The package check installs into a fresh GEM_HOME and exercises
 normal installed signature/executable discovery outside the checkout. It clears
 checkout Ruby and Bundler load paths. Both Ruby lanes run these feature gates in
-CI; core, Rails and Async bundles remain independent.
+CI. `rbs:check` includes strict source, inventory and all API consumers as well as
+the original generated positive/17 negative and nominal/bridge cases.
+`rbs:package` uses the existing frozen optional bundle setups for offline runtime
+archives, builds every owned signature package and checks each library through
+normal installed discovery. It checks composed environments in both load orders,
+real Rails subclass inclusion, Rack/Testing calls, native session/TLS operations,
+Falcon endpoint integration and API-only OTel without loading an SDK. The original
+package guards and generated installed callers remain. Core, optional and tool
+bundles stay independent; this feature adds no dependency or pin.
+
+`rbs:proof` captures independent source inodes without Git metadata, proves wrong
+return/data/callback diagnostics and source-addition/signature-omission drift,
+restores every captured byte, and reruns green. It never mutates delivery source.
+The captured executable alone uses 0755 for existing archive guards; source modes
+remain unchanged. Logs and capture bindings live under ignored `vendor/rbs/`.

@@ -38,7 +38,8 @@ module ConnectRPC
     end
 
     def self.headers(values)
-      values.each_with_object({}) { |(key, entries), result| (result[key.downcase] ||= []).concat(Array(entries)) }
+      result = {} #: headers
+      values.each_with_object(result) { |(key, entries), result| (result[key.downcase] ||= []).concat(Array(entries)) }
     end
 
     def self.single(headers, key)
@@ -61,13 +62,16 @@ module ConnectRPC
     end
 
     def self.accept_encoding!(value, encoding)
-      return [encoding, :identity].uniq if value.nil?
+      # @type var defaults: Array[encoding]
+      defaults = [encoding, :identity]
+      return defaults.uniq if value.nil?
       unless value.is_a?(Array) && !value.empty? && value.uniq.size == value.size &&
              value.all? { |entry| %i[identity gzip].include?(entry) }
         raise ArgumentError, "Response encodings must be distinct identity/gzip symbols"
       end
 
-      (value - [:identity]) + [:identity]
+      identity = [:identity] #: Array[encoding]
+      (value - identity) + identity
     end
 
     def self.response_encoding(headers, request_encoding, enabled)
@@ -132,11 +136,14 @@ module ConnectRPC
     end
 
     def self.wire_error(body, fallback:)
+      # JSON.parse is the external data boundary; validate before assembling wire_error.
       object = JSON.parse(body)
       return unless valid_wire_error?(object)
 
       code = Error::HTTP_STATUS.key?(object["code"]) ? object["code"] : fallback
-      { code: code, message: object.fetch("message", ""), details: wire_details(object.fetch("details", [])) }
+      # @type var details: Array[ErrorDetail]
+      details = []
+      { code: code, message: object.fetch("message", ""), details: wire_details(object.fetch("details", details)) }
     rescue JSON::ParserError, ArgumentError, TypeError, EncodingError
       # Invalid Connect error bodies use the protocol's HTTP fallback table.
       nil

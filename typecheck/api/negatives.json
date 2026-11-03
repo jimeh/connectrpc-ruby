@@ -1,0 +1,19 @@
+{
+  "partial_nil": "Ruby::NoMethod",
+  "record_write": "Ruby::UnresolvedOverloading",
+  "configuration": "Ruby::ArgumentTypeMismatch",
+  "subscriber": "Ruby::ArgumentTypeMismatch",
+  "observer": "Ruby::IncompatibleAssignment",
+  "rack": "Ruby::ArgumentTypeMismatch",
+  "provider": "Ruby::ArgumentTypeMismatch",
+  "tls_config": "Ruby::ArgumentTypeMismatch",
+  "tls_callback": "Ruby::ArgumentTypeMismatch",
+  "rails_reader": "Ruby::NoMethod",
+  "otel": "Ruby::ArgumentTypeMismatch",
+  "invoker": "Ruby::NoMethod",
+  "falcon_fallback": "Ruby::ArgumentTypeMismatch",
+  "falcon_dsl": "Ruby::ArgumentTypeMismatch",
+  "struct_pair": "Ruby::NoMethod",
+  "native_headers": "Ruby::NoMethod",
+  "otel_span": "Ruby::IncompatibleAssignment"
+}

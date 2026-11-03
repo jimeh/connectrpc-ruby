@@ -18,7 +18,7 @@ serial cache primer or aggregate job:
 | Async Go interoperability | 3.4.12, 4.0.9 | `mise run async:interop` |
 | Rack specs/check/package | 3.4.12, 4.0.9 | `mise run rack:test`, `mise run rack:check`, `mise run rack:package` |
 | In-process testing | 3.4.12, 4.0.9 | `mise run testing:verify` |
-| RBS consumers/package | 3.4.12, 4.0.9 | `mise run rbs:check`, then `mise run rbs:package` |
+| RBS source/API/package | 3.4.12, 4.0.9 | `mise run rbs:check`, then `mise run rbs:package` |
 | Falcon specs/package | 3.4.12, 4.0.9 | `mise run falcon:test`, then `mise run falcon:package` |
 | Falcon Go interoperability | 3.4.12, 4.0.9 | `mise run falcon:interop` |
 
@@ -224,3 +224,17 @@ process workers, Rack/Rails fallback and isolated installed service hosting.
 Separate Go jobs use the existing pinned toolchain/module caches and run the
 independent peer against actual Falcon workers. Every lane checks workspace
 cleanliness. Local verification does not establish hosted exact-head success.
+
+## Public API typing gates
+
+The existing two RBS jobs also run strict implementation checks for the ten core
+files and private state, validate the actual source list, enforce the reviewed
+source/signature inventory, and check application callers for all seven packages.
+The original generated positive/17 exact negative and nominal/bridge checks remain.
+Installed checks use normal RBS discovery in a fresh external GEM_HOME, validate
+each optional dependency closure and both composition orders, and exercise API-only
+OTel without loading an SDK. Scoped frozen optional setups supply offline archives;
+no lock, tool pin, runtime dependency or job/matrix axis is added. The workflow
+retains all 28 checks. Local `rbs:proof` verifies representative source and drift
+failures in an independent capture; a passing consumer alone is not strict source
+checking or backend interoperability evidence. See the [RBS guide](rbs.md).

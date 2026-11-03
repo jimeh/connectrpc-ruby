@@ -10,7 +10,8 @@ archives = %w[connectrpc connectrpc-async connectrpc-falcon].map do |name|
   File.join(root, "vendor/falcon/pkg/#{name}-0.1.0.gem")
 end
 packages = archives.map { |archive| Gem::Package.new(archive) }
-expected = %w[LICENSE README.md examples/falcon.rb lib/connectrpc/falcon.rb lib/connectrpc/falcon/endpoint.rb
+expected = %w[LICENSE README.md examples/falcon.rb lib/connectrpc/falcon.rb sig/connectrpc-falcon.rbs sig/manifest.yaml
+              rbs/async_service_0_25/service.rbs lib/connectrpc/falcon/endpoint.rb
               lib/connectrpc/falcon/environment.rb lib/connectrpc/falcon/http1.rb
               lib/connectrpc/falcon/rack_guard.rb lib/connectrpc/falcon/server.rb].sort
 abort "Falcon manifest changed" unless packages.last.contents.sort == expected

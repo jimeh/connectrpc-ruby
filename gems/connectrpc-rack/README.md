@@ -75,3 +75,12 @@ neutral per-call lifecycle or the optional [OpenTelemetry adapter](../connectrpc
 A supplied `rack.response_finished` extension takes precedence over body close.
 Without it the observation is only `body_closed`, with no delivery promise.
 Consumers must close bodies or invoke promised callbacks.
+
+## Static signatures
+
+This package owns `sig/` and its discovery manifest. Add
+`library "connectrpc-rack"` to a strict Steep target with this gem installed.
+See the [RBS guide](../../docs/rbs.md) for supported APIs, extension contracts,
+partial records, runtime validation and framework-signature limits.
+`mise run rbs:check` checks application callers for this package; strict core
+source checking is a separate target from backend implementation checking.

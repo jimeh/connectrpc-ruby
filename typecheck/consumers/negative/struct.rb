@@ -4,4 +4,5 @@ require "connectrpc"
 require "connectrpc/bindings/google_protobuf"
 require "service_connect"
 require_relative "../support"
-ConnectRPC::TransportResponse.new(status: 200)
+response = ConnectRPC::Response.new(message: "reply", metadata: ConnectRPC::Metadata.new, trailers: ConnectRPC::Metadata.new)
+response[:metadata] = nil

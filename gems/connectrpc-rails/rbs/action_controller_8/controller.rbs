@@ -1,0 +1,11 @@
+# Opt in only when the application has no Action Controller signatures.
+# Tested with actionpack 8.0.5.1 and 8.1.4. This is a nominal inheritance seam
+# and the named callback form, not a declaration of the complete Rails API.
+module ActionController
+  class API
+    def self.before_action: (*Symbol) -> void
+  end
+  class Base
+    def self.before_action: (*Symbol) -> void
+  end
+end

@@ -1,0 +1,48 @@
+module ConnectRPC
+  module OTel
+    VERSION: String
+    SEMCONV_VERSION: String
+    type attributes = Hash[String, String | Integer | Float | bool | Array[String]]
+    interface _TraceFlags
+      def sampled?: () -> bool
+    end
+    interface _Tracestate
+      def empty?: () -> bool
+      def to_s: () -> String
+    end
+    # The default W3C propagator consumes these API capabilities. Id contents
+    # and lengths remain the provider's runtime responsibility.
+    interface _SpanContext
+      def valid?: () -> bool
+      def trace_id: () -> String
+      def span_id: () -> String
+      def trace_flags: () -> _TraceFlags
+      def tracestate: () -> _Tracestate
+    end
+    interface _Span
+      def context: () -> _SpanContext
+      def set_attribute: (String, String | Integer | Float | bool | Array[String]) -> void
+      def status=: (Object) -> void
+      def finish: () -> void
+    end
+    interface _Tracer
+      def start_span: (String, kind: :client | :server, with_parent: Object, attributes: attributes) -> _Span
+    end
+    interface _TracerProvider
+      def tracer: (String, String, attributes: attributes) -> _Tracer
+    end
+    interface _Getter
+      def get: (Hash[String, String | Array[String]], String) -> String?
+      def keys: (Hash[String, String | Array[String]]) -> Array[String]
+    end
+    interface _Propagator
+      def extract: (Hash[String, String | Array[String]], context: Object, getter: _Getter) -> Object
+      def inject: (Hash[String, String | Array[String]], context: Object) -> void
+    end
+    class Subscriber
+      def initialize: (?tracer_provider: _TracerProvider, ?propagator: _Propagator?, ?request_metadata: Array[String], ?response_metadata: Array[String]) -> void
+      # The adapter's observer is private and discovered by the neutral lifecycle.
+      def start: (Instrumentation::Call) -> Object?
+    end
+  end
+end

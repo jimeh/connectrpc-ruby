@@ -24,7 +24,7 @@ module RBSHarness
     "map" => "Ruby::ArgumentTypeMismatch",
     "lifecycle_delivery" => "Ruby::ArgumentTypeMismatch",
     "lifecycle_failure" => "Ruby::ArgumentTypeMismatch",
-    "struct" => "Ruby::InsufficientKeywordArguments"
+    "struct" => "Ruby::UnresolvedOverloading"
   }.freeze
 
   def self.capture!(command, working:, environment: {})
@@ -83,8 +83,9 @@ module RBSHarness
       loader = RBS::EnvironmentLoader.new
       #{core ? "loader.add(path: Pathname(#{core.dump})); loader.add(library: 'uri')" : "loader.add(library: 'connectrpc')"}
       env = RBS::Environment.from_loader(loader).resolve_type_names
-      abort 'Core signatures introduce Google declarations' if env.class_decls.keys.any? { |key| key.to_s.start_with?('::Google') }
-      puts 'Core signature loading introduces no Google declarations'
+      forbidden = %w[::Google ::Rack ::Rails ::Async ::Falcon ::OpenTelemetry ::ConnectRPC::Rack ::ConnectRPC::Rails ::ConnectRPC::Async ::ConnectRPC::Falcon ::ConnectRPC::OTel ::ConnectRPC::Testing]
+      abort 'Core signatures introduce optional declarations' if env.class_decls.keys.any? { |key| forbidden.any? { |name| key.to_s == name || key.to_s.start_with?(name + '::') } }
+      puts 'Core signature loading introduces no optional namespaces'
     RUBY_CODE
     puts capture!([RbConfig.ruby, "-e", isolation], working: working)
     File.write(File.join(working, "results.json"), JSON.pretty_generate(ruby: RUBY_VERSION, cases: results))

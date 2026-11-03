@@ -30,6 +30,7 @@ module ConnectRPC
       step { stream.finish { |output| append(output) } }
       @output
     ensure
+      # @type var stream: Zlib::Deflate?
       stream&.close
     end
 
@@ -50,7 +51,7 @@ module ConnectRPC
     def chunks(bytes)
       cursor = 0
       while cursor < bytes.bytesize
-        chunk = bytes.byteslice(cursor, CHUNK_SIZE)
+        chunk = bytes.byteslice(cursor, CHUNK_SIZE) #: String
         yield chunk
         cursor += chunk.bytesize
       end
@@ -61,12 +62,14 @@ module ConnectRPC
       until stream.finished?
         raise Malformed, "Malformed gzip content" if cursor == bytes.bytesize
 
-        cursor += inflate_chunk(stream, bytes.byteslice(cursor, CHUNK_SIZE))
+        chunk = bytes.byteslice(cursor, CHUNK_SIZE) #: String
+        cursor += inflate_chunk(stream, chunk)
       end
       # finish may return raw trailing input. Only inflate's validated block
       # output belongs in the payload; the cursor starts the next gzip member.
       cursor
     ensure
+      # @type var stream: Zlib::Inflate?
       stream&.close
     end
 

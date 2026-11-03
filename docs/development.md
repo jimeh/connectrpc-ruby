@@ -354,7 +354,7 @@ of root build output. `check:package:rails` checks all three manifests, guards a
 conventional runtime dependency requirements, stages only their runtime closure, installs offline into fresh
 GEM_HOME/GEM_PATH outside the checkout, and exercises installed generated
 binary/JSON clients against native Rails callbacks and structured failures.
-Only the adapter README, `LICENSE` and library files ship in its archive. No dependencies
+The adapter README, `LICENSE`, library files and its owned `sig/` manifest/signatures ship in its archive. No dependencies
 or fixtures are vendored into either package, and nothing is published.
 
 ## Optional HTTP/2 development
@@ -417,8 +417,12 @@ strict Steep configuration, the explicit protobuf bridge and nominal alternative
 `mise run rbs:setup` installs the independent frozen checksummed development
 bundle. `rbs:check` checks protoc/Buf parity, unchanged default Ruby and official
 message RBS, deterministic output, real generated runtime calls, RBS validation
-and positive/negative strict consumers. `rbs:package` checks installed discovery
-and the same consumers outside the checkout. Run both on each pinned Ruby.
+and positive/negative strict consumers. It also runs the ten-file strict core
+implementation target, reviewed source inventory and per-package API callers.
+Discover the focused `rbs:source`, `rbs:api`, `rbs:inventory` and capture-only
+`rbs:proof` leaves with `mise tasks`. `rbs:package` checks every installed package
+and composed optional environments outside the checkout, using the existing
+scoped frozen optional setups to populate offline archives. Run both on each pinned Ruby.
 These leaves keep their Bundler state, caches, bundle and package outputs under
 `vendor/rbs/` and add no runtime or root-bundle dependencies.
 

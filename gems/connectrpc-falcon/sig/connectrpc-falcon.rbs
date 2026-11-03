@@ -1,0 +1,65 @@
+module ConnectRPC
+  module Falcon
+    # Endpoint and task/socket objects expose only their consumed capabilities.
+    interface _BoundEndpoint
+      def endpoint: () -> Endpoint
+      def close: () -> void
+    end
+    class Endpoint
+      def self.parse: (String, ?Object?, **Object) -> Endpoint
+      def initialize: (URI::Generic, ?Object?, **Object) -> void
+      def scheme: () -> String
+      def bound: () -> _BoundEndpoint
+      def with: (**Object) -> Endpoint
+    end
+    # Keep this small Rack capability local: Falcon does not depend on the
+    # connectrpc-rack gem. Its structural shapes also accept Rack::_App values.
+    type rack_headers = Hash[String, String | Array[String]]
+    type rack_response = [Integer, rack_headers, _RackBody | _RackCallableBody]
+    type server_options = { ?max_connections: Integer, ?max_requests: Integer, ?handshake_timeout: Numeric, ?idle_timeout: Numeric?, ?refresh_interval: Numeric, ?refresh_jitter: Numeric, ?refresh_timeout: Numeric, ?on_tls_error: (Async::_TLSErrorHandler | ^(Async::tls_event) -> void)? }
+    interface _RackBody
+      def each: () { (String) -> void } -> void
+    end
+    interface _RackStream
+      def read: (?nil, ?String?) -> String
+              | (Integer?, ?String?) -> String?
+      def write: (String) -> Integer
+      # Protocol::HTTP returns a byte count; ordinary IO returns itself.
+      def <<: (String) -> (Integer | self)
+      def flush: () -> void
+      def close: () -> void
+      def close_read: () -> void
+      def close_write: () -> void
+      def closed?: () -> bool
+    end
+    interface _RackCallableBody
+      def call: (_RackStream) -> void
+    end
+    interface _RackFallback
+      def call: (Hash[String, Object]) -> rack_response
+    end
+    class Server
+      def initialize: (server: ConnectRPC::Server, endpoint: Endpoint | _BoundEndpoint, ?rack_app: (_RackFallback | ^(Hash[String, Object]) -> rack_response)?, ?tls: Async::tls?, ?tls_provider: (Async::_TLSProvider | ^() -> Async::tls_snapshot)?, ?utilization_registry: Object?, ?max_connections: Integer, ?max_requests: Integer, ?handshake_timeout: Numeric, ?idle_timeout: Numeric?, ?refresh_interval: Numeric, ?refresh_jitter: Numeric, ?refresh_timeout: Numeric, ?on_tls_error: (Async::_TLSErrorHandler | ^(Async::tls_event) -> void)?) -> void
+      def run: () -> Async::_Task
+      def call: (Async::_Request, ?lifecycle: Instrumentation::Handle?) -> Async::_Response?
+      def close: (?grace: Numeric) -> bool
+      def abort: () -> Async::ServerSession
+      def reload_tls: (certificate_chain: Array[String], private_key: String, client_ca: Array[String]?) -> Integer
+      def refresh_tls: () -> Integer
+      def drain_tls: (?grace: Numeric) -> bool
+      def tls_generation: () -> Integer?
+      def tls_status: () -> Async::tls_status
+      def peer_certificate: () -> OpenSSL::X509::Certificate?
+    end
+    module Environment
+      def service_class: () -> Class
+      def endpoint: () -> Endpoint
+      def rack_app: () -> (_RackFallback | ^(Hash[String, Object]) -> rack_response)?
+      def tls: () -> Async::tls?
+      def tls_provider: () -> (Async::_TLSProvider | ^() -> Async::tls_snapshot)?
+      def server_options: () -> server_options
+      def connectrpc_server: () -> ConnectRPC::Server
+      def make_server: (Endpoint | _BoundEndpoint) -> Server
+    end
+  end
+end

@@ -131,3 +131,12 @@ lock preserves the eligible existing cross-package graph. Original project
 work is [MIT licensed](LICENSE), copyright 2026 Jim Myhrberg. All package
 archives retain `allowed_push_host=https://gems.invalid`; nothing here
 publishes or releases a gem.
+
+## Static signatures
+
+This package owns `sig/` and its discovery manifest. Add
+`library "connectrpc-otel"` to a strict Steep target with this gem installed.
+See the [RBS guide](../../docs/rbs.md) for supported APIs, extension contracts,
+partial records, runtime validation and framework-signature limits.
+`mise run rbs:check` checks application callers for this package; strict core
+source checking is a separate target from backend implementation checking.

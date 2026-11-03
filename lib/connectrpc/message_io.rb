@@ -23,9 +23,10 @@ module ConnectRPC
     private
 
     def read_chunks(body)
+      input = @input #: _Input
       loop do
         @context.check!
-        chunk = @input.read([16_384, @limit + 1 - body.bytesize].min)
+        chunk = input.read([16_384, @limit + 1 - body.bytesize].min)
         @context.check!
         break if chunk.nil? || chunk.empty?
 

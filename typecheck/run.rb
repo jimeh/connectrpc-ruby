@@ -20,8 +20,12 @@ environment = {
 environment.delete("TMPDIR") if ARGV == ["package"]
 command = case ARGV
           when ["setup"] then ["install"]
+          when ["proof"] then ["exec", RbConfig.ruby, File.join(__dir__, "prove.rb")]
+          when ["inventory"] then ["exec", RbConfig.ruby, File.join(__dir__, "surface.rb")]
+          when ["api"] then ["exec", RbConfig.ruby, File.join(__dir__, "api_check.rb")]
+          when ["source"] then ["exec", RbConfig.ruby, File.join(__dir__, "source.rb")]
           when ["check"] then ["exec", RbConfig.ruby, File.join(__dir__, "check.rb")]
           when ["package"] then ["exec", RbConfig.ruby, File.join(__dir__, "package.rb")]
-          else abort "Usage: typecheck/run.rb setup|check|package"
+          else abort "Usage: typecheck/run.rb setup|check|source|api|inventory|proof|package"
           end
 exec(environment, RbConfig.ruby, "-S", "bundle", "_4.0.23_", *command)

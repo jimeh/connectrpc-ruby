@@ -1,0 +1,139 @@
+# Application-owned capabilities; no external framework inheritance is implied.
+class APIBinding
+  def initialize: () -> void
+  def encode: (untyped, type: Object, codec: ConnectRPC::codec) -> String
+  def decode: (String, type: Object, codec: ConnectRPC::codec) -> untyped
+end
+class APISubscriber
+  def initialize: () -> void
+  def start: (ConnectRPC::Instrumentation::Call) -> APISubscriber
+  def finished: (ConnectRPC::Instrumentation::Completion) -> void
+end
+class APIInvoker
+  def initialize: () -> void
+  def call: (ConnectRPC::Method[untyped, untyped], untyped, ConnectRPC::Context) -> untyped
+end
+class APIProvider
+  def initialize: () -> void
+  def call: () -> ConnectRPC::Async::tls_snapshot
+end
+class APIReporter
+  def initialize: () -> void
+  def call: (ConnectRPC::Async::tls_event) -> void
+end
+class APIApp
+  def initialize: () -> void
+  def call: (ConnectRPC::Rack::env) -> ConnectRPC::Rack::response
+end
+class APIHeaders
+  def initialize: () -> void
+  def header: () -> Enumerator[[String, String], Array[[String, String]]]
+end
+class APIRequest
+  def initialize: () -> void
+  def path: () -> String
+  def method: () -> String
+  def headers: () -> APIHeaders
+  def body: () -> ConnectRPC::Async::_Body?
+end
+class APIController < ActionController::API
+  include ConnectRPC::Rails::Controller
+  def inspect_context: () -> String?
+  private
+  def observe_connect: () -> nil
+end
+class APIEnvironment
+  include ConnectRPC::Falcon::Environment
+end
+class APIPropagator
+  def initialize: () -> void
+  def extract: (Hash[String, String | Array[String]], context: Object, getter: ConnectRPC::OTel::_Getter) -> Object
+  def inject: (Hash[String, String | Array[String]], context: Object) -> void
+end
+class APITracerProvider
+  def initialize: () -> void
+  def tracer: (String, String, attributes: ConnectRPC::OTel::attributes) -> APITracer
+end
+class APITracer
+  def initialize: () -> void
+  def start_span: (String, kind: :client | :server, with_parent: Object, attributes: ConnectRPC::OTel::attributes) -> APISpan
+end
+class APISpan
+  def context: () -> APISpanContext
+  def initialize: () -> void
+  def set_attribute: (String, String | Integer | Float | bool | Array[String]) -> void
+  def status=: (Object) -> void
+  def finish: () -> void
+end
+class BadAPIProvider
+  def initialize: () -> void
+  def call: () -> { version: Integer, certificate_chain: Array[String], private_key: String, client_ca: nil }
+end
+class BadAPISubscriber
+  def initialize: () -> void
+  def start: (String) -> Object?
+end
+class BadAPIObserver
+  def initialize: () -> void
+  def finished: (String) -> void
+end
+class BadController
+  include ConnectRPC::Rails::Controller
+  def fail_reader: () -> nil
+end
+
+class BadAPIReporter
+  def initialize: () -> void
+  def call: (String) -> void
+end
+
+class APIClock
+  def initialize: () -> void
+  def call: () -> Numeric
+end
+class APIHosting
+  def initialize: () -> void
+  def exercise: (ConnectRPC::Async::ServerSession, ConnectRPC::Async::_Socket) -> nil
+end
+
+class APIBaseController < ActionController::Base
+  include ConnectRPC::Rails::Controller
+  private
+  def observe_connect: () -> nil
+end
+
+class APIFalconConfiguration
+  def configure: (::Async::Service::Loader) -> void
+end
+class BadFalconConfiguration
+  def configure: (::Async::Service::Loader) -> void
+end
+
+class APIInlineFalconConfiguration
+  def configure: (::Async::Service::Loader) -> void
+end
+class APISpanContext
+  def valid?: () -> bool
+  def trace_id: () -> String
+  def span_id: () -> String
+  def trace_flags: () -> APITraceFlags
+  def tracestate: () -> String
+end
+class APITraceFlags
+  def sampled?: () -> bool
+end
+class APICallableBody
+  def call: (ConnectRPC::Rack::_Stream) -> void
+end
+class BadHeaderUse
+  def self.apply: (ConnectRPC::Async::_Headers) -> void
+end
+class BadAPISpan
+  def set_attribute: (String, String | Integer | Float | bool | Array[String]) -> void
+  def status=: (Object) -> void
+  def finish: () -> void
+end
+
+class APIHeaderReader
+  def self.names: (ConnectRPC::Async::_Headers) -> Array[String]
+end

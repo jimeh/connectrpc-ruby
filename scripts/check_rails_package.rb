@@ -13,7 +13,7 @@ end
 core, middleware, adapter = archives.map { |archive| Gem::Package.new(archive) }
 core_files = %w[
   LICENSE README.md docs/development.md docs/design.md docs/rbs.md lib/connectrpc.rb lib/connectrpc/version.rb
-  sig/connectrpc.rbs sig/manifest.yaml rbs/google_protobuf_4_36/runtime.rbs rbs/google_protobuf_4_36/binding.rbs
+  sig/connectrpc.rbs sig/manifest.yaml rbs/google_protobuf_4_36/runtime.rbs
   lib/connectrpc/generator/rbs_renderer.rb
   exe/protoc-gen-connectrpc-ruby lib/connectrpc/generator.rb lib/connectrpc/generator/names.rb
   lib/connectrpc/generator/schema.rb lib/connectrpc/generator/renderer.rb lib/connectrpc/generator/runtime_names.rb
@@ -23,7 +23,9 @@ core_files = %w[
   lib/connectrpc/bindings/google_protobuf.rb lib/connectrpc/transports/net_http.rb
 ].sort
 abort "Core manifest changed" unless core.contents.sort == core_files.sort && core.spec.runtime_dependencies.empty?
-expected = %w[LICENSE README.md lib/connectrpc/rails.rb lib/connectrpc/rails/controller.rb]
+expected = %w[LICENSE README.md lib/connectrpc/rails.rb sig/connectrpc-rails.rbs sig/manifest.yaml
+              rbs/action_controller_8/controller.rbs
+              lib/connectrpc/rails/controller.rb]
 abort "Unexpected Rails manifest" unless adapter.contents.sort == expected.sort
 expected_dependencies = {
   "connectrpc" => "~> 0.1.0", "actionpack" => ">= 8.0.5.1, < 8.2", "connectrpc-rack" => "~> 0.1.0"
@@ -50,7 +52,8 @@ Dir.mktmpdir("connectrpc-license-") do |temporary|
     end
   end
 end
-abort "Rack manifest changed" unless middleware.contents.sort == %w[LICENSE README.md lib/connectrpc/rack.rb]
+abort "Rack manifest changed" unless middleware.contents.sort == %w[LICENSE README.md lib/connectrpc/rack.rb
+                                                                    sig/connectrpc-rack.rbs sig/manifest.yaml]
 rack_dependencies = middleware.spec.runtime_dependencies.to_h do |dependency|
   [dependency.name, dependency.requirement.to_s]
 end

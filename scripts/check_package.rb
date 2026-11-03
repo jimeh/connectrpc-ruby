@@ -29,7 +29,7 @@ archive = File.join(root, "pkg", specification.file_name)
 package = Gem::Package.new(archive)
 expected = %w[
   LICENSE README.md docs/development.md docs/design.md docs/rbs.md lib/connectrpc.rb lib/connectrpc/version.rb
-  sig/connectrpc.rbs sig/manifest.yaml rbs/google_protobuf_4_36/runtime.rbs rbs/google_protobuf_4_36/binding.rbs
+  sig/connectrpc.rbs sig/manifest.yaml rbs/google_protobuf_4_36/runtime.rbs
   lib/connectrpc/generator/rbs_renderer.rb
   exe/protoc-gen-connectrpc-ruby lib/connectrpc/generator.rb lib/connectrpc/generator/names.rb
   lib/connectrpc/generator/schema.rb lib/connectrpc/generator/renderer.rb lib/connectrpc/generator/runtime_names.rb
@@ -72,7 +72,8 @@ rack_archive = Dir.chdir(rack_directory) do
   output
 end
 rack_package = Gem::Package.new(rack_archive)
-abort "Unexpected Rack manifest" unless rack_package.contents.sort == %w[LICENSE README.md lib/connectrpc/rack.rb]
+abort "Unexpected Rack manifest" unless rack_package.contents.sort == %w[LICENSE README.md lib/connectrpc/rack.rb
+                                                                         sig/connectrpc-rack.rbs sig/manifest.yaml]
 rack_dependencies = rack_package.spec.runtime_dependencies.to_h { |entry| [entry.name, entry.requirement.to_s] }
 unless rack_dependencies == { "connectrpc" => "~> 0.1.0", "rack" => ">= 3.2.7, < 4" } &&
        rack_package.spec.required_ruby_version.to_s == ">= 3.4" &&
