@@ -3,7 +3,7 @@
 require_relative "api_check"
 require_relative "archive"
 
-module InstalledAPI
+module InstalledAPI # rubocop:disable Metrics/ModuleLength
   def self.archives(root:, output:)
     APICheck::PACKAGES.map do |name|
       directory = File.join(root, "gems/connectrpc-#{name}")
@@ -79,23 +79,28 @@ module InstalledAPI
     libraries.each do |name|
       RBSHarness.capture!([RbConfig.ruby, "-S", "rbs", "-r", name, "validate"], working: working)
     end
-    bridges = APICheck.bridge_paths(root: root, installed: true)
+    # The parent process still has the tooling bundle's RubyGems cache. Resolve
+    # the fresh GEM_HOME in an unbundled child, as the actual consumer does.
+    discovery = APICheck::BRIDGES.map do |name, directory|
+      "puts File.join(Gem::Specification.find_by_name(#{"connectrpc-#{name}".dump}).full_gem_path, #{directory.dump})"
+    end.join("\n")
+    bridges = RBSHarness.capture!([RbConfig.ruby, "-e", discovery], working: working).lines.map(&:chomp)
     [libraries, libraries.reverse].each do |order|
       command = [RbConfig.ruby, "-S", "rbs", *order.flat_map { |name| ["-r", name] }]
       RBSHarness.capture!([*command, "validate"], working: working)
       RBSHarness.capture!([*command, *bridges.flat_map { |directory| ["-I", directory] }, "validate"], working: working)
     end
+    library_loading = libraries.map { |name| "loader.add(library: #{name.dump})" }.join("\n")
     isolation = <<~CODE
-            require 'rbs'
-            loader = RBS::EnvironmentLoader.new
-            #{libraries.map { |name| "loader.add(library: #{name.dump})" }.join("
-      ")}
-            env = RBS::Environment.from_loader(loader).resolve_type_names
-            names = env.class_decls.keys.map(&:to_s)
-            abort 'Opt-in framework declarations loaded automatically' if names.any? do |name|
-              name.start_with?('::ActionController::', '::Async::Service::')
-            end
-            puts 'Framework compatibility declarations remain opt-in'
+      require 'rbs'
+      loader = RBS::EnvironmentLoader.new
+      #{library_loading}
+      env = RBS::Environment.from_loader(loader).resolve_type_names
+      names = env.class_decls.keys.map(&:to_s)
+      abort 'Opt-in framework declarations loaded automatically' if names.any? do |name|
+        name.start_with?('::ActionController::', '::Async::Service::')
+      end
+      puts 'Framework compatibility declarations remain opt-in'
     CODE
     puts RBSHarness.capture!([RbConfig.ruby, "-e", isolation], working: working)
     runner = <<~CODE
