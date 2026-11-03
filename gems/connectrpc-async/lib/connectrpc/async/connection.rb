@@ -58,6 +58,14 @@ module ConnectRPC
           @reader_task = super
         end
 
+        def consume_local_window(frame)
+          if frame.length > @local_window.available
+            raise ::Protocol::HTTP2::FlowControlError, "DATA exceeds connection receive window"
+          end
+
+          super
+        end
+
         def delete(id)
           super
         ensure
@@ -94,6 +102,80 @@ module ConnectRPC
 
         def receive_trailing_headers(...)
           @headers.trailer!
+          super
+        end
+
+        def prepare_input(length)
+          raise ArgumentError, "Input body already prepared!" if @input
+
+          @reclaimed_input = 0
+          @input = Ingress.new(self, length)
+        end
+
+        def receive_data(frame)
+          if %i[open half_closed_local].include?(@state) && frame.length > @local_window.available
+            @input&.retire(::Protocol::HTTP2::StreamError.for(::Protocol::HTTP2::Error::FLOW_CONTROL_ERROR))
+            send_reset_stream(::Protocol::HTTP2::Error::FLOW_CONTROL_ERROR)
+            return
+          end
+
+          super
+        end
+
+        def receive_reset_stream(frame)
+          unless @state == :idle || frame.unpack == ::Protocol::HTTP2::Error::NO_ERROR
+            @input&.retire(nil, discard: true)
+          end
+          super
+        end
+
+        def process_data(frame)
+          data = frame.unpack
+          if (input = @input)
+            input.write(data) unless data.empty?
+            input.close_write if frame.end_stream?
+            discarded = frame.length - data.bytesize
+          else
+            discarded = frame.length
+          end
+          reclaim_input(discarded)
+          data
+        rescue ::Protocol::HTTP2::ProtocolError
+          raise
+        rescue StandardError
+          send_reset_stream(::Protocol::HTTP2::Error::INTERNAL_ERROR)
+        end
+
+        def reclaim_input(amount)
+          return if closed? || @state == :half_closed_remote || @connection.closed?
+
+          @reclaimed_input = (@reclaimed_input || 0) + amount
+          request_window_update
+        end
+
+        def request_window_update
+          return unless @reclaimed_input&.positive? && @local_window.limited?
+
+          @connection.synchronize do
+            next if closed? || @state == :half_closed_remote || @connection.closed?
+            next unless @reclaimed_input.positive? && @local_window.limited?
+
+            ::Async::Task.current.defer_cancel do
+              amount = @reclaimed_input
+              @reclaimed_input = 0
+              # Reserve credit before flush can yield to the reader. A peer
+              # may spend the update as soon as it reaches the socket.
+              @local_window.expand(amount)
+              frame = ::Protocol::HTTP2::WindowUpdateFrame.new(@id)
+              frame.pack(amount)
+              write_frame(frame)
+            end
+          end
+        end
+
+        def closed(error)
+          @reclaimed_input = 0
+          @input&.retire(error)
           super
         end
 

@@ -1,8 +1,12 @@
 # frozen_string_literal: true
 
+require "digest"
 require_relative "support/process_cluster"
+require_relative "../../connectrpc-async/spec/support/ingress_peer"
 
 RSpec.describe "Real Falcon process-worker lifecycle" do
+  include IngressPeer
+
   def configuration(writer, make_core:, provider: nil, rack: nil, prepare: nil, count: 2, **options)
     Async::Service::Configuration.build do
       service "connectrpc-process-spec" do
@@ -28,6 +32,83 @@ RSpec.describe "Real Falcon process-worker lifecycle" do
         rack_app { rack }
         server_options options
       end
+    end
+  end
+
+  it "bounds ordinary H2 Rack input in a real worker while sibling controls release partial reads" do
+    reactor do |task|
+      reader, writer = IO.pipe
+      writer = FalconProcessFixtures::FalconEventWriter.new(writer)
+      writer.sync = true
+      commands = held = nil
+      rack = lambda do |env|
+        case env.fetch("PATH_INFO")
+        when "/hold"
+          held = env.fetch("protocol.http.request").body
+          commands = Async::Queue.new
+          writer.puts(JSON.generate(kind: :ingress_entered, pid: Process.pid))
+          bytes = +"".b
+          loop do
+            command = commands.dequeue
+            if command == :drain
+              while (chunk = env.fetch("rack.input").read(16_384)) && !chunk.empty?
+                bytes << chunk
+              end
+              break
+            end
+            bytes << env.fetch("rack.input").read(16_384)
+            writer.puts(JSON.generate(kind: :ingress_read, bytes: bytes.bytesize))
+          end
+          [200, {}, [Digest::SHA256.hexdigest(bytes)]]
+        when "/one", "/drain"
+          commands.enqueue(env.fetch("PATH_INFO") == "/one" ? :one : :drain)
+          [200, {}, ["released"]]
+        else
+          chunks = held.instance_variable_get(:@queue).instance_variable_get(:@chunks)
+          [200, { "cache-control" => "no-store" },
+           [JSON.generate(bytes: chunks.sum(&:bytesize), entries: chunks.size, pid: Process.pid)]]
+        end
+      end
+      config = configuration(writer, make_core: -> { server }, rack: rack, count: 1)
+      cluster = FalconProcessFixtures::FalconProcessCluster.new(config, reader, writer)
+      pid = cluster.event(:running).fetch("pid")
+      origin = "http://127.0.0.1:#{cluster.service.port}"
+      with_ingress_client(task, origin, :h2c) do |connection, wire|
+        response = connection.create_response
+        response.instance_variable_set(:@request, Protocol::HTTP::Request["POST", "/hold", {}, nil])
+        response.stream.send_headers([[":method", "POST"], [":scheme", "http"],
+                                      [":authority", URI(origin).authority], [":path", "/hold"]])
+        expect(cluster.event(:ingress_entered).fetch("pid")).to eq(pid)
+        id = response.stream.id
+        4.times { ingress_data(connection, id, "a" * 16_384) }
+        ingress_barrier(task, connection, wire)
+        control = lambda do |route|
+          verb = route == "/state" ? "GET" : "POST"
+          connection.call(Protocol::HTTP::Request[verb, route, {}, nil, scheme: "http",
+                                                                        authority: URI(origin).authority]).read
+        end
+        expect(JSON.parse(control.call("/state"))).to eq("bytes" => 65_536, "entries" => 4, "pid" => pid)
+        expect(wire[:credit][id]).to eq(0)
+        4.times do |round|
+          expect(control.call("/one")).to eq("released")
+          expect(cluster.event(:ingress_read, count: round + 1).fetch("bytes")).to eq((round + 1) * 16_384)
+          ingress_barrier(task, connection, wire)
+          expect(wire[:credit][id]).to eq((round + 1) * 16_384)
+          ingress_data(connection, id, "a" * 16_384)
+          ingress_barrier(task, connection, wire)
+          expect(JSON.parse(control.call("/state")).values_at("bytes", "entries")).to eq([65_536, 4])
+        end
+        ingress_data(connection, id, "", finish: true)
+        control.call("/drain")
+        connection.read_response(response)
+        expect(response.read).to eq(Digest::SHA256.hexdigest("a" * 131_072))
+      end
+      cluster.stop
+      closed = cluster.event(:closed)
+      expect(closed.values_at("requests", "connections")).to eq([0, 0])
+      expect(cluster.events.none? { |event| event["kind"] == "unhandled" }).to be(true)
+    ensure
+      cluster&.close
     end
   end
 

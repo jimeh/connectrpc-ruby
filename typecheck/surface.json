@@ -11,6 +11,7 @@
     "ConnectRPC::Async::Internal.settings": {"kind":"method","visibility":"public","parameters":"max_requests","classification":"internal"},
     "ConnectRPC::Async::Internal::ClientConnection#create_response": {"kind":"method","visibility":"public","parameters":"","classification":"internal"},
     "ConnectRPC::Async::Internal::Connection#close": {"kind":"method","visibility":"public","parameters":"error = nil","classification":"internal"},
+    "ConnectRPC::Async::Internal::Connection#consume_local_window": {"kind":"method","visibility":"public","parameters":"frame","classification":"internal"},
     "ConnectRPC::Async::Internal::Connection#defer_close": {"kind":"attribute","visibility":"public","classification":"internal"},
     "ConnectRPC::Async::Internal::Connection#defer_close=": {"kind":"attribute","visibility":"public","classification":"internal"},
     "ConnectRPC::Async::Internal::Connection#delete": {"kind":"method","visibility":"public","parameters":"id","classification":"internal"},
@@ -66,9 +67,16 @@
     "ConnectRPC::Async::Internal::ServerConnection#close_request": {"kind":"method","visibility":"private","parameters":"response, request","classification":"internal"},
     "ConnectRPC::Async::Internal::ServerConnection#each": {"kind":"method","visibility":"public","parameters":"task: ::Async::Task.current","classification":"internal"},
     "ConnectRPC::Async::Internal::ServerConnection#reset": {"kind":"method","visibility":"private","parameters":"stream","classification":"internal"},
+    "ConnectRPC::Async::Internal::Stream#closed": {"kind":"method","visibility":"public","parameters":"error","classification":"internal"},
     "ConnectRPC::Async::Internal::Stream#declared_length": {"kind":"attribute","visibility":"public","classification":"internal"},
+    "ConnectRPC::Async::Internal::Stream#prepare_input": {"kind":"method","visibility":"public","parameters":"length","classification":"internal"},
+    "ConnectRPC::Async::Internal::Stream#process_data": {"kind":"method","visibility":"public","parameters":"frame","classification":"internal"},
+    "ConnectRPC::Async::Internal::Stream#receive_data": {"kind":"method","visibility":"public","parameters":"frame","classification":"internal"},
     "ConnectRPC::Async::Internal::Stream#receive_initial_headers": {"kind":"method","visibility":"public","parameters":"...","classification":"internal"},
+    "ConnectRPC::Async::Internal::Stream#receive_reset_stream": {"kind":"method","visibility":"public","parameters":"frame","classification":"internal"},
     "ConnectRPC::Async::Internal::Stream#receive_trailing_headers": {"kind":"method","visibility":"public","parameters":"...","classification":"internal"},
+    "ConnectRPC::Async::Internal::Stream#reclaim_input": {"kind":"method","visibility":"public","parameters":"amount","classification":"internal"},
+    "ConnectRPC::Async::Internal::Stream#request_window_update": {"kind":"method","visibility":"public","parameters":"","classification":"internal"},
     "ConnectRPC::Async::Internal::Stream#send_body": {"kind":"method","visibility":"public","parameters":"body, trailer = nil","classification":"internal"}
   },
   "gems/connectrpc-async/lib/connectrpc/async/host.rb": {
@@ -87,6 +95,20 @@
     "ConnectRPC::Async::Host#stop_accepting": {"kind":"method","visibility":"private","parameters":"","classification":"internal"},
     "ConnectRPC::Async::Host#tls_generation": {"kind":"method","visibility":"public","parameters":"","classification":"supported"},
     "ConnectRPC::Async::Host#tls_status": {"kind":"method","visibility":"public","parameters":"","classification":"supported"}
+  },
+  "gems/connectrpc-async/lib/connectrpc/async/ingress.rb": {
+    "ConnectRPC::Async::Internal::Ingress#close": {"kind":"method","visibility":"public","parameters":"error = nil","classification":"internal"},
+    "ConnectRPC::Async::Internal::Ingress#initialize": {"kind":"method","visibility":"public","parameters":"stream, length","classification":"internal"},
+    "ConnectRPC::Async::Internal::Ingress#read": {"kind":"method","visibility":"public","parameters":"","classification":"internal"},
+    "ConnectRPC::Async::Internal::Ingress#retire": {"kind":"method","visibility":"public","parameters":"error = nil, discard: false","classification":"internal"},
+    "ConnectRPC::Async::Internal::Ingress#write": {"kind":"method","visibility":"public","parameters":"bytes","classification":"internal"},
+    "ConnectRPC::Async::Internal::IngressQueue#clear": {"kind":"method","visibility":"public","parameters":"","classification":"internal"},
+    "ConnectRPC::Async::Internal::IngressQueue#close": {"kind":"method","visibility":"public","parameters":"","classification":"internal"},
+    "ConnectRPC::Async::Internal::IngressQueue#closed?": {"kind":"method","visibility":"public","parameters":"","classification":"internal"},
+    "ConnectRPC::Async::Internal::IngressQueue#empty?": {"kind":"method","visibility":"public","parameters":"","classification":"internal"},
+    "ConnectRPC::Async::Internal::IngressQueue#initialize": {"kind":"method","visibility":"public","parameters":"","classification":"internal"},
+    "ConnectRPC::Async::Internal::IngressQueue#pop": {"kind":"method","visibility":"public","parameters":"","classification":"internal"},
+    "ConnectRPC::Async::Internal::IngressQueue#push": {"kind":"method","visibility":"public","parameters":"bytes","classification":"internal"}
   },
   "gems/connectrpc-async/lib/connectrpc/async/internal.rb": {
     "ConnectRPC::Async::Internal.cancel": {"kind":"method","visibility":"public","parameters":"task","classification":"internal"},

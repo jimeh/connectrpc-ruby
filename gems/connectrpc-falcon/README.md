@@ -128,6 +128,12 @@ and callable HTTP bodies are supported. Callable bodies must close their supplie
 stream according to the Protocol::Rack contract. Plain Falcon and the existing
 Rack/Rails integration APIs are unchanged.
 
+Native H2 uses the shared Async private bounded ingress for both RPC requests and
+ordinary Rack fallback input. Slow or nonreading Rack consumers withhold stream
+credit while healthy same-connection streams can advance. HTTP/1 input is unchanged.
+See the [Async ingress bounds](../connectrpc-async/README.md#backend-boundaries-and-verification)
+for padding, cleanup, allocation layers and the limits of this guarantee.
+
 `close(grace: 5)` and normal managed worker stop stop accepts/refresh, then
 perform bounded connection drain. HTTP/1 completion includes fixed/chunked wire
 bytes and response-finished callbacks. On grace expiry, teardown closes raw TCP
