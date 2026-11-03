@@ -60,3 +60,7 @@ falcon.peer_certificate&.to_der
 falcon.close(grace: 5)
 falcon.abort.tls_status
 APIEnvironment.new.make_server(endpoint)
+
+APIRequest.new.headers.header.next[0].upcase
+ConnectRPC::Falcon::Server.new(server: server, endpoint: endpoint,
+                               rack_app: ->(_env) { [200, {}, APICallableBody.new] })

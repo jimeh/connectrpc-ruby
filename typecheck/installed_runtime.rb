@@ -5,6 +5,8 @@ libraries.reverse! if ARGV == ["reverse"]
 libraries.each { |name| require name }
 require "action_controller"
 require "async/service/configuration"
+require "protocol/http/body/stream"
+require "stringio"
 require_relative "api/support"
 
 raise "SDK loaded" if defined?(OpenTelemetry::SDK) || Gem.loaded_specs.key?("opentelemetry-sdk")
@@ -29,6 +31,7 @@ raise "Only connect is a controller action" unless InstalledController.action_me
 end
 configuration = Async::Service::Configuration.new
 Async::Service::Loader.load_file(configuration, File.join(__dir__, "api/falcon_dsl.rb"))
+Async::Service::Loader.load_file(configuration, File.join(__dir__, "api/falcon_inline.rb"))
 APIFalconConfiguration.new.configure(Async::Service::Loader.new(configuration))
 evaluator = configuration.environments.fetch(0).evaluator
 raise "Falcon DSL values differ" unless evaluator.count == 2 && evaluator.url == "http://127.0.0.1:9292"
@@ -37,6 +40,23 @@ raise "Falcon DSL fallback differs" unless evaluator.rack_app.call("PATH_INFO" =
 raise "Falcon DSL options differ" unless evaluator.server_options == { idle_timeout: nil, max_connections: 8 }
 
 evaluator.prepare!(Object.new)
+APIInlineFalconConfiguration.new.configure(Async::Service::Loader.new(configuration))
+configuration.environments.drop(1).each do |environment|
+  inline = environment.evaluator
+  raise "Inline DSL fallback failed" unless inline.rack_app.call("PATH_INFO" => "/inline") == [200, {}, ["/inline"]]
+  raise "Inline DSL provider failed" unless inline.tls_provider.call[:version] == "v1"
+end
+native_headers = Protocol::HTTP::Headers[[%w[x-native value]]]
+raise "Native headers are not enumerable" unless native_headers.header.is_a?(Enumerator)
+raise "Native header caller failed" unless APIHeaderReader.names(native_headers) == ["x-native:value"]
+
+class InstalledStreamOutput < StringIO
+  def close_write(_error = nil) = super()
+end
+output = InstalledStreamOutput.new
+stream = Protocol::HTTP::Body::Stream.new(Protocol::HTTP::Body::Buffered.new(["input"]), output)
+APICallableBody.new.call(stream)
+raise "Ordinary callable stream failed" unless output.string == "helloworld" && stream.closed?
 
 class InstalledBinding
   def encode(message, type: nil, codec: nil)
@@ -79,9 +99,28 @@ Async do
 
   tls.close
 end.wait
+records = [ConnectRPC::Response.new, ConnectRPC::Response.new(message: "reply", metadata: ConnectRPC::Metadata.new,
+                                                              trailers: ConnectRPC::Metadata.new),
+           ConnectRPC::TransportRequest.new, ConnectRPC::TransportResponse.new]
+records.each do |record|
+  raise "Struct pair shape differs" unless record.each_pair.all? { |pair| pair.is_a?(Array) && pair[0].is_a?(Symbol) }
+end
+carrier = {}
+call = ConnectRPC::Instrumentation::Call.new(role: :client, protocol: :connect, method: nil,
+                                             server_address: nil, server_port: nil, carrier: carrier)
+custom = ConnectRPC::OTel::Subscriber.new(tracer_provider: APITracerProvider.new)
+observer = custom.start(call)
+expected_parent = "00-#{'74' * 16}-#{'73' * 8}-01"
+raise "Default propagation missed custom span context" unless carrier["traceparent"] == expected_parent &&
+                                                              carrier["tracestate"] == "vendor=value"
+
+observer.finished(ConnectRPC::Instrumentation::Completion.new(outcome: nil, processing_state: :not_started,
+                                                              decision: :processed, delivery: :unobserved,
+                                                              error: nil, http_status: nil, duration: 0.0))
 subscriber = ConnectRPC::OTel::Subscriber.new
 ConnectRPC::Instrumentation.new(subscribers: [subscriber])
 raise "SDK loaded late" if defined?(OpenTelemetry::SDK)
 
 puts "Installed optional runtime composition #{ARGV.first}: Rails subclass, Rack/Testing round trip, " \
-     "native application/session/TLS, Falcon endpoint/real service DSL, named Rails callbacks, API-only OTel"
+     "native headers/session/TLS, callable stream, Struct pairs, Falcon inline DSL, " \
+     "Rails callbacks, API-only OTel/default propagation"

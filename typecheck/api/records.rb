@@ -23,3 +23,12 @@ ConnectRPC::TransportRequest[{ body: "bytes", deadline: nil }][:body]&.bytesize
 ConnectRPC::TransportRequest[].url&.host
 complete.members.each(&:to_s)
 complete.values.size
+
+complete.each_pair { |pair| pair[0].id2name }
+partial.each_pair { |pair| pair[0].id2name }
+complete.each_pair { |name, value| name.id2name + value.to_s }
+ConnectRPC::TransportRequest.new(url: URI("https://example.invalid"), http_method: "POST", headers: {},
+                                 body: "", response_limit: 10).each_pair { |pair| pair[0].id2name }
+ConnectRPC::TransportRequest.new.each_pair { |pair| pair[0].id2name }
+ConnectRPC::TransportResponse.new(status: 200, headers: {}, body: "").each_pair { |pair| pair[0].id2name }
+ConnectRPC::TransportResponse.new.each_pair { |pair| pair[0].id2name }

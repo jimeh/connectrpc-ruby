@@ -15,7 +15,7 @@ module ConnectRPC
       def call: () -> void
     end
     interface _Headers
-      def header: () -> Array[[String, String]]
+      def header: () -> Enumerator[[String, String], Array[[String, String]]]
     end
     interface _Body
       def read: () -> String?

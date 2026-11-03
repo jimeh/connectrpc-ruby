@@ -15,12 +15,12 @@ module Async
         def prepare!: () { (Object) [self: ConnectRPC::Falcon::Environment] -> void } -> void
         def connectrpc_server: (ConnectRPC::Server) -> void
                             | () { () [self: ConnectRPC::Falcon::Environment] -> ConnectRPC::Server } -> void
-        def rack_app: (ConnectRPC::Falcon::_RackFallback?) -> void
-                    | () { () [self: ConnectRPC::Falcon::Environment] -> ConnectRPC::Falcon::_RackFallback? } -> void
+        def rack_app: ((ConnectRPC::Falcon::_RackFallback | ^(Hash[String, Object]) -> ConnectRPC::Falcon::rack_response)?) -> void
+                    | () { () [self: ConnectRPC::Falcon::Environment] -> (ConnectRPC::Falcon::_RackFallback | ^(Hash[String, Object]) -> ConnectRPC::Falcon::rack_response)? } -> void
         def tls: (ConnectRPC::Async::tls?) -> void
                | () { () [self: ConnectRPC::Falcon::Environment] -> ConnectRPC::Async::tls? } -> void
-        def tls_provider: (ConnectRPC::Async::_TLSProvider?) -> void
-                        | () { () [self: ConnectRPC::Falcon::Environment] -> ConnectRPC::Async::_TLSProvider? } -> void
+        def tls_provider: ((ConnectRPC::Async::_TLSProvider | ^() -> ConnectRPC::Async::tls_snapshot)?) -> void
+                        | () { () [self: ConnectRPC::Falcon::Environment] -> (ConnectRPC::Async::_TLSProvider | ^() -> ConnectRPC::Async::tls_snapshot)? } -> void
         def server_options: (ConnectRPC::Falcon::server_options) -> void
                           | () { () [self: ConnectRPC::Falcon::Environment] -> ConnectRPC::Falcon::server_options } -> void
       end

@@ -51,7 +51,10 @@ class APIApp
 end
 
 class APIHeaders
-  def header = [["content-type", "application/proto"]]
+  def header
+    entries = [["content-type", "application/proto"]] #: Array[[String, String]]
+    entries.each
+  end
 end
 
 class APIRequest
@@ -119,6 +122,8 @@ class APITracer
 end
 
 class APISpan
+  def context = APISpanContext.new
+
   def set_attribute(key, value)
     [key, value].inspect
     nil
@@ -160,5 +165,37 @@ class APIBaseController < ActionController::Base
 
   def observe_connect
     connect_context&.check!
+  end
+end
+
+class APISpanContext
+  def valid? = true
+  def trace_id = "t" * 16
+  def span_id = "s" * 8
+  def trace_flags = APITraceFlags.new
+  def tracestate = "vendor=value"
+end
+
+class APITraceFlags
+  def sampled? = true
+end
+
+class APICallableBody
+  def call(stream)
+    stream.read
+    stream.read(0, +"")
+    stream << "hello"
+    stream.write("world")
+    stream.flush
+    stream.close_read
+    stream.close_write
+    stream.closed?
+    stream.close
+  end
+end
+
+class APIHeaderReader
+  def self.names(headers)
+    headers.header.map { |key, value| "#{key}:#{value}" }
   end
 end

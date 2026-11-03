@@ -3,7 +3,24 @@ module ConnectRPC
     VERSION: String
     SEMCONV_VERSION: String
     type attributes = Hash[String, String | Integer | Float | bool | Array[String]]
+    interface _TraceFlags
+      def sampled?: () -> bool
+    end
+    interface _Tracestate
+      def empty?: () -> bool
+      def to_s: () -> String
+    end
+    # The default W3C propagator consumes these API capabilities. Id contents
+    # and lengths remain the provider's runtime responsibility.
+    interface _SpanContext
+      def valid?: () -> bool
+      def trace_id: () -> String
+      def span_id: () -> String
+      def trace_flags: () -> _TraceFlags
+      def tracestate: () -> _Tracestate
+    end
     interface _Span
+      def context: () -> _SpanContext
       def set_attribute: (String, String | Integer | Float | bool | Array[String]) -> void
       def status=: (Object) -> void
       def finish: () -> void

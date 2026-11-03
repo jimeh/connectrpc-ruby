@@ -27,7 +27,7 @@ class APIApp
 end
 class APIHeaders
   def initialize: () -> void
-  def header: () -> Array[[String, String]]
+  def header: () -> Enumerator[[String, String], Array[[String, String]]]
 end
 class APIRequest
   def initialize: () -> void
@@ -59,6 +59,7 @@ class APITracer
   def start_span: (String, kind: :client | :server, with_parent: Object, attributes: ConnectRPC::OTel::attributes) -> APISpan
 end
 class APISpan
+  def context: () -> APISpanContext
   def initialize: () -> void
   def set_attribute: (String, String | Integer | Float | bool | Array[String]) -> void
   def status=: (Object) -> void
@@ -106,4 +107,33 @@ class APIFalconConfiguration
 end
 class BadFalconConfiguration
   def configure: (::Async::Service::Loader) -> void
+end
+
+class APIInlineFalconConfiguration
+  def configure: (::Async::Service::Loader) -> void
+end
+class APISpanContext
+  def valid?: () -> bool
+  def trace_id: () -> String
+  def span_id: () -> String
+  def trace_flags: () -> APITraceFlags
+  def tracestate: () -> String
+end
+class APITraceFlags
+  def sampled?: () -> bool
+end
+class APICallableBody
+  def call: (ConnectRPC::Rack::_Stream) -> void
+end
+class BadHeaderUse
+  def self.apply: (ConnectRPC::Async::_Headers) -> void
+end
+class BadAPISpan
+  def set_attribute: (String, String | Integer | Float | bool | Array[String]) -> void
+  def status=: (Object) -> void
+  def finish: () -> void
+end
+
+class APIHeaderReader
+  def self.names: (ConnectRPC::Async::_Headers) -> Array[String]
 end

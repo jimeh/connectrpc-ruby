@@ -7,7 +7,14 @@ ConnectRPC::Falcon::Server.new(server: server, endpoint: endpoint, rack_app: lam
 })
 # @type var body: ^(ConnectRPC::Falcon::_RackStream) -> void
 body = lambda { |stream|
-  stream.write("ordinary callable body")
+  stream.read
+  stream.read(0, +"")
+  stream << "ordinary callable body"
+  stream.write("tail")
+  stream.flush
+  stream.close_read
+  stream.close_write
+  stream.closed?
   stream.close
 }
 ConnectRPC::Falcon::Server.new(server: server, endpoint: endpoint, rack_app: ->(_env) { [200, {}, body] })

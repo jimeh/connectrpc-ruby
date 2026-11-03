@@ -175,7 +175,7 @@ module ConnectRPC
     def deconstruct: () -> Array[M? | Metadata?]
     def each: () { (M | Metadata | nil) -> void } -> self
             | () -> Enumerator[M | Metadata | nil, self]
-    def each_pair: () { (Symbol, M | Metadata | nil) -> void } -> self
+    def each_pair: () { ([Symbol, M | Metadata | nil]) -> void } -> self
                  | () -> Enumerator[[Symbol, M | Metadata | nil], self]
     def deconstruct_keys: (Array[Symbol]?) -> Hash[Symbol, M | Metadata | nil]
     def values_at: (*(Integer | Range[Integer])) -> Array[M | Metadata | nil | nil]
@@ -213,7 +213,7 @@ module ConnectRPC
     def deconstruct: () -> Array[M | Metadata]
     def each: () { (M | Metadata) -> void } -> self
             | () -> Enumerator[M | Metadata, self]
-    def each_pair: () { (Symbol, M | Metadata) -> void } -> self
+    def each_pair: () { ([Symbol, M | Metadata]) -> void } -> self
                  | () -> Enumerator[[Symbol, M | Metadata], self]
     def deconstruct_keys: (Array[Symbol]?) -> Hash[Symbol, M | Metadata]
     def values_at: (*(Integer | Range[Integer])) -> Array[M | Metadata | nil]
@@ -258,7 +258,7 @@ module ConnectRPC
     def deconstruct: () -> Array[URI::Generic? | String? | headers? | Integer? | Deadline? | Instrumentation::Handle?]
     def each: () { (URI::Generic | String | headers | Integer | Deadline | Instrumentation::Handle | nil) -> void } -> self
             | () -> Enumerator[URI::Generic | String | headers | Integer | Deadline | Instrumentation::Handle | nil, self]
-    def each_pair: () { (Symbol, URI::Generic | String | headers | Integer | Deadline | Instrumentation::Handle | nil) -> void } -> self
+    def each_pair: () { ([Symbol, URI::Generic | String | headers | Integer | Deadline | Instrumentation::Handle | nil]) -> void } -> self
                  | () -> Enumerator[[Symbol, URI::Generic | String | headers | Integer | Deadline | Instrumentation::Handle | nil], self]
     def deconstruct_keys: (Array[Symbol]?) -> Hash[Symbol, URI::Generic | String | headers | Integer | Deadline | Instrumentation::Handle | nil]
     def values_at: (*(Integer | Range[Integer])) -> Array[URI::Generic | String | headers | Integer | Deadline | Instrumentation::Handle | nil | nil]
@@ -304,7 +304,7 @@ module ConnectRPC
     def deconstruct: () -> Array[URI::Generic | String | headers | Integer | Deadline? | Instrumentation::Handle?]
     def each: () { (URI::Generic | String | headers | Integer | Deadline | Instrumentation::Handle | nil) -> void } -> self
             | () -> Enumerator[URI::Generic | String | headers | Integer | Deadline | Instrumentation::Handle | nil, self]
-    def each_pair: () { (Symbol, URI::Generic | String | headers | Integer | Deadline | Instrumentation::Handle | nil) -> void } -> self
+    def each_pair: () { ([Symbol, URI::Generic | String | headers | Integer | Deadline | Instrumentation::Handle | nil]) -> void } -> self
                  | () -> Enumerator[[Symbol, URI::Generic | String | headers | Integer | Deadline | Instrumentation::Handle | nil], self]
     def deconstruct_keys: (Array[Symbol]?) -> Hash[Symbol, URI::Generic | String | headers | Integer | Deadline | Instrumentation::Handle | nil]
     def values_at: (*(Integer | Range[Integer])) -> Array[URI::Generic | String | headers | Integer | Deadline | Instrumentation::Handle | nil | nil]
@@ -333,7 +333,7 @@ module ConnectRPC
     def deconstruct: () -> Array[Integer? | headers? | String?]
     def each: () { (Integer | headers | String | nil) -> void } -> self
             | () -> Enumerator[Integer | headers | String | nil, self]
-    def each_pair: () { (Symbol, Integer | headers | String | nil) -> void } -> self
+    def each_pair: () { ([Symbol, Integer | headers | String | nil]) -> void } -> self
                  | () -> Enumerator[[Symbol, Integer | headers | String | nil], self]
     def deconstruct_keys: (Array[Symbol]?) -> Hash[Symbol, Integer | headers | String | nil]
     def values_at: (*(Integer | Range[Integer])) -> Array[Integer | headers | String | nil | nil]
@@ -367,7 +367,7 @@ module ConnectRPC
     def deconstruct: () -> Array[Integer | headers | String]
     def each: () { (Integer | headers | String) -> void } -> self
             | () -> Enumerator[Integer | headers | String, self]
-    def each_pair: () { (Symbol, Integer | headers | String) -> void } -> self
+    def each_pair: () { ([Symbol, Integer | headers | String]) -> void } -> self
                  | () -> Enumerator[[Symbol, Integer | headers | String], self]
     def deconstruct_keys: (Array[Symbol]?) -> Hash[Symbol, Integer | headers | String]
     def values_at: (*(Integer | Range[Integer])) -> Array[Integer | headers | String | nil]

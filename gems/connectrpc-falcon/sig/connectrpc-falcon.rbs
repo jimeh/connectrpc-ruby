@@ -21,8 +21,16 @@ module ConnectRPC
       def each: () { (String) -> void } -> void
     end
     interface _RackStream
+      def read: (?nil, ?String?) -> String
+              | (Integer?, ?String?) -> String?
       def write: (String) -> Integer
+      # Protocol::HTTP returns a byte count; ordinary IO returns itself.
+      def <<: (String) -> (Integer | self)
+      def flush: () -> void
       def close: () -> void
+      def close_read: () -> void
+      def close_write: () -> void
+      def closed?: () -> bool
     end
     interface _RackCallableBody
       def call: (_RackStream) -> void

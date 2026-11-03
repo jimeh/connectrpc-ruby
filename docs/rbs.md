@@ -263,6 +263,16 @@ NetHTTP socket/watchdog implementation, Google codec internals, generator
 internals and optional backend/framework implementation checking are later stages.
 Their supported public signatures and consumer checks are included here.
 
+Callable-body stream capabilities include the standard Rack read, write, `<<`,
+flush, close, half-close and closed-state operations. Native HTTP header
+capabilities return an Enumerator of name/value tuples. Struct `each_pair`
+yields one name/value tuple, which a block may explicitly destructure.
+
+Custom OpenTelemetry providers must supply the finite span-context capabilities
+used by the default W3C propagator: valid state, raw trace/span ids, sampled
+flags and serialized tracestate. These declarations introduce no SDK or upstream
+namespace; static types do not prove valid id lengths or sampling policy.
+
 ### Opt-in framework compatibility
 
 Rails inheritance and Falcon's configuration DSL need declarations for upstream

@@ -11,3 +11,8 @@ client = ConnectRPC::Client.new(base_url: "https://in-process.invalid", binding:
 # @type var method: ConnectRPC::Method[String, String]
 method = ConnectRPC::Method.new(service: "demo.Service", name: "Call", request_type: String, response_type: String)
 client.call(method, "message").message.size
+
+ConnectRPC::Rack.new(->(_env) { [200, {}, APICallableBody.new] }, server: server)
+# @type var ordinary_io: ConnectRPC::Rack::_Stream
+ordinary_io = $stdout
+ordinary_io.closed?

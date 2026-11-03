@@ -12,3 +12,6 @@ completion = ConnectRPC::Instrumentation::Completion.new(
   error: nil, http_status: 503, duration: 0.0
 )
 observer.finished(completion)
+
+ConnectRPC::OTel::Subscriber.new(tracer_provider: APITracerProvider.new)
+APISpan.new.context.valid?
