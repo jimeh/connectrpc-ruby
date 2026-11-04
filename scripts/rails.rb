@@ -23,14 +23,10 @@ arguments = case command
             when "setup" then ["install"]
             when "test" then ["exec", "appraisal", "rails-#{lane}", "rspec", *ARGV]
             when "generation:check" then ["exec", "ruby", File.join(root, "scripts/check_appraisals.rb")]
-            when "build" then ["exec", "ruby", "-rrubygems/package", "-rfileutils", "-e", <<~CODE]
-              FileUtils.mkdir_p("../../vendor/rails/pkg")
+            when "build" then ["exec", "ruby", "-r", File.join(root, "scripts/package_build"), "-e", <<~CODE]
               output = File.expand_path("../../vendor/rails/pkg")
               ["../..", "../connectrpc-rack", "."].each do |directory|
-                Dir.chdir(directory) do
-                  specification = Gem::Specification.load(Dir.glob("*.gemspec").fetch(0))
-                  Gem::Package.build(specification, false, false, File.join(output, specification.file_name))
-                end
+                PackageBuild.build(directory: directory, output: output)
               end
             CODE
             when "package" then ["exec", "appraisal", "rails-#{lane}", "ruby",

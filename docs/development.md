@@ -144,6 +144,14 @@ proof. The separate Go peer tests establish the advertised unary subset.
 
 ### Package isolation
 
+Canonical builders share `scripts/package_build.rb`. It loads each gem's exact
+manifest and metadata in its owning source directory, then builds from a private
+temporary copy with executable files set to `0755` and ordinary files to `0644`.
+Checkout permissions and bytes remain unchanged, and each package lane builds
+its own archives in its existing output directory. `spec/package_build_spec.rb`
+checks real archive headers, complete file bytes, manifests and metadata under
+umasks `002` and `022` using group-writable fixture inputs.
+
 `check:package` asserts an explicit reviewed package manifest, zero runtime
 dependencies, MIT metadata and complete license bytes, and the publication guard. It runs `gem install --norc --local`
 from a separate temporary working directory inside `Bundler.with_unbundled_env`,

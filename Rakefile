@@ -1,15 +1,13 @@
 # frozen_string_literal: true
 
 require "rake"
-require "rubygems/package"
+require_relative "scripts/package_build"
 require "rubocop/rake_task"
 require "rspec/core/rake_task"
 
-specification = Gem::Specification.load("connectrpc.gemspec")
 desc "Build the experimental gem from the current exact manifest"
 task :build do
-  mkdir_p "pkg"
-  Gem::Package.build(specification, false, false, File.join("pkg", specification.file_name))
+  PackageBuild.build(directory: __dir__, output: File.join(__dir__, "pkg"))
 end
 
 RuboCop::RakeTask.new(:format) do |task|
