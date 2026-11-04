@@ -219,6 +219,10 @@ module ConnectRPC
       end
 
       def dispatch(resource, request)
+        if resource.respond_to?(:prepare_stream_input) && @application.respond_to?(:http1_streaming_route?, true) &&
+           @application.send(:http1_streaming_route?, request)
+          retirement = resource.prepare_stream_input(request.body)
+        end
         lifecycle = @lifecycle_factory&.call(request)
         if lifecycle
           exchange = Internal::Exchange.new(lifecycle)
@@ -236,14 +240,20 @@ module ConnectRPC
             exchange.http_status = 503
           end
           @on_request_rejected&.call
+          retirement&.processor_finished
+          retirement&.head_resolved(503)
           return @application.admission_response(request) if @application.respond_to?(:admission_response)
 
           return ::Protocol::HTTP::Response[503, {}, nil]
         end
 
         @admitted[key] = false
+        retirement&.on_close do
+          retire_http1(key)
+          resource.changed
+        end
         publishes = request.respond_to?(:stream) ||
-                    (@application.respond_to?(:web_publication?) && @application.web_publication?(request))
+                    (@application.respond_to?(:publication?, true) && @application.send(:publication?, request))
         publication = Internal::Publication.new if publishes
         begin
           handler = resource.track(@lifetime.async(finished: false) do |task|
@@ -275,10 +285,13 @@ module ConnectRPC
             end
           end)
           response = publication ? publication.response : handler.wait
+          retirement&.head_resolved(response&.status)
           exchange.http_status = response&.status if exchange
           if !request.respond_to?(:stream) && response
             response.body = Internal::AdmissionBody.new(response.body) do
-              if publication
+              if retirement
+                # The connection retains admission through post-delivery hygiene.
+              elsif publication
                 @h1_wire[key] = true
                 retire_http1(key) if @admitted[key]
               else
@@ -318,7 +331,8 @@ module ConnectRPC
           @admitted[key] = true
           if key.respond_to?(:closed?)
             @admitted.delete(key) if @aborting || key.closed?
-          elsif @h1_wire[key] || @aborting
+          elsif (@h1_wire[key] || @aborting) &&
+                !(resource.respond_to?(:input_retirement) && resource.input_retirement)
             retire_http1(key)
           end
         end

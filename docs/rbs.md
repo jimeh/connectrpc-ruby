@@ -406,6 +406,12 @@ implementation target, with private declarations outside gem archives. Installed
 checks generate real mixed services and run native Async/Falcon streaming over
 localhost with all seven normally installed packages, both composition orders,
 codecs and codings. These remain separate from independent Go/official evidence.
+Custom server hosts may pass `capabilities: Array[:server_stream | :client_stream |
+:bidi_stream]?` to `Server#call_stream`. Nil preserves the legacy `http2:` behavior;
+a non-nil list must be nonempty, unique and cannot accompany `http2: true`.
+Runtime validation enforces those array constraints. Strict source and installed
+positive/negative consumers cover the capability SPI. Private native routing
+and retirement helpers are internal implementation, not supported host APIs.
 See the [streaming guide](streaming.md) for state, ownership and timing policies.
 
 ## Native gRPC types

@@ -151,7 +151,12 @@ source checking is a separate target from backend implementation checking.
 The core [streaming guide](../../docs/streaming.md) documents all three scoped
 Connect streaming shapes, typed generated clients/handlers, early headers,
 per-message limits and bounded ownership. Native Async/Falcon HTTP/2 supports
-both codecs and identity/gzip over h2c/TLS/mTLS. Falcon HTTP/1 remains unary.
+both codecs and identity/gzip over h2c/TLS/mTLS. Falcon additionally serves Connect server and client
+streaming over HTTP/1.1,
+with protobuf/ProtoJSON and identity/gzip over TCP/TLS/mTLS. The standalone
+Async Host and Ruby Async transport remain H2-only; a Ruby H1 streaming client
+is pending. See the streaming guide for bounded retirement and its known
+official-reference compatibility gap.
 The client's one-second absolute HTTP tail policy applies even with a nil RPC
 deadline and can reject otherwise valid late EOF or slow intermediaries.
 

@@ -1,7 +1,7 @@
 # connectrpc-ruby
 
 An unofficial, experimental Ruby implementation of typed
-[Connect](https://connectrpc.com/docs/protocol/) unary and native HTTP/2 streaming RPCs. It provides a
+[Connect](https://connectrpc.com/docs/protocol/) unary and native streaming RPCs. It provides a
 configurable client, a Net::HTTP transport, and host-neutral servers for reusable
 Ruby handlers. The optional [connectrpc-rack gem](gems/connectrpc-rack/README.md)
 provides Rack middleware. It is not production ready.
@@ -9,7 +9,9 @@ provides Rack middleware. It is not production ready.
 The implemented profile is POST and opt-in safe unary GET, identity or opt-in gzip encoding, and `application/proto` or
 protobuf `application/json`. The optional [connectrpc-rails gem](gems/connectrpc-rails/README.md)
 runs generated unary handlers through native Rails controllers. Native streaming
-uses the optional Async transport and Async/Falcon HTTP/2 hosts. See the
+uses the optional Async transport and Async/Falcon HTTP/2 hosts. Falcon also
+serves Connect HTTP/1.1 server and client streaming; Ruby H1 clients are pending.
+See the
 [streaming guide](docs/streaming.md), especially its one-second HTTP tail policy.
 Native [gRPC](docs/grpc.md) supports unary, server streaming, client streaming and
 bidi through the same core declarations and Async/Falcon HTTP/2 engine, with
@@ -415,12 +417,11 @@ separate, explicit authorization.
 
 The [connectrpc-async package](gems/connectrpc-async/README.md) provides explicit
 `connectrpc/async` integration: `ConnectRPC::Async::Host` and a matching pooled
-`Transport` for Connect unary protobuf/ProtoJSON over h2c and verified TLS `h2`.
+`Transport` for Connect unary and streaming protobuf/ProtoJSON over h2c and verified TLS `h2`.
 It supports required client authentication, complete live TLS snapshot reloads
 on the same listener, older-generation drain, and an authenticated client leaf
 accessor scoped to the exact handler task. Applications own the Async reactor,
-authorization and lifecycle. There is no HTTP/1 fallback, automatic replay or
-streaming API. See the package guide for defaults, bounded cleanup and backend
+authorization and lifecycle. There is no HTTP/1 fallback or automatic replay. See the package guide for defaults, bounded cleanup and backend
 header normalization. `mise run async:example` runs the generated localhost
 example; `async:verify` checks the independent bundle, installed packages and
 connect-go interoperability. Core require and core/Rails dependencies stay
@@ -431,7 +432,7 @@ See the optional [in-process testing package](gems/connectrpc-testing/README.md)
 ## Optional Falcon hosting
 
 The [connectrpc-falcon package](gems/connectrpc-falcon/README.md) serves the native
-unary application in real Falcon process workers, with explicit Rack/Rails
+application in real Falcon process workers, with explicit Rack/Rails
 fallback, h2/HTTP1 TLS selection and worker-local versioned TLS providers.
 RPC compression and byte limits stay outside generic Falcon middleware.
 WebSockets, ActionCable, upgrades, CONNECT and hijack are rejected on this
@@ -459,6 +460,10 @@ OpenTelemetry SDK. Core has no OpenTelemetry dependency. See
 ## Native Connect streaming
 
 Async and Falcon native HTTP/2 support server, client and bidirectional streaming.
+Falcon also serves Connect server and client streaming over HTTP/1.1 with both
+codecs and identity/gzip over TCP/TLS/mTLS. Ruby H1 streaming clients remain
+pending; the standalone Async Host stays H2-only. The early-response retirement
+policy has a known official-reference compatibility gap documented in the guide.
 See the [streaming guide](docs/streaming.md) for scoped APIs, mixed generated
 services, bounds and the one-second HTTP tail completion policy.
 

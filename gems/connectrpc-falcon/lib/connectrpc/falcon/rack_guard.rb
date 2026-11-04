@@ -129,7 +129,9 @@ module ConnectRPC
         @scheme = scheme
       end
 
-      def web_publication?(request) = @application.web_publication?(request)
+      def publication?(request) = @application.send(:publication?, request)
+      def http1_streaming_route?(request) = @application.send(:http1_streaming_route?, request)
+      private :publication?, :http1_streaming_route?
       def admission_response(request) = @application.admission_response(request)
 
       def call(request, lifecycle: nil, publication: nil, resource: nil)

@@ -171,3 +171,21 @@ controls and decoded query payload bytes/hash are recorded separately from the
 measured empty HTTP body. The fixture's request-local query echo populates
 `ConnectGetInfo`; production RPC observation exposes no query or payload.
 Focused Ruby and Go probes cover gzip GET and malformed-query/boundary behavior.
+
+## Connect HTTP/1.1 server profiles
+
+`mise run falcon:conformance:http1` runs separate official Connect SS/CS server
+profiles for HTTP_VERSION_1, protobuf/JSON and identity/gzip. Half-duplex bidi
+support is false. The independent `http1_ledger.rb` and `cases-http1-*.json`
+retain exact discovered inventories and strict accounting. Existing H2 and
+client profiles are unchanged. This does not implement a Ruby H1 client.
+
+Full H1 conformance is currently blocked. Recorded runs on Ruby 3.4.12 and
+4.0.9 executed 174 identity cases with one or two first-request-size-limit CS
+failures, and 160 gzip cases with no failures. The reference client's delayed
+response read can lose the response when its subsequent upload write fails at
+connection retirement. Raw-socket evidence observes `resource_exhausted` and
+terminal HTTP chunk completion. The approved response-first, absolute 100 ms /
+256 KiB best-effort hygiene policy remains in force. No failing case is waived,
+removed or counted as passing; the policy/evidence conflict remains open.
+See [streaming](../docs/streaming.md#falcon-http11-server) for the precise scope.

@@ -1,6 +1,9 @@
 # Design and implemented profile
 
-The gem implements typed Connect RPCs and native HTTP/2 gRPC in all four RPC shapes. Shared protocol code is
+The gem implements typed Connect RPCs and native HTTP/2 gRPC in all four RPC shapes.
+Falcon also serves Connect HTTP/1.1 server/client streaming; Ruby H1 clients are
+pending and standalone Async Host remains H2-only. The streaming guide records
+the bounded early-response policy and open official-reference conformance gap. Shared protocol code is
 independent of HTTP hosting and concrete protobuf classes. The public require
 is `connectrpc`, and the Ruby namespace is `ConnectRPC`. The API is experimental.
 
@@ -83,7 +86,7 @@ after header validation. Every concatenated member validates CRC/ISIZE/completio
 truncation and trailing data fail under an aggregate decoded cap.
 
 Other verbs get bare 405 with `Allow: GET, POST` for safe methods, otherwise `POST`; unsupported types, including
-Connect streaming and gRPC variants, get bare 415 with `Accept-Post`.
+Connect streaming and gRPC variants on portable adapters, get bare 415 with `Accept-Post`.
 Unsupported request encoding returns `unimplemented` listing supported codings. Invalid
 version, timeout, or request decoding returns `invalid_argument`. Limits return
 `resource_exhausted`. Unexpected application exceptions return generic
@@ -338,8 +341,8 @@ The optional [Falcon package](../gems/connectrpc-falcon/README.md) composes it w
 Falcon's process workers, raw endpoints and HTTP server/run lifecycle. Its local
 HTTP/1 resource uses upstream parse/write hooks and preserves wire completion
 and callback boundaries during retirement. Only explicit Rack fallback receives
-Falcon's generic encoding/cache middleware. No core signatures or unary wire
-capabilities change. See the package guide for source failure, expiry, worker
+Falcon's generic encoding/cache middleware. Native Connect streaming hosts
+select explicit core shape capabilities. See the package guide for source failure, expiry, worker
 stop and unsupported socket-ownership transfer policies.
 
 The explicit optional `connectrpc/generator` entry point implements the standard

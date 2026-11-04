@@ -45,9 +45,14 @@ module ConnectRPC
           @resource.exchange&.finish(false, $ERROR_INFO)
         ensure
           @resource.exchange = nil
-          @resource.failed! if @resource.active
-          @resource.active = false
-          @resource.changed
+          begin
+            @resource.input_retirement&.close(false)
+          ensure
+            @resource.input_retirement = nil
+            @resource.failed! if @resource.active
+            @resource.active = false
+            @resource.changed
+          end
         end
       end
 
@@ -62,13 +67,112 @@ module ConnectRPC
         begin
           @resource.exchange&.finish(!!written, $ERROR_INFO)
         ensure
-          @resource.exchange = nil
-          @resource.active = false
-          @resource.changed
+          begin
+            @resource.input_retirement&.close(!!written)
+          ensure
+            @resource.input_retirement = nil
+            @resource.exchange = nil
+            @resource.active = false
+            @resource.changed
+          end
         end
       end
     end
     private_constant :HTTP1Connection
+
+    # Connect-only transfer from the original processor to the connection task.
+    # Framing completion never relies on empty?, which also becomes true on error.
+    class HTTP1StreamInput
+      attr_writer :input
+
+      def initialize(body, raw:, connection:)
+        @body = body
+        @framed = body&.body
+        @raw = raw
+        @connection = connection
+      end
+
+      def on_close(&completion)
+        @completion = completion
+      end
+
+      def framed_complete?
+        case @framed
+        when nil then true
+        when ::Protocol::HTTP1::Body::Fixed then @framed.remaining.zero?
+        when ::Protocol::HTTP1::Body::Chunked then !@framed.length.nil?
+        else false
+        end
+      end
+
+      def head_resolved(status)
+        @retiring = status == 505 || !framed_complete?
+        @connection.persistent = false if @retiring
+      end
+
+      def processor_finished
+        @discarded = @input&.release_remainder || 0
+        @input = nil
+        @body&.close if framed_complete?
+        @processed = true
+      end
+
+      def close(delivered)
+        return if @closed
+
+        @closed = true
+        begin
+          if delivered && @processed && @retiring
+            discard
+          elsif !delivered || !@processed
+            abort_read
+          end
+        rescue StandardError
+          # Hygiene cannot change an already observed RPC delivery outcome.
+          abort_read
+        ensure
+          begin
+            # A retired connection is never reused, even after complete framing.
+            abort_read if @retiring || !delivered || !@processed
+          ensure
+            begin
+              @body&.close
+            ensure
+              @completion&.call
+            end
+          end
+        end
+      end
+
+      private
+
+      def discard
+        expires = now + 0.1
+        until framed_complete?
+          return if 262_144 - @discarded < 65_536
+
+          remaining = expires - now
+          return if remaining <= 0
+
+          # Pinned framed reads have no length argument and return <=64 KiB.
+          # Reserve a whole block before each read, including adapter remainder.
+          chunk = ::Async::Task.current.with_timeout(remaining) { @body.read }
+          @discarded += chunk.bytesize if chunk
+        end
+      end
+
+      def abort_read
+        @raw.close unless @raw.closed?
+        # Finishable.close must still resolve after raw-first teardown. Closing
+        # connection state first prevents framed close_read on an already shut IO.
+        @connection.close
+      rescue IOError, SystemCallError
+        nil
+      end
+
+      def now = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+    end
+    private_constant :HTTP1StreamInput
 
     # One request's original framing and deadline, owned only by native Web H1.
     class HTTP1RejectedInput
@@ -131,7 +235,7 @@ module ConnectRPC
 
     # Serial HTTP/1 ownership. It deliberately has no HTTP/2 stream/GOAWAY API.
     class HTTP1Resource
-      attr_accessor :raw, :socket, :task, :snapshot, :ready, :draining, :active, :exchange
+      attr_accessor :raw, :socket, :task, :snapshot, :ready, :draining, :active, :exchange, :input_retirement
       attr_reader :connection, :generation, :progress, :activity_at
 
       def initialize(stream, progress:, generation:)
@@ -167,6 +271,10 @@ module ConnectRPC
 
       def web_input(body, headers:)
         HTTP1RejectedInput.new(body, raw: @raw, connection: @connection, headers: headers)
+      end
+
+      def prepare_stream_input(body)
+        @input_retirement = HTTP1StreamInput.new(body, raw: @raw, connection: @connection)
       end
 
       def abort

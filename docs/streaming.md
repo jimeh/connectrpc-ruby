@@ -3,15 +3,56 @@
 Connect server streaming, client streaming and bidirectional streaming use the
 same dependency-free core engine. The optional Async transport and Async/Falcon
 native HTTP/2 hosts support protobuf and ProtoJSON, identity/gzip, h2c, verified
-TLS and mTLS. NetHTTP, Rack, Rails, Testing and Falcon HTTP/1 remain unary.
+TLS and mTLS. Falcon also serves Connect server and client streaming over
+HTTP/1.1 with both codecs and identity/gzip over TCP/TLS/mTLS. A Ruby H1
+streaming client is pending. The standalone Async Host and Async transport remain
+H2-only. NetHTTP, Rack, Rails and Testing remain unary.
 Unsupported clients reject a streaming operation before encoding or I/O. Native
-listeners explicitly select HTTP/2 capability. Portable adapters reject streaming
+listeners explicitly select their actual protocol capabilities. Portable adapters reject streaming
 media before reading input or invoking handlers, including Rails callbacks.
 
 Native gRPC reuses the declarations and session engine below, including unary
 calls through the exchange SPI. Its protobuf-only negotiation, final HTTP/2
 HEADERS, status codec and independent bounds are described in [gRPC](grpc.md).
 The Connect terminal envelope and one-second tail policy below apply to Connect.
+
+## Falcon HTTP/1.1 server
+
+Custom hosts opt in with `Server#call_stream(capabilities: [:server_stream,
+:client_stream], ...)`. The default `capabilities: nil` retains portable
+rejection; legacy `http2: true` grants all three shapes. Explicit capabilities
+must be a nonempty, unique Array of supported shape symbols and cannot be
+combined with `http2: true`. Omitted SS/CS returns bounded `unimplemented`;
+omitted known bidi returns host-neutral bare 505 before input or codecs.
+Falcon turns every native H1 bidi 505 into a nonpersistent response with exactly
+one `Connection: close`. Web negotiation and CORS retain precedence. Native
+gRPC remains H2-only, and HTTP/1.0 Connect streaming is rejected.
+
+The original processor retains handlers, codecs, authenticated peer identity,
+trace activation and application cleanup. Response consumers transmit prepared
+bytes. Headers can publish during input reads, but successful HTTP terminal
+chunk delivery waits for original application cleanup. Leading metadata and
+propagation exclude actual chunked trailers, including `connect-timeout-ms`.
+H1 peer EOF does not synthesize Context cancellation.
+
+When original framed input is incomplete at response-head resolution, Falcon
+disables reuse and delivers the complete response before best-effort input
+hygiene. Hygiene has one absolute 100 ms allowance and a 256 KiB entity-byte cap,
+including the adapter remainder. Every additional framed read reserves a full
+64 KiB, so retirement can stop below the cap. Progress never restarts the timer;
+Connect does not use `grpc-timeout`. Admission and connection ownership remain
+held through hygiene. Retirement never parses or dispatches a pipelined request,
+even if the original request finishes. Fully consumed input retains persistence.
+Raw socket abort precedes framed/Finishable close on forced teardown.
+
+This policy is best effort, not a guarantee that every client observes response
+completion. The pinned official identity suite currently fails first-request
+size-limit CS cases: its Go HTTP/1 transport may close its own connection after
+a later upload write fails at retirement, losing the delayed response read.
+A raw peer receives `resource_exhausted` and the terminal HTTP chunk, while the
+reference client can report an incomplete envelope. Gzip profiles pass in the
+recorded runs, but full H1 conformance remains blocked. The policy/evidence
+conflict is open; no case is waived or excluded.
 
 ## Completion policy
 

@@ -28,13 +28,22 @@ Dir.mktmpdir("streaming-interop-", File.join(root, "vendor/falcon")) do |fixture
     File.write(File.join(fixtures, "#{name}.pem"), certificate.to_pem)
     File.write(File.join(fixtures, "#{name}.key"), key.private_to_pem)
   end
-  %w[h2c tls mtls].each do |mode|
+  supported = %w[h2c tls mtls h1 h1tls h1mtls]
+  modes = ARGV.empty? ? supported : ARGV
+  raise "Unsupported Falcon peer mode" unless (modes - supported).empty?
+
+  modes.each do |mode|
     helpers.reactor do |task|
-      tls = helpers.host_tls(identities.fetch("server"), anchors: mode == "mtls" ? [ca] : nil) unless mode == "h2c"
+      unless %w[
+        h2c h1
+      ].include?(mode)
+        tls = helpers.host_tls(identities.fetch("server"),
+                               anchors: %w[mtls h1mtls].include?(mode) ? [ca] : nil)
+      end
       reader, writer = IO.pipe
       writer = FalconProcessFixtures::FalconEventWriter.new(writer)
       writer.sync = true
-      scheme = mode == "h2c" ? "http" : "https"
+      scheme = %w[h2c h1].include?(mode) ? "http" : "https"
       configuration = Async::Service::Configuration.build do
         service "streaming-interop" do
           include ConnectRPC::Falcon::Environment
@@ -44,7 +53,7 @@ Dir.mktmpdir("streaming-interop-", File.join(root, "vendor/falcon")) do |fixture
           count 2
           health_check_timeout nil
           events writer
-          connectrpc_server { StreamingInterop.server }
+          connectrpc_server { StreamingInterop.server(coordination: mode.start_with?("h1") ? fixtures : nil) }
           tls tls
         end
       end

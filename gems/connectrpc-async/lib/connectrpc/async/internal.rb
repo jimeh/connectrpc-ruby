@@ -166,6 +166,12 @@ module ConnectRPC
           end
         end
 
+        def release_remainder
+          size = @remainder&.bytesize || 0
+          @remainder = nil
+          size
+        end
+
         private
 
         def read_fragment(length)
@@ -201,17 +207,37 @@ module ConnectRPC
       end
 
       def self.headers(message)
+        # H1 chunked parsing appends trailers to the mutable native headers.
+        # Every later processing/observation phase must use the leading carrier.
+        if !message.respond_to?(:stream) && (leading = message.instance_variable_get(:@connectrpc_leading_headers))
+          return leading
+        end
+
         result = {}
-        message.headers.header.each { |key, value| (result[key.downcase] ||= []) << value }
+        message.headers.header.each { |key, value| (result[key.downcase] ||= []) << value.dup.freeze }
         length = message.body&.length
         length ||= message.stream.declared_length if message.respond_to?(:stream)
         length = 0 if length.nil? && message.body.nil?
         result["content-length"] = [length.to_s] if length
+        unless message.respond_to?(:stream)
+          result.each_value(&:freeze)
+          message.instance_variable_set(:@connectrpc_leading_headers, result.freeze)
+        end
         result
       end
 
       def self.fields(headers)
         headers.flat_map { |key, values| values.map { |value| [key, value] } }
+      end
+
+      def self.close_consumed_http1(request)
+        return if request.respond_to?(:stream) || !request.body.respond_to?(:body)
+
+        framed = request.body.body
+        complete = framed.nil? ||
+                   (framed.is_a?(::Protocol::HTTP1::Body::Fixed) && framed.remaining.zero?) ||
+                   (framed.is_a?(::Protocol::HTTP1::Body::Chunked) && !framed.length.nil?)
+        request.body&.close if complete
       end
     end
     private_constant :Internal

@@ -7,6 +7,9 @@ require "rbconfig"
 require_relative "../conformance/native_ledger"
 require_relative "../conformance/grpc_ledger"
 
+http1 = ENV["CONNECTRPC_CONFORMANCE_HTTP1"] == "1"
+require_relative "../conformance/http1_ledger" if http1
+
 grpc = ENV["CONNECTRPC_CONFORMANCE_GRPC"] == "1"
 
 root = File.expand_path("..", __dir__)
@@ -17,6 +20,9 @@ raise "Usage: native_conformance.rb async|falcon [client|server [exact-name]]" u
   %w[async falcon].include?(host) && directions.all? do |direction|
     %w[client server].include?(direction)
   end && ARGV.empty?
+if http1 && (host != "falcon" || directions != ["server"] || grpc)
+  raise "HTTP1 profiles require Falcon server-only Connect mode"
+end
 if host == "falcon" && directions.include?("client")
   raise "Native client profile must run once through its actual Async transport"
 end
@@ -24,9 +30,15 @@ end
 version, status = Open3.capture2("connectconformance", "--version")
 raise "Wrong conformance runner" unless status.success? && version.strip == "connectconformance v1.0.6"
 
-def native_command(root, profile, direction, selector, grpc)
+protocol = if http1
+             "http1"
+           else
+             (grpc ? "grpc" : "native")
+           end
+
+def native_command(root, profile, direction, selector, protocol)
   command = ["connectconformance", "--mode", direction, "--conf",
-             File.join(root, "conformance/profile-#{grpc ? 'grpc' : 'native'}-#{profile}.yaml"), "--vv"]
+             File.join(root, "conformance/profile-#{protocol}-#{profile}.yaml"), "--vv"]
   command.push("--run", selector) if selector
   command.push("--", RbConfig.ruby, "-I#{File.join(root, 'lib')}",
                File.join(root, "conformance/native_#{direction}.rb"))
@@ -45,16 +57,21 @@ end
 
 success = true
 %w[identity gzip].product(directions).each do |profile, direction| # rubocop:disable Metrics/BlockLength
-  inventory = (grpc ? Conformance::GRPCLedger : Conformance::NativeLedger)::INVENTORIES.fetch(profile).fetch(direction)
+  ledger_type = if http1
+                  Conformance::HTTP1Ledger
+                else
+                  (grpc ? Conformance::GRPCLedger : Conformance::NativeLedger)
+                end
+  inventory = ledger_type::INVENTORIES.fetch(profile).fetch(direction)
   next if selector && !inventory.include?(selector)
 
-  ledger = (grpc ? Conformance::GRPCLedger : Conformance::NativeLedger).new(profile: profile, direction: direction,
-                                                                            selected: selector)
+  ledger = ledger_type.new(profile: profile, direction: direction,
+                           selected: selector)
   stamp = "#{Time.now.utc.strftime('%Y%m%dT%H%M%S')}-#{Process.pid}-#{RUBY_VERSION}-" \
-          "#{host}-#{grpc ? 'grpc' : 'native'}-#{profile}-#{direction}"
+          "#{host}-#{protocol}-#{profile}-#{direction}"
   artifacts = File.join(root, "vendor/conformance/results", stamp)
   telemetry = native_telemetry(artifacts)
-  command = native_command(root, profile, direction, selector, grpc)
+  command = native_command(root, profile, direction, selector, protocol)
   raw, process = Open3.capture2e(native_environment(telemetry, host, artifacts), *command)
   File.write(File.join(artifacts, "runner.log"), raw)
   puts raw

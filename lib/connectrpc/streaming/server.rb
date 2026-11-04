@@ -4,10 +4,15 @@ module ConnectRPC
   class Server
     # Explicit native-host SPI. Portable adapters retain the unary entry point.
     def call_stream(path:, http_method:, headers:, input:, output:, publish:, lifecycle: nil, cancellation: nil, # rubocop:disable Metrics/MethodLength
-                    http2: false)
-      unless http2
+                    http2: false, capabilities: nil)
+      capabilities = stream_capabilities(http2, capabilities)
+      unless capabilities
         return call(path: path, http_method: http_method, headers: headers, input: input,
                     lifecycle: lifecycle, cancellation: cancellation)
+      end
+
+      if @methods[path].is_a?(BidiStreamMethod) && !capabilities.include?(:bidi_stream)
+        return bare(505, {}, cancellation: cancellation)
       end
 
       return bare(415, {}, cancellation: cancellation) unless @protocol.include?(:connect)
@@ -19,10 +24,28 @@ module ConnectRPC
 
       execute_native_stream(path, values, codec, http_method: http_method,
                                                  input: input, output: output, publish: publish,
-                                                 lifecycle: lifecycle, cancellation: cancellation)
+                                                 lifecycle: lifecycle, cancellation: cancellation,
+                                                 capabilities: capabilities)
     end
 
     private
+
+    def stream_capabilities(http2, capabilities)
+      # @type var shapes: Array[streaming_cardinality]
+      shapes = %i[server_stream client_stream bidi_stream]
+      return (http2 ? shapes : nil) if capabilities.nil?
+
+      raise ArgumentError, "Invalid streaming capabilities" if http2 || !stream_capability_list?(capabilities)
+
+      capabilities
+    end
+
+    def stream_capability_list?(capabilities)
+      # @type var shapes: Array[streaming_cardinality]
+      shapes = %i[server_stream client_stream bidi_stream]
+      capabilities.is_a?(Array) && !capabilities.empty? && capabilities.uniq == capabilities &&
+        (capabilities - shapes).empty?
+    end
 
     def stream_preflight(http_method, codec, cancellation)
       return bare(405, { "allow" => ["POST"] }, cancellation: cancellation) unless http_method == "POST"
@@ -31,7 +54,8 @@ module ConnectRPC
       bare(415, { "accept-post" => [Streaming::CONTENT_TYPES.values.join(", ")] }, cancellation: cancellation)
     end
 
-    def execute_native_stream(path, headers, codec, http_method:, input:, output:, publish:, lifecycle:, cancellation:) # rubocop:disable Metrics/MethodLength
+    def execute_native_stream(path, headers, codec, http_method:, input:, output:, publish:, lifecycle:,
+                              cancellation:, capabilities:) # rubocop:disable Metrics/MethodLength
       # @type var owned: bool?
       owned = nil
       # @type var error: Exception?
@@ -39,7 +63,8 @@ module ConnectRPC
       lifecycle, owned = begin_native_processing(path, headers, lifecycle, http_method)
       work = lambda {
         process_stream(path, headers, codec, input: input, output: output, publish: publish,
-                                             lifecycle: lifecycle, cancellation: cancellation)
+                                             lifecycle: lifecycle, cancellation: cancellation,
+                                             capabilities: capabilities)
       }
       lifecycle ? lifecycle.activate(&work) : work.call
       nil
@@ -64,15 +89,24 @@ module ConnectRPC
       lifecycle.finish(delivery: :unobserved) if owned
     end
 
-    def process_stream(path, headers, codec, input:, output:, publish:, lifecycle:, cancellation:)
+    def process_stream(path, headers, codec, input:, output:, publish:, lifecycle:, cancellation:, capabilities:)
       # @type var state: Streaming::ServerState?
       active = state = Streaming::ServerState.new(headers: headers, codec: codec, publish: publish,
                                                   lifecycle: lifecycle, cancellation: cancellation)
-      capture_stream_error(active) { execute_stream_handler(active, path, input, output) }
+      capture_stream_error(active) do
+        require_stream_capability(path, capabilities)
+        execute_stream_handler(active, path, input, output)
+      end
       render_stream_terminal(active, output)
     ensure
       state&.session&.close
       state&.context&.close
+    end
+
+    def require_stream_capability(path, capabilities)
+      return if capabilities.include?(streaming_declaration(path).cardinality)
+
+      raise Error.new(:unimplemented, "Unsupported streaming method"), cause: nil
     end
 
     def capture_stream_error(state)

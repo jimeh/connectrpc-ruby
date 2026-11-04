@@ -75,7 +75,7 @@ module Conformance
 
       if ENV.fetch("CONNECTRPC_NATIVE_HOST", "async") == "falcon"
         require "connectrpc/falcon"
-        if ENV["CONNECTRPC_CONFORMANCE_WEB"] == "1"
+        if ENV["CONNECTRPC_CONFORMANCE_WEB"] == "1" || ENV["CONNECTRPC_CONFORMANCE_HTTP1"] == "1"
           ConnectRPC::Falcon.const_get(:HTTP1Connection).prepend(WebHTTP1Arrival)
         end
         bound = ConnectRPC::Falcon::Endpoint.parse("#{config.use_tls ? 'https' : 'http'}://127.0.0.1:0").bound

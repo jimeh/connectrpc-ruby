@@ -37,3 +37,12 @@ request[-4].each_value(&:size)
 request[-3]&.remaining
 request[:cancellation]&.check!
 ConnectRPC::Server.new(services: [], binding: APIBinding.new, terminal_limit: 1, terminal_wire_limit: 2)
+
+server = ConnectRPC::Server.new(services: [], binding: APIBinding.new)
+server.call_stream(path: ss.path, http_method: "POST", headers: {}, input: APIStreamExchange.new,
+                   output: APIWebOutput.new, publish: APIStreamPublisher.new,
+                   capabilities: %i[server_stream client_stream])
+server.call_stream(path: ss.path, http_method: "POST", headers: {}, input: APIStreamExchange.new,
+                   output: APIWebOutput.new, publish: APIStreamPublisher.new, capabilities: nil)
+server.call_stream(path: ss.path, http_method: "POST", headers: {}, input: APIStreamExchange.new,
+                   output: APIWebOutput.new, publish: APIStreamPublisher.new, http2: true)

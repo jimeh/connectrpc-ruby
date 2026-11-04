@@ -1,0 +1,20 @@
+features:
+  versions:
+  - HTTP_VERSION_1
+  protocols:
+  - PROTOCOL_CONNECT
+  codecs:
+  - CODEC_PROTO
+  - CODEC_JSON
+  compressions:
+  - COMPRESSION_GZIP
+  streamTypes:
+  - STREAM_TYPE_SERVER_STREAM
+  - STREAM_TYPE_CLIENT_STREAM
+  supportsH2c: false
+  supportsTls: true
+  supportsTlsClientCerts: true
+  supportsTrailers: false
+  supportsHalfDuplexBidiOverHttp1: false
+  supportsConnectGet: false
+  supportsMessageReceiveLimit: true

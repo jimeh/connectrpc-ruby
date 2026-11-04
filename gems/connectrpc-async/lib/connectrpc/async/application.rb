@@ -22,14 +22,37 @@ module ConnectRPC
         @server.start_call(path: path, headers: Internal.headers(request), http_method: request.method)
       end
 
-      def web_publication?(request)
+      def publication?(request)
         path = request.path&.split("?", 2)&.first
         return false unless path
 
         return false unless @server.handles?(path)
 
-        @server.send(:request_protocol, Internal.headers(request), request.method) == :grpc_web
+        headers = Internal.headers(request)
+        protocol = @server.send(:request_protocol, headers, request.method)
+        protocol == :grpc_web ||
+          (protocol != :grpc && @server.instance_variable_get(:@methods)[path].is_a?(BidiStreamMethod)) ||
+          (request.method == "POST" && protocol == :connect &&
+            !Streaming.codec(Protocol.single(headers, "content-type")).nil?) ||
+          http1_streaming_route?(request)
       end
+
+      def http1_streaming_route?(request)
+        return false if request.respond_to?(:stream)
+
+        path = request.path&.split("?", 2)&.first
+        return false unless path && @server.handles?(path)
+
+        declaration = @server.instance_variable_get(:@methods)[path]
+        headers = Internal.headers(request)
+        protocol = @server.send(:request_protocol, headers, request.method)
+        return false if protocol == :grpc_web
+
+        (declaration && !declaration.is_a?(Method)) ||
+          (protocol == :connect && !Streaming.codec(Protocol.single(headers, "content-type")).nil?)
+      end
+
+      private :publication?, :http1_streaming_route?
 
       def admission_response(request)
         path = request.path&.split("?", 2)&.first
@@ -46,7 +69,8 @@ module ConnectRPC
         headers = Internal.headers(request)
         # This source-coupled host shares core's selection before choosing output.
         protocol = @server.send(:request_protocol, headers, request.method)
-        return call(request, lifecycle: lifecycle) if request.method == "GET" && protocol == :connect
+        h1_connect = !request.respond_to?(:stream) && http1_streaming_route?(request)
+        return call(request, lifecycle: lifecycle) if !h1_connect && request.method == "GET" && protocol == :connect
 
         web = protocol == :grpc_web
         grpc = protocol == :grpc
@@ -58,6 +82,12 @@ module ConnectRPC
         early = @server.cors_response(path: path, http_method: request.method, headers: headers)
         h1_input&.close if early
         return ::Protocol::HTTP::Response[early.status, Internal.fields(early.headers), nil] if early
+        if h1_connect && @server.instance_variable_get(:@methods)[path].is_a?(BidiStreamMethod)
+          return ::Protocol::HTTP::Response[505, {}, nil]
+        end
+        return call(request, lifecycle: lifecycle) if grpc && !stream
+        return ::Protocol::HTTP::Response[505, {}, nil] if h1_connect && request.version != "HTTP/1.1"
+
         unless @server.handles?(path) && (web || grpc || Streaming.codec(Protocol.single(headers, "content-type")))
           return call(request, lifecycle: lifecycle)
         end
@@ -74,12 +104,19 @@ module ConnectRPC
         begin
           input_type = grpc ? Internal::GRPCInput : Internal::Input
           input = input_type.new(request.body, resource: resource)
+          resource.input_retirement.input = input if h1_connect && resource&.input_retirement
           entrypoint = if web
                          :call_grpc_web
                        else
                          (grpc ? :call_grpc : :call_stream)
                        end
-          options = web ? { capabilities: %i[unary server_stream] } : { http2: true }
+          options = if web
+                      { capabilities: %i[unary server_stream] }
+                    elsif stream
+                      { http2: true }
+                    else
+                      { capabilities: %i[server_stream client_stream] }
+                    end
           response = @server.public_send(
             entrypoint, path: path, http_method: request.method, headers: headers,
                         input: input,
@@ -106,6 +143,8 @@ module ConnectRPC
         end
         body.close_write
         nil
+      ensure
+        resource.input_retirement&.processor_finished if resource.respond_to?(:input_retirement)
       end
 
       def call(request, lifecycle: nil)
@@ -123,6 +162,7 @@ module ConnectRPC
         ::Protocol::HTTP::Response[response.status, Internal.fields(response.headers), body]
       ensure
         stream&.detach_cancellation
+        Internal.close_consumed_http1(request)
       end
     end
   end

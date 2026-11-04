@@ -419,7 +419,7 @@ run = "ruby gems/connectrpc-falcon/scripts/run.rb interop"
 
 [tasks."falcon:verify"]
 description = "Verify Falcon specs, source, packages and Go interoperability"
-depends = ["falcon:test", "falcon:check", "falcon:package", "falcon:interop", "falcon:interop:streaming", "falcon:conformance", "falcon:conformance:grpc", "falcon:interop:grpc"]
+depends = ["falcon:test", "falcon:check", "falcon:package", "falcon:interop", "falcon:interop:streaming", "falcon:conformance", "falcon:conformance:grpc", "falcon:interop:grpc", "falcon:conformance:http1"]
 
 [tasks."falcon:tools"]
 description = "Prepare exact Ruby/Bundler for the independent backend bundle"
@@ -632,3 +632,10 @@ tools.go = "1.27.3"
 dir = "{{config_root}}/browser/reference"
 env = { GOTOOLCHAIN = "local", GOWORK = "off", GOFLAGS = "-mod=readonly", GOMODCACHE = "{{config_root}}/vendor/browser/go/mod", GOCACHE = "{{config_root}}/vendor/browser/go/build" }
 run = ["mise install --locked go@1.27.3", "go mod download all", "go mod verify", "ruby ../../scripts/check_web_reference.rb", "go build -o ../../vendor/browser/reference ."]
+
+[tasks."falcon:conformance:http1"]
+description = "Run separate official Connect HTTP/1 SS/CS Falcon server profiles"
+depends = ["falcon:setup", "setup:conformance"]
+tools."github:connectrpc/conformance" = "1.0.6"
+env.CONNECTRPC_CONFORMANCE_HTTP1 = "1"
+run = "ruby gems/connectrpc-falcon/scripts/run.rb conformance falcon server"

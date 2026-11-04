@@ -17,7 +17,8 @@ RSpec.describe "Native Protocol::HTTP application" do
 
   it "translates HTTP/1 requests without a stream, including absent and empty bodies" do
     application = ConnectRPC::Async::Application.new(server: server)
-    [nil, []].each do |body|
+    payload = AsyncHelpers::MESSAGE.encode(AsyncHelpers::MESSAGE.new(name: "buffered"))
+    [nil, [], [payload]].each do |body|
       incoming = Protocol::HTTP::Request["POST", "#{AsyncHelpers::ECHO::ECHO.path}?q=1",
                                          [["content-type", "application/proto"], ["x-request", "a"],
                                           ["x-request", "b"]], body]

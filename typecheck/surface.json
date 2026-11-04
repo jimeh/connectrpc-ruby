@@ -6,9 +6,10 @@
     "ConnectRPC::Async::Application#admission_response": {"kind":"method","visibility":"public","parameters":"request","classification":"internal"},
     "ConnectRPC::Async::Application#call": {"kind":"method","visibility":"public","parameters":"request, lifecycle: nil","classification":"supported"},
     "ConnectRPC::Async::Application#call_with_publication": {"kind":"method","visibility":"public","parameters":"request, publication:, lifecycle: nil, resource: nil","classification":"internal"},
+    "ConnectRPC::Async::Application#http1_streaming_route?": {"kind":"method","visibility":"private","parameters":"request","classification":"internal"},
     "ConnectRPC::Async::Application#initialize": {"kind":"method","visibility":"public","parameters":"server:, fallback: nil","classification":"supported"},
-    "ConnectRPC::Async::Application#start_call": {"kind":"method","visibility":"public","parameters":"request","classification":"spi"},
-    "ConnectRPC::Async::Application#web_publication?": {"kind":"method","visibility":"public","parameters":"request","classification":"internal"}
+    "ConnectRPC::Async::Application#publication?": {"kind":"method","visibility":"private","parameters":"request","classification":"internal"},
+    "ConnectRPC::Async::Application#start_call": {"kind":"method","visibility":"public","parameters":"request","classification":"spi"}
   },
   "gems/connectrpc-async/lib/connectrpc/async/connection.rb": {
     "ConnectRPC::Async::Internal.settings": {"kind":"method","visibility":"public","parameters":"max_requests","classification":"internal"},
@@ -129,6 +130,7 @@
   },
   "gems/connectrpc-async/lib/connectrpc/async/internal.rb": {
     "ConnectRPC::Async::Internal.cancel": {"kind":"method","visibility":"public","parameters":"task","classification":"internal"},
+    "ConnectRPC::Async::Internal.close_consumed_http1": {"kind":"method","visibility":"public","parameters":"request","classification":"internal"},
     "ConnectRPC::Async::Internal.fields": {"kind":"method","visibility":"public","parameters":"headers","classification":"internal"},
     "ConnectRPC::Async::Internal.headers": {"kind":"method","visibility":"public","parameters":"message","classification":"internal"},
     "ConnectRPC::Async::Internal.join": {"kind":"method","visibility":"public","parameters":"task","classification":"internal"},
@@ -152,7 +154,8 @@
     "ConnectRPC::Async::Internal::Exchange#initialize": {"kind":"method","visibility":"public","parameters":"lifecycle","classification":"internal"},
     "ConnectRPC::Async::Internal::Input#initialize": {"kind":"method","visibility":"public","parameters":"body, resource: nil","classification":"internal"},
     "ConnectRPC::Async::Internal::Input#read": {"kind":"method","visibility":"public","parameters":"length, timeout: nil","classification":"internal"},
-    "ConnectRPC::Async::Internal::Input#read_fragment": {"kind":"method","visibility":"private","parameters":"length","classification":"internal"}
+    "ConnectRPC::Async::Internal::Input#read_fragment": {"kind":"method","visibility":"private","parameters":"length","classification":"internal"},
+    "ConnectRPC::Async::Internal::Input#release_remainder": {"kind":"method","visibility":"public","parameters":"","classification":"internal"}
   },
   "gems/connectrpc-async/lib/connectrpc/async/server_session.rb": {
     "ConnectRPC::Async::ServerSession#abort": {"kind":"method","visibility":"public","parameters":"","classification":"spi"},
@@ -353,8 +356,11 @@
     "ConnectRPC::Falcon::HTTP1Resource#finishing?": {"kind":"method","visibility":"public","parameters":"","classification":"internal"},
     "ConnectRPC::Falcon::HTTP1Resource#generation": {"kind":"attribute","visibility":"public","classification":"internal"},
     "ConnectRPC::Falcon::HTTP1Resource#initialize": {"kind":"method","visibility":"public","parameters":"stream, progress:, generation:","classification":"internal"},
+    "ConnectRPC::Falcon::HTTP1Resource#input_retirement": {"kind":"attribute","visibility":"public","classification":"internal"},
+    "ConnectRPC::Falcon::HTTP1Resource#input_retirement=": {"kind":"attribute","visibility":"public","classification":"internal"},
     "ConnectRPC::Falcon::HTTP1Resource#join": {"kind":"method","visibility":"private","parameters":"task","classification":"internal"},
     "ConnectRPC::Falcon::HTTP1Resource#now": {"kind":"method","visibility":"private","parameters":"","classification":"internal"},
+    "ConnectRPC::Falcon::HTTP1Resource#prepare_stream_input": {"kind":"method","visibility":"public","parameters":"body","classification":"internal"},
     "ConnectRPC::Falcon::HTTP1Resource#progress": {"kind":"attribute","visibility":"public","classification":"internal"},
     "ConnectRPC::Falcon::HTTP1Resource#raw": {"kind":"attribute","visibility":"public","classification":"internal"},
     "ConnectRPC::Falcon::HTTP1Resource#raw=": {"kind":"attribute","visibility":"public","classification":"internal"},
@@ -367,8 +373,18 @@
     "ConnectRPC::Falcon::HTTP1Resource#task": {"kind":"attribute","visibility":"public","classification":"internal"},
     "ConnectRPC::Falcon::HTTP1Resource#task=": {"kind":"attribute","visibility":"public","classification":"internal"},
     "ConnectRPC::Falcon::HTTP1Resource#track": {"kind":"method","visibility":"public","parameters":"task","classification":"internal"},
+    "ConnectRPC::Falcon::HTTP1Resource#wait": {"kind":"method","visibility":"private","parameters":"task, expires","classification":"internal"},
     "ConnectRPC::Falcon::HTTP1Resource#web_input": {"kind":"method","visibility":"public","parameters":"body, headers:","classification":"internal"},
-    "ConnectRPC::Falcon::HTTP1Resource#wait": {"kind":"method","visibility":"private","parameters":"task, expires","classification":"internal"}
+    "ConnectRPC::Falcon::HTTP1StreamInput#abort_read": {"kind":"method","visibility":"private","parameters":"","classification":"internal"},
+    "ConnectRPC::Falcon::HTTP1StreamInput#close": {"kind":"method","visibility":"public","parameters":"delivered","classification":"internal"},
+    "ConnectRPC::Falcon::HTTP1StreamInput#discard": {"kind":"method","visibility":"private","parameters":"","classification":"internal"},
+    "ConnectRPC::Falcon::HTTP1StreamInput#framed_complete?": {"kind":"method","visibility":"public","parameters":"","classification":"internal"},
+    "ConnectRPC::Falcon::HTTP1StreamInput#head_resolved": {"kind":"method","visibility":"public","parameters":"status","classification":"internal"},
+    "ConnectRPC::Falcon::HTTP1StreamInput#initialize": {"kind":"method","visibility":"public","parameters":"body, raw:, connection:","classification":"internal"},
+    "ConnectRPC::Falcon::HTTP1StreamInput#input=": {"kind":"attribute","visibility":"public","classification":"internal"},
+    "ConnectRPC::Falcon::HTTP1StreamInput#now": {"kind":"method","visibility":"private","parameters":"","classification":"internal"},
+    "ConnectRPC::Falcon::HTTP1StreamInput#on_close": {"kind":"method","visibility":"public","parameters":"&completion","classification":"internal"},
+    "ConnectRPC::Falcon::HTTP1StreamInput#processor_finished": {"kind":"method","visibility":"public","parameters":"","classification":"internal"}
   },
   "gems/connectrpc-falcon/lib/connectrpc/falcon/rack_guard.rb": {
     "ConnectRPC::Falcon::CloseOnce#close": {"kind":"method","visibility":"public","parameters":"error = nil","classification":"internal"},
@@ -378,8 +394,9 @@
     "ConnectRPC::Falcon::CompletionBody#rewindable?": {"kind":"method","visibility":"public","parameters":"","classification":"internal"},
     "ConnectRPC::Falcon::ListenerApplication#admission_response": {"kind":"method","visibility":"public","parameters":"request","classification":"internal"},
     "ConnectRPC::Falcon::ListenerApplication#call": {"kind":"method","visibility":"public","parameters":"request, lifecycle: nil, publication: nil, resource: nil","classification":"internal"},
+    "ConnectRPC::Falcon::ListenerApplication#http1_streaming_route?": {"kind":"method","visibility":"private","parameters":"request","classification":"internal"},
     "ConnectRPC::Falcon::ListenerApplication#initialize": {"kind":"method","visibility":"public","parameters":"application, scheme","classification":"internal"},
-    "ConnectRPC::Falcon::ListenerApplication#web_publication?": {"kind":"method","visibility":"public","parameters":"request","classification":"internal"},
+    "ConnectRPC::Falcon::ListenerApplication#publication?": {"kind":"method","visibility":"private","parameters":"request","classification":"internal"},
     "ConnectRPC::Falcon::RackBody#close": {"kind":"method","visibility":"public","parameters":"*","classification":"internal"},
     "ConnectRPC::Falcon::RackGuard#call": {"kind":"method","visibility":"public","parameters":"env","classification":"internal"},
     "ConnectRPC::Falcon::RackGuard#completing_body": {"kind":"method","visibility":"private","parameters":"env, status, headers, original","classification":"internal"},
@@ -399,15 +416,16 @@
     "ConnectRPC::Falcon::Server#call_with_publication": {"kind":"method","visibility":"public","parameters":"request, publication:, lifecycle: nil, resource: nil","classification":"internal"},
     "ConnectRPC::Falcon::Server#close": {"kind":"method","visibility":"public","parameters":"grace: 5","classification":"supported"},
     "ConnectRPC::Falcon::Server#drain_tls": {"kind":"method","visibility":"public","parameters":"**","classification":"supported"},
+    "ConnectRPC::Falcon::Server#http1_streaming_route?": {"kind":"method","visibility":"private","parameters":"request","classification":"internal"},
     "ConnectRPC::Falcon::Server#initialize": {"kind":"method","visibility":"public","parameters":"server:, endpoint:, rack_app: nil, tls: nil, tls_provider: nil, utilization_registry: nil, max_connections: 128, max_requests: 128, handshake_timeout: 10, idle_timeout: 60, refresh_interval: 60, refresh_jitter: 0.1, refresh_timeout: 10, on_tls_error: nil","classification":"supported"},
     "ConnectRPC::Falcon::Server#peer_certificate": {"kind":"method","visibility":"public","parameters":"","classification":"supported"},
+    "ConnectRPC::Falcon::Server#publication?": {"kind":"method","visibility":"private","parameters":"request","classification":"internal"},
     "ConnectRPC::Falcon::Server#refresh_tls": {"kind":"method","visibility":"public","parameters":"","classification":"supported"},
     "ConnectRPC::Falcon::Server#reload_tls": {"kind":"method","visibility":"public","parameters":"**","classification":"supported"},
     "ConnectRPC::Falcon::Server#run": {"kind":"method","visibility":"public","parameters":"","classification":"supported"},
     "ConnectRPC::Falcon::Server#stop_accepting": {"kind":"method","visibility":"private","parameters":"","classification":"internal"},
     "ConnectRPC::Falcon::Server#tls_generation": {"kind":"method","visibility":"public","parameters":"","classification":"supported"},
-    "ConnectRPC::Falcon::Server#tls_status": {"kind":"method","visibility":"public","parameters":"","classification":"supported"},
-    "ConnectRPC::Falcon::Server#web_publication?": {"kind":"method","visibility":"public","parameters":"request","classification":"internal"}
+    "ConnectRPC::Falcon::Server#tls_status": {"kind":"method","visibility":"public","parameters":"","classification":"supported"}
   },
   "gems/connectrpc-otel/lib/connectrpc/otel.rb": {
 
@@ -432,10 +450,10 @@
   "gems/connectrpc-rack/lib/connectrpc/rack.rb": {
     "ConnectRPC::Rack#call": {"kind":"method","visibility":"public","parameters":"env","classification":"supported"},
     "ConnectRPC::Rack#initialize": {"kind":"method","visibility":"public","parameters":"app = nil, server:","classification":"supported"},
-    "ConnectRPC::Rack#transfer_response": {"kind":"method","visibility":"private","parameters":"env","classification":"internal"},
-    "ConnectRPC::Rack::Body#discard": {"kind":"method","visibility":"public","parameters":"error","classification":"internal"},
     "ConnectRPC::Rack#request_headers": {"kind":"method","visibility":"private","parameters":"env","classification":"internal"},
+    "ConnectRPC::Rack#transfer_response": {"kind":"method","visibility":"private","parameters":"env","classification":"internal"},
     "ConnectRPC::Rack::Body#close": {"kind":"method","visibility":"public","parameters":"","classification":"internal"},
+    "ConnectRPC::Rack::Body#discard": {"kind":"method","visibility":"public","parameters":"error","classification":"internal"},
     "ConnectRPC::Rack::Body#each": {"kind":"method","visibility":"public","parameters":"&","classification":"internal"},
     "ConnectRPC::Rack::Body#initialize": {"kind":"method","visibility":"public","parameters":"body, lifecycle","classification":"internal"}
   },
@@ -1009,11 +1027,14 @@
   },
   "lib/connectrpc/streaming/server.rb": {
     "ConnectRPC::Server#begin_native_processing": {"kind":"method","visibility":"private","parameters":"path, headers, lifecycle, http_method","classification":"internal"},
-    "ConnectRPC::Server#call_stream": {"kind":"method","visibility":"public","parameters":"path:, http_method:, headers:, input:, output:, publish:, lifecycle: nil, cancellation: nil, # rubocop:disable Metrics/MethodLength http2: false","classification":"spi"},
+    "ConnectRPC::Server#call_stream": {"kind":"method","visibility":"public","parameters":"path:, http_method:, headers:, input:, output:, publish:, lifecycle: nil, cancellation: nil, # rubocop:disable Metrics/MethodLength http2: false, capabilities: nil","classification":"spi"},
     "ConnectRPC::Server#capture_stream_error": {"kind":"method","visibility":"private","parameters":"state","classification":"internal"},
-    "ConnectRPC::Server#execute_native_stream": {"kind":"method","visibility":"private","parameters":"path, headers, codec, http_method:, input:, output:, publish:, lifecycle:, cancellation:","classification":"internal"},
+    "ConnectRPC::Server#execute_native_stream": {"kind":"method","visibility":"private","parameters":"path, headers, codec, http_method:, input:, output:, publish:, lifecycle:, cancellation:, capabilities:","classification":"internal"},
     "ConnectRPC::Server#finish_native_processing": {"kind":"method","visibility":"private","parameters":"lifecycle, owned, error","classification":"internal"},
-    "ConnectRPC::Server#process_stream": {"kind":"method","visibility":"private","parameters":"path, headers, codec, input:, output:, publish:, lifecycle:, cancellation:","classification":"internal"},
+    "ConnectRPC::Server#process_stream": {"kind":"method","visibility":"private","parameters":"path, headers, codec, input:, output:, publish:, lifecycle:, cancellation:, capabilities:","classification":"internal"},
+    "ConnectRPC::Server#require_stream_capability": {"kind":"method","visibility":"private","parameters":"path, capabilities","classification":"internal"},
+    "ConnectRPC::Server#stream_capabilities": {"kind":"method","visibility":"private","parameters":"http2, capabilities","classification":"internal"},
+    "ConnectRPC::Server#stream_capability_list?": {"kind":"method","visibility":"private","parameters":"capabilities","classification":"internal"},
     "ConnectRPC::Server#stream_preflight": {"kind":"method","visibility":"private","parameters":"http_method, codec, cancellation","classification":"internal"}
   },
   "lib/connectrpc/streaming/server_execution.rb": {

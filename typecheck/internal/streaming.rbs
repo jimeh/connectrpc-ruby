@@ -31,11 +31,14 @@ module ConnectRPC
     @terminal_wire_limit: Integer
     @terminal_limit: Integer
     private
+    def stream_capabilities: (bool, Array[streaming_cardinality]?) -> Array[streaming_cardinality]?
+    def stream_capability_list?: (Array[streaming_cardinality]) -> bool
+    def require_stream_capability: (String, Array[streaming_cardinality]) -> void
     def stream_preflight: (String, codec?, _Cancellation?) -> TransportResponse?
-    def execute_native_stream: (String, headers, codec, http_method: String, input: _StreamingInput, output: _StreamingOutput, publish: _PublishStreamHead | ^(StreamHead) -> void, lifecycle: Instrumentation::Handle?, cancellation: _Cancellation?) -> nil
+    def execute_native_stream: (String, headers, codec, http_method: String, input: _StreamingInput, output: _StreamingOutput, publish: _PublishStreamHead | ^(StreamHead) -> void, lifecycle: Instrumentation::Handle?, cancellation: _Cancellation?, capabilities: Array[streaming_cardinality]) -> nil
     def begin_native_processing: (String, headers, Instrumentation::Handle?, String) -> [Instrumentation::Handle?, bool]
     def finish_native_processing: (Instrumentation::Handle?, bool, Exception?) -> void
-    def process_stream: (String, headers, codec, input: _StreamingInput, output: _StreamingOutput, publish: _PublishStreamHead | ^(StreamHead) -> void, lifecycle: Instrumentation::Handle?, cancellation: _Cancellation?) -> void
+    def process_stream: (String, headers, codec, input: _StreamingInput, output: _StreamingOutput, publish: _PublishStreamHead | ^(StreamHead) -> void, lifecycle: Instrumentation::Handle?, cancellation: _Cancellation?, capabilities: Array[streaming_cardinality]) -> void
     def capture_stream_error: (Streaming::ServerState | GRPCProtocol::ServerState | GRPCWeb::ServerState) { () -> void } -> void
     def execute_stream_handler: (Streaming::ServerState, String, _StreamingInput, _StreamingOutput) -> void
     def stream_encoding: (headers) -> encoding

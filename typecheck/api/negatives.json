@@ -26,6 +26,7 @@
   "cancellation_readonly": "Ruby::NoMethod",
   "cancellation_context": "Ruby::ArgumentTypeMismatch",
   "cancellation_index": "Ruby::NoMethod",
+  "streaming_capabilities": "Ruby::ArgumentTypeMismatch",
   "streaming_unary": "Ruby::ArgumentTypeMismatch",
   "streaming_block": "Ruby::RequiredBlockMissing",
   "streaming_reader": "Ruby::NoMethod",
