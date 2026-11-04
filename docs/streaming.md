@@ -67,8 +67,11 @@ on both pinned Rubies, including the original oversized CS cases over TCP/TLS.
 No official assertion or inventory changed. This is a bounded, response-first variant of
 Go's conditional reset avoidance: connect-go may consume the full oversized
 declared message, and net/http may drain before flushing or reuse a connection.
-Literal Go parity is not claimed. The earlier unexplained hosted Web H1/TLS
-oversized SS failure remains disclosed separately in the
+Literal Go parity is not claimed. Native H1 Web retains its separate policy:
+original input cleanup gates the staged Web terminal, and an incomplete upload
+also gates a rejection head to avoid stopping the client's upload. This Web-only
+gate never delays Connect response delivery. The historical Web TCP/TLS failures,
+diagnosis and separate baseline repair are recorded in the
 [conformance status](../conformance/README.md#connect-http11-server-profiles).
 
 ## Completion policy

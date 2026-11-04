@@ -232,7 +232,9 @@ admission during remaining grace increases resource retention. This is best
 effort reset avoidance, with no arbitrary network-delivery guarantee. The separate
 `falcon:conformance:http1` production profiles pass 174/174 identity and 160/160
 gzip cases on Ruby 3.4.12 and 4.0.9 with unchanged assertions and inventories.
-The earlier unexplained hosted Web failure remains separate; see the
+Web rejection-head ordering is repaired separately, with its gate excluded from
+Connect response-first delivery. Historical Web failures and the baseline
+repair remain recorded in the
 [conformance status](../../conformance/README.md#connect-http11-server-profiles).
 
 `falcon:conformance` runs actual server profiles. `falcon:interop:streaming`

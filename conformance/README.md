@@ -199,9 +199,15 @@ reuse. Ruby remains response-first and bounded. The official runner stays
 connectconformance 1.0.6 (embedded connect-go 1.21.0, Go 1.27.2); the separate
 repository peer remains connect-go 1.21.1.
 
-The earlier hosted Web H1/TLS oversized SS failure at `d928ce6` (275/276) remains
-unexplained despite later passes. This Connect-only policy does not establish a
-fix for it. Clean-environment CI and exact-head review remain separate from
-these local results. See [streaming](../docs/streaming.md#falcon-http11-server)
+Historical Web oversized SS failures at `d928ce6` (TLS) and `1ad0d03` (TCP)
+each passed 275/276 cases. Bounded diagnosis reproduced the early-response-head
+and incomplete-upload race on the original base as well as this branch. The
+separate baseline repair [#42](https://github.com/jimeh/connectrpc-ruby/pull/42)
+defers H1 Web rejection heads until original input cleanup permits delivery.
+Its gate remains limited to Web when Connect H1 publication is enabled. The
+Connect final-close grace is not the Web repair. Historical red evidence remains
+recorded; the diagnosis does not estimate natural branch effects or reconstruct
+the hosted scheduling. Integrated exact-head CI and review remain required.
+See [streaming](../docs/streaming.md#falcon-http11-server)
 for the precise policy. Ruby H1 client work remains pending; standalone Async
 Host stays H2-only. This delivery is one server-only PR, with no client stack.

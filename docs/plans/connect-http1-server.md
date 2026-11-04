@@ -186,8 +186,13 @@ open threads/reasons, gaps and manual checks to the coordinator. Never merge.
 
 ## Open questions
 
-No product decisions remain open. Runtime feasibility and the private 500 ms
-overlay passed, but production changes must obtain their own revision-bound
-verification and lifecycle/concurrency review. The earlier hosted Web H1/TLS
-failure remains an unexplained disclosed residual; do not claim the new policy
-fixes it without evidence. No waiver, runner upgrade or merge is authorized.
+No product decisions remain open. Production final-close grace obtained its own
+revision-bound evidence and lifecycle/concurrency reviews. Integration onto the
+merged baseline Web repair #42 requires renewed affected review and exact-head
+qualification. Keep its rejection-head gate limited to Web, its selected-status
+and deferred-admission/error-close ordering intact, and failed active-request
+retirement on connection exit. Connect responses still complete before input
+hygiene. Historical Web TCP/TLS failures were reproduced on the original base;
+the separate repair addresses that early-head/upload mechanism. Do not attribute
+the Web repair to Connect grace, estimate natural branch effects, or reconstruct
+old hosted scheduling. No waiver, runner upgrade or merge is authorized.
