@@ -135,7 +135,11 @@ RSpec.describe "conformance cancellation evidence" do
       end
       events = nil
       if phase == :during_setup
-        peer = ->(socket) { expect(socket.read).to eq("") }
+        peer_eof = Queue.new
+        peer = lambda do |socket|
+          expect(socket.read).to eq("")
+          peer_eof << true
+        end
         with_peer(peer) do |url, listener|
           request = cancellation_request(port: URI(url).port)
           events = capture_events { run_adapter(adapter, request) }
@@ -146,6 +150,8 @@ RSpec.describe "conformance cancellation evidence" do
           expect(events.find { |event| event["event"] == "socket_cleanup" }).to include(
             "closed" => true, "retired" => true, "attached" => 1
           )
+          raise "Socket peer did not observe EOF" unless peer_eof.pop(timeout: 2)
+
           expect(listener.wait_readable(0)).to be_nil
         end
       else
