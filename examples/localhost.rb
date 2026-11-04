@@ -12,8 +12,9 @@ module EchoExample
     def initialize(app)
       ready = Queue.new
       @server = Rackup::Handler::WEBrick::Server.new(
-        app, BindAddress: "127.0.0.1", Port: 0, AccessLog: [], Logger: WEBrick::Log.new(File::NULL),
-             StartCallback: -> { ready << true }
+        draining_app(app),
+        BindAddress: "127.0.0.1", Port: 0, AccessLog: [], Logger: WEBrick::Log.new(File::NULL),
+        StartCallback: -> { ready << true }
       )
       @url = "http://127.0.0.1:#{@server.listeners.first.addr[1]}"
       @thread = Thread.new { @server.start }
@@ -26,6 +27,31 @@ module EchoExample
     def close
       @server&.shutdown
       raise "Localhost server failed to stop" if @thread && !@thread.join(5)
+    end
+
+    private
+
+    def draining_app(app)
+      lambda do |env|
+        # Fixture apps return buffered response bodies and finish reading during
+        # call. Capture Rackup's input before an app replaces it with telemetry.
+        input = env.fetch("rack.input")
+        result = begin
+          app.call(env)
+        rescue StandardError
+          drain_input(input)
+          raise
+        end
+        drain_input(input)
+        result
+      end
+    end
+
+    def drain_input(input)
+      # Resume Rackup's original Fiber to EOF. WEBrick's later body fixup cannot
+      # safely restart chunk parsing when that Fiber suspended inside a chunk.
+      buffer = +"".b
+      nil while input.read(16_384, buffer)
     end
   end
 end
