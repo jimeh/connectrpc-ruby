@@ -197,4 +197,32 @@ RSpec.describe EchoExample::Localhost do
       expect(read_response(socket).first).to eq(500)
     end
   end
+
+  it "closes malformed chunk framing without dispatching a following request" do
+    routes = Queue.new
+    closed = Queue.new
+    rejecting = lambda do |env|
+      routes << env.fetch("PATH_INFO")
+      env.fetch("rack.input").read(5) if env.fetch("REQUEST_METHOD") == "POST"
+      body = ["rejected"]
+      body.define_singleton_method(:close) { closed << true }
+      [415, { "content-type" => "text/plain" }, body]
+    end
+    with_socket(rejecting) do |socket|
+      socket.write("POST / HTTP/1.1\r\nHost: localhost\r\nTransfer-Encoding: chunked\r\n\r\n" \
+                   "a\r\n0123456789\r\nzz\r\n0\r\n\r\n" \
+                   "GET /unadmitted HTTP/1.1\r\nHost: localhost\r\n\r\n")
+      status, headers, body = read_response(socket)
+      expect(status).to eq(415)
+      expect(body).to eq("rejected")
+      expect(headers.fetch("connection")).to eq("close")
+      expect(closed.pop(timeout: 1)).to be(true)
+      expect { socket.readpartial(1) }.to(raise_error do |error|
+        expect(error).to be_a(EOFError).or be_a(Errno::ECONNRESET)
+      end)
+      # Only assert absence after the connection has actually terminated.
+      expect(routes.pop(timeout: 1)).to eq("/")
+      expect(routes).to be_empty
+    end
+  end
 end

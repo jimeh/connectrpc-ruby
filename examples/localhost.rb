@@ -11,8 +11,8 @@ module EchoExample
 
     def initialize(app)
       ready = Queue.new
-      @server = Rackup::Handler::WEBrick::Server.new(
-        draining_app(app),
+      @server = Server.new(
+        app,
         BindAddress: "127.0.0.1", Port: 0, AccessLog: [], Logger: WEBrick::Log.new(File::NULL),
         StartCallback: -> { ready << true }
       )
@@ -29,33 +29,46 @@ module EchoExample
       raise "Localhost server failed to stop" if @thread && !@thread.join(5)
     end
 
-    private
+    # Keep each request's input cleanup bound to its own WEBrick response.
+    class Server < WEBrick::HTTPServer
+      def initialize(app, config)
+        super(config)
+        @app = app
+      end
 
-    def draining_app(app)
-      lambda do |env|
-        # Fixture apps return buffered response bodies and finish reading during
-        # call. Capture Rackup's input before an app replaces it with telemetry.
-        input = env.fetch("rack.input")
-        result = begin
-          app.call(env)
-        rescue StandardError
-          drain_input(input)
-          raise
+      def service(request, response)
+        Rackup::Handler::WEBrick.new(self, draining_app(response)).service(request, response)
+      end
+
+      private
+
+      def draining_app(response)
+        lambda do |env|
+          # Fixture apps return buffered response bodies and finish reading during
+          # call. Capture Rackup's input before an app replaces it with telemetry.
+          input = env.fetch("rack.input")
+          result = begin
+            @app.call(env)
+          rescue StandardError
+            drain_input(input, response)
+            raise
+          end
+          drain_input(input, response)
+          result
         end
-        drain_input(input)
-        result
+      end
+
+      def drain_input(input, response)
+        # Resume Rackup's original Fiber to EOF. WEBrick's later body fixup cannot
+        # safely restart chunk parsing when that Fiber suspended inside a chunk.
+        buffer = +"".b
+        nil while input.read(16_384, buffer)
+      rescue StandardError
+        # Preserve the app response and body close, but prevent WEBrick's fixup
+        # from restarting failed framing and admitting a following request.
+        response.keep_alive = false
       end
     end
-
-    def drain_input(input)
-      # Resume Rackup's original Fiber to EOF. WEBrick's later body fixup cannot
-      # safely restart chunk parsing when that Fiber suspended inside a chunk.
-      buffer = +"".b
-      nil while input.read(16_384, buffer)
-    rescue WEBrick::HTTPStatus::Error
-      # As with WEBrick's fixup, a bad unread remainder must not replace the
-      # app's response or prevent Rackup from closing its body.
-      nil
-    end
+    private_constant :Server
   end
 end
