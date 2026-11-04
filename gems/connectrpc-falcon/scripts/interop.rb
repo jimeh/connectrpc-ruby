@@ -11,7 +11,7 @@ require "connectrpc/bindings/google_protobuf"
 
 unless ARGV.delete("--profile")
   %w[identity gzip].each do |profile|
-    system({ "CONNECTRPC_FALCON_GZIP" => profile == "gzip" ? "1" : nil }, RbConfig.ruby, __FILE__, "--profile",
+    system({ "CONNECTRPC_FALCON_GZIP" => profile == "gzip" ? "1" : nil }, RbConfig.ruby, __FILE__, "--profile", *ARGV,
            exception: true)
   end
   exit
@@ -21,7 +21,10 @@ root = File.expand_path("../../..", __dir__)
 binary = File.join(root, "vendor/falcon/connect-go-peer")
 FileUtils.mkdir_p(File.dirname(binary))
 system("go", "mod", "verify", chdir: File.join(root, "interop"), exception: true)
-system("go", "build", "-mod=readonly", "-o", binary, File.join(__dir__, "../interop/peer.go"),
+peer_sources = %w[peer.go web_rejection.go].map { |name| File.join(__dir__, "../interop", name) }
+system("go", "test", "-mod=readonly", "-v", *peer_sources, File.join(__dir__, "../interop/web_rejection_test.go"),
+       chdir: File.join(root, "interop"), exception: true)
+system("go", "build", "-mod=readonly", "-o", binary, *peer_sources,
        chdir: File.join(root, "interop"), exception: true)
 $LOAD_PATH.unshift(File.join(root, "spec/fixtures/generation/echo"))
 require "echo_connect"
@@ -117,6 +120,10 @@ Dir.mktmpdir("interop-", File.join(root, "vendor/falcon")) do |fixtures|
     File.write(File.join(fixtures, "#{name}.pem"), identity.first.to_pem)
     File.write(File.join(fixtures, "#{name}.key"), identity.last.private_to_pem)
   end
+  require_relative "web_rejection"
+  FalconWebRejection.run(binary, fixtures, server_identity, root)
+  next if ARGV.include?("--web-head-only")
+
   %w[h2c tls mtls].each do |mode|
     Open3.popen2(binary, "serve", mode, fixtures, chdir: File.join(root, "interop")) do |input, output, process|
       raise "Go peer readiness timeout" unless output.wait_readable(10)
@@ -208,4 +215,7 @@ Dir.mktmpdir("interop-", File.join(root, "vendor/falcon")) do |fixtures|
     end
   end
 end
-puts "Independent connect-go Falcon HTTP/2: both directions/codecs, h2c/TLS/mTLS and four typed wire-tail drains passed"
+unless ARGV.include?("--web-head-only")
+  puts "Independent connect-go Falcon HTTP/2: both directions/codecs, h2c/TLS/mTLS " \
+       "and four typed wire-tail drains passed"
+end
