@@ -157,8 +157,8 @@ func client(service protoreflect.ServiceDescriptor, url, target string) {
 	// normalization. The Go host preserves raw fields; WEBrick coalesces them.
 	profiles := map[string]metadataExpectations{
 		"Falcon": {[]string{"a", "b"}, []string{"one", "two"}, []string{"three", "four"}, []string{"a", "b"}, []string{"c", "d"}},
-		"Go":    {[]string{"a", "b"}, []string{"one", "two"}, []string{"three", "four"}, []string{"a", "b"}, []string{"c", "d"}},
-		"Ruby":  {[]string{"a, b"}, []string{"one, two"}, []string{"three, four"}, []string{"a, b"}, []string{"c, d"}},
+		"Go":     {[]string{"a", "b"}, []string{"one", "two"}, []string{"three", "four"}, []string{"a", "b"}, []string{"c", "d"}},
+		"Ruby":   {[]string{"a, b"}, []string{"one, two"}, []string{"three, four"}, []string{"a, b"}, []string{"c, d"}},
 	}
 	expected, ok := profiles[target]
 	check(ok, "unknown reference client target: "+target)
@@ -227,6 +227,8 @@ func main() {
 		serve(service)
 	case "client":
 		client(service, os.Args[2], os.Args[3])
+	case "web-head":
+		webRejection(service, os.Args[2], os.Args[3])
 	case "tail":
 		tail(service, os.Args[2], os.Args[3], os.Args[4])
 	default:

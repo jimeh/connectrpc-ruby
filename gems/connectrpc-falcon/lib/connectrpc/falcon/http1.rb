@@ -41,8 +41,14 @@ module ConnectRPC
         super
       ensure
         # Header failures and cancellation can bypass write_body entirely.
-        @resource.exchange&.finish(false, $ERROR_INFO)
-        @resource.exchange = nil
+        begin
+          @resource.exchange&.finish(false, $ERROR_INFO)
+        ensure
+          @resource.exchange = nil
+          @resource.failed! if @resource.active
+          @resource.active = false
+          @resource.changed
+        end
       end
 
       def write_body(...)

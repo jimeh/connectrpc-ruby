@@ -287,6 +287,20 @@ module ConnectRPC
               resource.changed
             end
             deferred = true
+            # An early Web head can stop an HTTP/1 client's unfinished upload.
+            # Keep input cleanup in the original processor before serialization;
+            # consumed unary input still permits incremental server streams.
+            if publication && request.body && !request.body.empty?
+              begin
+                publication.wait
+              rescue Exception => e # rubocop:disable Lint/RescueException -- cancellation must close deferred ownership too
+                begin
+                  response.body.close(e)
+                ensure
+                  raise e
+                end
+              end
+            end
           end
           response
         ensure
