@@ -234,3 +234,21 @@ Ruby peer outputs; `grpc:status:check` reproduces private Any/Status descriptors
 
 Native H1 and H2 support explicitly enabled binary/text unary and server-stream gRPC-Web. H1 retains original processor identity and admission through wire/callback completion. Browser incremental delivery uses text.
 See the [Web guide](../../docs/grpc-web.md) for protocol, CORS, bounds and completion rules.
+
+Rejected native Web HTTP/1 input now has an explicit resource-policy allowance:
+one absolute monotonic 100 ms budget to finish the original fixed/chunked body
+framing. Progress never resets it. The valid grpc-timeout captured at original
+application entry can shorten this allowance; cancellation, host drain and
+owner abort retain control. Reads use the pinned HTTP/1 body's at-most-64 KiB
+chunks, without aggregating the upload or consuming the next request. An existing
+input-adapter remainder can coexist with one discard read, each at most 64 KiB;
+this is not a total allocation or RSS bound. Successful
+calls already consume their input and do not enter this tail policy.
+
+On expiry or malformed framing, cleanup retires only the affected connection,
+closing raw TCP before body/TLS cleanup. The original RPC processing outcome
+remains separate from aborted delivery and cleanup failure. Terminal bytes stay
+staged until the original processor and application cleanup succeed. This is a
+best effort within bounded cleanup, not a delivery promise for arbitrarily slow
+uploads. The tail budget runs once and does not restart or stack; existing
+backend input-cancellation and teardown allowances remain separate.

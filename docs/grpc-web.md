@@ -124,8 +124,9 @@ fragment. Text uses raw slices of at most 12,288 bytes and flushes padded groups
 at existing write boundaries, including the first small prefix.
 
 Native H2 ingress remains 65,536 bytes/five entries with 16 KiB chunks and
-consumption-based stream credit. H1 may retain one pinned backend chunk of up
-to 64 KiB. Complete parsed field blocks are checked before application copies;
+consumption-based stream credit. The H1 input adapter may retain one pinned
+backend chunk of up to 64 KiB. During rejected-input cleanup this remainder can
+coexist with one discard read of at most 64 KiB. Complete parsed field blocks are checked before application copies;
 H2 includes pseudo/status fields. Parser/readahead, HPACK/CONTINUATION temporaries,
 codec allocations, CPU and total RSS are outside these retention bounds.
 
@@ -141,6 +142,15 @@ discards the candidate terminal and aborts delivery. Admission includes original
 processing and wire/callback completion. H1 has explicit resources, not fake H2
 streams. Only an actual H2 CANCEL reset signals Context cancellation. H1 EOF,
 disconnect and host shutdown do not. There is no Connect one-second tail policy.
+Falcon native H1 now has a separate explicit rejected-input resource policy:
+one absolute 100 ms allowance to finish the original HTTP body framing, shortened
+by the original valid grpc-timeout and subject to earlier cancellation, drain
+and owner abort. Each discard read is at most 64 KiB; progress does not reset the
+budget and a following request is never consumed. Expiry or malformed framing
+retires that connection raw-first, preserving the original RPC outcome and
+independent aborted delivery. This best effort does not promise delivery for
+arbitrarily slow uploads or extend existing cleanup allowances. See the
+[Falcon guide](../gems/connectrpc-falcon/README.md#grpc-web).
 
 `Server#cors_response(path:, http_method:, headers:, response: nil)` is a pure
 typed host SPI for early decisions and idempotent decoration, including admission

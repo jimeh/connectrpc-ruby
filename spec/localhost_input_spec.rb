@@ -160,4 +160,41 @@ RSpec.describe EchoExample::Localhost do
       end
     end
   end
+
+  {
+    "malformed chunk framing" => "Transfer-Encoding: chunked\r\n\r\na\r\n0123456789\r\nzz\r\n\r\n",
+    "truncated Content-Length" => "Content-Length: 10\r\n\r\n01234",
+    "missing framing" => "\r\n"
+  }.each do |label, wire|
+    it "preserves the returned response and closes its body after #{label}" do
+      closed = Queue.new
+      body = ["rejected"]
+      body.define_singleton_method(:close) { closed << true }
+      rejecting = lambda do |env|
+        env.fetch("rack.input").read(5) unless label == "missing framing"
+        [415, { "content-type" => "text/plain" }, body]
+      end
+      with_socket(rejecting) do |socket|
+        socket.write("POST / HTTP/1.1\r\nHost: localhost\r\n#{wire}")
+        socket.close_write
+        status, _headers, response = read_response(socket)
+        expect(status).to eq(415)
+        expect(response).to eq("rejected")
+        expect(closed.pop(timeout: 1)).to be(true)
+      end
+    end
+  end
+
+  it "preserves the app failure when draining malformed input also fails" do
+    failing = lambda do |env|
+      env.fetch("rack.input").read(5)
+      raise "ordinary app failure"
+    end
+    with_socket(failing) do |socket|
+      socket.write("POST / HTTP/1.1\r\nHost: localhost\r\nTransfer-Encoding: chunked\r\n\r\n" \
+                   "a\r\n0123456789\r\nzz\r\n\r\n")
+      socket.close_write
+      expect(read_response(socket).first).to eq(500)
+    end
+  end
 end

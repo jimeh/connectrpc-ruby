@@ -324,11 +324,17 @@
     "ConnectRPC::Falcon::Service#run": {"kind":"method","visibility":"public","parameters":"_instance, evaluator, listener","classification":"internal"}
   },
   "gems/connectrpc-falcon/lib/connectrpc/falcon/http1.rb": {
+    "ConnectRPC::Falcon::HTTP1Connection#close_read": {"kind":"method","visibility":"public","parameters":"","classification":"internal"},
     "ConnectRPC::Falcon::HTTP1Connection#each": {"kind":"method","visibility":"public","parameters":"...","classification":"internal"},
     "ConnectRPC::Falcon::HTTP1Connection#next_request": {"kind":"method","visibility":"public","parameters":"","classification":"internal"},
+    "ConnectRPC::Falcon::HTTP1Connection#rejected_input=": {"kind":"attribute","visibility":"public","classification":"internal"},
     "ConnectRPC::Falcon::HTTP1Connection#resource": {"kind":"attribute","visibility":"public","classification":"internal"},
     "ConnectRPC::Falcon::HTTP1Connection#resource=": {"kind":"attribute","visibility":"public","classification":"internal"},
     "ConnectRPC::Falcon::HTTP1Connection#write_body": {"kind":"method","visibility":"public","parameters":"...","classification":"internal"},
+    "ConnectRPC::Falcon::HTTP1RejectedInput#abort_read": {"kind":"method","visibility":"public","parameters":"","classification":"internal"},
+    "ConnectRPC::Falcon::HTTP1RejectedInput#close": {"kind":"method","visibility":"public","parameters":"error = $ERROR_INFO","classification":"internal"},
+    "ConnectRPC::Falcon::HTTP1RejectedInput#initialize": {"kind":"method","visibility":"public","parameters":"body, raw:, connection:, headers:","classification":"internal"},
+    "ConnectRPC::Falcon::HTTP1RejectedInput#now": {"kind":"method","visibility":"private","parameters":"","classification":"internal"},
     "ConnectRPC::Falcon::HTTP1Resource#abort": {"kind":"method","visibility":"public","parameters":"","classification":"internal"},
     "ConnectRPC::Falcon::HTTP1Resource#active": {"kind":"attribute","visibility":"public","classification":"internal"},
     "ConnectRPC::Falcon::HTTP1Resource#active=": {"kind":"attribute","visibility":"public","classification":"internal"},
@@ -361,6 +367,7 @@
     "ConnectRPC::Falcon::HTTP1Resource#task": {"kind":"attribute","visibility":"public","classification":"internal"},
     "ConnectRPC::Falcon::HTTP1Resource#task=": {"kind":"attribute","visibility":"public","classification":"internal"},
     "ConnectRPC::Falcon::HTTP1Resource#track": {"kind":"method","visibility":"public","parameters":"task","classification":"internal"},
+    "ConnectRPC::Falcon::HTTP1Resource#web_input": {"kind":"method","visibility":"public","parameters":"body, headers:","classification":"internal"},
     "ConnectRPC::Falcon::HTTP1Resource#wait": {"kind":"method","visibility":"private","parameters":"task, expires","classification":"internal"}
   },
   "gems/connectrpc-falcon/lib/connectrpc/falcon/rack_guard.rb": {

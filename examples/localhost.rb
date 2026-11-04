@@ -52,6 +52,10 @@ module EchoExample
       # safely restart chunk parsing when that Fiber suspended inside a chunk.
       buffer = +"".b
       nil while input.read(16_384, buffer)
+    rescue WEBrick::HTTPStatus::Error
+      # As with WEBrick's fixup, a bad unread remainder must not replace the
+      # app's response or prevent Rackup from closing its body.
+      nil
     end
   end
 end

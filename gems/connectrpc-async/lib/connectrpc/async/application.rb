@@ -50,14 +50,18 @@ module ConnectRPC
 
         web = protocol == :grpc_web
         grpc = protocol == :grpc
+        stream = request.stream if request.respond_to?(:stream)
+        resource ||= stream&.connection&.resource
+        if web && !stream && resource.respond_to?(:web_input)
+          h1_input = resource.web_input(request.body, headers: headers)
+        end
         early = @server.cors_response(path: path, http_method: request.method, headers: headers)
+        h1_input&.close if early
         return ::Protocol::HTTP::Response[early.status, Internal.fields(early.headers), nil] if early
         unless @server.handles?(path) && (web || grpc || Streaming.codec(Protocol.single(headers, "content-type")))
           return call(request, lifecycle: lifecycle)
         end
 
-        stream = request.stream if request.respond_to?(:stream)
-        resource ||= stream&.connection&.resource
         body = web ? Internal::GRPCWebBody.new(publication) : Internal::OutputBody.new
         trailers = ::Protocol::HTTP::Headers.new if grpc
         output = if web
@@ -96,7 +100,9 @@ module ConnectRPC
           stream&.detach_cancellation
           # HTTP/1 Finishable retains a reading request until explicit close,
           # even after EOF. The original processor owns this cleanup too.
-          request.body&.close if web && !stream
+          if web && !stream
+            h1_input ? h1_input.close : request.body&.close
+          end
         end
         body.close_write
         nil

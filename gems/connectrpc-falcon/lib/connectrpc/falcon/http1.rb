@@ -8,6 +8,13 @@ module ConnectRPC
   module Falcon
     class HTTP1Connection < ::Async::HTTP::Protocol::HTTP1::Server
       attr_accessor :resource
+      attr_writer :rejected_input
+
+      def close_read
+        # The framing parser can close input itself before raising EOFError.
+        @rejected_input&.abort_read
+        super
+      end
 
       def next_request
         return if @resource.draining
@@ -57,6 +64,65 @@ module ConnectRPC
     end
     private_constant :HTTP1Connection
 
+    # One request's original framing and deadline, owned only by native Web H1.
+    class HTTP1RejectedInput
+      def initialize(body, raw:, connection:, headers:)
+        @body = body
+        @raw = raw
+        @connection = connection
+        # Capture before processing. Invalid fields remain core's validation
+        # responsibility and must not change its validation order.
+        @deadline = GRPCProtocol.request_deadline(headers)
+      rescue Error
+        @deadline = nil
+      end
+
+      def close(error = $ERROR_INFO)
+        return if @closed
+
+        @closed = true
+        begin
+          @connection.rejected_input = self
+          raise error if error
+
+          if @body && !@body.empty?
+            @expires = now + 0.1
+            @expires = [@expires, now + @deadline.remaining].min if @deadline
+            until @body.empty?
+              remaining = @expires - now
+              raise ::Async::TimeoutError, "Rejected Web input did not finish" if remaining <= 0
+
+              # Pinned Fixed/Chunked reads are <=64 KiB and preserve framing,
+              # including a core input adapter's discarded readahead remainder.
+              ::Async::Task.current.with_timeout(remaining) { @body.read }
+            end
+          end
+          finished = true
+        ensure
+          # Cancellation and malformed/expired input must fail raw TCP before
+          # Finishable/body or TLS cleanup can yield. Never signal RPC cancellation.
+          begin
+            abort_read unless finished
+          ensure
+            begin
+              @body&.close
+            ensure
+              @connection.rejected_input = nil
+            end
+          end
+        end
+      end
+
+      def abort_read
+        @raw.close unless @raw.closed?
+      end
+
+      private
+
+      def now = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+    end
+    private_constant :HTTP1RejectedInput
+
     # Serial HTTP/1 ownership. It deliberately has no HTTP/2 stream/GOAWAY API.
     class HTTP1Resource
       attr_accessor :raw, :socket, :task, :snapshot, :ready, :draining, :active, :exchange
@@ -91,6 +157,10 @@ module ConnectRPC
 
       def failed!
         @failed = true
+      end
+
+      def web_input(body, headers:)
+        HTTP1RejectedInput.new(body, raw: @raw, connection: @connection, headers: headers)
       end
 
       def abort
