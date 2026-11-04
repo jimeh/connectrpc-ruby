@@ -249,7 +249,8 @@ module ConnectRPC
 
         @admitted[key] = false
         retirement&.on_close do
-          retire_http1(key)
+          @h1_wire[key] = true
+          retire_http1(key) if @admitted[key]
           resource.changed
         end
         publishes = request.respond_to?(:stream) ||
@@ -331,8 +332,7 @@ module ConnectRPC
           @admitted[key] = true
           if key.respond_to?(:closed?)
             @admitted.delete(key) if @aborting || key.closed?
-          elsif (@h1_wire[key] || @aborting) &&
-                !(resource.respond_to?(:input_retirement) && resource.input_retirement)
+          elsif @h1_wire[key] || @aborting
             retire_http1(key)
           end
         end

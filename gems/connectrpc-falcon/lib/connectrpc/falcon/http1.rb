@@ -8,11 +8,12 @@ module ConnectRPC
   module Falcon
     class HTTP1Connection < ::Async::HTTP::Protocol::HTTP1::Server
       attr_accessor :resource
-      attr_writer :rejected_input
+      attr_writer :rejected_input, :retiring_raw
 
       def close_read
         # The framing parser can close input itself before raising EOFError.
         @rejected_input&.abort_read
+        @retiring_raw.close if @retiring_raw && !@retiring_raw.closed?
         super
       end
 
@@ -147,6 +148,9 @@ module ConnectRPC
       private
 
       def discard
+        # Chunked EOF closes the buffered/TLS read side before raising. Guard
+        # only post-delivery reads, without recursively closing the connection.
+        @connection.retiring_raw = @raw
         expires = now + 0.1
         until framed_complete?
           return if 262_144 - @discarded < 65_536
@@ -159,6 +163,8 @@ module ConnectRPC
           chunk = ::Async::Task.current.with_timeout(remaining) { @body.read }
           @discarded += chunk.bytesize if chunk
         end
+      ensure
+        @connection.retiring_raw = nil
       end
 
       def abort_read

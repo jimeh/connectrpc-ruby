@@ -331,6 +331,7 @@
     "ConnectRPC::Falcon::HTTP1Connection#each": {"kind":"method","visibility":"public","parameters":"...","classification":"internal"},
     "ConnectRPC::Falcon::HTTP1Connection#next_request": {"kind":"method","visibility":"public","parameters":"","classification":"internal"},
     "ConnectRPC::Falcon::HTTP1Connection#rejected_input=": {"kind":"attribute","visibility":"public","classification":"internal"},
+    "ConnectRPC::Falcon::HTTP1Connection#retiring_raw=": {"kind":"attribute","visibility":"public","classification":"internal"},
     "ConnectRPC::Falcon::HTTP1Connection#resource": {"kind":"attribute","visibility":"public","classification":"internal"},
     "ConnectRPC::Falcon::HTTP1Connection#resource=": {"kind":"attribute","visibility":"public","classification":"internal"},
     "ConnectRPC::Falcon::HTTP1Connection#write_body": {"kind":"method","visibility":"public","parameters":"...","classification":"internal"},

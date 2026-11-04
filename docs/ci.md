@@ -274,6 +274,11 @@ always installs the already pinned runner/protoc pair and caches only tools unde
 the existing platform/image/config/lock key scheme. Existing check names, matrix
 axes, frozen bundle setup and clean-workspace assertions remain unchanged.
 
+Both Falcon specs/package lanes also run `falcon:conformance:http1` after the
+existing conformance tasks. The required H1 server identity/gzip profiles retain
+their strict inventories and expose the known identity size-limit failures;
+there is no allowed-failure setting. See the [H1 conformance status](../conformance/README.md#connect-http11-server-profiles).
+
 The existing backend Go jobs additionally run `async:interop:streaming` and
 `falcon:interop:streaming`. The latter exercises real process workers. Original
 unary identity/gzip, GET, generated, native cancellation and typed tail-drain

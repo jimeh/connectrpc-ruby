@@ -178,7 +178,9 @@ Focused Ruby and Go probes cover gzip GET and malformed-query/boundary behavior.
 profiles for HTTP_VERSION_1, protobuf/JSON and identity/gzip. Half-duplex bidi
 support is false. The independent `http1_ledger.rb` and `cases-http1-*.json`
 retain exact discovered inventories and strict accounting. Existing H2 and
-client profiles are unchanged. This does not implement a Ruby H1 client.
+client profiles are unchanged. Both Falcon specs/package CI lanes run this
+required task after the existing Connect and gRPC conformance tasks. This does
+not implement a Ruby H1 client.
 
 Full H1 conformance is currently blocked. Recorded runs on Ruby 3.4.12 and
 4.0.9 executed 174 identity cases with one or two first-request-size-limit CS

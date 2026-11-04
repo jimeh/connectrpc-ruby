@@ -27,6 +27,7 @@ RSpec.describe "Connect H1 framed input retirement bounds" do
     raw.define_singleton_method(:closed?) { false }
     raw.define_singleton_method(:close) { events << :raw_close }
     connection.define_singleton_method(:persistent=) { |_| nil }
+    connection.define_singleton_method(:retiring_raw=) { |_| nil }
     connection.define_singleton_method(:close) { events << :connection_close }
     owner = owner_type.new(body, raw: raw, connection: connection)
     [owner, body, events]

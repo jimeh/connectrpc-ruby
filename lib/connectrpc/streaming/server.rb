@@ -104,7 +104,8 @@ module ConnectRPC
     end
 
     def require_stream_capability(path, capabilities)
-      return if capabilities.include?(streaming_declaration(path).cardinality)
+      declaration = @methods[path]
+      return if !declaration || declaration.is_a?(Method) || capabilities.include?(declaration.cardinality)
 
       raise Error.new(:unimplemented, "Unsupported streaming method"), cause: nil
     end

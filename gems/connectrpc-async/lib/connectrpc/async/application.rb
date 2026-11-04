@@ -49,7 +49,8 @@ module ConnectRPC
         return false if protocol == :grpc_web
 
         (declaration && !declaration.is_a?(Method)) ||
-          (protocol == :connect && !Streaming.codec(Protocol.single(headers, "content-type")).nil?)
+          (request.method == "POST" && protocol == :connect &&
+            !Streaming.codec(Protocol.single(headers, "content-type")).nil?)
       end
 
       private :publication?, :http1_streaming_route?
@@ -86,7 +87,10 @@ module ConnectRPC
           return ::Protocol::HTTP::Response[505, {}, nil]
         end
         return call(request, lifecycle: lifecycle) if grpc && !stream
-        return ::Protocol::HTTP::Response[505, {}, nil] if h1_connect && request.version != "HTTP/1.1"
+        if h1_connect && request.method == "POST" && request.version != "HTTP/1.1" &&
+           Streaming.codec(Protocol.single(headers, "content-type"))
+          return ::Protocol::HTTP::Response[505, {}, nil]
+        end
 
         unless @server.handles?(path) && (web || grpc || Streaming.codec(Protocol.single(headers, "content-type")))
           return call(request, lifecycle: lifecycle)
