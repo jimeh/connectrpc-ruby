@@ -9,6 +9,7 @@ require "rubygems/package"
 require "shellwords"
 require "stringio"
 require "tmpdir"
+require_relative "package_build"
 
 def run_package_command(environment, command, working)
   result = system(environment, *command, chdir: working)
@@ -79,13 +80,7 @@ end
 
 rack_directory = File.join(root, "gems/connectrpc-rack")
 rack_output = File.join(root, "vendor/package/rack")
-FileUtils.mkdir_p(rack_output)
-rack_archive = Dir.chdir(rack_directory) do
-  spec = Gem::Specification.load("connectrpc-rack.gemspec")
-  output = File.join(rack_output, spec.file_name)
-  Gem::Package.build(spec, false, false, output)
-  output
-end
+rack_archive = PackageBuild.build(directory: rack_directory, output: rack_output)
 rack_package = Gem::Package.new(rack_archive)
 abort "Unexpected Rack manifest" unless rack_package.contents.sort == %w[LICENSE README.md lib/connectrpc/rack.rb
                                                                          sig/connectrpc-rack.rbs sig/manifest.yaml]

@@ -6,13 +6,11 @@ require "tmpdir"
 require_relative "harness"
 require_relative "installed_api"
 require_relative "archive"
+require_relative "../scripts/package_build"
 
 root = File.expand_path("..", __dir__)
-specification = Gem::Specification.load(File.join(root, "connectrpc.gemspec"))
 output = File.join(root, "vendor/rbs/pkg", RUBY_VERSION)
-FileUtils.mkdir_p(output)
-archive = File.join(output, specification.file_name)
-Dir.chdir(root) { Gem::Package.build(specification, false, false, archive) }
+archive = PackageBuild.build(directory: root, output: output)
 SignatureArchive.check(archive, root: root)
 package = Gem::Package.new(archive)
 expected = %w[sig/connectrpc.rbs sig/manifest.yaml

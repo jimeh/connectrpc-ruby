@@ -29,8 +29,8 @@ module SignatureArchive
           data.each do |file|
             if spec.name == "connectrpc" && GRPC_MEMBERS.include?(file.full_name)
               source = File.join(root, file.full_name)
-              unless file.read == File.binread(source) && file.header.mode & 0o777 == File.stat(source).mode & 0o777
-                raise "gRPC archive member bytes or mode differ: #{file.full_name}"
+              unless file.read == File.binread(source) && file.header.mode & 0o777 == 0o644
+                raise "gRPC archive member bytes differ or mode is not 0644: #{file.full_name}"
               end
 
               found_grpc << file.full_name

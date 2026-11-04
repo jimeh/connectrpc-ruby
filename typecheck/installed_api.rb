@@ -2,16 +2,13 @@
 
 require_relative "api_check"
 require_relative "archive"
+require_relative "../scripts/package_build"
 
-module InstalledAPI # rubocop:disable Metrics/ModuleLength
+module InstalledAPI
   def self.archives(root:, output:)
     APICheck::PACKAGES.map do |name|
       directory = File.join(root, "gems/connectrpc-#{name}")
-      archive = File.join(output, "connectrpc-#{name}-0.1.0.gem")
-      Dir.chdir(directory) do
-        specification = Gem::Specification.load("connectrpc-#{name}.gemspec")
-        Gem::Package.build(specification, false, false, archive)
-      end
+      archive = PackageBuild.build(directory: directory, output: output)
       SignatureArchive.check(archive, root: root)
       package = Gem::Package.new(archive)
       signatures = ["sig/connectrpc-#{name}.rbs", "sig/manifest.yaml"]
