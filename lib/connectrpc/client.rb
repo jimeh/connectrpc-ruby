@@ -1,7 +1,5 @@
 # frozen_string_literal: true
 
-require "English"
-
 require "uri"
 
 module ConnectRPC
@@ -105,6 +103,9 @@ module ConnectRPC
       lifecycle.begin_processing(self)
       # @type var response: TransportResponse?
       response = nil
+      # @type var error: Exception?
+      error = nil
+      completed = false
       begin
         result = lifecycle.activate do
           process_call(method, request, metadata, timeout, cancellation, lifecycle: lifecycle,
@@ -112,10 +113,13 @@ module ConnectRPC
             response = received
           end
         end
+        completed = true
         result
+      rescue Exception => e # rubocop:disable Lint/RescueException -- observe the actual escape and preserve it
+        error = e
+        raise
       ensure
-        error = $ERROR_INFO
-        lifecycle.processing_finished(code: error.is_a?(Error) ? error.code : ("OK" unless error),
+        lifecycle.processing_finished(code: error.is_a?(Error) ? error.code : ("OK" if completed),
                                       error: error, normalized_error: error, http_status: response&.status,
                                       response_bytes: response&.body&.bytesize,
                                       response_metadata: response ? Instrumentation.carrier(response.headers) : {})

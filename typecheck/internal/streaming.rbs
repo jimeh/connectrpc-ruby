@@ -34,7 +34,7 @@ module ConnectRPC
     def stream_preflight: (String, codec?, _Cancellation?) -> TransportResponse?
     def execute_native_stream: (String, headers, codec, http_method: String, input: _StreamingInput, output: _StreamingOutput, publish: _PublishStreamHead | ^(StreamHead) -> void, lifecycle: Instrumentation::Handle?, cancellation: _Cancellation?) -> nil
     def begin_native_processing: (String, headers, Instrumentation::Handle?, String) -> [Instrumentation::Handle?, bool]
-    def finish_native_processing: (Instrumentation::Handle?, bool?) -> void
+    def finish_native_processing: (Instrumentation::Handle?, bool, Exception?) -> void
     def process_stream: (String, headers, codec, input: _StreamingInput, output: _StreamingOutput, publish: _PublishStreamHead | ^(StreamHead) -> void, lifecycle: Instrumentation::Handle?, cancellation: _Cancellation?) -> void
     def capture_stream_error: (Streaming::ServerState | GRPCProtocol::ServerState | GRPCWeb::ServerState) { () -> void } -> void
     def execute_stream_handler: (Streaming::ServerState, String, _StreamingInput, _StreamingOutput) -> void

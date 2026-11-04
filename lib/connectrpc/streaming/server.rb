@@ -31,8 +31,11 @@ module ConnectRPC
       bare(415, { "accept-post" => [Streaming::CONTENT_TYPES.values.join(", ")] }, cancellation: cancellation)
     end
 
-    def execute_native_stream(path, headers, codec, http_method:, input:, output:, publish:, lifecycle:, cancellation:)
+    def execute_native_stream(path, headers, codec, http_method:, input:, output:, publish:, lifecycle:, cancellation:) # rubocop:disable Metrics/MethodLength
       # @type var owned: bool?
+      owned = nil
+      # @type var error: Exception?
+      error = nil
       lifecycle, owned = begin_native_processing(path, headers, lifecycle, http_method)
       work = lambda {
         process_stream(path, headers, codec, input: input, output: output, publish: publish,
@@ -40,8 +43,11 @@ module ConnectRPC
       }
       lifecycle ? lifecycle.activate(&work) : work.call
       nil
+    rescue Exception => e # rubocop:disable Lint/RescueException -- observe the actual escape and preserve it
+      error = e
+      raise
     ensure
-      finish_native_processing(lifecycle, owned)
+      finish_native_processing(lifecycle, owned, error) unless owned.nil?
     end
 
     def begin_native_processing(path, headers, lifecycle, http_method)
@@ -51,10 +57,10 @@ module ConnectRPC
       [lifecycle, owned]
     end
 
-    def finish_native_processing(lifecycle, owned)
+    def finish_native_processing(lifecycle, owned, error)
       return unless lifecycle
 
-      lifecycle.processing_finished(code: nil, error: $ERROR_INFO) unless lifecycle.outcome
+      lifecycle.processing_finished(code: nil, error: error) unless lifecycle.outcome
       lifecycle.finish(delivery: :unobserved) if owned
     end
 
