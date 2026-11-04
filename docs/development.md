@@ -483,6 +483,14 @@ baseline and unknown-method default-redaction limitation.
 matrix, bounded output/ingress, healthy same-connection siblings and cancellation.
 `otel:test` includes actual SDK processor-task identity, mTLS peer identity,
 codec/handler cleanup and separate processing/HTTP completion evidence.
+Falcon H1 focused specs distinguish the unchanged absolute 100 ms / 256 KiB
+discard (adapter remainder and full 64 KiB read reservations) from the cooperative
+500 ms total final-close expiry anchored at actual final HTTP flush. They check
+EOF before hygiene, delayed callbacks spending the same budget, no reads or
+pipeline parsing during remaining grace, admission joins before host cleanup,
+owner interruption and real worker shutdown. Timings may overshoot under reactor
+delay; they are not hard real-time bounds. SDK specs preserve completed delivery
+after later hygiene/grace failure.
 
 `async:interop:streaming` uses the unchanged pinned connect-go graph in both
 directions for all three streaming shapes, both codecs and codings over
@@ -500,6 +508,11 @@ without controlled wire evidence. Original unary profiles and their 5 ms before-
 200 ms response-delay and nil-deadline semantics remain independent and unchanged.
 Both native conformance and streaming Go leaves belong to each backend's verify
 aggregate and the existing two-Ruby CI jobs. No test results are cached.
+The Falcon-only `falcon:conformance:http1` leaf adds separate SS/CS server
+profiles requiring 174 identity and 160 gzip passes. Root `verify` includes this
+complete H1 gate, so use that pass for full-profile confirmation. Fresh exact
+oversized CS selectors can be run separately for focused regression evidence;
+do not weaken their original assertions or inventories.
 
 `rbs:check` includes concrete generated streaming positives and exact negative
 fixtures. `rbs:package` runs generated streaming network callers and a custom

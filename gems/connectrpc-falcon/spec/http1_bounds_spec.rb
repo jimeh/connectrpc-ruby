@@ -26,6 +26,7 @@ RSpec.describe "Connect H1 framed input retirement bounds" do
     raw = Object.new
     raw.define_singleton_method(:closed?) { false }
     raw.define_singleton_method(:close) { events << :raw_close }
+    raw.define_singleton_method(:shutdown) { |_| nil }
     connection.define_singleton_method(:persistent=) { |_| nil }
     connection.define_singleton_method(:retiring_raw=) { |_| nil }
     connection.define_singleton_method(:close) { events << :connection_close }
@@ -39,6 +40,7 @@ RSpec.describe "Connect H1 framed input retirement bounds" do
         owner, _body, events = fixture(framing)
         owner.head_resolved(200)
         owner.processor_finished
+        owner.final_flushed
         owner.close(true)
         expect(events).to eq(([65_536] * 4) + %i[raw_close connection_close close_read])
         expect(owner.instance_variable_get(:@discarded)).to eq(262_144)
@@ -56,6 +58,7 @@ RSpec.describe "Connect H1 framed input retirement bounds" do
         owner.head_resolved(200)
         owner.processor_finished
         expect(input.release_remainder).to eq(0)
+        owner.final_flushed
         owner.close(true)
         expect(events.grep(Integer)).to eq([65_536] * 4) # One processor read, three hygiene reads.
         expect(owner.instance_variable_get(:@discarded)).to eq(65_531 + (3 * 65_536))
@@ -68,7 +71,9 @@ RSpec.describe "Connect H1 framed input retirement bounds" do
         allow(owner).to receive(:now).and_return(10.0, 10.01, 10.06, 10.101)
         owner.head_resolved(200)
         owner.processor_finished
-        owner.close(true)
+        # Control only the discard clock, independently of final-close grace.
+        owner.send(:discard)
+        owner.close(false)
         expect(events.grep(Integer)).to eq([65_536] * 2)
       end
     end

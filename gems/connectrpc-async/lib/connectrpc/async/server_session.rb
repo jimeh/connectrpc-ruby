@@ -296,7 +296,9 @@ module ConnectRPC
             # An early Web head can stop an HTTP/1 client's unfinished upload.
             # Keep input cleanup in the original processor before serialization;
             # consumed unary input still permits incremental server streams.
-            if publication && request.body && !request.body.empty?
+            # Connect retirement owns input hygiene after response delivery.
+            if publication && !retirement && GRPCWeb.intent?(Internal.headers(request)) &&
+               request.body && !request.body.empty?
               begin
                 publication.wait
               rescue Exception => e # rubocop:disable Lint/RescueException -- cancellation must close deferred ownership too

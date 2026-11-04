@@ -155,15 +155,19 @@ both codecs and identity/gzip over h2c/TLS/mTLS. Falcon additionally serves Conn
 streaming over HTTP/1.1,
 with protobuf/ProtoJSON and identity/gzip over TCP/TLS/mTLS. The standalone
 Async Host and Ruby Async transport remain H2-only; a Ruby H1 streaming client
-is pending. See the streaming guide for bounded retirement and its known
-official-reference compatibility gap.
+is pending. See the streaming guide for Falcon's cooperative 500 ms total
+final-close budget and unchanged 100 ms / 256 KiB discard limits.
 The client's one-second absolute HTTP tail policy applies even with a nil RPC
 deadline and can reject otherwise valid late EOF or slow intermediaries.
 
 Streaming keeps one span and fixed lifecycle state per RPC, with no per-message
 events or payload capture. The original processor retains SDK context and peer
 identity through codecs and cleanup; publication, processing and full native
-wire completion remain independent. Late cleanup failure aborts delivery.
+wire completion remain independent. Late application cleanup failure aborts
+delivery. Falcon H1 records its final-flush expiry before body callbacks and
+lifecycle observation; delayed callbacks consume that same 500 ms budget.
+Post-delivery discard or grace failure preserves an already completed span,
+while socket/admission ownership continues through retirement and processing join.
 
 ## Native gRPC observation
 

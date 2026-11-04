@@ -3,9 +3,10 @@
 The gem implements typed Connect RPCs and native HTTP/2 gRPC in all four RPC shapes.
 Falcon also serves Connect HTTP/1.1 server/client streaming; Ruby H1 clients are
 pending and standalone Async Host remains H2-only. The streaming guide records
-the bounded early-response policy and open official-reference conformance gap. Shared protocol code is
-independent of HTTP hosting and concrete protobuf classes. The public require
-is `connectrpc`, and the Ruby namespace is `ConnectRPC`. The API is experimental.
+the response-first discard limits and cooperative 500 ms total final-close
+policy. Shared protocol code is independent of HTTP hosting and concrete
+protobuf classes. The public require is `connectrpc`, and the Ruby namespace is
+`ConnectRPC`. The API is experimental.
 
 ## Shared boundaries
 
@@ -340,8 +341,16 @@ HTTP/2 resource cleanup. The strict standalone Host composes that session.
 The optional [Falcon package](../gems/connectrpc-falcon/README.md) composes it with
 Falcon's process workers, raw endpoints and HTTP server/run lifecycle. Its local
 HTTP/1 resource uses upstream parse/write hooks and preserves wire completion
-and callback boundaries during retirement. Only explicit Rack fallback receives
-Falcon's generic encoding/cache middleware. Native Connect streaming hosts
+and callback boundaries during retirement. A private response-body EOF marker
+pairs with the pinned writer's next successful final flush to establish one
+absolute 500 ms final-close expiry before callbacks. Successfully delivered
+retiring Connect responses half-close raw TCP writes, retain the original
+100 ms / 256 KiB bounded discard, then wait only the remaining total budget
+without further reads. Admission/socket ownership joins original processing and
+retirement; owner shutdown can shorten either phase. These cooperative timers
+can overshoot under scheduler delay and do not guarantee peer receipt. The
+independent Web rejected-input policy is unchanged. Only explicit Rack fallback
+receives Falcon's generic encoding/cache middleware. Native Connect streaming hosts
 select explicit core shape capabilities. See the package guide for source failure, expiry, worker
 stop and unsupported socket-ownership transfer policies.
 

@@ -262,8 +262,8 @@ both codecs and identity/gzip over h2c/TLS/mTLS. Falcon additionally serves Conn
 streaming over HTTP/1.1,
 with protobuf/ProtoJSON and identity/gzip over TCP/TLS/mTLS. The standalone
 Async Host and Ruby Async transport remain H2-only; a Ruby H1 streaming client
-is pending. See the streaming guide for bounded retirement and its known
-official-reference compatibility gap.
+is pending. See the streaming guide for Falcon's cooperative 500 ms total
+final-close budget and unchanged 100 ms / 256 KiB discard limits.
 The client's one-second absolute HTTP tail policy applies even with a nil RPC
 deadline and can reject otherwise valid late EOF or slow intermediaries.
 

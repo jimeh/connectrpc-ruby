@@ -174,4 +174,48 @@ RSpec.describe "Connect HTTP/1 original processor SDK ownership" do
       provider.shutdown
     end
   end
+
+  [false, true].each do |secure|
+    it "keeps completed SDK delivery after remaining-grace failure, TLS=#{secure}" do
+      provider, exporter, bus = tracing
+      reactor do |task|
+        _, cs, = methods
+        waiting = Async::Queue.new
+        release = Async::Queue.new
+        with_host(target({ cs.path => lambda { |*|
+          AsyncHelpers::MESSAGE.new(name: "delivered")
+        } }, instrumentation: bus), secure) do |host, peer, _|
+          peer.write(request_head(cs, :chunked))
+          expect(peer.head.first).to eq(200)
+          expect(peer.body).to include("delivered")
+          session = host.instance_variable_get(:@session)
+          resource = session.instance_variable_get(:@resources).first
+          # Fail only the connection owner's remaining wait, after real discard.
+          allow(resource.task).to receive(:sleep) do |remaining|
+            waiting.enqueue(remaining)
+            release.dequeue
+            raise IOError, "late grace wait failure"
+          end
+          expect(waiting.dequeue).to be_between(0.25, 0.5)
+          expect(resource.raw).not_to be_closed
+          expect(session.instance_variable_get(:@admitted).size).to eq(1)
+          expect(rpc_spans(exporter).size).to eq(1)
+          span = rpc_spans(exporter).first
+          expect(span.attributes["connectrpc.delivery"]).to eq("completed")
+          release.enqueue(true)
+          wait_until(task, "late grace failure joins admission before host teardown") do
+            resource.finished? && session.instance_variable_get(:@admitted).empty?
+          end
+          expect(session.instance_variable_get(:@h1_wire)).to be_empty
+          expect(rpc_spans(exporter)).to eq([span])
+          expect(span.attributes["connectrpc.delivery"]).to eq("completed")
+          expect(span.status.code).to eq(OpenTelemetry::Trace::Status::UNSET)
+        ensure
+          release.enqueue(true)
+        end
+      ensure
+        provider.shutdown
+      end
+    end
+  end
 end

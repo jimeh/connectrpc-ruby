@@ -40,19 +40,36 @@ disables reuse and delivers the complete response before best-effort input
 hygiene. Hygiene has one absolute 100 ms allowance and a 256 KiB entity-byte cap,
 including the adapter remainder. Every additional framed read reserves a full
 64 KiB, so retirement can stop below the cap. Progress never restarts the timer;
-Connect does not use `grpc-timeout`. Admission and connection ownership remain
-held through hygiene. Retirement never parses or dispatches a pipelined request,
-even if the original request finishes. Fully consumed input retains persistence.
-Raw socket abort precedes framed/Finishable close on forced teardown.
+Connect does not use `grpc-timeout`.
 
-This policy is best effort, not a guarantee that every client observes response
-completion. The pinned official identity suite currently fails first-request
-size-limit CS cases: its Go HTTP/1 transport may close its own connection after
-a later upload write fails at retirement, losing the delayed response read.
-A raw peer receives `resource_exhausted` and the terminal HTTP chunk, while the
-reference client can report an incomplete envelope. Gzip profiles pass in the
-recorded runs, but full H1 conformance remains blocked. The policy/evidence
-conflict is open; no case is waived or excluded.
+A successfully delivered response on a retiring connection uses one absolute
+final-close expiry at the actual final HTTP flush plus 500 ms. A private body EOF
+marker anchors the pinned writer's next successful final flush before body-close
+callbacks or lifecycle observation; payload bytes cannot trigger it. Delayed
+callbacks consume the same total budget. After completed delivery, Falcon
+half-closes raw TCP writes and performs bounded discard. When discard stops,
+Falcon waits only the remaining part of that original 500 ms budget, without
+reading more. It does not add another 500 ms after discard. Earlier owner
+abort/shutdown can shorten either phase. Failed or incomplete delivery gets no
+success grace. Late hygiene/grace failures preserve completed processing and
+delivery facts.
+
+Admission and socket ownership remain held until retirement and original
+processing join. Retirement never parses or dispatches a pipelined request,
+even if the original request finishes. Fully consumed nonretiring input retains
+persistence. Raw socket abort precedes framed/Finishable close on forced teardown.
+Both timers are cooperative and can overshoot under scheduler delay. Remaining
+grace retains resources and is best effort reset avoidance, not a guarantee of
+response delivery under arbitrary network or peer failure.
+
+The production official H1 profiles pass 174/174 identity and 160/160 gzip cases
+on both pinned Rubies, including the original oversized CS cases over TCP/TLS.
+No official assertion or inventory changed. This is a bounded, response-first variant of
+Go's conditional reset avoidance: connect-go may consume the full oversized
+declared message, and net/http may drain before flushing or reuse a connection.
+Literal Go parity is not claimed. The earlier unexplained hosted Web H1/TLS
+oversized SS failure remains disclosed separately in the
+[conformance status](../conformance/README.md#connect-http11-server-profiles).
 
 ## Completion policy
 

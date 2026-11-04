@@ -182,12 +182,26 @@ client profiles are unchanged. Both Falcon specs/package CI lanes run this
 required task after the existing Connect and gRPC conformance tasks. This does
 not implement a Ruby H1 client.
 
-Full H1 conformance is currently blocked. Recorded runs on Ruby 3.4.12 and
-4.0.9 executed 174 identity cases with one or two first-request-size-limit CS
-failures, and 160 gzip cases with no failures. The reference client's delayed
-response read can lose the response when its subsequent upload write fails at
-connection retirement. Raw-socket evidence observes `resource_exhausted` and
-terminal HTTP chunk completion. The approved response-first, absolute 100 ms /
-256 KiB best-effort hygiene policy remains in force. No failing case is waived,
-removed or counted as passing; the policy/evidence conflict remains open.
-See [streaming](../docs/streaming.md#falcon-http11-server) for the precise scope.
+Production-source runs on 2026-11-04 passed 174/174 identity and 160/160 gzip
+cases on each of Ruby 3.4.12 and 4.0.9, without a RUBYOPT overlay. Fresh exact
+first-request-size-limit CS cases also passed over plain TCP and TLS on both
+lanes. The original assertions, inventories and strict ledgers are unchanged;
+no case is waived, excluded or counted as an expected failure.
+
+Retiring delivered Connect H1 responses use a cooperative 500 ms total budget
+from the actual final HTTP flush, with raw TCP write-side half-close. Response
+EOF precedes the unchanged absolute 100 ms / 256 KiB discard; no further reads
+occur during the remaining wait. Scheduler overshoot and admission/socket
+retention are accepted. This is best effort reset avoidance, not a guarantee
+under arbitrary network/peer failure. Go is a comparison: connect-go may consume
+the full declared oversized message, while net/http may drain before flush or
+reuse. Ruby remains response-first and bounded. The official runner stays
+connectconformance 1.0.6 (embedded connect-go 1.21.0, Go 1.27.2); the separate
+repository peer remains connect-go 1.21.1.
+
+The earlier hosted Web H1/TLS oversized SS failure at `d928ce6` (275/276) remains
+unexplained despite later passes. This Connect-only policy does not establish a
+fix for it. Clean-environment CI and exact-head review remain separate from
+these local results. See [streaming](../docs/streaming.md#falcon-http11-server)
+for the precise policy. Ruby H1 client work remains pending; standalone Async
+Host stays H2-only. This delivery is one server-only PR, with no client stack.

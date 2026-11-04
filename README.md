@@ -462,8 +462,11 @@ OpenTelemetry SDK. Core has no OpenTelemetry dependency. See
 Async and Falcon native HTTP/2 support server, client and bidirectional streaming.
 Falcon also serves Connect server and client streaming over HTTP/1.1 with both
 codecs and identity/gzip over TCP/TLS/mTLS. Ruby H1 streaming clients remain
-pending; the standalone Async Host stays H2-only. The early-response retirement
-policy has a known official-reference compatibility gap documented in the guide.
+pending; the standalone Async Host stays H2-only. Early H1 responses finish
+before bounded input discard. Retiring delivered responses use one cooperative
+500 ms total final-close budget from the actual final HTTP flush, including the
+unchanged 100 ms / 256 KiB discard allowance. Admission remains held until
+retirement and original processing join.
 See the [streaming guide](docs/streaming.md) for scoped APIs, mixed generated
 services, bounds and the one-second HTTP tail completion policy.
 
