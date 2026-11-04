@@ -66,6 +66,123 @@ RSpec.describe "gRPC-Web server" do
     expect(response.headers["content-type"]).to eq(["application/grpc-web+proto"])
   end
 
+  ["application/grpc-web, ", ",application/grpc-web,,", "application/grpc-web, text/html;level=1"].each do |accept|
+    it "accepts bounded empty elements and unrelated parameters in #{accept.inspect}" do
+      expect(call(headers: { "accept" => [accept] }).status).to eq(200)
+    end
+  end
+
+  it "keeps exact Accept byte and raw-entry caps including empty padding" do
+    supported = "application/grpc-web"
+    expect(call(headers: { "accept" => [supported + (" " * (8192 - supported.bytesize))] }).status).to eq(200)
+    expect(call(headers: { "accept" => [("," * 31) + supported] }).status).to eq(200)
+    expect(call(headers: { "accept" => [" " * 8192] }).status).to eq(200)
+    expect(call(headers: { "accept" => ["," * 31] }).status).to eq(200)
+    expect(call(headers: { "accept" => [""] * 32 }).status).to eq(200)
+    expect(call(headers: { "accept" => [""] * 33 }).status).to eq(406)
+  end
+
+  [" " * 8193, "application/grpc-web#{' ' * 8192}", "#{',' * 32}application/grpc-web", "," * 32,
+   "application/grpc-web;q=2, */*", "application/grpc-web;q=0.1234, */*",
+   "application/grpc-web;q=bogus, */*", "application/grpc-web;level=1",
+   "application/grpc-web;q=0, application/grpc-web-text;q=0, */*;q=1"].each_with_index do |accept, index|
+    it "rejects unacceptable or over-budget Accept case #{index} before input and invocation" do
+      input = Object.new
+      expect(input).not_to receive(:read)
+      expect(binding).not_to receive(:decode)
+      target = server { raise "invoked" }
+      response = target.call(path: method.path, http_method: "POST", headers: {
+                               "content-type" => ["application/grpc-web"], "accept" => [accept]
+                             }, input: input)
+      expect([response.status, response.body]).to eq([406, ""])
+      expect(response.headers["vary"]).to include("Accept")
+    end
+  end
+
+  it "keeps supported parameters nonmatching and validates supported weights across repeated fields" do
+    response = call(headers: { "accept" => ["application/grpc-web;level=1;q=0", "*/*;q=0.5"] })
+    expect(response.headers["content-type"]).to eq(["application/grpc-web+proto"])
+    response = call(media: "application/grpc-web-text", body: text(frame("request")), headers: {
+                      "accept" => ["application/grpc-web;q=0.500", "application/grpc-web-text;q=0.5"]
+                    })
+    expect(response.headers["content-type"]).to eq(["application/grpc-web-text+proto"])
+    ["q=-1", "q=1.001", "q=0.1;q=0.2", "level=1;q=bad"].each do |parameters|
+      expect(call(headers: { "accept" => ["application/grpc-web;#{parameters}, */*"] }).status).to eq(406)
+    end
+  end
+
+  [[1], [3], [5], [2, 7], [6]].each do |sizes|
+    it "decodes quartets and independent padded groups across input chunks #{sizes.inspect}" do
+      framed = frame("hello")
+      encodings = [text(framed), framed.bytes.map { |byte| text(byte.chr) }.join,
+                   text(framed.byteslice(0, 4)) + text(framed.byteslice(4..))]
+      encodings.each do |encoded|
+        chunk_sizes = sizes.cycle
+        offset = 0
+        requests = []
+        input = Object.new
+        input.define_singleton_method(:read) do |length|
+          requests << length
+          next if offset == encoded.bytesize
+
+          part = encoded.byteslice(offset, [length, chunk_sizes.next].min)
+          offset += part.bytesize
+          part
+        end
+        target = server(request_wire_limit: 5, request_limit: 5)
+        expect(binding).to receive(:decode).with("hello", type: :request, codec: :proto).once.and_call_original
+        response = target.call(path: method.path, http_method: "POST", headers: {
+                                 "content-type" => ["application/grpc-web-text"],
+                                 "content-length" => [encoded.bytesize.to_s]
+                               }, input: input)
+        wire = response.body.scan(/.{4}/).map { |group| group.unpack1("m0") }.join
+        expect(wire).to eq(frame("hello") + frame("grpc-status: 0\r\n", 128))
+        expect(offset).to eq(encoded.bytesize)
+        expect(requests).not_to be_empty
+      end
+    end
+  end
+
+  it "enforces encoded, framed, message and single-request bounds across quartet-splitting chunks" do
+    padded = frame("x").bytes.map { |byte| text(byte.chr) }.join
+    cases = [
+      [text(frame("hello")), { request_wire_limit: 5, request_limit: 4 }, 8],
+      [text(frame("hello")), { request_wire_limit: 4, request_limit: 5 }, 8],
+      [text(frame("hello"))[0...-1], {}, 3],
+      [text(frame("one") + frame("two")), {}, 12],
+      ["#{padded}A", { request_wire_limit: 1 }, 8,
+       "Encoded request exceeds byte limit"]
+    ]
+    cases.each do |encoded, limits, code, expected_message|
+      offset = 0
+      input = Object.new
+      input.define_singleton_method(:read) do |length|
+        next if offset == encoded.bytesize
+
+        part = encoded.byteslice(offset, [length, 3].min)
+        offset += part.bytesize
+        part
+      end
+      decoded = []
+      allow(binding).to receive(:decode).and_wrap_original do |original, bytes, **options|
+        decoded << bytes
+        original.call(bytes, **options)
+      end
+      response = server(**limits).call(path: method.path, http_method: "POST", headers: {
+                                         "content-type" => ["application/grpc-web-text"]
+                                       }, input: input)
+      status = terminal(response, :text)
+      expect(status).to include("grpc-status: #{code}\r\n")
+      if expected_message
+        expect(status).to include("grpc-message: #{expected_message}\r\n")
+        expect(offset).to eq(25) # Exactly the first byte over the independent encoded cap24.
+        expect(decoded).to eq(["x"])
+      end
+      expect(decoded).not_to include("two")
+      expect(decoded.size).to be <= 1
+    end
+  end
+
   ["application/grpc-web+json", "application/grpc-web; charset=utf-8"].each do |media|
     it "rejects unsupported media #{media} before reading" do
       input = Object.new
@@ -293,6 +410,31 @@ RSpec.describe "gRPC-Web server" do
     expect { server(protocol: :auto, cors: policy) }.to raise_error(ArgumentError)
     ["*", "null", "https://example/", "http://user@example", "https://example:443"].each do |origin|
       expect { ConnectRPC::GRPCWebCORS.new(origins: [origin]) }.to raise_error(ArgumentError)
+    end
+  end
+
+  %i[request_headers expose_headers].each do |field|
+    it "bounds #{field} configuration by token count/bytes and copies immutable normalized names" do
+      names = (1..31).map { |number| "X-#{number}" } + ["X" * 128]
+      policy = ConnectRPC::GRPCWebCORS.new(origins: [], **{ field => names })
+      expected = names.map(&:downcase)
+      names.first.replace("changed")
+      names.clear
+      expect(policy.public_send(field).last(32)).to eq(expected)
+      expect(policy.public_send(field)).to be_frozen
+      expect(policy.public_send(field)).to all(be_frozen)
+      [["x"] * 33, ["x" * 129], [""], ["x:y"], ["x y"], ["x\r\n"], %w[X-Name x-name]].each do |invalid|
+        expect { ConnectRPC::GRPCWebCORS.new(origins: [], **{ field => invalid }) }.to raise_error(ArgumentError)
+      end
+    end
+  end
+
+  it "exposes the exact baseline plus normalized configured leading metadata" do
+    [[], %w[X-Leading X-Region]].each do |names|
+      target = server(cors: ConnectRPC::GRPCWebCORS.new(origins: ["https://app.example"], expose_headers: names))
+      response = call(target, headers: { "origin" => ["https://app.example"] })
+      expected = %w[grpc-status grpc-message grpc-status-details-bin] + names.map(&:downcase)
+      expect(response.headers["access-control-expose-headers"]).to eq([expected.join(", ")])
     end
   end
 

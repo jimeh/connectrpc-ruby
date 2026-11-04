@@ -52,6 +52,78 @@ RSpec.describe "Falcon native gRPC-Web" do
     end
   end
 
+  it "checks the H1 parsed Web field block at 64KiB before copies, lifecycle or invocation and retires resources" do
+    reactor do |task|
+      calls = []
+      completions = []
+      seen = []
+      subscriber = Object.new
+      subscriber.define_singleton_method(:start) do |call|
+        calls << call
+        Object.new.tap do |observer|
+          observer.define_singleton_method(:finished) do |completion|
+            completions << completion
+          end
+        end
+      end
+      copies = []
+      allow(AsyncHelpers::INTERNAL).to receive(:headers).and_wrap_original do |original, incoming|
+        copies << incoming
+        original.call(incoming)
+      end
+      target = server(protocol: :grpc_web, instrumentation: ConnectRPC::Instrumentation.new(subscribers: [subscriber]),
+                      echo: lambda { |message, _|
+                        seen << message
+                        message
+                      })
+      falcon(server: target) do |host, origin|
+        uri = URI(origin)
+        fields = [["content-type", "application/grpc-web"]] + (1..16).map { |i| ["x-fill-#{i}", "x" * 3800] }
+        size = fields.sum { |key, value| key.bytesize + value.bytesize + 32 }
+        socket = nil
+        [0, 1].each do |delta|
+          block = fields + [["x-pad", "x" * (65_536 + delta - size - 37)]]
+          expect(block.sum { |key, value| key.bytesize + value.bytesize + 32 }).to eq(65_536 + delta)
+          if delta.zero?
+            result = http1(origin, AsyncHelpers::ECHO::ECHO.path, method: "POST", body: [0, 0].pack("CN"),
+                                                                  headers: block)
+            expect(result.first).to eq(200)
+            # The parsed block fits the host guard. Core separately accounts for
+            # the reconstructed Content-Length, so its own field cap rejects it.
+            expect(result.last).to include("grpc-status: 8\r\n")
+            expect(copies).not_to be_empty
+            expect(calls.size).to eq(1)
+          else
+            socket = IO::Endpoint.tcp(uri.hostname, uri.port).connect
+            header_lines = block.map { |key, value| "#{key}: #{value}\r\n" }.join
+            socket.write("POST #{AsyncHelpers::ECHO::ECHO.path} HTTP/1.1\r\nHost: #{uri.authority}\r\n" \
+                         "Content-Length: 5\r\n#{header_lines}\r\n" + [0, 0].pack("CN"))
+            expect(task.with_timeout(2) { socket.gets }).to be_nil
+            expect(calls.size).to eq(1)
+            expect(copies).to be_empty
+            socket.close
+          end
+          expect(seen).to be_empty
+          wait_until(task, "H1 Web owned resource and admission retirement") do
+            session = host.instance_variable_get(:@session)
+            session.instance_variable_get(:@admitted).empty? &&
+              session.instance_variable_get(:@resources).all? { |resource| resource.finished? && resource.raw.closed? }
+          end
+          copies.clear
+        end
+        healthy = http1(origin, AsyncHelpers::ECHO::ECHO.path, method: "POST", body: [0, 0].pack("CN"),
+                                                               headers: { "content-type" => "application/grpc-web" })
+        expect(healthy.first).to eq(200)
+        expect(healthy.last).to include("grpc-status: 0\r\n")
+        wait_until(task, "healthy H1 Web completion") { completions.size == 2 }
+        expect(seen.size).to eq(1)
+        expect(calls.size).to eq(2)
+      ensure
+        socket&.close unless socket&.closed?
+      end
+    end
+  end
+
   it "retains real H1 admission and metrics through a failing body callback" do
     reactor do |task|
       entered = Async::Queue.new
@@ -186,25 +258,50 @@ RSpec.describe "Falcon native gRPC-Web" do
         incoming << response.body.read while incoming.bytesize < bytes.bytesize
         expect(incoming).to eq(bytes)
         entered.dequeue
+        reader_started = Async::Queue.new
+        terminal_events = Async::Queue.new
+        terminal_chunks = []
         terminal_read = task.async(finished: false) do
-          response.read
+          reader_started.enqueue(true)
+          while (chunk = response.body.read)
+            terminal_chunks << chunk
+            terminal_events.enqueue([:bytes, chunk])
+          end
+          terminal_events.enqueue([:eof])
+          terminal_chunks.join
         rescue StandardError => e
+          terminal_events.enqueue([:error, e])
           e
         end
-        task.yield
+        reader_started.dequeue
+        # This is a bounded real network read, after first DATA and next-reader
+        # progress. EOF alone is insufficient: even one terminal prefix byte
+        # during the original cleanup gate must fail this assertion.
+        boundary = begin
+          task.with_timeout(0.1) { terminal_events.dequeue }
+        rescue Async::TimeoutError
+          :no_terminal_bytes
+        end
+        expect(boundary).to eq(:no_terminal_bytes), "terminal event before cleanup release: #{boundary.inspect}"
+        expect(terminal_chunks).to be_empty
         expect(terminal_read).not_to be_finished
         expect(host.instance_variable_get(:@session).instance_variable_get(:@admitted).size).to eq(1)
         release.enqueue(true)
         result = terminal_read.wait
         if late_failure
           expect(result).to be_a(StandardError)
+          expect(terminal_chunks).to be_empty
         else
           expect(result).to include("grpc-status: 0\r\n")
         end
         expect(observed.map(&:object_id).uniq.size).to eq(1)
         wait_until(task, "Web original processing and delivery outcomes") { !completions.empty? }
         expect(outcomes.first.error).to equal(late_failure ? failure : nil)
+        expect(completions.size).to eq(1)
         expect(completions.first.delivery).to eq(late_failure ? :aborted : :completed)
+        expect(completions.first.error).to equal(late_failure ? failure : nil)
+        healthy = http1(origin, "/healthy")
+        expect(healthy.first).to eq(404)
       ensure
         release&.enqueue(true)
         connection&.close

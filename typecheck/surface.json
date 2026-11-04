@@ -425,6 +425,8 @@
   "gems/connectrpc-rack/lib/connectrpc/rack.rb": {
     "ConnectRPC::Rack#call": {"kind":"method","visibility":"public","parameters":"env","classification":"supported"},
     "ConnectRPC::Rack#initialize": {"kind":"method","visibility":"public","parameters":"app = nil, server:","classification":"supported"},
+    "ConnectRPC::Rack#transfer_response": {"kind":"method","visibility":"private","parameters":"env","classification":"internal"},
+    "ConnectRPC::Rack::Body#discard": {"kind":"method","visibility":"public","parameters":"error","classification":"internal"},
     "ConnectRPC::Rack#request_headers": {"kind":"method","visibility":"private","parameters":"env","classification":"internal"},
     "ConnectRPC::Rack::Body#close": {"kind":"method","visibility":"public","parameters":"","classification":"internal"},
     "ConnectRPC::Rack::Body#each": {"kind":"method","visibility":"public","parameters":"&","classification":"internal"},
@@ -435,7 +437,7 @@
   },
   "gems/connectrpc-rails/lib/connectrpc/rails/controller.rb": {
     "ConnectRPC::Rails::Controller#connect": {"kind":"method","visibility":"public","parameters":"","classification":"spi"},
-    "ConnectRPC::Rails::Controller#connect_apply_response": {"kind":"method","visibility":"private","parameters":"result","classification":"internal"},
+    "ConnectRPC::Rails::Controller#connect_apply_response": {"kind":"method","visibility":"private","parameters":"result, cors_owned:","classification":"internal"},
     "ConnectRPC::Rails::Controller#connect_binding": {"kind":"method","visibility":"private","parameters":"","classification":"spi"},
     "ConnectRPC::Rails::Controller#connect_context": {"kind":"attribute","visibility":"private","classification":"spi"},
     "ConnectRPC::Rails::Controller#connect_cors": {"kind":"method","visibility":"private","parameters":"","classification":"supported"},

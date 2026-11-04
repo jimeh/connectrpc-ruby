@@ -23,11 +23,14 @@ module ConnectRPC
 
     def self.representation(headers, request) # rubocop:disable Metrics/AbcSize, Metrics/CyclomaticComplexity, Metrics/MethodLength, Metrics/PerceivedComplexity
       values = headers.fetch("accept", [])
-      return request if values.empty? || values.all? { |value| value.strip.empty? }
       return if values.sum(&:bytesize) > ACCEPT_LIMIT
+      return request if values.empty?
 
-      entries = values.flat_map { |value| value.split(",", -1) }
+      entries = values.flat_map { |value| value.empty? ? [""] : value.split(",", -1) }
       return if entries.size > ACCEPT_ENTRIES
+
+      entries.reject! { |entry| entry.strip.empty? }
+      return request if entries.empty?
 
       parsed = entries.map { |entry| accept_entry(entry) }
       return if parsed.any?(&:nil?)
@@ -38,11 +41,22 @@ module ConnectRPC
       selected if quality(entries, selected).positive?
     end
 
-    def self.accept_entry(entry)
-      match = %r{\A\s*([!#$%&'*+.^_`|~0-9a-z/-]+)\s*(?:;\s*q=(0(?:\.[0-9]{0,3})?|1(?:\.0{0,3})?)\s*)?\z}i.match(entry)
-      return unless match
+    def self.accept_entry(entry) # rubocop:disable Metrics/AbcSize, Metrics/CyclomaticComplexity, Metrics/PerceivedComplexity
+      token, *parameters = entry.strip.downcase.split(/\s*;\s*/, -1)
+      return unless token && %r{\A[!#$%&'*+.^_`|~0-9a-z-]+/[!#$%&'*+.^_`|~0-9a-z-]+\z}.match?(token)
+      return [token, 0] unless media(token) || %w[application/* */*].include?(token)
 
-      [match[1].downcase, match[2] ? (match[2].to_f * 1000).round : 1000]
+      weights = parameters.grep(/\Aq(?:=|\s|\z)/)
+      return if weights.size > 1
+
+      weight = weights.first
+      match = /\Aq=(0(?:\.[0-9]{0,3})?|1(?:\.0{0,3})?)\z/.match(weight) if weight
+      return if weight && !match
+      # Our representations have no media parameters. Other parameters cannot
+      # match them, but do not invalidate a separate satisfiable list element.
+      return ["", 0] unless parameters.size == weights.size
+
+      [token, match ? (match[1].to_f * 1000).round : 1000]
     end
 
     def self.quality(entries, candidate) # rubocop:disable Metrics/CyclomaticComplexity, Metrics/MethodLength, Metrics/PerceivedComplexity

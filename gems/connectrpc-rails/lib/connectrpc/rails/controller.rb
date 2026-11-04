@@ -2,7 +2,7 @@
 
 module ConnectRPC
   module Rails
-    module Controller
+    module Controller # rubocop:disable Metrics/ModuleLength
       extend ActiveSupport::Concern
 
       # Only this method is a Rails action. The generated handler map stays private.
@@ -47,7 +47,9 @@ module ConnectRPC
                             invoker: invoker, instrumentation: connect_instrumentation,
                             protocol: connect_protocol, status_codec: connect_status_codec, cors: connect_cors,
                             **connect_limits)
-        connect_apply_response(ConnectRPC::Rack.new(server: server).call(env))
+        ConnectRPC::Rack.new(server: server).__send__(:transfer_response, env) do |result, cors_owned|
+          connect_apply_response(result, cors_owned: cors_owned)
+        end
       end
 
       def connect_env(service)
@@ -105,17 +107,18 @@ module ConnectRPC
         Error.new(code, code == "internal" ? "Internal error" : code.tr("_", " ").capitalize)
       end
 
-      def connect_apply_response(result) # rubocop:disable Metrics/AbcSize, Metrics/CyclomaticComplexity, Metrics/MethodLength
+      def connect_apply_response(result, cors_owned:) # rubocop:disable Metrics/AbcSize, Metrics/CyclomaticComplexity, Metrics/MethodLength, Metrics/PerceivedComplexity
         status, headers, body = result
+        if cors_owned && response.headers.any? do |key, values|
+             key.start_with?("access-control-") && Array(values) != headers[key]
+           end
+          raise Error.new(:internal, "Conflicting application CORS policy")
+        end
+
         %w[content-length content-encoding etag last-modified location].each { |key| response.delete_header(key) }
         self.status = status
         headers.each do |key, values|
           values = connect_vary_header(values) if key == "vary"
-          if key.start_with?("access-control-") && response.has_header?(key) &&
-             Array(response.get_header(key)) != values
-            raise Error.new(:internal, "Conflicting application CORS policy")
-          end
-
           # Rails parses Content-Type as a scalar. Repeated metadata remains Rack 3 arrays.
           response.set_header(key, key == "content-type" ? values.fetch(0) : values)
         end

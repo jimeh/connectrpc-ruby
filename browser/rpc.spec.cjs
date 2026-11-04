@@ -28,6 +28,7 @@ for (const protocol of ['h1', 'h2', 'async']) {
       }, {origin: fixture[protocol], mode});
       expect(result.find(event => event[0] === 'callback').slice(1)).toEqual([0, 'browser unary', [0, 255, 127]]);
       expect(result.find(event => event[0] === 'status')[1]).toBe(0);
+      expect(result.find(event => event[0] === 'metadata')[1]['x-leading']).toBe('visible');
       const state = await (await request.get(fixture.h1 + '/__state')).json();
       expect(state.requests.some(item => item.method === 'POST' && item.protocol === (protocol === 'h1' ? 'http1' : 'h2') && item.host === (protocol === 'async' ? 'async' : 'falcon'))).toBe(true);
     });
