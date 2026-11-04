@@ -17,6 +17,8 @@ module ConnectRPC
     end
 
     def call(env) # rubocop:disable Metrics/AbcSize, Metrics/MethodLength, Metrics/CyclomaticComplexity, Metrics/PerceivedComplexity
+      transferred = false
+      error = nil
       path = env.fetch("PATH_INFO", "")
       return @app.call(env) unless @server.handles?(path)
 
@@ -38,10 +40,14 @@ module ConnectRPC
           body = Body.new(body, lifecycle)
         end
       end
-      [response.status, response.headers, body]
+      result = [response.status, response.headers, body]
+      transferred = true
+      result
     rescue Exception => e # rubocop:disable Lint/RescueException -- observe cancellation, then preserve it
-      lifecycle&.finish(delivery: :aborted, error: e)
+      error = e
       raise
+    ensure
+      lifecycle&.finish(delivery: :aborted, error: error) unless transferred
     end
 
     class Body
@@ -66,16 +72,22 @@ module ConnectRPC
 
     # Rails has not accepted ownership until its final header/body merge returns.
     # Only our body owns disposal here; response_finished remains host-owned.
-    def transfer_response(env)
+    def transfer_response(env) # rubocop:disable Metrics/AbcSize, Metrics/MethodLength
+      transferred = false
+      error = nil
       result = call(env)
       status, headers, body = result
       response = TransportResponse.new(status: status, headers: headers, body: "")
       decorated = @server.cors_response(path: env.fetch("PATH_INFO"), http_method: env.fetch("REQUEST_METHOD"),
                                         headers: request_headers(env), response: response)
-      yield result, !decorated.equal?(response)
+      value = yield result, !decorated.equal?(response)
+      transferred = true
+      value
     rescue Exception => e # rubocop:disable Lint/RescueException -- preserve the original transfer failure
-      body.discard(e) if body.is_a?(Body)
+      error = e
       raise
+    ensure
+      body.discard(error) if !transferred && body.is_a?(Body)
     end
 
     def request_headers(env)

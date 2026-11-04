@@ -1,7 +1,5 @@
 # frozen_string_literal: true
 
-require "English"
-
 module ConnectRPC
   class Server # rubocop:disable Metrics/ClassLength
     attr_reader :services
@@ -77,13 +75,18 @@ module ConnectRPC
       lifecycle ||= start_call(path: path, headers: headers, http_method: http_method)
       active = lifecycle #: Instrumentation::Handle
       active.begin_processing(self, path)
+      # @type var error: Exception?
+      error = nil
       begin
         active.activate do
           process_call(path: path, http_method: http_method, headers: headers, input: input, query: query,
                        lifecycle: active, cancellation: cancellation)
         end
+      rescue Exception => e # rubocop:disable Lint/RescueException -- include escapes from processing cleanup
+        error = e
+        raise
       ensure
-        active.processing_finished(code: nil, error: $ERROR_INFO) unless active.outcome
+        active.processing_finished(code: nil, error: error) unless active.outcome
         active.finish(delivery: :unobserved) if owned
       end
     end
@@ -104,41 +107,53 @@ module ConnectRPC
       # @type var response: TransportResponse?
       # @type var context: Context?
       context = nil
-      cancellation&.check!
-      return response = bare(415, {}, cancellation: cancellation) unless @protocol.include?(:connect)
+      # @type var error: Exception?
+      error = nil
+      # @type var cleaned: bool
+      cleaned = false
+      begin
+        cancellation&.check!
+        return response = bare(415, {}, cancellation: cancellation) unless @protocol.include?(:connect)
 
-      method = @methods[path]
-      safe = method.is_a?(Method) && method.idempotency == :no_side_effects
-      unless http_method == "POST" || (http_method == "GET" && (!method || safe))
-        return response = bare(405, { "allow" => [safe ? "GET, POST" : "POST"] }, cancellation: cancellation)
-      end
-      if http_method == "GET"
-        return response = process_get(path, headers, input, query, lifecycle, cancellation) do |created|
-          context = created
+        method = @methods[path]
+        safe = method.is_a?(Method) && method.idempotency == :no_side_effects
+        unless http_method == "POST" || (http_method == "GET" && (!method || safe))
+          return response = bare(405, { "allow" => [safe ? "GET, POST" : "POST"] }, cancellation: cancellation)
         end
-      end
+        if http_method == "GET"
+          return response = process_get(path, headers, input, query, lifecycle, cancellation) do |created|
+            context = created
+          end
+        end
 
-      headers = Protocol.headers(headers)
-      codec = Protocol.content_codec(Protocol.single(headers, "content-type"))
-      unless codec
-        return response = bare(415, { "accept-post" => ["application/proto, application/json"] },
-                               cancellation: cancellation)
-      end
+        headers = Protocol.headers(headers)
+        codec = Protocol.content_codec(Protocol.single(headers, "content-type"))
+        unless codec
+          return response = bare(415, { "accept-post" => ["application/proto, application/json"] },
+                                 cancellation: cancellation)
+        end
 
-      decoded_context = context = request_context(headers, lifecycle, cancellation)
-      response = dispatch(path, headers, input, codec, decoded_context, lifecycle: lifecycle)
-    rescue Error => e
-      lifecycle&.record_failure(e)
-      response = error_response(terminal_error(e, context, cancellation), context, lifecycle)
-    rescue StandardError => e
-      lifecycle&.record_failure(e)
-      response = error_response(terminal_error(Error.new(:internal, "Internal error"), context, cancellation), context,
-                                lifecycle)
+        decoded_context = context = request_context(headers, lifecycle, cancellation)
+        response = dispatch(path, headers, input, codec, decoded_context, lifecycle: lifecycle)
+      rescue Error => e
+        lifecycle&.record_failure(e)
+        response = error_response(terminal_error(e, context, cancellation), context, lifecycle)
+      rescue StandardError => e
+        lifecycle&.record_failure(e)
+        safe = terminal_error(Error.new(:internal, "Internal error"), context, cancellation)
+        response = error_response(safe, context, lifecycle)
+      ensure
+        context&.close
+        vary_get(response) if http_method == "GET" && response
+        cleaned = true
+      end
+    rescue Exception => e # rubocop:disable Lint/RescueException -- include rescue handlers and cleanup in the escape boundary
+      error = e
+      raise
     ensure
-      context&.close
-      vary_get(response) if http_method == "GET" && response
       if lifecycle && !lifecycle.outcome
-        lifecycle.processing_finished(code: response&.status == 200 ? "OK" : lifecycle.code, error: $ERROR_INFO,
+        lifecycle.processing_finished(code: response&.status == 200 && cleaned && !error ? "OK" : lifecycle.code,
+                                      error: error,
                                       normalized_error: lifecycle.normalized_error,
                                       http_status: response&.status, response_bytes: response&.body&.bytesize,
                                       response_metadata: response ? Instrumentation.carrier(response.headers) : {})

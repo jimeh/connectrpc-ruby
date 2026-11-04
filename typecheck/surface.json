@@ -1012,7 +1012,7 @@
     "ConnectRPC::Server#call_stream": {"kind":"method","visibility":"public","parameters":"path:, http_method:, headers:, input:, output:, publish:, lifecycle: nil, cancellation: nil, # rubocop:disable Metrics/MethodLength http2: false","classification":"spi"},
     "ConnectRPC::Server#capture_stream_error": {"kind":"method","visibility":"private","parameters":"state","classification":"internal"},
     "ConnectRPC::Server#execute_native_stream": {"kind":"method","visibility":"private","parameters":"path, headers, codec, http_method:, input:, output:, publish:, lifecycle:, cancellation:","classification":"internal"},
-    "ConnectRPC::Server#finish_native_processing": {"kind":"method","visibility":"private","parameters":"lifecycle, owned","classification":"internal"},
+    "ConnectRPC::Server#finish_native_processing": {"kind":"method","visibility":"private","parameters":"lifecycle, owned, error","classification":"internal"},
     "ConnectRPC::Server#process_stream": {"kind":"method","visibility":"private","parameters":"path, headers, codec, input:, output:, publish:, lifecycle:, cancellation:","classification":"internal"},
     "ConnectRPC::Server#stream_preflight": {"kind":"method","visibility":"private","parameters":"http_method, codec, cancellation","classification":"internal"}
   },

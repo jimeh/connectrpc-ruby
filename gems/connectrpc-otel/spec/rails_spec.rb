@@ -90,6 +90,27 @@ RSpec.describe "Native Rails RPC spans" do
   ensure
     WebEchoController.skip_before_action(callback, only: :connect) if callback
   end
+
+  it "finishes once as aborted when native Rails response assembly throws before body transfer" do
+    RailsIntegration::APP.eager_load!
+    allow_any_instance_of(EchoController).to receive(:connect_instrumentation).and_return(bus)
+    value = Object.new
+    # The native action and core processing complete before Rails accepts the body.
+    allow_any_instance_of(EchoController).to receive(:connect_apply_response) { throw :assembly, value }
+    result = catch(:assembly) do
+      Rack::MockRequest.new(RailsIntegration::APP).post(
+        AsyncHelpers::ECHO::ECHO.path, "HTTP_HOST" => "www.example.com", "CONTENT_TYPE" => "application/proto",
+                                       input: AsyncHelpers::MESSAGE.new(name: "assembly").to_proto
+      )
+    end
+    expect(result).to equal(value)
+    spans = rpc_spans(exporter)
+    expect(spans.size).to eq(1)
+    expect(spans.first.attributes).to include("rpc.response.status_code" => "OK",
+                                              "connectrpc.delivery" => "aborted", "error.type" => "delivery_aborted")
+    expect(spans.first.status.code).to eq(OpenTelemetry::Trace::Status::ERROR)
+    expect(current_span.context).not_to be_valid
+  end
 end
 
 RSpec.configure do |config|

@@ -20,10 +20,13 @@ module ConnectRPC
 
   class Server # rubocop:disable Metrics/ClassLength
     # Native entry point; portable adapters must never opt into HTTP/2 execution.
+    # rubocop:disable-next Metrics/AbcSize
     def call_grpc(path:, http_method:, headers:, input:, output:, publish:, lifecycle: nil, cancellation: nil, # rubocop:disable Metrics/CyclomaticComplexity, Metrics/MethodLength
                   http2: false)
       # @type var owned: bool?
       owned = nil
+      # @type var error: Exception?
+      error = nil
       return bare(415, {}, cancellation: cancellation) unless http2 && @protocol.include?(:grpc)
       return bare(405, { "allow" => ["POST"] }, cancellation: cancellation) unless http_method == "POST"
 
@@ -39,8 +42,11 @@ module ConnectRPC
       end
       lifecycle ? lifecycle.activate(&work) : work.call
       nil
+    rescue Exception => e # rubocop:disable Lint/RescueException -- observe the actual escape and preserve it
+      error = e
+      raise
     ensure
-      finish_native_processing(lifecycle, owned) if owned || lifecycle
+      finish_native_processing(lifecycle, owned, error) unless owned.nil?
     end
 
     private

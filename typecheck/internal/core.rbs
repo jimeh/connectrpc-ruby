@@ -3,7 +3,6 @@
 class Numeric
   def *: (Numeric) -> Numeric
 end
-$ERROR_INFO: Exception?
 # Implementation-only contracts. This directory is never included in a gem.
 module ConnectRPC
   class Method[Req, Resp]

@@ -25,6 +25,8 @@ module ConnectRPC
                       lifecycle: nil, cancellation: nil)
       # @type var owned: bool?
       owned = nil
+      # @type var error: Exception?
+      error = nil
       GRPCWeb.capabilities!(capabilities)
       values = Protocol.headers(headers)
       early = cors_response(path: path, http_method: http_method, headers: values)
@@ -47,7 +49,8 @@ module ConnectRPC
       end
       lifecycle ? lifecycle.activate(&work) : work.call
     rescue Exception => e # rubocop:disable Lint/RescueException -- discard staged status and preserve the original failure
-      lifecycle&.record_failure(e)
+      error = e
+      lifecycle&.record_failure(e) unless owned.nil?
       begin
         output.abort unless owned.nil?
       rescue StandardError => cleanup_error
@@ -55,7 +58,7 @@ module ConnectRPC
       end
       raise
     ensure
-      finish_native_processing(lifecycle, owned) unless owned.nil?
+      finish_native_processing(lifecycle, owned, error) unless owned.nil?
     end
 
     private
