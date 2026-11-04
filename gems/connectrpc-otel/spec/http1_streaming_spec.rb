@@ -152,17 +152,38 @@ RSpec.describe "Connect HTTP/1 original processor SDK ownership" do
     provider, exporter, bus = tracing
     reactor do |task|
       _, cs, = methods
+      entered = Async::Queue.new
+      finished = Async::Queue.new
+      type = ConnectRPC::Falcon.const_get(:HTTP1StreamInput)
+      allow(type).to receive(:new).and_wrap_original do |constructor, *args, **options|
+        constructor.call(*args, **options).tap do |owner|
+          allow(owner).to receive(:discard).and_wrap_original do |discard|
+            error = nil
+            entered.enqueue(true)
+            begin
+              discard.call
+            rescue StandardError => e
+              error = e
+              raise
+            ensure
+              finished.enqueue(error)
+            end
+          end
+        end
+      end
       with_host(target({ cs.path => lambda { |*|
         AsyncHelpers::MESSAGE.new(name: "early")
       } }, instrumentation: bus), false) do |host, peer, _|
         peer.write(request_head(cs, :chunked))
         expect(peer.head.first).to eq(200)
         expect(peer.body).to include("early")
-        wait_until(task, "SDK delivery observed before hygiene completes") { rpc_spans(exporter).size == 1 }
+        entered.dequeue
+        expect(rpc_spans(exporter).size).to eq(1)
         span = rpc_spans(exporter).first
         expect(span.attributes["connectrpc.delivery"]).to eq("completed")
         expect(host.instance_variable_get(:@session).instance_variable_get(:@admitted).size).to eq(1)
         peer.write("0\r\ncontent-length: 9\r\n\r\n")
+        expect(finished.dequeue).to be_a(Protocol::HTTP::InvalidTrailerError)
         wait_until(task, "hygiene retires admission") do
           host.instance_variable_get(:@session).instance_variable_get(:@admitted).empty?
         end
