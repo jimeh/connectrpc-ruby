@@ -2,6 +2,8 @@
 
 Base: `3d34adb`, including lifecycle ownership #39 and package staging #40.
 Delivery: one server PR. No client implementation, stack, merge, or release.
+Amended on 2026-11-04 with Jim's approval of the tested cooperative final-close
+grace. The earlier experiment-only restriction is superseded.
 
 ## Objective and supported scope
 
@@ -92,6 +94,30 @@ peer failure and hygiene errors cannot overwrite processing or delivery facts.
 Raw-first abort remains the forced teardown boundary. Preserve healthy fully
 consumed H1 persistence and the current gRPC-Web rejected-input policy.
 
+For a successfully delivered response on a retiring connection, establish one
+absolute final-close expiry at the actual final HTTP response flush plus
+500 ms, and perform the tested raw TCP write-side half-close. Preserve the
+original 100 ms discard clock and byte/read caps. Once discard stops, wait only
+the remaining part of that same 500 ms total budget, without reading further.
+Do not add 500 ms after discard. Owner abort/shutdown can shorten either phase.
+Failure before successful HTTP completion still uses immediate raw-first
+teardown. Graceful retirement must not overwrite an already observed delivery.
+
+The actual final flush, rather than write_body return, outer callbacks or
+lifecycle observation, anchors the expiry. Detect this boundary through the
+pinned writer's completion state; arbitrary application payload bytes must not
+be mistaken for an HTTP terminal. Include empty/preflight responses in the
+owned framing paths. Preserve non-Connect and gRPC-Web behavior.
+
+These timers are cooperative and can overshoot under scheduler delay; they are
+not hard real-time ceilings. Socket/admission retention through the remaining
+grace is accepted. The half-close plus bounded wait improves reset avoidance,
+but does not promise delivery under arbitrary network or peer failure.
+This is a deliberate response-first, bounded-discard variant of Go's conditional
+HTTP/1.1 reset-avoidance handling. connect-go can consume an oversized declared
+message and net/http can drain before flushing or reuse the connection; no
+literal Go parity is claimed. Keep the official runner and cases unchanged.
+
 A private per-request handoff retains the original Finishable and core input
 adapter remainder. The connection task runs hygiene after successful
 `HTTP1Connection#write_body` and delivery observation, before upstream
@@ -126,8 +152,8 @@ or retrying until green. Both pinned Ruby lanes are 3.4.12 and 4.0.9.
 | Runtime feasibility | Real pinned H1 concurrent head write and active body read probe, with bounded completion. |
 | Incrementality | Real-socket first SS message before handler completion; CS first receive before upload completion; response headers while CS input remains active. |
 | Early response | Valid success/error during slow and non-finishing fixed/chunked uploads over plain TCP and TLS; HTTP terminal chunk observed before discard/retirement completes. |
-| Lifecycle | Processing/application cleanup failure prevents false EOF; completed response remains completed after hygiene failure; admission/close/drain cleanup, unrelated-connection progress and real worker shutdown. |
-| Bounds and isolation | Absolute discard time under continued trickle, exact 4 x 64 KiB boundary and adapter remainder plus reads, body read sizes, malformed/truncated/oversize fixed/chunked input including InvalidTrailerError, pipelined next-request isolation and no replay; both plain TCP and TLS. |
+| Lifecycle | Processing/application cleanup failure prevents false EOF; completed response remains completed after hygiene failure; admission held through remaining final-close grace, close/drain/abort interruption, unrelated-connection progress and real worker shutdown. |
+| Bounds and isolation | Actual final HTTP flush plus one cooperative 500 ms total expiry, including delayed callbacks; no payload-based false completion; unchanged absolute discard time under continued trickle, exact 4 x 64 KiB boundary and adapter remainder plus reads, body read sizes, malformed/truncated/oversize fixed/chunked input including InvalidTrailerError, pipelined next-request isolation and no replay; both plain TCP and TLS. |
 | Protocol gates | Native H1 bidi 505/close before codec/input/handler; H1 native gRPC remains rejected; portable, Web and H2 behavior remains intact. |
 | Metadata and identity | Actual HTTP chunked trailers (including x-t and connect-timeout-ms) excluded from leading metadata, propagation and deadline; immutable TLS identity/trust; real SDK span activation and peer identity on original processor through codecs/cleanup. |
 | Independent peers | Extend pinned connect-go peer modes explicitly. Observe actual ProtoMajor==1 for SS/CS x protobuf/JSON x identity/gzip x plain/TLS/mTLS on both Ruby lanes. Retain H2 shape checks. |
@@ -160,6 +186,8 @@ open threads/reasons, gaps and manual checks to the coordinator. Never merge.
 
 ## Open questions
 
-No product decisions remain open. The pinned runtime feasibility probe is a
-blocking technical gate. Plan review may identify implementation details that
-must be resolved within the approved contract before proceeding.
+No product decisions remain open. Runtime feasibility and the private 500 ms
+overlay passed, but production changes must obtain their own revision-bound
+verification and lifecycle/concurrency review. The earlier hosted Web H1/TLS
+failure remains an unexplained disclosed residual; do not claim the new policy
+fixes it without evidence. No waiver, runner upgrade or merge is authorized.
