@@ -246,7 +246,8 @@ RSpec.describe "Falcon rejected Web HTTP/1 input" do
     end
   end
 
-  [false, true].product(%i[stalled malformed truncated progress deadline drain abort cancel]).each do |tls, failure|
+  failure_modes = %i[stalled malformed truncated progress deadline drain drain_malformed abort cancel]
+  [false, true].product(failure_modes).each do |tls, failure|
     it "retires only owned input raw-first on #{failure}, TLS=#{tls}" do
       reactor do |task|
         events = { prepared: Async::Queue.new, outcomes: [], completions: [] }
@@ -289,6 +290,10 @@ RSpec.describe "Falcon rejected Web HTTP/1 input" do
                 nil
               end
             when :drain then closing = task.async(finished: false) { host.close(grace: 0.015) }
+            when :drain_malformed
+              closing = task.async(finished: false) { host.close(grace: 3) }
+              wait_until(task, "draining before independent input failure") { resource.draining }
+              socket.write("invalid-chunk\r\n")
             when :abort then host.abort
             when :cancel then processor.cancel
             end
@@ -324,13 +329,24 @@ RSpec.describe "Falcon rejected Web HTTP/1 input" do
               expect(events[:reads].count { |size, _| size == 1 }).to be >= 3
               expect(elapsed).to be >= 0.08
             end
-            unless %i[drain abort].include?(failure)
+            unless %i[drain drain_malformed abort].include?(failure)
               expect(http1(origin, "/healthy", context: tls ? verified_h1_context : nil).first).to eq(404)
               wait_until(task, "all rejection and healthy peer metrics retired") do
                 registry.metric(:connections_active).value.zero? && registry.metric(:requests_active).value.zero?
               end
             end
-            closing&.wait
+            if failure == :drain_malformed
+              drained = begin
+                task.with_timeout(1) { closing.wait }
+              rescue Async::TimeoutError
+                :still_draining
+              end
+              expect(drained).to be(false), "failed cleanup did not finish drain before its grace deadline"
+              expect(resource.active).to be(false)
+              expect(resource).to be_finished
+            else
+              closing&.wait
+            end
             wait_until(task, "failed cleanup retires admission and request metrics") do
               host.instance_variable_get(:@session).instance_variable_get(:@admitted).empty? &&
                 registry.metric(:requests_active).value.zero?
