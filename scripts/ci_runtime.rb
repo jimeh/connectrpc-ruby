@@ -38,7 +38,8 @@ puts "Runner: #{ENV.fetch('RUNNER_OS', 'unknown')}/#{ENV.fetch('RUNNER_ARCH', 'u
 case ARGV
 when []
   # Ruby-only jobs need no Go or task-local tool installation.
-when ["interop"]
+when ["interop"], ["browser-reference"]
+  module_dir, cache_dir = ARGV == ["interop"] ? %w[interop interop] : %w[browser/reference browser/go]
   go = which.call("go")
   check.call(under_cache.call(go), "Go is outside RUNNER_TOOL_CACHE")
   output, status = Open3.capture2(go, "env", "-json", "GOVERSION", "GOROOT", "GOMODCACHE", "GOCACHE",
@@ -47,14 +48,14 @@ when ["interop"]
   context = JSON.parse(output)
   check.call(context.fetch("GOVERSION") == "go1.27.3", "unexpected Go version")
   check.call(under_cache.call(context.fetch("GOROOT")), "GOROOT is outside RUNNER_TOOL_CACHE")
-  check.call(Dir.pwd == File.join(root, "interop"), "interop task has the wrong working directory")
+  check.call(Dir.pwd == File.join(root, module_dir), "#{ARGV.first} task has the wrong working directory")
   {
-    "GOMODCACHE" => File.join(root, "vendor/interop/mod"),
-    "GOCACHE" => File.join(root, "vendor/interop/build"),
+    "GOMODCACHE" => File.join(root, "vendor", cache_dir, "mod"),
+    "GOCACHE" => File.join(root, "vendor", cache_dir, "build"),
     "GOTOOLCHAIN" => "local", "GOWORK" => "off", "GOFLAGS" => "-mod=readonly",
-    "GOMOD" => File.join(root, "interop/go.mod")
+    "GOMOD" => File.join(root, module_dir, "go.mod")
   }.each { |key, value| check.call(context.fetch(key) == value, "unexpected Go #{key}") }
   puts "Go: #{File.realpath(go)}; #{JSON.generate(context)}"
 else
-  abort "Usage: ruby scripts/ci_runtime.rb [interop]"
+  abort "Usage: ruby scripts/ci_runtime.rb [interop|browser-reference]"
 end

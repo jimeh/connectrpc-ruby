@@ -64,21 +64,25 @@ module ConnectRPC
 
       def abort = @session.abort
 
-      def call_with_publication(request, publication:, lifecycle: nil)
+      def web_publication?(request) = @listener_application.web_publication?(request)
+      def admission_response(request) = @listener_application.admission_response(request)
+
+      def call_with_publication(request, publication:, lifecycle: nil, resource: nil)
         publication.on_publish do |response|
           response.body = ::Falcon::Body::RequestFinished.new(response.body, @request_active) if response&.body
         end
-        call_native(request, lifecycle: lifecycle, publication: publication)
+        call_native(request, lifecycle: lifecycle, publication: publication, resource: resource)
       end
 
       def call(request, lifecycle: nil)
         call_native(request, lifecycle: lifecycle)
       end
 
-      def call_native(request, lifecycle: nil, publication: nil)
+      def call_native(request, lifecycle: nil, publication: nil, resource: nil)
         @request_total.increment
         @request_active.increment
-        response = @listener_application.call(request, lifecycle: lifecycle, publication: publication)
+        response = @listener_application.call(request, lifecycle: lifecycle, publication: publication,
+                                                       resource: resource)
         if response&.body && !publication
           # Empty bodies can still own completion callbacks. Preserve their
           # wire length while retaining the metric until close finishes.

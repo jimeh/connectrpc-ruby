@@ -1,0 +1,56 @@
+[
+  {
+    "path": "github.com/improbable-eng/grpc-web",
+    "version": "v0.15.0",
+    "published": "2021-11-04T13:48:43Z",
+    "age_days": 1824.4,
+    "sum": "h1:BN+7z6uNXZ1tQGcNAuaU1YjsLTApzkjt2tzCixLaUPQ=",
+    "go_mod_sum": "h1:1sy9HKV4Jt9aEs9JSnkWlRJPuPtwNr0l57L4f878wP8=",
+    "zip_sha256": "96a67e01a01b771457e3a37ae81be5981747c265bbdc6700eb6df3a1081847a3"
+  },
+  {
+    "path": "github.com/cenkalti/backoff/v4",
+    "version": "v4.1.1",
+    "published": "2021-05-31T01:50:55Z",
+    "age_days": 1981.9,
+    "sum": "h1:G2HAfAmvm/GcKan2oOQpBXOd2tT2G57ZnZGWa1PxPBQ=",
+    "go_mod_sum": "h1:scbssz8iZGpm3xbr14ovlUdkxfGXNInqkPWOWmG2CLw=",
+    "zip_sha256": "de69f5db190ee0f2c441e50e4bf607853ab99512a183a5713803888ced502dde"
+  },
+  {
+    "path": "github.com/desertbit/timer",
+    "version": "v0.0.0-20180107155436-c41aec40b27f",
+    "published": "2018-01-07T15:54:36Z",
+    "age_days": 3221.3,
+    "sum": "h1:U5y3Y5UE0w7amNe7Z5G/twsBW0KEalRQXZzf8ufSh9I=",
+    "go_mod_sum": "h1:xH/i4TFMt8koVQZ6WFms69WAsDWr2XsYL3Hkl7jkoLE=",
+    "zip_sha256": "7cd5dd8a10be59f406ea071fa4c51ca4d272d91fd20c4608dfd8cdf0cefd36df"
+  },
+  {
+    "path": "github.com/klauspost/compress",
+    "version": "v1.20.1",
+    "published": "2026-09-25T08:00:35Z",
+    "age_days": 38.7,
+    "sum": "h1:T7kKElXUMXrUJ2E9QhQhxFtcK5rPyLdsGZvdbLMPdiQ=",
+    "go_mod_sum": "h1:LUdAzn7YLVvxLpc7y3V1m40wESHTgc1422pwwBSKYuI=",
+    "zip_sha256": "eedb58d7e4a65669f9a290536646cbfe4188112368424b56a8c75cfdadb27dea"
+  },
+  {
+    "path": "github.com/rs/cors",
+    "version": "v1.11.1",
+    "published": "2024-08-29T11:33:59Z",
+    "age_days": 795.5,
+    "sum": "h1:eU3gRzXLRK57F5rKMGMZURNdIG4EoAmX8k94r9wXWHA=",
+    "go_mod_sum": "h1:XyqrcTp5zjWr1wsJ8PIRZssZ8b/WMcMf71DJnit4EMU=",
+    "zip_sha256": "0555d9d0c18079e1d472d83044bf9fb2517626f1027d3d9d527c7a4294978500"
+  },
+  {
+    "path": "nhooyr.io/websocket",
+    "version": "v1.8.6",
+    "published": "2020-05-10T12:46:20Z",
+    "age_days": 2367.5,
+    "sum": "h1:s+C3xAMLwGmlI31Nyn/eAehUlZPwfYZu2JXM621Q5/k=",
+    "go_mod_sum": "h1:B70DZP8IakI65RVQ51MsWP/8jndNma26DVA/nFSCgW0=",
+    "zip_sha256": "3a48fa58bbaa9b95a3505a1a89104dfe039067cea5d56ba3991790dad6196b5a"
+  }
+]

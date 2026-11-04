@@ -7,6 +7,72 @@ require_relative "../../connectrpc-async/spec/support/ingress_peer"
 RSpec.describe "Real Falcon process-worker lifecycle" do
   include IngressPeer
 
+  %i[http1 h2].each do |protocol|
+    it "drains a real #{protocol} Web worker after first wire data and keeps Context cancellation honest" do
+      reactor do
+        Dir.mktmpdir("web-worker-") do |directory|
+          release = File.join(directory, "release")
+          reader, writer = IO.pipe
+          writer = FalconProcessFixtures::FalconEventWriter.new(writer)
+          writer.sync = true
+          declaration = ConnectRPC::ServerStreamMethod.new(service: "worker.Web", name: "Watch",
+                                                           request_type: AsyncHelpers::MESSAGE,
+                                                           response_type: AsyncHelpers::MESSAGE)
+          make_core = lambda do
+            ConnectRPC::Server.new(
+              services: [ConnectRPC::Service.new(name: declaration.service, methods: [declaration])],
+              binding: ConnectRPC::Bindings::GoogleProtobuf.new, protocol: :grpc_web,
+              handlers: { declaration.path => lambda { |message, output, context|
+                begin
+                  output.send_message(message)
+                  writer.puts(JSON.generate(kind: :web_waiting, pid: Process.pid))
+                  Async::Task.current.with_timeout(5) { Async::Task.current.yield until File.exist?(release) }
+                  output.send_message(message)
+                ensure
+                  writer.puts(JSON.generate(kind: :web_handler_closed, reason: context.cancellation_reason))
+                end
+              } }
+            )
+          end
+          rack = ->(_) { [200, { "content-type" => "text/plain", "cache-control" => "no-store" }, ["healthy"]] }
+          config = configuration(writer, make_core: make_core, rack: rack, count: 1)
+          cluster = FalconProcessFixtures::FalconProcessCluster.new(config, reader, writer)
+          pid = cluster.event(:running).fetch("pid")
+          origin = "http://127.0.0.1:#{cluster.service.port}"
+          raw = IO::Endpoint.tcp("127.0.0.1", cluster.service.port).connect
+          implementation = protocol == :h2 ? Async::HTTP::Protocol::HTTP2 : Async::HTTP::Protocol::HTTP1
+          connection = implementation.client(raw)
+          bytes = AsyncHelpers::MESSAGE.encode(AsyncHelpers::MESSAGE.new(name: "wire progress"))
+          frame = [0, bytes.bytesize].pack("CN") + bytes
+          response = connection.call(Protocol::HTTP::Request["POST", declaration.path,
+                                                             { "content-type" => "application/grpc-web" }, [frame],
+                                                             authority: URI(origin).authority])
+          first = +"".b
+          first << response.body.read while first.bytesize < frame.bytesize
+          expect(first).to eq(frame)
+          expect(cluster.event(:web_waiting).fetch("pid")).to eq(pid)
+          expect(http1(origin, "/healthy").values_at(0, 2)).to eq([200, "healthy"])
+          cluster.stop
+          cluster.event(:closing)
+          File.write(release, "release after actual first response frame")
+          tail = response.read
+          expect(tail).to start_with(frame)
+          expect(tail).to end_with("grpc-status: 0\r\n")
+          connection.close
+          AsyncHelpers::INTERNAL.raw_close(raw)
+          expect(cluster.event(:web_handler_closed).fetch("reason")).to be_nil
+          expect(cluster.event(:closed).values_at("requests", "connections")).to eq([0, 0])
+          expect(cluster.events.map { |event| event["kind"] }).not_to include("unhandled")
+        ensure
+          File.write(release, "cleanup") if release
+          connection&.close
+          AsyncHelpers::INTERNAL.raw_close(raw)
+          cluster&.close
+        end
+      end
+    end
+  end
+
   def configuration(writer, make_core:, provider: nil, rack: nil, prepare: nil, count: 2, **options)
     Async::Service::Configuration.build do
       service "connectrpc-process-spec" do

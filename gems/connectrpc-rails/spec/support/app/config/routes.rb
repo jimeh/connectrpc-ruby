@@ -1,6 +1,8 @@
 # frozen_string_literal: true
 
 Rails.application.routes.draw do
+  match "/web/example.v1.EchoService(/*rpc)", to: "web_echo#connect", via: %i[post options], format: false
+  match "/base-web/example.v1.EchoService(/*rpc)", to: "base_web_echo#connect", via: %i[post options], format: false
   match "/example.v1.EchoService(/*rpc)", to: "echo#connect", via: :all, format: false
   scope "/rpc" do
     match "/example.v1.EchoService(/*rpc)", to: "echo#connect", via: :all, format: false

@@ -61,7 +61,8 @@ Handlers are reusable; application-owned shared state needs its own locking.
 
 The [native gRPC guide](grpc.md) describes protobuf-only native HTTP/2 execution,
 protocol configuration and status/trailer policies. The behavior below describes
-the default Connect profile; portable adapters remain Connect-only.
+the default Connect profile; portable adapters support Connect and explicitly enabled gRPC-Web unary.
+The [gRPC-Web guide](grpc-web.md) owns its independent media, CORS, bounds and terminal rules.
 
 The implemented [Connect profile](https://connectrpc.com/docs/protocol/) is
 unary POST and safe unary GET, identity or opt-in gzip encoding, and `application/proto` or `application/json`.
@@ -421,8 +422,12 @@ original exceptions, normalized/replacement exceptions, emitted Connect code,
 HTTP status, monotonic processing duration and measured encoded byte counts.
 Unknown byte counts are nil. Metadata snapshots retain repeated arrays.
 
-`Server#start_call(path:, headers:)` is the explicit host SPI. It resolves a known
-method and starts observers without reading input or validating protocol.
+`Server#start_call(path:, headers:, http_method: "POST")` is the explicit host
+SPI. Hosts pass the actual method so Connect GET selection precedes subscriber
+start, regardless of ignored POST content headers. It resolves a known method
+and starts observers without reading input or validating protocol. The default
+preserves POST behavior for existing callers; subclass overrides must accept
+and forward the new keyword.
 `Server#call(..., lifecycle: handle)` consumes that Server/path-bound handle once
 and leaves terminal ownership to the host. `handle.activate { ... }` scopes
 context to the executing task; `handle.finish(delivery:, error: nil,

@@ -1,13 +1,16 @@
 module ConnectRPC
   module Rails
     module Controller
-      type limits = { ?request_limit: Integer, ?response_limit: Integer, ?request_wire_limit: Integer, ?response_wire_limit: Integer, ?encoding: :identity | :gzip, ?get_query_limit: Integer? }
+      type limits = { ?request_limit: Integer, ?response_limit: Integer, ?request_wire_limit: Integer, ?response_wire_limit: Integer, ?encoding: :identity | :gzip, ?get_query_limit: Integer?, ?grpc_status_wire_limit: Integer, ?grpc_status_limit: Integer }
       def connect: () -> String
       private
       def connect_service: () -> Service
       def connect_binding: () -> _Binding
       def connect_handlers: () -> Hash[String, ^(untyped, Context) -> untyped | _Handler[untyped, untyped]]
       def connect_limits: () -> limits
+      def connect_protocol: () -> server_protocol_selection
+      def connect_status_codec: () -> _GRPCStatusCodec?
+      def connect_cors: () -> GRPCWebCORS?
       def connect_instrumentation: () -> Instrumentation?
       # Outside active decoded execution these readers have no established value.
       attr_reader connect_request: Object?

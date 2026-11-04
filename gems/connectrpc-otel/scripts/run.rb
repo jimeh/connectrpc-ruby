@@ -14,6 +14,8 @@ environment = {
 abort "Preinstall Bundler 4.0.23" if Gem::Specification.find_all_by_name("bundler", "= 4.0.23").empty?
 command = ARGV.shift
 arguments = case command
+            when "web_conformance" then ["exec", "ruby", File.join(root, "scripts/web_conformance.rb"), *ARGV]
+            when "browser" then ["exec", "ruby", File.join(root, "browser/run.rb"), *ARGV]
             when "setup" then ["install"]
             when "test" then ["exec", "rspec", *ARGV]
             when "check" then ["exec", "ruby", "scripts/check.rb"]

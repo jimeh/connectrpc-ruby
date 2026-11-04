@@ -461,3 +461,6 @@ OpenTelemetry SDK. Core has no OpenTelemetry dependency. See
 Async and Falcon native HTTP/2 support server, client and bidirectional streaming.
 See the [streaming guide](docs/streaming.md) for scoped APIs, mixed generated
 services, bounds and the one-second HTTP tail completion policy.
+
+Explicit server gRPC-Web support is documented in the [Web guide](docs/grpc-web.md),
+including native H1/H2 streaming, portable unary, CORS and the optional official browser harness.

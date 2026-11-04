@@ -224,6 +224,16 @@ validity, reactor affinity, admission and lifecycle ordering. RBS records with
 nullable fields do not prove those keys were explicitly present. There is no
 claim of fully type-safe RPC execution.
 
+Custom hosts must pass the actual HTTP method to
+`Server#start_call(path:, headers:, http_method: "POST")` before dispatch. Omitting
+the keyword retains POST classification for existing direct callers. Core,
+Rack and native hosts forward it. Server subclasses overriding `start_call`
+must accept and forward `http_method:` (or compatible keyword arguments);
+external overrides with narrower keyword signatures require an update.
+The method fixes `Call.protocol` before subscribers start while preserving the
+raw immutable header carrier. Native packages share core's private selection;
+it is not an additional public protocol API.
+
 Instrumentation subscribers return an opaque object or nil. They may implement
 any subset of attach, detach, processing_finished and finished. The separate
 `_ObserverAttach`, `_ObserverDetach`, `_ObserverProcessingFinished` and
@@ -411,3 +421,17 @@ A separate `_GRPCStatusCodec` supports composed custom binding tokens. Its
 normalizing unknown codes. Native `Server#call_grpc` requires explicit HTTP/2,
 `_GRPCOutput.finish(headers:)` and a `_PublishGRPCHead` callback. See the
 [gRPC guide](grpc.md) for publication, EOF and transport completion semantics.
+
+## gRPC-Web server types
+
+Server protocol selection accepts `:grpc_web` and explicit distinct protocol
+arrays; `:auto` remains Connect plus native gRPC. Client protocol types remain
+`:connect | :grpc`. `_GRPCWebOutput` separates prepared writes from staged
+`finish(terminal:)`; `call_grpc_web` grants only unary by default.
+`GRPCWebCORS` is an immutable public configuration value, and `cors_response` is
+the pure host evaluation/decorating SPI. Rails declares its three private Web
+hooks and two status limits. Call.protocol includes `:grpc_web` before observer
+start. All new core files enter the strict source set and internal signatures;
+API callers include exact client-mode, output, capability and CORS negatives.
+The installed consumer runs manual encoded Testing requests and real mixed
+Web/Connect H2 calls in both package load orders, without loading an OTel SDK.

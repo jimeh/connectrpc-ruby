@@ -27,6 +27,9 @@ module Conformance
   # These sleeps are the official instruction's external protocol delays. They
   # never synchronize readiness or move the original cancellation instruction.
   def self.delay(milliseconds)
-    ::Async::Task.current.sleep(milliseconds / 1000.0) if milliseconds.positive?
+    return unless milliseconds.positive?
+
+    task = ::Async::Task.current?
+    task ? task.sleep(milliseconds / 1000.0) : sleep(milliseconds / 1000.0)
   end
 end

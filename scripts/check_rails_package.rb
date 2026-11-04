@@ -24,7 +24,9 @@ core_files = %w[
   lib/connectrpc/streaming/session_completion.rb lib/connectrpc/streaming/session_io.rb
   lib/connectrpc/streaming/session_messages.rb lib/connectrpc/streaming/terminal.rb
   lib/connectrpc/grpc.rb lib/connectrpc/grpc_client.rb lib/connectrpc/grpc_server.rb
-  lib/connectrpc/streaming/strategy.rb lib/connectrpc/bindings/descriptors/status.bin docs/grpc.md
+  lib/connectrpc/grpc_web.rb lib/connectrpc/grpc_web_io.rb lib/connectrpc/grpc_web_cors.rb
+  lib/connectrpc/grpc_web_server.rb
+  lib/connectrpc/streaming/strategy.rb lib/connectrpc/bindings/descriptors/status.bin docs/grpc.md docs/grpc-web.md
   third_party/google/rpc/status.proto third_party/google/LICENSE third_party/protobuf-LICENSE third_party/README.md
   exe/protoc-gen-connectrpc-ruby lib/connectrpc/generator.rb lib/connectrpc/generator/names.rb
   lib/connectrpc/generator/schema.rb lib/connectrpc/generator/renderer.rb lib/connectrpc/generator/runtime_names.rb

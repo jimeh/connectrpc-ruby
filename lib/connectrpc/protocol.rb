@@ -26,10 +26,26 @@ module ConnectRPC
     end
 
     def self.profile!(protocol, mode, encoding, server: false)
-      return if (server ? %i[connect grpc auto] : %i[connect grpc]).include?(protocol) &&
+      valid = server ? valid_server_protocol?(protocol) : %i[connect grpc].include?(protocol)
+      return if valid &&
                 mode == :unary && %i[identity gzip].include?(encoding)
 
       raise ArgumentError, "Unsupported protocol, compatibility mode or encoding"
+    end
+
+    def self.valid_server_protocol?(protocol)
+      return true if %i[connect grpc grpc_web auto].include?(protocol)
+
+      protocol.is_a?(Array) && !protocol.empty? && protocol.uniq.size == protocol.size &&
+        protocol.all? { |value| %i[connect grpc grpc_web].include?(value) }
+    end
+
+    def self.server_protocols(protocol)
+      defaults = %i[connect grpc] #: Array[server_protocol]
+      return defaults.freeze if protocol == :auto
+
+      selected = protocol #: server_protocol | Array[server_protocol]
+      (selected.is_a?(Array) ? selected.dup : [selected]).freeze
     end
 
     def self.content_codec(value)

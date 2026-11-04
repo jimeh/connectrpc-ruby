@@ -280,3 +280,8 @@ Use `async:conformance:grpc` for exact official inventories and
 `async:interop:grpc` for generated official grpc-go peer checks. Both belong
 to the owning verify task. `grpc:generation:check` reproduces official Go and
 Ruby peer outputs; `grpc:status:check` reproduces private Any/Status descriptors.
+
+## gRPC-Web
+
+The native H2 server supports explicitly enabled binary/text unary and server-stream gRPC-Web. Browser incremental delivery uses text.
+See the [Web guide](../../docs/grpc-web.md) for protocol, CORS, bounds and completion rules.

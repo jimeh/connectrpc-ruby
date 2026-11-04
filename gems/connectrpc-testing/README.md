@@ -125,3 +125,8 @@ listener, arbitration and registration lifetime rules.
 Testing forwards the read-only cancellation seam into a distinct server Context.
 Completing server processing cannot complete its client or shared source. Checks
 are cooperative; Testing does not interrupt a blocked handler.
+
+## gRPC-Web
+
+Manual encoded TransportRequest values can exercise explicitly enabled binary/text unary gRPC-Web. This adds no Web Client mode, serializer, network or browser conformance claim.
+See the [Web guide](../../docs/grpc-web.md) for protocol, CORS, bounds and completion rules.

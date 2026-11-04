@@ -146,3 +146,8 @@ request-head dispatch **before** waiting for response headers. It provides
 the core retains the absolute budget across calls. `finish` attests owned transport
 completion and cleanup, never peer receipt. See [RBS](rbs.md) for the typed SPI,
 records, normal package discovery and explicit framework compatibility bridges.
+
+Explicit gRPC-Web server streaming uses the same declarations/session ownership
+on native Async H2 and Falcon H1/H2, with a staged body terminal. Browser
+incrementality uses text; binary XHR buffers. Portable adapters remain unary.
+See the [Web guide](grpc-web.md) for its capability SPI and identity-only bounds.

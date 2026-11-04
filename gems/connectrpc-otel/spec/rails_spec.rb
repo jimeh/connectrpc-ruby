@@ -65,6 +65,31 @@ RSpec.describe "Native Rails RPC spans" do
     controller&.skip_before_action(callback, only: :connect) if callback
     controller&.class_eval { remove_method :connect_instrumentation }
   end
+
+  it "finishes the SDK span once as aborted when Rails rejects an untransferred Web response" do
+    RailsIntegration::APP.eager_load!
+    allow_any_instance_of(WebEchoController).to receive(:connect_instrumentation).and_return(bus)
+    callback = -> { response.set_header("access-control-allow-origin", ["*"]) }
+    WebEchoController.before_action(callback, only: :connect)
+    expect do
+      Rack::MockRequest.new(RailsIntegration::APP).post(
+        "/web/example.v1.EchoService/Echo", "HTTP_HOST" => "www.example.com",
+                                            "CONTENT_TYPE" => "application/grpc-web", "HTTP_ORIGIN" => "https://browser.example",
+                                            input: [0, 0].pack("CN")
+      )
+    end.to raise_error(ConnectRPC::Error, "Conflicting application CORS policy")
+    spans = rpc_spans(exporter)
+    expect(spans.size).to eq(1)
+    span = spans.first
+    expect(span.attributes["connectrpc.protocol"]).to eq("grpc_web")
+    expect(span.attributes["rpc.response.status_code"]).to eq("OK")
+    expect(span.attributes["connectrpc.processing.state"]).to eq("finished")
+    expect(span.attributes["connectrpc.delivery"]).to eq("aborted")
+    expect(span.status.code).to eq(OpenTelemetry::Trace::Status::ERROR)
+    expect(current_span.context).not_to be_valid
+  ensure
+    WebEchoController.skip_before_action(callback, only: :connect) if callback
+  end
 end
 
 RSpec.configure do |config|

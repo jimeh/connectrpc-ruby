@@ -1,0 +1,103 @@
+module ConnectRPC
+  class GRPCWebCORS
+    BASE_REQUEST: Array[String]
+    BASE_EXPOSE: Array[String]
+    TOKEN: Regexp
+    private
+    def valid_origin?: (String) -> bool
+    def names: (Array[String]) -> Array[String]
+  end
+  module GRPCWeb
+    type representation = :binary | :text
+    CONTENT_TYPES: Hash[representation, String]
+    ACCEPT_LIMIT: Integer
+    ACCEPT_ENTRIES: Integer
+    def self.intent?: (headers) -> bool
+    def self.media: (String?) -> representation?
+    def self.representation: (headers, representation) -> representation?
+    def self.accept_entry: (String) -> [String, Integer]?
+    def self.quality: (Array[[String, Integer]], representation) -> Integer
+    def self.vary: (headers, *String) -> headers
+    def self.capabilities!: (Array[grpc_web_cardinality]) -> void
+    def self.terminal: (Error?, Metadata, codec: _GRPCStatusCodec, wire_limit: Integer, limit: Integer, on_error: (^(StandardError) -> void)?) -> [String, Error?]
+    class Framing < Streaming::Framing
+      private
+      def validate_flags: (Integer) -> void
+    end
+    class Strategy
+      def grpc?: () -> bool
+      def framing: () -> singleton(Framing)
+      def wait: (Numeric?) -> Numeric
+      def single_response?: (declaration) -> bool
+      def decode_error: (bool) -> :invalid_argument
+    end
+    class Input
+      @input: _StreamingInput?
+      @text: bool
+      @encoded_limit: Integer
+      @decoded_limit: Integer
+      @encoded: Integer
+      @decoded: Integer
+      @length: Integer?
+      @carry: String
+      @remainder: String
+      @eof: bool
+      def initialize: (_StreamingInput?, representation: representation, wire_limit: Integer, headers: headers) -> void
+      def read: (Integer, ?timeout: Numeric?) -> String?
+      private
+      def decode: (String) -> String
+      def finish_input: () -> void
+    end
+    class Output
+      @output: _GRPCWebOutput
+      @text: bool
+      def initialize: (_GRPCWebOutput, representation) -> void
+      def write: (String, ?timeout: Numeric?) -> nil
+      def finish: (terminal: String) -> nil
+      def abort: () -> nil
+    end
+    class Aggregate
+      @limit: Integer
+      @body: String
+      @terminal: String?
+      attr_reader body: String
+      def initialize: (Integer) -> void
+      def write: (String, ?timeout: Numeric?) -> nil
+      def finish: (terminal: String) -> nil
+      def complete: () -> nil
+      def abort: () -> nil
+    end
+    class PortableInput
+      @input: _Input?
+      def initialize: (_Input?) -> void
+      def read: (Integer, ?timeout: Numeric?) -> String?
+    end
+    class ServerState
+      attr_reader headers: headers
+      attr_reader publish: _PublishStreamHead | ^(StreamHead) -> void
+      attr_reader lifecycle: Instrumentation::Handle?
+      attr_reader cancellation: _Cancellation?
+      attr_reader representation: representation
+      attr_reader path: String
+      attr_accessor context: Context?
+      attr_accessor session: Streaming::Session?
+      attr_accessor error: Error?
+      attr_accessor published: bool
+      def initialize: (path: String, headers: headers, representation: representation, publish: _PublishStreamHead | ^(StreamHead) -> void, lifecycle: Instrumentation::Handle?, cancellation: _Cancellation?) -> void
+    end
+  end
+  class Server
+    private
+    def cors_fields: (GRPCWebCORS, String) -> headers
+    def merge_cors_fields: (headers, headers) -> headers
+    def cors_preflight: (headers, GRPCWebCORS, String?, bool?) -> TransportResponse
+    def web_preflight: (String, headers, _Cancellation?) -> TransportResponse?
+    def call_grpc_web_unary: (String, String, headers, _Input?, Instrumentation::Handle?, _Cancellation?) -> TransportResponse
+    def process_grpc_web: (GRPCWeb::ServerState, _StreamingInput, _GRPCWebOutput, GRPCWeb::representation, Array[grpc_web_cardinality]) -> void
+    def execute_grpc_web: (GRPCWeb::ServerState, _StreamingInput, GRPCWeb::Output, GRPCWeb::representation, Array[grpc_web_cardinality]) -> void
+    def web_context: (GRPCWeb::ServerState, ?declaration?, ?headers: headers) -> Context
+    def publish_web_head: (GRPCWeb::ServerState) -> void
+    def publish_web_snapshot: (GRPCWeb::ServerState, Metadata) -> nil
+    def render_grpc_web_terminal: (GRPCWeb::ServerState, GRPCWeb::Output) -> void
+  end
+end

@@ -21,6 +21,7 @@
   "get_url_limit": "Ruby::ArgumentTypeMismatch",
   "get_query_limit": "Ruby::ArgumentTypeMismatch",
   "get_query": "Ruby::ArgumentTypeMismatch",
+  "start_call_http_method": "Ruby::ArgumentTypeMismatch",
   "cancellation_source": "Ruby::ArgumentTypeMismatch",
   "cancellation_readonly": "Ruby::NoMethod",
   "cancellation_context": "Ruby::ArgumentTypeMismatch",
@@ -40,5 +41,9 @@
   "grpc_immutable": "Ruby::NoMethod",
   "grpc_block": "Ruby::RequiredBlockMissing",
   "grpc_raw_code": "Ruby::ArgumentTypeMismatch",
-  "grpc_output": "Ruby::ArgumentTypeMismatch"
+  "grpc_output": "Ruby::ArgumentTypeMismatch",
+  "grpc_web_client": "Ruby::ArgumentTypeMismatch",
+  "grpc_web_capabilities": "Ruby::ArgumentTypeMismatch",
+  "grpc_web_cors": "Ruby::ArgumentTypeMismatch",
+  "grpc_web_output": "Ruby::ArgumentTypeMismatch"
 }

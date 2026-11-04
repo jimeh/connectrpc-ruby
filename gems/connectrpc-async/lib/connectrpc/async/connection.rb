@@ -117,9 +117,13 @@ module ConnectRPC
         end
 
         def receive_initial_headers(headers, end_stream)
-          @grpc ||= headers.any? do |key, value|
+          @grpc_web ||= headers.any? do |key, value|
+            key.casecmp?("content-type") && value.downcase.start_with?("application/grpc-web")
+          end
+          @grpc ||= !@grpc_web && headers.any? do |key, value|
             key.casecmp?("content-type") && value.downcase.start_with?("application/grpc")
           end
+          grpc_fields(headers) if @grpc_web
           if @grpc
             fields = grpc_fields(headers)
             status = headers.find { |key, _value| key == ":status" }&.last.to_i
@@ -143,6 +147,7 @@ module ConnectRPC
         end
 
         def receive_trailing_headers(headers, end_stream)
+          grpc_fields(headers) if @grpc_web
           if @grpc
             @grpc_trailers = grpc_fields(headers)
             unless end_stream
@@ -244,7 +249,7 @@ module ConnectRPC
         end
 
         def finish_output(error = nil)
-          if @grpc && error.is_a?(ConnectRPC::Error) && error.code == "resource_exhausted"
+          if (@grpc || @grpc_web) && error.is_a?(ConnectRPC::Error) && error.code == "resource_exhausted"
             @output = nil
             send_reset_stream(::Protocol::HTTP2::Error::ENHANCE_YOUR_CALM) unless closed?
             return
@@ -253,7 +258,7 @@ module ConnectRPC
         end
 
         def send_headers(headers, flags = 0)
-          if @grpc
+          if @grpc || @grpc_web
             values = {}
             headers.each { |key, value| (values[key] ||= []) << value.to_s }
             begin

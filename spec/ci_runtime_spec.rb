@@ -65,6 +65,63 @@ RSpec.describe "CI runtime boundary" do
     end
   end
 
+  def go_guard(mode, context_overrides = {}, directory: mode == "interop" ? "interop" : "browser/reference",
+               outside_cache: false)
+    module_dir = mode == "interop" ? "interop" : "browser/reference"
+    cache_dir = mode == "interop" ? "interop" : "browser/go"
+    context = {
+      "GOVERSION" => "go1.27.3", "GOROOT" => File.dirname(ruby),
+      "GOMODCACHE" => File.join(root, "vendor", cache_dir, "mod"),
+      "GOCACHE" => File.join(root, "vendor", cache_dir, "build"),
+      "GOTOOLCHAIN" => "local", "GOWORK" => "off", "GOFLAGS" => "-mod=readonly",
+      "GOMOD" => File.join(root, module_dir, "go.mod")
+    }.merge(context_overrides)
+    Dir.mktmpdir("connectrpc-go-boundary-") do |bin|
+      go = File.join(bin, "go")
+      # Stub the external go env boundary. The symlink gives the simulated action
+      # runtime a real executable identity within the test's tool cache.
+      File.symlink(outside_cache ? "/bin/true" : ruby, go)
+      prelude = <<~RUBY
+        require "open3"
+        original = Open3.method(:capture2)
+        Open3.define_singleton_method(:capture2) do |*args|
+          if args.first == #{go.inspect}
+            [#{JSON.generate(context).inspect}, Struct.new(:success?).new(true)]
+          else
+            original.call(*args)
+          end
+        end
+        load ARGV.shift
+      RUBY
+      Bundler.with_unbundled_env do
+        Open3.capture3(environment.merge("PATH" => "#{File.dirname(ruby)}:#{bin}:#{ENV.fetch('PATH')}"),
+                       ruby, "-e", prelude, File.join(root, "scripts/ci_runtime.rb"), mode,
+                       chdir: File.join(root, directory))
+      end
+    end
+  end
+
+  %w[interop browser-reference].each do |mode|
+    it "validates the finite #{mode} Go module and cache context without changing runtime ownership" do
+      output, error, status = go_guard(mode)
+      expect(status.success?).to be(true), error
+      expect(output).to include("Go:", "go1.27.3")
+      { "GOVERSION" => "go0.0.0", "GOROOT" => "/tmp", "GOMODCACHE" => "/tmp/wrong",
+        "GOCACHE" => "/tmp/wrong", "GOTOOLCHAIN" => "auto", "GOWORK" => "auto", "GOFLAGS" => "",
+        "GOMOD" => File.join(root, "wrong/go.mod") }.each do |key, value|
+        _output, error, status = go_guard(mode, { key => value })
+        expect(status.success?).to be(false), key
+        expect(error).to include(key == "GOVERSION" ? "unexpected Go version" : key)
+      end
+      _output, error, status = go_guard(mode, directory: ".")
+      expect(status.success?).to be(false)
+      expect(error).to include("wrong working directory")
+      _output, error, status = go_guard(mode, outside_cache: true)
+      expect(status.success?).to be(false)
+      expect(error).to include("Go is outside RUNNER_TOOL_CACHE")
+    end
+  end
+
   it "rejects unknown guard modes" do
     _output, error, status = guard({}, "unknown")
     expect(status.success?).to be(false)
@@ -76,11 +133,12 @@ RSpec.describe "CI check mapping" do
   let(:workflow) { YAML.load_file(File.expand_path("../.github/workflows/ci.yml", __dir__)) }
   let(:jobs) { workflow.fetch("jobs") }
 
-  it "preserves all 26 existing checks and adds two independent OTel leaves" do
+  it "preserves all 28 existing checks and adds two independent browser leaves" do
     core = %w[static specs package interop conformance]
     backend = %w[async_specs async_interop]
     falcon = %w[falcon_specs falcon_interop]
-    expect(jobs.keys).to match_array([*core, "rails", *backend, "rack", "testing", "rbs", *falcon, "otel"])
+    expect(jobs.keys).to match_array([*core, "rails", *backend, "rack", "testing", "rbs", *falcon, "otel",
+                                      "browser_grpc_web"])
     count = lambda do |names|
       jobs.slice(*names).values.sum do |job|
         job.dig("strategy", "matrix", "ruby")&.size || job.dig("strategy", "matrix", "include")&.size || 1
@@ -93,9 +151,10 @@ RSpec.describe "CI check mapping" do
     expect(count.call(["rack"])).to eq(2)
     expect(count.call(["testing"])).to eq(2)
     expect(count.call(["rbs"])).to eq(2)
-    expect(count.call(jobs.keys - ["otel"])).to eq(26)
+    expect(count.call(jobs.keys - ["browser_grpc_web"])).to eq(28)
     expect(count.call(["otel"])).to eq(2)
-    expect(count.call(jobs.keys)).to eq(28)
+    expect(count.call(["browser_grpc_web"])).to eq(2)
+    expect(count.call(jobs.keys)).to eq(30)
     jobs.each_value { |job| expect(job).not_to have_key("needs") }
     jobs.except("static", "rails").each_value do |job|
       expect(job.dig("strategy", "fail-fast")).to be(false)
@@ -108,6 +167,10 @@ RSpec.describe "CI check mapping" do
     expect(commands.fetch("interop").first(2)).to eq(["mise run fixture:check", "mise run test:interop"])
     expect(commands.fetch("conformance")).to include("mise run test:conformance")
     expect(commands.fetch("otel").first).to eq("mise run otel:verify")
+    expect(commands.fetch("browser_grpc_web").first).to eq("mise run browser:verify")
+    expect(commands.fetch("browser_grpc_web")[1]).to include("mise run async:conformance:web",
+                                                             "mise run falcon:conformance:web",
+                                                             "mise run rack:conformance:web")
     expect(commands.fetch("rbs").first(3)).to eq(["mise run rbs:cache-platform", "mise run rbs:check",
                                                   "mise run rbs:package"])
   end
@@ -163,6 +226,17 @@ RSpec.describe "CI check mapping" do
     go = interop.fetch("steps").find { |step| step.fetch("uses", "").start_with?("actions/setup-go@") }
     expect(go.fetch("with")).to include("go-version" => "1.27.3", "check-latest" => false, "cache" => true,
                                         "cache-dependency-path" => "interop/go.sum")
+  end
+
+  it "provides action-owned pinned Go to both browser leaves without unrelated default caches" do
+    browser = jobs.fetch("browser_grpc_web")
+    expect(browser.fetch("env")).to include("GOMODCACHE" => "${{ github.workspace }}/vendor/browser/go/mod",
+                                            "GOCACHE" => "${{ github.workspace }}/vendor/browser/go/build")
+    go = browser.fetch("steps").find { |step| step.fetch("uses", "").start_with?("actions/setup-go@") }
+    expect(go).not_to be_nil
+    expect(go.fetch("uses")).to eq("actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e")
+    expect(go.fetch("with")).to include("go-version" => "1.27.3", "check-latest" => false, "cache" => true,
+                                        "cache-dependency-path" => "browser/reference/go.sum")
   end
 
   it "caches RBS dependency inputs while always running fresh source and installed checks" do
@@ -224,6 +298,26 @@ RSpec.describe "CI Mise task replacement" do
     expect(ci.fetch("description")).not_to be_empty
     expect(local.fetch("run")).to eq(["mise install --locked go@1.27.3", "go mod download"])
     expect(ci.fetch("run")).to eq(["ruby {{config_root}}/scripts/ci_runtime.rb interop", "go mod download"])
+  end
+
+  it "preserves browser reference tools, module, caches and build commands across the CI override" do
+    local, ci = [nil, "ci"].map do |mode|
+      output, error, status = Open3.capture3({ "MISE_ENV" => mode }, "mise", "tasks", "info",
+                                             "browser:reference:setup", "--json")
+      expect(status.success?).to be(true), error
+      JSON.parse(output)
+    end
+    %w[tools env dir depends depends_post].each { |field| expect(ci.fetch(field)).to eq(local.fetch(field)) }
+    expect(local.fetch("tools")).to eq("go" => "1.27.3")
+    expect(local.fetch("dir")).to eq(File.expand_path("../browser/reference", __dir__))
+    expected_env = ["GOTOOLCHAIN=local", "GOWORK=off", "GOFLAGS=-mod=readonly",
+                    "GOMODCACHE={{config_root}}/vendor/browser/go/mod",
+                    "GOCACHE={{config_root}}/vendor/browser/go/build"]
+    expect(local.fetch("env")).to match_array(expected_env)
+    build = ["go mod download all", "go mod verify", "ruby ../../scripts/check_web_reference.rb",
+             "go build -o ../../vendor/browser/reference ."]
+    expect(local.fetch("run")).to eq(["mise install --locked go@1.27.3", *build])
+    expect(ci.fetch("run")).to eq(["ruby {{config_root}}/scripts/ci_runtime.rb browser-reference", *build])
   end
 end
 

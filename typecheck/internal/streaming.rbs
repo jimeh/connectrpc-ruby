@@ -32,11 +32,11 @@ module ConnectRPC
     @terminal_limit: Integer
     private
     def stream_preflight: (String, codec?, _Cancellation?) -> TransportResponse?
-    def execute_native_stream: (String, headers, codec, input: _StreamingInput, output: _StreamingOutput, publish: _PublishStreamHead | ^(StreamHead) -> void, lifecycle: Instrumentation::Handle?, cancellation: _Cancellation?) -> nil
-    def begin_native_processing: (String, headers, Instrumentation::Handle?) -> [Instrumentation::Handle?, bool]
+    def execute_native_stream: (String, headers, codec, http_method: String, input: _StreamingInput, output: _StreamingOutput, publish: _PublishStreamHead | ^(StreamHead) -> void, lifecycle: Instrumentation::Handle?, cancellation: _Cancellation?) -> nil
+    def begin_native_processing: (String, headers, Instrumentation::Handle?, String) -> [Instrumentation::Handle?, bool]
     def finish_native_processing: (Instrumentation::Handle?, bool?) -> void
     def process_stream: (String, headers, codec, input: _StreamingInput, output: _StreamingOutput, publish: _PublishStreamHead | ^(StreamHead) -> void, lifecycle: Instrumentation::Handle?, cancellation: _Cancellation?) -> void
-    def capture_stream_error: (Streaming::ServerState | GRPCProtocol::ServerState) { () -> void } -> void
+    def capture_stream_error: (Streaming::ServerState | GRPCProtocol::ServerState | GRPCWeb::ServerState) { () -> void } -> void
     def execute_stream_handler: (Streaming::ServerState, String, _StreamingInput, _StreamingOutput) -> void
     def stream_encoding: (headers) -> encoding
     def streaming_declaration: (String) -> stream_declaration
@@ -49,7 +49,7 @@ module ConnectRPC
     def merge_stream_error_metadata: (Error?, Context) -> void
     def stream_trailers: (Error?, Context) -> Metadata
     def emit_stream_terminal: (String, _StreamingOutput) -> void
-    def observe_stream_result: (Streaming::ServerState | GRPCProtocol::ServerState, Error?) -> void
+    def observe_stream_result: (Streaming::ServerState | GRPCProtocol::ServerState | GRPCWeb::ServerState, Error?) -> void
     def streaming_context: (Streaming::ServerState, ?headers: headers) -> StreamingContext
     def stream_head: (Metadata, codec, encoding) -> StreamHead
   end
@@ -171,7 +171,7 @@ module ConnectRPC
       def protocol_error: (String) -> bot
     end
     class Session
-      @strategy: ConnectStrategy | GRPCProtocol::Strategy
+      @strategy: ConnectStrategy | GRPCProtocol::Strategy | GRPCWeb::Strategy
       @publish: (^() -> void)?
       @binding: _Binding
       @method: declaration
@@ -211,7 +211,7 @@ module ConnectRPC
       attr_reader trailers: Metadata?
       attr_reader received: Integer
       attr_reader sent: Integer
-      def initialize: (binding: _Binding, method: declaration, codec: codec, state: Context | CallCancellation, input: _StreamingInput | (_StreamExchange | _GRPCStreamExchange), output: _StreamingOutput | (_StreamExchange | _GRPCStreamExchange), request_limit: Integer, response_limit: Integer, request_wire_limit: Integer, response_wire_limit: Integer, request_encoding: encoding, response_encoding: encoding, terminal_wire_limit: Integer, terminal_limit: Integer, ?server: bool, ?context: Context?, ?lifecycle: Instrumentation::Handle?, ?accept_encoding: Array[encoding], ?strategy: ConnectStrategy | GRPCProtocol::Strategy, ?publish: (^() -> void)?) -> void
+      def initialize: (binding: _Binding, method: declaration, codec: codec, state: Context | CallCancellation, input: _StreamingInput | (_StreamExchange | _GRPCStreamExchange), output: _StreamingOutput | (_StreamExchange | _GRPCStreamExchange), request_limit: Integer, response_limit: Integer, request_wire_limit: Integer, response_wire_limit: Integer, request_encoding: encoding, response_encoding: encoding, terminal_wire_limit: Integer, terminal_limit: Integer, ?server: bool, ?context: Context?, ?lifecycle: Instrumentation::Handle?, ?accept_encoding: Array[encoding], ?strategy: ConnectStrategy | GRPCProtocol::Strategy | GRPCWeb::Strategy, ?publish: (^() -> void)?) -> void
       def headers: () -> Metadata
       def receive: () -> untyped
       def send_message: (untyped) -> nil

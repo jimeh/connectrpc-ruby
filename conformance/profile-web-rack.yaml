@@ -1,0 +1,13 @@
+features:
+  versions: [HTTP_VERSION_1]
+  protocols: [PROTOCOL_GRPC_WEB]
+  codecs: [CODEC_PROTO]
+  compressions: [COMPRESSION_IDENTITY]
+  streamTypes: [STREAM_TYPE_UNARY]
+  supportsH2c: false
+  supportsTls: false
+  supportsTlsClientCerts: false
+  supportsTrailers: false
+  supportsHalfDuplexBidiOverHttp1: false
+  supportsConnectGet: false
+  supportsMessageReceiveLimit: true

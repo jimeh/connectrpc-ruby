@@ -47,7 +47,9 @@ module ConnectRPC
     type wire_error = { code: String, message: String, details: Array[ErrorDetail] }
     def self.limit!: (Integer) -> Integer
     def self.codec!: (codec) -> codec
-    def self.profile!: (:connect | :grpc | :auto, :unary, encoding, ?server: bool) -> nil
+    def self.profile!: (server_protocol_selection, :unary, encoding, ?server: bool) -> nil
+    def self.valid_server_protocol?: (server_protocol_selection) -> bool
+    def self.server_protocols: (server_protocol_selection) -> Array[server_protocol]
     def self.content_codec: (String?) -> codec?
     def self.headers: (headers | Metadata) -> headers
     def self.single: (headers, String) -> String?
@@ -152,7 +154,8 @@ module ConnectRPC
     def decode_response: [Req, Resp] (String, Method[Req, Resp], ?Instrumentation::Handle?) -> Resp
   end
   class Server
-    @protocol: :connect | :grpc | :auto
+    @protocol: Array[server_protocol]
+    @cors: GRPCWebCORS?
     @grpc_status_wire_limit: Integer
     @grpc_status_limit: Integer
     @status_codec: _GRPCStatusCodec?
@@ -174,6 +177,7 @@ module ConnectRPC
     def empty_get_body?: (headers, _Input?, _Check?) -> bool
     def get_headers: (headers, Hash[String, String]) -> headers
     def vary_get: (TransportResponse) -> void
+    def request_protocol: (headers, String) -> (:connect | :grpc | :grpc_web)
     def declarations: (Array[Service]) -> Hash[String, declaration]
     def invoke_handler: (Method[untyped, untyped], untyped, Context) -> untyped
     def dispatch: (String, headers, _Input?, codec, Context, ?lifecycle: Instrumentation::Handle?) -> TransportResponse
@@ -195,7 +199,7 @@ module ConnectRPC
   class Instrumentation
     @subscribers: Array[_Subscriber]
     @on_error: (^(StandardError) -> void | _InstrumentationErrorHandler)?
-    def start: (owner: Object, role: :client | :server, method: declaration?, carrier: Hash[String, String | Array[String]], ?server_address: String?, ?server_port: Integer?, ?path: String?, ?protocol: :connect | :grpc) -> Handle
+    def start: (owner: Object, role: :client | :server, method: declaration?, carrier: Hash[String, String | Array[String]], ?server_address: String?, ?server_port: Integer?, ?path: String?, ?protocol: :connect | :grpc | :grpc_web) -> Handle
     def safely: [T] () { () -> T } -> T?
     def self.carrier: (headers | metadata_input) -> headers
     # Reflection is erased here only, before each capability enters Callbacks.

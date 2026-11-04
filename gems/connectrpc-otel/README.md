@@ -171,3 +171,8 @@ Connect keeps its existing names and lower-case codes. Unknown gRPC methods use
 span name `grpc` and `rpc.method=_OTHER`, with the same explicit privacy limit.
 Processing and delivery remain independent; successful handler processing cannot
 prove terminal HEADERS delivery. SDK configuration remains application-owned.
+
+## gRPC-Web
+
+Web calls have Call.protocol=:grpc_web before subscriber start. The project maps them to gRPC semconv 1.44.0 with rpc.system.name=grpc and bounded connectrpc.protocol=grpc_web. Status codes, metadata prefixes, error roles and original-task activation follow native gRPC.
+See the [Web guide](../../docs/grpc-web.md) for protocol, CORS, bounds and completion rules.

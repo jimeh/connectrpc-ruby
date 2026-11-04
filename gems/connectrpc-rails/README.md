@@ -235,3 +235,8 @@ The finite upstream compatibility signatures in `rbs/action_controller_8` are ex
 opt-ins, separate from normal gem discovery. See the [RBS guide](../../docs/rbs.md#opt-in-framework-compatibility)
 for tested versions, supported framework forms and how to avoid duplicate
 application-owned declarations.
+
+## gRPC-Web
+
+Private connect_protocol, connect_status_codec and connect_cors hooks enable binary/text unary gRPC-Web through the real controller invoker. POST/OPTIONS routes are explicit; auth, callbacks, cookies, security headers and Rails CSRF/origin controls remain active.
+See the [Web guide](../../docs/grpc-web.md) for protocol, CORS, bounds and completion rules.

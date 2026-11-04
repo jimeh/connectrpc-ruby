@@ -6,6 +6,34 @@ RSpec.describe "GET RPC observation" do
   let(:exporter) { telemetry[1] }
   let(:bus) { telemetry[2] }
 
+  it "starts mixed GET with Connect SDK attributes before ignored Web headers can select gRPC" do
+    protocols = []
+    starts = []
+    subscriber = Object.new
+    subscriber.define_singleton_method(:start) do |call|
+      protocols << call.protocol
+      nil
+    end
+    start_provider, exporter, instrumentation = tracing(subscribers: [subscriber])
+    processor = OpenTelemetry::SDK::Trace::Export::SimpleSpanProcessor.new(exporter)
+    processor.define_singleton_method(:on_start) { |span, _parent| starts << span.attributes.dup }
+    processor.define_singleton_method(:on_finish) { |_span| nil }
+    start_provider.add_span_processor(processor)
+    target = server(protocol: %i[connect grpc_web], instrumentation: instrumentation)
+    response = target.call(path: AsyncHelpers::ECHO::ECHO.path, http_method: "GET",
+                           query: "encoding=proto&base64=1&message=",
+                           headers: { "content-type" => ["application/grpc-web"] }, input: nil)
+    expect(response.status).to eq(200)
+    expect(protocols).to eq([:connect])
+    expect(starts.size).to eq(1)
+    expect(starts.first).to include("rpc.system.name" => "connectrpc")
+    expect(starts.first).not_to have_key("connectrpc.protocol")
+    expect(rpc_spans(exporter).first.attributes).to include("rpc.system.name" => "connectrpc",
+                                                            "rpc.response.status_code" => "OK")
+  ensure
+    start_provider&.shutdown
+  end
+
   %i[proto json].each do |codec|
     it "preserves #{codec} parent/outcomes and measures compressed query payload without URL attributes" do
       parent = provider.tracer("test").start_span("parent")

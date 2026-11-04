@@ -7,17 +7,22 @@ module ConnectRPC
     attr_reader :services
 
     # Public configuration keeps each validation next to its assignment.
-    # rubocop:disable Metrics/MethodLength, Metrics/AbcSize
+    # rubocop:disable Metrics/MethodLength, Metrics/AbcSize, Metrics/CyclomaticComplexity, Metrics/PerceivedComplexity
     def initialize(services:, binding:, handlers: {}, invoker: nil, request_limit: Protocol::DEFAULT_LIMIT,
                    response_limit: Protocol::DEFAULT_LIMIT, request_wire_limit: request_limit,
                    response_wire_limit: response_limit, protocol: :connect, mode: :unary, encoding: :identity,
                    instrumentation: nil, get_query_limit: nil, terminal_wire_limit: 65_536, terminal_limit: 65_536,
-                   status_codec: nil, grpc_status_wire_limit: 65_536, grpc_status_limit: 65_536)
+                   status_codec: nil, grpc_status_wire_limit: 65_536, grpc_status_limit: 65_536, cors: nil)
       Protocol.profile!(protocol, mode, encoding, server: true)
-      @protocol = protocol
+      @protocol = Protocol.server_protocols(protocol)
+      unless cors.nil? || (cors.is_a?(GRPCWebCORS) && @protocol.include?(:grpc_web))
+        raise ArgumentError, "cors requires a GRPCWebCORS policy and explicit gRPC-Web enablement"
+      end
+
+      @cors = cors
       @grpc_status_wire_limit = Protocol.limit!(grpc_status_wire_limit)
       @grpc_status_limit = Protocol.limit!(grpc_status_limit)
-      @status_codec = GRPCProtocol.status_codec!(binding, status_codec) unless protocol == :connect
+      @status_codec = GRPCProtocol.status_codec!(binding, status_codec) if @protocol.intersect?(%i[grpc grpc_web])
       @terminal_wire_limit = Protocol.limit!(terminal_wire_limit)
       @terminal_limit = Protocol.limit!(terminal_limit)
       @services = services.dup.freeze
@@ -38,31 +43,38 @@ module ConnectRPC
       @error_limit = [@response_limit, @response_wire_limit].min
     end
 
-    # rubocop:enable Metrics/MethodLength, Metrics/AbcSize
+    # rubocop:enable Metrics/MethodLength, Metrics/AbcSize, Metrics/CyclomaticComplexity, Metrics/PerceivedComplexity
 
     def handles?(path)
       services.any? { |service| path == "/#{service.name}" || path.start_with?("/#{service.name}/") }
     end
 
-    def start_call(path:, headers:)
+    def start_call(path:, headers:, http_method: "POST")
       instrumentation = @instrumentation
       return unless instrumentation
 
       instrumentation.start(owner: self, path: path.dup.freeze, role: :server, method: @methods[path],
                             carrier: Instrumentation.carrier(headers),
-                            protocol: GRPCProtocol.intent?(Protocol.headers(headers)) ? :grpc : :connect)
+                            protocol: request_protocol(headers, http_method))
     end
 
     # Keep processing and terminal ensures adjacent to their owner.
     # rubocop:disable Metrics/MethodLength, Metrics/AbcSize, Metrics/CyclomaticComplexity, Metrics/PerceivedComplexity
     def call(path:, http_method:, headers:, input:, query: "", lifecycle: nil, cancellation: nil)
+      if @protocol.include?(:grpc_web)
+        early = cors_response(path: path, http_method: http_method, headers: headers)
+        return early if early
+        if request_protocol(headers, http_method) == :grpc_web
+          return call_grpc_web_unary(path, http_method, headers, input, lifecycle, cancellation)
+        end
+      end
       unless lifecycle || @instrumentation
         return process_call(path: path, http_method: http_method, headers: headers, input: input, query: query,
                             cancellation: cancellation)
       end
 
       owned = lifecycle.nil?
-      lifecycle ||= start_call(path: path, headers: headers)
+      lifecycle ||= start_call(path: path, headers: headers, http_method: http_method)
       active = lifecycle #: Instrumentation::Handle
       active.begin_processing(self, path)
       begin
@@ -78,12 +90,22 @@ module ConnectRPC
 
     private
 
+    def request_protocol(headers, http_method)
+      # Query controls own Connect GET, including rejection before header work.
+      return :connect if http_method == "GET" && @protocol.include?(:connect)
+
+      headers = Protocol.headers(headers)
+      return :grpc_web if GRPCWeb.intent?(headers)
+
+      GRPCProtocol.intent?(headers) ? :grpc : :connect
+    end
+
     def process_call(path:, http_method:, headers:, input:, query:, lifecycle: nil, cancellation: nil)
       # @type var response: TransportResponse?
       # @type var context: Context?
       context = nil
       cancellation&.check!
-      return response = bare(415, {}, cancellation: cancellation) if @protocol == :grpc
+      return response = bare(415, {}, cancellation: cancellation) unless @protocol.include?(:connect)
 
       method = @methods[path]
       safe = method.is_a?(Method) && method.idempotency == :no_side_effects
