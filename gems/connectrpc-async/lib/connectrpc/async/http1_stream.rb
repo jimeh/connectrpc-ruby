@@ -16,6 +16,11 @@ module ConnectRPC
           super([length, 16_384].min, buffer)
         end
 
+        def close_read
+          # Destructive retirement closes raw IO before unfinished body cleanup.
+          super unless closed?
+        end
+
         def viable?
           return false if closed? || @finished || !@read_buffer.empty?
 

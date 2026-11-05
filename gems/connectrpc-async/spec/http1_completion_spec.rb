@@ -75,16 +75,30 @@ RSpec.describe ConnectRPC::Async::HTTP1Transport, "writer and completion arbitra
     end
   end
 
-  it "requires native HTTP EOF before finish" do
-    with_http1_peer(response: http1_wire) do |transport, origin|
-      expect do
-        transport.open_stream(stream_request(origin)) do |exchange|
+  [false, true].each do |tls|
+    it "requires native HTTP EOF before finish and retires after handled rejection over #{tls ? 'TLS' : 'TCP'}" do
+      with_http1_peer(response: http1_wire, tls: tls) do |transport, origin|
+        operation = nil
+        number = nil
+        result = transport.open_stream(stream_request(origin)) do |exchange|
           exchange.close_send
           expect(exchange.response_head.status).to eq(200)
-          expect { exchange.finish }.to raise_error(ConnectRPC::Error)
+          operation = exchange.instance_variable_get(:@operation)
+          number = operation.fetch(:resource).raw.fileno
+          expect { exchange.finish }.to raise_error(ConnectRPC::Error) { |error| expect(error.code).to eq("unavailable") }
+          expect(operation[:eof]).not_to be(true)
+          expect(operation[:finished]).not_to be(true)
+          :handled
         end
-      end.to raise_error(ConnectRPC::Error)
-      expect(transport.instance_variable_get(:@leases)).to be_empty
+        expect(result).to eq(:handled)
+        expect(operation[:cleanup_error]).to be_nil
+        expect(operation.fetch(:tasks).keys).to all(be_finished)
+        expect(operation.fetch(:cleanup_done)).to be_resolved
+        expect(operation.fetch(:resource)).to be_finished
+        expect(transport.instance_variable_get(:@idle)).to be_empty
+        expect(transport.instance_variable_get(:@leases)).to be_empty
+        expect { IO.for_fd(number, autoclose: false) }.to raise_error(Errno::EBADF)
+      end
     end
   end
 

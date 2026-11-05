@@ -147,6 +147,7 @@
     "ConnectRPC::Async::Internal::HTTP1Exchange#write": {"kind":"method","visibility":"public","parameters":"bytes","classification":"internal"}
   },
   "gems/connectrpc-async/lib/connectrpc/async/http1_stream.rb": {
+    "ConnectRPC::Async::Internal::HTTP1Stream#close_read": {"kind":"method","visibility":"public","parameters":"","classification":"internal"},
     "ConnectRPC::Async::Internal::HTTP1Stream#fill_read_buffer": {"kind":"method","visibility":"private","parameters":"size = @minimum_read_size","classification":"internal"},
     "ConnectRPC::Async::Internal::HTTP1Stream#initialize": {"kind":"method","visibility":"public","parameters":"io","classification":"internal"},
     "ConnectRPC::Async::Internal::HTTP1Stream#readpartial": {"kind":"method","visibility":"public","parameters":"length, buffer = nil","classification":"internal"},
