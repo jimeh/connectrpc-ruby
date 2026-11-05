@@ -432,7 +432,8 @@ module ConnectRPC
               unless reusable && !operation[:retiring] && resource&.connection&.viable?
                 operation[:retiring] = true
                 resource&.abort
-                resource&.close
+                # Final descriptor release belongs to the owner after this
+                # child's lifecycle detachment and all worker joins.
               end
             end
           end

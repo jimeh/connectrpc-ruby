@@ -92,13 +92,14 @@ module ConnectRPC
         def finish! = @finished = true
 
         def abort
+          pending_tls = @socket.is_a?(OpenSSL::SSL::SSLSocket) && @connection.nil?
           return if @raw.nil? || @raw.closed?
 
-          pending_tls = @socket.is_a?(OpenSSL::SSL::SSLSocket) && @connection.nil?
           # Ruby 4 marks raw closed before waiting for blocked fibers, before
           # closing the descriptor. Transfer descriptor ownership first so an
-          # interruption cannot strand it behind raw.closed?. This handle has
-          # no blocked readers/writers and is never used for transport IO.
+          # interruption cannot strand it behind raw.closed?. Retain the same
+          # descriptor until every native waiter and lifecycle child has joined.
+          # This handle has no readers/writers and is never used for transport IO.
           @raw_close_io ||= ::IO.for_fd(@raw.fileno)
           @raw.autoclose = false
           # Ruby 4 raw close can wait on SSL setup. Shutdown wakes it first.
@@ -109,21 +110,33 @@ module ConnectRPC
           begin
             Internal.raw_close(@raw)
           ensure
-            begin
-              Internal.raw_close(@raw_close_io) if @raw&.closed?
-            ensure
-              # Ruby 4 raw close of pending SSL setup can leave its abandoned
-              # EOF in OpenSSL's thread-local queue, including on interruption.
-              # Drain only this destructive setup boundary before sibling TLS.
-              OpenSSL.errors if pending_tls
-            end
+            # Ruby 4 raw close of pending SSL setup can leave its abandoned
+            # EOF in OpenSSL's thread-local queue, including on interruption.
+            # Drain only this destructive setup boundary before sibling TLS.
+            # The final post-join abort also drains a late native waiter EOF.
+            OpenSSL.errors if pending_tls
           end
         end
 
+        # Only the final owner calls this, after all accessing tasks have joined.
         def close
-          @connection&.close
-        ensure
-          @socket&.close unless @socket&.closed?
+          interruption = nil
+          [@connection, @socket, @raw_close_io].each do |owned|
+            next unless owned
+            next if owned.equal?(@raw_close_io) && owned.closed?
+
+            begin
+              owned.close
+            rescue Exception => e # rubocop:disable Lint/RescueException -- complete every close stage before propagating the first interruption
+              interruption ||= e
+              # Native wrappers can be interrupted before completing their own
+              # cleanup even when raw.closed? is true. Retry interruptions, but
+              # let ordinary wrapper failures proceed to the remaining stages.
+              retry if !e.is_a?(StandardError) && !owned.equal?(@raw_close_io)
+              retry if owned.equal?(@raw_close_io) && !owned.closed?
+            end
+          end
+          raise interruption if interruption
         end
       end
     end
