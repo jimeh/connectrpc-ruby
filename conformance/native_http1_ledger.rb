@@ -29,8 +29,20 @@ module Conformance
         validate_client_scope_counts!(event, events)
       end
       responses = events.select { |event| event.fetch("event") == "native_http1_response" }
-      verify(!responses.empty?, "No observed native HTTP/1 response")
+      validate_response_counts!(closed, responses)
       responses.each { |event| validate_response!(event) }
+    end
+
+    def validate_response_counts!(closed, responses)
+      expected = closed.to_h do |event|
+        count = event["response_heads"]
+        verify(count.is_a?(Integer) && count >= 0, "Missing or invalid native H1 response head count")
+        [event.fetch("name"), count]
+      end
+      actual = responses.map { |event| event.fetch("name") }.tally
+      verify(actual.keys.all? { |name| expected.key?(name) } &&
+             expected.all? { |name, count| actual.fetch(name, 0) == count },
+             "Native H1 response observations disagree with actual operation heads")
     end
 
     def validate_closed!(event)

@@ -4,8 +4,67 @@ generated = File.expand_path("../../../spec/fixtures/generation/ruby", __dir__)
 $LOAD_PATH.unshift(generated)
 require "generation/streaming_connect"
 $LOAD_PATH.delete(generated)
+require_relative "../../connectrpc-async/spec/support/http1_client_helpers"
 
 RSpec.describe "Explicit HTTP/1 client SDK propagation and task ownership" do
+  include HTTP1ClientHelpers
+
+  it "restores real SDK contexts after cancellation in yielding owned cleanup" do
+    entered = Async::Promise.new
+    release = Async::Promise.new
+    provider, exporter, bus = tracing
+    item = GenerationFixture::Streaming::Item
+    payload = item.encode(item.new(name: "reply"))
+    body = "#{[0, payload.bytesize].pack('CN')}#{payload}#{[2, 2].pack('CN')}{}"
+    wire = http1_wire(body, fields: "Content-Type: application/connect+proto\r\n")
+    with_http1_peer(response: wire) do |active, origin, _accepted, _requests, task|
+      transport = active
+      cleanup_contexts = []
+      allow(transport).to receive(:cleanup).and_wrap_original do |original, operation, **options|
+        if options[:reusable] && !operation[:cleaned]
+          allow(operation.fetch(:input_body)).to receive(:close).and_wrap_original do |close|
+            cleanup_contexts << current_span.context
+            entered.resolve(Async::Task.current)
+            release.wait
+            close.call
+          ensure
+            cleanup_contexts << current_span.context
+          end
+        end
+        original.call(operation, **options)
+      end
+      core = ConnectRPC::Client.new(base_url: origin, transport: transport, instrumentation: bus,
+                                    binding: ConnectRPC::Bindings::GoogleProtobuf.new)
+      caller = task.async(finished: false) do
+        core.server_stream(GenerationFixture::Streaming::Mixed::WATCH, item.new) do |reader|
+          expect(reader.receive.name).to eq("reply")
+          expect(reader.receive).to be_nil
+        end
+      end
+      cleanup_child = entered.wait
+      cleanup_fiber = cleanup_child.fiber
+      resource = transport.instance_variable_get(:@resources).first
+      caller.cancel
+      AsyncHelpers::INTERNAL.join(caller)
+      expect(caller.status).to eq(:cancelled)
+      expect(cleanup_child).to be_finished
+      expect(resource.raw).to be_closed
+      expect(transport.instance_variable_get(:@idle)).to be_empty
+      expect(transport.instance_variable_get(:@leases)).to be_empty
+      expect(cleanup_contexts).not_to be_empty
+      expect(cleanup_contexts).to all(be_valid)
+      expect(cleanup_contexts.map(&:span_id).uniq.size).to eq(1)
+      stack = cleanup_fiber.opentelemetry_context
+      expect(stack.nil? || stack.empty?).to be(true)
+      expect(current_span.context).not_to be_valid
+      expect(rpc_spans(exporter).size).to eq(1)
+    ensure
+      release.resolve(nil)
+    end
+  ensure
+    provider&.shutdown
+  end
+
   it "keeps native writer/read tasks in their client span and propagates mTLS unary/SS/CS to Falcon" do
     provider, exporter, bus = tracing
     reactor do |task|

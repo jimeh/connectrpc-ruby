@@ -7,7 +7,7 @@ module ConnectRPC
   module Async
     module Internal
       class HTTP1Connection < ::Protocol::HTTP1::Connection
-        STATUS = %r{\AHTTP/1\.1 ([0-9]{3}) [^\x00-\x1f\x7f]*\z}n
+        STATUS = %r{\AHTTP/1\.1 ([0-9]{3}) [\x09\x20-\x7e\x80-\xff]*\z}n
 
         attr_reader :response_version
 
@@ -25,7 +25,7 @@ module ConnectRPC
             headers = read_headers
             leading = snapshot(headers)
             validate_framing!(leading)
-            raise IOError, "HTTP upgrade is unsupported" if status == 101 || leading.key?("upgrade")
+            raise IOError, "HTTP upgrade is unsupported" if status == 101
 
             # The pinned native parser compares the transfer token literally.
             # Our validation already permits exactly one case-insensitive token.

@@ -175,6 +175,7 @@
     "ConnectRPC::Async::HTTP1Transport#read": {"kind":"method","visibility":"private","parameters":"operation, length, timeout: nil","classification":"internal"},
     "ConnectRPC::Async::HTTP1Transport#read_body": {"kind":"method","visibility":"private","parameters":"operation","classification":"internal"},
     "ConnectRPC::Async::HTTP1Transport#response_head": {"kind":"method","visibility":"private","parameters":"operation, timeout: nil","classification":"internal"},
+    "ConnectRPC::Async::HTTP1Transport#retire_cleanup": {"kind":"method","visibility":"private","parameters":"operation","classification":"internal"},
     "ConnectRPC::Async::HTTP1Transport#retire_idle": {"kind":"method","visibility":"private","parameters":"resource","classification":"internal"},
     "ConnectRPC::Async::HTTP1Transport#same_origin?": {"kind":"method","visibility":"private","parameters":"uri","classification":"internal"},
     "ConnectRPC::Async::HTTP1Transport#setup": {"kind":"method","visibility":"private","parameters":"operation, resource","classification":"internal"},

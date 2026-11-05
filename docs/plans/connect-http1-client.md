@@ -76,7 +76,8 @@ OpenSSL itself forbids that read, report unavailable with the failed wire eviden
 never promise recovery that native TLS cannot supply. Preserve original request,
 call cancellation and lifecycle activation in every owned task. No new public SPI.
 
-Response-head reads loop over at most 16 interim responses; reject 101/upgrade,
+Response-head reads loop over at most 16 interim responses; reject 101 switching
+protocols, but accept Upgrade advertisements on ordinary responses. Reject
 invalid response versions/status/framing and unsupported transfer coding. Keep the
 pinned 8192-byte line bound for status, headers and chunk lines. No new claim of
 total-header/RSS bounds. Snapshot leading metadata before reading a chunked body;

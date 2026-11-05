@@ -31,7 +31,8 @@ RSpec.describe Conformance::NativeHTTP1Ledger do
       { "event" => "native_closed_lifetime", "name" => name, "state" => "closed", "calls" => 0,
         "leases" => 0, "idle" => 0, "tasks_finished" => true, "operations_retired" => true,
         "resources_finished" => true, "raw_closed" => true, "lifetime_children_finished" => true,
-        "source_canceled" => false, "counts" => { "library" => { "entries" => 1, "exits" => 1 } } }
+        "response_heads" => 1, "source_canceled" => false,
+        "counts" => { "library" => { "entries" => 1, "exits" => 1 } } }
     ]
   end
 
@@ -56,7 +57,44 @@ RSpec.describe Conformance::NativeHTTP1Ledger do
     response["alpn"] = "http/1.1"
     response["version"] = "HTTP/2.0"
     expect { parse }.to raise_error(RuntimeError, /status line/)
-    expect { parse(raw, events - [response]) }.to raise_error(RuntimeError, /No observed/)
+    expect { parse(raw, events - [response]) }.to raise_error(RuntimeError, /response observations/)
+  end
+
+  %i[missing duplicate].each do |corruption|
+    it "rejects a #{corruption} response observation while another case's valid observation remains" do
+      other = described_class::INVENTORIES.fetch("identity").fetch("client").find do |entry|
+        entry.start_with?("TLS Client Certs/") && entry != name
+      end
+      ledger = described_class.new(direction: "client", selected: name)
+      ledger.instance_variable_set(:@expected, [name, other])
+      log = raw.sub("Filtered tests to 1", "Filtered tests to 2").sub("Running 1 tests", "Running 2 tests")
+               .sub("Total cases: 1", "Sending request for #{JSON.generate(other)}...\n" \
+                                      "Received response for #{JSON.generate(other)}...\nTotal cases: 2")
+               .sub("1 passed", "2 passed")
+      facts = events + events.reject { |event| event["event"] == "client_eof" }.map do |event|
+        event.merge("name" => other, "id" => 2)
+      end
+      expect(ledger.parse(log, facts, 0)).to include(executed: 2, accounting_valid: true)
+      response = facts.find { |event| event["event"] == "native_http1_response" && event["name"] == name }
+      invalid = corruption == :missing ? facts - [response] : facts + [response.dup]
+      fresh = described_class.new(direction: "client", selected: name)
+      fresh.instance_variable_set(:@expected, [name, other])
+      expect { fresh.parse(log, invalid, 0) }.to raise_error(RuntimeError, /response observations/)
+    end
+  end
+
+  it "permits genuine zero-head cases and rejects missing, invalid or contradictory head counts" do
+    response = events.find { |event| event["event"] == "native_http1_response" }
+    closed = events.last
+    closed["response_heads"] = 0
+    expect(parse(raw, events - [response])).to include(accounting_valid: true)
+    expect { parse }.to raise_error(RuntimeError, /response observations/)
+    [nil, false, "1", 1.0, -1].each do |invalid|
+      closed["response_heads"] = invalid
+      expect { parse }.to raise_error(RuntimeError, /response head count/)
+    end
+    closed.delete("response_heads")
+    expect { parse }.to raise_error(RuntimeError, /response head count/)
   end
 
   it "rejects unfinished tasks, retained leases, live raw sockets and missing scope evidence" do

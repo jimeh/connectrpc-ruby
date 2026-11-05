@@ -56,7 +56,9 @@ RSpec.describe ConnectRPC::Async::HTTP1Transport do
 
   ["HTTP/1.0 200 OK", "HTTP/2.0 200 OK", "HTTP/1.1 +200 OK", "HTTP/1.1 0200 OK",
    "HTTP/1.1 0xc8 OK", "HTTP/1.1 99 OK", "HTTP/1.1 8000 OK", "HTTP/1.1\t200 OK",
-   "HTTP/1.1 200OK", "HTTP/1.1 101 Switching Protocols"].each do |status|
+   "HTTP/1.1 200OK", "HTTP/1.1 200", "HTTP/1.1 200 Bad\x00Reason", "HTTP/1.1 200 Bad\x01Reason",
+   "HTTP/1.1 200 Bad\x7fReason", "HTTP/1.1 200 Bad\rReason", "HTTP/1.1 200 Bad\nReason",
+   "HTTP/1.1 101 Switching Protocols"].each do |status|
     it "rejects status #{status.inspect} without reusing the lease" do
       with_http1_peer(response: http1_wire(status: status)) do |transport, origin, accepted|
         2.times do
@@ -64,6 +66,35 @@ RSpec.describe ConnectRPC::Async::HTTP1Transport do
         end
         expect(accepted.size).to eq(2)
         expect(transport.instance_variable_get(:@leases)).to be_empty
+      end
+    end
+  end
+
+  it "accepts HTAB in the reason phrase and keeps the framed connection reusable" do
+    with_http1_peer(response: http1_wire(status: "HTTP/1.1 200 A\tReason")) do |transport, origin, accepted|
+      2.times { expect(transport.call(request(origin)).body).to eq("ok") }
+      expect(accepted.size).to eq(1)
+    end
+  end
+
+  [200, 400].each do |status|
+    it "accepts an Upgrade advertisement on an ordinary #{status} response and permits subsequent healthy calls" do
+      response = lambda do |count, _|
+        if count == 1
+          http1_wire("advertised", status: "HTTP/1.1 #{status} Ordinary",
+                                   fields: "Connection: upgrade\r\nUpgrade: h2c\r\n")
+        else
+          http1_wire
+        end
+      end
+      with_http1_peer(response: response) do |transport, origin, accepted|
+        advertised = transport.call(request(origin))
+        expect(advertised.status).to eq(status)
+        expect(advertised.body).to eq("advertised")
+        expect(transport.call(request(origin)).body).to eq("ok")
+        expect(transport.call(request(origin)).body).to eq("ok")
+        # Complete non-200 responses deliberately retire, independently of Upgrade.
+        expect(accepted.size).to eq(status == 200 ? 1 : 2)
       end
     end
   end

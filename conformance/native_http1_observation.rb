@@ -29,8 +29,9 @@ module Conformance
     def closed_facts
       resources = (@resources + @operations.filter_map { |operation| operation[:resource] }).uniq
       { state: @state, calls: @calls.size, leases: @leases.size, idle: @idle.size,
+        response_heads: @operations.count { |operation| !operation[:head].nil? },
         tasks_finished: @operations.all? { |item| operation_finished?(item) },
-        operations_retired: @operations.all? { |item| item[:cleaned] },
+        operations_retired: @operations.all? { |item| item[:cleanup_complete] },
         resources_finished: resources.all?(&:finished?),
         raw_closed: raw_closed_fact(resources),
         lifetime_children_finished: @lifetime.children.to_a.all?(&:finished?), socket_interruption: nil }
@@ -39,7 +40,7 @@ module Conformance
     private
 
     def operation_finished?(item)
-      [item[:writer], item[:resource]&.setup, *item.fetch(:tasks).keys].compact.all?(&:finished?)
+      [item[:writer], item[:resource]&.setup, item[:cleanup_task], *item.fetch(:tasks).keys].compact.all?(&:finished?)
     end
 
     def raw_closed_fact(resources)
