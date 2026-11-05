@@ -47,7 +47,7 @@ replay it.
 
 Use pinned protocol-http1 0.41.1 lower-level write_request/write_body,
 read_headers/read_response_body and pinned body parsers. Compose a strict HTTP/1.1
-status-line parser (exact version and three decimal status digits, 100 through 599), framing
+status-line parser (exact version and three decimal status digits, including extension statuses such as 800), framing
 validation before the native parser deletes fields, and native
 persistence/state/count updates. Reject HTTP/1.0 responses for this explicit
 HTTP/1.1 transport. Reject stacked/unsupported Transfer-Encoding and duplicate
@@ -210,7 +210,11 @@ qualification. Investigate concrete new failures; do not rerun blindly to green.
 
 Plan reviewed twice by Claude Opus 5.5. The second pass checked the changed
 buffering/parsing ownership and existing-SPI recovery semantics. Accepted
-source-grounded corrections are incorporated above.
+source-grounded corrections are incorporated above. Initial qualification exposed
+an incorrect 100..599 restriction added during planning: pinned official 1.0.6
+requires status 800 to reach core and map to unknown. Corrected the contract to
+retain well-formed three-digit extension statuses and existing core fallback;
+malformed status syntax remains rejected. No official case or assertion changes.
 
 Open questions: none. Any material change of scope or architecture returns to
 coordinator; code-grounded details stay with this run.
