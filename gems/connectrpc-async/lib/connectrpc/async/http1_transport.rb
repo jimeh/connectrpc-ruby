@@ -108,6 +108,7 @@ module ConnectRPC
         event = ::Async::Promise.new
         operation.fetch(:events)[event] = true
         registration = request.cancellation&.on_cancel { event.resolve([:cancellation, nil]) }
+        check_operation!(operation)
         child = @lifetime.async(finished: false) do |owned|
           child = owned
           operation.fetch(:tasks)[owned] = false
@@ -125,8 +126,10 @@ module ConnectRPC
         expires = Internal.now + [timeout, Deadline::MAX_NATIVE_WAIT].min if timeout
         expires = [expires || Float::INFINITY, Internal.now + request.deadline.remaining].min if request.deadline
         expires = [expires || Float::INFINITY, operation[:completion_expires]].min if operation[:completion_expires]
+        check_operation!(operation)
         tag, result = wait_event(event, expires)
         check_request!(request)
+        check_operation!(operation)
         raise result if tag == :error
         raise IOError, "HTTP/1 operation stopped" unless tag == :result
 
@@ -141,13 +144,16 @@ module ConnectRPC
         interruption = e
         raise
       ensure
-        if child && !child.finished?
-          cleanup(operation, interruption: interruption)
-        else
-          operation[:tasks]&.delete(child)
+        begin
+          if child && !child.finished?
+            cleanup(operation, interruption: interruption)
+          else
+            operation[:tasks]&.delete(child)
+          end
+        ensure
+          registration&.unregister
+          operation[:events]&.delete(event)
         end
-        registration&.unregister
-        operation[:events]&.delete(event)
       end
 
       def wait_event(event, expires)
@@ -169,6 +175,7 @@ module ConnectRPC
         loop do
           check_operation!(operation)
           check_request!(operation.fetch(:request))
+          check_operation!(operation)
           raise IOError, "HTTP/1 transport closed" if @forced
 
           if (resource = @idle.pop)
@@ -199,17 +206,18 @@ module ConnectRPC
         request = operation.fetch(:request)
         expires = Internal.now + @connect_timeout
         expires = [expires, Internal.now + request.deadline.remaining].min if request.deadline
+        check_operation!(operation)
         resource.setup = @lifetime.async(finished: false) do |owned|
           resource.setup = owned
           operation.fetch(:tasks)[owned] = false
           activate(request) do
-            check_operation!(operation)
             check_request!(request)
+            check_operation!(operation)
             resource.raw = ::IO::Endpoint.tcp(@origin.hostname, @origin.port).connect
+            check_operation!(operation)
             socket = resource.raw
             if @snapshot
-              socket = @snapshot.socket(resource.raw)
-              resource.socket = socket
+              socket = resource.socket = @snapshot.socket(resource.raw)
               socket.hostname = @origin.hostname
               socket.connect
               socket.post_connection_check(@origin.hostname)
@@ -219,6 +227,7 @@ module ConnectRPC
             end
             resource.socket = socket
             check_request!(request)
+            check_operation!(operation)
             resource.connection = Internal::HTTP1Connection.new(Internal::HTTP1Stream.new(socket))
           end
         rescue StandardError => e
@@ -234,8 +243,10 @@ module ConnectRPC
         connection = resource.connection
         operation[:connection] = connection
         check_request!(request)
+        check_operation!(operation)
         headers = request.headers.dup
         headers["connect-timeout-ms"] = [request.deadline.timeout_ms] if request.deadline
+        check_operation!(operation)
         dispatched = ::Async::Promise.new
         body = if streaming
                  Internal::HTTP1Output.new(dispatched)
@@ -307,6 +318,7 @@ module ConnectRPC
         bytes = +"".b
         while (chunk = operation.fetch(:input).read([16_384, limit + 1 - bytes.bytesize].min))
           check_request!(request)
+          check_operation!(operation)
           bytes << chunk
           raise Error.new(:resource_exhausted, "Response exceeds byte limit") if bytes.bytesize > limit
         end
@@ -449,6 +461,13 @@ module ConnectRPC
             if accepted && !operation[:retiring]
               @idle << resource
             else
+              pending = abort_resource(resource)
+              interruption ||= pending
+              begin
+                resource.close
+              rescue Exception => e # rubocop:disable Lint/RescueException -- raw disposition and joins are complete; preserve the owner's first interruption
+                interruption ||= e
+              end
               resource.finish!
               @leases.delete(resource)
             end
@@ -462,7 +481,7 @@ module ConnectRPC
 
       def retire_cleanup(operation)
         operation[:retiring] = true
-        operation[:resource]&.abort
+        interruption = abort_resource(operation[:resource])
         begin
           operation[:output]&.close(IOError.new("HTTP/1 exchange retired"))
         rescue StandardError => e
@@ -471,7 +490,6 @@ module ConnectRPC
         end
         events = operation.fetch(:events).keys
         events.each { |event| event.resolve([:stopped, nil]) }
-        interruption = nil
         tasks = operation.fetch(:tasks).keys
         tasks.each do |task|
           next if task.current? || task.finished? || operation[:tasks][task]
@@ -504,7 +522,7 @@ module ConnectRPC
       end
 
       def check_operation!(operation)
-        return unless operation[:cleaned] || operation[:retiring]
+        return unless @forced || operation[:cleaned] || operation[:retiring]
 
         raise Error.new(:unavailable, "HTTP/1 exchange is retired"), cause: nil
       end
@@ -515,13 +533,32 @@ module ConnectRPC
         raise Error.new(:unavailable, "HTTP/1 transport cleanup failed"), cause: nil
       end
 
+      # IO#close can suspend, and its caller may be interrupted repeatedly.
+      # Retry only this ownership boundary, retaining the first escape for the
+      # caller to propagate after the remaining disposition work.
+      def abort_resource(resource)
+        interruption = nil
+        begin
+          resource&.abort
+        rescue Exception => e # rubocop:disable Lint/RescueException -- native raw disposition must finish before cancellation or slot release
+          interruption ||= e
+          retry
+        end
+        interruption
+      end
+
       def retire_idle(resource)
-        resource.abort
-        resource.close
-      ensure
+        interruption = abort_resource(resource)
+        begin
+          resource.close
+        rescue Exception => e # rubocop:disable Lint/RescueException -- finish idle accounting after raw disposal, retaining the first interruption
+          interruption ||= e
+        end
         resource.finish!
+        @idle.delete(resource)
         @leases.delete(resource)
         @progress.signal
+        raise interruption if interruption
       end
 
       def close_owned(expires)
@@ -542,16 +579,22 @@ module ConnectRPC
 
       def force_operations
         @forced = true
-        @leases.dup.each(&:abort)
-        operations = @calls.keys
         interruption = nil
+        @leases.dup.each do |resource|
+          pending = abort_resource(resource)
+          interruption ||= pending
+        end
+        operations = @calls.keys
         operations.each do |operation|
           cleanup(operation)
         rescue Exception => e # rubocop:disable Lint/RescueException -- force every admitted operation before propagating the closer's interruption
           interruption ||= e
         end
-        @idle.dup.each { |resource| retire_idle(resource) }
-        @idle.clear
+        @idle.dup.each do |resource|
+          retire_idle(resource)
+        rescue Exception => e # rubocop:disable Lint/RescueException -- an interrupted idle close cannot bypass remaining resources
+          interruption ||= e
+        end
         @progress.signal
         raise interruption if interruption
       end
@@ -564,8 +607,11 @@ module ConnectRPC
         begin
           force_operations
         ensure
-          finish_closed(false) unless @state == :closed
-          Internal.cancel(@lifetime)
+          # force_operations retains interruptions until all disposition ends.
+          if @state != :closed && @leases.empty? && @calls.keys.all? { |operation| operation[:cleanup_complete] }
+            finish_closed(false)
+          end
+          Internal.cancel(@lifetime) if @state == :closed
         end
       end
 

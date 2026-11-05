@@ -95,20 +95,34 @@ module ConnectRPC
           return if @raw.nil? || @raw.closed?
 
           pending_tls = @socket.is_a?(OpenSSL::SSL::SSLSocket) && @connection.nil?
+          # Ruby 4 marks raw closed before waiting for blocked fibers, before
+          # closing the descriptor. Transfer descriptor ownership first so an
+          # interruption cannot strand it behind raw.closed?. This handle has
+          # no blocked readers/writers and is never used for transport IO.
+          @raw_close_io ||= ::IO.for_fd(@raw.fileno)
+          @raw.autoclose = false
           # Ruby 4 raw close can wait on SSL setup. Shutdown wakes it first.
           @raw.shutdown(Socket::SHUT_RDWR)
         rescue IOError, SystemCallError
           nil
         ensure
-          Internal.raw_close(@raw)
-          # Ruby 4 raw close of pending SSL setup can leave its abandoned EOF
-          # in OpenSSL's thread-local queue. Drain only that destructive setup
-          # boundary, before a sibling TLS operation can observe stale errors.
-          OpenSSL.errors if pending_tls
+          begin
+            Internal.raw_close(@raw)
+          ensure
+            begin
+              Internal.raw_close(@raw_close_io) if @raw&.closed?
+            ensure
+              # Ruby 4 raw close of pending SSL setup can leave its abandoned
+              # EOF in OpenSSL's thread-local queue, including on interruption.
+              # Drain only this destructive setup boundary before sibling TLS.
+              OpenSSL.errors if pending_tls
+            end
+          end
         end
 
         def close
           @connection&.close
+        ensure
           @socket&.close unless @socket&.closed?
         end
       end

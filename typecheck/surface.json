@@ -155,6 +155,7 @@
   },
   "gems/connectrpc-async/lib/connectrpc/async/http1_transport.rb": {
     "ConnectRPC::Async::HTTP1Transport#abort": {"kind":"method","visibility":"private","parameters":"operation","classification":"internal"},
+    "ConnectRPC::Async::HTTP1Transport#abort_resource": {"kind":"method","visibility":"private","parameters":"resource","classification":"internal"},
     "ConnectRPC::Async::HTTP1Transport#abort_owned": {"kind":"method","visibility":"private","parameters":"","classification":"internal"},
     "ConnectRPC::Async::HTTP1Transport#acquire": {"kind":"method","visibility":"private","parameters":"operation","classification":"internal"},
     "ConnectRPC::Async::HTTP1Transport#activate": {"kind":"method","visibility":"private","parameters":"request, &work","classification":"internal"},
