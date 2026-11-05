@@ -76,6 +76,7 @@ module ConnectRPC
           raise Error.new(:unavailable, "HTTP/1 transport admission is closed or full"), cause: nil
         end
 
+        # Registry values record cancellation delivery, not task completion.
         operation = { request: request, tasks: {}, events: {}, writer_state: :pending, writer_reported: false }
         @calls[operation] = true
         begin
@@ -83,10 +84,16 @@ module ConnectRPC
           cleanup(operation)
           check_cleanup!(operation)
           result
+        rescue Exception => e # rubocop:disable Lint/RescueException -- preserve the caller's original interruption through finalization
+          interruption = e unless e.is_a?(StandardError)
+          raise
         ensure
-          cleanup(operation)
-          @calls.delete(operation)
-          @progress.signal
+          begin
+            cleanup(operation, interruption: interruption)
+          ensure
+            @calls.delete(operation)
+            @progress.signal
+          end
         end
       end
 
@@ -95,7 +102,7 @@ module ConnectRPC
       def operate(operation, timeout: nil, &)
         check_affinity!
         request = operation.fetch(:request)
-        raise Error.new(:unavailable, "HTTP/1 exchange is retired"), cause: nil if operation[:cleaned]
+        check_operation!(operation)
 
         check_request!(request)
         event = ::Async::Promise.new
@@ -103,8 +110,11 @@ module ConnectRPC
         registration = request.cancellation&.on_cancel { event.resolve([:cancellation, nil]) }
         child = @lifetime.async(finished: false) do |owned|
           child = owned
-          operation.fetch(:tasks)[owned] = true
-          value = activate(request, &)
+          operation.fetch(:tasks)[owned] = false
+          value = activate(request) do
+            check_operation!(operation)
+            yield
+          end
           event.resolve([:result, value])
         rescue StandardError => e
           request.lifecycle&.record_failure(e)
@@ -127,9 +137,12 @@ module ConnectRPC
         raise if e.is_a?(Error)
 
         raise Error.new(:unavailable, "HTTP/1 transport failed"), cause: nil
+      rescue Exception => e # rubocop:disable Lint/RescueException -- an ensure must not replace this interruption with a later one
+        interruption = e
+        raise
       ensure
         if child && !child.finished?
-          cleanup(operation)
+          cleanup(operation, interruption: interruption)
         else
           operation[:tasks]&.delete(child)
         end
@@ -154,6 +167,7 @@ module ConnectRPC
 
       def acquire(operation)
         loop do
+          check_operation!(operation)
           check_request!(operation.fetch(:request))
           raise IOError, "HTTP/1 transport closed" if @forced
 
@@ -181,12 +195,15 @@ module ConnectRPC
       end
 
       def setup(operation, resource)
+        check_operation!(operation)
         request = operation.fetch(:request)
         expires = Internal.now + @connect_timeout
         expires = [expires, Internal.now + request.deadline.remaining].min if request.deadline
         resource.setup = @lifetime.async(finished: false) do |owned|
           resource.setup = owned
+          operation.fetch(:tasks)[owned] = false
           activate(request) do
+            check_operation!(operation)
             check_request!(request)
             resource.raw = ::IO::Endpoint.tcp(@origin.hostname, @origin.port).connect
             socket = resource.raw
@@ -226,9 +243,12 @@ module ConnectRPC
                  ::Protocol::HTTP::Body::Buffered.wrap([request.body])
                end
         operation[:output] = body
+        check_operation!(operation)
         operation[:writer] = @lifetime.async(finished: false) do |owned|
           operation[:writer] = owned
+          operation.fetch(:tasks)[owned] = false
           activate(request) do
+            check_operation!(operation)
             connection.write_request(@origin.authority, streaming ? "POST" : request.http_method,
                                      request.url.request_uri, "HTTP/1.1", Internal.fields(headers))
             if !streaming && request.http_method == "GET"
@@ -241,10 +261,8 @@ module ConnectRPC
             operation[:writer_state] = :ok
           end
         rescue StandardError => e
-          operation[:writer_error] = e
-          operation[:writer_state] = :failed
+          operation.update(writer_error: e, writer_state: :failed)
           request.lifecycle&.record_failure(e)
-          body&.close(e)
         ensure
           # Native ensure may call send_end_stream! even after cancellation.
           # Only our explicit :ok means the whole request was normally written.
@@ -344,25 +362,46 @@ module ConnectRPC
         nil
       end
 
-      def cleanup(operation, reusable: false)
+      def cleanup(operation, reusable: false, interruption: nil)
         return if operation[:cleanup_complete]
 
+        current = ::Async::Task.current
+        if operation.fetch(:tasks).key?(current)
+          # A joined task may request retirement, but cannot wait for its owner.
+          pending = retire_cleanup(operation)
+          raise pending if pending
+
+          return
+        end
         if operation[:cleaned]
-          retire_cleanup(operation)
-          # A concurrent caller must join the cleanup owner, not just its child.
-          # Only that owner may release the reservation after all task joins.
-          operation.fetch(:cleanup_done).wait unless operation.fetch(:cleanup_owner).current?
+          pending = retire_cleanup(operation)
+          interruption ||= pending
+          return if operation.fetch(:cleanup_owner).current?
+
+          loop do
+            operation.fetch(:cleanup_done).wait
+            break
+          rescue Exception => e # rubocop:disable Lint/RescueException -- external waiters retain their own interruption until disposition
+            interruption ||= e
+          end
+          raise interruption if interruption
+
           return
         end
 
         operation[:cleaned] = true
-        operation[:cleanup_owner] = ::Async::Task.current
+        operation[:cleanup_owner] = current
         operation[:cleanup_done] = ::Async::Promise.new
         resource = operation[:resource]
-        tasks = [resource&.setup, operation[:writer], *operation.fetch(:tasks).keys].compact.uniq
+        # Terminal entry closes all launch gates. Each child registered before
+        # activation could yield, so this set cannot gain another worker.
+        tasks = operation.fetch(:tasks).keys
         accepted = false
         begin
-          retire_cleanup(operation) unless reusable
+          unless reusable && !operation[:retiring]
+            pending = retire_cleanup(operation)
+            interruption ||= pending
+          end
           expires = Internal.now + Internal::CLEANUP_SECONDS
           expires = [expires, operation[:completion_expires]].min if operation[:completion_expires]
           if (deadline = operation.fetch(:request).deadline)
@@ -370,11 +409,13 @@ module ConnectRPC
           end
           events = operation.fetch(:events).keys
           events.each { |event| event.resolve([:stopped, nil]) }
-          operation[:cleanup_task] = ::Async::Task.current.async(finished: false) do |owned|
+          operation[:cleanup_task] = current.async(finished: false) do |owned|
             operation[:cleanup_task] = owned
+            operation.fetch(:tasks)[owned] = false
             activate(operation.fetch(:request)) do
-              tasks.each { |task| Internal.cancel(task) }
-              tasks.reverse_each { |task| Internal.join(task) }
+              # Normal cleanup waits for natural completion. Destructive paths
+              # already raw-aborted and sent each worker its one cancellation.
+              tasks.reverse_each(&:wait)
               operation[:input_body]&.close
               unless reusable && !operation[:retiring] && resource&.connection&.viable?
                 operation[:retiring] = true
@@ -382,28 +423,26 @@ module ConnectRPC
                 resource&.close
               end
             end
-            # Activation includes observer detachment, which may yield or cancel.
-            operation[:cleanup_succeeded] = true
           end
           Internal.wait(operation[:cleanup_task], expires)
-          raise IOError, "HTTP/1 cleanup stopped" unless operation[:cleanup_succeeded]
+          # Task completion includes lifecycle detachment, not just body close.
+          raise IOError, "HTTP/1 cleanup stopped" unless operation[:cleanup_task].completed?
 
           accepted = true
-        rescue StandardError => e
-          operation[:cleanup_error] ||= e
-          operation.fetch(:request).lifecycle&.record_failure(e)
+        rescue Exception => e # rubocop:disable Lint/RescueException -- no exit may bypass final joins and disposition
+          if e.is_a?(StandardError)
+            operation[:cleanup_error] ||= e
+            operation.fetch(:request).lifecycle&.record_failure(e)
+          else
+            interruption ||= e
+          end
         ensure
           unless accepted && !operation[:retiring]
-            # This ensure covers Exception exits (including Async::Cancel) too.
-            # Raw close precedes cancellation, observer unwind and every join.
-            retire_cleanup(operation)
-            tasks.each { |task| Internal.cancel(task) }
+            pending = retire_cleanup(operation)
+            interruption ||= pending
             [operation[:cleanup_task], *tasks.reverse].compact.each do |task|
-              Internal.join(task)
-            rescue Exception => e # rubocop:disable Lint/RescueException -- join every owner before preserving the active exit
-              raise unless task.finished?
-
-              operation[:cleanup_error] ||= e
+              pending = join_cleanup_task(operation, task)
+              interruption ||= pending
             end
           end
           if resource
@@ -418,6 +457,7 @@ module ConnectRPC
           operation.fetch(:cleanup_done).resolve(nil)
           @progress.signal
         end
+        raise interruption if interruption
       end
 
       def retire_cleanup(operation)
@@ -429,7 +469,44 @@ module ConnectRPC
           operation[:cleanup_error] ||= e
           operation.fetch(:request).lifecycle&.record_failure(e)
         end
-        Internal.cancel(operation[:cleanup_task])
+        events = operation.fetch(:events).keys
+        events.each { |event| event.resolve([:stopped, nil]) }
+        interruption = nil
+        tasks = operation.fetch(:tasks).keys
+        tasks.each do |task|
+          next if task.current? || task.finished? || operation[:tasks][task]
+
+          # Mark before delivery: cancel can immediately run a reentrant ensure.
+          operation[:tasks][task] = true
+          begin
+            task.cancel
+          rescue Exception => e # rubocop:disable Lint/RescueException -- finish retirement even if delivery interrupts the owner
+            interruption ||= e
+          end
+        end
+        interruption
+      end
+
+      def join_cleanup_task(operation, task)
+        interruption = nil
+        loop do
+          task.wait
+          break
+        rescue Exception => e # rubocop:disable Lint/RescueException -- a live owner interruption must not release a live task's reservation
+          if task.failed? && task.result.equal?(e)
+            operation[:cleanup_error] ||= e
+            break
+          end
+
+          interruption ||= e
+        end
+        interruption
+      end
+
+      def check_operation!(operation)
+        return unless operation[:cleaned] || operation[:retiring]
+
+        raise Error.new(:unavailable, "HTTP/1 exchange is retired"), cause: nil
       end
 
       def check_cleanup!(operation)
@@ -467,10 +544,16 @@ module ConnectRPC
         @forced = true
         @leases.dup.each(&:abort)
         operations = @calls.keys
-        operations.each { |operation| cleanup(operation) }
+        interruption = nil
+        operations.each do |operation|
+          cleanup(operation)
+        rescue Exception => e # rubocop:disable Lint/RescueException -- force every admitted operation before propagating the closer's interruption
+          interruption ||= e
+        end
         @idle.dup.each { |resource| retire_idle(resource) }
         @idle.clear
         @progress.signal
+        raise interruption if interruption
       end
 
       def abort_owned
@@ -478,9 +561,12 @@ module ConnectRPC
 
         @aborting = true
         @state = :closing unless @state == :closed
-        force_operations
-        finish_closed(false) unless @state == :closed
-        Internal.cancel(@lifetime)
+        begin
+          force_operations
+        ensure
+          finish_closed(false) unless @state == :closed
+          Internal.cancel(@lifetime)
+        end
       end
 
       def check_request!(request)
