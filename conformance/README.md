@@ -179,8 +179,8 @@ profiles for HTTP_VERSION_1, protobuf/JSON and identity/gzip. Half-duplex bidi
 support is false. The independent `http1_ledger.rb` and `cases-http1-*.json`
 retain exact discovered inventories and strict accounting. Existing H2 and
 client profiles are unchanged. Both Falcon specs/package CI lanes run this
-required task after the existing Connect and gRPC conformance tasks. This does
-not implement a Ruby H1 client.
+required task after the existing Connect and gRPC conformance tasks. The native
+H1 client has its own independent profiles below.
 
 Production-source runs on 2026-11-04 passed 174/174 identity and 160/160 gzip
 cases on each of Ruby 3.4.12 and 4.0.9, without a RUBYOPT overlay. Fresh exact
@@ -209,5 +209,31 @@ Connect final-close grace is not the Web repair. Historical red evidence remains
 recorded; the diagnosis does not estimate natural branch effects or reconstruct
 the hosted scheduling. Integrated exact-head CI and review remain required.
 See [streaming](../docs/streaming.md#falcon-http11-server)
-for the precise policy. Ruby H1 client work remains pending; standalone Async
-Host stays H2-only. This delivery is one server-only PR, with no client stack.
+for the precise server policy. Standalone Async Host stays H2-only.
+
+## Native HTTP/1.1 client profiles
+
+`mise run async:conformance:http1` runs the explicit Async HTTP1Transport against
+the pinned official 1.0.6 reference server. Separate identity/gzip profiles and
+`cases-native-http1-client-*.json` declare all unary/SS/CS cases for protobuf and
+ProtoJSON, safe GET, TCP/TLS/client certificates and receive limits. Their exact
+complete inventories contain 386 identity and 352 gzip names. There are no
+exclusions, expected failures, skips or runner changes. Both Ruby CI lanes run
+this gate independently of existing H2, NetHTTP and Falcon server sets.
+
+`native_http1_ledger.rb` requires strict per-case operation scope and closed
+lifetime accounting from actual leases, setup/writer/operation tasks and raw
+sockets. Response telemetry comes from parsed HTTP/1.1 status lines and actual
+socket ALPN, including nil. Missing or contradictory observations fail closed.
+Pinned source `generateTestCasePrefix` omits the TLS suffix for reliesOnTls
+suites; TLS Client Certs names therefore require observed TLS even without
+`TLS:true`. The official Unexpected Responses suite requires status 800 to map
+through core's existing fallback to unknown. Three-digit extension statuses are
+accepted while malformed status tokens, upgrades and ambiguous framing fail.
+
+`async:interop:http1` separately exercises the repository's pinned connect-go
+1.21.1 peer in H1-only TCP, TLS and mTLS modes with actual HTTP/1.1 and ALPN
+checks. Generated Ruby clients also exercise the merged Falcon H1 server in its
+own bundle. These checks do not change the server's response-first total grace
+or discard policy. Historical failed qualification artifacts remain evidence,
+not successful new-head results.

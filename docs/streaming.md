@@ -4,9 +4,9 @@ Connect server streaming, client streaming and bidirectional streaming use the
 same dependency-free core engine. The optional Async transport and Async/Falcon
 native HTTP/2 hosts support protobuf and ProtoJSON, identity/gzip, h2c, verified
 TLS and mTLS. Falcon also serves Connect server and client streaming over
-HTTP/1.1 with both codecs and identity/gzip over TCP/TLS/mTLS. A Ruby H1
-streaming client is pending. The standalone Async Host and Async transport remain
-H2-only. NetHTTP, Rack, Rails and Testing remain unary.
+HTTP/1.1 with both codecs and identity/gzip over TCP/TLS/mTLS. The explicit
+`ConnectRPC::Async::HTTP1Transport` provides unary, SS and CS on the owning
+reactor. The standalone Async Host and original Async Transport remain H2-only. NetHTTP, Rack, Rails and Testing remain unary.
 Unsupported clients reject a streaming operation before encoding or I/O. Native
 listeners explicitly select their actual protocol capabilities. Portable adapters reject streaming
 media before reading input or invoking handlers, including Rails callbacks.
@@ -212,3 +212,37 @@ Explicit gRPC-Web server streaming uses the same declarations/session ownership
 on native Async H2 and Falcon H1/H2, with a staged body terminal. Browser
 incrementality uses text; binary XHR buffers. Portable adapters remain unary.
 See the [Web guide](grpc-web.md) for its capability SPI and identity-only bounds.
+
+## Explicit HTTP/1.1 client
+
+Use `ConnectRPC::Async::HTTP1Transport` from the existing Async package through
+the core or generated client's `transport:` option. It advertises only SS/CS;
+core rejects bidi and gRPC before encoding or I/O. Construction and calls stay
+on the application's owning reactor/thread. No hidden thread is created.
+
+The default four exclusive connections include pending setup and retirement.
+Four long streams can occupy every slot. Waiters count toward `max_requests:
+128`; use deadlines/cancellation or configure more connections to avoid
+starvation. There is no fairness promise, pipelining, retry or protocol fallback.
+A stream's request head is flushed before yielding the writable exchange, and
+response reads progress independently of a blocked upload. A write-only caller
+without a deadline can still block if a peer neither consumes nor closes.
+
+Writer success, full native HTTP EOF and owned cleanup all precede successful
+`finish`. `close_send` is idempotent and never reports writer failure. A writer
+failure surfaced through `write` permits core's bounded terminal-only remote
+error recovery, but always retires the connection. If failure first appears
+after the last accepted write, `finish` returns unavailable even when the
+terminal contains a remote error. This existing-SPI limit can mask that remote
+error; the transport does not decode terminals or invent early success.
+Unhandled send failures still win over remote success under core's policy.
+
+The supplied completion timeout and original RPC deadline also cover cleanup;
+cleanup has at most its existing 100 ms allowance. Destructive retirement closes
+raw TCP before canceling/joining writers/readers and buffered/TLS cleanup. Abort
+after successful finish is harmless; abandonment otherwise retires the lease.
+TLS offers only `http/1.1` and accepts absent ALPN as legacy H1, with peer and
+hostname verification enabled. Unary close-delimited responses accept clean EOF;
+without Content-Length, EOF cannot detect a semantically truncated payload that
+is otherwise valid. Core still validates protobuf/JSON; unexpected TLS EOF
+without close_notify remains a transport failure.

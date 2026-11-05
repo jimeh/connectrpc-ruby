@@ -40,11 +40,14 @@ expected = %w[LICENSE README.md lib/connectrpc/async.rb sig/connectrpc-async.rbs
               lib/connectrpc/async/connection.rb lib/connectrpc/async/application.rb
               lib/connectrpc/async/stream_exchange.rb
               lib/connectrpc/async/tls_configuration.rb lib/connectrpc/async/server_session.rb
-              lib/connectrpc/async/host.rb lib/connectrpc/async/transport.rb].sort
+              lib/connectrpc/async/host.rb lib/connectrpc/async/transport.rb
+              lib/connectrpc/async/http1_transport.rb lib/connectrpc/async/http1_exchange.rb
+              lib/connectrpc/async/http1_connection.rb lib/connectrpc/async/http1_stream.rb].sort
 abort "Backend manifest changed" unless backend.contents.sort == expected
 expected_dependencies = {
   "connectrpc" => "~> 0.1.0", "async-http" => "~> 0.105.0", "async" => "~> 2.46.0", "async-pool" => "~> 0.12.0",
-  "protocol-http2" => "~> 0.29.2", "protocol-http" => "~> 0.72.1", "io-endpoint" => "~> 0.19.0",
+  "protocol-http2" => "~> 0.29.2", "protocol-http1" => "~> 0.41.1", "protocol-http" => "~> 0.72.1",
+  "io-endpoint" => "~> 0.19.0",
   "io-stream" => "~> 0.14.0", "openssl" => "~> 4.0.2"
 }
 actual = backend.spec.runtime_dependencies.to_h { |dependency| [dependency.name, dependency.requirement.to_s] }

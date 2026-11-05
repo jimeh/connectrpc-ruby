@@ -316,6 +316,8 @@ jobs:
         run: mise run async:conformance
       - name: Run async:conformance:grpc
         run: mise run async:conformance:grpc
+      - name: Run async:conformance:http1
+        run: mise run async:conformance:http1
       - name: Check workspace stayed clean
         if: always()
         run: |
@@ -370,6 +372,8 @@ jobs:
         run: mise run async:interop
       - name: Run async:interop:streaming
         run: mise run async:interop:streaming
+      - name: Run async:interop:http1
+        run: mise run async:interop:http1
       - name: Run async:interop:grpc
         run: mise run async:interop:grpc
       - name: Check workspace stayed clean

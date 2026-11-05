@@ -1,6 +1,6 @@
 # ConnectRPC Async
 
-Optional HTTP/2 hosting and pooled transport. Require `connectrpc/async`
+Optional HTTP/2 hosting and explicit HTTP/1.1 and HTTP/2 transports. Require `connectrpc/async`
 explicitly. Core, Rails and Rack remain independent. This experimental package
 supports Connect unary and streaming, identity and opt-in core gzip, protobuf and ProtoJSON,
 h2c prior knowledge and TLS with verified peers and ALPN `h2`.
@@ -261,8 +261,8 @@ per-message limits and bounded ownership. Native Async/Falcon HTTP/2 supports
 both codecs and identity/gzip over h2c/TLS/mTLS. Falcon additionally serves Connect server and client
 streaming over HTTP/1.1,
 with protobuf/ProtoJSON and identity/gzip over TCP/TLS/mTLS. The standalone
-Async Host and Ruby Async transport remain H2-only; a Ruby H1 streaming client
-is pending. See the streaming guide for Falcon's cooperative 500 ms total
+Async Host and original Async Transport remain H2-only. Use the independent
+`HTTP1Transport` below for Connect unary, server streaming and client streaming. See the streaming guide for Falcon's cooperative 500 ms total
 final-close budget and unchanged 100 ms / 256 KiB discard limits.
 The client's one-second absolute HTTP tail policy applies even with a nil RPC
 deadline and can reject otherwise valid late EOF or slow intermediaries.
@@ -290,3 +290,62 @@ Ruby peer outputs; `grpc:status:check` reproduces private Any/Status descriptors
 
 The native H2 server supports explicitly enabled binary/text unary and server-stream gRPC-Web. Browser incremental delivery uses text.
 See the [Web guide](../../docs/grpc-web.md) for protocol, CORS, bounds and completion rules.
+
+## Explicit HTTP/1.1 client
+
+```ruby
+Async do
+  transport = ConnectRPC::Async::HTTP1Transport.new(origin: "https://rpc.example.com")
+  client = ConnectRPC::Client.new(base_url: "https://rpc.example.com", binding: binding,
+                                  transport: transport, use_get: true)
+  begin
+    client.call(method, message)
+    # Existing generated clients and core server_stream/client_stream use it too.
+  ensure
+    transport.close
+  end
+end.wait
+```
+
+`HTTP1Transport.new(origin:, ca_file: nil, certificate_chain: nil, private_key:
+nil, connection_limit: 4, max_requests: 128, connect_timeout: 10)` is an explicit
+Connect H1 client. It supports safe unary GET, both codecs and identity/gzip
+through core, and SS/CS through the existing streaming SPI. It has no gRPC or
+bidi capability. Standalone Async Host remains H2-only; Falcon owns Ruby H1
+hosting. Ordinary-thread persistence remains issue #29.
+
+Each connection has one exclusive lease through setup, upload, full HTTP EOF
+and cleanup. Pending dials and retiring connections count toward the hard cap;
+lease waits count toward admission. Four long streams can occupy every default
+slot. Configure capacity or give waiters cancellation/deadlines; fairness is not
+promised. `close(grace: 5)` stops admission and drains admitted operations,
+including waiters, returning false on forced teardown. Owner exit aborts owned
+resources. There is no hidden thread, pipelining, retry, replay or fallback.
+
+Finite RPC deadlines cover every wait including cleanup. Nil RPC deadlines add
+no watchdog; setup still has its own combined connect timeout. Foreign-thread
+cancellation only signals the reactor. Full native EOF, a successful joined
+writer and successful cleanup permit reuse. Any abandoned/failed exchange
+retires its connection. Clean close-delimited unary EOF is supported, but
+cannot detect an otherwise valid semantic truncation without Content-Length.
+TLS unexpected EOF without close_notify remains a transport error.
+
+TLS offers only `http/1.1`, accepts absent or H1 ALPN, and rejects every other
+negotiation before request bytes. Peer/hostname verification and mTLS remain
+enabled. TCP rejects TLS options. Replace the transport to change TLS identity.
+
+Response reads are independent of a blocked upload. A complete unary non-200
+response stops pending output destructively so core can validate its error;
+HTTP 200 requires writer success. For streaming, `write` alone reports a writer
+failure. Core may then recover a remote error through its bounded terminal-only
+policy. An unreported upload-tail failure returns unavailable even if a remote
+error terminal arrived, masking that error. `close_send` never raises writer
+failure; `finish` requires full HTTP EOF and joined cleanup under the supplied
+completion budget. A write-only caller without a deadline can still block when
+a peer neither consumes nor closes. See [streaming](../../docs/streaming.md#explicit-http11-client).
+
+`async:conformance:http1` runs separate strict official 1.0.6 native H1 CLIENT
+inventories: 386 identity and 352 gzip cases, including safe GET, both codecs,
+TCP/TLS and client certificates. `async:interop:http1` runs independent pinned
+connect-go H1-only TCP/TLS/mTLS listeners, with actual HTTP/1.1 and ALPN evidence.
+Existing H2, NetHTTP and Falcon server inventories remain separate.

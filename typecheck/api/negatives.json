@@ -1,4 +1,7 @@
 {
+  "http_one_grpc": "Ruby::NoMethod",
+  "http_one_options": "Ruby::ArgumentTypeMismatch",
+  "http_one_block": "Ruby::RequiredBlockMissing",
   "partial_nil": "Ruby::NoMethod",
   "record_write": "Ruby::UnresolvedOverloading",
   "configuration": "Ruby::ArgumentTypeMismatch",

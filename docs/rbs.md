@@ -441,3 +441,14 @@ start. All new core files enter the strict source set and internal signatures;
 API callers include exact client-mode, output, capability and CORS negatives.
 The installed consumer runs manual encoded Testing requests and real mixed
 Web/Connect H2 calls in both package load orders, without loading an OTel SDK.
+
+## HTTP/1 client types
+
+The Async package owns the independent `HTTP1Transport` constructor, unary
+transport and existing SS/CS exchange signatures. Its finite capabilities omit
+bidi and its public surface has no gRPC entry point. Strict callers cover valid
+constructor/exchange use and reject invalid option types, missing blocks and
+gRPC methods. The source inventory classifies lease, parser and exchange
+implementation helpers as internal. Installed generated callers use the normal
+Async package with Falcon H1 for safe GET and SS/CS in both codecs/codings,
+without adding another package or changing the existing streaming SPI.

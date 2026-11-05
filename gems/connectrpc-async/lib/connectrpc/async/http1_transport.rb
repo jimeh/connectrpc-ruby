@@ -1,0 +1,476 @@
+# frozen_string_literal: true
+
+require "uri"
+require_relative "http1_connection"
+require_relative "http1_exchange"
+
+module ConnectRPC
+  module Async
+    # Explicit Connect HTTP/1.1 execution on the application's Async reactor.
+    class HTTP1Transport
+      include Internal::Affinity
+
+      def initialize(origin:, ca_file: nil, certificate_chain: nil, private_key: nil, connection_limit: 4,
+                     max_requests: 128, connect_timeout: 10)
+        initialize_affinity
+        @origin = parse_origin(origin)
+        @connection_limit = Internal.positive_integer(connection_limit, "connection_limit")
+        @max_requests = Internal.positive_integer(max_requests, "max_requests")
+        @connect_timeout = Internal.seconds(connect_timeout, "connect_timeout")
+        if @origin.scheme == "http" && (ca_file || certificate_chain || private_key)
+          raise ArgumentError, "TLS options require an HTTPS origin"
+        end
+
+        if @origin.scheme == "https"
+          @snapshot = Internal::TLS.client(ca_file: ca_file, certificate_chain: certificate_chain,
+                                           private_key: private_key, alpn_protocols: ["http/1.1"])
+        end
+        @calls = {}.compare_by_identity
+        @leases = []
+        @idle = []
+        @state = :running
+        install_owner_guard
+      end
+
+      def inspect = "#<#{self.class} state=#{@state} origin=#{@origin}>"
+      def streaming_capabilities = %i[server_stream client_stream].freeze
+
+      def call(request)
+        check_affinity!
+        CallCancellation.with_request(request) do |outgoing|
+          with_operation(outgoing) do |operation|
+            operate(operation) { dispatch(operation) }
+            head = response_head(operation)
+            bytes = operate(operation) { read_body(operation) }
+            if head.status == 200
+              finish(operation)
+            else
+              # A complete HTTP error is useful to core even if upload is
+              # blocked. Abort before any yield can emit a normal chunk EOF.
+              cleanup(operation)
+            end
+            TransportResponse.new(status: head.status, headers: head.headers, body: bytes)
+          end
+        end
+      end
+
+      def open_stream(request)
+        raise ArgumentError, "A streaming block is required" unless block_given?
+
+        check_affinity!
+        CallCancellation.with_request(request) do |outgoing|
+          with_operation(outgoing) do |operation|
+            operate(operation) { dispatch(operation, streaming: true) }
+            yield Internal::HTTP1Exchange.new(self, operation)
+          end
+        end
+      end
+
+      private
+
+      def with_operation(request)
+        raise ArgumentError, "Request URL must match the transport origin" unless same_origin?(request.url)
+
+        check_request!(request)
+        unless @state == :running && @calls.size < @max_requests
+          raise Error.new(:unavailable, "HTTP/1 transport admission is closed or full"), cause: nil
+        end
+
+        operation = { request: request, tasks: {}, events: {}, writer_state: :pending, writer_reported: false }
+        @calls[operation] = true
+        begin
+          result = yield operation
+          cleanup(operation)
+          check_cleanup!(operation)
+          result
+        ensure
+          cleanup(operation)
+          @calls.delete(operation)
+          @progress.signal
+        end
+      end
+
+      # Each wait owns a private activated task. Foreign-thread callbacks only
+      # resolve the event, never touch a socket or a later lease.
+      def operate(operation, timeout: nil, &)
+        check_affinity!
+        request = operation.fetch(:request)
+        raise Error.new(:unavailable, "HTTP/1 exchange is retired"), cause: nil if operation[:cleaned]
+
+        check_request!(request)
+        event = ::Async::Promise.new
+        operation.fetch(:events)[event] = true
+        registration = request.cancellation&.on_cancel { event.resolve([:cancellation, nil]) }
+        child = @lifetime.async(finished: false) do
+          value = activate(request, &)
+          event.resolve([:result, value])
+        rescue StandardError => e
+          request.lifecycle&.record_failure(e)
+          event.resolve([:error, e])
+        ensure
+          event.resolve([:stopped, nil])
+        end
+        operation.fetch(:tasks)[child] = true
+        expires = Internal.now + [timeout, Deadline::MAX_NATIVE_WAIT].min if timeout
+        expires = [expires || Float::INFINITY, Internal.now + request.deadline.remaining].min if request.deadline
+        expires = [expires || Float::INFINITY, operation[:completion_expires]].min if operation[:completion_expires]
+        tag, result = wait_event(event, expires)
+        check_request!(request)
+        raise result if tag == :error
+        raise IOError, "HTTP/1 operation stopped" unless tag == :result
+
+        result
+      rescue StandardError => e
+        request.lifecycle&.record_failure(e)
+        check_request!(request)
+        raise if e.is_a?(Error)
+
+        raise Error.new(:unavailable, "HTTP/1 transport failed"), cause: nil
+      ensure
+        if child && !child.finished?
+          cleanup(operation)
+        else
+          operation[:tasks]&.delete(child)
+        end
+        registration&.unregister
+        operation[:events]&.delete(event)
+      end
+
+      def wait_event(event, expires)
+        loop do
+          return event.wait unless expires
+
+          remaining = expires - Internal.now
+          raise ::Async::TimeoutError if remaining <= 0
+
+          begin
+            return event.wait(timeout: [remaining, Internal::MAX_WAIT].min)
+          rescue ::Async::TimeoutError
+            raise if Internal.now >= expires
+          end
+        end
+      end
+
+      def acquire(operation)
+        loop do
+          check_request!(operation.fetch(:request))
+          raise IOError, "HTTP/1 transport closed" if @forced
+
+          if (resource = @idle.pop)
+            if resource.connection.viable?
+              operation[:resource] = resource
+              return resource
+            end
+            retire_idle(resource)
+            next
+          end
+          if @leases.size < @connection_limit
+            # Reserve before TCP/TLS can yield. A stalled setup consumes only
+            # its own slot and never serializes other reserved dials.
+            resource = Internal::HTTP1Resource.new
+            @leases << resource
+            @resources.reject!(&:finished?)
+            @resources << resource
+            operation[:resource] = resource
+            setup(operation, resource)
+            return resource
+          end
+          @progress.wait
+        end
+      end
+
+      def setup(operation, resource)
+        request = operation.fetch(:request)
+        expires = Internal.now + @connect_timeout
+        expires = [expires, Internal.now + request.deadline.remaining].min if request.deadline
+        resource.setup = @lifetime.async(finished: false) do
+          activate(request) do
+            check_request!(request)
+            resource.raw = ::IO::Endpoint.tcp(@origin.hostname, @origin.port).connect
+            socket = resource.raw
+            if @snapshot
+              socket = @snapshot.socket(resource.raw)
+              resource.socket = socket
+              socket.hostname = @origin.hostname
+              socket.connect
+              socket.post_connection_check(@origin.hostname)
+              unless [nil, "http/1.1"].include?(socket.alpn_protocol)
+                raise OpenSSL::SSL::SSLError, "HTTP/1.1 ALPN is required"
+              end
+            end
+            resource.socket = socket
+            check_request!(request)
+            resource.connection = Internal::HTTP1Connection.new(Internal::HTTP1Stream.new(socket))
+          end
+        rescue StandardError => e
+          request.lifecycle&.record_failure(e)
+          raise
+        end
+        Internal.wait(resource.setup, expires)
+      end
+
+      def dispatch(operation, streaming: false)
+        request = operation.fetch(:request)
+        resource = acquire(operation)
+        connection = resource.connection
+        operation[:connection] = connection
+        check_request!(request)
+        headers = request.headers.dup
+        headers["connect-timeout-ms"] = [request.deadline.timeout_ms] if request.deadline
+        dispatched = ::Async::Promise.new
+        body = if streaming
+                 Internal::HTTP1Output.new(dispatched)
+               elsif request.http_method != "GET"
+                 ::Protocol::HTTP::Body::Buffered.wrap([request.body])
+               end
+        operation[:output] = body
+        operation[:writer] = @lifetime.async(finished: false) do
+          activate(request) do
+            connection.write_request(@origin.authority, streaming ? "POST" : request.http_method,
+                                     request.url.request_uri, "HTTP/1.1", Internal.fields(headers))
+            if !streaming && request.http_method == "GET"
+              connection.stream.write("\r\n")
+              connection.stream.flush
+              connection.send_end_stream!
+            else
+              connection.write_body("HTTP/1.1", body)
+            end
+            operation[:writer_state] = :ok
+          end
+        rescue StandardError => e
+          operation[:writer_error] = e
+          operation[:writer_state] = :failed
+          request.lifecycle&.record_failure(e)
+          body&.close(e)
+        ensure
+          # Native ensure may call send_end_stream! even after cancellation.
+          # Only our explicit :ok means the whole request was normally written.
+          unless operation[:writer_state] == :ok
+            operation[:writer_state] = :failed
+            operation[:writer_error] ||= IOError.new("HTTP/1 request writer stopped")
+            body&.close(operation[:writer_error])
+          end
+          dispatched.resolve(nil)
+        end
+        dispatched.wait if streaming
+      end
+
+      def response_head(operation, timeout: nil)
+        check_affinity!
+        return operation[:head] if operation[:head]
+
+        operate(operation, timeout: timeout) do
+          head, body = operation.fetch(:connection).read_head(operation.fetch(:request).http_method || "POST")
+          operation[:head] = head
+          operation[:input_body] = body
+          operation[:input] = Internal::Input.new(body)
+          head
+        end
+      end
+
+      def read(operation, length, timeout: nil)
+        response_head(operation, timeout: timeout)
+        operate(operation, timeout: timeout) do
+          bytes = operation.fetch(:input).read(length)
+          operation[:eof] = true if bytes.nil?
+          bytes
+        end
+      end
+
+      def read_body(operation)
+        request = operation.fetch(:request)
+        length = operation.fetch(:head).headers["content-length"]&.first&.to_i
+        limit = request.response_limit
+        raise Error.new(:resource_exhausted, "Response exceeds byte limit") if length && length > limit
+
+        bytes = +"".b
+        while (chunk = operation.fetch(:input).read([16_384, limit + 1 - bytes.bytesize].min))
+          check_request!(request)
+          bytes << chunk
+          raise Error.new(:resource_exhausted, "Response exceeds byte limit") if bytes.bytesize > limit
+        end
+        operation[:eof] = true
+        raise Error.new(:internal, "Content-Length does not match response") if length && bytes.bytesize != length
+
+        bytes
+      end
+
+      def write(operation, bytes)
+        operate(operation) do
+          raise operation[:writer_error] if operation[:writer_state] == :failed
+
+          operation.fetch(:output).write(bytes)
+        end
+        nil
+      rescue Error
+        operation[:writer_reported] = true if operation[:writer_state] == :failed
+        raise
+      end
+
+      def close_send(operation)
+        check_affinity!
+        return if operation[:cleaned]
+
+        operation.fetch(:output).close_write
+        nil
+      end
+
+      def finish(operation, timeout: nil)
+        check_affinity!
+        return if operation[:finished]
+
+        operation[:completion_expires] = Internal.now + timeout if timeout
+        operate(operation, timeout: timeout) do
+          raise IOError, "HTTP response EOF is required" unless operation[:eof]
+
+          operation.fetch(:writer).wait
+          unless operation[:writer_state] == :ok || operation[:writer_reported]
+            raise(operation[:writer_error] || IOError.new("HTTP/1 request writer incomplete"))
+          end
+        end
+        cleanup(operation, reusable: operation[:writer_state] == :ok)
+        check_cleanup!(operation)
+        check_request!(operation.fetch(:request))
+        operation[:finished] = true
+        nil
+      end
+
+      def abort(operation)
+        check_affinity!
+        cleanup(operation) unless operation[:finished]
+        nil
+      end
+
+      def cleanup(operation, reusable: false)
+        return if operation[:cleaned]
+
+        operation[:cleaned] = true
+        resource = operation[:resource]
+        # Mark terminal and error-close before any task creation or wait yields.
+        begin
+          operation[:output]&.close(IOError.new("HTTP/1 exchange retired")) unless reusable
+        rescue StandardError => e
+          operation[:cleanup_error] ||= e
+          operation.fetch(:request).lifecycle&.record_failure(e)
+        end
+        resource&.abort unless reusable
+        expires = Internal.now + Internal::CLEANUP_SECONDS
+        expires = [expires, operation[:completion_expires]].min if operation[:completion_expires]
+        if (deadline = operation.fetch(:request).deadline)
+          expires = [expires, Internal.now + deadline.remaining].min
+        end
+        tasks = [resource&.setup, operation[:writer], *operation.fetch(:tasks).keys].compact.uniq
+        operation.fetch(:events).each_key { |event| event.resolve([:stopped, nil]) }
+        cleanup_task = ::Async::Task.current.async(finished: false) do
+          activate(operation.fetch(:request)) do
+            tasks.each { |task| Internal.cancel(task) }
+            tasks.reverse_each { |task| Internal.join(task) }
+            operation[:input_body]&.close
+            unless reusable && resource&.connection&.viable?
+              reusable = false
+              resource&.abort
+              resource&.close
+            end
+          end
+        end
+        begin
+          Internal.wait(cleanup_task, expires)
+        rescue StandardError => e
+          operation[:cleanup_error] ||= e
+          operation.fetch(:request).lifecycle&.record_failure(e)
+          reusable = false
+          resource&.abort
+          Internal.cancel(cleanup_task)
+          Internal.join(cleanup_task)
+          # An expired completion budget may cancel the cleanup task while it
+          # is joining a reader woken by raw close. Keep the reservation until
+          # those already-aborted tasks have actually relinquished ownership.
+          tasks.each { |task| Internal.cancel(task) }
+          tasks.reverse_each { |task| Internal.join(task) }
+        ensure
+          if resource
+            if reusable
+              @idle << resource
+            else
+              resource.abort
+              resource.finish!
+              @leases.delete(resource)
+            end
+          end
+          @progress.signal
+        end
+      end
+
+      def check_cleanup!(operation)
+        return unless operation[:cleanup_error]
+
+        raise Error.new(:unavailable, "HTTP/1 transport cleanup failed"), cause: nil
+      end
+
+      def retire_idle(resource)
+        resource.abort
+        resource.close
+      ensure
+        resource.finish!
+        @leases.delete(resource)
+        @progress.signal
+      end
+
+      def close_owned(expires)
+        waiter = @lifetime.async(finished: false) { @progress.wait until @calls.empty? }
+        begin
+          Internal.wait(waiter, expires)
+          @idle.each { |resource| retire_idle(resource) }
+          @idle.clear
+          finish_closed(true)
+        rescue ::Async::TimeoutError
+          force_operations
+          finish_closed(false)
+        ensure
+          Internal.cancel(waiter)
+          Internal.join(waiter)
+        end
+      end
+
+      def force_operations
+        @forced = true
+        @leases.each(&:abort)
+        @calls.each_key { |operation| cleanup(operation) }
+        @idle.each { |resource| retire_idle(resource) }
+        @idle.clear
+        @progress.signal
+      end
+
+      def abort_owned
+        return if @aborting
+
+        @aborting = true
+        force_operations
+        finish_closed(false) unless @state == :closed
+        Internal.cancel(@lifetime)
+      end
+
+      def check_request!(request)
+        request.cancellation ? request.cancellation.check! : request.deadline&.check!
+      end
+
+      def activate(request, &work)
+        request.lifecycle ? request.lifecycle.activate(&work) : work.call
+      end
+
+      def parse_origin(value)
+        uri = URI(value)
+        unless %w[http https].include?(uri.scheme) && uri.host && !uri.userinfo && !uri.query && !uri.fragment &&
+               uri.path.empty?
+          raise ArgumentError, "Origin must contain only an HTTP(S) scheme, host and port"
+        end
+
+        uri.freeze
+      end
+
+      def same_origin?(uri)
+        [uri.scheme, uri.hostname&.downcase, uri.port] == [@origin.scheme, @origin.hostname.downcase, @origin.port]
+      end
+    end
+  end
+end

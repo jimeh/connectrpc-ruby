@@ -240,7 +240,7 @@ run = "ruby gems/connectrpc-async/scripts/run.rb interop"
 
 [tasks."async:verify"]
 description = "Verify optional HTTP/2 specs, source, packages and Go interoperability"
-depends = ["async:test", "async:check", "async:package", "async:interop", "async:interop:streaming", "async:conformance", "async:conformance:grpc", "async:interop:grpc"]
+depends = ["async:test", "async:check", "async:package", "async:interop", "async:interop:streaming", "async:conformance", "async:conformance:grpc", "async:interop:grpc", "async:conformance:http1", "async:interop:http1"]
 
 [tasks."async:tools"]
 description = "Prepare exact Ruby/Bundler for the independent backend bundle"
@@ -639,3 +639,17 @@ depends = ["falcon:setup", "setup:conformance"]
 tools."github:connectrpc/conformance" = "1.0.6"
 env.CONNECTRPC_CONFORMANCE_HTTP1 = "1"
 run = "ruby gems/connectrpc-falcon/scripts/run.rb conformance falcon server"
+
+[tasks."async:conformance:http1"]
+description = "Run separate strict official native HTTP/1.1 Connect client profiles"
+depends = ["async:setup", "setup:conformance"]
+tools."github:connectrpc/conformance" = "1.0.6"
+env.CONNECTRPC_CONFORMANCE_HTTP1_CLIENT = "1"
+run = "ruby gems/connectrpc-async/scripts/run.rb conformance async client"
+
+[tasks."async:interop:http1"]
+description = "Run pinned connect-go HTTP/1.1-only listeners against the explicit Ruby client"
+depends = ["async:setup", "setup:interop"]
+tools.go = "1.27.3"
+env = { GOTOOLCHAIN = "local", GOWORK = "off", GOFLAGS = "-mod=readonly", GOMODCACHE = "{{config_root}}/vendor/interop/mod", GOCACHE = "{{config_root}}/vendor/interop/build" }
+run = "ruby gems/connectrpc-async/scripts/run.rb http1_interop"
