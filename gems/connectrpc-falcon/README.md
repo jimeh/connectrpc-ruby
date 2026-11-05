@@ -1,6 +1,6 @@
 # connectrpc-falcon
 
-Optional Falcon process-worker hosting for Connect unary RPC, with native
+Optional Falcon process-worker hosting for Connect unary and streaming RPC, with native
 Protocol::HTTP dispatch and an explicit ordinary Rack/Rails fallback.
 Require `connectrpc/falcon`; core and Rails bundles do not load this package.
 The API is experimental. This package is MIT licensed; publication remains
@@ -130,7 +130,7 @@ Rack/Rails integration APIs are unchanged.
 
 Native H2 uses the shared Async private bounded ingress for both RPC requests and
 ordinary Rack fallback input. Slow or nonreading Rack consumers withhold stream
-credit while healthy same-connection streams can advance. HTTP/1 input is unchanged.
+credit while healthy same-connection streams can advance. Connect HTTP/1.1 early responses use the bounded input retirement policy below.
 See the [Async ingress bounds](../connectrpc-async/README.md#backend-boundaries-and-verification)
 for padding, cleanup, allocation layers and the limits of this guarantee.
 
@@ -207,9 +207,35 @@ token env injection. Application handlers remain cooperative.
 The core [streaming guide](../../docs/streaming.md) documents all three scoped
 Connect streaming shapes, typed generated clients/handlers, early headers,
 per-message limits and bounded ownership. Native Async/Falcon HTTP/2 supports
-both codecs and identity/gzip over h2c/TLS/mTLS. Falcon HTTP/1 remains unary.
+both codecs and identity/gzip over h2c/TLS/mTLS. Falcon additionally serves Connect server and client
+streaming over HTTP/1.1,
+with protobuf/ProtoJSON and identity/gzip over TCP/TLS/mTLS. The standalone
+Async Host and Ruby Async transport remain H2-only; a Ruby H1 streaming client
+is pending. See the streaming guide for Falcon's cooperative 500 ms total
+final-close budget and unchanged 100 ms / 256 KiB discard limits.
 The client's one-second absolute HTTP tail policy applies even with a nil RPC
 deadline and can reject otherwise valid late EOF or slow intermediaries.
+
+Incomplete H1 uploads disable reuse at response-head resolution. Falcon delivers
+the full response and HTTP EOF after original processor cleanup, then half-closes
+raw TCP writes. One absolute final-close expiry starts at the actual final HTTP
+flush plus 500 ms, before body callbacks or lifecycle observation. Original-input
+discard retains one absolute 100 ms allowance and 256 KiB cap, including adapter
+remainders and full 64 KiB read reservations. After discard stops, Falcon waits
+only the remaining part of the original 500 ms budget, without further reads.
+Following pipelined requests are never parsed or dispatched. Admission/socket
+ownership lasts until retirement and original processing join. Earlier owner
+shutdown can shorten either phase; failed delivery receives no success grace.
+
+Both timers are cooperative and may overshoot under scheduler delay. Holding
+admission during remaining grace increases resource retention. This is best
+effort reset avoidance, with no arbitrary network-delivery guarantee. The separate
+`falcon:conformance:http1` production profiles pass 174/174 identity and 160/160
+gzip cases on Ruby 3.4.12 and 4.0.9 with unchanged assertions and inventories.
+Web rejection-head ordering is repaired separately, with its gate excluded from
+Connect response-first delivery. Historical Web failures and the baseline
+repair remain recorded in the
+[conformance status](../../conformance/README.md#connect-http11-server-profiles).
 
 `falcon:conformance` runs actual server profiles. `falcon:interop:streaming`
 exercises real workers with the pinned Go streaming client. Both belong to

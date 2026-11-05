@@ -219,6 +219,10 @@ module ConnectRPC
       end
 
       def dispatch(resource, request)
+        if resource.respond_to?(:prepare_stream_input) && @application.respond_to?(:http1_streaming_route?, true) &&
+           @application.send(:http1_streaming_route?, request)
+          retirement = resource.prepare_stream_input(request.body)
+        end
         lifecycle = @lifecycle_factory&.call(request)
         if lifecycle
           exchange = Internal::Exchange.new(lifecycle)
@@ -236,61 +240,65 @@ module ConnectRPC
             exchange.http_status = 503
           end
           @on_request_rejected&.call
+          retirement&.processor_finished
+          retirement&.head_resolved(503)
           return @application.admission_response(request) if @application.respond_to?(:admission_response)
 
           return ::Protocol::HTTP::Response[503, {}, nil]
         end
 
         @admitted[key] = false
-        publishes = request.respond_to?(:stream) ||
-                    (@application.respond_to?(:web_publication?) && @application.web_publication?(request))
-        publication = Internal::Publication.new if publishes
         begin
-          handler = resource.track(@lifetime.async(finished: false) do |task|
+          retirement&.on_close do
+            complete_admission(key, wire: true)
+            resource.changed
+          end
+          publishes = request.respond_to?(:stream) ||
+                      (@application.respond_to?(:publication?, true) && @application.send(:publication?, request))
+          publication = Internal::Publication.new if publishes
+          handler = @lifetime.async(finished: false) do |task|
             @identities[task] = resource.snapshot.authenticated_leaf
-            begin
-              work = lambda do
-                if publication && @application.respond_to?(:call_with_publication)
-                  @application.call_with_publication(request, lifecycle: lifecycle, publication: publication,
-                                                              resource: resource)
-                elsif lifecycle
-                  @application.call(request, lifecycle: lifecycle)
-                else
-                  @application.call(request)
-                end
+            work = lambda do
+              if publication && @application.respond_to?(:call_with_publication)
+                @application.call_with_publication(request, lifecycle: lifecycle, publication: publication,
+                                                            resource: resource)
+              elsif lifecycle
+                @application.call(request, lifecycle: lifecycle)
+              else
+                @application.call(request)
               end
-              application_work = work
-              work = -> { lifecycle.send(:with_processing_completion, &application_work) } if lifecycle && publication
-              result = lifecycle ? lifecycle.activate(&work) : work.call
-              publication.publish(result) if publication && !publication.published?
-              result
-            rescue StandardError => e
-              raise unless publication
-
-              lifecycle&.record_failure(e)
-              publication.complete(e)
-              nil
-            ensure
-              complete_processor(publication, task, key, resource)
             end
-          end)
+            application_work = work
+            work = -> { lifecycle.send(:with_processing_completion, &application_work) } if lifecycle && publication
+            result = lifecycle ? lifecycle.activate(&work) : work.call
+            publication.publish(result) if publication && !publication.published?
+            result
+          rescue StandardError => e
+            raise unless publication
+
+            lifecycle&.record_failure(e)
+            publication.complete(e)
+            nil
+          ensure
+            complete_processor(publication, task, key, resource)
+          end
+          resource.track(handler)
           response = publication ? publication.response : handler.wait
+          retirement&.head_resolved(response&.status)
           exchange.http_status = response&.status if exchange
           if !request.respond_to?(:stream) && response
             response.body = Internal::AdmissionBody.new(response.body) do
-              if publication
-                @h1_wire[key] = true
-                retire_http1(key) if @admitted[key]
-              else
-                retire_http1(key)
-              end
+              # Connect retirement owns completion through post-delivery hygiene.
+              complete_admission(key, wire: true) unless retirement
               resource.changed
             end
             deferred = true
             # An early Web head can stop an HTTP/1 client's unfinished upload.
             # Keep input cleanup in the original processor before serialization;
             # consumed unary input still permits incremental server streams.
-            if publication && request.body && !request.body.empty?
+            # Connect retirement owns input hygiene after response delivery.
+            if publication && !retirement && GRPCWeb.intent?(Internal.headers(request)) &&
+               request.body && !request.body.empty?
               begin
                 publication.wait
               rescue Exception => e # rubocop:disable Lint/RescueException -- cancellation must close deferred ownership too
@@ -304,31 +312,34 @@ module ConnectRPC
           end
           response
         ensure
-          unless deferred || (publication && handler && !handler.finished?)
-            @admitted[key] = true
-            @admitted.delete(key) if @aborting || !key.respond_to?(:closed?) || key.closed?
-          end
+          complete_admission(key, processor: true) unless handler
+          complete_admission(key, wire: true) unless deferred || retirement
           resource.changed
         end
       end
 
       def complete_processor(publication, task, key, resource)
         @identities.delete(task)
-        if publication
-          @admitted[key] = true
-          if key.respond_to?(:closed?)
-            @admitted.delete(key) if @aborting || key.closed?
-          elsif @h1_wire[key] || @aborting
-            retire_http1(key)
-          end
-        end
+        complete_admission(key, processor: true)
         resource.changed
         publication&.complete($ERROR_INFO)
       end
 
-      def retire_http1(key)
-        @admitted.delete(key)
-        @h1_wire.delete(key)
+      def complete_admission(key, processor: false, wire: false)
+        # An absent admission is terminal. Late or duplicate events cannot
+        # recreate either side of the processor/wire join.
+        return unless @admitted.key?(key)
+
+        @admitted[key] = true if processor
+        if key.respond_to?(:closed?)
+          @admitted.delete(key) if @admitted[key] && (@aborting || key.closed?)
+        else
+          @h1_wire[key] = true if wire
+          if @admitted[key] && @h1_wire[key]
+            @admitted.delete(key)
+            @h1_wire.delete(key)
+          end
+        end
       end
 
       def drain_resources(resources, expires)

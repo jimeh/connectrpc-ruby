@@ -171,3 +171,43 @@ controls and decoded query payload bytes/hash are recorded separately from the
 measured empty HTTP body. The fixture's request-local query echo populates
 `ConnectGetInfo`; production RPC observation exposes no query or payload.
 Focused Ruby and Go probes cover gzip GET and malformed-query/boundary behavior.
+
+## Connect HTTP/1.1 server profiles
+
+`mise run falcon:conformance:http1` runs separate official Connect SS/CS server
+profiles for HTTP_VERSION_1, protobuf/JSON and identity/gzip. Half-duplex bidi
+support is false. The independent `http1_ledger.rb` and `cases-http1-*.json`
+retain exact discovered inventories and strict accounting. Existing H2 and
+client profiles are unchanged. Both Falcon specs/package CI lanes run this
+required task after the existing Connect and gRPC conformance tasks. This does
+not implement a Ruby H1 client.
+
+Production-source runs on 2026-11-04 passed 174/174 identity and 160/160 gzip
+cases on each of Ruby 3.4.12 and 4.0.9, without a RUBYOPT overlay. Fresh exact
+first-request-size-limit CS cases also passed over plain TCP and TLS on both
+lanes. The original assertions, inventories and strict ledgers are unchanged;
+no case is waived, excluded or counted as an expected failure.
+
+Retiring delivered Connect H1 responses use a cooperative 500 ms total budget
+from the actual final HTTP flush, with raw TCP write-side half-close. Response
+EOF precedes the unchanged absolute 100 ms / 256 KiB discard; no further reads
+occur during the remaining wait. Scheduler overshoot and admission/socket
+retention are accepted. This is best effort reset avoidance, not a guarantee
+under arbitrary network/peer failure. Go is a comparison: connect-go may consume
+the full declared oversized message, while net/http may drain before flush or
+reuse. Ruby remains response-first and bounded. The official runner stays
+connectconformance 1.0.6 (embedded connect-go 1.21.0, Go 1.27.2); the separate
+repository peer remains connect-go 1.21.1.
+
+Historical Web oversized SS failures at `d928ce6` (TLS) and `1ad0d03` (TCP)
+each passed 275/276 cases. Bounded diagnosis reproduced the early-response-head
+and incomplete-upload race on the original base as well as this branch. The
+separate baseline repair [#42](https://github.com/jimeh/connectrpc-ruby/pull/42)
+defers H1 Web rejection heads until original input cleanup permits delivery.
+Its gate remains limited to Web when Connect H1 publication is enabled. The
+Connect final-close grace is not the Web repair. Historical red evidence remains
+recorded; the diagnosis does not estimate natural branch effects or reconstruct
+the hosted scheduling. Integrated exact-head CI and review remain required.
+See [streaming](../docs/streaming.md#falcon-http11-server)
+for the precise policy. Ruby H1 client work remains pending; standalone Async
+Host stays H2-only. This delivery is one server-only PR, with no client stack.

@@ -168,14 +168,21 @@ func serve(mode, directory string) {
 	check(errors.Is(<-done, http.ErrServerClosed), "shutdown")
 }
 
-type checked struct{ transport *http.Transport }
+type checked struct {
+	transport *http.Transport
+	major     int
+}
 
 func (c checked) RoundTrip(r *http.Request) (*http.Response, error) {
 	response, err := c.transport.RoundTrip(r)
 	if err == nil {
-		check(response.ProtoMajor == 2, "client H2")
+		check(response.ProtoMajor == c.major, "client HTTP version")
 		if r.URL.Scheme == "https" {
-			check(response.TLS.NegotiatedProtocol == "h2", "client ALPN")
+			expected := "h2"
+			if c.major == 1 {
+				expected = "http/1.1"
+			}
+			check(response.TLS.NegotiatedProtocol == expected, "client ALPN")
 		}
 	}
 	return response, err
@@ -225,12 +232,24 @@ func requestCardinality(client *http.Client, origin, codec, coding string) {
 	}
 }
 func client(origin, mode, directory string) {
+	h1 := strings.HasPrefix(mode, "h1")
+	plain := mode == "h2c" || mode == "h1"
+	mutual := mode == "mtls" || mode == "h1mtls"
+	major := 2
 	transport := &http.Transport{Proxy: nil, DisableCompression: true, Protocols: protocols()}
-	if mode != "h2c" {
-		transport.TLSClientConfig = credentials(directory, mode == "mtls", false)
+	if h1 {
+		major = 1
+		transport.Protocols = new(http.Protocols)
+		transport.Protocols.SetHTTP1(true)
+	}
+	if !plain {
+		transport.TLSClientConfig = credentials(directory, mutual, false)
+		if h1 {
+			transport.TLSClientConfig.NextProtos = []string{"http/1.1"}
+		}
 	}
 	defer transport.CloseIdleConnections()
-	httpClient := &http.Client{Transport: checked{transport}, Timeout: 5 * time.Second}
+	httpClient := &http.Client{Transport: checked{transport: transport, major: major}, Timeout: 5 * time.Second}
 	for _, codec := range []string{"proto", "json"} {
 		for _, coding := range []string{"identity", "gzip"} {
 			options := []connect.ClientOption{}
@@ -277,21 +296,35 @@ func client(origin, mode, directory string) {
 			response, err = zero.CloseAndReceive()
 			must(err)
 			check(response.Msg.Value == "0", "CS zero input")
-			bidi := makeClient("Bidi").CallBidiStream(ctx)
-			headers(bidi.RequestHeader(), coding)
-			must(bidi.Send(wrapperspb.String("")))
-			first, err := bidi.Receive()
-			must(err)
-			check(first.Value == "", "bidi default message before halfclose")
-			must(bidi.Send(wrapperspb.String("two")))
-			second, err := bidi.Receive()
-			must(err)
-			check(second.Value == "two", "bidi second before halfclose")
-			must(bidi.CloseRequest())
-			_, err = bidi.Receive()
-			check(errors.Is(err, io.EOF), "bidi EOF")
-			check(bidi.ResponseTrailer().Get("X-Tail") == "done", "bidi trailers")
-			must(bidi.CloseResponse())
+			if h1 {
+				request, err := http.NewRequestWithContext(ctx, "POST", origin+prefix+"Bidi", nil)
+				must(err)
+				request.Header.Set("Content-Type", "application/connect+"+codec)
+				response, err := httpClient.Do(request)
+				must(err)
+				check(response.StatusCode == 505 && response.Close, "H1 bidi bare 505/close")
+				payload, err := io.ReadAll(response.Body)
+				must(err)
+				must(response.Body.Close())
+				check(len(payload) == 0, "H1 bidi empty response")
+			} else {
+				bidi := makeClient("Bidi").CallBidiStream(ctx)
+				headers(bidi.RequestHeader(), coding)
+				must(bidi.Send(wrapperspb.String("")))
+				first, err := bidi.Receive()
+				must(err)
+				check(first.Value == "", "bidi default message before halfclose")
+				must(bidi.Send(wrapperspb.String("two")))
+				second, err := bidi.Receive()
+				must(err)
+				check(second.Value == "two", "bidi second before halfclose")
+				must(bidi.CloseRequest())
+				_, err = bidi.Receive()
+				check(errors.Is(err, io.EOF), "bidi EOF")
+				check(bidi.ResponseTrailer().Get("X-Tail") == "done", "bidi trailers")
+				must(bidi.CloseResponse())
+			}
+
 			req = connect.NewRequest(wrapperspb.String("error"))
 			headers(req.Header(), coding)
 			ss, err = makeClient("SS").CallServerStream(ctx, req)
@@ -304,24 +337,31 @@ func client(origin, mode, directory string) {
 			must(err)
 			check(!ss.Receive() && connect.CodeOf(ss.Err()) == connect.CodeResourceExhausted, "request bound")
 			must(ss.Close())
-			canceled, stop := context.WithCancel(ctx)
-			bidi = makeClient("Bidi").CallBidiStream(canceled)
-			headers(bidi.RequestHeader(), coding)
-			must(bidi.Send(wrapperspb.String("progress")))
-			_, err = bidi.Receive()
-			must(err)
-			stop()
-			_, err = bidi.Receive()
-			check(connect.CodeOf(err) == connect.CodeCanceled, "wire-progress cancellation")
-			_ = bidi.CloseRequest()
-			_ = bidi.CloseResponse()
+			if !h1 {
+				canceled, stop := context.WithCancel(ctx)
+				bidi := makeClient("Bidi").CallBidiStream(canceled)
+				headers(bidi.RequestHeader(), coding)
+				must(bidi.Send(wrapperspb.String("progress")))
+				_, err = bidi.Receive()
+				must(err)
+				stop()
+				_, err = bidi.Receive()
+				check(connect.CodeOf(err) == connect.CodeCanceled, "wire-progress cancellation")
+				_ = bidi.CloseRequest()
+				_ = bidi.CloseResponse()
+			}
+
 			healthy := makeClient("CS").CallClientStream(ctx)
 			headers(healthy.RequestHeader(), coding)
 			response, err = healthy.CloseAndReceive()
 			must(err)
 			check(response.Msg.Value == "0", "healthy sibling after cancel")
 			cancel()
-			fmt.Printf("PASS Go->Ruby streaming %s/%s/%s SS/CS/bidi first-response/default/zero-input/incremental-CS/cardinality/headers/trailers/early-error/bounds/cancel/healthy\n", mode, codec, coding)
+			if h1 {
+				fmt.Printf("PASS Go->Ruby H1 server streaming %s/%s/%s SS/CS incremental/headers/trailers/cardinality/early-error/bounds/bidi505 ProtoMajor=1\n", mode, codec, coding)
+			} else {
+				fmt.Printf("PASS Go->Ruby streaming %s/%s/%s SS/CS/bidi first-response/default/zero-input/incremental-CS/cardinality/headers/trailers/early-error/bounds/cancel/healthy\n", mode, codec, coding)
+			}
 		}
 	}
 }

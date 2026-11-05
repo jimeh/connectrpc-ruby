@@ -3,15 +3,76 @@
 Connect server streaming, client streaming and bidirectional streaming use the
 same dependency-free core engine. The optional Async transport and Async/Falcon
 native HTTP/2 hosts support protobuf and ProtoJSON, identity/gzip, h2c, verified
-TLS and mTLS. NetHTTP, Rack, Rails, Testing and Falcon HTTP/1 remain unary.
+TLS and mTLS. Falcon also serves Connect server and client streaming over
+HTTP/1.1 with both codecs and identity/gzip over TCP/TLS/mTLS. A Ruby H1
+streaming client is pending. The standalone Async Host and Async transport remain
+H2-only. NetHTTP, Rack, Rails and Testing remain unary.
 Unsupported clients reject a streaming operation before encoding or I/O. Native
-listeners explicitly select HTTP/2 capability. Portable adapters reject streaming
+listeners explicitly select their actual protocol capabilities. Portable adapters reject streaming
 media before reading input or invoking handlers, including Rails callbacks.
 
 Native gRPC reuses the declarations and session engine below, including unary
 calls through the exchange SPI. Its protobuf-only negotiation, final HTTP/2
 HEADERS, status codec and independent bounds are described in [gRPC](grpc.md).
 The Connect terminal envelope and one-second tail policy below apply to Connect.
+
+## Falcon HTTP/1.1 server
+
+Custom hosts opt in with `Server#call_stream(capabilities: [:server_stream,
+:client_stream], ...)`. The default `capabilities: nil` retains portable
+rejection; legacy `http2: true` grants all three shapes. Explicit capabilities
+must be a nonempty, unique Array of supported shape symbols and cannot be
+combined with `http2: true`. Omitted SS/CS returns bounded `unimplemented`;
+omitted known bidi returns host-neutral bare 505 before input or codecs.
+Falcon turns every native H1 bidi 505 into a nonpersistent response with exactly
+one `Connection: close`. Web negotiation and CORS retain precedence. Native
+gRPC remains H2-only, and HTTP/1.0 Connect streaming is rejected.
+
+The original processor retains handlers, codecs, authenticated peer identity,
+trace activation and application cleanup. Response consumers transmit prepared
+bytes. Headers can publish during input reads, but successful HTTP terminal
+chunk delivery waits for original application cleanup. Leading metadata and
+propagation exclude actual chunked trailers, including `connect-timeout-ms`.
+H1 peer EOF does not synthesize Context cancellation.
+
+When original framed input is incomplete at response-head resolution, Falcon
+disables reuse and delivers the complete response before best-effort input
+hygiene. Hygiene has one absolute 100 ms allowance and a 256 KiB entity-byte cap,
+including the adapter remainder. Every additional framed read reserves a full
+64 KiB, so retirement can stop below the cap. Progress never restarts the timer;
+Connect does not use `grpc-timeout`.
+
+A successfully delivered response on a retiring connection uses one absolute
+final-close expiry at the actual final HTTP flush plus 500 ms. A private body EOF
+marker anchors the pinned writer's next successful final flush before body-close
+callbacks or lifecycle observation; payload bytes cannot trigger it. Delayed
+callbacks consume the same total budget. After completed delivery, Falcon
+half-closes raw TCP writes and performs bounded discard. When discard stops,
+Falcon waits only the remaining part of that original 500 ms budget, without
+reading more. It does not add another 500 ms after discard. Earlier owner
+abort/shutdown can shorten either phase. Failed or incomplete delivery gets no
+success grace. Late hygiene/grace failures preserve completed processing and
+delivery facts.
+
+Admission and socket ownership remain held until retirement and original
+processing join. Retirement never parses or dispatches a pipelined request,
+even if the original request finishes. Fully consumed nonretiring input retains
+persistence. Raw socket abort precedes framed/Finishable close on forced teardown.
+Both timers are cooperative and can overshoot under scheduler delay. Remaining
+grace retains resources and is best effort reset avoidance, not a guarantee of
+response delivery under arbitrary network or peer failure.
+
+The production official H1 profiles pass 174/174 identity and 160/160 gzip cases
+on both pinned Rubies, including the original oversized CS cases over TCP/TLS.
+No official assertion or inventory changed. This is a bounded, response-first variant of
+Go's conditional reset avoidance: connect-go may consume the full oversized
+declared message, and net/http may drain before flushing or reuse a connection.
+Literal Go parity is not claimed. Native H1 Web retains its separate policy:
+original input cleanup gates the staged Web terminal, and an incomplete upload
+also gates a rejection head to avoid stopping the client's upload. This Web-only
+gate never delays Connect response delivery. The historical Web TCP/TLS failures,
+diagnosis and separate baseline repair are recorded in the
+[conformance status](../conformance/README.md#connect-http11-server-profiles).
 
 ## Completion policy
 

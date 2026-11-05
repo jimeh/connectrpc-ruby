@@ -2,6 +2,7 @@
 
 require "digest"
 require_relative "support/process_cluster"
+require_relative "support/http1_helpers"
 require_relative "../../connectrpc-async/spec/support/ingress_peer"
 
 RSpec.describe "Real Falcon process-worker lifecycle" do
@@ -69,6 +70,63 @@ RSpec.describe "Real Falcon process-worker lifecycle" do
           AsyncHelpers::INTERNAL.raw_close(raw)
           cluster&.close
         end
+      end
+    end
+  end
+
+  %i[discard remaining_grace].each do |phase|
+    it "shuts down a real worker while Connect H1 #{phase} owns admission" do
+      reactor do
+        reader, writer = IO.pipe
+        writer = FalconProcessFixtures::FalconEventWriter.new(writer)
+        writer.sync = true
+        declaration = ConnectRPC::ClientStreamMethod.new(service: "worker.Connect", name: "Collect",
+                                                         request_type: AsyncHelpers::MESSAGE,
+                                                         response_type: AsyncHelpers::MESSAGE)
+        make_core = lambda do
+          ConnectRPC::Server.new(
+            services: [ConnectRPC::Service.new(name: declaration.service, methods: [declaration])],
+            binding: ConnectRPC::Bindings::GoogleProtobuf.new,
+            handlers: { declaration.path => ->(*) { AsyncHelpers::MESSAGE.new(name: "early") } }
+          )
+        end
+        prepare = lambda do
+          # Reuse the existing worker event pipe to observe the actual phase.
+          Thread.current[:h1_hygiene_trace] = TracePoint.new(:call, :return) do |event|
+            pending = if phase == :discard
+                        event.event == :call && event.method_id == :read &&
+                          event.defined_class == Protocol::HTTP1::Body::Fixed
+                      else
+                        event.event == :return && event.method_id == :discard &&
+                          event.defined_class == ConnectRPC::Falcon.const_get(:HTTP1StreamInput)
+                      end
+            next unless pending
+
+            worker = Thread.current.thread_variable_get(:falcon_observed_worker)
+            session = worker.instance_variable_get(:@session)
+            writer.puts(JSON.generate(kind: :hygiene_read, pid: Process.pid,
+                                      admitted: session.instance_variable_get(:@admitted).size,
+                                      raw_closed: session.instance_variable_get(:@resources).first.raw.closed?,
+                                      phase: phase))
+          end.enable
+        end
+        config = configuration(writer, make_core: make_core, prepare: prepare, count: 1)
+        cluster = FalconProcessFixtures::FalconProcessCluster.new(config, reader, writer)
+        pid = cluster.event(:running).fetch("pid")
+        peer = ConnectH1Wire.new("http://127.0.0.1:#{cluster.service.port}")
+        peer.write("POST #{declaration.path} HTTP/1.1\r\nHost: localhost\r\n" \
+                   "Content-Type: application/connect+proto\r\nContent-Length: 100000\r\n\r\n")
+        expect(peer.head.first).to eq(200)
+        expect(peer.body).to include("early")
+        expect(cluster.event(:hygiene_read)).to include("pid" => pid, "admitted" => 1,
+                                                        "raw_closed" => false, "phase" => phase.to_s)
+        cluster.stop
+        cluster.event(:closing)
+        expect(cluster.event(:closed).values_at("requests", "connections")).to eq([0, 0])
+        expect(cluster.events.map { |event| event["kind"] }).not_to include("unhandled")
+      ensure
+        peer&.close
+        cluster&.close
       end
     end
   end

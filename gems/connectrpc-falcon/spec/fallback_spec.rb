@@ -19,7 +19,7 @@ class FalconFallbackController < ActionController::Base
 end
 
 RSpec.describe "Falcon Rack/Rails fallback boundary" do
-  it "keeps actual HTTP/1 streaming requests outside binding, input reads and handler execution" do
+  it "keeps unary media on HTTP/1 streaming declarations outside binding, input reads and handler execution" do
     reactor do
       rpc = ConnectRPC::ServerStreamMethod.new(service: "fallback.Streams", name: "Watch",
                                                request_type: AsyncHelpers::MESSAGE, response_type: AsyncHelpers::MESSAGE)
@@ -32,7 +32,7 @@ RSpec.describe "Falcon Rack/Rails fallback boundary" do
         original.call(*args, **options).tap { |input| expect(input).not_to receive(:read) }
       end
       falcon(server: target) do |_host, origin|
-        { "application/connect+proto" => 415, "application/proto" => 501 }.each do |media, status|
+        { "application/proto" => 501 }.each do |media, status|
           expect(http1(origin, rpc.path, method: "POST", headers: { "content-type" => media },
                                          body: "must not read").first).to eq(status)
         end

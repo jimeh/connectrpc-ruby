@@ -12,10 +12,7 @@ module Conformance
 
     def initialize(config)
       web = config.protocol == :PROTOCOL_GRPC_WEB && ENV["CONNECTRPC_CONFORMANCE_WEB"] == "1"
-      unless web || (%i[PROTOCOL_CONNECT PROTOCOL_GRPC].include?(config.protocol) &&
-                      config.http_version == :HTTP_VERSION_2)
-        raise "Unsupported native server configuration"
-      end
+      validate_configuration(config, web)
 
       instrumentation = ConnectRPC::Instrumentation.new(subscribers: [NativeSubscriber.new])
       @server = ObservedNativeServer.new(services: [NATIVE_SERVICE], binding: BINDING, encoding: :gzip,
@@ -31,6 +28,15 @@ module Conformance
                                                      SERVER_STREAM.path => method(:server_stream),
                                                      CLIENT_STREAM.path => method(:client_stream),
                                                      BIDI_STREAM.path => method(:bidi_stream) })
+    end
+
+    def validate_configuration(config, web)
+      return if web
+
+      http1 = [ENV.fetch("CONNECTRPC_CONFORMANCE_HTTP1", nil), ENV.fetch("CONNECTRPC_NATIVE_HOST", nil),
+               config.protocol, config.http_version] == ["1", "falcon", :PROTOCOL_CONNECT, :HTTP_VERSION_1]
+      http2 = %i[PROTOCOL_CONNECT PROTOCOL_GRPC].include?(config.protocol) && config.http_version == :HTTP_VERSION_2
+      raise "Unsupported native server configuration" unless http1 || http2
     end
 
     def unary(request, context)

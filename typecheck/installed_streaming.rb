@@ -120,3 +120,61 @@ Gem.loaded_specs.each_value do |spec|
   end
 end
 puts "Installed seven-package composition: generated streaming network and custom SPI passed with no SDK"
+
+# Installed custom-host evidence exercises the explicit capability SPI without
+# relying on a backend, its private implementation, or checkout load paths.
+input_type = Class.new(StringIO) do
+  def read(length, timeout: nil) # rubocop:disable Lint/UnusedMethodArgument -- structural host SPI
+    super(length)
+  end
+end
+output_type = Class.new do
+  attr_reader :bytes
+
+  def initialize = @bytes = +"".b
+
+  def write(bytes, timeout: nil) # rubocop:disable Lint/UnusedMethodArgument -- structural host SPI
+    @bytes << bytes
+  end
+
+  def abort = nil
+end
+
+ss = ConnectRPC::ServerStreamMethod.new(service: "installed.Host", name: "Watch", request_type: String,
+                                        response_type: String)
+cs = ConnectRPC::ClientStreamMethod.new(service: "installed.Host", name: "Collect", request_type: String,
+                                        response_type: String)
+bidi = ConnectRPC::BidiStreamMethod.new(service: "installed.Host", name: "Chat", request_type: String,
+                                        response_type: String)
+custom = ConnectRPC::Server.new(services: [ConnectRPC::Service.new(name: ss.service, methods: [ss, cs, bidi])],
+                                binding: InstalledBinding.new,
+                                handlers: { ss.path => ->(message, writer, _) { writer.send_message(message) },
+                                            cs.path => ->(reader, _) { reader.receive } })
+[ss, cs].each do |rpc|
+  output = output_type.new
+  published = []
+  payload = "installed host"
+  custom.call_stream(path: rpc.path, http_method: "POST", headers: { "content-type" => ["application/connect+proto"] },
+                     input: input_type.new([0, payload.bytesize].pack("CN") + payload), output: output,
+                     publish: ->(head) { published << head }, capabilities: %i[server_stream client_stream])
+  unless published.one? && published.first.status == 200 && output.bytes.include?(payload)
+    raise "Installed explicit #{rpc.cardinality} host failed: #{output.bytes.inspect}"
+  end
+end
+response = custom.call_stream(path: bidi.path, http_method: "GET", headers: {}, input: StringIO.new,
+                              output: output_type.new, publish: ->(_) { raise "Unexpected publication" },
+                              capabilities: [:server_stream])
+raise "Host-neutral bidi rejection changed" unless response.status == 505 && !response.headers.key?("connection")
+
+[[], [:unary], %i[server_stream server_stream], false].each do |invalid|
+  begin
+    custom.call_stream(path: ss.path, http_method: "POST", headers: {}, input: StringIO.new,
+                       output: output_type.new, publish: ->(_) {}, capabilities: invalid)
+  rescue ArgumentError => e
+    raise "Unexpected installed capability error" unless e.message == "Invalid streaming capabilities"
+
+    next
+  end
+  raise "Invalid installed capability accepted"
+end
+puts "PASS installed explicit SS/CS host capabilities, host-neutral bidi 505 and invalid capabilities"

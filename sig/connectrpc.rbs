@@ -578,7 +578,7 @@ module ConnectRPC
     def bidi_stream: [Req, Resp] (BidiStreamMethod[Req, Resp], ?metadata: metadata_input, ?timeout: Numeric?, ?cancellation: CancellationToken?) { (ClientDuplex[Req, Resp]) -> void } -> nil
   end
   class Server
-    def call_stream: (path: String, http_method: String, headers: headers, input: _StreamingInput, output: _StreamingOutput, publish: _PublishStreamHead | ^(StreamHead) -> void, ?lifecycle: Instrumentation::Handle?, ?cancellation: _Cancellation?, ?http2: bool) -> TransportResponse?
+    def call_stream: (path: String, http_method: String, headers: headers, input: _StreamingInput, output: _StreamingOutput, publish: _PublishStreamHead | ^(StreamHead) -> void, ?lifecycle: Instrumentation::Handle?, ?cancellation: _Cancellation?, ?http2: bool, ?capabilities: Array[streaming_cardinality]?) -> TransportResponse?
   end
   interface _PartialStreamRequest
     def url: () -> URI::Generic?

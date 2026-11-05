@@ -64,7 +64,9 @@ module ConnectRPC
 
       def abort = @session.abort
 
-      def web_publication?(request) = @listener_application.web_publication?(request)
+      def publication?(request) = @listener_application.send(:publication?, request)
+      def http1_streaming_route?(request) = @listener_application.send(:http1_streaming_route?, request)
+      private :publication?, :http1_streaming_route?
       def admission_response(request) = @listener_application.admission_response(request)
 
       def call_with_publication(request, publication:, lifecycle: nil, resource: nil)

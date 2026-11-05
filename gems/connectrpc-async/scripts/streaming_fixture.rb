@@ -15,41 +15,76 @@ module StreamingInterop
     raise message unless condition
   end
 
-  def self.server
+  def self.server(coordination: nil)
     release = nil
     count = 0
     handlers = {
-      METHODS[0].path => lambda { |message, writer, context|
-        context.send_headers(metadata: { "x-head" => "early" })
-        context.response_trailers["x-tail"] = ["done"]
-        raise ConnectRPC::Error.new(:not_found, "missing") if message.value == "error"
-
-        if message.value == "gate"
-          release = Async::Queue.new
-          writer.send_message(MESSAGE.new(value: "first"))
-          release.dequeue
-        end
-        writer.send_message(message)
-      },
-      METHODS[1].path => lambda { |reader, context|
-        count = 0
-        context.send_headers(metadata: { "x-head" => "early" })
-        context.response_trailers["x-tail"] = ["done"]
-        reader.each { |_| count += 1 }
-        MESSAGE.new(value: count.to_s)
-      },
+      METHODS[0].path => server_stream_handler(coordination, ->(queue) { release = queue }),
+      METHODS[1].path => client_stream_handler(coordination, ->(value) { count = value }),
       METHODS[2].path => lambda { |duplex, context|
         context.send_headers(metadata: { "x-head" => "early" })
         context.response_trailers["x-tail"] = ["done"]
         duplex.each { |message| duplex.send_message(message) }
       },
       METHODS[3].path => lambda { |message, _|
-        release.enqueue(true) if message.value == "release"
+        if message.value == "release"
+          coordination ? File.write(File.join(coordination, "release"), "ready") : release.enqueue(true)
+        end
+        count = File.read(File.join(coordination, "count")).to_i if coordination && File.exist?(File.join(coordination,
+                                                                                                          "count"))
         MESSAGE.new(value: count.to_s)
       }
     }
     ConnectRPC::Server.new(services: [SERVICE], binding: BINDING, handlers: handlers,
                            request_limit: 1024, encoding: :gzip)
+  end
+
+  def self.server_stream_handler(coordination, on_release)
+    lambda { |message, writer, context|
+      context.send_headers(metadata: { "x-head" => "early" })
+      context.response_trailers["x-tail"] = ["done"]
+      raise ConnectRPC::Error.new(:not_found, "missing") if message.value == "error"
+
+      if message.value == "gate"
+        File.unlink(File.join(coordination, "release")) if coordination && File.exist?(File.join(coordination,
+                                                                                                 "release"))
+        release = Async::Queue.new
+        on_release.call(release)
+        writer.send_message(MESSAGE.new(value: "first"))
+        if coordination
+          Async::Task.current.with_timeout(3) do
+            Async::Task.current.yield until File.exist?(File.join(coordination, "release"))
+          end
+        else
+          release.dequeue
+        end
+      end
+      writer.send_message(message)
+    }
+  end
+
+  def self.client_stream_handler(coordination, on_count)
+    lambda { |reader, context|
+      count = 0
+      on_count.call(count)
+      publish_count(coordination, count) if coordination
+      context.send_headers(metadata: { "x-head" => "early" })
+      context.response_trailers["x-tail"] = ["done"]
+      reader.each do |_|
+        count += 1
+        on_count.call(count)
+        publish_count(coordination, count) if coordination
+      end
+      MESSAGE.new(value: count.to_s)
+    }
+  end
+
+  # Test-only worker coordination. H1 control RPCs use a separate connection
+  # and may reach either process, unlike multiplexed H2 control requests.
+  def self.publish_count(directory, count)
+    temporary = File.join(directory, "count-#{Process.pid}")
+    File.write(temporary, count.to_s)
+    File.rename(temporary, File.join(directory, "count"))
   end
 
   class ClientProbe

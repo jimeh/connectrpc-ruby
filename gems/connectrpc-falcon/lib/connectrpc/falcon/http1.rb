@@ -6,13 +6,33 @@ require "async/http/protocol/http1/server"
 
 module ConnectRPC
   module Falcon
+    # The pinned HTTP/1 writer flushes framing after body EOF, before close
+    # callbacks. Track that state without inspecting application payload bytes.
+    class HTTP1ResponseBody < ::Protocol::HTTP::Body::Wrapper
+      attr_reader :eof
+
+      def read
+        chunk = super
+        @eof = true if chunk.nil?
+        chunk
+      end
+
+      def empty?
+        empty = super
+        @eof = true if empty
+        empty
+      end
+    end
+    private_constant :HTTP1ResponseBody
+
     class HTTP1Connection < ::Async::HTTP::Protocol::HTTP1::Server
       attr_accessor :resource
-      attr_writer :rejected_input
+      attr_writer :rejected_input, :retiring_raw
 
       def close_read
         # The framing parser can close input itself before raising EOFError.
         @rejected_input&.abort_read
+        @retiring_raw.close if @retiring_raw && !@retiring_raw.closed?
         super
       end
 
@@ -45,30 +65,180 @@ module ConnectRPC
           @resource.exchange&.finish(false, $ERROR_INFO)
         ensure
           @resource.exchange = nil
-          @resource.failed! if @resource.active
-          @resource.active = false
-          @resource.changed
+          begin
+            @resource.input_retirement&.close(false)
+          ensure
+            @resource.input_retirement = nil
+            @resource.failed! if @resource.active
+            @resource.active = false
+            @resource.changed
+          end
         end
       end
 
-      def write_body(...)
+      # Match the pinned writer's positional arguments.
+      # rubocop:disable-next Style/OptionalBooleanParameter
+      def write_body(version, body, head = false, trailer = nil)
+        if @resource.input_retirement
+          @response_eof = head || body.nil?
+          body = @response_body = HTTP1ResponseBody.new(body) if body
+        end
         super
         written = true
       rescue StandardError
         @resource.failed!
         raise
       ensure
+        @response_body = nil
+        @response_eof = false
         # Upstream returns after final fixed/chunked bytes AND body callbacks.
         begin
           @resource.exchange&.finish(!!written, $ERROR_INFO)
         ensure
-          @resource.exchange = nil
-          @resource.active = false
-          @resource.changed
+          begin
+            @resource.input_retirement&.close(!!written)
+          ensure
+            @resource.input_retirement = nil
+            @resource.exchange = nil
+            @resource.active = false
+            @resource.changed
+          end
         end
+      end
+
+      private
+
+      def flush_stream
+        result = super
+        if @response_eof || @response_body&.eof
+          @resource.input_retirement&.final_flushed
+          @response_eof = false
+          @response_body = nil
+        end
+        result
       end
     end
     private_constant :HTTP1Connection
+
+    # Connect-only transfer from the original processor to the connection task.
+    # Framing completion never relies on empty?, which also becomes true on error.
+    class HTTP1StreamInput
+      attr_writer :input
+
+      def initialize(body, raw:, connection:)
+        @body = body
+        @framed = body&.body
+        @raw = raw
+        @connection = connection
+      end
+
+      def on_close(&completion)
+        @completion = completion
+      end
+
+      def framed_complete?
+        case @framed
+        when nil then true
+        when ::Protocol::HTTP1::Body::Fixed then @framed.remaining.zero?
+        when ::Protocol::HTTP1::Body::Chunked then !@framed.length.nil?
+        else false
+        end
+      end
+
+      def head_resolved(status)
+        @retiring = status == 505 || !framed_complete?
+        @connection.persistent = false if @retiring
+      end
+
+      def processor_finished
+        @discarded = @input&.release_remainder || 0
+        @input = nil
+        @body&.close if framed_complete?
+        @processed = true
+      end
+
+      def final_flushed
+        return if @close_expires
+
+        @close_expires = now + 0.5
+      end
+
+      def close(delivered)
+        return if @closed
+
+        @closed = true
+        begin
+          if delivered && @processed && @retiring
+            retire if @close_expires
+          elsif !delivered || !@processed
+            abort_read
+          end
+        rescue StandardError
+          # Hygiene cannot change an already observed RPC delivery outcome.
+          abort_read
+        ensure
+          begin
+            # A retired connection is never reused, even after complete framing.
+            abort_read if @retiring || !delivered || !@processed
+          ensure
+            begin
+              @body&.close
+            ensure
+              @completion&.call
+            end
+          end
+        end
+      end
+
+      private
+
+      def retire
+        # HTTP completion is already observed. TLS cleanup must not precede
+        # this raw TCP half-close or extend the one final-flush budget.
+        @raw.shutdown(Socket::SHUT_WR)
+        begin
+          remaining = @close_expires - now
+          ::Async::Task.current.with_timeout(remaining) { discard } if remaining.positive?
+        rescue StandardError
+          # A late framing/timeout failure cannot revise completed delivery.
+          nil
+        end
+        remaining = @close_expires - now
+        ::Async::Task.current.sleep(remaining) if remaining.positive? && !@raw.closed?
+      end
+
+      def discard
+        # Chunked EOF closes the buffered/TLS read side before raising. Guard
+        # only post-delivery reads, without recursively closing the connection.
+        @connection.retiring_raw = @raw
+        expires = now + 0.1
+        until framed_complete?
+          return if 262_144 - @discarded < 65_536
+
+          remaining = expires - now
+          return if remaining <= 0
+
+          # Pinned framed reads have no length argument and return <=64 KiB.
+          # Reserve a whole block before each read, including adapter remainder.
+          chunk = ::Async::Task.current.with_timeout(remaining) { @body.read }
+          @discarded += chunk.bytesize if chunk
+        end
+      ensure
+        @connection.retiring_raw = nil
+      end
+
+      def abort_read
+        @raw.close unless @raw.closed?
+        # Finishable.close must still resolve after raw-first teardown. Closing
+        # connection state first prevents framed close_read on an already shut IO.
+        @connection.close
+      rescue IOError, SystemCallError
+        nil
+      end
+
+      def now = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+    end
+    private_constant :HTTP1StreamInput
 
     # One request's original framing and deadline, owned only by native Web H1.
     class HTTP1RejectedInput
@@ -131,7 +301,7 @@ module ConnectRPC
 
     # Serial HTTP/1 ownership. It deliberately has no HTTP/2 stream/GOAWAY API.
     class HTTP1Resource
-      attr_accessor :raw, :socket, :task, :snapshot, :ready, :draining, :active, :exchange
+      attr_accessor :raw, :socket, :task, :snapshot, :ready, :draining, :active, :exchange, :input_retirement
       attr_reader :connection, :generation, :progress, :activity_at
 
       def initialize(stream, progress:, generation:)
@@ -167,6 +337,10 @@ module ConnectRPC
 
       def web_input(body, headers:)
         HTTP1RejectedInput.new(body, raw: @raw, connection: @connection, headers: headers)
+      end
+
+      def prepare_stream_input(body)
+        @input_retirement = HTTP1StreamInput.new(body, raw: @raw, connection: @connection)
       end
 
       def abort
