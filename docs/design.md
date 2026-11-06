@@ -1,8 +1,9 @@
 # Design and implemented profile
 
 The gem implements typed Connect RPCs and native HTTP/2 gRPC in all four RPC shapes.
-Falcon also serves Connect HTTP/1.1 server/client streaming; Ruby H1 clients are
-pending and standalone Async Host remains H2-only. The streaming guide records
+Falcon also serves Connect HTTP/1.1 server/client streaming. The explicit Async
+HTTP1Transport supports Connect unary and server/client streaming; standalone
+Async Host remains H2-only. The streaming guide records
 the response-first discard limits and cooperative 500 ms total final-close
 policy. Shared protocol code is independent of HTTP hosting and concrete
 protobuf classes. The public require is `connectrpc`, and the Ruby namespace is
@@ -462,3 +463,25 @@ handler activation and write/reset/cleanup evidence. Connection setup before an
 RPC exists remains outside this scope. See the
 [OTel guide](../gems/connectrpc-otel/README.md) for trace semantics, privacy,
 HTTP instrumentation nesting and synchronous processor costs.
+
+## Explicit HTTP/1.1 client ownership
+
+The Async package's independent `HTTP1Transport` uses exclusive reactor-owned
+leases for Connect unary, safe GET and SS/CS. Reservations precede yielding
+TCP/TLS setup; retiring resources count toward the cap until raw close and task
+joins finish. Idle reuse requires normal writer completion, full HTTP EOF,
+successful cleanup and native persistent/idle state. A nonblocking acquisition
+probe retires FIN or unsolicited data before dispatch. No failed call is replayed.
+
+A private H1 stream separates response reads from output flushing and caps native
+body fragments at 16 KiB. Strict HTTP/1.1 status syntax preserves three-digit
+extension statuses for core fallback. Framing validation precedes native header
+mutation; leading metadata is snapshotted before chunk trailers. Core retains
+terminal decoding and send/error arbitration. Complete unary non-200 responses
+stop unfinished uploads destructively and return to core; HTTP 200 requires
+writer success. Cleanup failures cannot turn into successful completion.
+
+TLS offers only `http/1.1`, accepts nil or H1 ALPN, and rejects other negotiation
+before dispatch. Hostname/peer verification and mTLS remain enabled. The shared
+private TLS helper retains H2's existing default. H1 changes no server runtime
+policy, H2 connection ownership, or Web rejection behavior.

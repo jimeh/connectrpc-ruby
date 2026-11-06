@@ -10,7 +10,8 @@ The implemented profile is POST and opt-in safe unary GET, identity or opt-in gz
 protobuf `application/json`. The optional [connectrpc-rails gem](gems/connectrpc-rails/README.md)
 runs generated unary handlers through native Rails controllers. Native streaming
 uses the optional Async transport and Async/Falcon HTTP/2 hosts. Falcon also
-serves Connect HTTP/1.1 server and client streaming; Ruby H1 clients are pending.
+serves Connect HTTP/1.1 server and client streaming. The explicit Async
+`HTTP1Transport` supports unary, server streaming and client streaming.
 See the
 [streaming guide](docs/streaming.md), especially its one-second HTTP tail policy.
 Native [gRPC](docs/grpc.md) supports unary, server streaming, client streaming and
@@ -427,6 +428,16 @@ example; `async:verify` checks the independent bundle, installed packages and
 connect-go interoperability. Core require and core/Rails dependencies stay
 independent.
 
+The same package provides `HTTP1Transport.new(origin:, connection_limit: 4,
+max_requests: 128, connect_timeout: 10)` for explicit Connect HTTP/1.1 unary
+(including safe GET), server streaming and client streaming. Pass it through the
+existing core/generated client's `transport:` option inside an application-owned
+Async reactor. TLS/mTLS verifies peer and hostname, offers only `http/1.1`, and
+accepts absent ALPN for legacy H1 servers. There is no gRPC, bidi, replay or
+protocol fallback. See the [package guide](gems/connectrpc-async/README.md#explicit-http11-client)
+for lease capacity, deadlines and upload failure limits. Ordinary-thread
+persistent clients remain [issue #29](https://github.com/jimeh/connectrpc-ruby/issues/29).
+
 See the optional [in-process testing package](gems/connectrpc-testing/README.md) for real encoded client/server round trips without sockets.
 
 ## Optional Falcon hosting
@@ -461,8 +472,9 @@ OpenTelemetry SDK. Core has no OpenTelemetry dependency. See
 
 Async and Falcon native HTTP/2 support server, client and bidirectional streaming.
 Falcon also serves Connect server and client streaming over HTTP/1.1 with both
-codecs and identity/gzip over TCP/TLS/mTLS. Ruby H1 streaming clients remain
-pending; the standalone Async Host stays H2-only. Early H1 responses finish
+codecs and identity/gzip over TCP/TLS/mTLS. Use the explicit
+`ConnectRPC::Async::HTTP1Transport` for Ruby H1 unary, server streaming and
+client streaming. The standalone Async Host stays H2-only. Early H1 responses finish
 before bounded input discard. Retiring delivered responses use one cooperative
 500 ms total final-close budget from the actual final HTTP flush, including the
 unchanged 100 ms / 256 KiB discard allowance. Admission remains held until
