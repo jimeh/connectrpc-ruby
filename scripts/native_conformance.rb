@@ -10,6 +10,9 @@ require_relative "../conformance/grpc_ledger"
 http1 = ENV["CONNECTRPC_CONFORMANCE_HTTP1"] == "1"
 require_relative "../conformance/http1_ledger" if http1
 
+http1_client = ENV["CONNECTRPC_CONFORMANCE_HTTP1_CLIENT"] == "1"
+require_relative "../conformance/native_http1_ledger" if http1_client
+
 grpc = ENV["CONNECTRPC_CONFORMANCE_GRPC"] == "1"
 
 root = File.expand_path("..", __dir__)
@@ -20,6 +23,9 @@ raise "Usage: native_conformance.rb async|falcon [client|server [exact-name]]" u
   %w[async falcon].include?(host) && directions.all? do |direction|
     %w[client server].include?(direction)
   end && ARGV.empty?
+if http1_client && (host != "async" || directions != ["client"] || grpc || http1)
+  raise "Native HTTP1 client profiles require Async client-only Connect mode"
+end
 if http1 && (host != "falcon" || directions != ["server"] || grpc)
   raise "HTTP1 profiles require Falcon server-only Connect mode"
 end
@@ -30,7 +36,9 @@ end
 version, status = Open3.capture2("connectconformance", "--version")
 raise "Wrong conformance runner" unless status.success? && version.strip == "connectconformance v1.0.6"
 
-protocol = if http1
+protocol = if http1_client
+             "native-http1-client"
+           elsif http1
              "http1"
            else
              (grpc ? "grpc" : "native")
@@ -40,8 +48,9 @@ def native_command(root, profile, direction, selector, protocol)
   command = ["connectconformance", "--mode", direction, "--conf",
              File.join(root, "conformance/profile-#{protocol}-#{profile}.yaml"), "--vv"]
   command.push("--run", selector) if selector
+  adapter = protocol == "native-http1-client" ? "native_http1_client" : "native_#{direction}"
   command.push("--", RbConfig.ruby, "-I#{File.join(root, 'lib')}",
-               File.join(root, "conformance/native_#{direction}.rb"))
+               File.join(root, "conformance/#{adapter}.rb"))
   command
 end
 
@@ -57,7 +66,9 @@ end
 
 success = true
 %w[identity gzip].product(directions).each do |profile, direction| # rubocop:disable Metrics/BlockLength
-  ledger_type = if http1
+  ledger_type = if http1_client
+                  Conformance::NativeHTTP1Ledger
+                elsif http1
                   Conformance::HTTP1Ledger
                 else
                   (grpc ? Conformance::GRPCLedger : Conformance::NativeLedger)

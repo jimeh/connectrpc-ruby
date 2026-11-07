@@ -19,8 +19,8 @@ arguments = case command
             when "setup" then ["install"]
             when "test" then ["exec", "rspec", *ARGV]
             when "check" then ["exec", "rubocop", ".", "--config", File.join(root, ".rubocop.yml")]
-            when "build", "package", "example", "interop", "streaming_interop" then ["exec", "ruby",
-                                                                                     "scripts/#{command}.rb", *ARGV]
+            when "build", "package", "example", "interop", "streaming_interop", "http1_interop"
+              ["exec", "ruby", "scripts/#{command}.rb", *ARGV]
             else abort "Usage: run.rb setup|test|check|build|package|example|interop"
             end
 puts "Async backend; Ruby #{RUBY_VERSION}; Bundler 4.0.23; Gemfile #{environment.fetch('BUNDLE_GEMFILE')}"

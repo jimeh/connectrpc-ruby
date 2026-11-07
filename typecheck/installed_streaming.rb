@@ -33,7 +33,8 @@ class InstalledStreamingNetwork
     server = ConnectRPC::Server.new(services: [@service::SERVICE], binding: @binding, handlers: @handlers,
                                     encoding: :gzip, protocol: protocol)
     host, origin, bound = make_host(backend, server)
-    transport = ConnectRPC::Async::Transport.new(origin: origin)
+    transport_class = backend == :falcon_http1 ? ConnectRPC::Async::HTTP1Transport : ConnectRPC::Async::Transport
+    transport = transport_class.new(origin: origin)
     codecs = protocol == :grpc ? [:proto] : %i[proto json]
     codecs.product(%i[identity gzip]).each do |codec, coding|
       probe(transport, origin, backend, codec, coding, protocol)
@@ -47,7 +48,7 @@ class InstalledStreamingNetwork
   private
 
   def make_host(backend, server)
-    return make_falcon(server) if backend == :falcon
+    return make_falcon(server) if %i[falcon falcon_http1].include?(backend)
 
     host = ConnectRPC::Async::Host.new(server: server).start
     [host, "http://127.0.0.1:#{host.port}", nil]
@@ -69,9 +70,9 @@ class InstalledStreamingNetwork
     check(typed.lookup(request, timeout: nil).message.count == 9, "mixed GET")
     watch(typed, request)
     collect(typed, request)
-    chat(typed, request)
+    chat(typed, request) unless backend == :falcon_http1
     puts "PASS installed generated streaming #{backend}/#{protocol}/#{codec}/#{coding}: " \
-         "mixed GET/POST SS/CS/bidi nil deadlines"
+         "mixed GET/POST SS/CS#{'/bidi' unless backend == :falcon_http1} nil deadlines"
   end
 
   def watch(typed, request)
@@ -102,7 +103,10 @@ class InstalledStreamingNetwork
   end
 end
 network = InstalledStreamingNetwork.new(service, binding, handlers, request_type)
-Async { %i[async falcon].product(%i[connect grpc]).each { |backend, protocol| network.run(backend, protocol) } }.wait
+Async do
+  %i[async falcon].product(%i[connect grpc]).each { |backend, protocol| network.run(backend, protocol) }
+  network.run(:falcon_http1)
+end.wait
 custom = ConnectRPC::Client.new(base_url: "https://installed.invalid", binding: InstalledBinding.new,
                                 transport: APIStreamingTransport.new)
 method = ConnectRPC::ServerStreamMethod.new(service: "installed.Custom", name: "Watch",

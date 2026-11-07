@@ -178,7 +178,9 @@ RSpec.shared_examples "HTTP/2 deadlines and stream isolation" do
           ready.dequeue
           resource = transport.instance_variable_get(:@resources).first
           resource.raw.setsockopt(Socket::SOL_SOCKET, Socket::SO_SNDBUF, 4096)
-          headers = { "x-large" => [SecureRandom.base64(1_000_000)] }
+          # Tildes expand under HPACK Huffman coding: enough wire bytes to block TCP,
+          # without a megabyte of CPU-heavy header encoding before deadline observation.
+          headers = { "x-large" => ["~" * 65_536] }
           started = AsyncHelpers::INTERNAL.now
           stuck = task.async(finished: false) do
             transport.call(request("#{origin}/blocked", headers: headers, deadline: ConnectRPC::Deadline.new(0.03)))

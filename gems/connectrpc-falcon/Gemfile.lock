@@ -15,6 +15,7 @@ PATH
       io-stream (~> 0.14.0)
       openssl (~> 4.0.2)
       protocol-http (~> 0.72.1)
+      protocol-http1 (~> 0.41.1)
       protocol-http2 (~> 0.29.2)
 
 PATH

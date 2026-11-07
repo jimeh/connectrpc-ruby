@@ -15,6 +15,7 @@ system("go", "build", "-mod=readonly", "-o", binary, File.join(__dir__, "../inte
 $LOAD_PATH.unshift(File.join(root, "spec/fixtures/generation/echo"))
 require "echo_connect"
 require_relative "../spec/support/helpers"
+require_relative "support/interop_diagnostics"
 include AsyncHelpers
 
 Dir.mktmpdir("interop-", File.join(root, "vendor/async")) do |fixtures|
@@ -39,7 +40,8 @@ Dir.mktmpdir("interop-", File.join(root, "vendor/async")) do |fixtures|
         options.merge!(host_tls(client_identity).except(:client_ca)) if mode == "mtls"
         transport = ConnectRPC::Async::Transport.new(**options)
         %i[proto json].each do |codec|
-          typed = client(transport, origin, codec: codec)
+          instrumentation = HTTP2InteropDiagnostics.instrumentation(transport, mode: mode, codec: codec)
+          typed = client(transport, origin, codec: codec, instrumentation: instrumentation)
           message = AsyncHelpers::MESSAGE.new(name: "", count: 9_007_199_254_740_993, mood: :HAPPY,
                                               at: Google::Protobuf::Timestamp.new(seconds: 1_704_067_200),
                                               data: "\x00\xff".b)
@@ -66,9 +68,11 @@ Dir.mktmpdir("interop-", File.join(root, "vendor/async")) do |fixtures|
           puts "PASS generated Ruby->Go #{mode} #{codec} success/presence/types/errors/details/metadata/trailers/limit"
         end
         source = ConnectRPC::CancellationSource.new
+        instrumentation = HTTP2InteropDiagnostics.instrumentation(transport, mode: mode)
         pending = task.async(finished: false) do
-          client(transport, origin).echo(AsyncHelpers::MESSAGE.new, timeout: nil, cancellation: source.token,
-                                                                    metadata: { "x-cancel-probe" => "hold" })
+          client(transport, origin, instrumentation: instrumentation).echo(
+            AsyncHelpers::MESSAGE.new, timeout: nil, cancellation: source.token, metadata: { "x-cancel-probe" => "hold" }
+          )
         end
         raise "Go handler not entered" unless task.with_timeout(5) { output.gets&.strip } == "CANCEL_ENTERED"
 
@@ -81,7 +85,8 @@ Dir.mktmpdir("interop-", File.join(root, "vendor/async")) do |fixtures|
         end
         raise "Go context not cancelled" unless task.with_timeout(5) { output.gets&.strip } == "CANCEL_OBSERVED"
 
-        healthy = client(transport, origin).echo(AsyncHelpers::MESSAGE.new(name: "after"))
+        typed = client(transport, origin, instrumentation: instrumentation)
+        healthy = typed.echo(AsyncHelpers::MESSAGE.new(name: "after"))
         raise "Go healthy call failed" unless healthy.message.name == "after"
 
         puts "PASS Ruby token->Go context #{mode} cancellation, healthy stream and pooled connection"

@@ -66,6 +66,9 @@ func protocols() *http.Protocols {
 }
 
 func serve(mode, directory string) {
+	h1 := strings.HasPrefix(mode, "h1")
+	plain := mode == "h2c" || mode == "h1"
+	mutual := mode == "mtls" || mode == "h1mtls"
 	mux := http.NewServeMux()
 	var lock sync.Mutex
 	count := 0
@@ -137,20 +140,40 @@ func serve(mode, directory string) {
 	}, options...))
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	must(err)
-	server := &http.Server{Protocols: protocols(), ReadHeaderTimeout: 5 * time.Second, Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		check(r.ProtoMajor == 2, "server H2")
+	versions := protocols()
+	if h1 {
+		versions = new(http.Protocols)
+		versions.SetHTTP1(true)
+	}
+	server := &http.Server{Protocols: versions, ReadHeaderTimeout: 5 * time.Second, Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		major := 2
+		negotiated := "h2"
+		if h1 {
+			major = 1
+			negotiated = "http/1.1"
+		}
+		check(r.ProtoMajor == major && (!h1 || r.ProtoMinor == 1), "server HTTP version")
 		if r.TLS != nil {
-			check(r.TLS.NegotiatedProtocol == "h2", "ALPN")
-			if mode == "mtls" {
+			check(r.TLS.NegotiatedProtocol == negotiated, "ALPN")
+			if mutual {
 				check(len(r.TLS.VerifiedChains) > 0, "mTLS")
+			}
+		}
+		if h1 {
+			w.Header().Set("X-Observed-Http", r.Proto)
+			if r.TLS != nil {
+				w.Header().Set("X-Observed-Alpn", r.TLS.NegotiatedProtocol)
 			}
 		}
 		mux.ServeHTTP(w, r)
 	})}
 	scheme := "http"
-	if mode != "h2c" {
+	if !plain {
 		scheme = "https"
-		server.TLSConfig = credentials(directory, mode == "mtls", true)
+		server.TLSConfig = credentials(directory, mutual, true)
+		if h1 {
+			server.TLSConfig.NextProtos = []string{"http/1.1"}
+		}
 	}
 	done := make(chan error, 1)
 	go func() {

@@ -79,7 +79,7 @@ module ConnectRPC
           raise ArgumentError, "Invalid TLS snapshot", cause: nil
         end
 
-        def self.client(ca_file:, certificate_chain:, private_key:)
+        def self.client(ca_file:, certificate_chain:, private_key:, alpn_protocols: ["h2"])
           context = OpenSSL::SSL::SSLContext.new
           context.set_params(verify_mode: OpenSSL::SSL::VERIFY_PEER, verify_hostname: true)
           configure(context)
@@ -91,7 +91,7 @@ module ConnectRPC
             certificates, key = identity(certificate_chain, private_key)
             context.add_certificate(certificates.first, key, certificates.drop(1))
           end
-          context.alpn_protocols = ["h2"]
+          context.alpn_protocols = alpn_protocols
           context.setup
           new(context, false)
         rescue StandardError
