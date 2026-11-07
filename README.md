@@ -110,10 +110,10 @@ Run `buf generate` in that module with pinned protoc on PATH. For this checkout,
 `mise run generation:check` runs both actual tools with explicit local paths,
 compares glue bytes and exercises both generated message trees.
 
-Proto2 and proto3, including optional presence, are supported. Editions,
-streaming targets and unsupported plugin parameters are rejected. Default output is
-`dir/foo_connect.rb` for service-bearing `dir/foo.proto`; message generation
-remains official `--ruby_out`. Set `rbs=true` to also emit `dir/foo_connect.rbs`.
+Proto2 and proto3, including optional presence and mixed unary/streaming
+services, are supported. Editions and unsupported plugin parameters are rejected.
+Default output is `dir/foo_connect.rb` for service-bearing `dir/foo.proto`;
+message generation remains official `--ruby_out`. Set `rbs=true` to also emit `dir/foo_connect.rbs`.
 The gem ships optional core signatures; the [RBS guide](docs/rbs.md) covers
 official message `--rbs_out`, explicit protobuf bridge selection and strict Steep
 configuration. Ruby module

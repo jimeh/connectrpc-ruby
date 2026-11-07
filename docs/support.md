@@ -82,7 +82,7 @@ or fallback. Server routing/authentication remains application owned.
 | Connect endpoint | U | SS | CS | bidi | HTTP/security evidence | Owning evidence |
 | --- | --- | --- | --- | --- | --- | --- |
 | Host-neutral `Server#call` | Encoded POST/eligible GET | No | No | No | Host-supplied HTTP state and bounded input, no socket ownership | Core specs, `rbs:check` API callers and installed consumers |
-| Default NetHTTP client | POST/eligible GET | No | No | No | H1.1 TCP; verified TLS in focused specs/installed consumers, outside the plaintext official profile. No qualified mTLS profile | `test:conformance`, `test:interop`, `test:interop:get`, core TLS/cancellation specs and `async:package` |
+| Default NetHTTP client | POST/eligible GET | No | No | No | H1.1 TCP; verified TLS in focused specs/installed consumers, outside the plaintext official profile. No client-certificate (mTLS) or custom trust configuration | `test:conformance`, `test:interop`, `test:interop:get`, core TLS/cancellation specs and `async:package` |
 | Rack middleware | POST/eligible GET | No | No | No | Portable unary translation; official socket profile is H1.1 TCP via rackup/WEBrick, with no portable TLS/mTLS qualification | `test:conformance`, `test:interop`, `rack:test`, `rack:package` |
 | Native Rails controller | POST/eligible GET | No | No | No | Portable unary execution through explicit routes; no separate Rails TLS/mTLS qualification | `test:rails`, `check:package:rails`, `generation:check:rails`; no exact Rails conformance inventory |
 | Testing transport | Encoded POST/eligible GET | No | No | No | In process, no HTTP socket or security negotiation | `testing:test`, `testing:package`; not independent interoperability evidence |
@@ -180,10 +180,12 @@ Extension SPIs include `_Binding`, unary `_Transport`/`_Input`/invokers,
 `_Cancellation`, `_StreamingTransport`/`_StreamExchange` and streaming I/O,
 `_GRPCTransport`/`_GRPCStreamExchange`/`_GRPCStatusCodec`, native server
 publication/output interfaces including `_GRPCWebOutput`, host lifecycle handles,
-and subscriber/observer callbacks. Rails' documented configuration hooks remain
-private Ruby methods despite being deliberate extension points. Use the owning
-RBS interface and guide, including bounded reads, completion, reactor affinity,
-and original-processor ownership. An SPI does not grant access to the private
+and subscriber/observer callbacks. Rails' private configuration hooks are
+deliberate extension points: the inventory classifies the Web protocol/status/CORS
+hooks as `supported` and service/binding/handlers/limits/instrumentation hooks
+and request/context/method readers as `spi`. Use the owning RBS interface and
+guide, including bounded reads, completion, reactor affinity and
+original-processor ownership. An SPI does not grant access to the private
 objects its implementation happens to expose.
 
 Protocol/compression/parser helpers, cancellation arbitration, private lifecycle
@@ -205,10 +207,10 @@ rejects malformed/duplicate rich details, details on OK and mismatched rich code
 with safe internal errors. See [gRPC](grpc.md) for its stricter-than-grpc-go policy.
 
 Falcon Connect H1 remains response-first. Incomplete original input disables
-reuse; after successful original processing and full response delivery, retirement
-uses a cooperative **500 ms total from the actual final HTTP flush**, including
-the unchanged absolute 100 ms / 256 KiB discard allowance with full 64 KiB read
-reservations. The remaining budget adds no reads or pipeline reuse. Admission
+reuse; after original processing finishes (any RPC outcome) and the full response
+is delivered, retirement uses a cooperative **500 ms total from the actual final
+HTTP flush**, including the unchanged absolute 100 ms / 256 KiB discard allowance
+with full 64 KiB read reservations. The remaining budget adds no reads or pipeline reuse. Admission
 and socket ownership last through retirement and original processing join.
 Cooperative timers can overshoot and cannot preempt arbitrary native/application
 work. [Falcon Web cleanup](grpc-web.md#bounds-and-host-spi) is separate: original

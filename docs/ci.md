@@ -227,9 +227,10 @@ by Package, under the same platform/tool/config/lock invalidation rules above.
 Each source and installed negative set shares one fresh single-worker Steep
 invocation while requiring the same exact diagnostic for every separate file.
 All positive, strict source, inventory, RBS validation, Falcon-only, normal
-installed discovery and runtime checks still execute on cache hits. The same 28
-CI check names and matrices remain. These checks remain independent of aggregate
-local `verify`. See the [RBS guide](rbs.md) for parser guards and proof boundaries.
+installed discovery and runtime checks still execute on cache hits. The
+[workflow](../.github/workflows/ci.yml) defines the job matrix. These checks remain
+independent of aggregate local `verify`. See the [RBS guide](rbs.md) for parser
+guards and proof boundaries.
 
 The cache behavior is grounded in the pinned action's
 [restore implementation](https://github.com/actions/cache/blob/55cc8345863c7cc4c66a329aec7e433d2d1c52a9/src/restoreImpl.ts),
