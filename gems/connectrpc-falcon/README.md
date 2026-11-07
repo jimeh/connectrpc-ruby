@@ -62,9 +62,10 @@ must be `true` or `false`; with no `rack_app`, either value has no effect.
 
 Opt-in retains the pinned Falcon 0.57.0 / async-http-cache 0.4.6 semantics. Cache
 keys use authority, method and path, plus response `Vary` headers. Custom
-authorization headers are not automatically cache keys. Successful bodyless,
-cookie-less GET responses can be cached without an explicit `Cache-Control`
-header, and entries without `max-age` can persist for the worker's lifetime.
+authorization headers are not automatically cache keys. GET/HEAD requests
+without a body, `Authorization` or `Cookie` can have 200, 203, 300, 301, 302, 404
+and 410 responses cached without an explicit `Cache-Control` header. Entries
+without `max-age` can persist for the worker's lifetime.
 Applications must set `Cache-Control` and `Vary` so responses are safe to share.
 Use `private` or `no-store` for unshared content; response `no-cache` alone is
 insufficient. Use appropriate `Vary` headers for deliberately shared content
