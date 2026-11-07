@@ -16,7 +16,7 @@ module ConnectRPC
     # connectrpc-rack gem. Its structural shapes also accept Rack::_App values.
     type rack_headers = Hash[String, String | Array[String]]
     type rack_response = [Integer, rack_headers, _RackBody | _RackCallableBody]
-    type server_options = { ?max_connections: Integer, ?max_requests: Integer, ?handshake_timeout: Numeric, ?idle_timeout: Numeric?, ?refresh_interval: Numeric, ?refresh_jitter: Numeric, ?refresh_timeout: Numeric, ?on_tls_error: (Async::_TLSErrorHandler | ^(Async::tls_event) -> void)? }
+    type server_options = { ?cache: bool, ?max_connections: Integer, ?max_requests: Integer, ?handshake_timeout: Numeric, ?idle_timeout: Numeric?, ?refresh_interval: Numeric, ?refresh_jitter: Numeric, ?refresh_timeout: Numeric, ?on_tls_error: (Async::_TLSErrorHandler | ^(Async::tls_event) -> void)? }
     interface _RackBody
       def each: () { (String) -> void } -> void
     end
@@ -39,7 +39,7 @@ module ConnectRPC
       def call: (Hash[String, Object]) -> rack_response
     end
     class Server
-      def initialize: (server: ConnectRPC::Server, endpoint: Endpoint | _BoundEndpoint, ?rack_app: (_RackFallback | ^(Hash[String, Object]) -> rack_response)?, ?tls: Async::tls?, ?tls_provider: (Async::_TLSProvider | ^() -> Async::tls_snapshot)?, ?utilization_registry: Object?, ?max_connections: Integer, ?max_requests: Integer, ?handshake_timeout: Numeric, ?idle_timeout: Numeric?, ?refresh_interval: Numeric, ?refresh_jitter: Numeric, ?refresh_timeout: Numeric, ?on_tls_error: (Async::_TLSErrorHandler | ^(Async::tls_event) -> void)?) -> void
+      def initialize: (server: ConnectRPC::Server, endpoint: Endpoint | _BoundEndpoint, ?rack_app: (_RackFallback | ^(Hash[String, Object]) -> rack_response)?, ?cache: bool, ?tls: Async::tls?, ?tls_provider: (Async::_TLSProvider | ^() -> Async::tls_snapshot)?, ?utilization_registry: Object?, ?max_connections: Integer, ?max_requests: Integer, ?handshake_timeout: Numeric, ?idle_timeout: Numeric?, ?refresh_interval: Numeric, ?refresh_jitter: Numeric, ?refresh_timeout: Numeric, ?on_tls_error: (Async::_TLSErrorHandler | ^(Async::tls_event) -> void)?) -> void
       def run: () -> Async::_Task
       def call: (Async::_Request, ?lifecycle: Instrumentation::Handle?) -> Async::_Response?
       def close: (?grace: Numeric) -> bool
