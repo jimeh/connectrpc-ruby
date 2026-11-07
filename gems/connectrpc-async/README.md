@@ -62,6 +62,9 @@ whole connection and siblings. Forced teardown closes raw TCP before cancelling
 and joining writers/readers, then performs buffered/TLS cleanup. These are
 cooperative bounds, not arbitrary native/application interruption guarantees.
 
+See the [supported 0.x contract](../../docs/support.md) for the target support
+profile, matched package versions, compatibility policy and adoption gates.
+
 ## TLS and client authentication
 
 Applications load their own files. Host TLS is a complete hash:

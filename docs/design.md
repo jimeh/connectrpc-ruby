@@ -1,5 +1,8 @@
 # Design and implemented profile
 
+The [supported 0.x contract](support.md) defines the target compatibility
+boundary and the remaining adoption gates.
+
 The gem implements typed Connect RPCs and native HTTP/2 gRPC in all four RPC shapes.
 Falcon also serves Connect HTTP/1.1 server/client streaming. The explicit Async
 HTTP1Transport supports Connect unary and server/client streaming; standalone

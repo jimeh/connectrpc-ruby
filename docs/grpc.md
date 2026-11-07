@@ -1,5 +1,8 @@
 # Native gRPC
 
+The [supported 0.x contract](support.md) defines the target compatibility
+boundary and the remaining adoption gates.
+
 Configure `Client(protocol: :grpc)` with an Async transport and a protobuf
 binding. Unary, server streaming, client streaming and bidi use the existing
 method declarations, generated clients and scoped stream endpoints. Configure

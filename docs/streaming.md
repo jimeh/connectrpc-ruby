@@ -1,5 +1,8 @@
 # Native RPC streaming
 
+The [supported 0.x contract](support.md) defines the target compatibility
+boundary and the remaining adoption gates.
+
 Connect server streaming, client streaming and bidirectional streaming use the
 same dependency-free core engine. The optional Async transport and Async/Falcon
 native HTTP/2 hosts support protobuf and ProtoJSON, identity/gzip, h2c, verified

@@ -17,7 +17,14 @@ See the
 Native [gRPC](docs/grpc.md) supports unary, server streaming, client streaming and
 bidi through the same core declarations and Async/Falcon HTTP/2 engine, with
 protobuf, identity/gzip, h2c, verified TLS and mTLS. Connect remains the default.
-gRPC-Web and Faraday remain unsupported. The API is experimental.
+Explicit server [gRPC-Web](docs/grpc-web.md) supports unary and native server
+streaming within its binary/text, host and compression limits. Faraday remains
+unsupported. The API is experimental.
+
+The [supported 0.x contract](docs/support.md) defines the target protocol, host,
+platform and API compatibility boundaries. Adoption still depends on the open
+[#26 findings](https://github.com/jimeh/connectrpc-ruby/issues/26) and release
+qualification; current artifacts are not declared supported or production ready.
 
 ## Try the localhost example
 

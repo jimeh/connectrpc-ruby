@@ -238,7 +238,7 @@ and [successful-job post condition](https://github.com/actions/cache/blob/55cc83
 
 ## Optional Falcon lanes
 
-Two Ruby matrix jobs add four Falcon checks alongside the existing 22. They
+The two Ruby lanes run separate Falcon specs/package and Go checks. They
 select `gems/connectrpc-falcon/Gemfile`, `vendor/falcon/bundle` and
 `vendor/falcon/bundler` before setup-ruby. The pinned Ruby/Bundler actions,
 frozen installation and seven-day cooldown apply independently of core, Rack,
@@ -253,16 +253,16 @@ cleanliness. Local verification does not establish hosted exact-head success.
 
 ## Public API typing gates
 
-The existing two RBS jobs also run strict implementation checks for the ten core
-files and private state, validate the actual source list, enforce the reviewed
-source/signature inventory, and check application callers for all seven packages.
-The original generated positive/17 exact negative and nominal/bridge checks remain.
+The existing two RBS jobs also run strict implementation checks for the core
+files and private state listed in `typecheck/source.rb`, validate the actual source
+list, enforce the reviewed source/signature inventory, and check application callers for all seven packages.
+Generated positive, exact per-file negative and nominal/bridge checks remain.
 Installed checks use normal RBS discovery in a fresh external GEM_HOME, validate
 each optional dependency closure and both composition orders, and exercise API-only
 OTel without loading an SDK. Scoped frozen optional setups supply offline archives;
-no lock, tool pin, runtime dependency or job/matrix axis is added. The workflow
-retains all 28 checks. Local `rbs:proof` verifies representative source and drift
-failures in an independent capture; a passing consumer alone is not strict source
+no lock, tool pin, runtime dependency or job/matrix axis is added. The
+[workflow](../.github/workflows/ci.yml) defines the complete job matrix. Local
+`rbs:proof` verifies representative source and drift failures in an independent capture; a passing consumer alone is not strict source
 checking or backend interoperability evidence. See the [RBS guide](rbs.md).
 
 ## Native streaming leaves

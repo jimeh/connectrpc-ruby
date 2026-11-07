@@ -5,6 +5,9 @@ Requires Ruby >= 3.4, `connectrpc ~> 0.1.0` and `rack >= 3.2.7, < 4`.
 This package uses the [MIT license](LICENSE), copyright 2026 Jim Myhrberg.
 Publication remains disabled by its `https://gems.invalid` guard.
 
+See the [supported 0.x contract](../../docs/support.md) for the target support
+profile, matched package versions, compatibility policy and adoption gates.
+
 ## Installation and migration
 
 Rack middleware now ships in this separate package. Applications that previously
@@ -35,7 +38,9 @@ It translates `PATH_INFO`, raw `QUERY_STRING`, request headers and `rack.input` 
 calls and returns Rack status, headers and body. Mount prefixes use `SCRIPT_NAME`;
 registered service paths belong to ConnectRPC, including unknown methods.
 Unrelated paths call the downstream app, or return 404 when none was supplied.
-Repeated response metadata and `trailer-*` fields remain Rack 3 arrays.
+Repeated response metadata and `trailer-*` fields remain Rack 3 arrays. Rack env
+normalization loses the distinction between underscore and hyphen request
+metadata names; native metadata acceptance is unchanged.
 
 The core Server owns unary proto/JSON negotiation, identity/opt-in gzip, bounded
 input/output, typed errors and cooperative deadlines. Synchronous Rack cannot
