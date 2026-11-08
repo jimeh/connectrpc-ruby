@@ -242,9 +242,10 @@ operations. Generated service factories, typed handlers and installed generated
 client contracts are included. Optional protobuf and framework bridges remain
 explicit opt-ins with their documented finite coverage.
 
-The extension SPIs cover these boundaries:
+The extension SPIs cover these boundaries. Binding, cancellation and lifecycle
+interfaces are shared with streaming and gRPC execution.
 
-- Binding and unary execution: `_Binding`, `_Transport`, `_Input`, invokers and
+- Shared interfaces and unary execution: `_Binding`, `_Transport`, `_Input`, invokers and
   `_Cancellation`.
 - Streaming and gRPC: `_StreamingTransport`, `_StreamExchange`, streaming I/O,
   `_GRPCTransport`, `_GRPCStreamExchange` and `_GRPCStatusCodec`.
@@ -340,9 +341,15 @@ decision. A merged fix closes its specific defect, not the audit as a whole.
 
 ### Still open
 
-- **Async Host accept failures (M4).** Diagnose current accept-failure behavior
-  and settle bounded recovery or fail-visible policy. Native RPC success does
-  not qualify listener resilience.
+- **Async Host accept failures (M4).** Runtime diagnosis at `073f95a` on both
+  pinned Rubies confirms that a controlled accept `EMFILE` silently fails the
+  listener task. The session and socket stay live and admitted RPCs continue,
+  but fresh typed RPCs time out without acceptance or dispatch. Calling `start`
+  again does not recover the listener. First-accept and configured-persistent
+  fault cases also reproduce; normal blocked-accept close passes. Repair policy
+  remains open: bounded transient retry with visible terminal failure, or
+  immediate visible host failure. The terminal observation mechanism is also
+  undecided. This Host diagnosis does not explain historical H2 client failures.
 - **Custom observer detach unwind.** A fatal or nonlocal exit in one detach can
   skip earlier detaches. Require a repair or explicit support decision with
   focused core/SDK evidence. The bundled OTel detach does not yield; historical
