@@ -39,6 +39,27 @@ checkouts, mutate Git state, publish, or run those parent-owned graphs.
 
 ## Outcome and evidence gate
 
+### R4 reader publication correction
+
+The H2 reader wrapper mirrors async-http 0.105.0 and Async 2.46's eager
+Task construction, with the actual transient reader published before `run`.
+Closed-connection and finished-parent guards retain their upstream order;
+parentage, annotation, frame loop, error forwarding and the single-close
+ensure guard retain their existing behavior. This changes no R3 completion,
+membership, cancellation, server pending-close or client boolean contract.
+Falcon H2 and the H2 client share this wrapper. Falcon-local H1 is unaffected.
+
+Focused real-socket examples capture publication at actual EOF/frame-error
+retirement reentry. The pre-fix observation gate proves missing ownership at
+that boundary without claiming an ungated runtime cycle. Separate ungated
+cases check reader-initiated retirement and original error identity; held
+reader fibers keep external competitors and disposal pending until release.
+The R4 evidence bundle records fixture corrections and terminated fixture
+runs separately. Those terminations prove no cooperative cleanup. Both pinned
+Ruby lanes must also explicitly collect the early-output regression on final
+source. Fresh Codex/Claude component reviews and later qualification remain
+parent-owned, with the historical holds below preserved.
+
 External callers must join actual owned cleanup rather than observe an abort-request flag as completion. Owned-task reentry must remain nonblocking when the retiring owner is joining that task. Preserve normal close outcomes, raw-first invalidation, first failure/interruption ownership, exactly-once disposal, admission, identity, existing caps and cooperative semantics. There is no hard cleanup deadline.
 
 The M4 candidate failure is supplied evidence, not a demonstrated baseline defect. Before changing product code, add and run an independent regression against unchanged baseline Resource/ServerSession. Establish a real generated Echo call on an actual ephemeral TCP connection, capture its actual resource and handler task, then hold handler ensure on an explicit release gate that tolerates repeated cancellation. Start one real abort, observe cleanup entry, then start an external competing resource abort/session abort/close. Assert the external completion has not returned before release and that every captured owner task has finished after release. Use explicit operation-start and scheduler ordering boundaries; release all gates in ensure. Retain command, exact diff/base, first intended assertion failure and state. No Host#wait, accept fault feature or copied candidate product code.

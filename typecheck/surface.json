@@ -46,7 +46,7 @@
     "ConnectRPC::Async::Internal::Connection#delete": {"kind":"method","visibility":"public","parameters":"id","classification":"internal"},
     "ConnectRPC::Async::Internal::Connection#finish_close": {"kind":"method","visibility":"public","parameters":"error = nil","classification":"internal"},
     "ConnectRPC::Async::Internal::Connection#initialize": {"kind":"method","visibility":"public","parameters":"...","classification":"internal"},
-    "ConnectRPC::Async::Internal::Connection#read_in_background": {"kind":"method","visibility":"public","parameters":"...","classification":"internal"},
+    "ConnectRPC::Async::Internal::Connection#read_in_background": {"kind":"method","visibility":"public","parameters":"parent: ::Async::Task.current","classification":"internal"},
     "ConnectRPC::Async::Internal::Connection#reader_task": {"kind":"attribute","visibility":"public","classification":"internal"},
     "ConnectRPC::Async::Internal::Connection#resource": {"kind":"attribute","visibility":"public","classification":"internal"},
     "ConnectRPC::Async::Internal::Connection#resource=": {"kind":"attribute","visibility":"public","classification":"internal"},

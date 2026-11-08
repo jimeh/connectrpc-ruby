@@ -56,8 +56,31 @@ module ConnectRPC
           synchronize { ::Async::Task.current.defer_cancel { super(&) } }
         end
 
-        def read_in_background(...)
-          @reader_task = super
+        # Mirror async-http 0.105.0 and Async 2.46's eager Task#async, publishing
+        # the actual transient reader before EOF/error can reenter retirement.
+        def read_in_background(parent: ::Async::Task.current)
+          raise "Connection is closed!" if closed?
+          raise ::Async::Task::FinishedError if parent.finished?
+
+          reader = @reader_task = ::Async::Task.new(parent, transient: true) do |task|
+            @reader = task
+            task.annotate("#{version} reading data for #{self.class}.")
+            begin
+              until closed?
+                consume_window
+                read_frame
+              end
+            rescue StandardError => e
+              # Upstream forwards the original reader failure through close.
+            ensure
+              if @reader
+                @reader = nil
+                close(e)
+              end
+            end
+          end
+          reader.run
+          reader
         end
 
         def consume_local_window(frame)
