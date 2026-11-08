@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require_relative "../../connectrpc-async/spec/support/retirement_helpers"
+require_relative "../../connectrpc-async/spec/support/retirement_corrections"
 
 RSpec.describe "Falcon shared retirement completion" do
   include RetirementHelpers
@@ -12,6 +13,9 @@ RSpec.describe "Falcon shared retirement completion" do
     port = host.instance_variable_get(:@owned_bound).sockets.first.local_address.ip_port
     [host, "#{tls ? 'https' : 'http'}://127.0.0.1:#{port}"]
   end
+
+  include_examples "retirement close corrections", :h1
+  include_examples "retirement close corrections", :h2
 
   %i[h1 h2].product(%i[h2c tls mtls]).each do |protocol, mode|
     it "retains actual #{protocol} #{mode} connection metrics and competing close until processor cleanup" do

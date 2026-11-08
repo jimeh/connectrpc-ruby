@@ -68,6 +68,11 @@ tasks, their cleanup descendants and final buffered/TLS disposal. An owned task
 initiating or reentering abort requests retirement without waiting on cleanup
 that must join that same task. Each external abort/close joiner retains its own
 first interruption until cleanup completes.
+An external server close caller interrupted during a nonzero graceful drain
+requests forced session retirement, joins actual cleanup, then raises its
+identical first exception. Other callers retain their own result or exception,
+and an already-decided close outcome remains unchanged. Owned close reentry
+requests retirement without joining cleanup that must join that same task.
 H2 pool release, acquisition or close can therefore wait beyond an RPC deadline
 for actual retirement. The 100 ms fallback allowance triggers destructive
 cleanup; it is not a hard deadline for that cleanup.

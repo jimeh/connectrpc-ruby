@@ -63,7 +63,13 @@ module ConnectRPC
         Internal.seconds(grace, "grace", zero: true)
         return @close_outcome if @state == :closed
 
-        owned = resource_owned_task?
+        return @close_outcome if @cleanup&.current? || @closer&.current?
+
+        if resource_owned_task?
+          abort_owned
+          return @close_outcome
+        end
+
         unless @state == :closing
           @state = :closing
           @closer = ::Async::Task.new(@owner, finished: false) do
@@ -74,16 +80,10 @@ module ConnectRPC
             end
             @close_outcome
           end
-          # Owned handlers must remain interruptible so cleanup can join them.
-          if owned
-            @closer.run
-            return @closer.wait
-          end
-
-          return Internal.join_complete(@closer, failure: true) { @closer.run }
+          return Internal.join_complete(@closer, failure: true, on_interrupt: method(:abort_owned)) { @closer.run }
         end
         waiter = @closer || @cleanup
-        owned ? waiter.wait : Internal.join_complete(waiter, failure: true)
+        Internal.join_complete(waiter, failure: true, on_interrupt: method(:abort_owned))
         @close_outcome
       end
 

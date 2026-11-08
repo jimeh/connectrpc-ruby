@@ -257,6 +257,9 @@ RSpec.describe "HTTP/2 idle expiry" do
       host_record = host_session(host).instance_variable_get(:@resources).first
       client_record = transport.instance_variable_get(:@resources).first
       wait_until(task, "idle connection EOF") { host_record.raw.closed? && client_record.raw.closed? }
+      wait_until(task, "idle connection retirement completes after raw EOF") do
+        host_record.send(:retirement_completed?) && client_record.send(:retirement_completed?)
+      end
       expect(host_record.task).to be_finished
       expect(client_record.connection.reader_task).to be_finished
       expect(typed.echo(AsyncHelpers::MESSAGE.new(name: "future")).message.name).to eq("future")

@@ -100,6 +100,19 @@ module ConnectRPC
         end
       end
 
+      # Publish ownership before the pinned output's eager first body read.
+      class Output < ::Async::HTTP::Protocol::HTTP2::Output
+        def start(parent: ::Async::Task.current)
+          raise "Task already started!" if @task
+
+          work = method(@body.stream? ? :stream : :passthrough)
+          task = @task = ::Async::Task.new(parent, &work)
+          yield task
+          task.run
+          task
+        end
+      end
+
       module Stream # rubocop:disable Metrics/ModuleLength
         attr_reader :grpc_initial_headers, :grpc_initial_end_stream, :grpc_trailers, :grpc_error, :grpc_reset,
                     :declared_length
@@ -273,12 +286,13 @@ module ConnectRPC
           super
         end
 
-        def send_body(body, trailer = nil)
+        def send_body(body, trailer = nil, &)
           # A peer reset can close the stream while deferred headers flush.
           # Upstream otherwise starts an output task on the closed stream.
           return body.close if closed?
 
-          super
+          @output = Output.new(self, body, trailer)
+          @output.start(&)
         end
       end
 
@@ -302,7 +316,7 @@ module ConnectRPC
         def response_written? = @response_written && !@response_reset && (!@grpc || @grpc_terminal_written)
 
         def send_body(...)
-          @response_task = super
+          super { |task| @response_task = task }
         end
 
         def receive_reset_stream(frame)
@@ -342,7 +356,7 @@ module ConnectRPC
         end
 
         def send_body(...)
-          @output_task = super
+          super { |task| @output_task = task }
         end
       end
 
@@ -443,6 +457,7 @@ module ConnectRPC
           @drain_task = nil
           @retirement_members = {}
           @cancelled_roots = {}
+          @forced_roots = {}
         end
 
         def changed
@@ -467,6 +482,8 @@ module ConnectRPC
         def finishing? = @finishing
 
         def abort(error = IOError.new("HTTP/2 connection closed"))
+          return if @cleanup&.current?
+
           capture_retirement
           owned = owns_task?(::Async::Task.current)
           launch = !@cleanup
@@ -571,7 +588,14 @@ module ConnectRPC
           task.cancel
           # The first request can remain deferred by the pinned frame/response
           # guard. Deliver it now, once, rather than waiting on that guard.
-          task.cancel if task.cancel_deferred?
+          force_deferred(task)
+        end
+
+        def force_deferred(task)
+          return if @forced_roots.key?(task) || task.finished? || !task.cancel_deferred?
+
+          @forced_roots[task] = true
+          task.cancel
         end
 
         def mark_cancelled(task)
@@ -582,9 +606,12 @@ module ConnectRPC
         def retire(error)
           # Raw TCP precedes any protocol, buffered stream or TLS disposal.
           Internal.raw_close(@raw)
+          # Release the eager initiator's cancellation stack before joining it.
+          ::Async::Task.current.yield
           @connection&.close!
           loop do
             capture_retirement
+            writers = @connection&.writers&.keys || []
             roots = retirement_roots
             roots.reject! do |task|
               ancestor = task
@@ -595,6 +622,9 @@ module ConnectRPC
               covered
             end
             roots.each { |task| cancel_root(task) }
+            # An ancestor's cascade can leave the registered frame writer with
+            # only a deferred request. Logical coverage is not forced delivery.
+            writers.each { |writer| force_deferred(writer) }
             @retirement_members.keys.reverse_each { |task| Internal.join_complete(task) }
             capture_retirement
             break if @retirement_members.keys.all?(&:finished?)

@@ -348,6 +348,8 @@ module ConnectRPC
       end
 
       def abort
+        return if @cleanup&.current?
+
         capture_retirement
         owned = owns_task?(::Async::Task.current)
         launch = !@cleanup
@@ -458,6 +460,8 @@ module ConnectRPC
 
       def retire
         @raw.close unless @raw.closed?
+        # Release the eager initiator's cancellation stack before joining it.
+        ::Async::Task.current.yield
         loop do
           capture_retirement
           roots = retirement_roots
@@ -488,24 +492,35 @@ module ConnectRPC
         return unless task
 
         interruption = stored_failure = nil
-        resolved = false
+        pending = [[task, false]]
         begin
           yield if block_given?
         rescue Exception => e # rubocop:disable Lint/RescueException -- finish the join before propagating caller interruption
           interruption = e
         end
-        loop do
-          task.wait unless resolved
-          resolved = true
-          break if task.finished?
+        while (entry = pending.last)
+          target = entry.first
+          raise ArgumentError, "Cannot join the current task" if target.current?
 
-          ::Async::Task.current.yield
-        rescue Exception => e # rubocop:disable Lint/RescueException -- repeated interruption cannot abandon retirement
-          if task.failed? && task.result.equal?(e)
-            stored_failure = e if failure || !e.is_a?(StandardError)
-            resolved = true
+          begin
+            target.wait unless entry.last
+            entry[1] = true
+          rescue Exception => e # rubocop:disable Lint/RescueException -- repeated interruption cannot abandon retirement
+            if target.failed? && target.result.equal?(e)
+              stored_failure ||= e if (failure && target.equal?(task)) || !e.is_a?(StandardError)
+              entry[1] = true
+            else
+              interruption ||= e
+            end
+            next
+          end
+          if target.finished?
+            pending.pop
           else
-            interruption ||= e
+            children = target.children&.to_a&.reject { |child| child.transient? || child.finished? } || []
+            raise "Resolved task has no joinable descendant" if children.empty?
+
+            pending.concat(children.map { |child| [child, false] })
           end
         end
         raise interruption if interruption

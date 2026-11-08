@@ -68,33 +68,54 @@ module ConnectRPC
 
       # A task's promise can resolve before its children relinquish ownership.
       # Each joiner retains its own interruption, independently of the task result.
-      def self.join_complete(task, failure: false)
-        interruption = stored_failure = nil
-        resolved = false
-        begin
-          yield if block_given?
-        rescue Exception => e # rubocop:disable Lint/RescueException -- finish the join before propagating caller interruption
-          interruption = e
-        end
-        loop do
-          task.wait unless resolved
-          resolved = true
-          break if task.finished?
-
-          ::Async::Task.current.yield
-        rescue Exception => e # rubocop:disable Lint/RescueException -- repeated interruption cannot abandon retirement
-          if task.failed? && task.result.equal?(e)
-            stored_failure = e if failure || !e.is_a?(StandardError)
-            resolved = true
-          else
-            interruption ||= e
+      class CompletionJoin
+        def self.call(task, failure: false, on_interrupt: nil)
+          interruption = stored_failure = nil
+          pending = [[task, false]]
+          begin
+            yield if block_given?
+          rescue Exception => e # rubocop:disable Lint/RescueException -- finish the join before propagating caller interruption
+            interruption = e
           end
-        end
-        raise interruption if interruption
-        raise stored_failure if stored_failure
+          while (entry = pending.last)
+            target = entry.first
+            raise ArgumentError, "Cannot join the current task" if target.current?
 
-        task.result
+            begin
+              if interruption && on_interrupt
+                request = on_interrupt
+                on_interrupt = nil
+                request.call
+              end
+              target.wait unless entry.last
+              entry[1] = true
+            rescue Exception => e # rubocop:disable Lint/RescueException -- repeated interruption cannot abandon retirement
+              if target.failed? && target.result.equal?(e)
+                stored_failure ||= e if (failure && target.equal?(task)) || !e.is_a?(StandardError)
+                entry[1] = true
+              else
+                interruption ||= e
+              end
+              next
+            end
+            if target.finished?
+              pending.pop
+            else
+              children = target.children&.to_a&.reject { |child| child.transient? || child.finished? } || []
+              raise "Resolved task has no joinable descendant" if children.empty?
+
+              pending.concat(children.map { |child| [child, false] })
+            end
+          end
+          raise interruption if interruption
+          raise stored_failure if stored_failure
+
+          task.result
+        end
       end
+      private_constant :CompletionJoin
+
+      def self.join_complete(...) = CompletionJoin.call(...)
 
       def self.cancel(task)
         return unless task && !task.current? && !task.finished?

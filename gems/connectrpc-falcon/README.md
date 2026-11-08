@@ -178,6 +178,11 @@ cleanup that must join them. A session accepted handle's existing `wait_closed`
 operation uses this same boundary, so the active connection metric and server
 connection slot remain retained until cleanup completes. Each external abort/close
 joiner retains its own first interruption through the join.
+An external close caller interrupted during a nonzero graceful drain requests
+forced session retirement, joins actual cleanup, then raises its identical first
+exception. Competitors keep their own result or exception, and an already-decided
+outcome remains unchanged. Owned close reentry requests retirement without
+joining cleanup that must join that same task.
 
 The grace period bounds cooperative drain before forced teardown; it is not a
 hard cleanup timer. Non-yielding application/native work can delay retirement
