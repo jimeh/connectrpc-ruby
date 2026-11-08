@@ -221,6 +221,17 @@ optional runtime require.
 | Falcon | Endpoint's supported operations, Environment overrides and Server/native application/TLS lifecycle |
 | OTel | Subscriber configuration and narrow tracer-provider/tracer/span/propagator capabilities; SDK and context implementation remain application owned |
 
+`Async::Host#close`, `Async::ServerSession#close` and `Falcon::Server#close`
+return `bool?`. Nil means a nonjoining owned request or coordinator reentry is
+pending. External callers join actual cleanup and receive the final shared
+boolean; once closed, all calls receive that boolean. Owned positive-grace
+initiation preserves ordinary asynchronous drain and admitted sibling progress.
+Repeated requests retain the first closer and expiry. Pending nil does not
+decide an outcome or publish completion. The API callers narrow nil separately
+from completed booleans, and the negative inventory rejects treating a pending
+server close as an unconditional bool. Client transport close signatures remain
+`bool`.
+
 Constructors include their actual options and return types. Type checks reject
 wrong field, callback and configuration types. Runtime checks still enforce
 names, byte limits, finite numeric ranges, required TLS key presence, TLS/wire

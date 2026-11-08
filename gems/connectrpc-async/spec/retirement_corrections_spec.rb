@@ -1,9 +1,11 @@
 # frozen_string_literal: true
 
 require_relative "support/retirement_corrections"
+require_relative "support/pending_close"
 
 RSpec.describe "Shared retirement first review corrections" do
   include_examples "retirement close corrections", :h2
+  include_examples "owned pending close", :h2
 
   %i[abort close].each do |operation|
     it "allows #{operation} coordinator close reentry from listener cleanup" do
@@ -15,6 +17,7 @@ RSpec.describe "Shared retirement first review corrections" do
         result = operation == :abort ? session.abort : session.close(grace: 1)
         expect(result).to equal(operation == :abort ? session : true)
         expect(reentries).not_to be_empty
+        expect(reentries).to all(be_nil)
         expect(session.close(grace: 0)).to be(operation == :close)
       ensure
         session&.abort

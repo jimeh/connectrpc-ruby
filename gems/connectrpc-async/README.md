@@ -52,7 +52,7 @@ A future separate call can open a fresh connection after failure/GOAWAY.
 
 Both objects provide `close(grace: 5)`: stop admission, await handlers/calls and
 complete wire streams, send GOAWAY when empty, then half-close and await EOF.
-Returns true when drained, false after forced teardown. Grace is finite and
+External callers receive true when drained, false after forced teardown. Grace is finite and
 nonnegative; zero aborts. Repeated/concurrent calls share the first outcome.
 Finite deadlines begin in core before encoding and cover pool/setup/headers/body.
 Timers use at most 86400-second waits without shortening logical deadlines.
@@ -71,8 +71,20 @@ first interruption until cleanup completes.
 An external server close caller interrupted during a nonzero graceful drain
 requests forced session retirement, joins actual cleanup, then raises its
 identical first exception. Other callers retain their own result or exception,
-and an already-decided close outcome remains unchanged. Owned close reentry
-requests retirement without joining cleanup that must join that same task.
+and an already-decided close outcome remains unchanged.
+
+Server `Host#close` and `ServerSession#close` return `bool?`. A resource-owned
+handler initiating positive-grace close starts the ordinary asynchronous drain
+and returns nil while shutdown is pending. Admitted siblings retain their grace
+and can continue processing. Owned repeated requests and cleanup/close coordinator
+reentry also return nil while pending, without joining cleanup that must join
+them. Nil neither decides the outcome nor publishes completion. Repeated requests
+share the original closer and expiry, even with a different grace argument.
+External callers join actual cleanup and receive its final boolean. Once closed,
+every call returns that same boolean, including coordinator reentry. Zero grace
+still forces teardown; explicit abort and already-decided outcomes are preserved.
+The client `Transport` and `HTTP1Transport` close return types remain `bool`.
+
 H2 pool release, acquisition or close can therefore wait beyond an RPC deadline
 for actual retirement. The 100 ms fallback allowance triggers destructive
 cleanup; it is not a hard deadline for that cleanup.

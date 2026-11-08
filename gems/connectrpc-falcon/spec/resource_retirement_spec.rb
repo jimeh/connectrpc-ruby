@@ -2,6 +2,7 @@
 
 require_relative "../../connectrpc-async/spec/support/retirement_helpers"
 require_relative "../../connectrpc-async/spec/support/retirement_corrections"
+require_relative "../../connectrpc-async/spec/support/pending_close"
 
 RSpec.describe "Falcon shared retirement completion" do
   include RetirementHelpers
@@ -16,6 +17,8 @@ RSpec.describe "Falcon shared retirement completion" do
 
   include_examples "retirement close corrections", :h1
   include_examples "retirement close corrections", :h2
+  include_examples "owned pending close", :h1
+  include_examples "owned pending close", :h2
 
   %i[h1 h2].product(%i[h2c tls mtls]).each do |protocol, mode|
     it "retains actual #{protocol} #{mode} connection metrics and competing close until processor cleanup" do

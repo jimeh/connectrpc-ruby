@@ -181,8 +181,18 @@ joiner retains its own first interruption through the join.
 An external close caller interrupted during a nonzero graceful drain requests
 forced session retirement, joins actual cleanup, then raises its identical first
 exception. Competitors keep their own result or exception, and an already-decided
-outcome remains unchanged. Owned close reentry requests retirement without
-joining cleanup that must join that same task.
+outcome remains unchanged.
+
+`Server#close` returns `bool?`: a resource-owned handler initiating positive-grace
+close starts the ordinary asynchronous drain and returns nil while pending.
+Admitted siblings keep their grace and can continue processing. Owned repeated
+requests and cleanup/close coordinator reentry also return nil while pending,
+without joining cleanup that must join them. Nil neither decides the outcome nor
+publishes completion. Repeated requests retain the first closer and expiry even
+when passed a different grace. External callers join actual cleanup and receive
+the final boolean, true for drained or false for forced teardown. Once closed,
+all calls return that same boolean, including coordinator reentry. Zero grace
+still forces teardown; explicit abort and already-decided outcomes are preserved.
 
 The grace period bounds cooperative drain before forced teardown; it is not a
 hard cleanup timer. Non-yielding application/native work can delay retirement

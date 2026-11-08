@@ -63,14 +63,11 @@ module ConnectRPC
         Internal.seconds(grace, "grace", zero: true)
         return @close_outcome if @state == :closed
 
-        return @close_outcome if @cleanup&.current? || @closer&.current?
+        return nil if @cleanup&.current? || @closer&.current?
 
-        if resource_owned_task?
-          abort_owned
-          return @close_outcome
-        end
-
-        unless @state == :closing
+        owned = resource_owned_task?
+        launch = @state != :closing
+        if launch
           @state = :closing
           @closer = ::Async::Task.new(@owner, finished: false) do
             begin
@@ -80,10 +77,14 @@ module ConnectRPC
             end
             @close_outcome
           end
-          return Internal.join_complete(@closer, failure: true, on_interrupt: method(:abort_owned)) { @closer.run }
         end
+        if owned
+          @closer.run if launch
+          return @state == :closed ? @close_outcome : nil
+        end
+
         waiter = @closer || @cleanup
-        Internal.join_complete(waiter, failure: true, on_interrupt: method(:abort_owned))
+        Internal.join_complete(waiter, failure: true, on_interrupt: method(:abort_owned)) { @closer.run if launch }
         @close_outcome
       end
 

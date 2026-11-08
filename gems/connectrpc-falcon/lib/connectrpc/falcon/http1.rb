@@ -503,7 +503,7 @@ module ConnectRPC
           raise ArgumentError, "Cannot join the current task" if target.current?
 
           begin
-            target.wait unless entry.last
+            target.wait unless entry[1]
             entry[1] = true
           rescue Exception => e # rubocop:disable Lint/RescueException -- repeated interruption cannot abandon retirement
             if target.failed? && target.result.equal?(e)
@@ -516,12 +516,24 @@ module ConnectRPC
           end
           if target.finished?
             pending.pop
-          else
-            children = target.children&.to_a&.reject { |child| child.transient? || child.finished? } || []
-            raise "Resolved task has no joinable descendant" if children.empty?
-
-            pending.concat(children.map { |child| [child, false] })
+            next
           end
+
+          children = target.children&.to_a&.reject { |child| child.transient? || child.finished? } || []
+          if children.empty? && target.alive? && !entry[2]
+            # Cancellation resolves the promise before its final transfer
+            # returns. Hand off once, then require actual completion.
+            entry[2] = true
+            begin
+              ::Async::Task.current.yield
+            rescue Exception => e # rubocop:disable Lint/RescueException -- retain interruption through finalization
+              interruption ||= e
+            end
+            next
+          end
+          raise "Resolved task has no joinable descendant" if children.empty?
+
+          pending.concat(children.map { |child| [child, false] })
         end
         raise interruption if interruption
         raise stored_failure if stored_failure
