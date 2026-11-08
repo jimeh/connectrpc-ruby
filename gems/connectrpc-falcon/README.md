@@ -194,6 +194,12 @@ the final boolean, true for drained or false for forced teardown. Once closed,
 all calls return that same boolean, including coordinator reentry. Zero grace
 still forces teardown; explicit abort and already-decided outcomes are preserved.
 
+Private task joins distinguish a resolved result from actual finalization. They
+block on required children and task-local progress/finalization notifications,
+retaining captured child identities through reparenting or transient changes.
+A scheduling opportunity after raw close establishes no completion boundary;
+all retained task joins still precede disposal and retirement publication.
+
 The grace period bounds cooperative drain before forced teardown; it is not a
 hard cleanup timer. Non-yielding application/native work can delay retirement
 indefinitely. Ordinary owner cancellation leaves independent cleanup running

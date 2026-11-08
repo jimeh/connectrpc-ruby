@@ -606,7 +606,8 @@ module ConnectRPC
         def retire(error)
           # Raw TCP precedes any protocol, buffered stream or TLS disposal.
           Internal.raw_close(@raw)
-          # Release the eager initiator's cancellation stack before joining it.
+          # Best-effort scheduling hint only. A return proves no unwind or
+          # completion; the retained-task joins below establish retirement.
           ::Async::Task.current.yield
           @connection&.close!
           loop do

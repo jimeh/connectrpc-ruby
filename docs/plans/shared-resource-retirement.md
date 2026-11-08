@@ -2,6 +2,41 @@
 
 Revised after independent Claude plan review and baseline proof. Delivery branch: `fix/shared-resource-retirement`. Base: live main `805bb8099bac63b9bff75b1cac7a637c9752217c`. Refs #26. One separate PR, no merge.
 
+## R3 completion correction
+
+The consolidated R3 model replaces consumed-one-yield finalization with private
+observation of selected Task instances. Initial observation applies only after a
+result is known, with an unfinished live fiber and no unfinished required child.
+A super-first consume hook retains newly exposed required identities immediately,
+including progress while the target remains unfinished. Independent joiners keep
+blocking worklists and share nondestructive retained membership. A generation and
+rotating latched Promise signal only actual progress, terminal observation or an
+internal violation. Interruptions and stray wakes grant no completion credit.
+
+A deferred scheduler callback observes both actual finished? and death of the
+captured original fiber. It creates no Task, performs no application work or
+suspension, and latches ordinary internal errors outside the selector. Terminal
+observation releases fiber/scheduler references, but final decisions recheck the
+actual predicate and all retained work because finished? is not monotone.
+Membership capture remains active through retained joins and becomes inert only
+after the final completion decision. Newly created required work, reparenting, removal and later transient flags do not erase
+captured obligations. Nil/dead-fiber unfinished states without work report an
+explicit diagnostic, including attached-but-finished children.
+
+The single post-raw-close yield is only a best-effort scheduling hint. Neither its
+return nor promise resolution proves unwind or cleanup completion. Stored target
+failure and each caller's first interruption remain separate; on_interrupt is
+one-shot even at the new latch wait. Async and Falcon retain local private
+counterparts with independent per-instance state and inert released hooks.
+
+Jim's implemented bool?/nil pending server close contract and all ownership,
+grace, cancellation, accounting and publication rules remain unchanged. R3 runs
+only focused owning tests and static/API/inventory leaves on both pins. Aggregate,
+installed/full RBS checks, fresh whole-component Codex/Claude reviews and final
+judgment remain parent-owned. Historical execution instructions below describe
+the original delivery phase; they do not authorize R3 workers to access other
+checkouts, mutate Git state, publish, or run those parent-owned graphs.
+
 ## Outcome and evidence gate
 
 External callers must join actual owned cleanup rather than observe an abort-request flag as completion. Owned-task reentry must remain nonblocking when the retiring owner is joining that task. Preserve normal close outcomes, raw-first invalidation, first failure/interruption ownership, exactly-once disposal, admission, identity, existing caps and cooperative semantics. There is no hard cleanup deadline.

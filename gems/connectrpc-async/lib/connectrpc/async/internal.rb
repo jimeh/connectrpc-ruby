@@ -1,5 +1,7 @@
 # frozen_string_literal: true
 
+require_relative "completion_join"
+
 module ConnectRPC
   module Async
     module Internal
@@ -65,67 +67,6 @@ module ConnectRPC
         # The owner/supervisor reports the original failure.
         nil
       end
-
-      # A task's promise can resolve before its children relinquish ownership.
-      # Each joiner retains its own interruption, independently of the task result.
-      class CompletionJoin
-        def self.call(task, failure: false, on_interrupt: nil)
-          interruption = stored_failure = nil
-          pending = [[task, false]]
-          begin
-            yield if block_given?
-          rescue Exception => e # rubocop:disable Lint/RescueException -- finish the join before propagating caller interruption
-            interruption = e
-          end
-          while (entry = pending.last)
-            target = entry.first
-            raise ArgumentError, "Cannot join the current task" if target.current?
-
-            begin
-              if interruption && on_interrupt
-                request = on_interrupt
-                on_interrupt = nil
-                request.call
-              end
-              target.wait unless entry[1]
-              entry[1] = true
-            rescue Exception => e # rubocop:disable Lint/RescueException -- repeated interruption cannot abandon retirement
-              if target.failed? && target.result.equal?(e)
-                stored_failure ||= e if (failure && target.equal?(task)) || !e.is_a?(StandardError)
-                entry[1] = true
-              else
-                interruption ||= e
-              end
-              next
-            end
-            if target.finished?
-              pending.pop
-              next
-            end
-
-            children = target.children&.to_a&.reject { |child| child.transient? || child.finished? } || []
-            if children.empty? && target.alive? && !entry[2]
-              # Cancellation resolves the promise before its final transfer
-              # returns. Hand off once, then require actual completion.
-              entry[2] = true
-              begin
-                ::Async::Task.current.yield
-              rescue Exception => e # rubocop:disable Lint/RescueException -- retain interruption through finalization
-                interruption ||= e
-              end
-              next
-            end
-            raise "Resolved task has no joinable descendant" if children.empty?
-
-            pending.concat(children.map { |child| [child, false] })
-          end
-          raise interruption if interruption
-          raise stored_failure if stored_failure
-
-          task.result
-        end
-      end
-      private_constant :CompletionJoin
 
       def self.join_complete(...) = CompletionJoin.call(...)
 

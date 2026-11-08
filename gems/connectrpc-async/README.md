@@ -89,6 +89,12 @@ H2 pool release, acquisition or close can therefore wait beyond an RPC deadline
 for actual retirement. The 100 ms fallback allowance triggers destructive
 cleanup; it is not a hard deadline for that cleanup.
 
+Private task joins distinguish a resolved result from actual finalization. They
+block on required children and task-local progress/finalization notifications,
+retaining captured child identities through reparenting or transient changes.
+A scheduling opportunity after raw close establishes no completion boundary;
+all retained task joins still precede disposal and retirement publication.
+
 These joins require cooperative tasks and a live application reactor. A
 non-yielding handler or native operation can delay them indefinitely. Cleanup
 survives ordinary owner cancellation while an external waiter or lifetime guard

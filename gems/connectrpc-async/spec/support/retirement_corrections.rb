@@ -14,6 +14,7 @@ RSpec.shared_examples "retirement close corrections" do |protocol|
           Async::Condition.new.wait
         end
         child = root.children.to_a.fetch(0)
+        original_fibers = [root.fiber, child.fiber]
         root.cancel
         expect(root.wait).to be_nil
         expect(root).to be_alive
@@ -30,9 +31,10 @@ RSpec.shared_examples "retirement close corrections" do |protocol|
           AsyncHelpers::INTERNAL.join_complete(root)
         end
         trace.disable
-        expect(yields).to eq(1)
+        expect(yields).to eq(0)
         expect(root).to be_finished
         expect(child).to be_finished
+        expect(original_fibers).to all(satisfy { |fiber| !fiber.alive? })
         state.fetch(:gate).release
         state.fetch(:resource).abort
         expect(retirement_complete?(state.fetch(:resource))).to be(true)
@@ -46,7 +48,7 @@ RSpec.shared_examples "retirement close corrections" do |protocol|
     end
   end
 
-  it "retains the first #{protocol} joiner interruption at the single finalization handoff" do
+  it "retains the first #{protocol} joiner interruption during finalization observation" do
     reactor do |task|
       with_retirement_connection(task, protocol: protocol) do |state|
         reader, writer = Socket.pair(:UNIX, :STREAM, 0)
@@ -55,7 +57,6 @@ RSpec.shared_examples "retirement close corrections" do |protocol|
           Async::Condition.new.wait
         end
         child = root.children.to_a.fetch(0)
-        boundary = Async::Queue.new
         first = Async::Cancel.new("first finalization interruption")
         joiner = Async::Task.new(task, finished: false) do
           root.cancel
@@ -71,27 +72,24 @@ RSpec.shared_examples "retirement close corrections" do |protocol|
           e
         end
         interrupter = task.async(finished: false) do
-          boundary.dequeue
+          root.wait
           Fiber.scheduler.raise(joiner.fiber, first)
         end
         yields = 0
         trace = TracePoint.new(:call) do |event|
-          if event.self.equal?(joiner) && event.method_id == :yield
-            yields += 1
-            boundary.enqueue(true)
-          end
+          yields += 1 if event.self.equal?(joiner) && event.method_id == :yield
         end
         trace.enable
         joiner.run
         join_retirement_tasks(task, joiner, interrupter, root, child)
         trace.disable
-        expect(yields).to eq(1)
+        expect(yields).to eq(0)
         expect(joiner.result).to equal(first)
       ensure
         trace&.disable
         reader&.close
         writer&.close
-        boundary&.enqueue(true)
+        AsyncHelpers::INTERNAL.cancel(interrupter) if interrupter && !interrupter.finished?
       end
     end
   end
@@ -118,6 +116,41 @@ RSpec.shared_examples "retirement close corrections" do |protocol|
       ensure
         reader&.close
         writer&.close
+      end
+    end
+  end
+
+  it "ignores an early stray wake at the #{protocol} post-raw-close scheduling hint" do
+    reactor do |task|
+      with_retirement_connection(task, protocol: protocol) do |state|
+        resource = state.fetch(:resource)
+        hint_done = Async::Promise.new
+        trace = TracePoint.new(:call, :return) do |event|
+          next unless event.self.equal?(resource.instance_variable_get(:@cleanup)) && event.method_id == :yield
+
+          if event.event == :call
+            Fiber.scheduler.push(event.self.fiber)
+          else
+            hint_done.resolve(raw_closed: resource.raw.closed?, handler_finished: state.fetch(:handler).finished?)
+            trace.disable
+          end
+        end
+        trace.enable
+        state.fetch(:commands).enqueue(->(_) { resource.abort })
+        state.fetch(:gate).entered.dequeue
+        expect(hint_done.wait).to eq(raw_closed: true, handler_finished: false)
+        expect(retirement_complete?(resource)).to be(false)
+        expect(resource.instance_variable_get(:@cleanup)).not_to be_finished
+        external = task.async(finished: false) { state.fetch(:session).abort }
+        expect(external).not_to be_finished
+        expect(state.fetch(:session).instance_variable_get(:@state)).to eq(:closing)
+        state.fetch(:gate).release
+        join_retirement_tasks(task, external, state.fetch(:handler), resource.instance_variable_get(:@cleanup))
+        expect(retirement_complete?(resource)).to be(true)
+        expect(state.fetch(:session).instance_variable_get(:@state)).to eq(:closed)
+      ensure
+        trace&.disable
+        state.fetch(:gate).release
       end
     end
   end
