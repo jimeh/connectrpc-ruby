@@ -240,11 +240,12 @@ streaming over HTTP/1.1,
 with protobuf/ProtoJSON and identity/gzip over TCP/TLS/mTLS. The standalone
 Async Host and original Async Transport remain H2-only. The explicit
 `ConnectRPC::Async::HTTP1Transport` supports Connect unary, safe GET, server
-streaming and client streaming in an application-owned reactor. See the streaming
-guide for Falcon's cooperative 500 ms total final-close budget and unchanged
-100 ms / 256 KiB discard limits. The native Connect streaming client's one-second
-absolute HTTP tail policy applies even with a nil RPC deadline and can reject
-otherwise valid late EOF or slow intermediaries.
+streaming and client streaming in an application-owned reactor.
+
+The streaming guide defines Falcon's cooperative 500 ms total final-close budget
+and unchanged 100 ms / 256 KiB discard limits. Native Connect streaming clients
+have a separate one-second absolute HTTP tail policy. It applies even with a nil
+RPC deadline and can reject otherwise valid late EOF or slow intermediaries.
 
 Incomplete H1 uploads disable reuse at response-head resolution. Falcon delivers
 the full response and HTTP EOF after original processor cleanup, then half-closes

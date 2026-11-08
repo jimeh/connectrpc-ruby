@@ -155,9 +155,16 @@ ownership of request ids, ETags, content length and other final host behavior.
 ## Verification and tested combinations
 
 The target supported Rails profile is 8.1. Rails 8.0 remains compatibility
-evidence outside that profile. The tested Linux x64 combinations are Rails
-8.0.5.1 on Ruby 3.4.12, and Rails 8.1.4 on Ruby 3.4.12 and 4.0.9, with Bundler 4.0.23. This is not a full
-cross-product support claim. As checked on 2026-11-02, Rails'
+evidence outside that profile. The tested combinations use Linux x64 and
+Bundler 4.0.23:
+
+| Rails | Ruby | Target profile status |
+| --- | --- | --- |
+| 8.1.4 | 3.4.12 and 4.0.9 | Supported framework profile |
+| 8.0.5.1 | 3.4.12 | Compatibility evidence only |
+
+These rows do not promise every framework/runtime combination. As checked on
+2026-11-02, Rails'
 [maintenance policy](https://rubyonrails.org/maintenance) lists security support
 ending 2026-11-07 for 8.0 and 2027-10-10 for 8.1. The 8.0 compatibility lane
 is not a promise to extend upstream maintenance.

@@ -254,17 +254,19 @@ cleanliness. Local verification does not establish hosted exact-head success.
 
 ## Public API typing gates
 
-The existing two RBS jobs also run strict implementation checks for the core
-files and private state listed in `typecheck/source.rb`, validate the actual source
-list, enforce the reviewed source/signature inventory, and check application callers for all seven packages.
-Generated positive, exact per-file negative and nominal/bridge checks remain.
+The two RBS jobs run strict implementation checks for the core files and private
+state listed in `typecheck/source.rb`. They validate that source list, enforce
+the reviewed source/signature inventory, and check application callers for all
+seven packages. Generated positive, exact per-file negative and nominal/bridge
+checks remain.
 Installed checks use normal RBS discovery in a fresh external GEM_HOME, validate
 each optional dependency closure and both composition orders, and exercise API-only
 OTel without loading an SDK. Scoped frozen optional setups supply offline archives;
 no lock, tool pin, runtime dependency or job/matrix axis is added. The
 [workflow](../.github/workflows/ci.yml) defines the complete job matrix. Local
-`rbs:proof` verifies representative source and drift failures in an independent capture; a passing consumer alone is not strict source
-checking or backend interoperability evidence. See the [RBS guide](rbs.md).
+`rbs:proof` verifies representative source and drift failures in an independent
+capture. A passing consumer alone does not establish strict source checking or
+backend interoperability. See the [RBS guide](rbs.md).
 
 ## Native streaming leaves
 

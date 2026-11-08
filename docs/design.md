@@ -303,8 +303,10 @@ Wire protocol, HTTP transport, and message binding remain separate choices.
 [Native gRPC](grpc.md) and [gRPC-Web](grpc-web.md) have distinct implemented
 profiles. Interceptors and Faraday remain future work; production readiness
 remains subject to the support contract's adoption gates. Unsupported
-modes/options are rejected rather than represented as buffered streaming. The optional [connectrpc-rails gem](../gems/connectrpc-rails/README.md) uses
-the invoker boundary to run native controller callbacks, authentication,
+modes/options are rejected rather than represented as buffered streaming.
+
+The optional [connectrpc-rails gem](../gems/connectrpc-rails/README.md) uses the
+invoker boundary to run native controller callbacks, authentication,
 `rescue_from` and instrumentation after bounded core decode. It depends on `connectrpc-rack` for Rack translation and keeps hosting
 dependencies out of core. It preserves native
 CSRF/session policy, reports unexpected errors through Rails.error and keeps
