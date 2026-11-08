@@ -2,6 +2,7 @@
 
 require "action_controller"
 require "action_dispatch"
+require "async/service/configuration"
 
 class FalconFallbackController < ActionController::Base
   self.allow_forgery_protection = true
@@ -19,6 +20,85 @@ class FalconFallbackController < ActionController::Base
 end
 
 RSpec.describe "Falcon Rack/Rails fallback boundary" do
+  it "does not cache header-dependent fallback GET responses by default" do
+    reactor do
+      finished = Async::Queue.new
+      calls = 0
+      rack = lambda do |env|
+        calls += 1
+        env["rack.response_finished"] << ->(*) { finished.enqueue(true) }
+        [200, { "content-type" => "text/plain" }, [env.fetch("HTTP_X_AUTH")]]
+      end
+      falcon(rack_app: rack) do |_host, origin|
+        first = http1(origin, "/account", body: nil,
+                                          headers: { "x-auth" => "alice", "accept-encoding" => "identity" })
+        expect(first.values_at(0, 2)).to eq([200, "alice"])
+        finished.dequeue
+        second = http1(origin, "/account", body: nil,
+                                           headers: { "x-auth" => "bob", "accept-encoding" => "identity" })
+        expect(second.values_at(0, 2)).to eq([200, "bob"])
+        expect(calls).to eq(2)
+      end
+    end
+  end
+
+  %i[direct environment].each do |configuration|
+    it "enables fallback cache hits through #{configuration} configuration" do
+      reactor do
+        finished = Async::Queue.new
+        calls = 0
+        rack = lambda do |env|
+          calls += 1
+          env["rack.response_finished"] << ->(*) { finished.enqueue(true) }
+          [200, { "content-type" => "text/plain" }, ["shared-#{calls}"]]
+        end
+        bound = ConnectRPC::Falcon::Endpoint.parse("http://127.0.0.1:0").bound
+        host = if configuration == :environment
+                 core = server
+                 config = Async::Service::Configuration.build do
+                   service "fallback-cache" do
+                     include ConnectRPC::Falcon::Environment
+
+                     connectrpc_server { core }
+                     rack_app { rack }
+                     server_options { { cache: true } }
+                   end
+                 end
+                 config.environments.fetch(0).evaluator.make_server(bound)
+               else
+                 ConnectRPC::Falcon::Server.new(server: server, endpoint: bound, rack_app: rack, cache: true)
+               end
+        host.run
+        origin = "http://127.0.0.1:#{bound.sockets.first.local_address.ip_port}"
+        headers = { "accept-encoding" => "identity" }
+        expect(http1(origin, "/shared", body: nil, headers: headers).values_at(0, 2)).to eq([200, "shared-1"])
+        # Rack completion follows the upstream cache's insertion callback.
+        finished.dequeue
+        status, cached_headers, body = http1(origin, "/shared", body: nil, headers: headers)
+        expect([status, body]).to eq([200, "shared-1"])
+        expect(cached_headers["x-cache"]).to eq(["hit"])
+        expect(calls).to eq(1)
+      ensure
+        host&.close(grace: 0)
+        bound&.close
+      end
+    end
+  end
+
+  it "preserves fallback gzip encoding with caching disabled by default" do
+    reactor do
+      rack = ->(_) { [200, { "content-type" => "text/plain" }, ["ordinary-" * 128]] }
+      falcon(rack_app: rack) do |_host, origin|
+        status, headers, body = http1(origin, "/encoded", body: nil, headers: { "accept-encoding" => "gzip" })
+        expect(status).to eq(200)
+        expect(headers["content-encoding"]).to eq(["gzip"])
+        expect(ConnectRPC::Compression.decode(body, limit: 4096)).to eq("ordinary-" * 128)
+        expect(headers["x-cache"]).to be_nil
+        expect(headers["etag"]).to be_nil
+      end
+    end
+  end
+
   it "keeps unary media on HTTP/1 streaming declarations outside binding, input reads and handler execution" do
     reactor do
       rpc = ConnectRPC::ServerStreamMethod.new(service: "fallback.Streams", name: "Watch",

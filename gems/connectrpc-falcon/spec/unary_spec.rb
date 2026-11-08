@@ -60,6 +60,26 @@ RSpec.describe ConnectRPC::Falcon::Server do
       end
     end
   end
+
+  it "rejects nonboolean cache options even without a fallback" do
+    reactor do
+      endpoint = ConnectRPC::Falcon::Endpoint.parse("http://127.0.0.1:0")
+      [nil, 0, "true", :enabled].each do |cache|
+        [nil, ->(_) { [200, {}, ["ordinary"]] }].each do |rack|
+          expect { described_class.new(server: server, endpoint: endpoint, rack_app: rack, cache: cache) }
+            .to raise_error(ArgumentError, "cache must be true or false")
+        end
+      end
+    end
+  end
+
+  it "accepts cache opt-in without a fallback" do
+    reactor do
+      falcon(cache: true) do |_host, origin|
+        expect(http1(origin, "/missing", body: nil).first).to eq(404)
+      end
+    end
+  end
   it "rejects invalid and cross-thread close before mutating the listener" do
     reactor do
       falcon(rack_app: ->(_env) { [200, {}, ["alive"]] }) do |host, origin|

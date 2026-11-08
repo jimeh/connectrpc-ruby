@@ -37,7 +37,9 @@ evaluator = configuration.environments.fetch(0).evaluator
 raise "Falcon DSL values differ" unless evaluator.count == 2 && evaluator.url == "http://127.0.0.1:9292"
 raise "Falcon DSL server differs" unless evaluator.connectrpc_server.is_a?(ConnectRPC::Server)
 raise "Falcon DSL fallback differs" unless evaluator.rack_app.call("PATH_INFO" => "/ordinary").first == 200
-raise "Falcon DSL options differ" unless evaluator.server_options == { idle_timeout: nil, max_connections: 8 }
+unless evaluator.server_options == { idle_timeout: nil, max_connections: 8, cache: true }
+  raise "Falcon DSL options differ"
+end
 
 evaluator.prepare!(Object.new)
 APIInlineFalconConfiguration.new.configure(Async::Service::Loader.new(configuration))
@@ -91,6 +93,11 @@ endpoint = ConnectRPC::Falcon::Endpoint.parse("https://127.0.0.1:9292")
 raise "Falcon endpoint failed" unless endpoint.scheme == "https"
 
 Async do
+  bound = ConnectRPC::Falcon::Endpoint.parse("http://127.0.0.1:0").bound
+  falcon = ConnectRPC::Falcon::Server.new(server: server, endpoint: bound, cache: true)
+  falcon.run
+  falcon.close(grace: 0)
+  bound.close
   application = ConnectRPC::Async::Application.new(server: server)
   session = ConnectRPC::Async::ServerSession.new(application: application)
   session.start

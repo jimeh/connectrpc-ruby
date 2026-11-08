@@ -498,7 +498,7 @@
     "ConnectRPC::Falcon::Server#close": {"kind":"method","visibility":"public","parameters":"grace: 5","classification":"supported"},
     "ConnectRPC::Falcon::Server#drain_tls": {"kind":"method","visibility":"public","parameters":"**","classification":"supported"},
     "ConnectRPC::Falcon::Server#http1_streaming_route?": {"kind":"method","visibility":"private","parameters":"request","classification":"internal"},
-    "ConnectRPC::Falcon::Server#initialize": {"kind":"method","visibility":"public","parameters":"server:, endpoint:, rack_app: nil, tls: nil, tls_provider: nil, utilization_registry: nil, max_connections: 128, max_requests: 128, handshake_timeout: 10, idle_timeout: 60, refresh_interval: 60, refresh_jitter: 0.1, refresh_timeout: 10, on_tls_error: nil","classification":"supported"},
+    "ConnectRPC::Falcon::Server#initialize": {"kind":"method","visibility":"public","parameters":"server:, endpoint:, rack_app: nil, cache: false, tls: nil, tls_provider: nil, utilization_registry: nil, max_connections: 128, max_requests: 128, handshake_timeout: 10, idle_timeout: 60, refresh_interval: 60, refresh_jitter: 0.1, refresh_timeout: 10, on_tls_error: nil","classification":"supported"},
     "ConnectRPC::Falcon::Server#peer_certificate": {"kind":"method","visibility":"public","parameters":"","classification":"supported"},
     "ConnectRPC::Falcon::Server#publication?": {"kind":"method","visibility":"private","parameters":"request","classification":"internal"},
     "ConnectRPC::Falcon::Server#refresh_tls": {"kind":"method","visibility":"public","parameters":"","classification":"supported"},

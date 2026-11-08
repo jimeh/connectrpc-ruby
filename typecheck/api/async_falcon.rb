@@ -46,7 +46,7 @@ endpoint.scheme.size
 # @type var rack_app: ConnectRPC::Rack::_App
 rack_app = APIApp.new
 falcon = ConnectRPC::Falcon::Server.new(
-  server: server, endpoint: endpoint, tls_provider: provider, rack_app: rack_app,
+  server: server, endpoint: endpoint, tls_provider: provider, rack_app: rack_app, cache: true,
   on_tls_error: ->(event) { event[:status][:category]&.to_s }
 )
 falcon.run.wait

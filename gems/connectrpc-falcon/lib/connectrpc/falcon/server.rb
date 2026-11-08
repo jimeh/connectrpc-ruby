@@ -3,10 +3,12 @@
 module ConnectRPC
   module Falcon
     class Server < ::Falcon::Server
-      def initialize(server:, endpoint:, rack_app: nil, tls: nil, tls_provider: nil,
+      def initialize(server:, endpoint:, rack_app: nil, cache: false, tls: nil, tls_provider: nil,
                      utilization_registry: nil, max_connections: 128, max_requests: 128,
                      handshake_timeout: 10, idle_timeout: 60, refresh_interval: 60,
                      refresh_jitter: 0.1, refresh_timeout: 10, on_tls_error: nil)
+        raise ArgumentError, "cache must be true or false" unless [true, false].include?(cache)
+
         configured = if endpoint.is_a?(::IO::Endpoint::BoundEndpoint)
                        endpoint.endpoint
                      else
@@ -16,7 +18,7 @@ module ConnectRPC
           raise ArgumentError, "Listener scheme and TLS configuration must agree"
         end
 
-        fallback = ::Falcon::Server.rack_middleware(RackGuard.new(rack_app)) unless rack_app.nil?
+        fallback = ::Falcon::Server.rack_middleware(RackGuard.new(rack_app), cache: cache) unless rack_app.nil?
         application = ::ConnectRPC::Async::Application.new(server: server, fallback: fallback)
         listener_application = ListenerApplication.new(application, configured.scheme)
         @listener_application = listener_application

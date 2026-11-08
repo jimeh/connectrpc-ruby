@@ -47,6 +47,31 @@ ensure
 end
 ```
 
+Rack fallback caching is disabled by default (`cache: false`). Falcon's fallback
+content encoding remains active, and native RPC bypasses both middleware layers.
+To enable Falcon's existing shared in-memory cache within each worker, pass
+`cache: true` to `ConnectRPC::Falcon::Server.new`. In a service configuration,
+use the supported `server_options` path:
+
+```ruby
+server_options { { cache: true } }
+```
+
+The inherited Falcon `cache` DSL setting does not configure this host. `cache:`
+must be `true` or `false`; with no `rack_app`, either value has no effect.
+
+Opt-in retains the pinned Falcon 0.57.0 / async-http-cache 0.4.6 semantics. Cache
+keys use authority, method and path, plus response `Vary` headers. Custom
+authorization headers are not automatically cache keys. GET/HEAD requests
+without a body, `Authorization` or `Cookie` can have 200, 203, 300, 301, 302, 404
+and 410 responses cached without an explicit `Cache-Control` header. Entries
+without `max-age` can persist for the worker's lifetime.
+Applications must set `Cache-Control` and `Vary` so responses are safe to share.
+Use `private` or `no-store` for unshared content; response `no-cache` alone is
+insufficient. Use appropriate `Vary` headers for deliberately shared content
+that depends on request headers. These are upstream cache semantics, not a
+promise of full RFC cache policy support.
+
 A TLS provider returns a complete Hash with exactly these symbol keys:
 
 ```ruby
