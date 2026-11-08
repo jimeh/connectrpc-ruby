@@ -985,6 +985,7 @@
     "ConnectRPC::Instrumentation::Handle#code=": {"kind":"attribute","visibility":"public","classification":"internal"},
     "ConnectRPC::Instrumentation::Handle#complete": {"kind":"method","visibility":"private","parameters":"","classification":"internal"},
     "ConnectRPC::Instrumentation::Handle#complete_processing": {"kind":"method","visibility":"private","parameters":"","classification":"internal"},
+    "ConnectRPC::Instrumentation::Handle#detach_tokens": {"kind":"method","visibility":"private","parameters":"tokens","classification":"internal"},
     "ConnectRPC::Instrumentation::Handle#finish": {"kind":"method","visibility":"public","parameters":"delivery:, error: nil, decision: :processed, http_status: nil","classification":"spi"},
     "ConnectRPC::Instrumentation::Handle#host_rejected!": {"kind":"method","visibility":"public","parameters":"","classification":"spi"},
     "ConnectRPC::Instrumentation::Handle#host_rejected?": {"kind":"method","visibility":"public","parameters":"","classification":"spi"},

@@ -32,6 +32,193 @@ RSpec.describe "RPC lifecycle instrumentation" do
   end
   let(:bus) { ConnectRPC::Instrumentation.new(subscribers: [subscriber]) }
 
+  describe "activation detach unwind" do
+    def observer_for(token, attach: -> { token }, &detach)
+      Object.new.tap do |observer|
+        observer.define_singleton_method(:attach, attach)
+        observer.define_singleton_method(:detach, detach)
+      end
+    end
+
+    def activation_handle(observers, on_error: nil)
+      subscribers = observers.map do |observer|
+        Object.new.tap { |sub| sub.define_singleton_method(:start) { |_| observer } }
+      end
+      ConnectRPC::Instrumentation.new(subscribers: subscribers, on_error: on_error)
+                                 .start(owner: self, role: :server, method: rpc, carrier: {})
+    end
+
+    %i[fatal throw].each do |exit|
+      it "attempts every remaining detach exactly once after a #{exit} detach exit" do
+        tokens = [Object.new, nil, false]
+        attempts = []
+        value = Object.new
+        fatal = Class.new(Exception).new("detach") # rubocop:disable Lint/InheritException -- Exercise fatal unwind.
+        fatal.set_backtrace(["observer-detach:1"])
+        observers = tokens.each_with_index.map do |token, index|
+          observer_for(token) do |received|
+            attempts << [index, received]
+            next unless index == 2
+
+            exit == :fatal ? raise(fatal) : throw(:detach_exit, value)
+          end
+        end
+        handle = activation_handle(observers)
+        yields = 0
+        if exit == :fatal
+          expect { handle.activate { yields += 1 } }.to raise_error do |error|
+            expect(error).to equal(fatal)
+            expect(error.backtrace).to eq(["observer-detach:1"])
+          end
+        else
+          expect(catch(:detach_exit) { handle.activate { yields += 1 } }).to equal(value)
+        end
+        expect(attempts.map(&:first)).to eq([2, 1, 0])
+        attempts.each { |index, received| expect(received).to equal(tokens[index]) }
+        expect(yields).to eq(1)
+      end
+    end
+
+    %i[return error].each do |exit|
+      it "preserves application #{exit} and reverse token ownership with returning detaches" do
+        tokens = [Object.new, nil, false]
+        attempts = []
+        observers = tokens.each_with_index.map do |token, index|
+          observer_for(token) do |received|
+            attempts << [index, received]
+            Object.new
+          end
+        end
+        handle = activation_handle(observers)
+        value = Object.new
+        error = RuntimeError.new("application")
+        yields = 0
+        application = lambda do
+          yields += 1
+          raise error if exit == :error
+
+          value
+        end
+        if exit == :error
+          expect { handle.activate(&application) }.to raise_error do |caught|
+            expect(caught).to equal(error)
+          end
+        else
+          expect(handle.activate(&application)).to equal(value)
+        end
+        expect(attempts.map(&:first)).to eq([2, 1, 0])
+        attempts.each { |index, received| expect(received).to equal(tokens[index]) }
+        expect(yields).to eq(1)
+      end
+    end
+
+    %i[standard fatal throw].each do |exit|
+      it "detaches only successful tokens after a #{exit} attach failure" do
+        attempts = []
+        reports = []
+        value = Object.new
+        error = if exit == :standard
+                  RuntimeError.new("attach")
+                else
+                  Class.new(Exception).new("attach") # rubocop:disable Lint/InheritException -- Exercise fatal unwind.
+                end
+        attach = -> { exit == :throw ? throw(:attach_exit, value) : raise(error) }
+        observers = [observer_for(:first) { |token| attempts << token },
+                     observer_for(:failed, attach: attach) { |token| attempts << token },
+                     observer_for(:last) { |token| attempts << token }]
+        handle = activation_handle(observers, on_error: ->(reported) { reports << reported })
+        yields = 0
+        case exit
+        when :standard
+          handle.activate { yields += 1 }
+          expect(reports).to contain_exactly(equal(error))
+          expect(attempts).to eq(%i[last first])
+          expect(yields).to eq(1)
+        when :fatal
+          expect { handle.activate { yields += 1 } }.to raise_error do |caught|
+            expect(caught).to equal(error)
+          end
+        when :throw
+          expect(catch(:attach_exit) { handle.activate { yields += 1 } }).to equal(value)
+        end
+        unless exit == :standard
+          expect(attempts).to eq([:first])
+          expect(reports).to be_empty
+          expect(yields).to eq(0)
+        end
+      end
+    end
+
+    %i[fatal throw].product(%i[fatal throw]).each do |first, remaining|
+      it "uses ordinary ensure precedence when #{first} competes with remaining #{remaining}" do
+        attempts = []
+        fatal_class = Class.new(Exception) # rubocop:disable Lint/InheritException -- Exercise fatal unwind.
+        initial = fatal_class.new("initial")
+        replacement = fatal_class.new("replacement")
+        value = Object.new
+        observers = [observer_for(:last) { |token| attempts << token },
+                     observer_for(:replacement) do |token|
+                       attempts << token
+                       remaining == :fatal ? raise(replacement) : throw(:cleanup_exit, value)
+                     end,
+                     observer_for(:initial) do |token|
+                       attempts << token
+                       first == :fatal ? raise(initial) : throw(:cleanup_exit, Object.new)
+                     end]
+        handle = activation_handle(observers)
+        if remaining == :fatal
+          expect { catch(:cleanup_exit) { handle.activate { nil } } }.to raise_error do |caught|
+            expect(caught).to equal(replacement)
+            expect(caught.cause).to equal(first == :fatal ? initial : nil)
+          end
+        else
+          expect(catch(:cleanup_exit) { handle.activate { nil } }).to equal(value)
+        end
+        expect(attempts).to eq(%i[initial replacement last])
+      end
+    end
+
+    it "reports StandardError detaches and isolates reporter failures while continuing unwind" do
+      attempts = []
+      reports = []
+      error = RuntimeError.new("detach")
+      observers = [observer_for(:first) { |token| attempts << token },
+                   observer_for(:second) do |token|
+                     attempts << token
+                     raise error
+                   end]
+      handle = activation_handle(observers, on_error: lambda { |reported|
+        reports << reported
+        raise "reporter"
+      })
+      expect(handle.activate { :result }).to eq(:result)
+      expect(attempts).to eq(%i[second first])
+      expect(reports).to contain_exactly(equal(error))
+    end
+
+    it "keeps normal detach iteration at constant stack depth" do
+      depths = []
+      observer = observer_for(nil) { |_| depths << caller.size }
+      handle = activation_handle(Array.new(2_000, observer))
+      expect(handle.activate { :result }).to eq(:result)
+      expect(depths.size).to eq(2_000)
+      expect(depths.uniq.size).to eq(1)
+    end
+
+    it "skips absent attach or detach callbacks and leaves terminal activation as a plain yield" do
+      attempts = []
+      detach_only = Object.new
+      detach_only.define_singleton_method(:detach) { |_| attempts << :unowned }
+      attach_only = Object.new
+      attach_only.define_singleton_method(:attach) { attempts << :attach }
+      handle = activation_handle([detach_only, attach_only])
+      expect(handle.activate { :first }).to eq(:first)
+      handle.finish(delivery: :completed)
+      expect(handle.activate { :terminal }).to eq(:terminal)
+      expect(attempts).to eq([:attach])
+    end
+  end
+
   def server(**, &handler)
     ConnectRPC::Server.new(services: [ConnectRPC::Service.new(name: rpc.service, methods: [rpc])], binding: binding,
                            handlers: { rpc.path => handler || ->(message, _context) { message } },
