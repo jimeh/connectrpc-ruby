@@ -5,6 +5,9 @@ ConnectRPC unary Ruby gem. The core gem remains independent of Rails and has
 zero runtime dependencies. This adapter reuses its Server invoker and the
 optional [connectrpc-rack](../connectrpc-rack/README.md) translation. It does not add another protocol implementation.
 
+See the [supported 0.x contract](../../docs/support.md) for the target support
+profile, matched package versions, compatibility policy and adoption gates.
+
 ## Use a controller
 
 Add `connectrpc-rails` and your chosen protobuf binding dependency to your
@@ -151,9 +154,17 @@ ownership of request ids, ETags, content length and other final host behavior.
 
 ## Verification and tested combinations
 
-The tested Linux x64 combinations are Rails 8.0.5.1 on Ruby 3.4.12, and Rails
-8.1.4 on Ruby 3.4.12 and 4.0.9, with Bundler 4.0.23. This is not a full
-cross-product support claim. As checked on 2026-11-02, Rails'
+The target supported Rails profile is 8.1. Rails 8.0 remains compatibility
+evidence outside that profile. The tested combinations use Linux x64 and
+Bundler 4.0.23:
+
+| Rails | Ruby | Target profile status |
+| --- | --- | --- |
+| 8.1.4 | 3.4.12 and 4.0.9 | Supported framework profile |
+| 8.0.5.1 | 3.4.12 | Compatibility evidence only |
+
+These rows do not promise every framework/runtime combination. As checked on
+2026-11-02, Rails'
 [maintenance policy](https://rubyonrails.org/maintenance) lists security support
 ending 2026-11-07 for 8.0 and 2027-10-10 for 8.1. The 8.0 compatibility lane
 is not a promise to extend upstream maintenance.
@@ -197,7 +208,9 @@ generation, Go interoperability and official conformance evidence.
 
 ## Status and licensing
 
-Experimental and not production ready. Streaming, gRPC/gRPC-Web and production hosting are outside this adapter.
+Experimental and not production ready. Streaming, native gRPC and production
+hosting are outside this adapter. Explicit binary/text unary gRPC-Web uses the
+private hooks described below.
 Original project work is [MIT licensed](LICENSE), copyright 2026 Jim Myhrberg.
 Both gem archives include the complete license and retain the
 `https://gems.invalid` push guard. Publishing, releasing or deploying requires

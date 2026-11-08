@@ -6,6 +6,9 @@ Require `connectrpc/falcon`; core and Rails bundles do not load this package.
 The API is experimental. This package is MIT licensed; publication remains
 disabled by `allowed_push_host: https://gems.invalid`.
 
+See the [supported 0.x contract](../../docs/support.md) for the target support
+profile, matched package versions, compatibility policy and adoption gates.
+
 ## Run a service
 
 The [runnable configuration](examples/falcon.rb) uses Falcon's normal service
@@ -235,11 +238,14 @@ per-message limits and bounded ownership. Native Async/Falcon HTTP/2 supports
 both codecs and identity/gzip over h2c/TLS/mTLS. Falcon additionally serves Connect server and client
 streaming over HTTP/1.1,
 with protobuf/ProtoJSON and identity/gzip over TCP/TLS/mTLS. The standalone
-Async Host and Ruby Async transport remain H2-only; a Ruby H1 streaming client
-is pending. See the streaming guide for Falcon's cooperative 500 ms total
-final-close budget and unchanged 100 ms / 256 KiB discard limits.
-The client's one-second absolute HTTP tail policy applies even with a nil RPC
-deadline and can reject otherwise valid late EOF or slow intermediaries.
+Async Host and original Async Transport remain H2-only. The explicit
+`ConnectRPC::Async::HTTP1Transport` supports Connect unary, safe GET, server
+streaming and client streaming in an application-owned reactor.
+
+The streaming guide defines Falcon's cooperative 500 ms total final-close budget
+and unchanged 100 ms / 256 KiB discard limits. Native Connect streaming clients
+have a separate one-second absolute HTTP tail policy. It applies even with a nil
+RPC deadline and can reject otherwise valid late EOF or slow intermediaries.
 
 Incomplete H1 uploads disable reuse at response-head resolution. Falcon delivers
 the full response and HTTP EOF after original processor cleanup, then half-closes

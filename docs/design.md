@@ -1,5 +1,8 @@
 # Design and implemented profile
 
+The [supported 0.x contract](support.md) defines the target compatibility
+boundary and the remaining adoption gates.
+
 The gem implements typed Connect RPCs and native HTTP/2 gRPC in all four RPC shapes.
 Falcon also serves Connect HTTP/1.1 server/client streaming. The explicit Async
 HTTP1Transport supports Connect unary and server/client streaming; standalone
@@ -297,10 +300,13 @@ The pinned Go server prefers request gzip over explicit identity acceptance;
 Ruby clients reject that unadvertised response. There is no full-conformance claim.
 
 Wire protocol, HTTP transport, and message binding remain separate choices.
-gRPC/gRPC-Web, interceptors, a production server,
-and Faraday are future work. Unsupported modes/options are rejected
-rather than represented as buffered streaming. The optional [connectrpc-rails gem](../gems/connectrpc-rails/README.md) uses
-the invoker boundary to run native controller callbacks, authentication,
+[Native gRPC](grpc.md) and [gRPC-Web](grpc-web.md) have distinct implemented
+profiles. Interceptors and Faraday remain future work; production readiness
+remains subject to the support contract's adoption gates. Unsupported
+modes/options are rejected rather than represented as buffered streaming.
+
+The optional [connectrpc-rails gem](../gems/connectrpc-rails/README.md) uses the
+invoker boundary to run native controller callbacks, authentication,
 `rescue_from` and instrumentation after bounded core decode. It depends on `connectrpc-rack` for Rack translation and keeps hosting
 dependencies out of core. It preserves native
 CSRF/session policy, reports unexpected errors through Rails.error and keeps
@@ -322,10 +328,10 @@ claimed to be verified chains. See the package guide for session isolation,
 cleanup's 100ms allowance and deliberate whole-connection failure for a stuck
 frame. Native streaming uses the same ingress and cleanup boundaries. No production daemon claim is made.
 
-Connect streaming carries end-stream metadata in its body; future gRPC has
-different [trailer requirements](https://github.com/grpc/grpc/blob/master/doc/PROTOCOL-HTTP2.md).
-The Async backend preserves leading repeated fields and leading `trailer-*`
-metadata while ignoring actual trailing HEADERS after backend validation.
+Connect streaming carries end-stream metadata in its body; native gRPC requires
+actual final HTTP/2 HEADERS, as described in the [gRPC guide](grpc.md).
+For Connect, the Async backend preserves leading repeated fields and leading
+`trailer-*` metadata while ignoring actual trailing HEADERS after backend validation.
 It reconstructs lengths normalized by the backend; malformed lengths and some
 singleton repeats can fail before core. Conservative frame/window settings do
 not provide a hard process-memory/header-size guarantee. Independent connect-go

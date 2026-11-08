@@ -69,7 +69,7 @@ Mise owns setup ordering and verification composition.
 | `mise run setup:conformance` | Install task-local official runner 1.0.6 and protoc 36.2 with locked checksums. |
 | `mise run conformance:build` | Generate descriptors from unchanged official schemas using protoc. |
 | `mise run conformance:check` | Verify schema hashes and byte-for-byte descriptor regeneration. |
-| `mise run test:conformance` | Run identity (94/88) and gzip (88/82) client/server profiles with strict accounting. |
+| `mise run test:conformance` | Run the declared identity and gzip client/server profiles with strict accounting; see the [conformance guide](../conformance/README.md). |
 | `mise run verify` | Run core checks, specs, packages, generation, Go interop, official conformance, the selected Rails lane and the independent HTTP/2 and Falcon backends. |
 
 Every entry point installs missing prerequisites through the same task graph.
@@ -420,8 +420,8 @@ Rack source ownership. Root installed checks also retain default JSON/NetHTTP
 and the actual installed generator. Rails checks all three local owners.
 
 Final local handoff requires `mise run verify` followed by `mise run rack:verify`.
-Rack verification stays separate from root `verify`. CI preserves the original 16 checks and
-adds two Rack specs/check/package lanes on the existing Rubies; clean-environment
+Rack verification stays separate from root `verify`. CI runs the core checks and
+two Rack specs/check/package lanes on the existing Rubies; clean-environment
 matrix evidence remains a hosted responsibility. No runtime savings are claimed.
 
 See the optional [in-process testing package](../gems/connectrpc-testing/README.md) for real encoded client/server round trips without sockets.
@@ -433,8 +433,9 @@ strict Steep configuration, the explicit protobuf bridge and nominal alternative
 `mise run rbs:setup` installs the independent frozen checksummed development
 bundle. `rbs:check` checks protoc/Buf parity, unchanged default Ruby and official
 message RBS, deterministic output, real generated runtime calls, RBS validation
-and positive/negative strict consumers. It also runs the ten-file strict core
-implementation target, reviewed source inventory and per-package API callers.
+and positive/negative strict consumers. It also runs the strict core
+implementation target defined by `typecheck/source.rb`, reviewed source inventory
+and per-package API callers.
 Discover the focused `rbs:source`, `rbs:api`, `rbs:inventory` and capture-only
 `rbs:proof` leaves with `mise tasks`. `rbs:package` checks every installed package
 and composed optional environments outside the checkout, using the existing
@@ -452,8 +453,8 @@ worker-local TLS provider and Rack/Rails fallback contracts. Start with
 isolated GEM_HOME and runs the actual Falcon DSL/service outside the checkout.
 `falcon:interop` runs identity and gzip against the pinned independent Go peer,
 including actual Falcon process workers. `falcon:verify` combines these leaves;
-root `verify` includes it. The existing 22 CI checks remain, with four additional
-Falcon checks across Ruby 3.4.12 and 4.0.9.
+root `verify` includes it. CI runs separate Falcon specs/package and Go checks
+across Ruby 3.4.12 and 4.0.9.
 
 Keep its checksummed Gemfile/lock, `vendor/falcon/bundle`, Bundler user state and
 `coverage/falcon/<Ruby>/` independent. Audit every added registry/platform
@@ -471,7 +472,7 @@ in-process traces, `spec/native_spec.rb` for real Async/Falcon boundaries, and
 discoverable leaves. Repeat `MISE_RUBY_VERSION=4.0.9 mise run otel:verify` for the
 second pinned runtime. Coverage starts before requires and includes core and all
 local integration libraries under `coverage/otel/<Ruby>/`. The two OTel CI leaves
-are independent of the existing 26 jobs. Runtime bundles never gain an SDK.
+run independently of the other package jobs. Runtime bundles never gain an SDK.
 Package checks install normal dependencies offline into a fresh external
 GEM_HOME, then run copied generated callers with actual SDK in-memory exports.
 See the [package guide](../gems/connectrpc-otel/README.md) for the precise trace

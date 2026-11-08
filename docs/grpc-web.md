@@ -1,5 +1,8 @@
 # gRPC-Web servers
 
+The [supported 0.x contract](support.md) defines the target compatibility
+boundary and the remaining adoption gates.
+
 Enable gRPC-Web explicitly on the existing server. Generated declarations,
 message bindings, unary invokers and server-stream handlers remain protocol neutral.
 There is no Ruby gRPC-Web client or new runtime dependency.

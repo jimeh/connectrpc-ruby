@@ -97,6 +97,9 @@ codecs and encodings. Root verification remains independent.
 Licensed under the [MIT License](LICENSE). The invalid `allowed_push_host` guard
 remains in place; no task publishes or releases this package.
 
+See the [supported 0.x contract](../../docs/support.md) for the target support
+profile, matched package versions, compatibility policy and adoption gates.
+
 ## RPC observation
 
 Configure `instrumentation:` on the core Client/Server to enable the fixed

@@ -1,5 +1,8 @@
 # Public API signatures
 
+The [supported 0.x contract](support.md) defines the target compatibility
+boundary and the remaining adoption gates.
+
 Every package ships its own gem-discovered signatures and dependency manifest.
 Core also generates mixed unary/streaming service signatures. RBS
 and Steep are development tools; neither is required by the runtime. Default
@@ -209,11 +212,12 @@ optional runtime require.
 | Owner | Supported API and extension SPI |
 | --- | --- |
 | Core | Method, non-generic Service, Client/Server options and calls, records, Metadata, CancellationSource/Token/Registration, Deadline/Context, Error/ErrorDetail, explicit NetHTTP and Google binding entry points |
-| Core SPI | `_Cancellation`, `_Binding`, `_Transport`, `_Input`, `_Handler`, `_Invoker`, callable clocks/error handlers, `_Subscriber`, four separate optional observer callback capabilities, host lifecycle Handle |
+| Core shared, unary and observation SPI | `_Cancellation`, `_Binding`, `_Transport`, `_Input`, `_Handler`, `_Invoker`, callable clocks/error handlers, `_Subscriber`, four separate optional observer callback capabilities, host lifecycle Handle |
+| Core streaming and gRPC/Web SPI | `_StreamingTransport`, `_StreamExchange`, streaming input/output, `_GRPCTransport`, `_GRPCStreamExchange`, `_GRPCStatusCodec`, native server publication/output interfaces including `_GRPCWebOutput`; see the protocol-specific sections below |
 | Rack | Middleware constructor/call and shared `_App`, `_Body`, `_CallableBody`, `_Stream`, env and response contracts |
 | Testing | In-process Transport constructor/call, reusable as the core transport |
-| Rails | Controller inclusion, `connect`, documented private service/binding/handlers/limits/instrumentation overrides and nullable request/context/method readers |
-| Async | Application/native HTTP capabilities, Host, Transport, ServerSession/accepted handles, TLSConfiguration, complete static/provider record shapes, status/error callbacks, rotation/drain/identity |
+| Rails | Controller inclusion and `connect`; documented private overrides for service, binding, handlers, limits, instrumentation and Web protocol/status/CORS; nullable request/context/method readers |
+| Async | Application/native HTTP capabilities, Host, Transport, HTTP1Transport, ServerSession/accepted handles, TLSConfiguration, complete static/provider record shapes, status/error callbacks, rotation/drain/identity |
 | Falcon | Endpoint's supported operations, Environment overrides and Server/native application/TLS lifecycle |
 | OTel | Subscriber configuration and narrow tracer-provider/tracer/span/propagator capabilities; SDK and context implementation remain application owned |
 
@@ -273,8 +277,8 @@ implementation helpers stay outside the supported API. Generator invocation and
 schema-generated service APIs retain their existing contract and parity checks.
 
 `typecheck/Steepfile` checks actual core source and private state under
-`Steep::Diagnostic::Ruby.strict`: method, metadata, error, deadline, protocol,
-client, server, instrumentation, compression message_io, cancellation and get_query, plus entry/version.
+`Steep::Diagnostic::Ruby.strict`, including streaming and gRPC/Web.
+[`typecheck/source.rb`](../typecheck/source.rb) defines the exact source set.
 `rbs:source` validates the resolved source list and Ruby syntax before checking.
 Its implementation-only declarations live outside every gem's `sig/` directory.
 Erasure is limited to custom bindings/heterogeneous messages, external JSON and
@@ -345,9 +349,9 @@ Bundles, Bundler state, compiler caches and local evidence live under
 normal installed signature/executable discovery outside the checkout. It clears
 checkout Ruby and Bundler load paths. Both Ruby lanes run these feature gates in
 CI. `rbs:check` includes strict source, inventory and all API consumers as well as
-the generated positive/22 negative and nominal/bridge cases. The 17
-generated negatives and 26 API negatives each use one fresh Steep invocation
-with a single worker. Files remain separate, with independent inference contexts
+the generated positive/negative and nominal/bridge cases. The generated and
+API negative inventories each use one fresh Steep invocation with a single
+worker. Files remain separate, with independent inference contexts
 and unchanged strict signature inputs. The harness verifies the fixture inventory,
 normal exit 1, complete checker progress/summary and exactly one expected error
 per known path. Missing, extra, duplicate, malformed and wrong-severity records
