@@ -66,6 +66,36 @@ module ConnectRPC
         nil
       end
 
+      # A task's promise can resolve before its children relinquish ownership.
+      # Each joiner retains its own interruption, independently of the task result.
+      def self.join_complete(task, failure: false)
+        interruption = stored_failure = nil
+        resolved = false
+        begin
+          yield if block_given?
+        rescue Exception => e # rubocop:disable Lint/RescueException -- finish the join before propagating caller interruption
+          interruption = e
+        end
+        loop do
+          task.wait unless resolved
+          resolved = true
+          break if task.finished?
+
+          ::Async::Task.current.yield
+        rescue Exception => e # rubocop:disable Lint/RescueException -- repeated interruption cannot abandon retirement
+          if task.failed? && task.result.equal?(e)
+            stored_failure = e if failure || !e.is_a?(StandardError)
+            resolved = true
+          else
+            interruption ||= e
+          end
+        end
+        raise interruption if interruption
+        raise stored_failure if stored_failure
+
+        task.result
+      end
+
       def self.cancel(task)
         return unless task && !task.current? && !task.finished?
 

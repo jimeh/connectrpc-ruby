@@ -62,6 +62,21 @@ whole connection and siblings. Forced teardown closes raw TCP before cancelling
 and joining writers/readers, then performs buffered/TLS cleanup. These are
 cooperative bounds, not arbitrary native/application interruption guarantees.
 
+Forced teardown invalidates the connection immediately. External callers of
+private connection abort and server session abort/close then wait for owned
+tasks, their cleanup descendants and final buffered/TLS disposal. An owned task
+initiating or reentering abort requests retirement without waiting on cleanup
+that must join that same task. Each external abort/close joiner retains its own
+first interruption until cleanup completes.
+H2 pool release, acquisition or close can therefore wait beyond an RPC deadline
+for actual retirement. The 100 ms fallback allowance triggers destructive
+cleanup; it is not a hard deadline for that cleanup.
+
+These joins require cooperative tasks and a live application reactor. A
+non-yielding handler or native operation can delay them indefinitely. Cleanup
+survives ordinary owner cancellation while an external waiter or lifetime guard
+keeps the task tree alive; reactor termination cannot guarantee completion.
+
 See the [supported 0.x contract](../../docs/support.md) for the target support
 profile, matched package versions, compatibility policy and adoption gates.
 
@@ -148,12 +163,20 @@ semantics and safe diagnostics shared by both hosts.
 `accept(raw)` before scheduling, then call the opaque accepted handle's `serve`.
 `schedule` attaches accepted work to the independent session lifetime. The handle
 also supports `close`, `wait_closed`, `timeout=` and `remote_address`, and exposes no SSLContext.
+`wait_closed` waits for actual connection retirement, including owned task
+unwind and final disposal, rather than merely observing invalidation. Retiring
+server connections retain their admission slot until this boundary. H2 client
+pool accounting remains owned by Async::Pool, which removes a retired pool slot
+before joining its connection close.
 The session forwards TLS lifecycle/identity operations, bounded `close` and
 raw-first `abort` for listener/setup failure.
 The optional `stop_accepting:` callback runs after affinity/grace validation,
 before refresh stops and connection drain begins. Its one HTTP/1 construction hook is for the optional Falcon-local resource;
 HTTP/2 resources do not pretend to implement HTTP/1. The standalone Host keeps
 its strict h2 listener and composes the shared session.
+The shared session's private resource completion and lifetime-anchor operations
+are source-coupled to Falcon's local HTTP/1 resource. Use matched Async/Falcon
+package versions; these internals are not an additional public API or SPI.
 
 ## Backend boundaries and verification
 

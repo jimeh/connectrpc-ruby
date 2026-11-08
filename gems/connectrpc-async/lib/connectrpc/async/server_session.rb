@@ -60,7 +60,31 @@ module ConnectRPC
       def close(grace: 5)
         check_affinity!
         @tls.send(:check_recursion!)
-        super
+        Internal.seconds(grace, "grace", zero: true)
+        return @close_outcome if @state == :closed
+
+        owned = resource_owned_task?
+        unless @state == :closing
+          @state = :closing
+          @closer = ::Async::Task.new(@owner, finished: false) do
+            begin
+              close_owned(Internal.now + grace)
+            ensure
+              abort_owned
+            end
+            @close_outcome
+          end
+          # Owned handlers must remain interruptible so cleanup can join them.
+          if owned
+            @closer.run
+            return @closer.wait
+          end
+
+          return Internal.join_complete(@closer, failure: true) { @closer.run }
+        end
+        waiter = @closer || @cleanup
+        owned ? waiter.wait : Internal.join_complete(waiter, failure: true)
+        @close_outcome
       end
 
       def abort
@@ -75,7 +99,8 @@ module ConnectRPC
         Internal.seconds(grace, "grace", zero: true)
         cutoff = tls_generation
         @retirement_floor = [@retirement_floor, cutoff].max
-        targets = @resources.reject(&:finished?).select { |resource| resource.generation < cutoff }
+        targets = @resources.reject { |resource| resource.send(:retirement_completed?) }
+                            .select { |resource| resource.generation < cutoff }
         targets.each { |resource| resource.draining = true }
         drain_resources(targets, Internal.now + grace)
       end
@@ -97,13 +122,14 @@ module ConnectRPC
       # schedules any handshake work. The returned handle owns this one peer.
       def accept(raw)
         check_affinity!
-        @resources.reject!(&:finished?)
+        @resources.reject! { |resource| resource.send(:retirement_completed?) }
         unless @state == :running && @resources.size < @max_connections
           Internal.raw_close(raw)
           return
         end
         capture = @tls.send(:capture, raw)
         resource = Internal::Resource.new(progress: @progress, generation: capture.generation, snapshot: capture)
+        resource.send(:retirement_parent=, @lifetime)
         resource.raw = raw
         @resources << resource
         Accepted.new(self, resource, @progress)
@@ -130,7 +156,7 @@ module ConnectRPC
         end
 
         def wait_closed
-          @progress.wait until @resource.finished?
+          @progress.wait until @resource.send(:retirement_completed?)
         end
 
         def timeout=(value)
@@ -150,9 +176,12 @@ module ConnectRPC
       end
 
       def serve(resource)
+        return if resource.finished?
+
         resource.task = ::Async::Task.current
         expires = Internal.now + @handshake_timeout
-        setup = resource.track(::Async::Task.current.async(finished: false) { setup_connection(resource) })
+        setup = resource.track(::Async::Task.new(::Async::Task.current, finished: false) { setup_connection(resource) })
+        setup.run
         resource = Internal.wait(setup, expires)
         yield resource if block_given?
         return if resource.draining || (tls_generation && resource.generation < @retirement_floor)
@@ -180,6 +209,7 @@ module ConnectRPC
           return resource if resource.draining || (tls_generation && resource.generation < @retirement_floor)
 
           replacement = @http1.call(stream, progress: @progress, generation: resource.generation)
+          replacement.send(:retirement_parent=, @lifetime)
           replacement.raw = resource.raw
           replacement.socket = socket
           replacement.snapshot = resource.snapshot
@@ -256,7 +286,7 @@ module ConnectRPC
           publishes = request.respond_to?(:stream) ||
                       (@application.respond_to?(:publication?, true) && @application.send(:publication?, request))
           publication = Internal::Publication.new if publishes
-          handler = @lifetime.async(finished: false) do |task|
+          handler = ::Async::Task.new(@lifetime, finished: false) do |task|
             @identities[task] = resource.snapshot.authenticated_leaf
             work = lambda do
               if publication && @application.respond_to?(:call_with_publication)
@@ -283,6 +313,7 @@ module ConnectRPC
             complete_processor(publication, task, key, resource)
           end
           resource.track(handler)
+          handler.run
           response = publication ? publication.response : handler.wait
           retirement&.head_resolved(response&.status)
           exchange.http_status = response&.status if exchange
@@ -360,23 +391,55 @@ module ConnectRPC
         drained = drain_resources(@resources, expires)
         @admitted.clear
         @h1_wire.clear
-        finish_closed(drained)
+        decide_close_outcome(drained)
+      end
+
+      def install_owner_guard
+        @lifetime = @owner.async do
+          ::Async::Condition.new.wait
+        ensure
+          abort_owned unless @state == :closed
+        end
+      end
+
+      def resource_owned_task?
+        @resources.any? { |resource| resource.send(:owns_task?, ::Async::Task.current) }
+      end
+
+      def decide_close_outcome(outcome)
+        return if @close_decided
+
+        @close_decided = true
+        @close_outcome = outcome
       end
 
       def abort_owned
-        return if @aborting
+        return if @cleanup&.current?
 
-        @aborting = true
-        @state = :closing unless @state == :closed
-        # Listener cancellation can yield into its own cleanup. Fail all raw
-        # peers before that boundary, then cancel/join the protocol owners.
+        owned = resource_owned_task?
+        launch = !@cleanup
+        if launch
+          @aborting = true
+          @state = :closing unless @state == :closed
+          decide_close_outcome(false)
+          @cleanup = ::Async::Task.new(@lifetime, transient: true, finished: false) { retire_session }
+        end
+        if owned
+          @cleanup.run if launch
+        else
+          Internal.join_complete(@cleanup, failure: true) { @cleanup.run if launch }
+        end
+      end
+
+      def retire_session
+        # Listener cleanup can yield. Fail every peer before crossing it.
         @resources.each { |resource| Internal.raw_close(resource.raw) }
         stop_accepting
         @resources.each(&:abort)
         @admitted.clear
         @h1_wire.clear
         @tls.close
-        finish_closed(false) unless @state == :closed
+        finish_closed(@close_outcome)
         Internal.cancel(@lifetime)
       end
     end

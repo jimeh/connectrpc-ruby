@@ -171,6 +171,26 @@ boundary uses raw-first abort and offers no response-delivery guarantee.
 HTTP response completion is separate from TLS `close_notify`; orderly TLS
 shutdown is not promised.
 
+External abort and close callers wait for actual connection retirement, including
+owned processors, output tasks, cleanup descendants and final disposal. Owned
+tasks initiating or reentering abort request retirement without waiting on
+cleanup that must join them. A session accepted handle's existing `wait_closed`
+operation uses this same boundary, so the active connection metric and server
+connection slot remain retained until cleanup completes. Each external abort/close
+joiner retains its own first interruption through the join.
+
+The grace period bounds cooperative drain before forced teardown; it is not a
+hard cleanup timer. Non-yielding application/native work can delay retirement
+indefinitely. Ordinary owner cancellation leaves independent cleanup running
+while an external waiter or lifetime guard keeps the tree alive; terminating the
+reactor cannot guarantee completion. H2 client pool cleanup can also outlast an
+RPC deadline, as described in the [Async guide](../connectrpc-async/README.md).
+
+Falcon's local HTTP/1 resource and the shared Async session use source-coupled
+private completion and lifetime-anchor operations. Use matched Async/Falcon
+package versions. These operations add no public API or SPI and change neither
+HTTP/1 response timing nor the input retirement limits below.
+
 ## Development
 
 The independent checksummed bundle uses `vendor/falcon` and reports full optional
