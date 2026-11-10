@@ -20,9 +20,9 @@ Dir.mktmpdir("appraisals-", File.join(root, "vendor/rails/tmp")) do |temporary| 
                File.join(temporary, "gems/connectrpc-rack"))
   %w[rack rails].each do |name|
     relative = "gems/connectrpc-#{name}/lib/connectrpc/#{name}/version.rb"
-    destination = File.join(temporary, relative)
-    FileUtils.mkdir_p(File.dirname(destination))
-    FileUtils.cp(File.join(root, relative), destination)
+    version_destination = File.join(temporary, relative)
+    FileUtils.mkdir_p(File.dirname(version_destination))
+    FileUtils.cp(File.join(root, relative), version_destination)
   end
   # Appraisal's real generator reads the development Gemfile, not the selected
   # generated lane. Bundler has already activated the frozen selected bundle.
