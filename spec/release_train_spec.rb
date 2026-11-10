@@ -2,6 +2,8 @@
 
 require "fileutils"
 require "json"
+require "open3"
+require "rbconfig"
 require "tmpdir"
 require "yaml"
 require_relative "../scripts/release_train"
@@ -14,20 +16,14 @@ RSpec.describe ReleaseTrain do
       owners = described_class::NAMES.map do |name|
         name == "connectrpc" ? "connectrpc.gemspec" : "gems/#{name}/#{name}.gemspec"
       end
-      inputs = [*owners, *described_class::LOCKS, *described_class::GUIDES,
-                "docs/development.md", "lib/connectrpc/version.rb",
-                ".github/release-please-config.json", ".github/.release-please-manifest.json",
-                "gems/connectrpc-otel/lib/connectrpc/otel/subscriber.rb"]
+      inputs = [*owners, *described_class::VERSION_FILES.values, *described_class::LOCKS, *described_class::GUIDES,
+                "docs/development.md", ".github/release-please-config.json", ".github/.release-please-manifest.json"]
       inputs.each do |file|
         destination = File.join(temporary, file)
         FileUtils.mkdir_p(File.dirname(destination))
         FileUtils.cp(File.join(root, file), destination)
       end
-      train = described_class.new(temporary)
-      propose_version(train, "0.1.0")
-      train.prepare!
-      File.write(File.join(temporary, ".github/.release-please-manifest.json"), "{}\n")
-      yield train
+      yield described_class.new(temporary)
     end
   end
 
@@ -45,18 +41,41 @@ RSpec.describe ReleaseTrain do
     File.write(File.join(train.root, ".github/.release-please-manifest.json"), JSON.generate({ "." => version }))
   end
 
-  it "accepts initial 0.1.0 without inventing an already-released manifest entry" do
-    expect(described_class.new.check!).to be(true)
+  def next_version(train, bump = :patch)
+    major, minor, patch = train.version.split(".").map(&:to_i)
+    bump == :patch ? "#{major}.#{minor}.#{patch + 1}" : "#{major}.#{minor + 1}.0"
+  end
+
+  it "accepts the synchronized train and only allows an empty bootstrap at 0.1.0" do
+    expect(described_class.new.check!).to be_a(described_class)
     captured_train do |train|
-      expect(train.version).to eq("0.1.0")
-      expect(JSON.parse(train.read(".github/.release-please-manifest.json"))).to eq({})
-      expect(train.check!).to be(true)
+      manifest = JSON.parse(train.read(".github/.release-please-manifest.json"))
+      expect(train.version).to eq("0.1.0") if manifest.empty?
+      expect(train.check!).to equal(train)
     end
   end
 
-  %w[0.1.1 0.2.0].each do |version|
-    it "prepares every frozen local record for #{version} without changing registry resolution" do
+  it "loads each static version file without loading optional runtime dependencies" do
+    train = described_class.new
+    files = described_class::VERSION_FILES.values.map { |file| File.join(train.root, file) }
+    command = <<~RUBY
+      require "json"
+      ARGV.each { |file| require file }
+      abort "Loaded optional dependency" if defined?(::Rack) || defined?(::Rails) || defined?(::Async) ||
+                                            defined?(::Falcon) || defined?(::OpenTelemetry)
+      puts JSON.generate([ConnectRPC::VERSION, ConnectRPC::Rack::VERSION, ConnectRPC::Rails::VERSION,
+                          ConnectRPC::Async::VERSION, ConnectRPC::Falcon::VERSION,
+                          ConnectRPC::Testing::VERSION, ConnectRPC::OTel::VERSION])
+    RUBY
+    stdout, stderr, status = Open3.capture3(RbConfig.ruby, "-e", command, *files)
+    expect(status.success?).to be(true), stderr
+    expect(JSON.parse(stdout)).to eq(Array.new(7, train.version))
+  end
+
+  %i[patch minor].each do |bump|
+    it "prepares every frozen local record for a #{bump} without changing registry resolution" do
       captured_train do |train|
+        version = next_version(train, bump)
         originals = described_class::LOCKS.to_h { |file| [file, train.read(file)] }
         propose_version(train, version)
         expect { train.check! }.to raise_error(/Stale release preparation/)
@@ -75,7 +94,11 @@ RSpec.describe ReleaseTrain do
           names.each do |name|
             expect(train.read(file)).to include("    #{name} (#{version})\n", "  #{name} (#{version})\n")
           end
-          registry_sections = ->(text) { text.split(/(?=^[A-Z][A-Z ]*\n)/).reject { |s| s.start_with?("PATH\n", "CHECKSUMS\n") } }
+          registry_sections = lambda { |text|
+            text.split(/(?=^[A-Z][A-Z ]*\n)/).reject do |s|
+              s.start_with?("PATH\n", "CHECKSUMS\n")
+            end
+          }
           expect(registry_sections.call(train.read(file))).to eq(registry_sections.call(original))
           external_checksums = ->(text) { text.lines.grep(/sha256=/) }
           expect(external_checksums.call(train.read(file))).to eq(external_checksums.call(original))
@@ -90,21 +113,23 @@ RSpec.describe ReleaseTrain do
 
   it "rejects the partial root-lock update made by the upstream Ruby updater" do
     captured_train do |train|
-      propose_version(train, "0.1.1")
-      edit(train, "Gemfile.lock") { |text| text.sub("connectrpc (0.1.0)", "connectrpc (0.1.1)") }
+      previous = train.version
+      version = next_version(train)
+      propose_version(train, version)
+      edit(train, "Gemfile.lock") { |text| text.sub("connectrpc (#{previous})", "connectrpc (#{version})") }
       expect { train.check! }.to raise_error(/Stale release preparation: Gemfile.lock/)
       train.prepare!
-      expect(train.check!).to be(true)
+      expect(train.check!).to equal(train)
     end
   end
 
   {
-    "gems/connectrpc-falcon/connectrpc-falcon.gemspec" => /Version mismatch: connectrpc-falcon/,
-    "gems/connectrpc-otel/lib/connectrpc/otel/subscriber.rb" => /Instrumentation version mismatch/
+    "gems/connectrpc-falcon/lib/connectrpc/falcon/version.rb" => /Version mismatch: connectrpc-falcon/,
+    "gems/connectrpc-otel/lib/connectrpc/otel/version.rb" => /Version mismatch: connectrpc-otel/
   }.each do |file, failure|
     it "rejects a mismatched #{file} before building artifacts" do
       captured_train do |train|
-        edit(train, file) { |text| text.sub('"0.1.0"', '"0.1.1"') }
+        edit(train, file) { |text| text.sub("\"#{train.version}\"", "\"#{next_version(train)}\"") }
         output = File.join(train.root, "output")
         expect do
           ReleaseCandidate.new(train).build!(output: output, revision: "fixture", epoch: 1_800_000_000)
@@ -116,8 +141,8 @@ RSpec.describe ReleaseTrain do
 
   it "rejects a missing local checksum and a changed publication guard" do
     captured_train do |train|
-      edit(train, "Gemfile.lock") { |text| text.sub("  connectrpc (0.1.0)\n", "") }
-      expect { train.check! }.to raise_error(/Local path\/checksum inventory/)
+      edit(train, "Gemfile.lock") { |text| text.sub("  connectrpc (#{train.version})\n", "") }
+      expect { train.check! }.to raise_error(%r{Local path/checksum inventory})
     end
     captured_train do |train|
       edit(train, "connectrpc.gemspec") { |text| text.sub("https://gems.invalid", "https://rubygems.org") }
@@ -127,9 +152,11 @@ RSpec.describe ReleaseTrain do
 
   it "rejects narrowing patch dependency ranges" do
     captured_train do |train|
-      propose_version(train, "0.1.1")
+      version = next_version(train)
+      propose_version(train, version)
       edit(train, "gems/connectrpc-rack/connectrpc-rack.gemspec") do |text|
-        text.sub('spec.add_dependency "connectrpc", local_requirement', 'spec.add_dependency "connectrpc", "~> 0.1.1"')
+        text.sub('spec.add_dependency "connectrpc", local_requirement',
+                 "spec.add_dependency \"connectrpc\", \"~> #{version}\"")
       end
       expect { train.prepare! }.to raise_error(/Local dependency policy changed/)
     end
@@ -149,8 +176,8 @@ RSpec.describe "Release preparation workflow boundary" do
     expect(release.fetch("with")).not_to have_key("release-type")
     token = job.fetch("steps").find { |step| step.fetch("uses", "").start_with?("actions/create-github-app-token@") }
     expect(token.fetch("with")).to include("client-id" => "${{ vars.RELEASE_BOT_CLIENT_ID }}",
-                                            "private-key" => "${{ secrets.RELEASE_BOT_PRIVATE_KEY }}")
+                                           "private-key" => "${{ secrets.RELEASE_BOT_PRIVATE_KEY }}")
     expect(token.fetch("with").keys.grep(/^permission-/)).to match_array(%w[permission-contents permission-issues
-                                                                           permission-pull-requests])
+                                                                            permission-pull-requests])
   end
 end

@@ -9,6 +9,17 @@ require "protocol/http/body/stream"
 require "stringio"
 require_relative "api/support"
 
+versions = {
+  "connectrpc" => ConnectRPC::VERSION, "connectrpc-rack" => ConnectRPC::Rack::VERSION,
+  "connectrpc-rails" => ConnectRPC::Rails::VERSION, "connectrpc-async" => ConnectRPC::Async::VERSION,
+  "connectrpc-falcon" => ConnectRPC::Falcon::VERSION, "connectrpc-testing" => ConnectRPC::Testing::VERSION,
+  "connectrpc-otel" => ConnectRPC::OTel::VERSION
+}
+versions.each do |name, version|
+  raise "Installed runtime version differs: #{name}" unless version == Gem.loaded_specs.fetch(name).version.to_s
+end
+raise "Installed release train differs" unless versions.values.uniq == [ConnectRPC::VERSION]
+
 raise "SDK loaded" if defined?(OpenTelemetry::SDK) || Gem.loaded_specs.key?("opentelemetry-sdk")
 
 Gem.loaded_specs.each_value do |spec|

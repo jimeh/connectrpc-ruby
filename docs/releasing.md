@@ -14,8 +14,9 @@ that guard. A successful candidate build grants no publication authority.
 
 One root Release Please Ruby component covers the whole repository, including
 changes confined to one optional gem. It updates the core version and uses
-explicit annotated extra files for the six optional gemspecs and OTel's
-instrumentation version. The root `CHANGELOG.md` describes the entire train.
+explicit annotated extra files for the six optional `version.rb` files. Each
+gemspec reads its owning static version without requiring runtime code. OTel uses
+its same owning constant for instrumentation. The root `CHANGELOG.md` describes the entire train.
 The future tag convention is one `v0.x.y` tag, not seven component tags.
 
 The initial manifest is empty and `initial-version` is `0.1.0`. A manifest entry

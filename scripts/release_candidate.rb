@@ -15,14 +15,15 @@ class ReleaseCandidate
     @train = train
   end
 
-  def check_archive!(archive, specification)
+  # Keep the complete archive walk and its byte/mode assertions together.
+  def check_archive!(archive, specification) # rubocop:disable Metrics/AbcSize, Metrics/CyclomaticComplexity, Metrics/MethodLength, Metrics/PerceivedComplexity
     package = Gem::Package.new(archive)
     raise "Archive manifest differs: #{specification.name}" unless package.contents.sort == specification.files.sort
     raise "Archive version differs: #{specification.name}" unless package.spec.version.to_s == @train.version
 
     SignatureArchive.check(archive, root: @train.root)
     expected = specification.files.to_h do |file|
-      executable = specification.executables.include?(File.basename(file)) && file.start_with?("#{specification.bindir}/")
+      executable = specification.executables.any? { |name| file == "#{specification.bindir}/#{name}" }
       [file, [executable ? 0o755 : 0o644, File.binread(File.join(@train.directory(specification.name), file))]]
     end
     actual = {}
@@ -46,7 +47,7 @@ class ReleaseCandidate
     raise "Archive bytes/modes differ: #{specification.name}" unless actual == expected
   end
 
-  def build!(output:, revision:, epoch:)
+  def build!(output:, revision:, epoch:) # rubocop:disable Metrics/AbcSize, Metrics/CyclomaticComplexity, Metrics/MethodLength
     @train.check!
     raise "Candidate output must be missing or empty: #{output}" if Dir.exist?(output) && !Dir.empty?(output)
 
@@ -63,7 +64,9 @@ class ReleaseCandidate
       Dir.mktmpdir("connectrpc-rebuild-") do |temporary|
         specifications.zip(inventory).each do |spec, record|
           rebuilt = PackageBuild.build(directory: @train.directory(spec.name), output: temporary)
-          raise "Non-reproducible archive: #{spec.name}" unless Digest::SHA256.file(rebuilt).hexdigest == record["sha256"]
+          unless Digest::SHA256.file(rebuilt).hexdigest == record["sha256"]
+            raise "Non-reproducible archive: #{spec.name}"
+          end
         end
       end
       expected = specifications.map(&:file_name).sort
@@ -79,7 +82,7 @@ class ReleaseCandidate
     output
   end
 
-  def build_from_git!
+  def build_from_git! # rubocop:disable Metrics/AbcSize
     @train.check!
     raise "Canonical candidates require Ruby 3.4.12" unless RUBY_VERSION == "3.4.12"
 

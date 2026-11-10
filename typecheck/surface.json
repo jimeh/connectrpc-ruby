@@ -424,6 +424,9 @@
     "ConnectRPC::Async::Transport#streaming_capabilities": {"kind":"method","visibility":"public","parameters":"","classification":"spi"},
     "ConnectRPC::Async::Transport#wait_event": {"kind":"method","visibility":"private","parameters":"event, expires","classification":"internal"}
   },
+  "gems/connectrpc-async/lib/connectrpc/async/version.rb": {
+
+  },
   "gems/connectrpc-falcon/lib/connectrpc/falcon.rb": {
 
   },
@@ -588,6 +591,9 @@
     "ConnectRPC::Falcon::Server#tls_generation": {"kind":"method","visibility":"public","parameters":"","classification":"supported"},
     "ConnectRPC::Falcon::Server#tls_status": {"kind":"method","visibility":"public","parameters":"","classification":"supported"}
   },
+  "gems/connectrpc-falcon/lib/connectrpc/falcon/version.rb": {
+
+  },
   "gems/connectrpc-otel/lib/connectrpc/otel.rb": {
 
   },
@@ -608,6 +614,9 @@
     "ConnectRPC::OTel::Subscriber::Observer#processing_finished": {"kind":"method","visibility":"public","parameters":"outcome","classification":"internal"},
     "ConnectRPC::OTel::Subscriber::Observer#status_code": {"kind":"method","visibility":"private","parameters":"code","classification":"internal"}
   },
+  "gems/connectrpc-otel/lib/connectrpc/otel/version.rb": {
+
+  },
   "gems/connectrpc-rack/lib/connectrpc/rack.rb": {
     "ConnectRPC::Rack#call": {"kind":"method","visibility":"public","parameters":"env","classification":"supported"},
     "ConnectRPC::Rack#initialize": {"kind":"method","visibility":"public","parameters":"app = nil, server:","classification":"supported"},
@@ -617,6 +626,9 @@
     "ConnectRPC::Rack::Body#discard": {"kind":"method","visibility":"public","parameters":"error","classification":"internal"},
     "ConnectRPC::Rack::Body#each": {"kind":"method","visibility":"public","parameters":"&","classification":"internal"},
     "ConnectRPC::Rack::Body#initialize": {"kind":"method","visibility":"public","parameters":"body, lifecycle","classification":"internal"}
+  },
+  "gems/connectrpc-rack/lib/connectrpc/rack/version.rb": {
+
   },
   "gems/connectrpc-rails/lib/connectrpc/rails.rb": {
 
@@ -645,6 +657,9 @@
     "ConnectRPC::Rails::Controller#connect_vary_header": {"kind":"method","visibility":"private","parameters":"values","classification":"internal"},
     "ConnectRPC::Rails::Controller#process_action": {"kind":"method","visibility":"private","parameters":"name, ...","classification":"internal"}
   },
+  "gems/connectrpc-rails/lib/connectrpc/rails/version.rb": {
+
+  },
   "gems/connectrpc-testing/lib/connectrpc/testing.rb": {
 
   },
@@ -659,6 +674,9 @@
     "ConnectRPC::Testing::Transport#validate_fields!": {"kind":"method","visibility":"private","parameters":"request","classification":"internal"},
     "ConnectRPC::Testing::Transport::BytesReader#initialize": {"kind":"method","visibility":"public","parameters":"bytes","classification":"internal"},
     "ConnectRPC::Testing::Transport::BytesReader#read": {"kind":"method","visibility":"public","parameters":"length","classification":"internal"}
+  },
+  "gems/connectrpc-testing/lib/connectrpc/testing/version.rb": {
+
   },
   "lib/connectrpc.rb": {
 

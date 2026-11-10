@@ -12,13 +12,12 @@
       "bump-patch-for-minor-pre-major": true,
       "draft-pull-request": true,
       "extra-files": [
-        "gems/connectrpc-rack/connectrpc-rack.gemspec",
-        "gems/connectrpc-rails/connectrpc-rails.gemspec",
-        "gems/connectrpc-async/connectrpc-async.gemspec",
-        "gems/connectrpc-falcon/connectrpc-falcon.gemspec",
-        "gems/connectrpc-testing/connectrpc-testing.gemspec",
-        "gems/connectrpc-otel/connectrpc-otel.gemspec",
-        "gems/connectrpc-otel/lib/connectrpc/otel/subscriber.rb"
+        "gems/connectrpc-rack/lib/connectrpc/rack/version.rb",
+        "gems/connectrpc-rails/lib/connectrpc/rails/version.rb",
+        "gems/connectrpc-async/lib/connectrpc/async/version.rb",
+        "gems/connectrpc-falcon/lib/connectrpc/falcon/version.rb",
+        "gems/connectrpc-testing/lib/connectrpc/testing/version.rb",
+        "gems/connectrpc-otel/lib/connectrpc/otel/version.rb"
       ]
     }
   }

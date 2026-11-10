@@ -8,7 +8,7 @@ require "tmpdir"
 root = File.expand_path("..", __dir__)
 adapter = File.join(root, "gems/connectrpc-rails")
 FileUtils.mkdir_p(File.join(root, "vendor/rails/tmp"))
-Dir.mktmpdir("appraisals-", File.join(root, "vendor/rails/tmp")) do |temporary|
+Dir.mktmpdir("appraisals-", File.join(root, "vendor/rails/tmp")) do |temporary| # rubocop:disable Metrics/BlockLength
   destination = File.join(temporary, "gems/connectrpc-rails")
   FileUtils.mkdir_p(destination)
   FileUtils.mkdir_p(File.join(temporary, "lib/connectrpc"))
@@ -18,6 +18,12 @@ Dir.mktmpdir("appraisals-", File.join(root, "vendor/rails/tmp")) do |temporary|
   FileUtils.mkdir_p(File.join(temporary, "gems/connectrpc-rack"))
   FileUtils.cp(File.join(root, "gems/connectrpc-rack/connectrpc-rack.gemspec"),
                File.join(temporary, "gems/connectrpc-rack"))
+  %w[rack rails].each do |name|
+    relative = "gems/connectrpc-#{name}/lib/connectrpc/#{name}/version.rb"
+    destination = File.join(temporary, relative)
+    FileUtils.mkdir_p(File.dirname(destination))
+    FileUtils.cp(File.join(root, relative), destination)
+  end
   # Appraisal's real generator reads the development Gemfile, not the selected
   # generated lane. Bundler has already activated the frozen selected bundle.
   original = ENV.fetch("BUNDLE_GEMFILE")

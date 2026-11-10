@@ -14,7 +14,8 @@ archives = %w[connectrpc connectrpc-async connectrpc-falcon].map do |name|
   File.join(root, "vendor/falcon/pkg/#{name}-#{version}.gem")
 end
 packages = archives.map { |archive| Gem::Package.new(archive) }
-expected = %w[LICENSE README.md examples/falcon.rb lib/connectrpc/falcon.rb sig/connectrpc-falcon.rbs sig/manifest.yaml
+expected = %w[LICENSE README.md examples/falcon.rb lib/connectrpc/falcon.rb lib/connectrpc/falcon/version.rb
+              sig/connectrpc-falcon.rbs sig/manifest.yaml
               lib/connectrpc/falcon/completion_join.rb
               rbs/async_service_0_25/service.rbs lib/connectrpc/falcon/endpoint.rb
               lib/connectrpc/falcon/environment.rb lib/connectrpc/falcon/http1.rb

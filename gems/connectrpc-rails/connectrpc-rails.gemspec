@@ -2,7 +2,8 @@
 
 Gem::Specification.new do |spec|
   spec.name = "connectrpc-rails"
-  spec.version = "0.1.0" # x-release-please-version
+  # Read without loading library code before SimpleCov starts.
+  spec.version = File.read(File.join(__dir__, "lib/connectrpc/rails/version.rb"))[/VERSION = "([^"]+)"/, 1]
   spec.authors = ["jimeh"]
   spec.summary = "Native Rails controller execution for Connect unary RPCs"
   spec.description = "Optional, experimental Rails lifecycle integration for the unofficial ConnectRPC Ruby gem."
@@ -15,7 +16,7 @@ Gem::Specification.new do |spec|
     Dir.glob("sig/**/*.{rbs,yaml}") + Dir.glob("rbs/**/*.rbs") + Dir.glob("lib/**/*.rb") + %w[LICENSE README.md]
   end
   spec.require_paths = ["lib"]
-  local_requirement = "~> #{spec.version.to_s.split(".").first(2).join(".")}.0"
+  local_requirement = "~> #{spec.version.to_s.split('.').first(2).join('.')}.0"
   spec.add_dependency "actionpack", ">= 8.0.5.1", "< 8.2"
   spec.add_dependency "connectrpc", local_requirement
   spec.add_dependency "connectrpc-rack", local_requirement

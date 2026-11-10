@@ -1,5 +1,6 @@
 module ConnectRPC
   module Rails
+    VERSION: String
     module Controller
       type limits = { ?request_limit: Integer, ?response_limit: Integer, ?request_wire_limit: Integer, ?response_wire_limit: Integer, ?encoding: :identity | :gzip, ?get_query_limit: Integer?, ?grpc_status_wire_limit: Integer, ?grpc_status_limit: Integer }
       def connect: () -> String

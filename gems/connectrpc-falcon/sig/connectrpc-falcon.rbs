@@ -1,5 +1,6 @@
 module ConnectRPC
   module Falcon
+    VERSION: String
     # Endpoint and task/socket objects expose only their consumed capabilities.
     interface _BoundEndpoint
       def endpoint: () -> Endpoint
