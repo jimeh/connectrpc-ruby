@@ -427,10 +427,15 @@ list. `start(call)` returns a per-call observer. Optional callbacks are fixed:
 attachments in reverse registration order; `processing_finished(outcome)`
 receives an immutable final processing snapshot; `finished(completion)` receives
 one terminal processing/delivery observation. Core owns one application yield.
-Each callback/reporter StandardError is isolated. Fatal exceptions retain Ruby
-semantics. Observers must make attach/detach exception-safe: the dispatcher
-cannot repair private context state mutated before a failing attach returns a
-token. Retained observers hold no globally active core context.
+Each callback/reporter StandardError is isolated. Every successful attachment
+token receives one detach attempt, including when another detach raises a
+fatal exception or throws to a matching catch. Returning detaches preserve the
+escaping exit; competing cleanup exits follow ordinary Ruby ensure semantics.
+Observers must make attach/detach exception-safe: the dispatcher cannot repair
+private context state mutated before a failing attach returns a token or
+guarantee that a failing detach restores its own state. This cleanup does not
+guarantee completion under arbitrary repeated asynchronous interruption.
+Retained observers hold no globally active core context.
 
 Call facts contain role, Connect protocol, recognized immutable Method or nil,
 client endpoint host/port and a propagation carrier, never message objects.

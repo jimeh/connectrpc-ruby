@@ -235,6 +235,7 @@ module ConnectRPC
       def begin_processing: (Object, ?String?) -> Float
       def processing_finished: (code: String?, ?http_status: Integer?, ?normalized_error: Exception?, ?error: Exception?, ?response_bytes: Integer?, ?response_metadata: headers) -> nil
       private
+      def detach_tokens: (Array[[(^(Object?) -> void)?, Object?]]) -> nil
       def with_processing_completion: [T] () { () -> T } -> T
       def complete_processing: () -> nil
       def now: () -> Float

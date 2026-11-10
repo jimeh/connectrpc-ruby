@@ -3,6 +3,55 @@
 require "rack/mock"
 
 RSpec.describe "SDK spans across lifecycle execution boundaries" do
+  it "detaches the real SDK context from a finished fiber after cancellation in custom detach" do
+    completions = []
+    active_contexts = []
+    observer = Object.new
+    observer.define_singleton_method(:attach) { nil }
+    subscriber = Object.new
+    subscriber.define_singleton_method(:start) { |_| observer }
+    observer.define_singleton_method(:finished) { |completion| completions << completion }
+    provider, exporter, bus = tracing(subscribers: [subscriber])
+    reactor do |task|
+      entered = Async::Queue.new
+      release = Async::Queue.new
+      observer.define_singleton_method(:detach) do |_|
+        active_contexts << OpenTelemetry::Trace.current_span.context
+        entered.enqueue(true)
+        release.dequeue
+      end
+      handle = bus.start(owner: self, role: :client, method: AsyncHelpers::ECHO::ECHO, carrier: {})
+      captured_fiber = nil
+      call = task.async(finished: false) do
+        handle.activate do
+          captured_fiber = Fiber.current
+          active_contexts << current_span.context
+        end
+      ensure
+        handle.finish(delivery: :aborted)
+      end
+      entered.dequeue
+      call.cancel
+      AsyncHelpers::INTERNAL.join(call)
+      expect(call.status).to eq(:cancelled)
+      expect(call).to be_finished
+      expect(active_contexts.size).to eq(2)
+      expect(active_contexts).to all(be_valid)
+      expect(active_contexts.map(&:span_id).uniq.size).to eq(1)
+      stack = captured_fiber.opentelemetry_context
+      expect(stack.nil? || stack.empty?).to be(true)
+      expect(completions.size).to eq(1)
+      expect(completions.first).to have_attributes(delivery: :aborted, processing_state: :not_started)
+      expect(rpc_spans(exporter).size).to eq(1)
+      expect(rpc_spans(exporter).first.attributes["connectrpc.delivery"]).to eq("aborted")
+      expect(current_span.context).not_to be_valid
+    ensure
+      release&.enqueue(true)
+    end
+  ensure
+    provider&.shutdown
+  end
+
   it "exports successful inner client and server calls inside an unrelated rescue" do
     _provider, exporter, bus = tracing
     target = server(instrumentation: bus)

@@ -71,7 +71,7 @@ module ConnectRPC
       empty.freeze
     end
 
-    class Handle
+    class Handle # rubocop:disable Metrics/ClassLength
       attr_reader :outcome
       attr_accessor :request_bytes, :request_metadata, :code, :normalized_error
 
@@ -104,7 +104,7 @@ module ConnectRPC
           end
           yield
         ensure
-          tokens.reverse_each { |detach, token| @bus.safely { detach&.call(token) } }
+          detach_tokens(tokens)
         end
       end
 
@@ -152,6 +152,17 @@ module ConnectRPC
       end
 
       private
+
+      def detach_tokens(tokens)
+        while (entry = tokens.pop)
+          detach, token = entry
+          @bus.safely { detach&.call(token) }
+        end
+        nil
+      ensure
+        # Only an escaping detach leaves tokens for this continuation.
+        detach_tokens(tokens) unless tokens.empty?
+      end
 
       # Native hosts hold preparation through the original application's cleanup.
       # Delivery can arrive meanwhile, but neither observer callback can run yet.
