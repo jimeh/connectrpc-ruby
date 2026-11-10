@@ -5,9 +5,13 @@ require "fileutils"
 require "rubygems/package"
 require "rbconfig"
 require "tmpdir"
+require_relative "../../../scripts/release_train"
+
 root = File.expand_path("../../..", __dir__)
+version = ReleaseTrain.new(root).version
+local_requirement = ReleaseTrain.new(root).requirement
 archives = %w[connectrpc connectrpc-async connectrpc-falcon].map do |name|
-  File.join(root, "vendor/falcon/pkg/#{name}-0.1.0.gem")
+  File.join(root, "vendor/falcon/pkg/#{name}-#{version}.gem")
 end
 packages = archives.map { |archive| Gem::Package.new(archive) }
 expected = %w[LICENSE README.md examples/falcon.rb lib/connectrpc/falcon.rb sig/connectrpc-falcon.rbs sig/manifest.yaml
@@ -17,7 +21,7 @@ expected = %w[LICENSE README.md examples/falcon.rb lib/connectrpc/falcon.rb sig/
               lib/connectrpc/falcon/rack_guard.rb lib/connectrpc/falcon/server.rb].sort
 abort "Falcon manifest changed" unless packages.last.contents.sort == expected
 expected_dependencies = {
-  "connectrpc-async" => "~> 0.1.0", "falcon" => "~> 0.57.0", "protocol-rack" => "~> 0.23.0",
+  "connectrpc-async" => local_requirement, "falcon" => "~> 0.57.0", "protocol-rack" => "~> 0.23.0",
   "async-service" => "~> 0.25.0", "async-container" => "~> 0.38.0", "async-utilization" => "~> 0.5.0",
   "protocol-http1" => "~> 0.41.1"
 }

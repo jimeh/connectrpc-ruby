@@ -2,7 +2,7 @@
 
 Gem::Specification.new do |spec|
   spec.name = "connectrpc-falcon"
-  spec.version = "0.1.0"
+  spec.version = "0.1.0" # x-release-please-version
   spec.summary = "Optional Falcon worker hosting for ConnectRPC unary"
   spec.authors = ["jimeh"]
   spec.homepage = "https://github.com/jimeh/connectrpc-ruby"
@@ -12,8 +12,9 @@ Gem::Specification.new do |spec|
   spec.files = Dir.glob("sig/**/*.{rbs,yaml}") + Dir.glob("rbs/**/*.rbs") + Dir["lib/**/*.rb", "examples/*.rb",
                                                                                 "README.md", "LICENSE"].sort
   spec.require_paths = ["lib"]
+  local_requirement = "~> #{spec.version.to_s.split(".").first(2).join(".")}.0"
   {
-    "connectrpc-async" => "~> 0.1.0", "falcon" => "~> 0.57.0", "protocol-rack" => "~> 0.23.0",
+    "connectrpc-async" => local_requirement, "falcon" => "~> 0.57.0", "protocol-rack" => "~> 0.23.0",
     "async-service" => "~> 0.25.0", "async-container" => "~> 0.38.0", "async-utilization" => "~> 0.5.0",
     "protocol-http1" => "~> 0.41.1"
   }.each { |name, requirement| spec.add_dependency(name, requirement) }
