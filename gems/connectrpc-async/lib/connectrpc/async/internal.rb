@@ -1,5 +1,7 @@
 # frozen_string_literal: true
 
+require_relative "completion_join"
+
 module ConnectRPC
   module Async
     module Internal
@@ -65,6 +67,8 @@ module ConnectRPC
         # The owner/supervisor reports the original failure.
         nil
       end
+
+      def self.join_complete(...) = CompletionJoin.call(...)
 
       def self.cancel(task)
         return unless task && !task.current? && !task.finished?

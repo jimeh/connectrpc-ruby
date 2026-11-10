@@ -1,4 +1,5 @@
 {
+  "pending_close": "Ruby::IncompatibleAssignment",
   "http_one_grpc": "Ruby::NoMethod",
   "http_one_options": "Ruby::ArgumentTypeMismatch",
   "http_one_block": "Ruby::RequiredBlockMissing",

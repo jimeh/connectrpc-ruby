@@ -12,7 +12,16 @@ host.tls_status[:source_check_age]&.round
 host.tls_status[:publication_age]&.round
 host.peer_certificate&.to_der
 host.drain_tls(grace: 0)
-host.close(grace: 5)
+host_close = host.close(grace: 5)
+if host_close.nil?
+  # @type var host_pending: nil
+  host_pending = host_close
+  host_pending.nil?
+else
+  # @type var host_completed: bool
+  host_completed = host_close
+  !host_completed
+end
 configuration = ConnectRPC::Async::TLSConfiguration.new(tls_provider: lambda {
   { version: "v1", certificate_chain: ["leaf"], private_key: "key", client_ca: ["ca"] }
 }, on_error: ->(event) { event[:category].to_s })
@@ -33,7 +42,16 @@ session.start.schedule { application.call(request) }.wait
 session.tls_status[:generation]&.succ
 session.refresh_tls
 session.drain_tls
-session.close
+session_close = session.close
+if session_close.nil?
+  # @type var session_pending: nil
+  session_pending = session_close
+  session_pending.nil?
+else
+  # @type var session_completed: bool
+  session_completed = session_close
+  !session_completed
+end
 session.abort
 transport = ConnectRPC::Async::Transport.new(
   origin: "https://example.invalid", ca_file: "application-ca.pem", certificate_chain: ["client"],
@@ -57,7 +75,16 @@ falcon.reload_tls(certificate_chain: ["leaf"], private_key: "key", client_ca: ni
 falcon.refresh_tls
 falcon.drain_tls(grace: 0)
 falcon.peer_certificate&.to_der
-falcon.close(grace: 5)
+falcon_close = falcon.close(grace: 5)
+if falcon_close.nil?
+  # @type var falcon_pending: nil
+  falcon_pending = falcon_close
+  falcon_pending.nil?
+else
+  # @type var falcon_completed: bool
+  falcon_completed = falcon_close
+  !falcon_completed
+end
 falcon.abort.tls_status
 APIEnvironment.new.make_server(endpoint)
 

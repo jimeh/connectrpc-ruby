@@ -29,6 +29,8 @@ module ConnectRPC
           task = ::Async::Task.current
           return yield if @writer.equal?(task)
 
+          raise IOError, "HTTP/2 connection closed" if @resource&.finished?
+
           @writers[task] = true
           begin
             @write_frame_guard.acquire do
@@ -54,8 +56,31 @@ module ConnectRPC
           synchronize { ::Async::Task.current.defer_cancel { super(&) } }
         end
 
-        def read_in_background(...)
-          @reader_task = super
+        # Mirror async-http 0.105.0 and Async 2.46's eager Task#async, publishing
+        # the actual transient reader before EOF/error can reenter retirement.
+        def read_in_background(parent: ::Async::Task.current)
+          raise "Connection is closed!" if closed?
+          raise ::Async::Task::FinishedError if parent.finished?
+
+          reader = @reader_task = ::Async::Task.new(parent, transient: true) do |task|
+            @reader = task
+            task.annotate("#{version} reading data for #{self.class}.")
+            begin
+              until closed?
+                consume_window
+                read_frame
+              end
+            rescue StandardError => e
+              # Upstream forwards the original reader failure through close.
+            ensure
+              if @reader
+                @reader = nil
+                close(e)
+              end
+            end
+          end
+          reader.run
+          reader
         end
 
         def consume_local_window(frame)
@@ -95,6 +120,19 @@ module ConnectRPC
         def initialize(message, code)
           super(message)
           @code = code
+        end
+      end
+
+      # Publish ownership before the pinned output's eager first body read.
+      class Output < ::Async::HTTP::Protocol::HTTP2::Output
+        def start(parent: ::Async::Task.current)
+          raise "Task already started!" if @task
+
+          work = method(@body.stream? ? :stream : :passthrough)
+          task = @task = ::Async::Task.new(parent, &work)
+          yield task
+          task.run
+          task
         end
       end
 
@@ -271,12 +309,13 @@ module ConnectRPC
           super
         end
 
-        def send_body(body, trailer = nil)
+        def send_body(body, trailer = nil, &)
           # A peer reset can close the stream while deferred headers flush.
           # Upstream otherwise starts an output task on the closed stream.
           return body.close if closed?
 
-          super
+          @output = Output.new(self, body, trailer)
+          @output.start(&)
         end
       end
 
@@ -300,7 +339,7 @@ module ConnectRPC
         def response_written? = @response_written && !@response_reset && (!@grpc || @grpc_terminal_written)
 
         def send_body(...)
-          @response_task = super
+          super { |task| @response_task = task }
         end
 
         def receive_reset_stream(frame)
@@ -340,7 +379,7 @@ module ConnectRPC
         end
 
         def send_body(...)
-          @output_task = super
+          super { |task| @output_task = task }
         end
       end
 
@@ -367,7 +406,7 @@ module ConnectRPC
           while (request = @requests.dequeue)
             next if request.stream.closed?
 
-            worker = task.async(request, finished: false) do |_worker, incoming|
+            worker = ::Async::Task.new(task, finished: false) do |_worker, incoming|
               response = error = written = nil
               begin
                 response = yield(incoming)
@@ -396,6 +435,7 @@ module ConnectRPC
               end
             end
             @resource.track(worker)
+            worker.run(request)
           end
         end
 
@@ -438,6 +478,9 @@ module ConnectRPC
           @aborted = false
           @finishing = false
           @drain_task = nil
+          @retirement_members = {}
+          @cancelled_roots = {}
+          @forced_roots = {}
         end
 
         def changed
@@ -447,6 +490,8 @@ module ConnectRPC
         end
 
         def track(task)
+          raise IOError, "Connection is retiring" if @aborted
+
           @tasks.reject!(&:finished?)
           @tasks << task
           task
@@ -460,37 +505,31 @@ module ConnectRPC
         def finishing? = @finishing
 
         def abort(error = IOError.new("HTTP/2 connection closed"))
-          return if @aborted
+          return if @cleanup&.current?
 
-          @aborted = true
-          @abort_during_drain = true if @drain_task && !@drained
-          @connection&.close!
-          # Raw TCP is the non-flushing primitive, including for TLS. Closing
-          # SSL/Stream first can block forever trying to flush a partial frame.
-          Internal.raw_close(@raw)
-          owned = [*@connection&.writers&.keys, @connection&.reader_task, *@tasks, @task].compact.uniq
-          # Cancel every writer/reader before joining any: a joined task can
-          # itself wait for another owned task blocked on the closed socket.
-          owned.each { |task| Internal.cancel(task) }
-          # rubocop:disable-next Style/CombinableLoops
-          owned.each { |task| Internal.join(task) }
-          begin
-            @connection&.finish_close(error)
-          rescue StandardError
-            nil
-          ensure
-            begin
-              @socket&.close
-            rescue StandardError
-              nil
-            end
-            changed
+          capture_retirement
+          owned = owns_task?(::Async::Task.current)
+          launch = !@cleanup
+          if launch
+            @aborted = true
+            @abort_during_drain = true if @drain_task && !@drained
+            @cleanup = ::Async::Task.new(@lifetime, transient: true, finished: false) { retire(error) }
           end
+          if owned
+            @cleanup.run if launch
+          else
+            Internal.join_complete(@cleanup, failure: true) { @cleanup.run if launch }
+          end
+          nil
         end
 
         def drain(parent, expires)
           return Internal.wait(@drain_task, expires) if @drain_task
-          return true if @aborted
+
+          if @aborted
+            abort
+            return true
+          end
 
           @draining = true
           unless @ready
@@ -506,8 +545,8 @@ module ConnectRPC
             @connection.send_goaway
             @raw.shutdown(Socket::SHUT_WR)
             reader = @connection.reader_task
-            Internal.cancel(reader)
-            Internal.join(reader)
+            cancel_root(reader)
+            Internal.join_complete(reader) if reader
             # Discard unread inbound control bytes before closing TCP, so
             # the peer receives the complete response/GOAWAY rather than RST.
             loop { @raw.readpartial(16_384) }
@@ -524,6 +563,109 @@ module ConnectRPC
         rescue ::Async::TimeoutError
           abort
           false
+        end
+
+        private
+
+        def retirement_parent=(parent)
+          @lifetime = parent
+        end
+
+        def retirement_completed? = !!@retirement_completed
+
+        def retirement_roots
+          outputs = (@connection ? @connection.streams.values : []).flat_map do |stream|
+            [stream.respond_to?(:response_task) ? stream.response_task : nil,
+             stream.respond_to?(:output_task) ? stream.output_task : nil]
+          end
+          [*@connection&.writers&.keys, @connection&.reader_task, *@tasks, @task, *outputs].compact.uniq
+        end
+
+        def capture_retirement
+          retirement_roots.each { |task| capture_task(task) }
+          members = @retirement_members.keys
+          members.each { |task| capture_task(task) }
+        end
+
+        def capture_task(task)
+          @retirement_members[task] = true
+          task.children&.to_a&.each { |child| capture_task(child) unless child.transient? }
+        end
+
+        def owns_task?(task)
+          capture_retirement
+          while task
+            return true if @retirement_members.key?(task)
+            return false if task.transient?
+
+            task = task.parent
+          end
+          false
+        end
+
+        def cancel_root(task)
+          return if !task || @cancelled_roots.key?(task) || task.finished?
+
+          # Record cascade coverage before cancellation can reenter or reparent.
+          mark_cancelled(task)
+          task.cancel
+          # The first request can remain deferred by the pinned frame/response
+          # guard. Deliver it now, once, rather than waiting on that guard.
+          force_deferred(task)
+        end
+
+        def force_deferred(task)
+          return if @forced_roots.key?(task) || task.finished? || !task.cancel_deferred?
+
+          @forced_roots[task] = true
+          task.cancel
+        end
+
+        def mark_cancelled(task)
+          @cancelled_roots[task] = true
+          task.children&.to_a&.each { |child| mark_cancelled(child) unless child.transient? }
+        end
+
+        def retire(error)
+          # Raw TCP precedes any protocol, buffered stream or TLS disposal.
+          Internal.raw_close(@raw)
+          # Best-effort scheduling hint only. A return proves no unwind or
+          # completion; the retained-task joins below establish retirement.
+          ::Async::Task.current.yield
+          @connection&.close!
+          loop do
+            capture_retirement
+            writers = @connection&.writers&.keys || []
+            roots = retirement_roots
+            roots.reject! do |task|
+              ancestor = task
+              covered = false
+              until ancestor.transient? || !(ancestor = ancestor.parent)
+                covered ||= roots.include?(ancestor)
+              end
+              covered
+            end
+            roots.each { |task| cancel_root(task) }
+            # An ancestor's cascade can leave the registered frame writer with
+            # only a deferred request. Logical coverage is not forced delivery.
+            writers.each { |writer| force_deferred(writer) }
+            @retirement_members.keys.reverse_each { |task| Internal.join_complete(task) }
+            capture_retirement
+            break if @retirement_members.keys.all?(&:finished?)
+          end
+          begin
+            @connection&.finish_close(error)
+          rescue StandardError
+            nil
+          ensure
+            begin
+              @socket&.close
+            rescue StandardError
+              nil
+            end
+          end
+          @retirement_completed = true
+          changed
         end
       end
     end

@@ -171,6 +171,47 @@ boundary uses raw-first abort and offers no response-delivery guarantee.
 HTTP response completion is separate from TLS `close_notify`; orderly TLS
 shutdown is not promised.
 
+External abort and close callers wait for actual connection retirement, including
+owned processors, output tasks, cleanup descendants and final disposal. Owned
+tasks initiating or reentering abort request retirement without waiting on
+cleanup that must join them. A session accepted handle's existing `wait_closed`
+operation uses this same boundary, so the active connection metric and server
+connection slot remain retained until cleanup completes. Each external abort/close
+joiner retains its own first interruption through the join.
+An external close caller interrupted during a nonzero graceful drain requests
+forced session retirement, joins actual cleanup, then raises its identical first
+exception. Competitors keep their own result or exception, and an already-decided
+outcome remains unchanged.
+
+`Server#close` returns `bool?`: a resource-owned handler initiating positive-grace
+close starts the ordinary asynchronous drain and returns nil while pending.
+Admitted siblings keep their grace and can continue processing. Owned repeated
+requests and cleanup/close coordinator reentry also return nil while pending,
+without joining cleanup that must join them. Nil neither decides the outcome nor
+publishes completion. Repeated requests retain the first closer and expiry even
+when passed a different grace. External callers join actual cleanup and receive
+the final boolean, true for drained or false for forced teardown. Once closed,
+all calls return that same boolean, including coordinator reentry. Zero grace
+still forces teardown; explicit abort and already-decided outcomes are preserved.
+
+Private task joins distinguish a resolved result from actual finalization. They
+block on required children and task-local progress/finalization notifications,
+retaining captured child identities through reparenting or transient changes.
+A scheduling opportunity after raw close establishes no completion boundary;
+all retained task joins still precede disposal and retirement publication.
+
+The grace period bounds cooperative drain before forced teardown; it is not a
+hard cleanup timer. Non-yielding application/native work can delay retirement
+indefinitely. Ordinary owner cancellation leaves independent cleanup running
+while an external waiter or lifetime guard keeps the tree alive; terminating the
+reactor cannot guarantee completion. H2 client pool cleanup can also outlast an
+RPC deadline, as described in the [Async guide](../connectrpc-async/README.md).
+
+Falcon's local HTTP/1 resource and the shared Async session use source-coupled
+private completion and lifetime-anchor operations. Use matched Async/Falcon
+package versions. These operations add no public API or SPI and change neither
+HTTP/1 response timing nor the input retirement limits below.
+
 ## Development
 
 The independent checksummed bundle uses `vendor/falcon` and reports full optional

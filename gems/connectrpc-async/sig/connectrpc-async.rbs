@@ -80,7 +80,7 @@ module ConnectRPC
       attr_reader port: Integer?
       attr_reader addresses: Array[Addrinfo]
       def start: () -> self
-      def close: (?grace: Numeric) -> bool
+      def close: (?grace: Numeric) -> bool?
       def reload_tls: (certificate_chain: Array[String], private_key: String, client_ca: Array[String]?) -> Integer
       def refresh_tls: () -> Integer
       def drain_tls: (?grace: Numeric) -> bool
@@ -111,7 +111,7 @@ module ConnectRPC
       end
       def initialize: (application: _Application | ^(_Request, ?lifecycle: Instrumentation::Handle?) -> _Response?, ?tls: tls?, ?tls_provider: (_TLSProvider | ^() -> tls_snapshot)?, ?max_connections: Integer, ?max_requests: Integer, ?handshake_timeout: Numeric, ?idle_timeout: Numeric?, ?refresh_interval: Numeric, ?refresh_jitter: Numeric, ?refresh_timeout: Numeric, ?on_tls_error: (_TLSErrorHandler | ^(tls_event) -> void)?, ?alpn_protocols: Array[String], ?http1: _HTTP1Factory?, ?stop_accepting: (_Callback | ^() -> void)?, ?on_request_rejected: (_Callback | ^() -> void)?, ?lifecycle_factory: (_LifecycleFactory | ^(_Request) -> Instrumentation::Handle?)?) -> void
       def start: () -> self
-      def close: (?grace: Numeric) -> bool
+      def close: (?grace: Numeric) -> bool?
       def abort: () -> self
       def accept: (_Socket) -> _Accepted?
       def schedule: () { (_Task) -> top } -> _Task

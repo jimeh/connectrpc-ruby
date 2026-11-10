@@ -52,7 +52,7 @@ A future separate call can open a fresh connection after failure/GOAWAY.
 
 Both objects provide `close(grace: 5)`: stop admission, await handlers/calls and
 complete wire streams, send GOAWAY when empty, then half-close and await EOF.
-Returns true when drained, false after forced teardown. Grace is finite and
+External callers receive true when drained, false after forced teardown. Grace is finite and
 nonnegative; zero aborts. Repeated/concurrent calls share the first outcome.
 Finite deadlines begin in core before encoding and cover pool/setup/headers/body.
 Timers use at most 86400-second waits without shortening logical deadlines.
@@ -61,6 +61,44 @@ its stream. A frame that cannot finish within cleanup deliberately fails the
 whole connection and siblings. Forced teardown closes raw TCP before cancelling
 and joining writers/readers, then performs buffered/TLS cleanup. These are
 cooperative bounds, not arbitrary native/application interruption guarantees.
+
+Forced teardown invalidates the connection immediately. External callers of
+private connection abort and server session abort/close then wait for owned
+tasks, their cleanup descendants and final buffered/TLS disposal. An owned task
+initiating or reentering abort requests retirement without waiting on cleanup
+that must join that same task. Each external abort/close joiner retains its own
+first interruption until cleanup completes.
+An external server close caller interrupted during a nonzero graceful drain
+requests forced session retirement, joins actual cleanup, then raises its
+identical first exception. Other callers retain their own result or exception,
+and an already-decided close outcome remains unchanged.
+
+Server `Host#close` and `ServerSession#close` return `bool?`. A resource-owned
+handler initiating positive-grace close starts the ordinary asynchronous drain
+and returns nil while shutdown is pending. Admitted siblings retain their grace
+and can continue processing. Owned repeated requests and cleanup/close coordinator
+reentry also return nil while pending, without joining cleanup that must join
+them. Nil neither decides the outcome nor publishes completion. Repeated requests
+share the original closer and expiry, even with a different grace argument.
+External callers join actual cleanup and receive its final boolean. Once closed,
+every call returns that same boolean, including coordinator reentry. Zero grace
+still forces teardown; explicit abort and already-decided outcomes are preserved.
+The client `Transport` and `HTTP1Transport` close return types remain `bool`.
+
+H2 pool release, acquisition or close can therefore wait beyond an RPC deadline
+for actual retirement. The 100 ms fallback allowance triggers destructive
+cleanup; it is not a hard deadline for that cleanup.
+
+Private task joins distinguish a resolved result from actual finalization. They
+block on required children and task-local progress/finalization notifications,
+retaining captured child identities through reparenting or transient changes.
+A scheduling opportunity after raw close establishes no completion boundary;
+all retained task joins still precede disposal and retirement publication.
+
+These joins require cooperative tasks and a live application reactor. A
+non-yielding handler or native operation can delay them indefinitely. Cleanup
+survives ordinary owner cancellation while an external waiter or lifetime guard
+keeps the task tree alive; reactor termination cannot guarantee completion.
 
 See the [supported 0.x contract](../../docs/support.md) for the target support
 profile, matched package versions, compatibility policy and adoption gates.
@@ -148,12 +186,20 @@ semantics and safe diagnostics shared by both hosts.
 `accept(raw)` before scheduling, then call the opaque accepted handle's `serve`.
 `schedule` attaches accepted work to the independent session lifetime. The handle
 also supports `close`, `wait_closed`, `timeout=` and `remote_address`, and exposes no SSLContext.
+`wait_closed` waits for actual connection retirement, including owned task
+unwind and final disposal, rather than merely observing invalidation. Retiring
+server connections retain their admission slot until this boundary. H2 client
+pool accounting remains owned by Async::Pool, which removes a retired pool slot
+before joining its connection close.
 The session forwards TLS lifecycle/identity operations, bounded `close` and
 raw-first `abort` for listener/setup failure.
 The optional `stop_accepting:` callback runs after affinity/grace validation,
 before refresh stops and connection drain begins. Its one HTTP/1 construction hook is for the optional Falcon-local resource;
 HTTP/2 resources do not pretend to implement HTTP/1. The standalone Host keeps
 its strict h2 listener and composes the shared session.
+The shared session's private resource completion and lifetime-anchor operations
+are source-coupled to Falcon's local HTTP/1 resource. Use matched Async/Falcon
+package versions; these internals are not an additional public API or SPI.
 
 ## Backend boundaries and verification
 

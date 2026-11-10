@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "English"
+require_relative "completion_join"
 
 require "async/http/protocol/http1/server"
 
@@ -37,7 +38,7 @@ module ConnectRPC
       end
 
       def next_request
-        return if @resource.draining
+        return if @resource.draining || @resource.finished?
 
         request = super
         if request
@@ -50,7 +51,7 @@ module ConnectRPC
           end
         end
         # Retirement can happen while the upstream parser is blocked.
-        return if @resource.draining
+        return if @resource.draining || @resource.finished?
 
         @resource.active = true if request
         @resource.changed
@@ -311,6 +312,8 @@ module ConnectRPC
         @progress = ::Async::Condition.new
         @generation = generation
         @tasks = []
+        @retirement_members = {}
+        @cancelled_roots = {}
         @activity_at = now
         @active = @ready = @draining = @aborted = @finishing = false
       end
@@ -322,6 +325,8 @@ module ConnectRPC
       end
 
       def track(task)
+        raise IOError, "Connection is retiring" if @aborted
+
         @tasks.reject!(&:finished?)
         @tasks << task
         task
@@ -344,27 +349,30 @@ module ConnectRPC
       end
 
       def abort
-        return if @aborted
+        return if @cleanup&.current?
 
-        @aborted = true
-        @raw.close unless @raw.closed?
-        owned = [*@tasks, @task].compact.uniq
-        owned.each { |task| cancel(task) }
-        # Cancel every task before joining dependencies of other owned tasks.
-        # rubocop:disable-next Style/CombinableLoops
-        owned.each { |task| join(task) }
-        begin
-          @connection.close
-        rescue StandardError
-          nil
-        ensure
-          changed
+        capture_retirement
+        owned = owns_task?(::Async::Task.current)
+        launch = !@cleanup
+        if launch
+          @aborted = true
+          @cleanup = ::Async::Task.new(@lifetime, transient: true, finished: false) { retire }
         end
+        if owned
+          @cleanup.run if launch
+        else
+          join(@cleanup, failure: true) { @cleanup.run if launch }
+        end
+        nil
       end
 
       def drain(parent, expires)
         return wait(@drain_task, expires) if @drain_task
-        return true if @aborted
+
+        if @aborted
+          abort
+          return true
+        end
 
         @draining = true
         unless @ready
@@ -379,7 +387,7 @@ module ConnectRPC
           # Cancel an idle parser only after the admitted response and callback
           # complete. Raw half-close preserves the HTTP wire-completion boundary.
           @raw.shutdown(Socket::SHUT_WR)
-          cancel(@task)
+          cancel_root(@task)
           join(@task)
           loop { @raw.readpartial(16_384) }
         rescue EOFError
@@ -406,17 +414,86 @@ module ConnectRPC
         ::Async::Task.current.with_timeout(remaining) { task.wait }
       end
 
-      def cancel(task)
-        return unless task && !task.current? && !task.finished?
+      def retirement_parent=(parent)
+        @lifetime = parent
+      end
 
+      def retirement_completed? = !!@retirement_completed
+
+      def retirement_roots = [*@tasks, @task].compact.uniq
+
+      def capture_retirement
+        retirement_roots.each { |task| capture_task(task) }
+        members = @retirement_members.keys
+        members.each { |task| capture_task(task) }
+      end
+
+      def capture_task(task)
+        @retirement_members[task] = true
+        task.children&.to_a&.each { |child| capture_task(child) unless child.transient? }
+      end
+
+      def owns_task?(task)
+        capture_retirement
+        while task
+          return true if @retirement_members.key?(task)
+          return false if task.transient?
+
+          task = task.parent
+        end
+        false
+      end
+
+      def cancel_root(task)
+        return if !task || @cancelled_roots.key?(task) || task.finished?
+
+        mark_cancelled(task)
         task.cancel
+        # Pinned HTTP/1 defers cancellation through response/body callbacks.
+        # A deferred request still needs its one immediate forced delivery.
         task.cancel if task.cancel_deferred?
       end
 
-      def join(task)
-        task&.wait unless task&.current?
-      rescue StandardError
-        nil
+      def mark_cancelled(task)
+        @cancelled_roots[task] = true
+        task.children&.to_a&.each { |child| mark_cancelled(child) unless child.transient? }
+      end
+
+      def retire
+        @raw.close unless @raw.closed?
+        # Best-effort scheduling hint only. A return proves no unwind or
+        # completion; the retained-task joins below establish retirement.
+        ::Async::Task.current.yield
+        loop do
+          capture_retirement
+          roots = retirement_roots
+          roots.reject! do |task|
+            ancestor = task
+            covered = false
+            until ancestor.transient? || !(ancestor = ancestor.parent)
+              covered ||= roots.include?(ancestor)
+            end
+            covered
+          end
+          roots.each { |task| cancel_root(task) }
+          @retirement_members.keys.reverse_each { |task| join(task) }
+          capture_retirement
+          break if @retirement_members.keys.all?(&:finished?)
+        end
+        begin
+          @connection.close
+        rescue StandardError
+          nil
+        end
+        @retirement_completed = true
+        changed
+      end
+
+      # Local counterpart of the private Async helper; no shared public utility.
+      def join(task, failure: false)
+        return unless task
+
+        CompletionJoin.call(task, failure: failure) { yield if block_given? }
       end
     end
     private_constant :HTTP1Resource

@@ -241,14 +241,15 @@ module ConnectRPC
 
       def connect(operation)
         resource = Internal::Resource.new(progress: @progress)
-        @resources.reject!(&:finished?)
+        resource.send(:retirement_parent=, @lifetime)
+        @resources.reject! { |entry| entry.send(:retirement_completed?) }
         @resources << resource
         operation[:resource] = resource
         expires = Internal.now + @connect_timeout
         deadline = operation.fetch(:request).deadline
         expires = [expires, Internal.now + deadline.remaining].min if deadline
         check_request!(operation.fetch(:request))
-        setup = @lifetime.async(finished: false) do
+        setup = ::Async::Task.new(@lifetime, finished: false) do
           activate(operation.fetch(:request)) do
             check_request!(operation.fetch(:request))
             setup_connection(resource)
@@ -258,6 +259,7 @@ module ConnectRPC
         end
         resource.task = setup
         begin
+          setup.run
           Internal.wait(setup, expires)
         rescue ::Async::Cancel, StandardError
           abort_setup(resource)
