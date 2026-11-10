@@ -74,7 +74,7 @@ module ConnectRPC
 
       # Ordinary shutdown waits only for listener stop, not session retirement.
       # Terminal failure waits for cooperative abort/join, then raises its cause.
-      # Owner cancellation can interrupt that cleanup; the cause still survives.
+      # Owner interruption is retained through cleanup; the cause still survives.
       def wait
         @session.send(:check_affinity!)
         raise LifecycleError, "Start or close the host before waiting" unless @bound || @closing
@@ -145,7 +145,7 @@ module ConnectRPC
       end
 
       def join_listeners
-        @listeners.each { |listener| Internal.join(listener) }
+        @listeners.each { |listener| Internal.join_complete(listener) unless listener.current? }
       end
 
       def stop_accepting

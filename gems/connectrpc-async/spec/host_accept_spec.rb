@@ -385,6 +385,9 @@ RSpec.describe ConnectRPC::Async::Host do
         owner.wait
         expect(waiter.wait).to be_nil
         expect(host.wait).to be_nil
+        # Ordinary wait observes listener stop; owner.wait only observes its result.
+        AsyncHelpers::INTERNAL.join_complete(owner)
+        expect(owner).to be_finished
         expect(faults.listeners).to all(be_closed)
         expect(faults.tasks).to all(be_finished)
         expect(host_session(host).instance_variable_get(:@lifetime)).to be_finished
@@ -461,16 +464,28 @@ RSpec.describe ConnectRPC::Async::Host do
       waiter = task.async { wait_error(host) }
       trigger.enqueue(true)
       handler = cleaning.dequeue
+      retained = resources.flat_map { |resource| resource.instance_variable_get(:@retirement_members).keys }
+      retained.concat(faults.tasks)
+      fibers = retained.filter_map(&:fiber)
       expect(handler).not_to be_finished
       expect(resources.map(&:raw)).to all(be_closed)
       AsyncHelpers::INTERNAL.cancel(owner)
+      expect(owner).to be_cancelled
+      expect(waiter).not_to be_finished
+      expect(host.instance_variable_get(:@completion)).not_to be_resolved
+      expect(handler).not_to be_finished
+      expect(resources).to all(satisfy { |resource| !resource.send(:retirement_completed?) })
+      expect(host_session(host).instance_variable_get(:@state)).to eq(:closing)
+      release_cleanup.enqueue(true)
       expect(waiter.wait).to equal(original)
       expect(wait_error(host)).to equal(original)
-      # Settlement preserves supervision even if cancellation interrupted abort.
-      # It is not an assertion that the blocked handler retired at settlement.
-      release_cleanup.enqueue(true)
-      AsyncHelpers::INTERNAL.cancel(handler)
-      AsyncHelpers::INTERNAL.join(handler)
+      expect(handler).to be_finished
+      expect(retained).to include(handler)
+      expect(retained).to all(be_finished)
+      expect(fibers).not_to be_empty
+      expect(fibers).to all(satisfy { |fiber| !fiber.alive? })
+      expect(resources).to all(satisfy { |resource| resource.send(:retirement_completed?) })
+      expect(host_session(host).instance_variable_get(:@state)).to eq(:closed)
       expect(pending.wait).to be_a(ConnectRPC::Error)
     ensure
       release_cleanup&.enqueue(true)
@@ -658,12 +673,22 @@ RSpec.describe ConnectRPC::Async::Host do
         waiter = task.async { wait_error(host) }
         trigger.enqueue(true)
         cleaning.dequeue
+        resources = host_session(host).instance_variable_get(:@resources).dup
+        retained = resources.flat_map { |resource| resource.instance_variable_get(:@retirement_members).keys }
+        retained.concat(faults.tasks)
+        fibers = retained.filter_map(&:fiber)
         closer = task.async { host.close(grace: 5) }
         expect(host_session(host).instance_variable_get(:@aborting)).to be(true)
         expect(waiter).not_to be_finished
         expect(closer).not_to be_finished
         release.enqueue(true)
         expect(waiter.wait).to equal(original)
+        expect(retained).to all(be_finished)
+        expect(fibers).not_to be_empty
+        expect(fibers).to all(satisfy { |fiber| !fiber.alive? })
+        expect(resources).to all(satisfy { |resource| resource.send(:retirement_completed?) })
+        expect(resources.map(&:raw)).to all(be_closed)
+        expect(host_session(host).instance_variable_get(:@state)).to eq(:closed)
         expect(closer.wait).to be(false)
         expect(pending.wait).to be_a(ConnectRPC::Error)
         caller_error = RuntimeError.new("caller ensure after terminal failure")

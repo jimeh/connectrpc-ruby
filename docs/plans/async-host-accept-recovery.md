@@ -1,10 +1,44 @@
 # Async Host accept recovery
 
 Status: frozen after independent Claude plan review and the coordinator's
-explicit design approval on 2026-11-08. The exclusive local execution slot is
-released to this repair for setup, RED/GREEN and focused/owning gates.
-Base: `805bb8099bac63b9bff75b1cac7a637c9752217c`.
+explicit design approval on 2026-11-08. Focused runtime validation completed on
+2026-11-10 after observer #48 released all runtime resources and root explicitly
+granted M4 the exclusive focused window. Both pinned Ruby lanes ran serially.
+The parent owns runtime-slot handback and every Git/delivery operation. No
+aggregate, independent Go, PR or readiness claim follows from this validation.
+Base: merged prerequisite #49 at `2d08080274c72653b4f6ca7326619e7417fb7ef8`.
+Rebased plan: `9b4767b`; pre-adaptation candidate: `0219486`.
+Original base: `805bb8099bac63b9bff75b1cac7a637c9752217c`.
 Scope: one repair PR referencing #26/M4.
+
+The original eight-file input is preserved at `9d45a34` and in the source-only
+reconciliation backup at
+`/tmp/user-jimeh/connectrpc-m4-reconcile-20261110-xk6d6rbn/`.
+The historical `/tmp/connectrpc-async-host-repair-20261108/REPORT.md` and
+terminal-cleanup RED remain unchanged evidence. The initial recovery RED/GREEN
+and partial RBS/lint qualification predate this merged base; the stopped Ruby 4
+terminal cleanup failure is not relabelled GREEN. Current source-bound commands,
+initial failures, corrections and outcomes are recorded separately at
+`/tmp/user-jimeh/connectrpc-m4-focused-20261110-u7c7j0rm/validation-20261110/REPORT.md`.
+
+Both Ruby 3.4.12 and 4.0.9 passed the unchanged initial terminal-close fixture
+and adapted owner-interruption fixture, one collected example per command.
+Subsequent insert-only assertions proved retained task completion, captured
+fiber termination and resource retirement when terminal wait returned; the
+original gates and pre-release assertions remain. Both focused matrices passed
+90 examples, including 33 Host accept examples. The remaining owning files plus
+the final Host fixture passed 507 examples per lane, covering all 56 owning
+spec files and 564 unique examples per lane across the two batches.
+Both lanes passed `async:check`, established `rbs:inventory` and `rbs:api`
+leaves, `rbs:package` including installed Host close-then-wait in both load
+orders, and `async:package`. The first Ruby 3.4 matrix's two ordinary-owner
+fixture failures remain recorded: `owner.wait` observed its result before child
+finalization. An external `Internal.join_complete(owner)` now precedes the
+unchanged lifetime/session-retirement assertions. The same failing seed then
+passed. The first lint run's two added line-length offenses and their routine
+correction also remain recorded. Product source and shared retirement inputs
+were unchanged during this validation. All owned runtime processes finished;
+no background runtime work remains.
 
 ## Outcome and fixed policy
 
@@ -74,15 +108,20 @@ a short-lived start caller. After startup, recording the first terminal cause
 starts this supervisor in the same turn, before a concurrent close can initiate
 a drain window. The listener itself never aborts/closes the session. Settlement
 must preserve the original recorded cause if owner cancellation interrupts
-terminal cleanup; documentation and tests must distinguish completed retirement
-from an interrupted cleanup, and must not claim every task finished solely from
-promise settlement. Ordinary owner cancellation must still cancel real backoff
-and blocked accept, retire owned resources, and resolve ordinary waiters.
+terminal cleanup. Merged #49 retains external abort-join interruption until
+actual shared cleanup completes. Documentation and tests must assert retirement
+through explicit cleanup boundaries, rather than infer it solely from promise
+settlement. Ordinary owner cancellation must still cancel real backoff and
+blocked accept, retire owned resources, and resolve ordinary waiters.
 
-`close(grace:)` retains its existing boolean drain outcome and validation, and
-never raises a stored accept failure from an ensure. Repeated/concurrent close
-shares the first close outcome. If ordinary close has begun, accept errors caused
-by teardown are normal shutdown. If a terminal cause was recorded first, a
+`close(grace:)` retains its existing validation and `bool?` return: external
+callers join actual cleanup and receive the boolean drain outcome; resource-owned
+calls and cleanup/close coordinator reentry can return nil while pending. Nil
+does not publish completion or decide the outcome. Once closed, all callers
+receive the final boolean. Close never raises a stored accept failure from an
+ensure. Repeated/concurrent close shares the first close outcome and expiry.
+If ordinary close has begun, accept errors caused by teardown are normal
+shutdown. If a terminal cause was recorded first, a
 concurrent close cannot erase it. Unrelated exceptions escaping caller code must
 survive ordinary ensure-close unchanged. `on_tls_error` retains its TLS meaning.
 
@@ -126,9 +165,11 @@ transport and generated Echo calls. A private backoff method may provide a
 deterministic timing boundary, but at least close-during-backoff exercises the
 real cooperative timer.
 
-Prefer Host-only lifecycle implementation using existing ServerSession APIs.
-Any directly necessary shared private lifecycle edit requires an explicit
-rationale and affected Falcon evidence before expansion. Core, transport,
+Keep lifecycle implementation Host-only using the merged ServerSession APIs.
+Existing session abort owns actual shared retirement; Host listener joins use
+the merged private `Internal.join_complete` with a current-task guard. No M4
+shared lifecycle edit is authorized. If another conflict requires shared changes,
+stop with evidence for explicit disposition before expansion. Core, transport,
 Falcon source, observer #48 and other #26 repairs are outside scope. Do not
 alter pins, inventories, assertions or limits to obtain a passing result.
 
@@ -136,13 +177,21 @@ alter pins, inventories, assertions or limits to obtain a passing result.
 
 1. Independent Claude review and the coordinator checkpoint are complete.
    No UI exists; UX review does not apply. Use a fresh implementation worker.
-2. The coordinator released the exclusive runtime slot for setup, implementation
-   RED/GREEN and focused/owning gates. Use existing Mise tasks and pinned bundles.
-   Preserve all original diagnosis and unrelated failure logs. Request coordination
-   again before final heavy aggregate graphs; no aggregate retry is authorized.
-3. Before product changes, run a focused regression that fails at its intended
-   fresh generated RPC/progress/terminal-observation assertion. Prove one-shot
-   recovery preserves both a held in-flight RPC and a later RPC on that admitted
+2. The original implementation had a runtime allocation on 2026-11-08. The
+   2026-11-10 source-only adaptation initially had no runtime grant while
+   observer #48 held the slot. After that observer released all runtime resources,
+   root explicitly granted the current exclusive focused window. The implementer
+   ran pinned lanes and gates serially, preserving the initial source/fixture
+   copies, every initial outcome, original diagnosis and unrelated failure logs.
+   No aggregate retry was authorized or executed.
+3. Preserve the historical pre-product focused regression failures at their
+   intended fresh generated RPC assertions. For the granted focused window,
+   first run the unchanged stopped terminal-close example and the adapted
+   owner-cancellation example on Ruby 3.4.12 and 4.0.9, retaining each initial
+   outcome. Then run all Host accept examples, existing lifecycle and affected
+   shared-retirement ownership coverage, followed by `async:check` on both lanes.
+   Use existing Mise tasks and pinned bundles. Prove one-shot recovery preserves
+   both a held in-flight RPC and a later RPC on that admitted
    connection, plus a fresh typed client. Exercise h2c and verified TLS/mTLS
    composition as warranted, using existing helpers and both pinned Ruby lanes.
 4. Prove the exact delay sequence, six-failure exhaustion, original exception
@@ -167,7 +216,9 @@ alter pins, inventories, assertions or limits to obtain a passing result.
    policy require coordinator agreement before launching those heavy graphs.
    Preserve every initial failure and stop for disposition; never retry a graph
    or CI until green. Exact-head CI supplies only the evidence it actually runs.
-7. Use ship-feature-pr: fresh implementation, inspect and commit, one draft PR,
+7. After source adaptation and runtime qualification, root owns every Git and
+   delivery operation. The implementation worker stops after its source report.
+   The parent delivery workflow remains: inspect and commit, one draft PR,
    independent exact-head Codex/Claude review, then authorized CodeRabbit after
    internal acceptance. Apply convergence rules to correction batches. Never
    merge. Readiness requires current base, required checks/reviews on head,
