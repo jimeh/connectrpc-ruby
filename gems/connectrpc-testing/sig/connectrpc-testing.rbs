@@ -1,5 +1,6 @@
 module ConnectRPC
   module Testing
+    VERSION: String
     class Transport
       def initialize: (server: Server) -> void
       def call: (TransportRequest) -> TransportResponse

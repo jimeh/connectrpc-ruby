@@ -1,5 +1,6 @@
 module ConnectRPC
   module Async
+    VERSION: String
     type tls = { certificate_chain: Array[String], private_key: String, client_ca: Array[String]? }
     type tls_snapshot = { version: String, certificate_chain: Array[String], private_key: String, client_ca: Array[String]? }
     type tls_category = :invalid | :source | :version_conflict | :timeout | :closed

@@ -2,7 +2,8 @@
 
 Gem::Specification.new do |spec|
   spec.name = "connectrpc-testing"
-  spec.version = "0.1.0" # x-release-please-version
+  # Read without loading library code before SimpleCov starts.
+  spec.version = File.read(File.join(__dir__, "lib/connectrpc/testing/version.rb"))[/VERSION = "([^"]+)"/, 1]
   spec.authors = ["jimeh"]
   spec.summary = "In-process transport for real ConnectRPC unary round trips"
   spec.description = "Optional synchronous testing transport using an application-owned core Server."
@@ -13,6 +14,6 @@ Gem::Specification.new do |spec|
   spec.metadata["source_code_uri"] = spec.homepage
   spec.files = Dir.glob("sig/**/*.{rbs,yaml}") + Dir.glob("lib/**/*.rb") + %w[README.md LICENSE]
   spec.require_paths = ["lib"]
-  local_requirement = "~> #{spec.version.to_s.split(".").first(2).join(".")}.0"
+  local_requirement = "~> #{spec.version.to_s.split('.').first(2).join('.')}.0"
   spec.add_dependency "connectrpc", local_requirement
 end

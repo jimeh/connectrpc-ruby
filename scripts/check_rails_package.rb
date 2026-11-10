@@ -42,8 +42,9 @@ core_files = %w[
   lib/connectrpc/bindings/google_protobuf.rb lib/connectrpc/transports/net_http.rb
 ].sort
 abort "Core manifest changed" unless core.contents.sort == core_files.sort && core.spec.runtime_dependencies.empty?
-expected = %w[LICENSE README.md lib/connectrpc-on-rails.rb lib/connectrpc/on_rails.rb sig/connectrpc-on-rails.rbs
-              sig/manifest.yaml rbs/action_controller_8/controller.rbs lib/connectrpc/on_rails/controller.rb]
+expected = %w[LICENSE README.md lib/connectrpc-on-rails.rb lib/connectrpc/on_rails.rb lib/connectrpc/on_rails/version.rb
+              sig/connectrpc-on-rails.rbs sig/manifest.yaml rbs/action_controller_8/controller.rbs
+              lib/connectrpc/on_rails/controller.rb]
 abort "Unexpected Rails manifest" unless adapter.contents.sort == expected.sort
 expected_dependencies = {
   "connectrpc" => local_requirement, "actionpack" => ">= 8.0.5.1, < 8.2", "connectrpc-rack" => local_requirement
@@ -75,7 +76,8 @@ abort "Rack manifest changed" unless middleware.contents.sort == %w[LICENSE READ
 rack_dependencies = middleware.spec.runtime_dependencies.to_h do |dependency|
   [dependency.name, dependency.requirement.to_s]
 end
-abort "Rack dependencies changed" unless rack_dependencies == { "connectrpc" => local_requirement, "rack" => ">= 3.2.7, < 4" }
+abort "Rack dependencies changed" unless rack_dependencies == { "connectrpc" => local_requirement,
+                                                                "rack" => ">= 3.2.7, < 4" }
 specs = Bundler.load.specs.to_h { |spec| [spec.name, spec] }
 pending = %w[connectrpc-on-rails railties google-protobuf]
 required = {}

@@ -2,7 +2,8 @@
 
 Gem::Specification.new do |spec|
   spec.name = "connectrpc-async"
-  spec.version = "0.1.0" # x-release-please-version
+  # Read without loading library code before SimpleCov starts.
+  spec.version = File.read(File.join(__dir__, "lib/connectrpc/async/version.rb"))[/VERSION = "([^"]+)"/, 1]
   spec.summary = "Optional Async host and HTTP/1.1 and HTTP/2 ConnectRPC transports"
   spec.authors = ["jimeh"]
   spec.homepage = "https://github.com/jimeh/connectrpc-ruby"
@@ -11,7 +12,7 @@ Gem::Specification.new do |spec|
   spec.metadata["allowed_push_host"] = "https://gems.invalid"
   spec.files = Dir.glob("sig/**/*.{rbs,yaml}") + Dir["lib/**/*.rb", "LICENSE", "README.md"].sort
   spec.require_paths = ["lib"]
-  local_requirement = "~> #{spec.version.to_s.split(".").first(2).join(".")}.0"
+  local_requirement = "~> #{spec.version.to_s.split('.').first(2).join('.')}.0"
   {
     "connectrpc" => local_requirement, "async-http" => "~> 0.105.0", "async" => "~> 2.46.0",
     "async-pool" => "~> 0.12.0", "protocol-http2" => "~> 0.29.2", "protocol-http1" => "~> 0.41.1",

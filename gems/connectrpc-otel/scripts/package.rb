@@ -41,7 +41,8 @@ expected_core = %w[
   lib/connectrpc/generator/renderer.rb lib/connectrpc/generator/runtime_names.rb
 ].sort
 abort "Core manifest changed" unless core.contents.sort == expected_core && core.spec.runtime_dependencies.empty?
-expected_otel = %w[LICENSE README.md lib/connectrpc/otel.rb sig/connectrpc-otel.rbs sig/manifest.yaml
+expected_otel = %w[LICENSE README.md lib/connectrpc/otel.rb lib/connectrpc/otel/version.rb
+                   sig/connectrpc-otel.rbs sig/manifest.yaml
                    lib/connectrpc/otel/subscriber.rb].sort
 abort "OTel manifest changed" unless otel.contents.sort == expected_otel
 expected_dependencies = { "connectrpc" => local_requirement, "opentelemetry-api" => ">= 1.11.1, < 2" }

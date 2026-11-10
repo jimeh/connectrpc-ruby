@@ -43,7 +43,8 @@ expected_core = %w[
   lib/connectrpc/generator.rb lib/connectrpc/generator/names.rb lib/connectrpc/generator/schema.rb
   lib/connectrpc/generator/renderer.rb lib/connectrpc/generator/runtime_names.rb
 ].sort
-expected_testing = %w[LICENSE README.md lib/connectrpc/testing.rb sig/connectrpc-testing.rbs sig/manifest.yaml
+expected_testing = %w[LICENSE README.md lib/connectrpc/testing.rb lib/connectrpc/testing/version.rb
+                      sig/connectrpc-testing.rbs sig/manifest.yaml
                       lib/connectrpc/testing/transport.rb].sort
 abort "Unexpected core manifest" unless core.contents.sort == expected_core
 abort "Unexpected testing manifest" unless testing.contents.sort == expected_testing
