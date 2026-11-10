@@ -307,3 +307,13 @@ before downloading, verifying and building the independent reference. The local
 `browser:reference:setup` task explicitly installs locked Mise Go instead.
 Both task definitions retain `GOTOOLCHAIN=local`, `GOWORK=off` and
 `GOFLAGS=-mod=readonly`; CI does not install Go through Mise.
+
+## Release preparation
+
+The separate `release-please.yml` workflow runs only on manual dispatch from main.
+It opens draft release PRs using an existing GitHub App and never tags or publishes.
+The 30 CI checks above retain their mapping. `check:static` also runs the offline
+`release:check` invariant for all seven versions and all eight local path locks.
+Frozen Bundler installs in each owning CI lane prove the prepared locks are accepted
+by Bundler. See [release preparation](releasing.md) for the candidate procedure and
+remaining App/account setup.

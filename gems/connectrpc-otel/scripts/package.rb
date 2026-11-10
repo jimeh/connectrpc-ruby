@@ -7,10 +7,14 @@ require "rubygems/package"
 require "stringio"
 require "tmpdir"
 
+require_relative "../../../scripts/release_train"
+
 root = File.expand_path("../../..", __dir__)
+version = ReleaseTrain.new(root).version
+local_requirement = ReleaseTrain.new(root).requirement
 output = File.join(root, "vendor/otel/pkg")
-core = Gem::Package.new(File.join(output, "connectrpc-0.1.0.gem"))
-otel = Gem::Package.new(File.join(output, "connectrpc-otel-0.1.0.gem"))
+core = Gem::Package.new(File.join(output, "connectrpc-#{version}.gem"))
+otel = Gem::Package.new(File.join(output, "connectrpc-otel-#{version}.gem"))
 expected_core = %w[
   LICENSE README.md docs/development.md docs/design.md docs/rbs.md docs/streaming.md exe/protoc-gen-connectrpc-ruby
   sig/connectrpc.rbs sig/manifest.yaml rbs/google_protobuf_4_36/runtime.rbs
@@ -40,7 +44,7 @@ abort "Core manifest changed" unless core.contents.sort == expected_core && core
 expected_otel = %w[LICENSE README.md lib/connectrpc/otel.rb sig/connectrpc-otel.rbs sig/manifest.yaml
                    lib/connectrpc/otel/subscriber.rb].sort
 abort "OTel manifest changed" unless otel.contents.sort == expected_otel
-expected_dependencies = { "connectrpc" => "~> 0.1.0", "opentelemetry-api" => ">= 1.11.1, < 2" }
+expected_dependencies = { "connectrpc" => local_requirement, "opentelemetry-api" => ">= 1.11.1, < 2" }
 abort "OTel runtime closure changed" unless otel.spec.runtime_dependencies.to_h do |dep|
   [dep.name, dep.requirement.to_s]
 end == expected_dependencies
@@ -81,14 +85,15 @@ Bundler.with_unbundled_env do
     working = File.join(temporary, "cwd")
     gem_home = File.join(temporary, "gems")
     FileUtils.mkdir_p(working)
-    FileUtils.cp([*Dir.glob(File.join(output, "*.gem")), *artifacts], working)
+    local_archives = ReleaseTrain::NAMES.map { |name| File.join(output, "#{name}-#{version}.gem") }
+    FileUtils.cp([*local_archives, *artifacts], working)
     FileUtils.cp(File.join(__dir__, "integration.rb"), working)
     FileUtils.cp(Dir.glob(File.join(root, "spec/fixtures/generation/echo/*.rb")), working)
     environment = { "GEM_HOME" => gem_home, "GEM_PATH" => gem_home, "RUBYOPT" => nil, "RUBYLIB" => nil,
                     "RUBYGEMS_GEMDEPS" => nil }
     ENV.each_key { |key| environment[key] = nil if key.start_with?("BUNDLE_", "BUNDLER_") }
     run = ->(*args) { system(environment, RbConfig.ruby, *args, chdir: working, exception: true) }
-    run.call("-S", "gem", "install", "--norc", "connectrpc-otel-0.1.0.gem", "--local", "--no-document")
+    run.call("-S", "gem", "install", "--norc", "connectrpc-otel-#{version}.gem", "--local", "--no-document")
     run.call("-e", <<~'CODE')
       require "connectrpc/otel"
       abort "SDK/exporter auto-required" if defined?(OpenTelemetry::SDK)
@@ -101,7 +106,7 @@ Bundler.with_unbundled_env do
       end
       puts "API-only require from normal offline dependencies outside checkout passed"
     CODE
-    ["connectrpc-testing-0.1.0.gem", *development_archives].each do |name|
+    ["connectrpc-testing-#{version}.gem", *development_archives].each do |name|
       run.call("-S", "gem", "install", "--norc", name, "--local", "--no-document")
     end
     run.call("-I", working, "integration.rb")

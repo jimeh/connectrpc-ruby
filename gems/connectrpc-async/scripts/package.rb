@@ -5,8 +5,12 @@ require "fileutils"
 require "rubygems/package"
 require "rbconfig"
 require "tmpdir"
+require_relative "../../../scripts/release_train"
+
 root = File.expand_path("../../..", __dir__)
-archives = %w[connectrpc connectrpc-async].map { |name| File.join(root, "vendor/async/pkg/#{name}-0.1.0.gem") }
+version = ReleaseTrain.new(root).version
+local_requirement = ReleaseTrain.new(root).requirement
+archives = %w[connectrpc connectrpc-async].map { |name| File.join(root, "vendor/async/pkg/#{name}-#{version}.gem") }
 core, backend = archives.map { |archive| Gem::Package.new(archive) }
 core_expected = %w[
   LICENSE README.md docs/development.md docs/design.md docs/rbs.md docs/streaming.md lib/connectrpc.rb
@@ -46,7 +50,7 @@ expected = %w[LICENSE README.md lib/connectrpc/async.rb sig/connectrpc-async.rbs
               lib/connectrpc/async/http1_connection.rb lib/connectrpc/async/http1_stream.rb].sort
 abort "Backend manifest changed" unless backend.contents.sort == expected
 expected_dependencies = {
-  "connectrpc" => "~> 0.1.0", "async-http" => "~> 0.105.0", "async" => "~> 2.46.0", "async-pool" => "~> 0.12.0",
+  "connectrpc" => local_requirement, "async-http" => "~> 0.105.0", "async" => "~> 2.46.0", "async-pool" => "~> 0.12.0",
   "protocol-http2" => "~> 0.29.2", "protocol-http1" => "~> 0.41.1", "protocol-http" => "~> 0.72.1",
   "io-endpoint" => "~> 0.19.0",
   "io-stream" => "~> 0.14.0", "openssl" => "~> 4.0.2"

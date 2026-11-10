@@ -1,0 +1,25 @@
+{
+  "$schema": "https://raw.githubusercontent.com/googleapis/release-please/main/schemas/config.json",
+  "packages": {
+    ".": {
+      "release-type": "ruby",
+      "component": "connectrpc",
+      "version-file": "lib/connectrpc/version.rb",
+      "initial-version": "0.1.0",
+      "include-component-in-tag": false,
+      "include-v-in-tag": true,
+      "bump-minor-pre-major": true,
+      "bump-patch-for-minor-pre-major": true,
+      "draft-pull-request": true,
+      "extra-files": [
+        "gems/connectrpc-rack/connectrpc-rack.gemspec",
+        "gems/connectrpc-rails/connectrpc-rails.gemspec",
+        "gems/connectrpc-async/connectrpc-async.gemspec",
+        "gems/connectrpc-falcon/connectrpc-falcon.gemspec",
+        "gems/connectrpc-testing/connectrpc-testing.gemspec",
+        "gems/connectrpc-otel/connectrpc-otel.gemspec",
+        "gems/connectrpc-otel/lib/connectrpc/otel/subscriber.rb"
+      ]
+    }
+  }
+}

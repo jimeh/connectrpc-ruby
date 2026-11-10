@@ -7,11 +7,15 @@ require "rubygems/package"
 require "stringio"
 require "tmpdir"
 
+require_relative "../../../scripts/release_train"
+
 root = File.expand_path("../../..", __dir__)
+version = ReleaseTrain.new(root).version
+local_requirement = ReleaseTrain.new(root).requirement
 package_root = File.dirname(__dir__)
 output = File.join(root, "vendor/testing/pkg")
-core_archive = File.join(output, "connectrpc-0.1.0.gem")
-testing_archive = File.join(output, "connectrpc-testing-0.1.0.gem")
+core_archive = File.join(output, "connectrpc-#{version}.gem")
+testing_archive = File.join(output, "connectrpc-testing-#{version}.gem")
 core = Gem::Package.new(core_archive)
 testing = Gem::Package.new(testing_archive)
 expected_core = %w[
@@ -46,7 +50,7 @@ abort "Unexpected testing manifest" unless testing.contents.sort == expected_tes
 abort "Core runtime dependencies changed" unless core.spec.runtime_dependencies.empty?
 dependencies = testing.spec.runtime_dependencies
 abort "Unexpected testing dependencies" unless dependencies.size == 1 && dependencies.first.name == "connectrpc" &&
-                                               dependencies.first.requirement.to_s == "~> 0.1.0"
+                                               dependencies.first.requirement.to_s == local_requirement
 [core, testing].each do |archive|
   abort "Publication guard missing" unless archive.spec.metadata["allowed_push_host"] == "https://gems.invalid"
   abort "MIT metadata missing" unless archive.spec.licenses == ["MIT"]

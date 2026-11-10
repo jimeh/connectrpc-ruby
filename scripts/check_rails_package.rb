@@ -6,9 +6,13 @@ require "rubygems/package"
 require "rbconfig"
 require "tmpdir"
 
+require_relative "release_train"
+
 root = File.expand_path("..", __dir__)
+version = ReleaseTrain.new(root).version
+local_requirement = ReleaseTrain.new(root).requirement
 archives = %w[connectrpc connectrpc-rack connectrpc-rails].map do |name|
-  File.join(root, "vendor/rails/pkg/#{name}-0.1.0.gem")
+  File.join(root, "vendor/rails/pkg/#{name}-#{version}.gem")
 end
 core, middleware, adapter = archives.map { |archive| Gem::Package.new(archive) }
 core_files = %w[
@@ -43,7 +47,7 @@ expected = %w[LICENSE README.md lib/connectrpc/rails.rb sig/connectrpc-rails.rbs
               lib/connectrpc/rails/controller.rb]
 abort "Unexpected Rails manifest" unless adapter.contents.sort == expected.sort
 expected_dependencies = {
-  "connectrpc" => "~> 0.1.0", "actionpack" => ">= 8.0.5.1, < 8.2", "connectrpc-rack" => "~> 0.1.0"
+  "connectrpc" => local_requirement, "actionpack" => ">= 8.0.5.1, < 8.2", "connectrpc-rack" => local_requirement
 }
 actual = adapter.spec.runtime_dependencies.to_h { |dependency| [dependency.name, dependency.requirement.to_s] }
 abort "Unexpected Rails dependencies: #{actual}" unless actual == expected_dependencies
@@ -72,7 +76,7 @@ abort "Rack manifest changed" unless middleware.contents.sort == %w[LICENSE READ
 rack_dependencies = middleware.spec.runtime_dependencies.to_h do |dependency|
   [dependency.name, dependency.requirement.to_s]
 end
-abort "Rack dependencies changed" unless rack_dependencies == { "connectrpc" => "~> 0.1.0", "rack" => ">= 3.2.7, < 4" }
+abort "Rack dependencies changed" unless rack_dependencies == { "connectrpc" => local_requirement, "rack" => ">= 3.2.7, < 4" }
 specs = Bundler.load.specs.to_h { |spec| [spec.name, spec] }
 pending = %w[connectrpc-rails railties google-protobuf]
 required = {}
