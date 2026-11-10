@@ -6,7 +6,13 @@ explicit design approval on 2026-11-08. Focused runtime validation completed on
 granted M4 the exclusive focused window. Both pinned Ruby lanes ran serially.
 The parent owns runtime-slot handback and every Git/delivery operation. No
 aggregate, independent Go, PR or readiness claim follows from this validation.
-Base: merged prerequisite #49 at `2d08080274c72653b4f6ca7326619e7417fb7ef8`.
+Delivery base: `63b70f4319198151084b61551cbf032df88d9da2`, including merged
+prerequisite #49 and observer unwind #48. The post-validation rebase preserved
+every M4 source/spec byte and all upstream private inventory additions. Runtime
+evidence below remains bound to the pre-#48 composition; exact-head CI and
+independent review must cover the delivery composition. No additional runtime
+allocation follows from this rebase. The focused slot has been explicitly released.
+Validation base: merged prerequisite #49 at `2d08080274c72653b4f6ca7326619e7417fb7ef8`.
 Rebased plan: `9b4767b`; pre-adaptation candidate: `0219486`.
 Original base: `805bb8099bac63b9bff75b1cac7a637c9752217c`.
 Scope: one repair PR referencing #26/M4.
