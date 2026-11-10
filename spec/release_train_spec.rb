@@ -91,9 +91,20 @@ RSpec.describe ReleaseTrain do
           # Independent assertions cover PATH specs, local CHECKSUMS, and the
           # unmodified registry records, not just a call to the preparer twice.
           names = described_class::LOCK_PACKAGES.fetch(file)
+          sections = train.read(file).split(/(?=^[A-Z][A-Z ]*\n)/)
+          paths = sections.select { |section| section.start_with?("PATH\n") }.join
+          checksums = sections.find { |section| section.start_with?("CHECKSUMS\n") }
           names.each do |name|
-            expect(train.read(file)).to include("    #{name} (#{version})\n", "  #{name} (#{version})\n")
+            expect(paths.lines).to include("    #{name} (#{version})\n")
+            expect(checksums.lines).to include("  #{name} (#{version})\n"),
+                                       "#{file}: CHECKSUMS must contain #{name} (#{version})"
           end
+          local_dependency = /^ {6}(connectrpc(?:-[a-z]+)?) \(/
+          original_paths = original.split(/(?=^[A-Z][A-Z ]*\n)/).select { |section| section.start_with?("PATH\n") }.join
+          dependencies = original_paths.scan(local_dependency).flatten
+          expected_dependencies = dependencies.map { |name| "      #{name} (#{floor})\n" }
+          expect(paths.lines.grep(local_dependency)).to eq(expected_dependencies),
+                                                        "#{file}: PATH dependencies must use #{floor}"
           registry_sections = lambda { |text|
             text.split(/(?=^[A-Z][A-Z ]*\n)/).reject do |s|
               s.start_with?("PATH\n", "CHECKSUMS\n")
@@ -120,6 +131,20 @@ RSpec.describe ReleaseTrain do
       expect { train.check! }.to raise_error(/Stale release preparation: Gemfile.lock/)
       train.prepare!
       expect(train.check!).to equal(train)
+    end
+  end
+
+  it "refuses a non-empty candidate directory without replacing existing artifacts" do
+    captured_train do |train|
+      output = File.join(train.root, "candidate")
+      FileUtils.mkdir_p(output)
+      artifact = File.join(output, "old.gem")
+      File.binwrite(artifact, "retained artifact")
+      expect do
+        ReleaseCandidate.new(train).build!(output: output, revision: "fixture", epoch: 1_800_000_000)
+      end.to raise_error(/Candidate output must be missing or empty/)
+      expect(Dir.children(output)).to eq(["old.gem"])
+      expect(File.binread(artifact)).to eq("retained artifact")
     end
   end
 
@@ -169,6 +194,7 @@ RSpec.describe "Release preparation workflow boundary" do
     expect(workflow.fetch("on", workflow[true]).keys).to eq(["workflow_dispatch"])
     expect(workflow.fetch("permissions")).to eq({})
     job = workflow.fetch("jobs").fetch("release-please")
+    expect(job).not_to have_key("permissions")
     expect(workflow.fetch("jobs").keys).to eq(["release-please"])
     expect(job.fetch("if")).to eq("github.ref == 'refs/heads/main'")
     release = job.fetch("steps").find { |step| step.fetch("uses", "").start_with?("googleapis/release-please-action@") }

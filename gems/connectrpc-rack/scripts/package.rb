@@ -43,6 +43,7 @@ unless core.contents.sort == core_expected && core.spec.runtime_dependencies.emp
   abort "Core manifest/dependencies changed"
 end
 abort "Rack manifest changed" unless middleware.contents.sort == %w[LICENSE README.md lib/connectrpc/rack.rb
+                                                                    lib/connectrpc/rack/version.rb
                                                                     sig/connectrpc-rack.rbs sig/manifest.yaml]
 expected = { "connectrpc" => local_requirement, "rack" => ">= 3.2.7, < 4" }
 actual = middleware.spec.runtime_dependencies.to_h { |dependency| [dependency.name, dependency.requirement.to_s] }

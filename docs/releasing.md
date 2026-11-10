@@ -129,9 +129,18 @@ Async and Falcon. Add the distinct missing leaves, rather than re-running all
 of `release:candidate` after them:
 
 ```sh
-RAILS_LANE=8.0 mise run generation:check:rails check:package:rails
-mise run testing:package otel:package rbs:check rbs:package grpc:status:check
-MISE_RUBY_VERSION=4.0.9 mise run testing:package otel:package rbs:check rbs:package grpc:status:check
+RAILS_LANE=8.0 mise run generation:check:rails
+RAILS_LANE=8.0 mise run check:package:rails
+mise run testing:package
+mise run otel:package
+mise run rbs:check
+mise run rbs:package
+mise run grpc:status:check
+MISE_RUBY_VERSION=4.0.9 mise run testing:package
+MISE_RUBY_VERSION=4.0.9 mise run otel:package
+MISE_RUBY_VERSION=4.0.9 mise run rbs:check
+MISE_RUBY_VERSION=4.0.9 mise run rbs:package
+MISE_RUBY_VERSION=4.0.9 mise run grpc:status:check
 mise run release:build
 ```
 

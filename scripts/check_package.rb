@@ -85,6 +85,7 @@ rack_output = File.join(root, "vendor/package/rack")
 rack_archive = PackageBuild.build(directory: rack_directory, output: rack_output)
 rack_package = Gem::Package.new(rack_archive)
 abort "Unexpected Rack manifest" unless rack_package.contents.sort == %w[LICENSE README.md lib/connectrpc/rack.rb
+                                                                         lib/connectrpc/rack/version.rb
                                                                          sig/connectrpc-rack.rbs sig/manifest.yaml]
 rack_dependencies = rack_package.spec.runtime_dependencies.to_h { |entry| [entry.name, entry.requirement.to_s] }
 unless rack_dependencies == { "connectrpc" => local_requirement, "rack" => ">= 3.2.7, < 4" } &&

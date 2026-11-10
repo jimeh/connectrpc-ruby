@@ -73,6 +73,7 @@ Dir.mktmpdir("connectrpc-license-") do |temporary|
   end
 end
 abort "Rack manifest changed" unless middleware.contents.sort == %w[LICENSE README.md lib/connectrpc/rack.rb
+                                                                    lib/connectrpc/rack/version.rb
                                                                     sig/connectrpc-rack.rbs sig/manifest.yaml]
 rack_dependencies = middleware.spec.runtime_dependencies.to_h do |dependency|
   [dependency.name, dependency.requirement.to_s]
