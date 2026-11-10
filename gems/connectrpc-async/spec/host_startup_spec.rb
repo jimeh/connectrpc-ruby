@@ -351,6 +351,77 @@ RSpec.describe ConnectRPC::Async::Host, "startup ownership" do
     end
   end
 
+  %i[ephemeral fixed].each do |port_mode|
+    it "rejects an overlapping start during a yielding real #{port_mode}-port bind without disturbing the first" do
+      reactor do |task|
+        port = 0
+        if port_mode == :fixed
+          probe = Addrinfo.tcp("127.0.0.1", 0).bind
+          port = probe.local_address.ip_port
+          probe.close
+        end
+        host = described_class.new(server: server, port: port)
+        entered = Async::Queue.new
+        release = Async::Queue.new
+        endpoints = []
+        real_bind = host.method(:bind)
+        host.define_singleton_method(:bind) do
+          bound = real_bind.call
+          endpoints << bound
+          if endpoints.size == 1
+            entered.enqueue(true)
+            release.dequeue
+          end
+          bound
+        end
+        first = task.async(finished: false) do
+          host.start
+        rescue StandardError => e
+          e
+        end
+        entered.dequeue
+        second = begin
+          host.start
+        rescue StandardError => e
+          e
+        end
+        during = { binds: endpoints.size, starting: host.instance_variable_get(:@starting),
+                   exit_task: host.instance_variable_get(:@exit_task),
+                   session: host_session(host).instance_variable_get(:@state) }
+        release.enqueue(true)
+        outcome = task.with_timeout(2) { first.wait }
+        served = nil
+        if outcome.equal?(host)
+          origin = "http://127.0.0.1:#{host.port}"
+          transport = ConnectRPC::Async::Transport.new(origin: origin)
+          served = client(transport, origin).echo(AsyncHelpers::MESSAGE.new(name: "overlap")).message.name
+          transport.close(grace: 0)
+        end
+        closed = host.close(grace: 0)
+        observed = {
+          second: [second.class, second.respond_to?(:message) ? second.message : second], during: during,
+          first: outcome.equal?(host) ? :host : [outcome.class, outcome.message], served: served,
+          port: port.zero? ? :ephemeral : host.port == port,
+          listeners_finished: host.instance_variable_get(:@listeners).all?(&:finished?),
+          sockets_closed: endpoints.flat_map(&:sockets).all?(&:closed?),
+          closed: closed, session: host_session(host).instance_variable_get(:@state)
+        }
+        expect(observed).to eq(
+          second: [AsyncHelpers::LIFECYCLE_ERROR, "Host startup is already in progress"],
+          during: { binds: 1, starting: true, exit_task: nil, session: :running },
+          first: :host, served: "overlap", port: port.zero? ? :ephemeral : true,
+          listeners_finished: true, sockets_closed: true, closed: true, session: :closed
+        )
+      ensure
+        release&.enqueue(true)
+        AsyncHelpers::INTERNAL.cancel(first)
+        AsyncHelpers::INTERNAL.join_complete(first) if first
+        host&.close(grace: 0)
+        endpoints&.each(&:close)
+      end
+    end
+  end
+
   it "keeps start idempotent when a running provider refresh calls it" do
     reactor do
       host = nil

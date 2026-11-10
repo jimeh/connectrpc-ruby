@@ -128,6 +128,17 @@ leaves running, with the same error. Retirement, exit ownership and public API
 are unchanged. Its RED/GREEN evidence, including reporter on Ruby 4.0.9, is
 retained at `/tmp/user-jimeh/connectrpc-m4-correction3-20261110-jBlWiEdb/`.
 
+CodeRabbit then found that a second `start` overlapping a yielding bind passed
+every guard. With port 0 it bound and leaked a second listener set; with a fixed
+port its `EADDRINUSE` rescue aborted the session under the first start; either
+way its `ensure` cleared `@starting` early. The double bind predates this PR.
+Jim authorized a fourth correction: after the caller-context preflight and
+before the startup cleanup boundary, Host rejects any start while `@starting`
+with `LifecycleError`, so a rejected caller never binds, aborts or clears the
+first caller's marker. Recursion rejection, running idempotence and terminal
+cleanup are unchanged. Real-bind RED/GREEN evidence on both pins is retained at
+`/tmp/user-jimeh/connectrpc-m4-correction4-20261110-2p4RxHVY/`.
+
 ## Outcome and fixed policy
 
 Keep the standalone Host usable through bounded transient accept failures, then

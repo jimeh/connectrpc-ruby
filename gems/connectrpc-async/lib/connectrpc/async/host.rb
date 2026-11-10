@@ -39,6 +39,8 @@ module ConnectRPC
 
         # Caller-context rejection must not enter startup cleanup or retire a peer.
         @session.send(:preflight_start)
+        # An overlapping caller must not rebind, reset @starting or abort the first.
+        raise LifecycleError, "Host startup is already in progress" if @starting
 
         begin
           @starting = true

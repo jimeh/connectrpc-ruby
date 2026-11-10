@@ -86,7 +86,10 @@ setup errors remain synchronous and subsequent `wait` returns nil. The Host cann
 after close or failure. Caller-context validation, including the TLS provider
 and `on_tls_error` recursion guard, runs in the calling task before startup
 cleanup: a recursive initial `start` raises `LifecycleError` without creating
-the exit task or aborting the outer startup. Startup failure uses that same exit task and preserves
+the exit task or aborting the outer startup. An overlapping `start` from another
+task while startup is still in progress raises `LifecycleError` before binding,
+so it cannot leak a second listener set, reset startup state or abort the first
+start. Startup failure uses that same exit task and preserves
 its first caller/setup error, or an already recorded terminal cause, through
 repeated caller interruption. When an independent ordinary close already owns
 shutdown, startup exit stops only listeners and late acquisitions. It preserves
