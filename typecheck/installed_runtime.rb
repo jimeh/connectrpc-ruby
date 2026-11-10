@@ -178,6 +178,7 @@ ensure
   release&.enqueue(true)
   native_transport&.close(grace: 0)
   host&.close(grace: 0)
+  raise "Installed Host wait after close" unless host&.wait.nil?
 end.wait
 puts "Installed NetHTTP and native HTTP/2 cancellation: real request progress, " \
      "foreign-thread source, socket/reset cleanup and pool reuse"

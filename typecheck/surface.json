@@ -134,21 +134,26 @@
     "ConnectRPC::Async::Internal::Stream#send_headers": {"kind":"method","visibility":"public","parameters":"headers, flags = 0","classification":"internal"}
   },
   "gems/connectrpc-async/lib/connectrpc/async/host.rb": {
+    "ConnectRPC::Async::Host#accept_backoff": {"kind":"method","visibility":"private","parameters":"delay","classification":"internal"},
     "ConnectRPC::Async::Host#accept_loop": {"kind":"method","visibility":"private","parameters":"listener","classification":"internal"},
     "ConnectRPC::Async::Host#addresses": {"kind":"attribute","visibility":"public","classification":"supported"},
+    "ConnectRPC::Async::Host#bind": {"kind":"method","visibility":"private","parameters":"","classification":"internal"},
     "ConnectRPC::Async::Host#build_session": {"kind":"method","visibility":"private","parameters":"**","classification":"internal"},
     "ConnectRPC::Async::Host#close": {"kind":"method","visibility":"public","parameters":"**","classification":"supported"},
     "ConnectRPC::Async::Host#drain_tls": {"kind":"method","visibility":"public","parameters":"**","classification":"supported"},
     "ConnectRPC::Async::Host#initialize": {"kind":"method","visibility":"public","parameters":"server:, host: \"127.0.0.1\", port: 0, tls: nil, tls_provider: nil, max_connections: 128, max_requests: 128, handshake_timeout: 10, idle_timeout: 60, refresh_interval: 60, refresh_jitter: 0.1, refresh_timeout: 10, on_tls_error: nil","classification":"supported"},
     "ConnectRPC::Async::Host#inspect": {"kind":"method","visibility":"public","parameters":"","classification":"internal"},
+    "ConnectRPC::Async::Host#join_listeners": {"kind":"method","visibility":"private","parameters":"","classification":"internal"},
     "ConnectRPC::Async::Host#peer_certificate": {"kind":"method","visibility":"public","parameters":"","classification":"supported"},
     "ConnectRPC::Async::Host#port": {"kind":"attribute","visibility":"public","classification":"supported"},
     "ConnectRPC::Async::Host#refresh_tls": {"kind":"method","visibility":"public","parameters":"","classification":"supported"},
     "ConnectRPC::Async::Host#reload_tls": {"kind":"method","visibility":"public","parameters":"**","classification":"supported"},
     "ConnectRPC::Async::Host#start": {"kind":"method","visibility":"public","parameters":"","classification":"supported"},
     "ConnectRPC::Async::Host#stop_accepting": {"kind":"method","visibility":"private","parameters":"","classification":"internal"},
+    "ConnectRPC::Async::Host#supervise_failure": {"kind":"method","visibility":"private","parameters":"","classification":"internal"},
     "ConnectRPC::Async::Host#tls_generation": {"kind":"method","visibility":"public","parameters":"","classification":"supported"},
-    "ConnectRPC::Async::Host#tls_status": {"kind":"method","visibility":"public","parameters":"","classification":"supported"}
+    "ConnectRPC::Async::Host#tls_status": {"kind":"method","visibility":"public","parameters":"","classification":"supported"},
+    "ConnectRPC::Async::Host#wait": {"kind":"method","visibility":"public","parameters":"","classification":"supported"}
   },
   "gems/connectrpc-async/lib/connectrpc/async/http1_connection.rb": {
     "ConnectRPC::Async::Internal::HTTP1Connection#read_head": {"kind":"method","visibility":"public","parameters":"method","classification":"internal"},

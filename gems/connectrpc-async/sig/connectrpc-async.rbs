@@ -80,6 +80,7 @@ module ConnectRPC
       attr_reader port: Integer?
       attr_reader addresses: Array[Addrinfo]
       def start: () -> self
+      def wait: () -> nil
       def close: (?grace: Numeric) -> bool?
       def reload_tls: (certificate_chain: Array[String], private_key: String, client_ca: Array[String]?) -> Integer
       def refresh_tls: () -> Integer

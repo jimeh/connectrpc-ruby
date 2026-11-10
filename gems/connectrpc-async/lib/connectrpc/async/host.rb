@@ -4,6 +4,11 @@ module ConnectRPC
   module Async
     # Strict HTTP/2 listener composing the same worker session as other hosts.
     class Host
+      ACCEPT_RETRY_DELAYS = [0.05, 0.1, 0.2, 0.4, 0.5].freeze
+      ACCEPT_RETRY_ERRORS = [Errno::EMFILE, Errno::ENFILE, Errno::ENOBUFS, Errno::ENOMEM,
+                             Errno::ECONNABORTED, Errno::EINTR].freeze
+      private_constant :ACCEPT_RETRY_DELAYS, :ACCEPT_RETRY_ERRORS
+
       attr_reader :port, :addresses
 
       def initialize(server:, host: "127.0.0.1", port: 0, tls: nil, tls_provider: nil,
@@ -12,6 +17,9 @@ module ConnectRPC
         @host = host
         @requested_port = port
         @addresses = [].freeze
+        @owner = ::Async::Task.current?
+        @listeners = []
+        @completion = ::Async::Promise.new
         application = Application.new(server: server)
         @session = build_session(
           application: application, lifecycle_factory: application.method(:start_call),
@@ -26,19 +34,55 @@ module ConnectRPC
       def inspect = "#<#{self.class} port=#{@port.inspect} session=#{@session.inspect}>"
 
       def start
-        @session.start
+        begin
+          @session.start
+        rescue StandardError
+          @session.abort
+          raise
+        end
         return self if @bound
 
-        @bound = ::IO::Endpoint.tcp(@host, @requested_port).bound
-        @addresses = @bound.sockets.map(&:local_address).freeze
-        @port = @addresses.first.ip_port
-        @listeners = @bound.sockets.map do |listener|
-          @session.schedule { accept_loop(listener) }
+        begin
+          @starting = true
+          @bound = bind
+          @addresses = @bound.sockets.map(&:local_address).freeze
+          @port = @addresses.first.ip_port
+          @bound.sockets.each do |listener|
+            break if @failure
+
+            @listeners << @session.schedule { accept_loop(listener) }
+          end
+          @starting = false
+          if @failure
+            supervise_failure
+            wait
+          end
+          self
+        rescue StandardError => e
+          @starting = false
+          if @failure
+            supervise_failure
+            wait
+          else
+            @session.abort
+            join_listeners
+            @completion.resolve(nil)
+          end
+          raise e
         end
-        self
-      rescue StandardError
-        @session.abort
-        raise
+      end
+
+      # Ordinary shutdown waits only for listener stop, not session retirement.
+      # Terminal failure waits for cooperative abort/join, then raises its cause.
+      # Owner cancellation can interrupt that cleanup; the cause still survives.
+      def wait
+        @session.send(:check_affinity!)
+        raise LifecycleError, "Start or close the host before waiting" unless @bound || @closing
+
+        error = @completion.wait
+        raise error if error
+
+        nil
       end
 
       def close(**) = @session.close(**)
@@ -55,20 +99,61 @@ module ConnectRPC
         ServerSession.new(**)
       end
 
+      def bind
+        ::IO::Endpoint.tcp(@host, @requested_port).bound
+      end
+
       def accept_loop(listener)
+        failures = 0
         loop do
-          raw, = listener.accept
+          begin
+            raw, = listener.accept
+          rescue *ACCEPT_RETRY_ERRORS
+            raise if failures == ACCEPT_RETRY_DELAYS.size
+            return if @closing
+
+            accept_backoff(ACCEPT_RETRY_DELAYS.fetch(failures))
+            failures += 1
+            next
+          end
+          failures = 0
           accepted = @session.accept(raw)
           @session.schedule { accepted.serve } if accepted
         end
-      rescue IOError, SystemCallError
-        raise unless @closing
+      rescue StandardError => e
+        unless @closing
+          @failure ||= e
+          supervise_failure unless @starting
+        end
+      end
+
+      def accept_backoff(delay)
+        ::Async::Task.current.sleep(delay)
+      end
+
+      def supervise_failure
+        return if @supervising
+
+        @supervising = true
+        # This task must survive session-lifetime and start-caller cancellation.
+        @owner.async(finished: false) do
+          @session.abort
+          join_listeners
+        ensure
+          @completion.resolve(@failure)
+        end
+      end
+
+      def join_listeners
+        @listeners.each { |listener| Internal.join(listener) }
       end
 
       def stop_accepting
         @closing = true
         @bound&.close
-        @listeners&.each(&:stop)
+        @listeners.each { |listener| Internal.cancel(listener) }
+        join_listeners
+        @completion.resolve(nil) unless @failure || @starting
       end
     end
   end
