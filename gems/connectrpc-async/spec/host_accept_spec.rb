@@ -167,8 +167,10 @@ RSpec.describe ConnectRPC::Async::Host do
         expect(entered.dequeue).to eq(0.1)
         peers << IO::Endpoint.tcp("127.0.0.1", host.port).connect
         release.enqueue(true)
-        [0.05, 0.1, 0.2, 0.4, 0.5].each do |delay|
+        [0.05, 0.1, 0.2, 0.4, 0.5].each_with_index do |delay, index|
           expect(entered.dequeue).to eq(delay)
+          # The reset streak is held before its later failures and terminal abort.
+          expect(peers.last.read(1)).to be_nil if index.zero?
           release.enqueue(true)
         end
         expect(wait_error(host)).to equal(terminal)

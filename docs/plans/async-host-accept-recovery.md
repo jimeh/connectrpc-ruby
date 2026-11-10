@@ -11,7 +11,7 @@ prerequisite #49 and observer unwind #48. The post-validation rebase preserved
 every M4 source/spec byte and all upstream private inventory additions. Runtime
 evidence below remains bound to the pre-#48 composition; exact-head CI and
 independent review must cover the delivery composition. No additional runtime
-allocation follows from this rebase. The focused slot has been explicitly released.
+allocation follows from this rebase. That original focused slot was explicitly released.
 Validation base: merged prerequisite #49 at `2d08080274c72653b4f6ca7326619e7417fb7ef8`.
 Rebased plan: `9b4767b`; pre-adaptation candidate: `0219486`.
 Original base: `805bb8099bac63b9bff75b1cac7a637c9752217c`.
@@ -45,6 +45,44 @@ passed. The first lint run's two added line-length offenses and their routine
 correction also remain recorded. Product source and shared retirement inputs
 were unchanged during this validation. All owned runtime processes finished;
 no background runtime work remains.
+
+
+## Correction batch 1 execution provenance
+
+The parent authorized one Host-only startup correction at reviewed head
+`28eb4aef008752c66840566ca2765bc6fb3119f3`, on delivery base
+`63b70f4319198151084b61551cbf032df88d9da2`. After Release36 released its runtime,
+the parent explicitly granted a separate exclusive focused window on 2026-11-10.
+That grant supersedes the prepared brief's earlier "not granted" text.
+The implementation worker owns no Git, PR, review or runtime-slot handback action.
+
+Current batch evidence is recorded independently at
+`/tmp/user-jimeh/connectrpc-m4-correction1-20261110-o2l_1ye8/execution/REPORT.md`,
+with per-command source hashes, stdout, stderr and results. Before product
+changes, both Ruby pins failed the intended ordinary-wait assertions after
+starter and owner cancellation during a yielding real-bind seam. Both also
+observed a real socket left open when binding completed after close and a missing
+listener ownership record at eager accept entry. The controlled seams establish
+these startup states; natural resolver suspension and an orphaned eager task
+are not claimed. The original historical failures and prior qualification
+remain unchanged evidence.
+
+The correction clears startup-scoped state in ensure, records each actual
+listener task before eager accept execution, and explicitly retires late
+acquisitions even if session cleanup already completed. It preserves caller
+cancellation and first terminal exception identities and leaves the frozen
+ordinary/terminal cleanup boundaries unchanged. The admission-reset test now
+observes rejected-peer EOF before releasing later faults. The typed wait caller
+consumes its nil result without changing signatures or negative cases.
+Both pins passed the four original new regressions after correction, a
+102-example affected matrix including seven startup cases and all 33 Host
+examples, the final eight-example startup suite, and 23 unchanged SDK-backed
+OTel composition examples. Both pins also passed owning Async checks, root lint,
+API/inventory with all 52 exact negative diagnostics, installed RBS/caller
+packages and Async offline h2/mTLS packages. All owned runtime processes finished;
+the parent still owns inspection and explicit slot handback. The report retains
+all initial fixture/lint/selection corrections and remaining parent-owned
+review and delivery gates. These results make no aggregate or readiness claim.
 
 ## Outcome and fixed policy
 

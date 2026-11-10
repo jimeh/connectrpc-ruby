@@ -36,37 +36,53 @@ module ConnectRPC
       def start
         begin
           @session.start
-        rescue StandardError
-          @session.abort
-          raise
+        rescue Exception => e # rubocop:disable Lint/RescueException -- startup cancellation must retire the session
+          begin
+            @session.abort
+          ensure
+            raise e
+          end
         end
         return self if @bound
 
         begin
           @starting = true
-          @bound = bind
-          @addresses = @bound.sockets.map(&:local_address).freeze
-          @port = @addresses.first.ip_port
-          @bound.sockets.each do |listener|
-            break if @failure
+          begin
+            @bound = bind
+            raise LifecycleError, "Host closed during startup" if @closing
 
-            @listeners << @session.schedule { accept_loop(listener) }
+            @addresses = @bound.sockets.map(&:local_address).freeze
+            @port = @addresses.first.ip_port
+            @bound.sockets.each do |listener|
+              break if @failure || @closing
+
+              @session.schedule do |task|
+                @listeners << task
+                accept_loop(listener)
+              end
+            end
+          ensure
+            @starting = false
           end
-          @starting = false
           if @failure
             supervise_failure
             wait
           end
+          raise LifecycleError, "Host closed during startup" if @closing
+
           self
-        rescue StandardError => e
-          @starting = false
+        rescue Exception => e # rubocop:disable Lint/RescueException -- every startup exit must retire acquired listeners
           if @failure
             supervise_failure
             wait
           else
-            @session.abort
-            join_listeners
-            @completion.resolve(nil)
+            begin
+              # Bind may have returned after the session already finished cleanup.
+              stop_accepting
+              @session.abort
+            ensure
+              raise e
+            end
           end
           raise e
         end
