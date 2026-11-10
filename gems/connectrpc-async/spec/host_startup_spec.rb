@@ -271,4 +271,103 @@ RSpec.describe ConnectRPC::Async::Host, "startup ownership" do
       host&.close(grace: 0)
     end
   end
+
+  def settled_start(task, starter, host)
+    task.with_timeout(2) { starter.wait }
+  rescue Async::TimeoutError
+    session = host_session(host)
+    raise "Outer start did not settle; exit_task=#{host.instance_variable_get(:@exit_task)&.status.inspect} " \
+          "session=#{session.instance_variable_get(:@state).inspect} " \
+          "cleanup=#{session.instance_variable_get(:@cleanup)&.status.inspect}"
+  end
+
+  %i[provider reporter].each do |callback|
+    it "rejects recursive start from the initial TLS #{callback} before any startup cleanup" do
+      reactor do |task|
+        host = nil
+        rejected = []
+        events = []
+        recurse = lambda do
+          host.start
+        rescue AsyncHelpers::LIFECYCLE_ERROR => e
+          rejected << { error: e, task: Async::Task.current, exit_task: host.instance_variable_get(:@exit_task),
+                        starting: host.instance_variable_get(:@starting),
+                        state: host_session(host).instance_variable_get(:@state) }
+        end
+        provider = lambda do
+          raise "initial provider setup" unless callback == :provider
+
+          recurse.call
+          host_tls.merge(version: "one")
+        end
+        host = described_class.new(server: server, tls_provider: provider, on_tls_error: lambda { |event|
+          events << event[:category]
+          recurse.call if callback == :reporter
+        })
+        session = host_session(host)
+        starter = task.async(finished: false) do
+          host.start
+        rescue StandardError => e
+          e
+        end
+        outcome = settled_start(task, starter, host)
+        expect(rejected.size).to eq(1)
+        expect(rejected.first[:error].message).to eq("Recursive TLS provider lifecycle call")
+        expect(rejected.first.slice(:exit_task, :starting, :state)).to eq(exit_task: nil, starting: true, state: :new)
+        expect(rejected.first[:task]).to be_finished
+        if callback == :provider
+          expect(outcome).to equal(host)
+          expect(events).to be_empty
+          expect(host.instance_variable_get(:@exit_task)).to be_nil
+          expect(session.instance_variable_get(:@state)).to eq(:running)
+          expect(host.tls_generation).to eq(1)
+          with_ca do |ca|
+            origin = "https://127.0.0.1:#{host.port}"
+            transport = ConnectRPC::Async::Transport.new(origin: origin, ca_file: ca)
+            expect(client(transport, origin).echo(AsyncHelpers::MESSAGE.new(name: "served")).message.name)
+              .to eq("served")
+          ensure
+            transport&.close(grace: 0)
+          end
+        else
+          expect(outcome).to be_a(ConnectRPC::Async::TLSConfiguration::Error)
+          expect(outcome.category).to eq(:source)
+          expect(events).to eq([:source])
+          expect(host.instance_variable_get(:@starting)).to be(false)
+          expect(host.instance_variable_get(:@exit_task)).to be_finished
+          expect(session.instance_variable_get(:@state)).to eq(:closed)
+          expect(session.instance_variable_get(:@lifetime)).to be_finished
+          expect(host.wait).to be_nil
+        end
+      ensure
+        if starter&.finished?
+          host&.close(grace: 0)
+        elsif host
+          # A startup join cycle has no timer, and reactor teardown skips transient
+          # tasks. Cancelling its shared cleanup lets this failure report.
+          AsyncHelpers::INTERNAL.cancel(host_session(host).instance_variable_get(:@cleanup))
+        end
+      end
+    end
+  end
+
+  it "keeps start idempotent when a running provider refresh calls it" do
+    reactor do
+      host = nil
+      inner = []
+      recurse = false
+      host = described_class.new(server: server, tls_provider: lambda {
+        inner << host.start if recurse
+        host_tls.merge(version: "one")
+      }).start
+      recurse = true
+      expect(host.refresh_tls).to eq(1)
+      expect(inner.size).to eq(1)
+      expect(inner.first).to equal(host)
+      expect(host.instance_variable_get(:@exit_task)).to be_nil
+      expect(host.tls_status[:state]).to eq(:running)
+    ensure
+      host&.close(grace: 0)
+    end
+  end
 end

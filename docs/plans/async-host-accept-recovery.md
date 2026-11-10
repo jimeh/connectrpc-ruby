@@ -84,6 +84,50 @@ the parent still owns inspection and explicit slot handback. The report retains
 all initial fixture/lint/selection corrections and remaining parent-owned
 review and delivery gates. These results make no aggregate or readiness claim.
 
+## Correction batch 2 execution provenance
+
+The parent authorized exactly one consolidated Host exit-ownership correction
+at reviewed head `86737eec4641acd2ff66f0339196e1985aec10be`, retaining delivery
+base `63b70f4319198151084b61551cbf032df88d9da2`. Release36 released its ten gates
+and root explicitly granted this exclusive focused implementation/runtime window.
+That grant supersedes the prepared brief's pending text. The original startup
+finding remains closed. The two accepted correction-caused defects concern an
+independent graceful close and repeated interruption during actual listener join.
+Controlled seams establish these states, not their natural scheduling frequency.
+
+The correction replaces inline startup cleanup and anonymous terminal
+supervision with one stored transient exit task under the application owner,
+outside the session lifetime. It selects forced shared abort or listener-only
+cleanup before marking shutdown and before eager execution. Prior ordinary close
+retains its closer, grace, outcome and admitted peers; startup does not await that
+peer drain. The session callback remains listener-only and never joins the exit
+task. Startup joins actual exit-task finalization while retaining its first cause;
+terminal `wait` also joins that finalization after the completion promise resolves.
+No shared retirement implementation, public signature or retry policy changes.
+
+Source-bound RED/GREEN and qualification evidence is retained separately at
+`/tmp/user-jimeh/connectrpc-m4-batch2-20261110-6p97oadn/execution/REPORT.md`.
+The exhausted four diagnostic launches and their artifacts remain untouched.
+The parent owns source inspection, runtime-slot handback, fresh whole-Host
+Codex and Claude review, acceptance and all Git/external actions. A material
+finding in those reviews requires Jim's decision; no automatic batch 3 or
+readiness claim follows from this implementation.
+
+Both fresh reviews then found that an initial TLS provider or `on_tls_error`
+reporter calling `start` recursively was rejected only inside the startup
+rescue. The stored exit task's abort then ran outside the calling-task
+recursion guard, and shared TLS shutdown joined the rejected callback or attempt.
+Three of four bounded diagnostic launches captured that live join cycle before
+forced termination; the fourth stayed unrun under the expired diagnostic window.
+Jim authorized one narrow third correction: a private nonyielding
+`ServerSession#preflight_start` keeps affinity, running idempotence, closed-state
+and initial TLS recursion validation in their original order. Host runs it after
+its existing affinity and own closing checks, before its startup cleanup
+boundary; Host closing is set without yielding only when the session also
+leaves running, with the same error. Retirement, exit ownership and public API
+are unchanged. Its RED/GREEN evidence, including reporter on Ruby 4.0.9, is
+retained at `/tmp/user-jimeh/connectrpc-m4-correction3-20261110-jBlWiEdb/`.
+
 ## Outcome and fixed policy
 
 Keep the standalone Host usable through bounded transient accept failures, then
@@ -146,10 +190,10 @@ or nonyielding application code. The fixed policy bounds retries and grants zero
 drain time; it does not create a new server cleanup deadline. The coordinator
 explicitly accepted this limit and withdrew any requirement for a new deadline.
 
-Capture the application owner in Host construction. The cleanup supervisor is
-an independent child of that owner, never a session-lifetime child or a child of
+Capture the application owner in Host construction. The stored transient exit
+task is an independent child of that owner, never a session-lifetime child or a child of
 a short-lived start caller. After startup, recording the first terminal cause
-starts this supervisor in the same turn, before a concurrent close can initiate
+starts this exit task in the same turn, before a concurrent close can initiate
 a drain window. The listener itself never aborts/closes the session. Settlement
 must preserve the original recorded cause if owner cancellation interrupts
 terminal cleanup. Merged #49 retains external abort-join interruption until
@@ -211,8 +255,11 @@ real cooperative timer.
 
 Keep lifecycle implementation Host-only using the merged ServerSession APIs.
 Existing session abort owns actual shared retirement; Host listener joins use
-the merged private `Internal.join_complete` with a current-task guard. No M4
-shared lifecycle edit is authorized. If another conflict requires shared changes,
+the merged private `Internal.join_complete` from their independent cleanup owner;
+the session callback never joins the Host exit task. No M4
+shared lifecycle edit is authorized, except the third correction's private
+`ServerSession#preflight_start`, which `ServerSession#start` reuses unchanged in
+behavior. If another conflict requires shared changes,
 stop with evidence for explicit disposition before expansion. Core, transport,
 Falcon source, observer #48 and other #26 repairs are outside scope. Do not
 alter pins, inventories, assertions or limits to obtain a passing result.

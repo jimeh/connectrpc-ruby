@@ -141,6 +141,7 @@
     "ConnectRPC::Async::Host#build_session": {"kind":"method","visibility":"private","parameters":"**","classification":"internal"},
     "ConnectRPC::Async::Host#close": {"kind":"method","visibility":"public","parameters":"**","classification":"supported"},
     "ConnectRPC::Async::Host#drain_tls": {"kind":"method","visibility":"public","parameters":"**","classification":"supported"},
+    "ConnectRPC::Async::Host#exit_task": {"kind":"method","visibility":"private","parameters":"","classification":"internal"},
     "ConnectRPC::Async::Host#initialize": {"kind":"method","visibility":"public","parameters":"server:, host: \"127.0.0.1\", port: 0, tls: nil, tls_provider: nil, max_connections: 128, max_requests: 128, handshake_timeout: 10, idle_timeout: 60, refresh_interval: 60, refresh_jitter: 0.1, refresh_timeout: 10, on_tls_error: nil","classification":"supported"},
     "ConnectRPC::Async::Host#inspect": {"kind":"method","visibility":"public","parameters":"","classification":"internal"},
     "ConnectRPC::Async::Host#join_listeners": {"kind":"method","visibility":"private","parameters":"","classification":"internal"},
@@ -150,7 +151,6 @@
     "ConnectRPC::Async::Host#reload_tls": {"kind":"method","visibility":"public","parameters":"**","classification":"supported"},
     "ConnectRPC::Async::Host#start": {"kind":"method","visibility":"public","parameters":"","classification":"supported"},
     "ConnectRPC::Async::Host#stop_accepting": {"kind":"method","visibility":"private","parameters":"","classification":"internal"},
-    "ConnectRPC::Async::Host#supervise_failure": {"kind":"method","visibility":"private","parameters":"","classification":"internal"},
     "ConnectRPC::Async::Host#tls_generation": {"kind":"method","visibility":"public","parameters":"","classification":"supported"},
     "ConnectRPC::Async::Host#tls_status": {"kind":"method","visibility":"public","parameters":"","classification":"supported"},
     "ConnectRPC::Async::Host#wait": {"kind":"method","visibility":"public","parameters":"","classification":"supported"}
@@ -290,6 +290,7 @@
     "ConnectRPC::Async::ServerSession#inspect": {"kind":"method","visibility":"public","parameters":"","classification":"internal"},
     "ConnectRPC::Async::ServerSession#install_owner_guard": {"kind":"method","visibility":"private","parameters":"","classification":"internal"},
     "ConnectRPC::Async::ServerSession#peer_certificate": {"kind":"method","visibility":"public","parameters":"","classification":"spi"},
+    "ConnectRPC::Async::ServerSession#preflight_start": {"kind":"method","visibility":"private","parameters":"","classification":"internal"},
     "ConnectRPC::Async::ServerSession#refresh_tls": {"kind":"method","visibility":"public","parameters":"","classification":"spi"},
     "ConnectRPC::Async::ServerSession#reload_tls": {"kind":"method","visibility":"public","parameters":"certificate_chain:, private_key:, client_ca:","classification":"spi"},
     "ConnectRPC::Async::ServerSession#resource_owned_task?": {"kind":"method","visibility":"private","parameters":"","classification":"internal"},

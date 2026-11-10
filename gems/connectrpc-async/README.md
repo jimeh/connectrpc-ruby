@@ -46,7 +46,8 @@ nil after all listener tasks stop; session retirement may still be running.
 External `close(grace:)` callers await the session's boolean drain outcome;
 resource-owned calls can return nil while shutdown is pending, as described
 below. Terminal listener failure instead makes `wait` raise the identical
-original exception after cooperative session abort and listener joins.
+original exception after cooperative session abort, listener joins and actual
+finalization of its stored private exit task.
 Repeated/concurrent waits share that outcome; cancelling a waiter does not close
 the Host. Like other lifecycle operations, `wait` requires the owning reactor
 and thread.
@@ -74,16 +75,24 @@ terminal. No RPC is replayed and no retry policy knobs are exposed.
 The first terminal listener cause closes every listener and forces raw-first
 session abort with zero drain time, then cooperative cancellation and joins.
 Server abort has no cleanup deadline and cannot forcibly interrupt nonyielding
-or cancellation-resistant application code. If owner cancellation interrupts
-the supervisor's abort join, that interruption is retained until shared cleanup
-completes; `wait` then preserves the original terminal cause. Ordinary owner
-cancellation stops accepting and resolves ordinary waits after listener
+or cancellation-resistant application code. The stored exit task runs outside
+the session lifetime under the application owner and survives ordinary owner
+cancellation; `wait` joins its actual finalization before reporting the cause.
+Ordinary owner cancellation stops accepting and resolves ordinary waits after listener
 finalization, while session retirement may still be running. `close` retains
 its drain result and does not raise the stored listener cause. A terminal cause
 already observed during startup is raised by `start` after cleanup; bind/initial
 setup errors remain synchronous and subsequent `wait` returns nil. The Host cannot restart
-after close or failure. Partial failure inside upstream multi-address binding
-is outside this recovery policy.
+after close or failure. Caller-context validation, including the TLS provider
+and `on_tls_error` recursion guard, runs in the calling task before startup
+cleanup: a recursive initial `start` raises `LifecycleError` without creating
+the exit task or aborting the outer startup. Startup failure uses that same exit task and preserves
+its first caller/setup error, or an already recorded terminal cause, through
+repeated caller interruption. When an independent ordinary close already owns
+shutdown, startup exit stops only listeners and late acquisitions. It preserves
+that close's admitted RPCs, original grace and outcome without awaiting its peer
+drain. Partial failure inside upstream multi-address binding is outside this
+recovery policy.
 
 `Transport.new(origin:, ca_file: nil, certificate_chain: nil, private_key: nil,
 connection_limit: 1, max_requests: 128, connect_timeout: 10)` implements core's

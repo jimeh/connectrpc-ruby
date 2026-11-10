@@ -34,57 +34,45 @@ module ConnectRPC
       def inspect = "#<#{self.class} port=#{@port.inspect} session=#{@session.inspect}>"
 
       def start
-        begin
-          @session.start
-        rescue Exception => e # rubocop:disable Lint/RescueException -- startup cancellation must retire the session
-          begin
-            @session.abort
-          ensure
-            raise e
-          end
-        end
-        return self if @bound
+        @session.send(:check_affinity!)
+        raise LifecycleError, "Server session cannot start after close" if @closing
+
+        # Caller-context rejection must not enter startup cleanup or retire a peer.
+        @session.send(:preflight_start)
 
         begin
           @starting = true
-          begin
-            @bound = bind
-            raise LifecycleError, "Host closed during startup" if @closing
+          @session.start
+          return self if @bound
 
-            @addresses = @bound.sockets.map(&:local_address).freeze
-            @port = @addresses.first.ip_port
-            @bound.sockets.each do |listener|
-              break if @failure || @closing
+          @bound = bind
+          raise LifecycleError, "Host closed during startup" if @closing
 
-              @session.schedule do |task|
-                @listeners << task
-                accept_loop(listener)
-              end
+          @addresses = @bound.sockets.map(&:local_address).freeze
+          @port = @addresses.first.ip_port
+          @bound.sockets.each do |listener|
+            break if @failure || @closing
+
+            @session.schedule do |task|
+              @listeners << task
+              accept_loop(listener)
             end
-          ensure
-            @starting = false
           end
-          if @failure
-            supervise_failure
-            wait
-          end
+          raise @failure if @failure
           raise LifecycleError, "Host closed during startup" if @closing
 
           self
-        rescue Exception => e # rubocop:disable Lint/RescueException -- every startup exit must retire acquired listeners
-          if @failure
-            supervise_failure
-            wait
-          else
-            begin
-              # Bind may have returned after the session already finished cleanup.
-              stop_accepting
-              @session.abort
-            ensure
-              raise e
-            end
+        rescue Exception => e # rubocop:disable Lint/RescueException -- retain the first startup cause through obligatory cleanup
+          cause = @failure || e
+          cleanup = exit_task
+          begin
+            Internal.join_complete(cleanup, failure: true) { cleanup.run if cleanup.status == :initialized }
+          rescue Exception # rubocop:disable Lint/RescueException -- joins retain later caller interruptions until actual finalization
+            raise if cleanup.failed?
           end
-          raise e
+          raise cause
+        ensure
+          @starting = false
         end
       end
 
@@ -96,7 +84,10 @@ module ConnectRPC
         raise LifecycleError, "Start or close the host before waiting" unless @bound || @closing
 
         error = @completion.wait
-        raise error if error
+        if error
+          Internal.join_complete(@exit_task, failure: true)
+          raise error
+        end
 
         nil
       end
@@ -139,7 +130,7 @@ module ConnectRPC
       rescue StandardError => e
         unless @closing
           @failure ||= e
-          supervise_failure unless @starting
+          exit_task.run unless @starting
         end
       end
 
@@ -147,21 +138,23 @@ module ConnectRPC
         ::Async::Task.current.sleep(delay)
       end
 
-      def supervise_failure
-        return if @supervising
+      def exit_task
+        return @exit_task if @exit_task
 
-        @supervising = true
-        # This task must survive session-lifetime and start-caller cancellation.
-        @owner.async(finished: false) do
-          @session.abort
-          join_listeners
-        ensure
+        # Prior shared close owns its peers and grace. Decide before marking our
+        # own teardown, so shutdown errors cannot become a new terminal cause.
+        force = @failure || !@closing
+        @closing = true
+        # Store identity before eager execution; callers never own this sequence.
+        @exit_task = ::Async::Task.new(@owner, transient: true, finished: false) do
+          @session.abort if force
+          stop_accepting
           @completion.resolve(@failure)
         end
       end
 
       def join_listeners
-        @listeners.each { |listener| Internal.join_complete(listener) unless listener.current? }
+        @listeners.each { |listener| Internal.join_complete(listener) }
       end
 
       def stop_accepting
