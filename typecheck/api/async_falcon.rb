@@ -22,6 +22,9 @@ else
   host_completed = host_close
   !host_completed
 end
+# @type var stopped: nil
+stopped = host.wait
+stopped.nil?
 configuration = ConnectRPC::Async::TLSConfiguration.new(tls_provider: lambda {
   { version: "v1", certificate_chain: ["leaf"], private_key: "key", client_ca: ["ca"] }
 }, on_error: ->(event) { event[:category].to_s })

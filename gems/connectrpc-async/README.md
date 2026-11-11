@@ -40,6 +40,63 @@ Connection admission happens before TLS/preface. Request admission fails with
 bare 503. Setup has one combined cooperative timeout. Idle expiry runs only
 without streams or handlers and can be disabled with nil.
 
+`Host#wait` supports application supervision. Before start it raises
+`LifecycleError`, unless the Host was already closed. Ordinary shutdown returns
+nil after all listener tasks stop; session retirement may still be running.
+External `close(grace:)` callers await the session's boolean drain outcome;
+resource-owned calls can return nil while shutdown is pending, as described
+below. Terminal listener failure instead makes `wait` raise the identical
+original exception after cooperative session abort, listener joins and actual
+finalization of its stored private exit task.
+Repeated/concurrent waits share that outcome; cancelling a waiter does not close
+the Host. Like other lifecycle operations, `wait` requires the owning reactor
+and thread.
+
+```ruby
+Async do
+  host = ConnectRPC::Async::Host.new(server: server).start
+  begin
+    host.wait # Ordinary listener stop returns nil; terminal failure raises.
+  ensure
+    host.close # Await session drain separately from ordinary listener stop.
+  end
+end.wait
+```
+
+Each listener retries accept-only `EMFILE`, `ENFILE`, `ENOBUFS`, `ENOMEM`,
+`ECONNABORTED` and `EINTR` with private cooperative delays of 0.05, 0.1, 0.2,
+0.4 and 0.5 seconds. The sixth consecutive selected failure is terminal.
+The requested delay totals 1.25 seconds; scheduler/native stalls can extend it.
+A successful raw accept resets only that listener's streak, even if admission
+or TLS subsequently rejects the peer. Admitted RPCs and healthy listeners keep
+running during backoff. Other accept errors and unexpected listener errors are
+terminal. No RPC is replayed and no retry policy knobs are exposed.
+
+The first terminal listener cause closes every listener and forces raw-first
+session abort with zero drain time, then cooperative cancellation and joins.
+Server abort has no cleanup deadline and cannot forcibly interrupt nonyielding
+or cancellation-resistant application code. The stored exit task runs outside
+the session lifetime under the application owner and survives ordinary owner
+cancellation; `wait` joins its actual finalization before reporting the cause.
+Ordinary owner cancellation stops accepting and resolves ordinary waits after listener
+finalization, while session retirement may still be running. `close` retains
+its drain result and does not raise the stored listener cause. A terminal cause
+already observed during startup is raised by `start` after cleanup; bind/initial
+setup errors remain synchronous and subsequent `wait` returns nil. The Host cannot restart
+after close or failure. Caller-context validation, including the TLS provider
+and `on_tls_error` recursion guard, runs in the calling task before startup
+cleanup: a recursive initial `start` raises `LifecycleError` without creating
+the exit task or aborting the outer startup. An overlapping `start` from another
+task while startup is still in progress raises `LifecycleError` before binding,
+so it cannot leak a second listener set, reset startup state or abort the first
+start. Startup failure uses that same exit task and preserves
+its first caller/setup error, or an already recorded terminal cause, through
+repeated caller interruption. When an independent ordinary close already owns
+shutdown, startup exit stops only listeners and late acquisitions. It preserves
+that close's admitted RPCs, original grace and outcome without awaiting its peer
+drain. Partial failure inside upstream multi-address binding is outside this
+recovery policy.
+
 `Transport.new(origin:, ca_file: nil, certificate_chain: nil, private_key: nil,
 connection_limit: 1, max_requests: 128, connect_timeout: 10)` implements core's
 transport seam. Origins contain only scheme/host/port. Request paths, including
@@ -56,7 +113,7 @@ External callers receive true when drained, false after forced teardown. Grace i
 nonnegative; zero aborts. Repeated/concurrent calls share the first outcome.
 Finite deadlines begin in core before encoding and cover pool/setup/headers/body.
 Timers use at most 86400-second waits without shortening logical deadlines.
-Cleanup uses one total internal 100ms allowance. Ordinary cancellation resets
+Client cleanup uses one total internal 100ms allowance. Ordinary cancellation resets
 its stream. A frame that cannot finish within cleanup deliberately fails the
 whole connection and siblings. Forced teardown closes raw TCP before cancelling
 and joining writers/readers, then performs buffered/TLS cleanup. These are

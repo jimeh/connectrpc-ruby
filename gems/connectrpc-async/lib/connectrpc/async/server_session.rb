@@ -39,9 +39,8 @@ module ConnectRPC
       def inspect = "#<#{self.class} state=#{@state} tls_generation=#{tls_generation.inspect}>"
 
       def start
-        check_affinity!
+        preflight_start
         return self if @state == :running
-        raise LifecycleError, "Server session cannot start after close" unless @state == :new
 
         @tls.start
         @state = :running
@@ -170,6 +169,16 @@ module ConnectRPC
       private_constant :Accepted
 
       private
+
+      # Nonyielding calling-task validation, shared with Host before startup
+      # cleanup can retire anything. A running session stays idempotent.
+      def preflight_start
+        check_affinity!
+        return if @state == :running
+        raise LifecycleError, "Server session cannot start after close" unless @state == :new
+
+        @tls.send(:check_recursion!)
+      end
 
       def check_running_tls!
         check_affinity!
