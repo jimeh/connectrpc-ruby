@@ -12,7 +12,7 @@ require_relative "release_train"
 # Publishes one canonical candidate from its release tag. Every step can be
 # re-run: draft assets and registry versions that already exist must match the
 # candidate bytes, and the GitHub release is published only after all seven gems.
-class ReleasePublisher
+class ReleasePublisher # rubocop:disable Metrics/ClassLength
   Artifact = Struct.new(:name, :file, :path, :sha256, keyword_init: true)
   # assets maps each asset name to an adapter-specific handle.
   Release = Struct.new(:id, :tag, :draft, :assets, keyword_init: true)
@@ -32,8 +32,9 @@ class ReleasePublisher
     gems, record = verify_candidate!
     release = @github.release(@tag)
     if release.draft
+      published = registry_state!(gems)
       stage!(release, [*gems, record])
-      push!(gems)
+      push!(gems, published)
       @github.publish(release)
       @log.puts "Published #{@tag}: seven gems on RubyGems.org and the GitHub release"
     else
@@ -101,16 +102,29 @@ class ReleasePublisher
     end
   end
 
-  def push!(gems) # rubocop:disable Metrics/MethodLength
+  # Check every gem before uploading or pushing anything, so a conflict cannot
+  # strand a partially published train.
+  def registry_state!(gems)
+    gems.to_h do |gem|
+      published = @registry.sha256(gem.name, version)
+      if published && published != gem.sha256
+        raise "#{gem.name} #{version} on RubyGems.org differs from the candidate; stop for a maintainer decision"
+      end
+      if published.nil? && !@registry.claimable?(gem.name)
+        raise "#{gem.name} on RubyGems.org has other owners; stop for a maintainer decision"
+      end
+
+      [gem.name, published]
+    end
+  end
+
+  def push!(gems, published)
     gems.each do |gem|
-      case @registry.sha256(gem.name, version)
-      when nil
-        @registry.push(gem.path, @signer.sign(gem.path))
-        @log.puts "Pushed #{gem.file} with a Sigstore attestation"
-      when gem.sha256
+      if published[gem.name]
         @log.puts "#{gem.file} is already on RubyGems.org with the candidate's bytes"
       else
-        raise "#{gem.name} #{version} on RubyGems.org differs from the candidate; stop for a maintainer decision"
+        @registry.push(gem.path, @signer.sign(gem.path))
+        @log.puts "Pushed #{gem.file} with a Sigstore attestation"
       end
     end
   end
@@ -150,6 +164,10 @@ class ReleasePublisher
 
     def asset_sha256(release, file)
       asset = release.assets.fetch(file)
+      unless asset["state"] == "uploaded"
+        raise "Draft asset #{file} is incomplete (#{asset['state']}); delete that asset and re-run"
+      end
+
       digest = asset["digest"].to_s.delete_prefix("sha256:")
       return digest unless digest.empty?
 
@@ -174,7 +192,7 @@ class ReleasePublisher
 
     def find(tag)
       query = ".[] | select(.tag_name == #{JSON.generate(tag)}) | " \
-              "{id, draft, assets: [.assets[] | {id, name, digest}]}"
+              "{id, draft, assets: [.assets[] | {id, name, digest, state}]}"
       found = gh("api", "--paginate", "repos/#{@repository}/releases?per_page=100", "--jq", query)
               .lines.map { |line| JSON.parse(line) }
       raise "Multiple GitHub releases use #{tag}" if found.size > 1
@@ -213,6 +231,16 @@ class ReleasePublisher
       JSON.parse(response.body).find do |entry|
         entry["number"] == version && entry["platform"] == "ruby"
       end&.fetch("sha")
+    end
+
+    # Pending publishers do not reserve names, so an existing gem must already
+    # belong to the owner.
+    def claimable?(name)
+      response = request(Net::HTTP::Get.new(URI("#{HOST}/api/v1/gems/#{name}/owners.json")))
+      return true if response.is_a?(Net::HTTPNotFound)
+
+      owners = JSON.parse(checked(response, "RubyGems.org owners lookup for #{name}").body)
+      owners.any? { |owner| owner["handle"].to_s.casecmp?(@owner) }
     end
 
     def push(path, attestation)
