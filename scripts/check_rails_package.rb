@@ -6,9 +6,13 @@ require "rubygems/package"
 require "rbconfig"
 require "tmpdir"
 
+require_relative "release_train"
+
 root = File.expand_path("..", __dir__)
+version = ReleaseTrain.new(root).version
+local_requirement = ReleaseTrain.new(root).requirement
 archives = %w[connectrpc connectrpc-rack connectrpc-rails].map do |name|
-  File.join(root, "vendor/rails/pkg/#{name}-0.1.0.gem")
+  File.join(root, "vendor/rails/pkg/#{name}-#{version}.gem")
 end
 core, middleware, adapter = archives.map { |archive| Gem::Package.new(archive) }
 core_files = %w[
@@ -38,19 +42,20 @@ core_files = %w[
   lib/connectrpc/bindings/google_protobuf.rb lib/connectrpc/transports/net_http.rb
 ].sort
 abort "Core manifest changed" unless core.contents.sort == core_files.sort && core.spec.runtime_dependencies.empty?
-expected = %w[LICENSE README.md lib/connectrpc/rails.rb sig/connectrpc-rails.rbs sig/manifest.yaml
+expected = %w[LICENSE README.md lib/connectrpc/rails.rb lib/connectrpc/rails/version.rb
+              sig/connectrpc-rails.rbs sig/manifest.yaml
               rbs/action_controller_8/controller.rbs
               lib/connectrpc/rails/controller.rb]
 abort "Unexpected Rails manifest" unless adapter.contents.sort == expected.sort
 expected_dependencies = {
-  "connectrpc" => "~> 0.1.0", "actionpack" => ">= 8.0.5.1, < 8.2", "connectrpc-rack" => "~> 0.1.0"
+  "connectrpc" => local_requirement, "actionpack" => ">= 8.0.5.1, < 8.2", "connectrpc-rack" => local_requirement
 }
 actual = adapter.spec.runtime_dependencies.to_h { |dependency| [dependency.name, dependency.requirement.to_s] }
 abort "Unexpected Rails dependencies: #{actual}" unless actual == expected_dependencies
 [core, middleware, adapter].each do |package|
-  unless package.spec.metadata["allowed_push_host"] == "https://gems.invalid" &&
+  unless package.spec.metadata["allowed_push_host"] == "https://rubygems.org" &&
          package.spec.license == "MIT"
-    abort "Publication guard/license missing"
+    abort "Push host/license missing"
   end
 end
 %w[connectrpc-rack connectrpc-rails].each do |name|
@@ -68,11 +73,13 @@ Dir.mktmpdir("connectrpc-license-") do |temporary|
   end
 end
 abort "Rack manifest changed" unless middleware.contents.sort == %w[LICENSE README.md lib/connectrpc/rack.rb
+                                                                    lib/connectrpc/rack/version.rb
                                                                     sig/connectrpc-rack.rbs sig/manifest.yaml]
 rack_dependencies = middleware.spec.runtime_dependencies.to_h do |dependency|
   [dependency.name, dependency.requirement.to_s]
 end
-abort "Rack dependencies changed" unless rack_dependencies == { "connectrpc" => "~> 0.1.0", "rack" => ">= 3.2.7, < 4" }
+abort "Rack dependencies changed" unless rack_dependencies == { "connectrpc" => local_requirement,
+                                                                "rack" => ">= 3.2.7, < 4" }
 specs = Bundler.load.specs.to_h { |spec| [spec.name, spec] }
 pending = %w[connectrpc-rails railties google-protobuf]
 required = {}
@@ -129,5 +136,5 @@ Bundler.with_unbundled_env do
     end
   end
 end
-puts "Exact core/Rails manifests, offline dependencies and publication guards passed"
+puts "Exact core/Rails manifests, offline dependencies and push hosts passed"
 puts "Installed Rails integration passed"

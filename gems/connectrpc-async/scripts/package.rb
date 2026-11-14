@@ -5,8 +5,12 @@ require "fileutils"
 require "rubygems/package"
 require "rbconfig"
 require "tmpdir"
+require_relative "../../../scripts/release_train"
+
 root = File.expand_path("../../..", __dir__)
-archives = %w[connectrpc connectrpc-async].map { |name| File.join(root, "vendor/async/pkg/#{name}-0.1.0.gem") }
+version = ReleaseTrain.new(root).version
+local_requirement = ReleaseTrain.new(root).requirement
+archives = %w[connectrpc connectrpc-async].map { |name| File.join(root, "vendor/async/pkg/#{name}-#{version}.gem") }
 core, backend = archives.map { |archive| Gem::Package.new(archive) }
 core_expected = %w[
   LICENSE README.md docs/development.md docs/design.md docs/rbs.md docs/streaming.md lib/connectrpc.rb
@@ -35,7 +39,8 @@ core_expected = %w[
   lib/connectrpc/bindings/google_protobuf.rb lib/connectrpc/transports/net_http.rb
 ].sort
 abort "Core package changed" unless core.contents.sort == core_expected && core.spec.runtime_dependencies.empty?
-expected = %w[LICENSE README.md lib/connectrpc/async.rb sig/connectrpc-async.rbs sig/manifest.yaml
+expected = %w[LICENSE README.md lib/connectrpc/async.rb lib/connectrpc/async/version.rb
+              sig/connectrpc-async.rbs sig/manifest.yaml
               lib/connectrpc/async/completion_join.rb
               lib/connectrpc/async/internal.rb lib/connectrpc/async/ingress.rb lib/connectrpc/async/tls.rb
               lib/connectrpc/async/connection.rb lib/connectrpc/async/application.rb
@@ -46,7 +51,7 @@ expected = %w[LICENSE README.md lib/connectrpc/async.rb sig/connectrpc-async.rbs
               lib/connectrpc/async/http1_connection.rb lib/connectrpc/async/http1_stream.rb].sort
 abort "Backend manifest changed" unless backend.contents.sort == expected
 expected_dependencies = {
-  "connectrpc" => "~> 0.1.0", "async-http" => "~> 0.105.0", "async" => "~> 2.46.0", "async-pool" => "~> 0.12.0",
+  "connectrpc" => local_requirement, "async-http" => "~> 0.105.0", "async" => "~> 2.46.0", "async-pool" => "~> 0.12.0",
   "protocol-http2" => "~> 0.29.2", "protocol-http1" => "~> 0.41.1", "protocol-http" => "~> 0.72.1",
   "io-endpoint" => "~> 0.19.0",
   "io-stream" => "~> 0.14.0", "openssl" => "~> 4.0.2"
@@ -54,8 +59,8 @@ expected_dependencies = {
 actual = backend.spec.runtime_dependencies.to_h { |dependency| [dependency.name, dependency.requirement.to_s] }
 abort "Runtime dependencies changed" unless actual == expected_dependencies
 [core, backend].each do |package|
-  unless package.spec.metadata["allowed_push_host"] == "https://gems.invalid" && package.spec.license == "MIT"
-    abort "Publication guard missing"
+  unless package.spec.metadata["allowed_push_host"] == "https://rubygems.org" && package.spec.license == "MIT"
+    abort "Push host missing"
   end
 end
 unless File.binread(File.join(root, "gems/connectrpc-async/LICENSE")) == File.binread(File.join(root, "LICENSE"))
@@ -105,4 +110,4 @@ Bundler.with_unbundled_env do
     commands.each { |command| system(environment, *command, chdir: working, exception: true) }
   end
 end
-puts "Exact core/async manifests, normal offline dependencies, isolated h2/mTLS and publication guards passed"
+puts "Exact core/async manifests, normal offline dependencies, isolated h2/mTLS and push hosts passed"

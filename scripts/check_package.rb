@@ -10,6 +10,7 @@ require "shellwords"
 require "stringio"
 require "tmpdir"
 require_relative "package_build"
+require_relative "release_train"
 
 def run_package_command(environment, command, working)
   result = system(environment, *command, chdir: working)
@@ -25,6 +26,7 @@ def run_package_command(environment, command, working)
 end
 
 root = File.expand_path("..", __dir__)
+local_requirement = ReleaseTrain.new(root).requirement
 specification = Gem::Specification.load(File.join(root, "connectrpc.gemspec"))
 archive = File.join(root, "pkg", specification.file_name)
 package = Gem::Package.new(archive)
@@ -57,7 +59,7 @@ expected = %w[
 abort "Unexpected package files: #{package.contents.inspect}" unless package.contents.sort == expected
 abort "Runtime dependencies leaked into package" unless package.spec.runtime_dependencies.empty?
 abort "MIT license metadata missing" unless package.spec.license == "MIT"
-abort "Publication guard missing" unless package.spec.metadata["allowed_push_host"] == "https://gems.invalid"
+abort "Push host missing" unless package.spec.metadata["allowed_push_host"] == "https://rubygems.org"
 
 abort "Executable metadata missing" unless package.spec.bindir == "exe" &&
                                            package.spec.executables == ["protoc-gen-connectrpc-ruby"]
@@ -83,11 +85,12 @@ rack_output = File.join(root, "vendor/package/rack")
 rack_archive = PackageBuild.build(directory: rack_directory, output: rack_output)
 rack_package = Gem::Package.new(rack_archive)
 abort "Unexpected Rack manifest" unless rack_package.contents.sort == %w[LICENSE README.md lib/connectrpc/rack.rb
+                                                                         lib/connectrpc/rack/version.rb
                                                                          sig/connectrpc-rack.rbs sig/manifest.yaml]
 rack_dependencies = rack_package.spec.runtime_dependencies.to_h { |entry| [entry.name, entry.requirement.to_s] }
-unless rack_dependencies == { "connectrpc" => "~> 0.1.0", "rack" => ">= 3.2.7, < 4" } &&
+unless rack_dependencies == { "connectrpc" => local_requirement, "rack" => ">= 3.2.7, < 4" } &&
        rack_package.spec.required_ruby_version.to_s == ">= 3.4" &&
-       rack_package.spec.metadata["allowed_push_host"] == "https://gems.invalid" &&
+       rack_package.spec.metadata["allowed_push_host"] == "https://rubygems.org" &&
        rack_package.spec.license == "MIT"
   abort "Unexpected Rack dependencies/metadata"
 end
@@ -144,7 +147,7 @@ Bundler.with_unbundled_env do
        "--no-document"],
       [RbConfig.ruby, "-e", <<~'RUBY']
         require "connectrpc"
-        abort "Wrong version" unless ConnectRPC::VERSION == "0.1.0"
+        abort "Wrong version" unless ConnectRPC::VERSION == Gem.loaded_specs.fetch("connectrpc").version.to_s
         installed = Gem.loaded_specs.fetch("connectrpc")
         abort "Loaded outside isolated GEM_HOME" unless installed.full_gem_path.start_with?("#{ENV.fetch('GEM_HOME')}/")
         abort "Unexpected runtime dependencies" unless installed.runtime_dependencies.empty?

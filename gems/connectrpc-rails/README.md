@@ -212,9 +212,9 @@ Experimental and not production ready. Streaming, native gRPC and production
 hosting are outside this adapter. Explicit binary/text unary gRPC-Web uses the
 private hooks described below.
 Original project work is [MIT licensed](LICENSE), copyright 2026 Jim Myhrberg.
-Both gem archives include the complete license and retain the
-`https://gems.invalid` push guard. Publishing, releasing or deploying requires
-separate, explicit authorization. Verification authorizes no publication.
+Both gem archives include the complete license and pin `allowed_push_host` to
+`https://rubygems.org`; only the [release workflow](../../docs/releasing.md)
+publishes them. Verification authorizes no publication.
 
 
 To enable unary gzip, return `encoding: :gzip` from the private `connect_limits`

@@ -18,7 +18,7 @@ expected = %w[sig/connectrpc.rbs sig/manifest.yaml
 raise "Signature package manifest changed" unless package.contents.grep(%r{\A(?:sig|rbs)/}).sort == expected
 raise "Runtime dependency added" unless package.spec.runtime_dependencies.empty?
 raise "MIT license metadata missing" unless package.spec.license == "MIT"
-raise "Publication guard missing" unless package.spec.metadata["allowed_push_host"] == "https://gems.invalid"
+raise "Push host missing" unless package.spec.metadata["allowed_push_host"] == "https://rubygems.org"
 
 plugin_mode = File.stat(File.join(root, "exe/protoc-gen-connectrpc-ruby")).mode & 0o777
 puts "Source plugin mode: #{format('%04o', plugin_mode)} (unchanged)"

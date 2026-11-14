@@ -6,8 +6,12 @@ require "rubygems/package"
 require "rbconfig"
 require "tmpdir"
 
+require_relative "../../../scripts/release_train"
+
 root = File.expand_path("../../..", __dir__)
-archives = %w[connectrpc connectrpc-rack].map { |name| File.join(root, "vendor/rack/pkg/#{name}-0.1.0.gem") }
+version = ReleaseTrain.new(root).version
+local_requirement = ReleaseTrain.new(root).requirement
+archives = %w[connectrpc connectrpc-rack].map { |name| File.join(root, "vendor/rack/pkg/#{name}-#{version}.gem") }
 core, middleware = archives.map { |archive| Gem::Package.new(archive) }
 core_expected = %w[
   LICENSE README.md docs/development.md docs/design.md docs/rbs.md docs/streaming.md lib/connectrpc.rb
@@ -39,14 +43,15 @@ unless core.contents.sort == core_expected && core.spec.runtime_dependencies.emp
   abort "Core manifest/dependencies changed"
 end
 abort "Rack manifest changed" unless middleware.contents.sort == %w[LICENSE README.md lib/connectrpc/rack.rb
+                                                                    lib/connectrpc/rack/version.rb
                                                                     sig/connectrpc-rack.rbs sig/manifest.yaml]
-expected = { "connectrpc" => "~> 0.1.0", "rack" => ">= 3.2.7, < 4" }
+expected = { "connectrpc" => local_requirement, "rack" => ">= 3.2.7, < 4" }
 actual = middleware.spec.runtime_dependencies.to_h { |dependency| [dependency.name, dependency.requirement.to_s] }
 abort "Rack dependencies changed" unless actual == expected
 [core, middleware].each do |package|
-  unless package.spec.metadata["allowed_push_host"] == "https://gems.invalid" &&
+  unless package.spec.metadata["allowed_push_host"] == "https://rubygems.org" &&
          package.spec.license == "MIT" && package.spec.required_ruby_version.to_s == ">= 3.4"
-    abort "Publication guard/license/Ruby requirement changed"
+    abort "Push host/license/Ruby requirement changed"
   end
 end
 unless File.binread(File.join(root, "gems/connectrpc-rack/LICENSE")) == File.binread(File.join(root, "LICENSE"))

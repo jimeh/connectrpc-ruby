@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "connectrpc"
+require_relative "async/version"
 require "async"
 require "async/queue"
 require "async/promise"

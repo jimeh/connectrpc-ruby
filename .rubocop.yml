@@ -18,10 +18,6 @@ Style/StringLiterals:
 Style/Documentation:
   Enabled: false
 
-# Publication is disabled; there is no public RubyGems account policy to assert.
-Gemspec/RequireMFA:
-  Enabled: false
-
 # Scenario harnesses keep setup, assertions and deterministic cleanup together.
 Metrics/BlockLength:
   Exclude:

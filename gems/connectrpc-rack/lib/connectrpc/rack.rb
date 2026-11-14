@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "connectrpc"
+require_relative "rack/version"
 
 begin
   gem "rack", ">= 3.2.7", "< 4"

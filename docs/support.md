@@ -382,6 +382,6 @@ decision. A merged fix closes its specific defect, not the audit as a whole.
    protocol gates.
 3. Identify the release and migration notes that adopt this contract.
 
-Release preparation remains [#36](https://github.com/jimeh/connectrpc-ruby/issues/36).
-Publication and removal of the `https://gems.invalid` guard require separate
-authorization.
+Release automation ([#36](https://github.com/jimeh/connectrpc-ruby/issues/36))
+is described in [releasing](releasing.md). Merging a release PR is the separate
+release decision.

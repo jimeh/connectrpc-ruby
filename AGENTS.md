@@ -50,11 +50,13 @@ on observable progress and bounded completion; do not use fixed sleeps to
 assume a race has started or an operation has finished.
 
 Keep runtime dependencies deliberate and package checks isolated. Original
-project work is MIT licensed; `allowed_push_host` intentionally points to
-`https://gems.invalid`.
-Do not remove that guard or publish, release, or deploy without separate,
-explicit authorization. A successful build or verify command does not authorize
-publication.
+project work is MIT licensed. Gems pin `allowed_push_host` to
+`https://rubygems.org` and require MFA; only the tag-triggered
+`.github/workflows/release.yml` publishes (see [releasing](docs/releasing.md)).
+Do not merge release PRs, push `v*` tags, run or dispatch the release workflow,
+or otherwise publish, release, or deploy without separate, explicit
+authorization. A successful build or verify command does not authorize
+publication. `release/` holds the release job's frozen Sigstore bundle.
 
 Optional HTTP/2 development uses `mise run async:setup`, then `async:test`,
 `async:check` and `async:verify`. It has a separate checksummed Gemfile/lock,

@@ -1,8 +1,9 @@
 # frozen_string_literal: true
 
+require_relative "version"
+
 module ConnectRPC
   module OTel
-    VERSION = "0.1.0"
     SEMCONV_VERSION = "1.44.0"
 
     class Subscriber

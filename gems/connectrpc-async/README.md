@@ -316,9 +316,9 @@ identity and gzip is also exercised under that activation. Focused combined
 specs cover actual gzip bytes over h2c/TLS in both codecs and independent host
 wire/inflated and transport wire/client inflated caps. Nothing is published.
 Original project work is [MIT licensed](LICENSE), copyright 2026 Jim Myhrberg.
-Both archives include the complete license and retain the invalid
-`https://gems.invalid` push guard. Publishing, releasing or deploying requires
-separate, explicit authorization.
+Both archives include the complete license and pin `allowed_push_host` to
+`https://rubygems.org`; only the [release workflow](../../docs/releasing.md)
+publishes them.
 
 ## RPC observation
 

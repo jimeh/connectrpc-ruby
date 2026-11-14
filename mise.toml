@@ -73,7 +73,7 @@ run = ["mise exec -- actionlint", "mise exec -- zizmor --offline .github/workflo
 
 [tasks."check:static"]
 description = "Run platform-independent format, lint, and workflow checks"
-depends = ["format:check", "lint", "lint:workflows"]
+depends = ["format:check", "lint", "lint:workflows", "release:check"]
 
 [tasks.check]
 description = "Run fast static checks"
@@ -653,3 +653,29 @@ depends = ["async:setup", "setup:interop"]
 tools.go = "1.27.3"
 env = { GOTOOLCHAIN = "local", GOWORK = "off", GOFLAGS = "-mod=readonly", GOMODCACHE = "{{config_root}}/vendor/interop/mod", GOCACHE = "{{config_root}}/vendor/interop/build" }
 run = "ruby gems/connectrpc-async/scripts/run.rb http1_interop"
+
+# Release preparation never tags, creates a GitHub release, or publishes gems.
+[tasks."release:check"]
+description = "Check seven synchronized versions, frozen local locks and release guards offline"
+run = "mise exec -- ruby scripts/release.rb check"
+
+[tasks."release:prepare"]
+description = "Prepare local lock metadata and installation guides after a release version update"
+run = "mise exec -- ruby scripts/release.rb prepare"
+
+[tasks."release:build"]
+description = "Build and compare seven canonical candidate archives from a clean Ruby 3.4.12 checkout"
+run = "mise exec -- ruby scripts/release.rb build"
+
+[tasks."release:tools"]
+description = "Install the frozen Sigstore signing bundle used by the release workflow"
+run = "mise exec -- ruby scripts/release.rb tools"
+
+[tasks."release:publish"]
+description = "CI only (release.yml on a v* tag): attest, push and publish the built candidate"
+run = "mise exec -- ruby scripts/release.rb publish"
+
+[tasks."release:candidate"]
+description = "Validate installed combinations, generated consumers and canonical candidate archives"
+depends = ["release:check", "generation:check", "grpc:status:check", "check:package", "rack:package", "check:package:rails", "async:package", "falcon:package", "testing:package", "otel:package", "rbs:package"]
+run = "mise run release:build"
