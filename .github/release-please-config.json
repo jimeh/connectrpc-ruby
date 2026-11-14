@@ -11,6 +11,8 @@
       "bump-minor-pre-major": true,
       "bump-patch-for-minor-pre-major": true,
       "draft-pull-request": true,
+      "draft": true,
+      "force-tag-creation": true,
       "extra-files": [
         "gems/connectrpc-rack/lib/connectrpc/rack/version.rb",
         "gems/connectrpc-rails/lib/connectrpc/rails/version.rb",

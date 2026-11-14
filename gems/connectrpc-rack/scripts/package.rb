@@ -49,9 +49,9 @@ expected = { "connectrpc" => local_requirement, "rack" => ">= 3.2.7, < 4" }
 actual = middleware.spec.runtime_dependencies.to_h { |dependency| [dependency.name, dependency.requirement.to_s] }
 abort "Rack dependencies changed" unless actual == expected
 [core, middleware].each do |package|
-  unless package.spec.metadata["allowed_push_host"] == "https://gems.invalid" &&
+  unless package.spec.metadata["allowed_push_host"] == "https://rubygems.org" &&
          package.spec.license == "MIT" && package.spec.required_ruby_version.to_s == ">= 3.4"
-    abort "Publication guard/license/Ruby requirement changed"
+    abort "Push host/license/Ruby requirement changed"
   end
 end
 unless File.binread(File.join(root, "gems/connectrpc-rack/LICENSE")) == File.binread(File.join(root, "LICENSE"))

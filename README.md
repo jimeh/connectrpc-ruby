@@ -420,11 +420,10 @@ complete license. Third-party dependencies and imported fixtures retain their
 own licenses and notices, including the separately licensed
 [conformance schemas](conformance/README.md).
 
-The gems' `allowed_push_host` remains `https://gems.invalid`, a reserved invalid
-domain, to guard against accidental public RubyGems pushes. It is not a
-publication destination or a complete access-control mechanism. Project MIT
-licensing is approved; publishing, releasing or deploying still requires
-separate, explicit authorization.
+The gems pin `allowed_push_host` to `https://rubygems.org` and require MFA for
+manual pushes. Releases are published only by the tag-triggered
+[release workflow](docs/releasing.md), using RubyGems trusted publishing with
+Sigstore attestations.
 
 ## Optional standalone HTTP/2
 

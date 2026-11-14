@@ -323,10 +323,11 @@ Keep PRs scoped. Describe the concrete result, relevant design boundaries,
 commands and results (including RSpec example counts), and remaining limits.
 Approved merges use squash merging; merge authorization remains separate.
 Reuse valid evidence. Design changes should update [design.md](design.md).
-Release preparation uses a PR-only workflow on main pushes and local candidate tasks. See the
+Releases use a Release Please PR on main, local candidate tasks and a
+tag-triggered publishing workflow. See the
 [release guide](https://github.com/jimeh/connectrpc-ruby/blob/main/docs/releasing.md)
-for App setup references, synchronized versions, dry runs and later enablement.
-Project MIT licensing is approved. Publishing still needs separate, explicit authorization.
+for App and trusted-publisher setup, synchronized versions and recovery.
+Project MIT licensing is approved. Releasing still needs separate, explicit authorization.
 
 ## Optional Rails development
 

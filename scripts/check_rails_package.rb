@@ -53,9 +53,9 @@ expected_dependencies = {
 actual = adapter.spec.runtime_dependencies.to_h { |dependency| [dependency.name, dependency.requirement.to_s] }
 abort "Unexpected Rails dependencies: #{actual}" unless actual == expected_dependencies
 [core, middleware, adapter].each do |package|
-  unless package.spec.metadata["allowed_push_host"] == "https://gems.invalid" &&
+  unless package.spec.metadata["allowed_push_host"] == "https://rubygems.org" &&
          package.spec.license == "MIT"
-    abort "Publication guard/license missing"
+    abort "Push host/license missing"
   end
 end
 %w[connectrpc-rack connectrpc-rails].each do |name|
@@ -136,5 +136,5 @@ Bundler.with_unbundled_env do
     end
   end
 end
-puts "Exact core/Rails manifests, offline dependencies and publication guards passed"
+puts "Exact core/Rails manifests, offline dependencies and push hosts passed"
 puts "Installed Rails integration passed"

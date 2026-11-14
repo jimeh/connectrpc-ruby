@@ -138,8 +138,8 @@ native variants, were checked against primary RubyGems release timestamps and
 API SHA256 values before adoption, under the seven-day cooldown. The versioned
 lock preserves the eligible existing cross-package graph. Original project
 work is [MIT licensed](LICENSE), copyright 2026 Jim Myhrberg. All package
-archives retain `allowed_push_host=https://gems.invalid`; nothing here
-publishes or releases a gem.
+archives pin `allowed_push_host=https://rubygems.org`; these checks never
+publish or release a gem.
 
 ## Static signatures
 

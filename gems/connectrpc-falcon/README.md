@@ -3,8 +3,8 @@
 Optional Falcon process-worker hosting for Connect unary and streaming RPC, with native
 Protocol::HTTP dispatch and an explicit ordinary Rack/Rails fallback.
 Require `connectrpc/falcon`; core and Rails bundles do not load this package.
-The API is experimental. This package is MIT licensed; publication remains
-disabled by `allowed_push_host: https://gems.invalid`.
+The API is experimental. This package is MIT licensed and released with the
+whole [release train](../../docs/releasing.md).
 
 See the [supported 0.x contract](../../docs/support.md) for the target support
 profile, matched package versions, compatibility policy and adoption gates.

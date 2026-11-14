@@ -52,7 +52,7 @@ end == expected_dependencies
 license = File.binread(File.join(root, "LICENSE"))
 mode_failure = false
 [core, otel].each do |archive|
-  abort "Publication guard missing" unless archive.spec.metadata["allowed_push_host"] == "https://gems.invalid"
+  abort "Push host missing" unless archive.spec.metadata["allowed_push_host"] == "https://rubygems.org"
   abort "MIT metadata missing" unless archive.spec.licenses == ["MIT"]
   Gem::Package::TarReader.new(File.open(archive.gem.path, "rb")) do |tar|
     tar.each do |entry|
@@ -111,7 +111,7 @@ Bundler.with_unbundled_env do
       run.call("-S", "gem", "install", "--norc", name, "--local", "--no-document")
     end
     run.call("-I", working, "integration.rb")
-    puts "Exact manifests, API-only runtime closure, MIT, guards and fresh installed generated SDK consumer passed"
+    puts "Exact manifests, API-only runtime closure, MIT, push hosts and fresh installed generated SDK consumer passed"
   end
 end
 abort "Core package executable mode must be 0755" if mode_failure

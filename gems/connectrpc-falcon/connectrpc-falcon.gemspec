@@ -9,7 +9,8 @@ Gem::Specification.new do |spec|
   spec.homepage = "https://github.com/jimeh/connectrpc-ruby"
   spec.license = "MIT"
   spec.required_ruby_version = ">= 3.4"
-  spec.metadata["allowed_push_host"] = "https://gems.invalid"
+  spec.metadata["allowed_push_host"] = "https://rubygems.org"
+  spec.metadata["rubygems_mfa_required"] = "true"
   spec.files = Dir.glob("sig/**/*.{rbs,yaml}") + Dir.glob("rbs/**/*.rbs") + Dir["lib/**/*.rb", "examples/*.rb",
                                                                                 "README.md", "LICENSE"].sort
   spec.require_paths = ["lib"]

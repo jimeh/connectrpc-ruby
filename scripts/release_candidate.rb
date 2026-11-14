@@ -73,7 +73,7 @@ class ReleaseCandidate
       raise "Unexpected candidate artifact inventory" unless Dir.children(output).sort == expected
 
       record = { "version" => @train.version, "revision" => revision, "source_date_epoch" => Integer(epoch),
-                 "ruby" => RUBY_VERSION, "rubygems" => Gem::VERSION, "publication" => "disabled",
+                 "ruby" => RUBY_VERSION, "rubygems" => Gem::VERSION, "push_host" => "https://rubygems.org",
                  "artifacts" => inventory }
       File.write(File.join(output, "candidate.json"), "#{JSON.pretty_generate(record)}\n")
     ensure
