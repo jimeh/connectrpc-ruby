@@ -211,9 +211,9 @@ renaming either breaks publication. `release:publish` runs these steps:
 2. It finds the GitHub release for the tag, polling for up to five minutes
    because Release Please creates the draft just after the tag.
 3. It checks all seven gems on RubyGems.org before uploading or pushing
-   anything. A version that already exists must have the candidate's SHA256,
-   and a gem name that already exists must be owned by `jimeh`. Pending
-   publishers do not reserve names.
+   anything. A gem name that already exists must be owned by `jimeh`, even
+   when its bytes match, and a version that already exists must have the
+   candidate's SHA256. Pending publishers do not reserve names.
 4. It uploads any missing assets to the draft. An existing asset must be fully
    uploaded and match the candidate's SHA256, and an unexpected asset stops
    the run.
@@ -246,7 +246,7 @@ These settings live outside the repository. They are not verified by CI.
 | --- | --- |
 | RubyGems.org, `jimeh` account | One pending trusted publisher per gem: repository owner `jimeh`, repository `connectrpc-ruby`, workflow `release.yml`, environment `release`. |
 | GitHub `release` environment | Deployment policy allowing only `v*` tags; add `jimeh` as a required reviewer. |
-| GitHub repository settings | Enable immutable releases. Optionally add a tag ruleset that lets only the release App create `v*` tags, so nobody else with write access can start the release workflow. |
+| GitHub repository settings | Enable immutable releases. Optionally add a tag ruleset that lets only the release App create `v*` tags. It restricts tag creation only: anyone with write access can still dispatch the workflow on an existing tag, so the environment reviewer remains the approval checkpoint. |
 
 **Pending publishers expire 12 hours after creation**, and a pending publisher
 does not reserve a gem name. Create all seven shortly before merging the first
@@ -275,11 +275,11 @@ or incomplete draft asset, and a rebuild that no longer matches retained bytes.
 It requires a maintainer decision. Do not automatically yank, retag or replace
 versions.
 
-The draft's assets may be deleted only while no gem of the train exists on
-RubyGems.org, for example when a later runner image rebuilds different bytes
-before any push. A draft release is not public, so nothing has been released
-yet. Once any gem is published, its retained bytes are the only valid
-candidate. An interrupted upload leaves an incomplete asset, which is always
+The draft's assets may be deleted only while none of the seven gems exists on
+RubyGems.org at the tagged version, for example when a later runner image
+rebuilds different bytes before any push. A draft release is not public, so
+that version has not been released yet. Once any gem at that version is
+published, the retained bytes are the only valid candidate. An interrupted upload leaves an incomplete asset, which is always
 safe to delete. When repair requires a new version, release a new whole-train
 version and document the partial train and migration implications.
 
