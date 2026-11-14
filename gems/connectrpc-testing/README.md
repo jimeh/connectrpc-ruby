@@ -7,8 +7,9 @@ including protocol errors, metadata, safe unary GET and compression. No sockets 
 
 Add `gem "connectrpc-testing", path: "gems/connectrpc-testing"` to a development
 or test bundle in this repository. For another local application, point `path:`
-at this package and provide the core gem through its own local path. Publication
-is disabled. The runtime dependency is only `connectrpc ~> 0.1.0`; Google protobuf
+at this package and provide the core gem through its own local path. Released
+versions are published to RubyGems.org with the whole
+[release train](../../docs/releasing.md). The runtime dependency is only `connectrpc ~> 0.1.0`; Google protobuf
 and a test framework are application choices.
 
 ```ruby

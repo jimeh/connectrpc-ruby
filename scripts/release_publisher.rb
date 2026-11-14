@@ -103,15 +103,17 @@ class ReleasePublisher # rubocop:disable Metrics/ClassLength
   end
 
   # Check every gem before uploading or pushing anything, so a conflict cannot
-  # strand a partially published train.
+  # strand a partially published train. Ownership is checked even when bytes
+  # match: reproducible builds let anyone push identical archives first.
   def registry_state!(gems)
     gems.to_h do |gem|
+      unless @registry.claimable?(gem.name)
+        raise "#{gem.name} on RubyGems.org has other owners; stop for a maintainer decision"
+      end
+
       published = @registry.sha256(gem.name, version)
       if published && published != gem.sha256
         raise "#{gem.name} #{version} on RubyGems.org differs from the candidate; stop for a maintainer decision"
-      end
-      if published.nil? && !@registry.claimable?(gem.name)
-        raise "#{gem.name} on RubyGems.org has other owners; stop for a maintainer decision"
       end
 
       [gem.name, published]

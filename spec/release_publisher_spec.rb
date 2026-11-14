@@ -151,11 +151,15 @@ RSpec.describe ReleasePublisher do
     "different bytes for a version" => [{ published: { "connectrpc-async" => "0" * 64 } },
                                         /connectrpc-async .* on RubyGems.org differs/],
     "other owners for a new gem name" => [{ published: {}, foreign: ["connectrpc-otel"] },
-                                          /connectrpc-otel on RubyGems.org has other owners/]
+                                          /connectrpc-otel on RubyGems.org has other owners/],
+    "other owners for identical bytes" => [{ published: :identical_rack, foreign: ["connectrpc-rack"] },
+                                           /connectrpc-rack on RubyGems.org has other owners/]
   }.each do |label, (registry_state, failure)|
     it "stops before uploading or pushing anything when RubyGems.org has #{label}" do
       github = ReleasePublisherFakes::FakeGitHub.new(events, draft: true, assets: {})
-      registry = ReleasePublisherFakes::FakeRegistry.new(events, registry_state[:published],
+      published = registry_state[:published]
+      published = { "connectrpc-rack" => sha(files[1]) } if published == :identical_rack
+      registry = ReleasePublisherFakes::FakeRegistry.new(events, published,
                                                          foreign: registry_state.fetch(:foreign, []))
 
       expect { publisher(github, registry: registry).publish! }.to raise_error(failure)
