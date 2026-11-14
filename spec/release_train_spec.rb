@@ -164,14 +164,20 @@ RSpec.describe ReleaseTrain do
     end
   end
 
-  it "rejects a missing local checksum and a changed publication guard" do
+  it "rejects a missing local checksum, a changed push host and a dropped MFA requirement" do
     captured_train do |train|
       edit(train, "Gemfile.lock") { |text| text.sub("  connectrpc (#{train.version})\n", "") }
       expect { train.check! }.to raise_error(%r{Local path/checksum inventory})
     end
     captured_train do |train|
-      edit(train, "connectrpc.gemspec") { |text| text.sub("https://gems.invalid", "https://rubygems.org") }
-      expect { train.check! }.to raise_error(/Publication guard lost/)
+      edit(train, "connectrpc.gemspec") { |text| text.sub("https://rubygems.org", "https://gems.example") }
+      expect { train.check! }.to raise_error(/Push host changed/)
+    end
+    captured_train do |train|
+      edit(train, "gems/connectrpc-otel/connectrpc-otel.gemspec") do |text|
+        text.sub(/^.*rubygems_mfa_required.*\n/, "")
+      end
+      expect { train.check! }.to raise_error(/MFA requirement lost: connectrpc-otel/)
     end
   end
 
@@ -188,23 +194,44 @@ RSpec.describe ReleaseTrain do
   end
 end
 
-RSpec.describe "Release preparation workflow boundary" do
-  it "prepares PRs from main pushes with no GitHub token permissions, release creation or publishing job" do
-    workflow = YAML.load_file(File.expand_path("../.github/workflows/release-please.yml", __dir__))
-    expect(workflow.fetch("on", workflow[true])).to eq("push" => { "branches" => ["main"] }, "workflow_dispatch" => nil)
+RSpec.describe "Release workflow boundaries" do
+  def load_workflow(name)
+    workflow = YAML.load_file(File.expand_path("../.github/workflows/#{name}", __dir__))
+    [workflow, workflow.fetch("on", workflow[true])]
+  end
+
+  it "keeps Release Please on main with App credentials and no publishing permissions" do
+    workflow, triggers = load_workflow("release-please.yml")
+    expect(triggers).to eq("push" => { "branches" => ["main"] }, "workflow_dispatch" => nil)
     expect(workflow.fetch("permissions")).to eq({})
+    expect(workflow.fetch("jobs").keys).to eq(["release-please"])
     job = workflow.fetch("jobs").fetch("release-please")
     expect(job).not_to have_key("permissions")
     expect(job.fetch("environment")).to eq("release-please")
-    expect(workflow.fetch("jobs").keys).to eq(["release-please"])
     expect(job.fetch("if")).to eq("github.ref == 'refs/heads/main'")
     release = job.fetch("steps").find { |step| step.fetch("uses", "").start_with?("googleapis/release-please-action@") }
-    expect(release.fetch("with")).to include("skip-github-release" => true)
-    expect(release.fetch("with")).not_to have_key("release-type")
+    expect(release.fetch("with").keys).to match_array(%w[token config-file manifest-file])
     token = job.fetch("steps").find { |step| step.fetch("uses", "").start_with?("actions/create-github-app-token@") }
     expect(token.fetch("with")).to include("client-id" => "${{ vars.RELEASE_BOT_CLIENT_ID }}",
                                            "private-key" => "${{ secrets.RELEASE_BOT_PRIVATE_KEY }}")
     expect(token.fetch("with").keys.grep(/^permission-/)).to match_array(%w[permission-contents permission-issues
                                                                             permission-pull-requests])
+  end
+
+  # RubyGems.org trusted publishers match this exact filename and environment.
+  it "publishes only from v* tags in the release environment with job-scoped OIDC" do
+    workflow, triggers = load_workflow("release.yml")
+    expect(triggers).to eq("push" => { "tags" => ["v*"] }, "workflow_dispatch" => nil)
+    expect(workflow.fetch("permissions")).to eq({})
+    expect(workflow.fetch("jobs").keys).to eq(["publish"])
+    job = workflow.fetch("jobs").fetch("publish")
+    expect(job.fetch("if")).to eq("startsWith(github.ref, 'refs/tags/v')")
+    expect(job.fetch("environment")).to eq("release")
+    expect(job.fetch("permissions")).to eq("contents" => "write", "id-token" => "write")
+    expect(job.fetch("steps").filter_map { |step| step["run"] })
+      .to eq(["mise run release:tools", "mise run release:build", "mise run release:publish"])
+    expect(job.fetch("steps").last.fetch("env")).to include("RUBYGEMS_OWNER" => "jimeh")
+    caches = job.fetch("steps").filter_map { |step| step["with"]&.slice("bundler-cache", "cache") }.reject(&:empty?)
+    expect(caches).to eq([{ "cache" => false }])
   end
 end

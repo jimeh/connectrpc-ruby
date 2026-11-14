@@ -13,7 +13,7 @@ module InstalledAPI
       package = Gem::Package.new(archive)
       signatures = ["sig/connectrpc-#{name}.rbs", "sig/manifest.yaml"]
       raise "Missing owned signature manifest: #{name}" unless package.contents.grep(%r{\Asig/}).sort == signatures.sort
-      raise "Publication guard lost: #{name}" unless package.spec.metadata["allowed_push_host"] == "https://gems.invalid"
+      raise "Push host changed: #{name}" unless package.spec.metadata["allowed_push_host"] == "https://rubygems.org"
       raise "License metadata lost: #{name}" unless package.spec.licenses == ["MIT"]
 
       [archive, package.spec]

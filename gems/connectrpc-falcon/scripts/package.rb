@@ -29,8 +29,8 @@ expected_dependencies = {
 actual = packages.last.spec.runtime_dependencies.to_h { |dependency| [dependency.name, dependency.requirement.to_s] }
 abort "Falcon runtime dependencies changed" unless actual == expected_dependencies
 packages.each do |package|
-  unless package.spec.metadata["allowed_push_host"] == "https://gems.invalid" && package.spec.license == "MIT"
-    abort "Publication guard missing"
+  unless package.spec.metadata["allowed_push_host"] == "https://rubygems.org" && package.spec.license == "MIT"
+    abort "Push host missing"
   end
 end
 unless File.binread(File.expand_path("../LICENSE", __dir__)) == File.binread(File.join(root, "LICENSE"))
@@ -79,4 +79,4 @@ Bundler.with_unbundled_env do
     commands.each { |command| system(environment, *command, chdir: working, exception: true) }
   end
 end
-puts "Exact Falcon manifest, normal offline dependencies, actual DSL/workers and publication guards passed"
+puts "Exact Falcon manifest, normal offline dependencies, actual DSL/workers and push hosts passed"

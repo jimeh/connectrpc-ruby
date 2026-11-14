@@ -1,0 +1,7 @@
+# frozen_string_literal: true
+
+# Release-job tooling only. Never part of a published gem or a runtime bundle.
+source "https://rubygems.org", cooldown: 7
+
+# Matches rubygems/release-gem's pinned signer, which rubygems.org verifies.
+gem "sigstore-cli", "0.2.3"

@@ -59,7 +59,7 @@ expected = %w[
 abort "Unexpected package files: #{package.contents.inspect}" unless package.contents.sort == expected
 abort "Runtime dependencies leaked into package" unless package.spec.runtime_dependencies.empty?
 abort "MIT license metadata missing" unless package.spec.license == "MIT"
-abort "Publication guard missing" unless package.spec.metadata["allowed_push_host"] == "https://gems.invalid"
+abort "Push host missing" unless package.spec.metadata["allowed_push_host"] == "https://rubygems.org"
 
 abort "Executable metadata missing" unless package.spec.bindir == "exe" &&
                                            package.spec.executables == ["protoc-gen-connectrpc-ruby"]
@@ -90,7 +90,7 @@ abort "Unexpected Rack manifest" unless rack_package.contents.sort == %w[LICENSE
 rack_dependencies = rack_package.spec.runtime_dependencies.to_h { |entry| [entry.name, entry.requirement.to_s] }
 unless rack_dependencies == { "connectrpc" => local_requirement, "rack" => ">= 3.2.7, < 4" } &&
        rack_package.spec.required_ruby_version.to_s == ">= 3.4" &&
-       rack_package.spec.metadata["allowed_push_host"] == "https://gems.invalid" &&
+       rack_package.spec.metadata["allowed_push_host"] == "https://rubygems.org" &&
        rack_package.spec.license == "MIT"
   abort "Unexpected Rack dependencies/metadata"
 end

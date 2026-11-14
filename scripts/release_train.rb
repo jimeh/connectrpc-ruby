@@ -68,10 +68,11 @@ class ReleaseTrain # rubocop:disable Metrics/ClassLength
     end
   end
 
-  def check_versions! # rubocop:disable Metrics/AbcSize
+  def check_versions! # rubocop:disable Metrics/AbcSize, Metrics/CyclomaticComplexity
     specifications.each do |spec|
       raise "Version mismatch: #{spec.name} #{spec.version}, expected #{version}" unless spec.version.to_s == version
-      raise "Publication guard lost: #{spec.name}" unless spec.metadata["allowed_push_host"] == "https://gems.invalid"
+      raise "Push host changed: #{spec.name}" unless spec.metadata["allowed_push_host"] == "https://rubygems.org"
+      raise "MFA requirement lost: #{spec.name}" unless spec.metadata["rubygems_mfa_required"] == "true"
 
       spec.runtime_dependencies.select { |dep| NAMES.include?(dep.name) }.each do |dependency|
         next if dependency.requirement.to_s == requirement
@@ -115,7 +116,9 @@ class ReleaseTrain # rubocop:disable Metrics/ClassLength
     expected = {
       "release-type" => "ruby", "component" => "connectrpc", "version-file" => "lib/connectrpc/version.rb",
       "initial-version" => "0.1.0", "include-component-in-tag" => false, "include-v-in-tag" => true,
-      "bump-minor-pre-major" => true, "bump-patch-for-minor-pre-major" => true, "draft-pull-request" => true
+      "bump-minor-pre-major" => true, "bump-patch-for-minor-pre-major" => true, "draft-pull-request" => true,
+      # Publication adopts the draft; the forced tag keeps release history discoverable.
+      "draft" => true, "force-tag-creation" => true
     }
     raise "Release configuration changed" unless expected.all? { |key, value| package[key] == value }
     raise "Permanent release-as override is forbidden" if package.key?("release-as")

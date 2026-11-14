@@ -3,7 +3,7 @@
 Optional, experimental Rack middleware for the unofficial Connect unary Ruby gem.
 Requires Ruby >= 3.4, `connectrpc ~> 0.1.0` and `rack >= 3.2.7, < 4`.
 This package uses the [MIT license](LICENSE), copyright 2026 Jim Myhrberg.
-Publication remains disabled by its `https://gems.invalid` guard.
+It is released with the whole [release train](../../docs/releasing.md).
 
 See the [supported 0.x contract](../../docs/support.md) for the target support
 profile, matched package versions, compatibility policy and adoption gates.
