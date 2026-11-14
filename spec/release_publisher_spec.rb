@@ -38,13 +38,18 @@ module ReleasePublisherFakes
   end
 
   class FakeRegistry
-    def initialize(events, published)
+    def initialize(events, published, foreign: [])
       @events = events
       @published = published
+      @foreign = foreign
     end
 
     def sha256(name, _version)
       @published[name]
+    end
+
+    def claimable?(name)
+      !@foreign.include?(name)
     end
 
     def push(path, attestation)
@@ -61,6 +66,20 @@ module ReleasePublisherFakes
     def sign(path)
       @events << [:sign, File.basename(path)]
       "#{path}.sigstore.json"
+    end
+  end
+
+  # Net::HTTP is the network boundary; requests are captured per host.
+  class FakeHTTP
+    def initialize(host, requests, responses)
+      @host = host
+      @requests = requests
+      @responses = responses
+    end
+
+    def request(request)
+      @requests << [@host, request]
+      @responses.fetch([@host, request.path]).call
     end
   end
 end
@@ -128,15 +147,21 @@ RSpec.describe ReleasePublisher do
     expect(events.last).to eq([:publish, 1])
   end
 
-  it "stops without publishing when RubyGems.org has different bytes for a version" do
-    github = ReleasePublisherFakes::FakeGitHub.new(events, draft: true, assets: {})
-    registry = ReleasePublisherFakes::FakeRegistry.new(events, { "connectrpc-async" => "0" * 64 })
+  {
+    "different bytes for a version" => [{ published: { "connectrpc-async" => "0" * 64 } },
+                                        /connectrpc-async .* on RubyGems.org differs/],
+    "other owners for a new gem name" => [{ published: {}, foreign: ["connectrpc-otel"] },
+                                          /connectrpc-otel on RubyGems.org has other owners/]
+  }.each do |label, (registry_state, failure)|
+    it "stops before uploading or pushing anything when RubyGems.org has #{label}" do
+      github = ReleasePublisherFakes::FakeGitHub.new(events, draft: true, assets: {})
+      registry = ReleasePublisherFakes::FakeRegistry.new(events, registry_state[:published],
+                                                         foreign: registry_state.fetch(:foreign, []))
 
-    expect { publisher(github, registry: registry).publish! }
-      .to raise_error(/connectrpc-async #{Regexp.escape(version)} on RubyGems.org differs/)
-    expect(events.select { |event| event.first == :push }.map { |event| event[1] }).to eq(files.first(2))
-    expect(events).not_to include([:publish, 1])
-    expect(github.release_record.draft).to be(true)
+      expect { publisher(github, registry: registry).publish! }.to raise_error(failure)
+      expect(events).to eq([[:lookup, "v#{version}"]])
+      expect(github.release_record.draft).to be(true)
+    end
   end
 
   {
@@ -171,5 +196,91 @@ RSpec.describe ReleasePublisher do
     incomplete = complete.except("connectrpc-falcon")
     expect { publisher(github, registry: ReleasePublisherFakes::FakeRegistry.new(events, incomplete)).publish! }
       .to raise_error(/no matching connectrpc-falcon-.*on RubyGems.org/)
+  end
+end
+
+RSpec.describe ReleasePublisher::RubyGems do
+  def http_response(klass, code, body)
+    klass.new("1.1", code, "").tap do |response|
+      response.instance_variable_set(:@body, body)
+      response.instance_variable_set(:@read, true)
+    end
+  end
+
+  let(:requests) { [] }
+  let(:log) { StringIO.new }
+  let(:environment) do
+    { "ACTIONS_ID_TOKEN_REQUEST_URL" => "https://token.actions.example/idtoken?api-version=2.0",
+      "ACTIONS_ID_TOKEN_REQUEST_TOKEN" => "request-token" }
+  end
+  let(:exchange_path) { "/api/v1/oidc/trusted_publisher/exchange_token" }
+
+  def stub_http(responses)
+    allow(Net::HTTP).to receive(:start) do |host, _port, use_ssl:, &block|
+      raise "Plain HTTP to #{host}" unless use_ssl
+
+      block.call(ReleasePublisherFakes::FakeHTTP.new(host, requests, responses))
+    end
+  end
+
+  it "exchanges a GitHub OIDC token asserting the owner and gives the key only to gem push" do
+    stub_http(
+      ["token.actions.example", "/idtoken?api-version=2.0&audience=rubygems.org"] =>
+        -> { http_response(Net::HTTPOK, "200", '{"value":"github-jwt"}') },
+      ["rubygems.org", exchange_path] =>
+        -> { http_response(Net::HTTPCreated, "201", '{"rubygems_api_key":"rubygems-key"}') }
+    )
+    allow(Open3).to receive(:capture2e).and_return(["Successfully registered gem", instance_double(Process::Status,
+                                                                                                   success?: true)])
+
+    described_class.new(owner: "jimeh", environment: environment, log: log).push("/c/a.gem", "/s/a.gem.sigstore.json")
+
+    oidc, exchange = requests.map(&:last)
+    expect(oidc["Authorization"]).to eq("Bearer request-token")
+    expect(JSON.parse(exchange.body)).to eq("jwt" => "github-jwt", "owner" => "jimeh")
+    expect(Open3).to have_received(:capture2e).with({ "GEM_HOST_API_KEY" => "rubygems-key" }, RbConfig.ruby, "-S",
+                                                    "gem", "push", "/c/a.gem", "--attestation",
+                                                    "/s/a.gem.sigstore.json")
+    expect(log.string).to eq("::add-mask::rubygems-key\n")
+  end
+
+  it "does not push when the trusted publisher exchange fails" do
+    stub_http(
+      ["token.actions.example", "/idtoken?api-version=2.0&audience=rubygems.org"] =>
+        -> { http_response(Net::HTTPOK, "200", '{"value":"github-jwt"}') },
+      ["rubygems.org", exchange_path] => -> { http_response(Net::HTTPNotFound, "404", "no publisher") }
+    )
+    allow(Open3).to receive(:capture2e)
+
+    expect { described_class.new(owner: "jimeh", environment: environment, log: log).push("/c/a.gem", "/s/a") }
+      .to raise_error(/trusted publisher exchange failed: HTTP 404 no publisher/)
+    expect(Open3).not_to have_received(:capture2e)
+  end
+
+  it "treats a missing gem or one the owner already owns as claimable" do
+    owners = '[{"handle":"someone"},{"handle":"JimEh"}]'
+    stub_http(
+      ["rubygems.org", "/api/v1/gems/new-gem/owners.json"] => -> { http_response(Net::HTTPNotFound, "404", "") },
+      ["rubygems.org", "/api/v1/gems/ours/owners.json"] => -> { http_response(Net::HTTPOK, "200", owners) },
+      ["rubygems.org", "/api/v1/gems/theirs/owners.json"] =>
+        -> { http_response(Net::HTTPOK, "200", '[{"handle":"someone"}]') }
+    )
+    registry = described_class.new(owner: "jimeh", environment: environment, log: log)
+
+    expect(%w[new-gem ours theirs].map { |name| registry.claimable?(name) }).to eq([true, true, false])
+  end
+end
+
+RSpec.describe ReleasePublisher::GitHub do
+  it "uses uploaded asset digests and rejects an interrupted upload without calling gh" do
+    assets = { "a.gem" => { "id" => 1, "state" => "uploaded", "digest" => "sha256:#{'a' * 64}" },
+               "b.gem" => { "id" => 2, "state" => "starter", "digest" => nil } }
+    release = ReleasePublisher::Release.new(id: 9, tag: "v0.1.0", draft: true, assets: assets)
+    github = described_class.new(repository: "owner/repo")
+    allow(Open3).to receive(:capture3)
+
+    expect(github.asset_sha256(release, "a.gem")).to eq("a" * 64)
+    expect { github.asset_sha256(release, "b.gem") }.to raise_error(/b.gem is incomplete \(starter\)/)
+    expect(Open3).not_to have_received(:capture3)
   end
 end

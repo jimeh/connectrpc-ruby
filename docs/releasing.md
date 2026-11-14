@@ -210,9 +210,14 @@ renaming either breaks publication. `release:publish` runs these steps:
    gem's internal dependencies precede it in publication order.
 2. It finds the GitHub release for the tag, polling for up to five minutes
    because Release Please creates the draft just after the tag.
-3. It uploads any missing assets to the draft. An existing asset must match
-   the candidate's SHA256, and an unexpected asset stops the run.
-4. It pushes the gems in dependency order:
+3. It checks all seven gems on RubyGems.org before uploading or pushing
+   anything. A version that already exists must have the candidate's SHA256,
+   and a gem name that already exists must be owned by `jimeh`. Pending
+   publishers do not reserve names.
+4. It uploads any missing assets to the draft. An existing asset must be fully
+   uploaded and match the candidate's SHA256, and an unexpected asset stops
+   the run.
+5. It pushes the gems in dependency order:
    1. `connectrpc`.
    2. `connectrpc-rack`, `connectrpc-async`, `connectrpc-testing` and
       `connectrpc-otel`.
@@ -222,9 +227,9 @@ renaming either breaks publication. `release:publish` runs these steps:
    `sigstore-cli` using the job's GitHub OIDC identity and pushes it with
    `gem push --attestation`. Each push exchanges a fresh OIDC token for a
    15-minute RubyGems key. The exchange asserts owner `jimeh`, which RubyGems
-   requires before a pending publisher can create a new gem. A version that
-   already exists must have the candidate's SHA256.
-5. It publishes the draft and marks it latest. With immutable releases enabled,
+   requires before a pending publisher can create a new gem. Versions found
+   in step 3 are skipped.
+6. It publishes the draft and marks it latest. With immutable releases enabled,
    GitHub then locks the tag and assets and adds its release attestation.
 
 RubyGems' own action, `configure-rubygems-credentials` v2.1.0, cannot assert an
@@ -241,7 +246,7 @@ These settings live outside the repository. They are not verified by CI.
 | --- | --- |
 | RubyGems.org, `jimeh` account | One pending trusted publisher per gem: repository owner `jimeh`, repository `connectrpc-ruby`, workflow `release.yml`, environment `release`. |
 | GitHub `release` environment | Deployment policy allowing only `v*` tags; add `jimeh` as a required reviewer. |
-| GitHub repository settings | Enable immutable releases. |
+| GitHub repository settings | Enable immutable releases. Optionally add a tag ruleset that lets only the release App create `v*` tags, so nobody else with write access can start the release workflow. |
 
 **Pending publishers expire 12 hours after creation**, and a pending publisher
 does not reserve a gem name. Create all seven shortly before merging the first
@@ -264,12 +269,19 @@ so a retained artifact is never replaced or mixed with a different build.
 Already-published gems are skipped, and missing ones are pushed in dependency
 order.
 
-A mismatch stops the run before it changes anything else. This covers a
-conflicting asset or registry version, an unexpected asset, and a rebuild that
-no longer matches retained bytes. It requires a maintainer decision. Do not
-automatically yank, retag, delete the draft, or replace versions. When repair
-requires a new version, release a new whole-train version and document the
-partial train and migration implications.
+A mismatch stops the run before it uploads or pushes anything more. This
+covers a conflicting registry version or gem owner, a conflicting, unexpected
+or incomplete draft asset, and a rebuild that no longer matches retained bytes.
+It requires a maintainer decision. Do not automatically yank, retag or replace
+versions.
+
+The draft's assets may be deleted only while no gem of the train exists on
+RubyGems.org, for example when a later runner image rebuilds different bytes
+before any push. A draft release is not public, so nothing has been released
+yet. Once any gem is published, its retained bytes are the only valid
+candidate. An interrupted upload leaves an incomplete asset, which is always
+safe to delete. When repair requires a new version, release a new whole-train
+version and document the partial train and migration implications.
 
 Release Please creates its commits and tags through the GitHub API as the App,
 not with a local GPG key. Normal source commits stay signed.

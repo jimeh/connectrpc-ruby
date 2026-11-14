@@ -153,7 +153,7 @@ checks real archive headers, complete file bytes, manifests and metadata under
 umasks `002` and `022` using group-writable fixture inputs.
 
 `check:package` asserts an explicit reviewed package manifest, zero runtime
-dependencies, MIT metadata and complete license bytes, and the publication guard. It runs `gem install --norc --local`
+dependencies, MIT metadata and complete license bytes, and the push host. It runs `gem install --norc --local`
 from a separate temporary working directory inside `Bundler.with_unbundled_env`,
 with fresh `GEM_HOME`/`GEM_PATH` and cleared Ruby/Bundler options. It verifies
 core require without Google/Rack, an ordinary missing `connectrpc/rack` file

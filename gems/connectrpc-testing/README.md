@@ -94,8 +94,8 @@ GEM_HOME, checks public require without optional bindings/hosts, then installs
 the cached Google dependency closure and runs the generated example in both
 codecs and encodings. Root verification remains independent.
 
-Licensed under the [MIT License](LICENSE). The invalid `allowed_push_host` guard
-remains in place; no task publishes or releases this package.
+Licensed under the [MIT License](LICENSE). It is released with the whole
+[release train](../../docs/releasing.md); its package tasks never publish it.
 
 See the [supported 0.x contract](../../docs/support.md) for the target support
 profile, matched package versions, compatibility policy and adoption gates.
