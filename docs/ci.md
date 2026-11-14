@@ -310,8 +310,9 @@ Both task definitions retain `GOTOOLCHAIN=local`, `GOWORK=off` and
 
 ## Release preparation
 
-The separate `release-please.yml` workflow runs only on manual dispatch from main.
-It opens draft release PRs using an existing GitHub App and never tags or publishes.
+The separate `release-please.yml` workflow runs on pushes to main and manual dispatch.
+It opens or updates the draft release PR using an existing GitHub App from the
+`release-please` environment, and never tags or publishes.
 The 30 CI checks above retain their mapping. `check:static` also runs the offline
 `release:check` invariant for all seven versions and all eight local path locks.
 Frozen Bundler installs in each owning CI lane prove the prepared locks are accepted

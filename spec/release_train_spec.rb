@@ -189,12 +189,13 @@ RSpec.describe ReleaseTrain do
 end
 
 RSpec.describe "Release preparation workflow boundary" do
-  it "only dispatches PR preparation on main with no GitHub token permissions or publishing job" do
+  it "prepares PRs from main pushes with no GitHub token permissions, release creation or publishing job" do
     workflow = YAML.load_file(File.expand_path("../.github/workflows/release-please.yml", __dir__))
-    expect(workflow.fetch("on", workflow[true]).keys).to eq(["workflow_dispatch"])
+    expect(workflow.fetch("on", workflow[true])).to eq("push" => { "branches" => ["main"] }, "workflow_dispatch" => nil)
     expect(workflow.fetch("permissions")).to eq({})
     job = workflow.fetch("jobs").fetch("release-please")
     expect(job).not_to have_key("permissions")
+    expect(job.fetch("environment")).to eq("release-please")
     expect(workflow.fetch("jobs").keys).to eq(["release-please"])
     expect(job.fetch("if")).to eq("github.ref == 'refs/heads/main'")
     release = job.fetch("steps").find { |step| step.fetch("uses", "").start_with?("googleapis/release-please-action@") }
