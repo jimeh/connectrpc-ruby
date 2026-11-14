@@ -1,7 +1,10 @@
 name: Release preparation
 
-# Preparation is manual until the App installation and release process are approved.
+# Opens and updates the draft release PR only. skip-github-release keeps this
+# workflow from tagging or creating releases until enablement is approved.
 on:
+  push:
+    branches: [main]
   workflow_dispatch:
 
 permissions: {}
@@ -14,6 +17,7 @@ jobs:
   release-please:
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
+    environment: release-please
     timeout-minutes: 10
     steps:
       - name: Check App references
@@ -22,7 +26,7 @@ jobs:
           PRIVATE_KEY: ${{ secrets.RELEASE_BOT_PRIVATE_KEY }}
         run: |
           if [ -z "$CLIENT_ID" ] || [ -z "$PRIVATE_KEY" ]; then
-            echo '::error::Configure RELEASE_BOT_CLIENT_ID and RELEASE_BOT_PRIVATE_KEY for the existing release App. See docs/releasing.md.'
+            echo '::error::Configure RELEASE_BOT_CLIENT_ID and RELEASE_BOT_PRIVATE_KEY in the release-please environment. See docs/releasing.md.'
             exit 1
           fi
       - id: app-token

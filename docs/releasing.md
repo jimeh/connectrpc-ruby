@@ -40,29 +40,33 @@ do not add a runtime enforcement mechanism or adopt the support profile.
 
 ## Prepare a draft release PR
 
-The [workflow](../.github/workflows/release-please.yml) runs only on manual
-dispatch from main. It uses `skip-github-release: true`, opens draft PRs and has
-no publishing job or OIDC permission. Merging the setup PR does not run it.
+The [workflow](../.github/workflows/release-please.yml) runs on every push to
+main, and on manual dispatch from main, to open or update the draft release PR.
+It uses `skip-github-release: true` and has no publishing job or OIDC
+permission, so it never tags or creates GitHub releases. Merging the setup PR
+runs it for the first time.
 
-The existing release GitHub App needs these references, as in the pinned
+The job runs in the `release-please` environment, whose deployment branch
+policy allows only `main`. The existing release GitHub App needs these
+references, as in the pinned
 [Airplan workflow](https://github.com/jimeh/airplan/blob/f70df0f43404f07808e56613a4511b53160c2bbd/.github/workflows/release-please.yml):
 
 | Reference | Required setup |
 | --- | --- |
-| `vars.RELEASE_BOT_CLIENT_ID` | The existing App's client ID, available to this repository. |
-| `secrets.RELEASE_BOT_PRIVATE_KEY` | The existing App's private key, available through a repository or authorized shared secret. |
+| `vars.RELEASE_BOT_CLIENT_ID` | The existing App's client ID, as a `release-please` environment variable. |
+| `secrets.RELEASE_BOT_PRIVATE_KEY` | The existing App's private key, as a `release-please` environment secret. |
 | App installation | Installation access to `jimeh/connectrpc-ruby`, with contents, issues and pull requests write permissions. |
 
 The workflow requests an installation token scoped to the current repository
 and those three permissions. Its `GITHUB_TOKEN` has no permissions. App-created
-PRs can trigger normal downstream CI. Missing references fail dispatch with an
+PRs can trigger normal downstream CI. Missing references fail the run with an
 actionable error; there is no fallback token. Do not print, copy into the
 checkout, or ask for private-key values in chat.
 
-At preparation time, the coordinator's repository name listings did not show
-either reference. Shared-secret availability and App installation have not
-been verified. Account and repository configuration require a separate explicit
-authorization. Source preparation and offline checks can proceed without them.
+Both reference names were listed in the `release-please` environment on
+2026-11-14. App installation and token permissions are verified only by the
+first run after merge. Publishing credentials and approvals belong to the
+separate `release` environment, so its protection never gates PR preparation.
 
 Both action pins meet the seven-day age policy: release-please-action v5.0.0,
 published 2026-04-22, and create-github-app-token v3.3.0, published 2026-10-12.
@@ -71,8 +75,8 @@ release-please 17.6.0. Review new pins and their embedded behavior before update
 
 After App setup is separately authorized and complete:
 
-1. Dispatch **Release preparation** on main. Inspect the generated draft PR;
-   verify that the initial proposed version is exactly `0.1.0` and all seven
+1. After a push to main (or a manual dispatch), inspect the generated draft
+   PR; verify that the initial proposed version is exactly `0.1.0` and all seven
    gems remain included in the train.
 2. Check out that release branch. Run `mise run release:prepare` before frozen
    Bundler setup. This updates all eight local path locks, including digest-free
@@ -196,7 +200,10 @@ publication, configure one pending trusted publisher per gem with owner
 `jimeh`, repository `connectrpc-ruby`, the exact future publishing workflow
 filename and a protected `release` environment. An existing gem instead needs
 an owner-authorized trusted publisher. Protect the environment with required
-reviewers before adding a workflow with job-scoped `id-token: write`.
+reviewers before adding a workflow with job-scoped `id-token: write`. On
+2026-11-14 the `release` environment existed with a deployment policy allowing
+only `v*` tags, no required reviewers and no variables or secrets. A publishing
+job in it must therefore run from a release tag, not from a main push.
 
 The enablement change must deliberately replace `gems.invalid` in all seven
 gemspecs and their strict validators, review the publishing action and its
