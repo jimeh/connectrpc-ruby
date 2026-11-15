@@ -33,8 +33,9 @@ shared backoff, callers cannot wait for readiness, and a draining connection
 keeps the only pool slot after GOAWAY.
 
 This design adds both pieces: a private connection manager inside the Async
-H2 transport, and a `ThreadedTransport` that drives that transport from one
-owner thread on behalf of any number of caller threads.
+H2 transport, used by every H2 `Transport`, and a `ThreadedTransport` that
+drives that transport from one owner thread on behalf of any number of caller
+threads.
 
 ## Decisions
 
@@ -44,7 +45,7 @@ Jim accepted these choices on 2026-11-15:
 | --- | --- |
 | Package and name | `ConnectRPC::Async::ThreadedTransport` in `connectrpc-async`. It uses `Client.new(transport:)` like the other transports. |
 | Threaded defaults | Go-like: one connection, fail-fast, backoff of 1 s growing by 1.6x with 20% jitter and a hard 30 s cap, one extra draining connection, 16 MiB of admitted request bytes. |
-| Effect on `Async::Transport` | The new connection policy is opt-in through `connection_policy:`. Without it, the existing transport keeps today's behavior. |
+| Effect on `Async::Transport` | The connection policy is on by default for every H2 `Transport`, not only `ThreadedTransport`. There is no legacy mode. Jim chose this on 2026-11-15, reversing an earlier opt-in choice, because nothing has been released and nobody depends on today's behavior yet. It overrides #28's request to preserve existing behavior. |
 | Delivery | Four PRs: the #28 manager core, threaded Connect unary, GOAWAY replacement with refused-stream retry, then the stream proxy. Client and bidi streaming from threads come later. |
 
 The direction set before this design also stands:
@@ -173,9 +174,9 @@ transport.connection_state # => :idle, :connecting, :ready, :transient_failure, 
   `0...1`, a maximum of at least the base, positive integer bytes, nonnegative
   integer draining, and a nil or positive drain timeout. New knobs can be added
   later without widening constructors.
-- `Transport.new(connection_policy: nil)` is the default and keeps today's
-  behavior: no backoff, no waiting through failures, no byte budget, a draining
-  connection holds its slot, and no refused-stream retry.
+- `Transport.new` and `ThreadedTransport.new` both default to
+  `connection_policy: ConnectionPolicy.new`. There is no `nil` legacy mode, so
+  the manager has one code path and one set of tests.
 - `connection_observer:` is optional. It receives frozen `ConnectionEvent`
   values on the owner reactor and must return quickly. Exceptions it raises are
   rescued and ignored, like cancellation listeners.
@@ -208,7 +209,7 @@ first frame and requires it to be SETTINGS (`client.rb`,
 ### Call admission and waiting
 
 1. **Admission.** Each call reserves one admission slot from `max_requests`.
-   When a policy is set, a unary call also reserves its encoded request bytes
+   A unary call also reserves its encoded request bytes
    from `max_pending_bytes`. For POST these are the body bytes. For GET they
    are the request-target bytes, because core moves the encoded message into
    the query and sends an empty body (`lib/connectrpc/client.rb:174-179`). If
@@ -244,7 +245,11 @@ first frame and requires it to be SETTINGS (`client.rb`,
    If the connection died before any request bytes were written, the call
    returns to acquisition. This is not a replay, because nothing was sent. Once
    the request headers start to be written, the outcome may be ambiguous and the
-   call is never resent, apart from the refused case in Part 3.
+   call is never resent, apart from the refused case in Part 3. Rerouting
+   changes today's behavior, which an existing spec asserts: a connection that
+   closes at the dispatch guard currently fails the call, and only a later call
+   reconnects (`gems/connectrpc-async/spec/stream_cleanup_spec.rb:136-175`).
+   PR A rewrites that spec so the same call succeeds on a new connection.
 
 ### Backoff
 
@@ -315,9 +320,8 @@ RPC.close(grace: 5)
 
 The constructor takes `origin:, ca_file: nil, certificate_chain: nil,
 private_key: nil, connection_limit: 1, max_requests: 128, connect_timeout: 10,
-connection_policy: ConnectionPolicy.new, connection_observer: nil`. The policy
-defaults on here. Passing `connection_policy: nil` gives the legacy pool
-behavior.
+connection_policy: ConnectionPolicy.new, connection_observer: nil`, the same
+connection options as `Transport`.
 
 The constructor validates every argument and compiles the TLS snapshot on the
 calling thread, so a configuration error raises at boot. It starts no thread
@@ -516,8 +520,6 @@ half-close, bounded finish, and sibling isolation.
 
 ### GOAWAY
 
-These rules apply only with a connection policy.
-
 - **Graceful GOAWAY** (`NO_ERROR`). The connection stops taking new streams.
   Streams at or below the last stream id continue. If fewer than
   `max_draining` connections are draining, this one moves out of the active cap,
@@ -542,8 +544,8 @@ The pinned protocol-http2 0.29.2 closes two kinds of streams with
 reset with `REFUSED_STREAM` (`stream.rb:253`). RFC 9113 defines both as never
 processed ([§6.8][rfc-goaway], [§8.7][rfc-refused]).
 
-With a connection policy, a unary call whose stream is refused before response
-headers is sent again once, within the same deadline. Unary request bodies are
+A unary call whose stream is refused before response headers is sent again
+once, within the same deadline. Unary request bodies are
 complete strings, so resending them is exact. The retry goes back through
 ordinary acquisition with the call's existing admission. It picks no particular
 connection:
@@ -562,8 +564,10 @@ connection:
 
 A second refusal fails the call with `unavailable`. Streams are never resent,
 because the caller already holds the exchange and may have written messages.
-Without a policy, refused calls keep failing with `unavailable`, as the existing
-no-replay specs assert.
+This deliberately changes today's behavior, which an existing spec asserts:
+refused and GOAWAY-refused unary streams currently fail with `unavailable`
+(`gems/connectrpc-async/spec/stream_cleanup_spec.rb:95-133`). PR C rewrites
+that spec to expect exactly one more transmission and one server invocation.
 
 ## Non-goals
 
@@ -611,7 +615,9 @@ connections, frames, handler entry and completion signals, never fixed sleeps.
 Scope: the private manager, `ConnectionPolicy`, `ConnectionEvent`,
 `connection_policy:` and `connection_observer:` on `Transport`, and
 `connection_state`. Shared attempts, backoff, wait-for-ready, the byte budget
-and the dispatch guard reroute.
+and the dispatch guard reroute, all on by default. The Async README's
+`Transport` section changes with it, because it says a failed call never
+reconnects and only a later call opens a fresh connection.
 
 | Concern | Evidence |
 | --- | --- |
@@ -621,8 +627,8 @@ and the dispatch guard reroute.
 | Recovery after refused connections | Peer refuses, then listens. Concurrent wait-for-ready waiters share paced attempts. A frame-observing peer shows that expired and cancelled waiters sent no request HEADERS or DATA, which handler counts alone cannot prove. Survivors dispatch once. Fail-fast callers fail during `transient_failure`. |
 | Count and byte limits during an outage | Admission rejects predictably for POST bodies and GET request targets; events report the rejection |
 | Dead-before-dispatch reroute | Peer closes an idle connection; the next call uses a new one with one server invocation |
-| No replay with a policy | Policy-enabled POST and GET probes observe request HEADERS and DATA progress, then inject an ambiguous failure: a reset after headers, EOF after a partial or complete body, and connection loss after the handler ran. The failed call is not resent, judged by both transmitted frames and invocations; only a separately issued call reconnects. |
-| Legacy behavior | Existing pool, lifecycle and no-replay specs pass unchanged without a policy |
+| No replay | POST and GET probes observe request HEADERS and DATA progress, then inject an ambiguous failure: a reset after headers, EOF after a partial or complete body, and connection loss after the handler ran. The failed call is not resent, judged by both transmitted frames and invocations; only a separately issued call reconnects. |
+| Existing behavior | Existing pool and lifecycle specs pass under the default policy. The pre-dispatch closure spec is rewritten for rerouting; every other no-replay assertion is kept. |
 | Attempts outside RPC context | OTel bundle spec: no attempt span is parented to the first RPC |
 | Close | Wakes waiters, stops timers and attempts, keeps existing outcomes |
 
@@ -646,6 +652,10 @@ close; interruption; owner-thread failure.
 
 ### PR C: GOAWAY replacement and refused retry
 
+Scope: draining connections, replacement attempts, `drain_timeout` and the
+single refused-unary retry, all on by default. The Async README's "No retries"
+statement changes to name the refused exception.
+
 | Concern | Evidence |
 | --- | --- |
 | Replacement while draining | Peer sends graceful GOAWAY with a live long stream and several new calls; a replacement opens; the socket count stays within `connection_limit + max_draining` |
@@ -655,7 +665,7 @@ close; interruption; owner-thread failure.
 | Refusal capacity | Standalone `REFUSED_STREAM` with a live sibling on the default single connection: the retry reuses that connection and the sibling completes. Above-last-id refusal with the draining set full: the retry waits for capacity or fails per the waiting rules, and no accepted sibling is aborted. A second refusal fails with `unavailable`. |
 | No stream retry | Refused streams fail with `unavailable` |
 | Error GOAWAY | At or below the last id: fail, no retry |
-| Legacy behavior | Existing no-replay specs unchanged without a policy |
+| Existing behavior | The refused/GOAWAY no-replay spec is rewritten for the single retry; no-replay assertions for ambiguous failures are kept |
 
 ### PR D: stream proxy
 
