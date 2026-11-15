@@ -367,9 +367,9 @@ module ConnectRPC
         end
 
         def finish_output(error = nil)
-          # Raw abort has already retired the connection. Its owned tasks must
-          # finish locally rather than attempting another reset on that socket.
-          return if @connection.closed?
+          # Abort marks the resource finished before raw close and close!.
+          # Owned output must finish locally rather than write to that socket.
+          return if @connection.closed? || @connection.resource&.finished?
 
           writable = !closed? && !@response_reset && error.nil?
           super
@@ -382,10 +382,10 @@ module ConnectRPC
 
         attr_reader :output_task
 
-        # A raw-first destructive abort has already retired this connection.
+        # Abort marks the resource finished before raw close and close!.
         # Output unwinding must not attempt another reset on its closed socket.
         def finish_output(error = nil)
-          return if @connection.closed?
+          return if @connection.closed? || @connection.resource&.finished?
 
           super
         end
