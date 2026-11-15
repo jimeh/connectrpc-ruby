@@ -92,7 +92,9 @@ RSpec.shared_examples "HTTP/2 deadlines and stream isolation" do
       headers = { "content-type" => ["application/proto"], "connect-timeout-ms" => ["2000"] }
       outgoing = request("#{origin}#{AsyncHelpers::ECHO::ECHO.path}", deadline: deadline, headers: headers)
       call = task.async { transport.call(outgoing) }
-      wait_until(task, "call queued on the connection guard") { guard_waiters(connection) == 1 }
+      # Falcon shares these examples without the async-only ConnectionPeer helpers.
+      guard = connection.instance_variable_get(:@write_frame_guard)
+      wait_until(task, "call queued on the connection guard") { guard.waiting.size == 1 }
       clock = 1.5
       release.enqueue(true)
       holder.wait

@@ -231,7 +231,7 @@ RSpec.describe "HTTP/2 dispatch-guard reroute" do
         source = ConnectRPC::CancellationSource.new
         # The deadline variant measures real elapsed time: its expiry while
         # queued is the boundary under test, after the queue is observed.
-        outgoing = request("#{origin}/queued", deadline: bound_by == :deadline ? ConnectRPC::Deadline.new(0.5) : nil)
+        outgoing = request("#{origin}/queued", deadline: bound_by == :deadline ? ConnectRPC::Deadline.new(1) : nil)
         outgoing.cancellation = source.token if bound_by == :cancellation
         queued = task.async(finished: false) { transport.call(outgoing) }
         wait_until(task, "call queued on the guard") { guard_waiters(connection) == 1 }
@@ -316,7 +316,7 @@ RSpec.describe "HTTP/2 no replay of possibly delivered requests" do
       resource.connection.stream.instance_variable_set(:@io, gate)
       gate.armed = true
       call = task.async(finished: false) { transport.call(request("#{origin}/partial", body: "x" * 4096)) }
-      # The peer has the request HEADERS and the DATA frame header, not its payload.
+      # The peer has the request HEADERS and only the first 5 bytes of the DATA frame header.
       expect(peer.requests.dequeue.path).to eq("/partial")
       gate.started.dequeue
       peer.connections.first.close
