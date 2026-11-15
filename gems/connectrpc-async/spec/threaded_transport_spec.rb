@@ -84,6 +84,39 @@ RSpec.describe "ThreadedTransport construction and Connect unary from plain thre
     peer&.stop
   end
 
+  [true, false].each do |retry_refused|
+    it "forwards retry_refused: #{retry_refused} to the owner's transport for a refused unary call" do
+      seen = Hash.new(0)
+      invocations = []
+      peer = threaded_recording_peer do |incoming|
+        if (seen[incoming.path] += 1) == 1
+          incoming.stream.send_reset_stream(Protocol::HTTP2::Error::REFUSED_STREAM)
+        else
+          invocations << incoming.path
+          incoming.send_response(Protocol::HTTP::Response[200, {}, [incoming.path]])
+        end
+      end
+      origin = "http://127.0.0.1:#{peer.peer.port}"
+      policy = ConnectRPC::Async::ConnectionPolicy.new(retry_refused: retry_refused)
+      transport = threaded(origin: origin, connection_policy: policy)
+      caller = Thread.new do
+        transport.call(request("#{origin}/refused")).body
+      rescue ConnectRPC::Error => e
+        e
+      end
+      result = value_within(caller, "the refused caller")
+      if retry_refused
+        expect([result, invocations]).to eq(["/refused", ["/refused"]])
+      else
+        expect([result.code, invocations]).to eq(["unavailable", []])
+      end
+      expect([peer.peer.headers_frames.size, peer.peer.accepted]).to eq([retry_refused ? 2 : 1, 1])
+    ensure
+      transport&.close(grace: 0)
+      peer&.stop
+    end
+  end
+
   it "names the owner thread by host and port only" do
     peer = threaded_host(server: server)
     origin = "http://127.0.0.1:#{peer.peer.port}"

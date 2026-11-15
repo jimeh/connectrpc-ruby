@@ -385,7 +385,7 @@ headers and body reads. Native DNS/TCP before socket exposure remains
 cooperative; cancellation is checked on return before any later dispatch.
 The optional Async transport wakes its owner reactor and resets its stream.
 Healthy multiplexed siblings survive; a stuck frame retains the documented
-connection-wide cleanup fallback. Neither backend retries or replays a call.
+connection-wide cleanup fallback. Neither backend retries or replays a cancelled call.
 
 Server contexts expose `deadline`, `cancelled?`, `cancellation_reason`
 (`:canceled`, `:deadline_exceeded`, or nil), and `check!`. Handlers cooperate at
