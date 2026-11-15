@@ -160,7 +160,7 @@ RSpec.shared_examples "native streaming bounds and cancellation" do |protocol = 
         expect(client_resource.finished?).to be(false)
         expect(receiver.finished?).to be(false)
         expect(transport.instance_variable_get(:@calls)).to be_empty
-        expect(transport.instance_variable_get(:@pool).resources.values.sum).to eq(0)
+        expect(lease_usage(transport)).to eq(0)
       ensure
         release&.enqueue(true)
         transport&.close(grace: 0)

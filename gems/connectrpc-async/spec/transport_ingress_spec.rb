@@ -71,8 +71,7 @@ RSpec.describe "Transport native response ingress" do
       ingress_data(connection, outgoing.id, "", finish: true)
       5.times { release.enqueue(true) }
       expect(call.wait.body).to eq("a" * 131_072)
-      pool = transport.instance_variable_get(:@pool)
-      expect(pool.resources.values.sum).to eq(0)
+      expect(lease_usage(transport)).to eq(0)
       expect(transport.instance_variable_get(:@resources).size).to eq(1)
       expect(transport.instance_variable_get(:@resources).first.connection.streams).to be_empty
       expect(ingress_backlog(body)).to eq([0, 0])

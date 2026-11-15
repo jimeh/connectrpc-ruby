@@ -14,6 +14,10 @@ module ConnectRPC
         }
       end
 
+      # Raised before a writer enters the guard of a connection that can no
+      # longer start streams. Nothing has been written for that writer.
+      class UnusableConnection < IOError; end
+
       # Version-coupled wrappers around the selected stack, not a frame codec.
       module Connection
         attr_accessor :resource, :defer_close
@@ -29,7 +33,7 @@ module ConnectRPC
           task = ::Async::Task.current
           return yield if @writer.equal?(task)
 
-          raise IOError, "HTTP/2 connection closed" if @resource&.finished?
+          raise UnusableConnection, "HTTP/2 connection closed" if @resource&.finished?
 
           @writers[task] = true
           begin
@@ -389,6 +393,19 @@ module ConnectRPC
         def create_response
           ResponseStream.create(self, next_stream_id).response
         end
+
+        # Peer SETTINGS can change stream capacity for waiting acquisitions.
+        def update_remote_settings(changes)
+          super
+        ensure
+          @resource&.changed
+        end
+
+        def receive_goaway(frame)
+          super
+        ensure
+          @resource&.unusable
+        end
       end
 
       class ServerConnection < ::Async::HTTP::Protocol::HTTP2::Server
@@ -465,6 +482,9 @@ module ConnectRPC
       class Resource
         attr_accessor :raw, :socket, :connection, :task, :generation, :snapshot, :ready, :draining
         attr_reader :tasks, :progress, :activity_at
+        # Called when the connection stops accepting new streams, before any
+        # retirement join, so its owner can update accounting promptly.
+        attr_writer :on_unusable
 
         def initialize(progress:, generation: nil, snapshot: nil)
           @shared_progress = progress
@@ -503,6 +523,7 @@ module ConnectRPC
 
         def finished? = @aborted
         def finishing? = @finishing
+        def unusable = @on_unusable&.call(self)
 
         def abort(error = IOError.new("HTTP/2 connection closed"))
           return if @cleanup&.current?
@@ -514,6 +535,7 @@ module ConnectRPC
             @aborted = true
             @abort_during_drain = true if @drain_task && !@drained
             @cleanup = ::Async::Task.new(@lifetime, transient: true, finished: false) { retire(error) }
+            unusable
           end
           if owned
             @cleanup.run if launch

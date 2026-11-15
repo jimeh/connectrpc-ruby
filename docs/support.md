@@ -124,6 +124,10 @@ client does not add H1 to that Host.
 Native clients require an application-owned Async reactor. Construction, I/O
 and close run on its reactor and thread; foreign-thread cancellation only
 signals that owner. There is no ordinary-thread persistent/streaming facade.
+The H2 `Transport` manages its own connections: shared attempts outside RPC
+lifecycles, capped jittered backoff, opt-in wait-for-ready, count and request-byte
+admission, and rerouting only of calls that wrote nothing. GOAWAY replacement and
+refused-stream retry are not implemented.
 Each H1 connection has one exclusive lease through EOF and cleanup, so long
 streams can occupy all leases. Native handlers do not acquire Rails callbacks
 or security policy merely because Falcon also hosts a Rails fallback.

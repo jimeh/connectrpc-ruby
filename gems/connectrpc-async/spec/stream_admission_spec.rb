@@ -34,7 +34,7 @@ RSpec.describe "Streaming cancellation before writable and response-head progres
   end
 
   %i[token deadline].each do |reason|
-    it "retires an actual TLS setup wait through #{reason} with no call or acquiring scopes left" do
+    it "leaves an actual TLS setup through #{reason} and retires the shared attempt at close" do
       reactor do |task|
         bound = IO::Endpoint.tcp("127.0.0.1", 0).bound
         listener = bound.sockets.first
@@ -61,6 +61,9 @@ RSpec.describe "Streaming cancellation before writable and response-head progres
         expect_interrupted(call, reason)
         expect(transport.instance_variable_get(:@calls)).to be_empty
         expect(transport.instance_variable_get(:@acquiring)).to be_empty
+        # The shared attempt outlives the interrupted stream until close.
+        expect(transport.instance_variable_get(:@resources).map(&:raw)).to all(satisfy { |raw| !raw.closed? })
+        expect(transport.close(grace: 1)).to be(true)
         expect(transport.instance_variable_get(:@resources).map(&:raw)).to all(be_closed)
         resources = transport.instance_variable_get(:@resources)
         expect(resources.map(&:task)).to all(be_finished), resources.map { |resource|
@@ -121,7 +124,7 @@ RSpec.describe "Streaming cancellation before writable and response-head progres
           expect(observed).to eq(%w[hold after])
           expect(transport.instance_variable_get(:@calls)).to be_empty
           expect(transport.instance_variable_get(:@acquiring)).to be_empty
-          expect(transport.instance_variable_get(:@pool).resources.values.sum).to eq(0)
+          expect(lease_usage(transport)).to eq(0)
           expect(transport.instance_variable_get(:@resources).size).to eq(1)
         ensure
           release&.enqueue(true)

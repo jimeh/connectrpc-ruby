@@ -50,5 +50,6 @@
   "grpc_web_client": "Ruby::ArgumentTypeMismatch",
   "grpc_web_capabilities": "Ruby::ArgumentTypeMismatch",
   "grpc_web_cors": "Ruby::ArgumentTypeMismatch",
-  "grpc_web_output": "Ruby::ArgumentTypeMismatch"
+  "grpc_web_output": "Ruby::ArgumentTypeMismatch",
+  "connection_policy": "Ruby::ArgumentTypeMismatch"
 }

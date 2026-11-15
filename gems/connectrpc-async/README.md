@@ -98,20 +98,24 @@ drain. Partial failure inside upstream multi-address binding is outside this
 recovery policy.
 
 `Transport.new(origin:, ca_file: nil, certificate_chain: nil, private_key: nil,
-connection_limit: 1, max_requests: 128, connect_timeout: 10)` implements core's
-transport seam. Origins contain only scheme/host/port. Request paths, including
-core's base prefix, remain intact. One connection multiplexes requests. Full
-admission fails with unavailable; pool waits honor finite RPC deadlines. Nil
-RPC deadlines remain unbounded, while actual setup still has its own timeout.
-No retries, redirects, proxy environment routing or HTTP/1 fallback. The transport
-carries opaque encoded bytes; core owns compression and negotiation.
-A future separate call can open a fresh connection after failure/GOAWAY.
+connection_limit: 1, max_requests: 128, connect_timeout: 10,
+connection_policy: ConnectionPolicy.new, connection_observer: nil)` implements
+core's transport seam. Origins contain only scheme/host/port. Request paths,
+including core's base prefix, remain intact. One connection multiplexes requests.
+Full admission fails with unavailable; acquisition waits honor finite RPC
+deadlines. Nil RPC deadlines remain unbounded, while each connection attempt has
+its own `connect_timeout`. No redirects, proxy environment routing or HTTP/1
+fallback. The transport carries opaque encoded bytes; core owns compression and
+negotiation. [Client connection management](#client-connection-management)
+describes reconnection, backoff, admission and the single reroute exception to
+"no retries".
 
 Both objects provide `close(grace: 5)`: stop admission, await handlers/calls and
 complete wire streams, send GOAWAY when empty, then half-close and await EOF.
 External callers receive true when drained, false after forced teardown. Grace is finite and
 nonnegative; zero aborts. Repeated/concurrent calls share the first outcome.
-Finite deadlines begin in core before encoding and cover pool/setup/headers/body.
+Finite deadlines begin in core before encoding and cover acquisition, headers and
+body. A shared connection attempt is bounded by `connect_timeout` instead.
 Timers use at most 86400-second waits without shortening logical deadlines.
 Client cleanup uses one total internal 100ms allowance. Ordinary cancellation resets
 its stream. A frame that cannot finish within cleanup deliberately fails the
@@ -142,7 +146,7 @@ every call returns that same boolean, including coordinator reentry. Zero grace
 still forces teardown; explicit abort and already-decided outcomes are preserved.
 The client `Transport` and `HTTP1Transport` close return types remain `bool`.
 
-H2 pool release, acquisition or close can therefore wait beyond an RPC deadline
+H2 connection release, acquisition or close can therefore wait beyond an RPC deadline
 for actual retirement. The 100 ms fallback allowance triggers destructive
 cleanup; it is not a hard deadline for that cleanup.
 
@@ -159,6 +163,83 @@ keeps the task tree alive; reactor termination cannot guarantee completion.
 
 See the [supported 0.x contract](../../docs/support.md) for the target support
 profile, matched package versions, compatibility policy and adoption gates.
+
+## Client connection management
+
+Each H2 `Transport` owns a private connection manager on its reactor. Its policy
+is on by default; these are the defaults:
+
+```ruby
+policy = ConnectRPC::Async::ConnectionPolicy.new(
+  backoff: ConnectRPC::Async::Backoff.new(base: 1.0, multiplier: 1.6, jitter: 0.2, max: 30.0),
+  wait_for_ready: false,
+  max_pending_bytes: 16 * 1024 * 1024
+)
+transport = ConnectRPC::Async::Transport.new(origin: origin, connection_policy: policy,
+                                             connection_observer: ->(event) { record(event) })
+transport.connection_state # => :idle, :connecting, :ready, :transient_failure, :closing or :closed
+```
+
+Invalid values raise `ArgumentError` at construction. `wait_for_ready: true`
+requires a backoff, and `connection_policy: nil` is rejected.
+
+- No socket opens before the first call. A connection is ready after TCP, TLS
+  with hostname and ALPN `h2` verification, the client preface and the server's
+  first SETTINGS frame. TCP connect alone is not readiness.
+- Attempts are shared, one at a time, and run under the transport rather than
+  under any RPC task or lifecycle. A call whose deadline or cancellation fires
+  stops waiting without cancelling the attempt; the attempt continues until
+  `connect_timeout` or `close`, and a connection that becomes ready stays for
+  the next call. No attempt starts without a waiting call.
+- After a failed attempt the manager waits
+  `min(base * multiplier ** (failures - 1), max) * (1 - rand * jitter)` seconds
+  before the next one. Jitter only shortens a delay, so `max` is a hard cap.
+  Readiness resets `failures`; bursts of calls and idle periods do not. A timer
+  that expires with no waiting call starts nothing and the state returns to
+  `idle`. GOAWAY is not a failure.
+- Calls are fail-fast by default. A call waits for at most one attempt and fails
+  with `unavailable` if that attempt fails, and calls arriving while the timer
+  runs fail at once unless a usable connection exists. With
+  `wait_for_ready: true`, calls keep waiting through backoff and later attempts
+  until their own deadline, cancellation or `close`.
+- `backoff: nil` removes the timer and the `transient_failure` state. A failed
+  attempt fails every call that joined it, and the next call dials at once.
+- `connection_limit` counts open connections, reusable or not, plus the attempt
+  in progress. A call reuses the first connection with spare stream capacity,
+  which is the peer's `SETTINGS_MAX_CONCURRENT_STREAMS`, and opens another only
+  when none has capacity and a slot is free. A peer raising that limit wakes
+  waiting calls; lowering it never revokes a stream already acquired. While any
+  connection is usable the state stays `ready`, even if an extra attempt failed
+  and is backing off. Extra connections add capacity, not load spreading.
+- A connection that receives GOAWAY or dies takes no new streams. It counts as
+  draining and keeps its slot until its streams finish; replacing it while it
+  drains is not implemented yet. A connection that dies while idle republishes
+  the state immediately.
+- Every call and stream takes one of `max_requests`. `Transport#call` (Connect
+  unary) also reserves its encoded request bytes from `max_pending_bytes`: the
+  POST body, or the request target for GET. Native gRPC unary and all streams
+  reserve no bytes. A full count or byte budget, or a single call larger than
+  the budget, fails immediately with `unavailable`. `max_pending_bytes: nil`
+  admits by count only. Reservations last until the call's terminal outcome.
+- There are no retries, with one exception that is not a replay: a call whose
+  connection became unusable after acquisition but before any stream ID was
+  allocated or request byte written returns to acquisition with its existing
+  admission. Once request HEADERS start, a failed call is never resent; only a
+  separate later call reconnects.
+- `connection_observer` receives frozen `ConnectionEvent` values with `type`
+  (`:state_changed`, `:attempt_finished` or `:admission_rejected`), `state`,
+  `previous_state`, `outcome` (`:ready`, `:refused`, `:timeout`, `:tls`,
+  `:protocol`, `:closed` or `:other`), `duration` in monotonic seconds, and the
+  counts `active`, `draining`, `pending_calls` and `pending_bytes`. Events carry
+  no addresses, certificates, payloads, URLs or exception text. The observer
+  runs synchronously on the owner reactor after the manager's bookkeeping and
+  must return quickly. Its `StandardError`s are ignored. Calling `call`,
+  `open_stream`, `open_grpc_stream` or `close` from the observer raises;
+  `connection_state` and `inspect` remain available.
+- `connection_state` is a published observation, not a promise that the next
+  call succeeds. `close` additionally stops admission, fails waiting calls with
+  `unavailable`, and cancels the backoff timer and any attempt, raw socket
+  first.
 
 ## TLS and client authentication
 
@@ -245,9 +326,9 @@ semantics and safe diagnostics shared by both hosts.
 also supports `close`, `wait_closed`, `timeout=` and `remote_address`, and exposes no SSLContext.
 `wait_closed` waits for actual connection retirement, including owned task
 unwind and final disposal, rather than merely observing invalidation. Retiring
-server connections retain their admission slot until this boundary. H2 client
-pool accounting remains owned by Async::Pool, which removes a retired pool slot
-before joining its connection close.
+server connections retain their admission slot until this boundary. The H2
+client's private connection manager removes a retiring connection's slot and
+wakes waiting calls before joining its connection close.
 The session forwards TLS lifecycle/identity operations, bounded `close` and
 raw-first `abort` for listener/setup failure.
 The optional `stop_accepting:` callback runs after affinity/grace validation,
@@ -326,7 +407,9 @@ Configure `instrumentation:` on the core Client/Server to enable the fixed
 neutral per-call lifecycle or the optional [OpenTelemetry adapter](../connectrpc-otel/README.md).
 Native hosts create explicit handles before request admission, activate the
 actual handler tasks, and finish after full-write/reset/cleanup evidence.
-Connection-level setup/admission before an RPC exists is outside this lifecycle.
+Shared H2 client connection attempts run outside every RPC lifecycle, so tracing
+never parents connection setup to the call that triggered it. Use the transport's
+`connection_observer` for connection events.
 
 ## Static signatures
 

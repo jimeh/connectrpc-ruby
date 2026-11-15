@@ -8,12 +8,19 @@ module ConnectRPC
       include Internal::Affinity
 
       def initialize(origin:, ca_file: nil, certificate_chain: nil, private_key: nil, connection_limit: 1,
-                     max_requests: 128, connect_timeout: 10)
+                     max_requests: 128, connect_timeout: 10, connection_policy: ConnectionPolicy.new,
+                     connection_observer: nil)
         initialize_affinity
         @origin = parse_origin(origin)
         @connection_limit = Internal.positive_integer(connection_limit, "connection_limit")
         @max_requests = Internal.positive_integer(max_requests, "max_requests")
         @connect_timeout = Internal.seconds(connect_timeout, "connect_timeout")
+        unless connection_policy.is_a?(ConnectionPolicy)
+          raise ArgumentError, "connection_policy must be a ConnectionPolicy"
+        end
+        unless connection_observer.nil? || connection_observer.respond_to?(:call)
+          raise ArgumentError, "connection_observer must respond to call"
+        end
         if @origin.scheme == "http" && (ca_file || certificate_chain || private_key)
           raise ArgumentError, "TLS options require an HTTPS origin"
         end
@@ -26,13 +33,21 @@ module ConnectRPC
         @acquiring = {}
         @state = :running
         install_owner_guard
-        @pool = ::Async::Pool::Controller.wrap(limit: @connection_limit) { connect(@acquiring.fetch(::Async::Task.current)) }
+        @manager = Internal::ConnectionManager.new(
+          policy: connection_policy, observer: connection_observer, connection_limit: @connection_limit,
+          connect_timeout: @connect_timeout, lifetime: @lifetime, progress: @progress,
+          build: method(:build_resource), setup: method(:setup_connection), abort_setup: method(:abort_setup)
+        )
       end
 
-      def inspect = "#<#{self.class} state=#{@state} origin=#{@origin}>"
+      def inspect = "#<#{self.class} state=#{@state} connection_state=#{@manager&.state} origin=#{@origin}>"
+
+      # A published observation, not a promise that the next call succeeds.
+      def connection_state = @manager.state
 
       def call(request)
         check_affinity!
+        @manager.check_reentry!
         CallCancellation.with_request(request) { |outgoing| perform_call(outgoing) }
       end
 
@@ -42,6 +57,7 @@ module ConnectRPC
         raise ArgumentError, "A streaming block is required" unless block_given?
 
         check_affinity!
+        @manager.check_reentry!
         CallCancellation.with_request(request) { |outgoing| perform_stream(outgoing, &) }
       end
 
@@ -51,17 +67,25 @@ module ConnectRPC
         raise ArgumentError, "A gRPC block is required" unless block_given?
 
         check_affinity!
+        @manager.check_reentry!
         CallCancellation.with_request(request) { |outgoing| perform_stream(outgoing, grpc: true, &) }
+      end
+
+      def close(grace: 5)
+        check_affinity!
+        @manager.check_reentry!
+        super
       end
 
       private
 
       def perform_stream(request, grpc: false)
         raise ArgumentError, "Request URL must match the transport origin" unless same_origin?(request.url)
-        raise Error.new(:unavailable, "HTTP/2 transport admission is closed or full") unless
-          @state == :running && @calls.size < @max_requests
+        raise Error.new(:unavailable, "HTTP/2 transport admission is closed or full") unless @state == :running
 
         operation = { request: request, tasks: {}, grpc: grpc }
+        # Streams reserve an admission slot but no request bytes.
+        @manager.admit(0, full: @calls.size >= @max_requests)
         @calls[operation] = true
         body = Internal::OutputBody.new
         completed = false
@@ -134,19 +158,7 @@ module ConnectRPC
 
       def dispatch_stream(operation, body)
         request = operation.fetch(:request)
-        task = ::Async::Task.current
-        @acquiring[task] = operation
-        begin
-          connection = @pool.acquire
-          operation[:connection] = connection
-          operation[:resource] = connection.resource
-        ensure
-          @acquiring.delete(task)
-        end
-        connection.synchronize do
-          check_request!(request)
-          raise IOError, "Connection is not reusable" unless connection.reusable?
-
+        dispatch(operation) do |connection, task|
           headers = request.headers.dup
           if request.deadline
             key = operation[:grpc] ? "grpc-timeout" : "connect-timeout-ms"
@@ -162,16 +174,69 @@ module ConnectRPC
         end
       end
 
+      # Acquires a lease and runs the block under its write guard. A connection
+      # found unusable before any stream ID is allocated is released and the
+      # call returns to acquisition; once dispatch starts it is never resent.
+      def dispatch(operation)
+        request = operation.fetch(:request)
+        task = ::Async::Task.current
+        loop do
+          connection = acquire(operation, task)
+          dispatched = false
+          begin
+            return connection.synchronize do
+              check_request!(request)
+              raise Internal::UnusableConnection, "Connection is not reusable" unless @manager.usable?(connection)
+
+              dispatched = true
+              yield connection, task
+            end
+          rescue Internal::UnusableConnection
+            raise if dispatched
+
+            reroute(operation)
+          end
+        end
+      end
+
+      def acquire(operation, task)
+        @acquiring[task] = operation
+        begin
+          connection = @manager.acquire
+          operation[:connection] = connection
+          operation[:resource] = connection.resource
+          connection
+        ensure
+          @acquiring.delete(task)
+        end
+      end
+
+      # Detaches the unsent lease before any yielding release, so cleanup can
+      # never release it again. A failed release fails the call.
+      def reroute(operation)
+        connection = operation.delete(:connection)
+        operation.delete(:resource)
+        @manager.release(connection)
+      rescue StandardError
+        begin
+          connection.resource&.abort
+        ensure
+          @manager.retire(connection)
+        end
+        raise
+      end
+
       def perform_call(request)
         raise ArgumentError, "Request URL must match the transport origin" unless same_origin?(request.url)
 
         check_request!(request)
-        unless @state == :running && @calls.size < @max_requests
-          raise Error.new(:unavailable, "HTTP/2 transport admission is closed or full")
-        end
+        raise Error.new(:unavailable, "HTTP/2 transport admission is closed or full") unless @state == :running
 
         event = ::Async::Promise.new
         operation = { request: request }
+        # GET carries its encoded message in the request target.
+        bytes = request.http_method == "GET" ? request.url.request_uri.bytesize : request.body.bytesize
+        operation[:bytes] = @manager.admit(bytes, full: @calls.size >= @max_requests)
         @calls[operation] = true
         registration = request.cancellation&.on_cancel { event.resolve([:cancellation, nil]) }
         begin
@@ -200,9 +265,13 @@ module ConnectRPC
           raise Error.new(:unavailable, "HTTP/2 transport failed"), cause: nil
         ensure
           registration&.unregister
-          cleanup(operation)
-          @calls.delete(operation)
-          @progress.signal
+          begin
+            cleanup(operation)
+          ensure
+            @calls.delete(operation)
+            @manager.release_bytes(operation.fetch(:bytes))
+            @progress.signal
+          end
         end
       end
 
@@ -239,32 +308,12 @@ module ConnectRPC
         [uri.scheme, uri.hostname&.downcase, uri.port] == [@origin.scheme, @origin.hostname.downcase, @origin.port]
       end
 
-      def connect(operation)
+      def build_resource
         resource = Internal::Resource.new(progress: @progress)
         resource.send(:retirement_parent=, @lifetime)
         @resources.reject! { |entry| entry.send(:retirement_completed?) }
         @resources << resource
-        operation[:resource] = resource
-        expires = Internal.now + @connect_timeout
-        deadline = operation.fetch(:request).deadline
-        expires = [expires, Internal.now + deadline.remaining].min if deadline
-        check_request!(operation.fetch(:request))
-        setup = ::Async::Task.new(@lifetime, finished: false) do
-          activate(operation.fetch(:request)) do
-            check_request!(operation.fetch(:request))
-            setup_connection(resource)
-            check_request!(operation.fetch(:request))
-            resource.connection
-          end
-        end
-        resource.task = setup
-        begin
-          setup.run
-          Internal.wait(setup, expires)
-        rescue ::Async::Cancel, StandardError
-          abort_setup(resource)
-          raise
-        end
+        resource
       end
 
       def abort_setup(resource)
@@ -306,28 +355,17 @@ module ConnectRPC
       def exchange(operation)
         request = operation.fetch(:request)
         check_request!(request)
-        task = ::Async::Task.current
-        @acquiring[task] = operation
-        begin
-          connection = @pool.acquire
-          operation[:connection] = connection
-          operation[:resource] = connection.resource
-        ensure
-          @acquiring.delete(task)
-        end
-        connection.synchronize do
-          check_request!(request)
-          raise IOError, "Connection is not reusable" unless connection.reusable?
-
+        connection = dispatch(operation) do |guarded, task|
           headers = request.headers.dup
           headers["connect-timeout-ms"] = [request.deadline.timeout_ms] if request.deadline
           body = request.http_method == "GET" ? nil : [request.body]
           outgoing = ::Protocol::HTTP::Request[request.http_method, request.url.request_uri, Internal.fields(headers),
                                                body, scheme: @origin.scheme, authority: @origin.authority]
           # Stream ID allocation shares the wire dispatch guard.
-          response = connection.create_response
+          response = guarded.create_response
           operation[:response] = response
-          task.defer_cancel { connection.write_request(response, outgoing) }
+          task.defer_cancel { guarded.write_request(response, outgoing) }
+          guarded
         end
         response = operation.fetch(:response)
         connection.read_response(response)
@@ -360,7 +398,8 @@ module ConnectRPC
         operation[:cleaned] = true
         expires = Internal.now + Internal::CLEANUP_SECONDS
         cleanup_task = ::Async::Task.current.async(finished: false) do
-          tasks = [operation[:task], operation[:resource]&.task, *operation.fetch(:tasks, {}).keys].compact.uniq
+          # The manager owns connection setup; a call owns only its own tasks.
+          tasks = [operation[:task], *operation.fetch(:tasks, {}).keys].compact.uniq
           tasks.each { |task| task.cancel unless task.finished? }
           # Cancel every task before joining in reverse ownership order.
           tasks.reverse_each do |task|
@@ -392,14 +431,14 @@ module ConnectRPC
         ensure
           if (connection = operation.delete(:connection))
             begin
-              @pool.release(connection)
+              @manager.release(connection)
             rescue StandardError => e
               operation[:cleanup_error] ||= e
               begin
                 operation[:resource]&.abort
                 # A failed release may precede usage accounting. Retire the
                 # aborted connection without retrying release or cleanup.
-                @pool.retire(connection) if operation[:grpc]
+                @manager.retire(connection)
               rescue StandardError
                 raise unless operation[:grpc]
               end
@@ -414,6 +453,7 @@ module ConnectRPC
       end
 
       def close_owned(expires)
+        @manager.close
         waiter = @lifetime.async(finished: false) { @progress.wait until @calls.empty? }
         graceful = true
         begin
@@ -427,7 +467,7 @@ module ConnectRPC
         end
         drains = @resources.map { |resource| @lifetime.async(finished: false) { resource.drain(@lifetime, expires) } }
         graceful = drains.map(&:wait).all? && graceful
-        @pool.close unless @pool.busy?
+        @manager.finish
         finish_closed(graceful)
       end
 
@@ -436,9 +476,10 @@ module ConnectRPC
 
         @aborting = true
         @state = :closing unless @state == :closed
+        @manager&.close
         @resources.each(&:abort)
         @calls.each_key { |operation| Internal.cancel(operation[:task]) }
-        @pool&.close unless @pool&.busy?
+        @manager&.finish
         finish_closed(false) unless @state == :closed
         Internal.cancel(@lifetime)
       end

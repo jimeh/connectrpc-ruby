@@ -43,7 +43,7 @@ RSpec.describe "Explicit HTTP/2 unary cancellation" do
           next_call = task.async(finished: false) { typed.echo(AsyncHelpers::MESSAGE.new(name: "next"), cancellation: source.token) }
           expect { next_call.wait }.to raise_error(ConnectRPC::Error) { |e| expect(e.code).to eq("canceled") }
           expect(resource.raw).not_to be_closed
-          expect(transport.instance_variable_get(:@pool).resources.values.sum).to eq(0)
+          expect(lease_usage(transport)).to eq(0)
           expect(transport.instance_variable_get(:@calls)).to be_empty
           expect(source.instance_variable_get(:@signal).instance_variable_get(:@registrations)).to be_empty
         ensure
@@ -98,37 +98,57 @@ RSpec.describe "HTTP/2 cancellation before dispatch and during cleanup" do
     end
   end
 
-  it "wakes a TLS setup wait from a foreign thread and retires every setup task and socket" do
-    reactor do |task|
-      bound = IO::Endpoint.tcp("127.0.0.1", 0).bound
-      listener = bound.sockets.first
-      entered = Async::Queue.new
-      peer = task.async do
-        raw, = listener.accept
-        expect(raw.readpartial(1024)).not_to be_empty
-        entered.enqueue(true)
-        expect(raw.read).to eq("")
+  %i[close connect_timeout].each do |retirement|
+    it "wakes a TLS setup waiter from a foreign thread and retires the shared attempt at #{retirement}" do
+      reactor do |task|
+        bound = IO::Endpoint.tcp("127.0.0.1", 0).bound
+        listener = bound.sockets.first
+        entered = Async::Queue.new
+        events = Async::Queue.new
+        peer = task.async do
+          raw, = listener.accept
+          expect(raw.readpartial(1024)).not_to be_empty
+          entered.enqueue(true)
+          expect(raw.read).to eq("")
+        ensure
+          raw&.close
+        end
+        origin = "https://127.0.0.1:#{listener.local_address.ip_port}"
+        transport = ConnectRPC::Async::Transport.new(
+          origin: origin, connect_timeout: retirement == :connect_timeout ? 0.3 : 10,
+          connection_observer: ->(event) { events.enqueue(event) if event.type == :attempt_finished }
+        )
+        source = ConnectRPC::CancellationSource.new
+        pending = task.async(finished: false) do
+          client(transport, origin).echo(AsyncHelpers::MESSAGE.new, timeout: nil, cancellation: source.token)
+        end
+        entered.dequeue
+        Thread.new { source.cancel }.value
+        expect { pending.wait }.to raise_error(ConnectRPC::Error) { |e| expect(e.code).to eq("canceled") }
+        expect(transport.instance_variable_get(:@calls)).to be_empty
+        expect(transport.instance_variable_get(:@acquiring)).to be_empty
+        # The leaving caller never owned the shared attempt; it keeps its socket.
+        resource = transport.instance_variable_get(:@resources).first
+        expect(resource.raw).not_to be_closed
+        expect(resource.task).not_to be_finished
+        expect(transport.connection_state).to eq(:connecting)
+        if retirement == :close
+          # Close cancels the attempt; with no admitted call it is graceful.
+          expect(transport.close(grace: 1)).to be(true)
+          expect(events).to be_empty
+        else
+          # The real connect_timeout is the external boundary under test.
+          expect(events.dequeue.outcome).to eq(:timeout)
+          expect(transport.connection_state).to eq(:transient_failure)
+        end
+        peer.wait
+        expect(transport.instance_variable_get(:@resources).map(&:raw)).to all(be_closed)
+        expect(transport.instance_variable_get(:@resources).map(&:task)).to all(be_finished)
       ensure
-        raw&.close
+        transport&.close(grace: 0)
+        peer&.cancel
+        bound&.close
       end
-      origin = "https://127.0.0.1:#{listener.local_address.ip_port}"
-      transport = ConnectRPC::Async::Transport.new(origin: origin)
-      source = ConnectRPC::CancellationSource.new
-      pending = task.async(finished: false) do
-        client(transport, origin).echo(AsyncHelpers::MESSAGE.new, timeout: nil, cancellation: source.token)
-      end
-      entered.dequeue
-      Thread.new { source.cancel }.value
-      expect { pending.wait }.to raise_error(ConnectRPC::Error) { |e| expect(e.code).to eq("canceled") }
-      peer.wait
-      expect(transport.instance_variable_get(:@resources).map(&:raw)).to all(be_closed)
-      expect(transport.instance_variable_get(:@resources).map(&:task)).to all(be_finished)
-      expect(transport.instance_variable_get(:@calls)).to be_empty
-      expect(transport.instance_variable_get(:@acquiring)).to be_empty
-    ensure
-      transport&.close(grace: 0)
-      peer&.cancel
-      bound&.close
     end
   end
 
@@ -168,7 +188,7 @@ RSpec.describe "HTTP/2 cancellation before dispatch and during cleanup" do
       expect(typed.echo(AsyncHelpers::MESSAGE.new(name: "after")).message.name).to eq("after")
       expect(resource.raw).not_to be_closed
       expect(transport.instance_variable_get(:@resources)).to eq([resource])
-      expect(transport.instance_variable_get(:@pool).resources.values.sum).to eq(0)
+      expect(lease_usage(transport)).to eq(0)
     ensure
       gate&.release&.enqueue(true)
       release_handler&.enqueue(true)
@@ -204,7 +224,7 @@ RSpec.describe "Promise wake and arbitration" do
       release << true
       expect(worker.join(1)).to equal(worker)
       expect(transport.instance_variable_get(:@calls)).to be_empty
-      expect(transport.instance_variable_get(:@pool).resources.values.sum).to eq(0)
+      expect(lease_usage(transport)).to eq(0)
       expect(source.instance_variable_get(:@signal).instance_variable_get(:@registrations)).to be_empty
     ensure
       release&.push(true)

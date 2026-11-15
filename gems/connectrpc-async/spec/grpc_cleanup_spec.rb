@@ -74,8 +74,8 @@ RSpec.describe "gRPC owned cleanup outcome" do
           Async::Queue.new.dequeue if failure == :timeout
         end
       end
-      pool = transport.instance_variable_get(:@pool)
-      allow(pool).to receive(:release).and_wrap_original do |release, connection|
+      manager = connection_manager(transport)
+      allow(manager).to receive(:release).and_wrap_original do |release, connection|
         release_calls += 1
         raise original if failure == :release_before
 
@@ -91,7 +91,7 @@ RSpec.describe "gRPC owned cleanup outcome" do
       expect(operations.first[:connection]).to be_nil
       expect(operations.first.fetch(:tasks).keys).to all(be_finished)
       expect(transport.instance_variable_get(:@calls)).to be_empty
-      expect(pool.resources.values.sum).to eq(0)
+      expect(manager.usage).to eq(0)
       expect(transport.instance_variable_get(:@resources).first.finished?).to eq(failure != :none)
     ensure
       transport&.close(grace: 0)

@@ -7,7 +7,7 @@ RSpec.describe "Native host tracing" do
   let(:bus) { telemetry[2] }
 
   %i[async falcon].each do |backend|
-    it "keeps overlapping #{backend} HTTP/2 calls isolated across operation, setup and handler tasks" do
+    it "keeps overlapping #{backend} HTTP/2 calls isolated and setup outside every RPC context" do
       reactor do |task|
         entered = Async::Queue.new
         release = Async::Queue.new
@@ -48,8 +48,10 @@ RSpec.describe "Native host tracing" do
           end
           wait_until(task, "both native server span completions") { rpc_spans(exporter).size == 4 }
           spans = rpc_spans(exporter)
-          expect(task_contexts.map(&:first)).to include(:exchange, :setup_connection)
-          expect(task_contexts.map { |entry| entry.last.valid? }).to all(be(true))
+          setups, exchanges = task_contexts.partition { |name, _| name == :setup_connection }
+          # The shared attempt runs outside every RPC; each exchange keeps its own span.
+          expect(setups.map { |_, context| context.valid? }).to eq([false])
+          expect(exchanges.map { |_, context| context.valid? }).to eq([true, true])
           parents.each_with_index do |parent, index|
             pair = spans.select { |span| span.trace_id == parent.context.trace_id }
             expect(pair.size).to eq(2)
@@ -83,6 +85,51 @@ RSpec.describe "Native host tracing" do
       ensure
         host&.close(grace: 0)
       end
+    end
+  end
+
+  it "runs a later demand-driven attempt outside the waiting RPC after its initiator left" do
+    reactor do |task|
+      reserved = refusing_socket
+      port = reserved.local_address.ip_port
+      origin = "http://127.0.0.1:#{port}"
+      policy = ConnectRPC::Async::ConnectionPolicy.new(wait_for_ready: true)
+      transport = ConnectRPC::Async::Transport.new(origin: origin, connection_policy: policy)
+      clock = install_clock(transport)
+      typed = client(transport, origin, instrumentation: bus)
+      setups = []
+      probe = TracePoint.new(:call) do |event|
+        if event.defined_class == ConnectRPC::Async::Transport && event.method_id == :setup_connection
+          setups << current_span.context
+        end
+      end
+      parents = %w[initiator waiter].map { |name| provider.tracer("test").start_span(name) }
+      probe.enable
+      initiator = task.async(finished: false) do
+        OpenTelemetry::Trace.with_span(parents.first) do
+          typed.echo(AsyncHelpers::MESSAGE.new(name: "initiator"), timeout: 0.2)
+        end
+      end
+      clock.next_delay
+      waiter = task.async do
+        OpenTelemetry::Trace.with_span(parents.last) { typed.echo(AsyncHelpers::MESSAGE.new(name: "waiter"), timeout: nil) }
+      end
+      expect { initiator.wait }.to raise_error(ConnectRPC::Error) { |error| expect(error.code).to eq("deadline_exceeded") }
+      reserved.close
+      host = ConnectRPC::Async::Host.new(server: server(instrumentation: bus), port: port).start
+      clock.fire
+      expect(waiter.wait.message.name).to eq("waiter")
+      expect(setups.map(&:valid?)).to eq([false, false])
+      wait_until(task, "waiter client and server spans") { rpc_spans(exporter).size == 3 }
+      trace_id = parents.last.context.trace_id
+      caller = rpc_spans(exporter).find { |span| span.kind == :client && span.trace_id == trace_id }
+      expect(caller.parent_span_id).to eq(parents.last.context.span_id)
+    ensure
+      probe&.disable
+      parents&.each(&:finish)
+      transport&.close(grace: 0)
+      host&.close(grace: 0)
+      reserved&.close unless reserved&.closed?
     end
   end
 
