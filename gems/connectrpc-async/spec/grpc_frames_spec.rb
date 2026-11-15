@@ -326,6 +326,11 @@ RSpec.describe "gRPC unary request cardinality" do
       expect(seen).to be_empty
 
       decoded.clear
+      truncated = [0, 1_000, "partial"].pack("CNa*")
+      expect(unary_exchange(host, envelope(first) + truncated)).to eq(["12"])
+      expect(decoded).to eq([first])
+
+      decoded.clear
       oversized = [0, (4 * 1024 * 1024) + 1].pack("CN")
       expect(unary_exchange(host, envelope(first) + oversized)).to eq(["8"])
       expect(decoded).to eq([first])

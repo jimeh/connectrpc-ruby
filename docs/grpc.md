@@ -40,10 +40,12 @@ end of input. A second request envelope fails with `unimplemented` once its
 5-byte header passes the normal envelope checks, before its payload is read,
 inflated or decoded. An oversized second envelope still fails with
 `resource_exhausted`. A client that receives a non-gRPC response content type
-reads at most 262,144 body bytes, within the call's normal waits, to reach the
-trailers. `grpc-status` in the head or trailers maps to `internal`; otherwise
-the HTTP status fallback applies. A larger body stops the read, classifies from
-the head alone and abandons the stream through the normal call cleanup.
+reads a body of up to 262,144 bytes, within the call's normal waits, to reach
+the trailers. `grpc-status` in the head or trailers maps to `internal`;
+otherwise the HTTP status fallback applies. For a larger body, reading stops at
+the first byte past that limit, the error is classified from the head alone and
+the normal call cleanup abandons the stream. During send-I/O terminal recovery,
+its separate budget, described below, applies instead.
 
 Clients require actual final HTTP/2 HEADERS and stream EOF. Trailers-only means
 initial final-response HEADERS with END_STREAM. Ordinary initial grpc-status is

@@ -82,9 +82,10 @@ module ConnectRPC
 
       private
 
-      # Reads at most RECOVERY_LIMIT body bytes to reach EOF and the trailers.
-      # A larger body yields no fields, so the caller classifies from the head
-      # alone and call cleanup abandons the unread stream.
+      # A body of up to RECOVERY_LIMIT bytes reaches EOF and the trailers. The
+      # read stops at the first byte past that, so a larger body yields no
+      # fields: the caller classifies from the head alone and call cleanup
+      # abandons the unread stream.
       def drain_rejected_media(input, exchange, timeout)
         remaining = Streaming::RECOVERY_LIMIT
         loop do

@@ -470,3 +470,46 @@ RSpec.describe "Streaming exception ownership and completion" do
     end
   end
 end
+
+RSpec.describe "Connect single-request stream cardinality" do
+  def frame(bytes, flags = 0) = [flags, bytes.bytesize].pack("CN") + bytes
+
+  def serve(body)
+    decoded = []
+    seen = []
+    binding = Object.new
+    binding.define_singleton_method(:encode) { |message, **| message }
+    binding.define_singleton_method(:decode) do |bytes, **|
+      decoded << bytes
+      bytes
+    end
+    method = ConnectRPC::ServerStreamMethod.new(service: "cardinality.Streams", name: "Call",
+                                                request_type: String, response_type: String)
+    target = ConnectRPC::Server.new(services: [ConnectRPC::Service.new(name: method.service, methods: [method])],
+                                    binding: binding,
+                                    handlers: { method.path => ->(request, _writer, _) { seen << request } })
+    input = StringIO.new(body)
+    input.define_singleton_method(:read) { |length, **| super(length) }
+    output = StringIO.new
+    output.define_singleton_method(:write) do |bytes, **|
+      super(bytes)
+      nil
+    end
+    output.define_singleton_method(:abort) { nil }
+    target.call_stream(path: method.path, http_method: "POST",
+                       headers: { "content-type" => ["application/connect+proto"] },
+                       input: input, output: output, publish: ->(_) {}, http2: true)
+    terminal = JSON.parse(output.string.byteslice(5..))
+    [terminal.dig("error", "code"), decoded, seen]
+  end
+
+  it "rejects a surplus envelope from its header before reading or decoding its payload" do
+    truncated = [0, 1_000, "partial"].pack("CNa*")
+    expect(serve(frame("only") + truncated)).to eq(["unimplemented", ["only"], []])
+  end
+
+  it "still rejects zero requests and accepts exactly one followed by end of input" do
+    expect(serve("")).to eq(["unimplemented", [], []])
+    expect(serve(frame("only"))).to eq([nil, ["only"], ["only"]])
+  end
+end

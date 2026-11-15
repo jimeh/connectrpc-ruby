@@ -356,9 +356,10 @@ decision. A merged fix closes its specific defect, not the audit as a whole.
   one reverse-order detach attempt even when another detach raises a fatal
   exception or throws. [Design](design.md#rpc-lifecycle-observation) keeps the
   observer's own exception-safety obligations.
-- L4 and L7 are resolved. A gRPC client reads at most 262,144 bytes of a
-  rejected-media response body, and a surplus unary request envelope fails
-  before its payload is read or decoded, as the [gRPC guide](grpc.md) describes.
+- [#61](https://github.com/jimeh/connectrpc-ruby/pull/61) resolves L4 and L7. A
+  gRPC client stops reading a rejected-media response body at the first byte
+  past 262,144 bytes, and a surplus unary request envelope fails before its
+  payload is read or decoded, as the [gRPC guide](grpc.md) describes.
 - L12 is disclosed above as a Rack adapter limitation. This guide corrects
   L18's current documentation drift without declaring the audit complete.
 
