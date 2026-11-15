@@ -117,6 +117,36 @@ RSpec.describe "ThreadedTransport construction and Connect unary from plain thre
     peer&.stop
   end
 
+  it "sends the target the caller passed even if the caller mutates its URI strings while the call is queued" do
+    peer = threaded_host(server: server)
+    origin = "http://127.0.0.1:#{peer.peer.port}"
+    transport = threaded(origin: origin)
+    transport.call(request("#{origin}/example.v1.EchoService/Echo",
+                           body: AsyncHelpers::MESSAGE.encode(AsyncHelpers::MESSAGE.new(name: "warm")),
+                           headers: { "content-type" => ["application/proto"] }))
+    gate = hold_owner(transport)
+    body = AsyncHelpers::MESSAGE.encode(AsyncHelpers::MESSAGE.new(name: "queued"))
+    outgoing = request("#{origin}/example.v1.EchoService/Echo", body: body,
+                                                                headers: { "content-type" => ["application/proto"] })
+    caller = Thread.new do
+      transport.call(outgoing)
+    rescue StandardError => e
+      e
+    end
+    caller.report_on_exception = false
+    eventually("call queued behind the held owner") { admitted(transport) == 1 && blocked?(caller) }
+    outgoing.url.path.replace("/example.v1.EchoService/Fail")
+    gate << true
+    response = value_within(caller, "the queued call")
+    expect(response).to be_a(ConnectRPC::TransportResponse)
+    expect(response.status).to eq(200)
+    expect(AsyncHelpers::MESSAGE.decode(response.body).name).to eq("queued")
+  ensure
+    gate&.<<(true)
+    transport&.close(grace: 0)
+    peer&.stop
+  end
+
   it "has no streaming or gRPC capability, so core rejects those shapes before any I/O" do
     peer = threaded_host(server: server)
     origin = "http://127.0.0.1:#{peer.peer.port}"

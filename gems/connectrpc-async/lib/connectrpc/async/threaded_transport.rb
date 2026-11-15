@@ -385,7 +385,8 @@ module ConnectRPC
         end
         body = request.body
         body = body.dup.freeze unless body.nil? || body.frozen?
-        url = request.url.dup.freeze
+        # URI#dup shares its component strings with the caller; parse a copy.
+        url = URI.parse(request.url.to_s).freeze
         source = CancellationSource.new
         proxy = LifecycleProxy.new(request.lifecycle) if request.lifecycle
         outgoing = TransportRequest.new(url: url, http_method: request.http_method, headers: headers.freeze,
