@@ -29,11 +29,14 @@ Ruby updates. Compilation uses the host's compiler and system libraries, so
 these locks do not promise bit-identical Ruby binaries across machines.
 
 Setup installs only the declared project tools, then Bundler 4.0.23 into the
-active Ruby, then the frozen `Gemfile.lock` into ignored `vendor/bundle/`.
+active Ruby, then the root bundle into ignored `vendor/bundle/`. This project
+ships gems, so no development lock is committed: the first setup resolves the
+newest versions the Gemfile and gemspecs allow (subject to the cooldown below)
+and writes an ignored local `Gemfile.lock`. Later setups reuse that local lock.
 Root Bundler user state is scoped to `vendor/bundler/`; optional bundles set
-their own user directories.
+their own user directories and ignored locks.
 Re-running setup is safe. Bundler config files are ignored so user-level
-settings cannot silently change the bundle location or frozen behavior.
+settings cannot silently change the bundle location or resolution behavior.
 `mise.lock` currently locks Linux x64 downloads and checksums, including both
 Ruby source archives. Add and review locks for other development platforms
 with `mise lock --platform <platform>` before installing there.
@@ -45,7 +48,7 @@ Mise owns setup ordering and verification composition.
 
 | Command | Purpose |
 | --- | --- |
-| `mise run setup` | Install locked tools, pinned Bundler, frozen dependencies. |
+| `mise run setup` | Install locked tools, pinned Bundler and the root bundle. |
 | `mise run format` | Apply RuboCop Layout fixes. |
 | `mise run format:check` | Check Layout without writing. |
 | `mise run lint` | Run remaining RuboCop cops. |
@@ -55,7 +58,7 @@ Mise owns setup ordering and verification composition.
 | `mise run lint:workflows` | Run actionlint and offline zizmor. |
 | `mise run check:static` | Run format, lint, and workflow checks once. |
 | `mise run check` | Run static checks and Ruby syntax checks. |
-| `mise run build` | Build `pkg/connectrpc-0.1.0.gem`. |
+| `mise run build` | Build `pkg/connectrpc-<version>.gem`. |
 | `mise run check:package` | Build, install, and require the gem in isolation. |
 | `mise run setup:generation` | Install task-local protoc 36.2 and development-only Buf 1.75.0. |
 | `mise run generation:build` | Regenerate checked-in official messages and service glue using protoc; verify actual Buf glue parity/runtime. |
@@ -163,7 +166,7 @@ core require without Google/Rack, an ordinary missing `connectrpc/rack` file
 error, and useful missing Google/generator dependency errors.
 It independently builds the optional Rack archive under `vendor/package/rack`,
 stages it and only the required runtime archives in the external cwd, and uses
-normal offline dependency resolution. It installs the cached, locked optional
+normal offline dependency resolution. It installs the cached, bundle-resolved optional
 artifacts, including native
 `bigdecimal`, Google protobuf and its `rake` dependency, Rack, rackup and
 WEBrick. The installed gem performs real typed Rack/NetHTTP calls with both
@@ -280,33 +283,116 @@ set hostile proxy environment variables and restore their previous state.
 
 ## Dependency and action updates
 
-Keep exact direct dependency and tool pins. Check release dates against the
-[primary RubyGems API](https://guides.rubygems.org/rubygems-org-api/) or upstream
-GitHub releases before updating: stable releases must be at least seven days
-old. Verify Ruby requirements for both supported Rubies. For actions, resolve
-the upstream release tag to its commit and retain a full SHA with a tag comment.
-Mise's minimum age filters fuzzy resolution, not explicit pins; review pinned
-release ages manually. Bundler's source cooldown is seven days; old registries
-or index entries lacking timestamps may not enforce it, so audit newly resolved
-versions too. See [Bundler cooldown](https://bundler.io/man/bundle-config.1.html).
+### Gem dependency constraints
 
-For a deliberate dependency update, edit the Gemfile, then resolve the lock
-with frozen mode temporarily disabled. Keep the generic Ruby platform and
-checksums, and do not add a `ruby` Gemfile directive or `RUBY VERSION` field
-that excludes the other CI Ruby:
+Users resolve our gemspec requirements, never our development locks, so the
+gemspecs are the dependency contract:
+
+- The floor of each third-party runtime requirement is the release the project
+  currently tests, for example `rack >= 3.2.7` or `falcon >= 0.57.0`.
+- Pre-1.0 dependencies whose public API is all we use are capped below 1 (or
+  below the next major for 1.x+ gems, such as `async < 3`).
+- Dependencies coupled to private internals keep patch-only `~> x.y.z`
+  requirements: async-http, protocol-http2, protocol-http1 and io-stream in
+  connectrpc-async, and protocol-rack and protocol-http1 in connectrpc-falcon.
+  Each gemspec names these in a comment.
+- Internal gems keep the train's `~> M.m.0` requirement.
+
+Raise a floor only when code needs a newer release, and prove it in the
+lowest-allowed lane below.
+
+### Fresh resolution and the lowest-allowed lane
+
+Own-gem development locks (`Gemfile.lock`, each optional package's
+`Gemfile.lock` and both Rails lane locks) are ignored. A fresh checkout and
+every CI run resolve the newest versions the Gemfiles and gemspecs allow. Only
+tools keep exact Gemfile pins: rake, rspec, rubocop, simplecov, appraisal,
+webrick, rackup, and google-protobuf 4.36.2, which matches pinned protoc 36.2
+and the `google_protobuf_4_36` RBS bridge. The tool-only `typecheck/` and
+`release/` bundles keep committed, frozen, checksummed locks.
+
+Setup reuses an existing local lock, so a stale local resolution persists
+until you refresh it. Run `mise exec -- bundle update` for the root bundle, or
+delete the owning ignored lock and re-run its setup task, for example:
 
 ```sh
-mise exec -- env BUNDLE_FROZEN=false bundle lock --update --add-platform ruby --add-checksums
-mise lock --platform linux-x64
-mise run setup
-mise run verify
+rm gems/connectrpc-async/Gemfile.lock && mise run async:setup
+rm gems/connectrpc-on-rails/gemfiles/rails_8.0.gemfile.lock && RAILS_LANE=8.0 mise run setup:rails
 ```
 
-Review all lock changes, including transitive dependencies. CI uses frozen
-installation. For an urgent security fix inside the seven-day window, obtain
-an explicit maintainer exception, record the advisory/version/reason in the PR,
-and override cooldown only for that resolution (for example,
-`mise exec -- env BUNDLE_COOLDOWN=0 BUNDLE_FROZEN=false bundle lock --update <gem>`).
+`CONNECTRPC_DEPENDENCY_FLOORS=1` selects the lowest-allowed lane. Each launcher
+then writes an ignored wrapper beside the owning Gemfile (`Gemfile.floors`, or
+`gemfiles/rails_8.0.floors.gemfile`). The wrapper evaluates the real Gemfile
+through [`scripts/dependency_floors.rb`](../scripts/dependency_floors.rb), which
+pins every third-party runtime dependency of the loaded connectrpc gemspecs to
+the lowest version its requirement admits (`>= 3.3` becomes 3.3.0 and
+`~> 0.105.0` becomes 0.105.0). Bundler derives a separate ignored
+`*.floors.lock`, so normal locks stay untouched, and a missing floor release
+fails resolution. Real Gemfiles, `Appraisals` and generated lane Gemfiles carry
+no floors logic. The Ruby 3.4.12 floors tasks delete their floors lock, resolve
+the bundle fresh, assert every floor resolved exactly, and run specs and package
+checks:
+
+```sh
+mise run floors:async
+mise run floors:falcon
+mise run floors:rack
+mise run floors:rails   # Rails 8.0 lane, directly under the wrapper bundle
+mise run floors:otel
+mise run floors         # all five
+```
+
+Floors do not apply to development tools or transitive-only dependencies. The
+OTel bundle leaves Action Pack floating: Rails 8.0's ActiveSupport passes JSON
+`quirks_mode`, which json 3.x rejects, and that cross-package bundle co-installs
+json 3.x. The Action Pack floor keeps its own proof in `floors:rails`. The
+installed package checks expect the release RubyGems activates, which can be a
+newer Ruby default gem (for example Ruby 3.4's openssl 3.3.x) than the floor.
+
+A new optional gem under `gems/connectrpc-<name>/` follows the same model:
+
+- Its `Gemfile` uses `source "https://rubygems.org", cooldown: 3`, the gemspec,
+  core as a relative `path:` gem, and exact pins for tools only. The
+  `.gitignore` already covers `gems/*/Gemfile.lock` and floors files.
+- Its launcher sets `BUNDLE_GEMFILE` through
+  `DependencyFloors.gemfile(...)`, clears `BUNDLE_LOCKFILE`, sets
+  `BUNDLE_COOLDOWN=3`, and offers a `floors` subcommand, as
+  `gems/connectrpc-rack/scripts/run.rb` does.
+- Add a `floors:<name>` task and CI leaf when the gem has third-party runtime
+  dependencies. Package checks resolve archives from the bundle it resolved,
+  never from hard-coded versions.
+
+### Cooldowns and updates
+
+Bundler's source cooldown is three days (`BUNDLE_COOLDOWN=3` and Gemfile
+`cooldown: 3`), so fresh resolution can pick a release three days old. Old
+registries or index entries lacking timestamps may not enforce it. See
+[Bundler cooldown](https://bundler.io/man/bundle-config.1.html). CI runs daily
+to catch upstream releases that break the newest or lowest allowed versions.
+Report such a break; fix it if it is our bug, otherwise tighten that one
+gemspec requirement with a reason rather than pinning the development Gemfile.
+
+Keep exact tool pins. Check release dates against the
+[primary RubyGems API](https://guides.rubygems.org/rubygems-org-api/) or upstream
+GitHub releases before updating: stable tool and action releases must be at
+least seven days old. Verify Ruby requirements for both supported Rubies. For
+actions, resolve the upstream release tag to its commit and retain a full SHA
+with a tag comment. Mise's minimum age filters fuzzy resolution, not explicit
+pins; review pinned release ages manually.
+
+The tool bundles update their committed locks with frozen mode temporarily
+disabled. Keep the generic Ruby platform and checksums, and do not add a `ruby`
+Gemfile directive or `RUBY VERSION` field that excludes the other CI Ruby:
+
+```sh
+mise exec -- env BUNDLE_GEMFILE=typecheck/Gemfile BUNDLE_FROZEN=false bundle lock --update --add-platform ruby --add-checksums
+mise lock --platform linux-x64
+```
+
+For an urgent security fix inside the cooldown window, obtain an explicit
+maintainer exception, record the advisory/version/reason in the PR, and
+override cooldown only for that resolution (for example,
+`mise exec -- env BUNDLE_COOLDOWN=0 bundle update <gem>`).
 Do not weaken the persistent policy. Original project work is [MIT licensed](../LICENSE).
 The invalid push host remains an accidental-push guard, not a security boundary
 against someone editing metadata. Publishing, releasing or deploying requires
@@ -348,24 +434,24 @@ mise run build:rails
 mise run check:package:rails
 ```
 
-The launcher prints Ruby, exact selected Rails, Bundler and Gemfile. Specs assert
-actual loaded Rails/Bundler. The tested combinations are Rails 8.0.5.1/Ruby
-3.4.12 and Rails 8.1.4/Ruby 3.4.12 or 4.0.9. The default lane is 8.1.
+The launcher prints Ruby, the selected lane, Bundler and Gemfile. Specs assert
+that the loaded Rails belongs to the lane and the actual Bundler. The tested
+combinations are the newest Rails 8.0.x/Ruby 3.4.12 and newest Rails 8.1.x/Ruby
+3.4.12 or 4.0.9, plus the Action Pack floor 8.0.5.1/Ruby 3.4.12 in
+`floors:rails`. The default lane is 8.1.
 `verify` includes the selected Rails lane, not all three combinations; CI runs
 all three independently. Adapter setup depends on `setup:bundler`, not root
 `setup`, and uses the root ABI-specific `vendor/bundle` cache.
 
-Actual Appraisal 2.5.0 generates the lane Gemfiles. Its parser cannot accept a
+Actual Appraisal 2.5.0 generates the lane Gemfiles from `Appraisals`, which
+admit any `~> 8.0.0` or `~> 8.1.0` Rails release. Its parser cannot accept a
 source cooldown keyword, so the adapter development source is plain and tasks
-and CI enforce `BUNDLE_COOLDOWN=7`. Root source cooldown/pins/lock stay intact.
-There is no adapter base lock: select one generated checksummed lane lock for
-frozen installation and actual `appraisal <lane>` execution. Do not run
-`appraisal install` in CI. The launcher checks Bundler 4.0.23 is installed
-before Appraisal can invoke its legacy installer fallback.
+and CI enforce `BUNDLE_COOLDOWN=3`. There is no adapter base lock: each lane
+resolves its own ignored lane lock for actual `appraisal <lane>` execution. Do
+not run `appraisal install` in CI. The launcher checks Bundler 4.0.23 is
+installed before Appraisal can invoke its legacy installer fallback.
 `generation:check:rails` runs the actual generator in a temporary relative-layout
 copy and byte-compares both outputs without touching checked-in Gemfiles.
-Changing dependencies requires the same seven-day primary registry release-age
-and archive checksum audit as root dependencies, including native variants.
 
 Adapter SimpleCov includes every adapter `lib/**/*.rb` file before requires
 and writes to `vendor/rails/coverage`, separate from core. Real app tests use
@@ -388,18 +474,17 @@ or `async:check` while iterating. `async:build` builds its own core and backend
 archives under `vendor/async/pkg`; `async:package` installs cached normal runtime
 dependencies in a fresh outside-checkout GEM_HOME and performs generated
 h2c/mTLS calls with identity and gzip plus core NetHTTP TLS/JSON in both encodings.
-That process activates OpenSSL 4.0.2/JSON 3.1.0, so its TLS trust fixture is passed
-only to the child process.
+That process asserts it activates the OpenSSL and JSON releases the development
+bundle resolved, and its TLS trust fixture is passed only to the child process.
 `async:example` runs the same generated localhost scenarios from development
 sources. `async:interop` uses the existing pinned Go module graph and toolchain
 with a separate peer executable. `async:verify` combines backend checks, product
 specs, package isolation and independent Go interoperability; root `verify`
 includes it alongside the existing core and selected Rails verification.
 
-The backend Gemfile/lock is independent; do not resolve it into root or Rails
-locks. All registry/platform artifacts require seven-day primary release-age
-and archive checksum verification, including generic/native variants. Keep its
-root dependency as a development-only relative path. Bundle installation and
+The backend Gemfile and its ignored local lock are independent; do not resolve
+it into root or Rails bundles. Keep its root dependency as a development-only
+relative path. Bundle installation and
 native caches use `vendor/async/bundle`; Bundler user state uses
 `vendor/async/bundler`. Only the observed generated backend `.bundle/` directory
 is ignored. SimpleCov starts before backend/core requires, includes every
@@ -411,8 +496,8 @@ not establish interoperability or hosted clean-environment success.
 The [middleware guide](../gems/connectrpc-rack/README.md) owns installation,
 mounting and lifecycle limits. Run `mise run rack:setup`, focused
 `mise run rack:test -- spec/rack_spec.rb`, and `mise run rack:check` while iterating.
-The frozen checksummed Gemfile reuses exact root registry pins with core as a
-development path dependency. Bundle, Bundler user state, lint cache and build
+The Gemfile reuses the root tool pins with core as a development path
+dependency; Rack floats within the gemspec requirement. Bundle, Bundler user state, lint cache and build
 outputs are isolated under `vendor/rack`; SimpleCov starts before requires and
 covers every package source in `coverage/rack/<Ruby>/`.
 
@@ -436,7 +521,7 @@ See the optional [in-process testing package](../gems/connectrpc-testing/README.
 
 [The RBS guide](rbs.md) covers official message generation, opt-in service RBS,
 strict Steep configuration, the explicit protobuf bridge and nominal alternatives.
-`mise run rbs:setup` installs the independent frozen checksummed development
+`mise run rbs:setup` installs the independent frozen checksummed tool
 bundle. `rbs:check` checks protoc/Buf parity, unchanged default Ruby and official
 message RBS, deterministic output, real generated runtime calls, RBS validation
 and positive/negative strict consumers. It also runs the strict core
@@ -445,7 +530,8 @@ and per-package API callers.
 Discover the focused `rbs:source`, `rbs:api`, `rbs:inventory` and capture-only
 `rbs:proof` leaves with `mise tasks`. `rbs:package` checks every installed package
 and composed optional environments outside the checkout, using the existing
-scoped frozen optional setups to populate offline archives. Run both on each pinned Ruby.
+scoped optional setups to populate offline archives. RubyGems resolves the
+installed closure from the running Ruby ABI's cached archives. Run both on each pinned Ruby.
 These leaves keep their Bundler state, caches, bundle and package outputs under
 `vendor/rbs/` and add no runtime or root-bundle dependencies.
 
@@ -462,16 +548,15 @@ including actual Falcon process workers. `falcon:verify` combines these leaves;
 root `verify` includes it. CI runs separate Falcon specs/package and Go checks
 across Ruby 3.4.12 and 4.0.9.
 
-Keep its checksummed Gemfile/lock, `vendor/falcon/bundle`, Bundler user state and
-`coverage/falcon/<Ruby>/` independent. Audit every added registry/platform
-artifact for seven-day release age and downloaded archive SHA256. Actual worker,
+Keep its Gemfile and ignored local lock, `vendor/falcon/bundle`, Bundler user
+state and `coverage/falcon/<Ruby>/` independent. Actual worker,
 TLS, retirement and installed-caller tests establish different properties;
 green coverage or baseline probes do not substitute for them.
 
 ## Optional OpenTelemetry development
 
-`mise run otel:setup` installs the independent checksummed API/SDK and integration
-bundle under `vendor/otel`. Use `otel:test -- spec/tracing_spec.rb` for generated
+`mise run otel:setup` installs the independent API/SDK and integration bundle
+under `vendor/otel`; the SDK and instrumentations float like runtime dependencies. Use `otel:test -- spec/tracing_spec.rb` for generated
 in-process traces, `spec/native_spec.rb` for real Async/Falcon boundaries, and
 `spec/rack_rails_spec.rb spec/rails_spec.rb` for Rack/NetHTTP and native Rails.
 `otel:check`, `otel:build`, `otel:package`, `otel:example` and `otel:verify` are

@@ -83,6 +83,11 @@ end
 abort "Rack dependencies changed" unless rack_dependencies == { "connectrpc" => local_requirement,
                                                                 "rack" => ">= 3.2.7, < 4" }
 specs = Bundler.load.specs.to_h { |spec| [spec.name, spec] }
+rails_version = specs.fetch("railties").version.to_s
+lane = ENV.fetch("CONNECTRPC_RAILS_LANE")
+abort "Lane #{lane} bundle resolved Rails #{rails_version}" unless rails_version.start_with?("#{lane}.")
+exact = ENV.fetch("CONNECTRPC_RAILS_VERSION", nil)
+abort "Rails floor #{exact} not resolved: #{rails_version}" if exact && rails_version != exact
 pending = %w[connectrpc-on-rails railties google-protobuf]
 required = {}
 until pending.empty?
@@ -121,13 +126,13 @@ Bundler.with_unbundled_env do
     FileUtils.cp_r(File.join(root, "spec/fixtures/generation/echo"), File.join(working, "generated"))
     environment = { "GEM_HOME" => File.join(temporary, "home"), "GEM_PATH" => File.join(temporary, "home"),
                     "RUBYOPT" => nil, "RUBYLIB" => nil, "RUBYGEMS_GEMDEPS" => nil,
-                    "CONNECTRPC_RAILS_VERSION" => ENV.fetch("CONNECTRPC_RAILS_VERSION") }
+                    "CONNECTRPC_RAILS_LANE" => lane, "CONNECTRPC_RAILS_VERSION" => rails_version }
     ENV.each_key { |name| environment[name] = nil if name.start_with?("BUNDLE_", "BUNDLER_") }
     commands = [
       [RbConfig.ruby, "-S", "gem", "install", "--norc", File.basename(archives.first), "--local", "--no-document"],
       [RbConfig.ruby, "-e", core_check],
       [RbConfig.ruby, "-S", "gem", "install", "--norc", File.basename(archives.last), "--local", "--no-document"],
-      [RbConfig.ruby, "-S", "gem", "install", "--norc", "railties", "--version", ENV.fetch("CONNECTRPC_RAILS_VERSION"),
+      [RbConfig.ruby, "-S", "gem", "install", "--norc", "railties", "--version", rails_version,
        "--local", "--no-document"],
       [RbConfig.ruby, "-S", "gem", "install", "--norc", "google-protobuf", "--version", "4.36.2", "--local",
        "--no-document"],

@@ -13,7 +13,7 @@ environment = {
   "BUNDLE_APP_CONFIG" => File.join(output, "config"),
   "BUNDLE_CACHE_PATH" => File.join(output, "cache"),
   "BUNDLE_FROZEN" => "true", "BUNDLE_IGNORE_CONFIG" => "true",
-  "BUNDLE_DISABLE_SHARED_GEMS" => "true", "BUNDLE_COOLDOWN" => "7",
+  "BUNDLE_DISABLE_SHARED_GEMS" => "true", "BUNDLE_COOLDOWN" => "3",
   "XDG_CACHE_HOME" => File.join(output, "xdg"), "TMPDIR" => File.join(output, "tmp"),
   "BUF_CACHE_DIR" => File.join(output, "buf")
 }

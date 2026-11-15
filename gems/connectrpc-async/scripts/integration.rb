@@ -13,8 +13,11 @@ require "echo_connect"
 require_relative "helpers"
 include AsyncHelpers
 
-abort "Unexpected activated OpenSSL" unless Gem.loaded_specs.fetch("openssl").version.to_s == "4.0.2"
-abort "Unexpected activated JSON" unless Gem.loaded_specs.fetch("json").version.to_s == "3.1.0"
+# The package check derives these expected releases from the development bundle.
+expected_openssl = ENV.fetch("CONNECTRPC_EXPECTED_OPENSSL")
+expected_json = ENV.fetch("CONNECTRPC_EXPECTED_JSON")
+abort "Unexpected activated OpenSSL" unless Gem.loaded_specs.fetch("openssl").version.to_s == expected_openssl
+abort "Unexpected activated JSON" unless Gem.loaded_specs.fetch("json").version.to_s == expected_json
 puts "Activated OpenSSL #{OpenSSL::VERSION} (#{OpenSSL::OPENSSL_LIBRARY_VERSION}), JSON #{JSON::VERSION}"
 Dir.mktmpdir("integration-", Dir.pwd) do |directory|
   ca = credentials(1, "installed CA", authority: true)
@@ -115,8 +118,8 @@ Dir.mktmpdir("integration-", Dir.pwd) do |directory|
     hosting&.join
   end
 
-  # Exercise core NetHTTP identity/gzip after this graph activates
-  # OpenSSL 4.0.2 and JSON 3.1.0, with trust scoped to this child process.
+  # Exercise core NetHTTP identity/gzip after this graph activates the
+  # resolved OpenSSL and JSON, with trust scoped to this child process.
   require "webrick"
   require "webrick/https"
   ready = Thread::Queue.new
@@ -140,14 +143,17 @@ Dir.mktmpdir("integration-", Dir.pwd) do |directory|
       require "connectrpc/bindings/google_protobuf"
       $LOAD_PATH.unshift(File.expand_path("generated", Dir.pwd))
       require "echo_connect"
-      abort "OpenSSL activation" unless Gem.loaded_specs.fetch("openssl").version.to_s == "4.0.2"
-      abort "JSON activation" unless Gem.loaded_specs.fetch("json").version.to_s == "3.1.0"
+      openssl = Gem.loaded_specs.fetch("openssl").version.to_s
+      json = Gem.loaded_specs.fetch("json").version.to_s
+      abort "OpenSSL activation" unless openssl == ENV.fetch("CONNECTRPC_EXPECTED_OPENSSL")
+      abort "JSON activation" unless json == ENV.fetch("CONNECTRPC_EXPECTED_JSON")
       %i[identity gzip].each do |encoding|
         core = ConnectRPC::Client.new(base_url: ARGV.fetch(0),
           binding: ConnectRPC::Bindings::GoogleProtobuf.new, codec: :json, encoding: encoding)
         result = core.call(Example::V1::EchoService::ECHO, Example::V1::EchoMessage.new(name: "core TLS JSON"))
         abort "Core NetHTTP interaction" unless result.message.name == "core TLS JSON"
-        puts "PASS installed core NetHTTP TLS/JSON/#{encoding} with activated OpenSSL 4.0.2/JSON 3.1.0/Zlib #{Zlib::VERSION}"
+        puts "PASS installed core NetHTTP TLS/JSON/#{encoding} with activated OpenSSL #{openssl}/JSON #{json}/" \
+             "Zlib #{Zlib::VERSION}"
       end
     CODE
     system({ "SSL_CERT_FILE" => ca_file }, RbConfig.ruby, "-e", smoke,

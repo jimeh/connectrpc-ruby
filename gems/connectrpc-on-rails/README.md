@@ -282,8 +282,9 @@ Bundler 4.0.23:
 
 | Rails | Ruby | Target profile status |
 | --- | --- | --- |
-| 8.1.4 | 3.4.12 and 4.0.9 | Supported framework profile |
-| 8.0.5.1 | 3.4.12 | Compatibility evidence only |
+| Newest 8.1.x | 3.4.12 and 4.0.9 | Supported framework profile |
+| Newest 8.0.x | 3.4.12 | Compatibility evidence only |
+| 8.0.5.1 (Action Pack floor) | 3.4.12 | Lowest-allowed evidence (`floors:rails`) |
 
 These rows do not promise every framework/runtime combination. As checked on
 2026-11-02, Rails'
@@ -309,16 +310,17 @@ mise run verify
 `check:package:rails`, and `verify:rails` select `RAILS_LANE=8.1` by default.
 Tests accept RSpec paths/options relative to this adapter directory.
 
-Actual Appraisal 2.5.0 runs under the selected frozen lane bundle, with no extra
-base lock. `BUNDLE_COOLDOWN=7` applies to every adapter bundle process; the plain
+Actual Appraisal 2.5.0 runs under the selected lane bundle, with no extra
+base lock. `BUNDLE_COOLDOWN=3` applies to every adapter bundle process; the plain
 Gemfile source is necessary because Appraisal cannot parse source keywords.
 Pinned Bundler must exist before Appraisal can run, preventing its legacy
 installer fallback. Never use `appraisal install` in CI. Generation is checked
 in a temporary relative-layout copy, without rewriting tracked files.
 
-Both lane locks include checksums and `ruby`/`x86_64-linux` platforms. Native
-variants recorded by Bundler remain checksum-locked. New resolved artifacts
-require a primary registry release-age and archive SHA256 audit. Runtime cache
+`Appraisals` admits any `~> 8.0.0` or `~> 8.1.0` release, and each lane resolves
+an ignored local lane lock with the newest allowed versions. `floors:rails`
+instead runs specs and package checks directly under an ignored wrapper of the
+8.0 lane Gemfile, with Action Pack and Rack at their gemspec floors. Runtime cache
 uses root `vendor/bundle` by ABI; adapter artifacts and coverage live under
 `vendor/rails`. SimpleCov starts before adapter requires and includes every
 adapter library file, independently of core coverage.

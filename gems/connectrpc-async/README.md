@@ -731,9 +731,10 @@ RPC cancellation; credit accounting adds no lifecycle instrumentation.
 Independent connect-go tests exercise both directions/codecs over h2c/TLS/mTLS,
 with observed HTTP/2/ALPN and large typed wire-tail drains. Original core fixture
 and official conformance harnesses remain separate. Installed package checks use
-normal offline dependencies and a fresh GEM_HOME outside the checkout. This
-graph activates OpenSSL 4.0.2/JSON 3.1.0; installed core NetHTTP TLS/JSON with
-identity and gzip is also exercised under that activation. Focused combined
+normal offline dependencies and a fresh GEM_HOME outside the checkout. The check
+asserts the graph activates the OpenSSL and JSON releases the development bundle
+resolved; installed core NetHTTP TLS/JSON with identity and gzip is also
+exercised under that activation. Focused combined
 specs cover actual gzip bytes over h2c/TLS in both codecs and independent host
 wire/inflated and transport wire/client inflated caps. Nothing is published.
 
@@ -820,8 +821,9 @@ source checking is a separate target from backend implementation checking.
 
 Discover `async:setup`, `async:test`, `async:check`, `async:build`,
 `async:package`, `async:example`, `async:interop`, and `async:verify` with
-`mise tasks`. The separate checksummed bundle uses `vendor/async` and coverage
-uses `coverage/async`. `async:verify` checks the independent bundle, installed
+`mise tasks`. The separate bundle resolves the newest allowed dependencies into
+`vendor/async`, and coverage uses `coverage/async`. `floors:async` repeats specs
+and package checks with every runtime dependency at its gemspec floor. `async:verify` checks the independent bundle, installed
 packages and connect-go interoperability. Core require and core/Rails
 dependencies stay independent. The [backend evidence](#verification-evidence)
 above describes what these checks exercise.

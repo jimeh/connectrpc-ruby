@@ -16,7 +16,6 @@ zizmor = "1.31.1"
 [env]
 RUBOCOP_CACHE_ROOT = "{{config_root}}/.rubocop_cache"
 BUNDLE_IGNORE_CONFIG = "true"
-BUNDLE_FROZEN = "true"
 BUNDLE_PATH = "{{config_root}}/vendor/bundle"
 BUNDLE_USER_HOME = "{{config_root}}/vendor/bundler"
 BUNDLE_DISABLE_SHARED_GEMS = "true"
@@ -32,7 +31,7 @@ depends = ["setup:tools"]
 run = "mise exec -- ruby scripts/setup_bundler.rb"
 
 [tasks.setup]
-description = "Install tools, pinned Bundler, and the frozen bundle"
+description = "Install tools, pinned Bundler, and the bundle (fresh resolution without a local lock)"
 depends = ["setup:bundler"]
 run = "mise exec -- bundle _4.0.23_ install"
 
@@ -182,33 +181,33 @@ run = "mise exec -- ruby scripts/example_verify.rb"
 
 # Optional Rails bundle, independent of the root development bundle.
 [tasks."setup:rails"]
-description = "Install the frozen selected Rails Appraisal lane (RAILS_LANE=8.0 or 8.1)"
+description = "Install the selected Rails Appraisal lane (RAILS_LANE=8.0 or 8.1)"
 depends = ["setup:bundler"]
-env.BUNDLE_COOLDOWN = "7"
+env.BUNDLE_COOLDOWN = "3"
 run = "mise exec -- ruby scripts/rails.rb setup"
 
 [tasks."test:rails"]
 description = "Run real Rails integration specs under the selected actual Appraisal lane"
 depends = ["setup:rails"]
-env.BUNDLE_COOLDOWN = "7"
+env.BUNDLE_COOLDOWN = "3"
 run = "mise exec -- ruby scripts/rails.rb test"
 
 [tasks."generation:check:rails"]
 description = "Check actual Appraisal generation in a temporary relative-layout copy"
 depends = ["setup:rails"]
-env.BUNDLE_COOLDOWN = "7"
+env.BUNDLE_COOLDOWN = "3"
 run = "mise exec -- ruby scripts/rails.rb generation:check"
 
 [tasks."build:rails"]
 description = "Build core and optional Rails archives into vendor/rails/pkg"
 depends = ["setup:rails"]
-env.BUNDLE_COOLDOWN = "7"
+env.BUNDLE_COOLDOWN = "3"
 run = "mise exec -- ruby scripts/rails.rb build"
 
 [tasks."check:package:rails"]
 description = "Install core and Rails archives offline and dispatch installed Rails requests"
 depends = ["build:rails"]
-env.BUNDLE_COOLDOWN = "7"
+env.BUNDLE_COOLDOWN = "3"
 run = "mise exec -- ruby scripts/rails.rb package"
 
 [tasks."verify:rails"]
@@ -216,7 +215,7 @@ description = "Verify selected Rails specs, Appraisal generation and isolated pa
 depends = ["test:rails", "generation:check:rails", "check:package:rails"]
 
 [tasks."async:setup"]
-description = "Install the independent frozen HTTP/2 backend bundle"
+description = "Install the independent HTTP/2 backend bundle"
 depends = ["async:tools"]
 run = "mise exec -- ruby gems/connectrpc-async/scripts/run.rb setup"
 
@@ -259,7 +258,7 @@ depends = ["async:test", "async:check", "async:package", "async:interop", "async
 [tasks."async:tools"]
 description = "Prepare exact Ruby/Bundler for the independent backend bundle"
 dir = "{{config_root}}/gems/connectrpc-async"
-env = { BUNDLE_GEMFILE = "{{config_root}}/gems/connectrpc-async/Gemfile", BUNDLE_PATH = "{{config_root}}/vendor/async/bundle", BUNDLE_USER_HOME = "{{config_root}}/vendor/async/bundler", BUNDLE_COOLDOWN = "7" }
+env = { BUNDLE_GEMFILE = "{{config_root}}/gems/connectrpc-async/Gemfile", BUNDLE_PATH = "{{config_root}}/vendor/async/bundle", BUNDLE_USER_HOME = "{{config_root}}/vendor/async/bundler", BUNDLE_COOLDOWN = "3" }
 run = ["mise install --locked ruby", "mise exec -- ruby ../../scripts/setup_bundler.rb"]
 
 [tasks."test:interop:identity"]
@@ -291,7 +290,7 @@ run = "bundle _4.0.23_ exec ruby scripts/conformance.rb --profile=gzip"
 # Optional Rack bundle, independent of core, Rails and HTTP/2.
 
 [tasks."rack:setup"]
-description = "Install the independent frozen Rack middleware bundle"
+description = "Install the independent Rack middleware bundle"
 depends = ["rack:tools"]
 run = "mise exec -- ruby gems/connectrpc-rack/scripts/run.rb setup"
 
@@ -322,13 +321,13 @@ depends = ["rack:test", "rack:check", "rack:package"]
 [tasks."rack:tools"]
 description = "Prepare exact Ruby/Bundler for the independent Rack bundle"
 dir = "{{config_root}}/gems/connectrpc-rack"
-env = { BUNDLE_GEMFILE = "{{config_root}}/gems/connectrpc-rack/Gemfile", BUNDLE_PATH = "{{config_root}}/vendor/rack/bundle", BUNDLE_USER_HOME = "{{config_root}}/vendor/rack/bundler", BUNDLE_COOLDOWN = "7" }
+env = { BUNDLE_GEMFILE = "{{config_root}}/gems/connectrpc-rack/Gemfile", BUNDLE_PATH = "{{config_root}}/vendor/rack/bundle", BUNDLE_USER_HOME = "{{config_root}}/vendor/rack/bundler", BUNDLE_COOLDOWN = "3" }
 run = ["mise install --locked ruby", "mise exec -- ruby ../../scripts/setup_bundler.rb"]
 
 # Optional in-process testing bundle.
 
 [tasks."testing:setup"]
-description = "Install independent frozen testing bundle"
+description = "Install the independent testing bundle"
 depends = ["testing:tools"]
 run = "mise exec -- ruby gems/connectrpc-testing/scripts/run.rb setup"
 
@@ -389,13 +388,13 @@ tools."aqua:bufbuild/buf" = "1.75.0"
 run = "ruby typecheck/run.rb package"
 
 [tasks."rbs:runtime"]
-description = "Prepare the frozen fixture runtime bundle with local Bundler state"
+description = "Prepare the fixture runtime bundle with local Bundler state"
 depends = ["setup:bundler"]
 env.BUNDLE_USER_HOME = "{{config_root}}/vendor/rbs/root-bundler"
 run = "bundle _4.0.23_ install"
 
 [tasks."falcon:setup"]
-description = "Install the independent frozen Falcon backend bundle"
+description = "Install the independent Falcon backend bundle"
 depends = ["falcon:tools"]
 run = "mise exec -- ruby gems/connectrpc-falcon/scripts/run.rb setup"
 
@@ -438,7 +437,7 @@ depends = ["falcon:test", "falcon:check", "falcon:package", "falcon:interop", "f
 [tasks."falcon:tools"]
 description = "Prepare exact Ruby/Bundler for the independent backend bundle"
 dir = "{{config_root}}/gems/connectrpc-falcon"
-env = { BUNDLE_GEMFILE = "{{config_root}}/gems/connectrpc-falcon/Gemfile", BUNDLE_PATH = "{{config_root}}/vendor/falcon/bundle", BUNDLE_USER_HOME = "{{config_root}}/vendor/falcon/bundler", BUNDLE_COOLDOWN = "7" }
+env = { BUNDLE_GEMFILE = "{{config_root}}/gems/connectrpc-falcon/Gemfile", BUNDLE_PATH = "{{config_root}}/vendor/falcon/bundle", BUNDLE_USER_HOME = "{{config_root}}/vendor/falcon/bundler", BUNDLE_COOLDOWN = "3" }
 run = ["mise install --locked ruby", "mise exec -- ruby ../../scripts/setup_bundler.rb"]
 
 # Optional API-only tracing adapter; SDK-backed cross-package development bundle.
@@ -446,11 +445,11 @@ run = ["mise install --locked ruby", "mise exec -- ruby ../../scripts/setup_bund
 [tasks."otel:tools"]
 description = "Require preinstalled pinned Ruby and Bundler for OpenTelemetry"
 dir = "{{config_root}}/gems/connectrpc-otel"
-env = { BUNDLE_GEMFILE = "{{config_root}}/gems/connectrpc-otel/Gemfile", BUNDLE_PATH = "{{config_root}}/vendor/otel/bundle", BUNDLE_USER_HOME = "{{config_root}}/vendor/otel/bundler", BUNDLE_COOLDOWN = "7" }
+env = { BUNDLE_GEMFILE = "{{config_root}}/gems/connectrpc-otel/Gemfile", BUNDLE_PATH = "{{config_root}}/vendor/otel/bundle", BUNDLE_USER_HOME = "{{config_root}}/vendor/otel/bundler", BUNDLE_COOLDOWN = "3" }
 run = "mise exec -- ruby scripts/tools.rb"
 
 [tasks."otel:setup"]
-description = "Install the independent frozen OpenTelemetry development bundle"
+description = "Install the independent OpenTelemetry development bundle"
 depends = ["otel:tools"]
 run = "mise exec -- ruby gems/connectrpc-otel/scripts/run.rb setup"
 
@@ -750,13 +749,86 @@ tools.go = "1.27.3"
 env = { GOTOOLCHAIN = "local", GOWORK = "off", GOFLAGS = "-mod=readonly", GOMODCACHE = "{{config_root}}/vendor/interop/mod", GOCACHE = "{{config_root}}/vendor/interop/build" }
 run = "ruby gems/connectrpc-async/scripts/run.rb http1_interop"
 
+# Lowest-allowed dependency lane. CONNECTRPC_DEPENDENCY_FLOORS=1 makes each
+# launcher use an ignored floors wrapper beside the owning Gemfile; see
+# scripts/dependency_floors.rb. Each run resolves its ignored floors lock fresh;
+# normal bundles and locks stay untouched.
+[tasks."floors:async"]
+description = "Run Async specs and package checks with runtime dependencies at their declared floors"
+depends = ["async:tools"]
+env.CONNECTRPC_DEPENDENCY_FLOORS = "1"
+run = [
+  "rm -f gems/connectrpc-async/Gemfile.floors.lock",
+  "mise exec -- ruby gems/connectrpc-async/scripts/run.rb setup",
+  "mise exec -- ruby gems/connectrpc-async/scripts/run.rb floors",
+  "mise exec -- ruby gems/connectrpc-async/scripts/run.rb test",
+  "mise exec -- ruby gems/connectrpc-async/scripts/run.rb build",
+  "mise exec -- ruby gems/connectrpc-async/scripts/run.rb package",
+]
+
+[tasks."floors:falcon"]
+description = "Run Falcon specs and package checks with runtime dependencies at their declared floors"
+depends = ["falcon:tools"]
+env.CONNECTRPC_DEPENDENCY_FLOORS = "1"
+run = [
+  "rm -f gems/connectrpc-falcon/Gemfile.floors.lock",
+  "mise exec -- ruby gems/connectrpc-falcon/scripts/run.rb setup",
+  "mise exec -- ruby gems/connectrpc-falcon/scripts/run.rb floors",
+  "mise exec -- ruby gems/connectrpc-falcon/scripts/run.rb test",
+  "mise exec -- ruby gems/connectrpc-falcon/scripts/run.rb build",
+  "mise exec -- ruby gems/connectrpc-falcon/scripts/run.rb package",
+]
+
+[tasks."floors:rack"]
+description = "Run Rack specs and package checks with runtime dependencies at their declared floors"
+depends = ["rack:tools"]
+env.CONNECTRPC_DEPENDENCY_FLOORS = "1"
+run = [
+  "rm -f gems/connectrpc-rack/Gemfile.floors.lock",
+  "mise exec -- ruby gems/connectrpc-rack/scripts/run.rb setup",
+  "mise exec -- ruby gems/connectrpc-rack/scripts/run.rb floors",
+  "mise exec -- ruby gems/connectrpc-rack/scripts/run.rb test",
+  "mise exec -- ruby gems/connectrpc-rack/scripts/run.rb build",
+  "mise exec -- ruby gems/connectrpc-rack/scripts/run.rb package",
+]
+
+[tasks."floors:rails"]
+description = "Run Rails 8.0 specs and package checks with runtime dependencies at their declared floors"
+depends = ["setup:bundler"]
+env = { RAILS_LANE = "8.0", CONNECTRPC_DEPENDENCY_FLOORS = "1", BUNDLE_COOLDOWN = "3" }
+run = [
+  "rm -f gems/connectrpc-on-rails/gemfiles/rails_8.0.floors.gemfile.lock",
+  "mise exec -- ruby scripts/rails.rb setup",
+  "mise exec -- ruby scripts/rails.rb floors",
+  "mise exec -- ruby scripts/rails.rb test",
+  "mise exec -- ruby scripts/rails.rb build",
+  "mise exec -- ruby scripts/rails.rb package",
+]
+
+[tasks."floors:otel"]
+description = "Run OpenTelemetry specs and package checks with runtime dependencies at their declared floors"
+depends = ["otel:tools"]
+env.CONNECTRPC_DEPENDENCY_FLOORS = "1"
+run = [
+  "rm -f gems/connectrpc-otel/Gemfile.floors.lock",
+  "mise exec -- ruby gems/connectrpc-otel/scripts/run.rb setup",
+  "mise exec -- ruby gems/connectrpc-otel/scripts/run.rb floors",
+  "mise exec -- ruby gems/connectrpc-otel/scripts/run.rb test",
+  "mise exec -- ruby gems/connectrpc-otel/scripts/run.rb build",
+  "mise exec -- ruby gems/connectrpc-otel/scripts/run.rb package",
+]
+
+[tasks.floors]
+description = "Run every lowest-allowed dependency lane (Ruby 3.4.12)"
+depends = ["floors:async", "floors:falcon", "floors:rack", "floors:rails", "floors:otel"]
+
 # Release preparation never tags, creates a GitHub release, or publishes gems.
 [tasks."release:check"]
-description = "Check nine synchronized versions, frozen local locks and release guards offline"
+description = "Check nine synchronized versions, installation guides and release guards offline"
 run = "mise exec -- ruby scripts/release.rb check"
 
 [tasks."release:prepare"]
-description = "Prepare local lock metadata and installation guides after a release version update"
+description = "Refresh installation guide requirements after a minor (breaking) release version update"
 run = "mise exec -- ruby scripts/release.rb prepare"
 
 [tasks."release:build"]

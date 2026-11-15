@@ -16,11 +16,10 @@ ruby = ENV.fetch("PATH").split(File::PATH_SEPARATOR).map { |entry| File.join(ent
 check.call(File.realpath(ruby) == File.realpath(RbConfig.ruby), "PATH Ruby differs from running Ruby")
 check.call(File.realpath(RbConfig.ruby).start_with?("#{cache}/"), "Ruby outside action tool cache")
 {
-  "BUNDLE_IGNORE_CONFIG" => "true", "BUNDLE_FROZEN" => "true",
-  "BUNDLE_DISABLE_SHARED_GEMS" => "true", "BUNDLE_VERSION" => "4.0.23",
+  "BUNDLE_IGNORE_CONFIG" => "true", "BUNDLE_DISABLE_SHARED_GEMS" => "true", "BUNDLE_VERSION" => "4.0.23",
   "BUNDLE_GEMFILE" => File.join(package, "Gemfile"),
   "BUNDLE_PATH" => File.join(root, "vendor/testing/bundle"),
-  "BUNDLE_USER_HOME" => File.join(root, "vendor/testing/bundler"), "BUNDLE_COOLDOWN" => "7"
+  "BUNDLE_USER_HOME" => File.join(root, "vendor/testing/bundler"), "BUNDLE_COOLDOWN" => "3"
 }.each { |key, value| check.call(ENV.fetch(key) == value, "unexpected #{key}") }
 check.call(Bundler::VERSION == "4.0.23", "unexpected actual Bundler")
 check.call(Bundler.settings[:path] == File.join(root, "vendor/testing/bundle"), "unexpected actual bundle path")

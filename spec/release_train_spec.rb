@@ -16,8 +16,8 @@ RSpec.describe ReleaseTrain do
       owners = described_class::NAMES.map do |name|
         name == "connectrpc" ? "connectrpc.gemspec" : "gems/#{name}/#{name}.gemspec"
       end
-      inputs = [*owners, *described_class::VERSION_FILES.values, *described_class::LOCKS, *described_class::GUIDES,
-                "docs/development.md", ".github/release-please-config.json", ".github/.release-please-manifest.json"]
+      inputs = [*owners, *described_class::VERSION_FILES.values, *described_class::GUIDES,
+                ".github/release-please-config.json", ".github/.release-please-manifest.json"]
       inputs.each do |file|
         destination = File.join(temporary, file)
         FileUtils.mkdir_p(File.dirname(destination))
@@ -74,65 +74,36 @@ RSpec.describe ReleaseTrain do
     expect(JSON.parse(stdout)).to eq(Array.new(9, train.version))
   end
 
-  %i[patch minor].each do |bump|
-    it "prepares every frozen local record for a #{bump} without changing registry resolution" do
-      captured_train do |train|
-        version = next_version(train, bump)
-        originals = described_class::LOCKS.to_h { |file| [file, train.read(file)] }
-        propose_version(train, version)
-        expect { train.check! }.to raise_error(/Stale release preparation/)
-        train.prepare!
-        expect(train.specifications.map { |spec| spec.version.to_s }.uniq).to eq([version])
-        floor = "~> #{version.split('.').first(2).join('.')}.0"
-        train.specifications.each do |spec|
-          spec.runtime_dependencies.select { |dep| described_class::NAMES.include?(dep.name) }.each do |dependency|
-            expect(dependency.requirement.to_s).to eq(floor)
-          end
-        end
-        originals.each do |file, original|
-          # Independent assertions cover PATH specs, local CHECKSUMS, and the
-          # unmodified registry records, not just a call to the preparer twice.
-          names = described_class::LOCK_PACKAGES.fetch(file)
-          sections = train.read(file).split(/(?=^[A-Z][A-Z ]*\n)/)
-          paths = sections.select { |section| section.start_with?("PATH\n") }.join
-          checksums = sections.find { |section| section.start_with?("CHECKSUMS\n") }
-          names.each do |name|
-            expect(paths.lines).to include("    #{name} (#{version})\n")
-            expect(checksums.lines).to include("  #{name} (#{version})\n"),
-                                       "#{file}: CHECKSUMS must contain #{name} (#{version})"
-          end
-          local_dependency = /^ {6}(connectrpc(?:-[a-z]+)*) \(/
-          original_paths = original.split(/(?=^[A-Z][A-Z ]*\n)/).select { |section| section.start_with?("PATH\n") }.join
-          dependencies = original_paths.scan(local_dependency).flatten
-          expected_dependencies = dependencies.map { |name| "      #{name} (#{floor})\n" }
-          expect(paths.lines.grep(local_dependency)).to eq(expected_dependencies),
-                                                        "#{file}: PATH dependencies must use #{floor}"
-          registry_sections = lambda { |text|
-            text.split(/(?=^[A-Z][A-Z ]*\n)/).reject do |s|
-              s.start_with?("PATH\n", "CHECKSUMS\n")
-            end
-          }
-          expect(registry_sections.call(train.read(file))).to eq(registry_sections.call(original))
-          external_checksums = ->(text) { text.lines.grep(/sha256=/) }
-          expect(external_checksums.call(train.read(file))).to eq(external_checksums.call(original))
-        end
-        expect(train.read("README.md")).to include("gem \"connectrpc-rack\", \"#{floor}\"")
-        snapshot = train.prepared_files
-        train.prepare!
-        expect(train.prepared_files).to eq(snapshot)
-      end
+  def internal_requirements(train)
+    train.specifications.flat_map(&:runtime_dependencies).select { |dep| described_class::NAMES.include?(dep.name) }
+         .map { |dep| dep.requirement.to_s }.uniq
+  end
+
+  it "accepts a patch release that changes only version files and the manifest" do
+    captured_train do |train|
+      version = next_version(train, :patch)
+      guides = described_class::GUIDES.to_h { |file| [file, train.read(file)] }
+      propose_version(train, version)
+      expect(train.check!).to equal(train)
+      expect(train.specifications.map { |spec| spec.version.to_s }.uniq).to eq([version])
+      expect(internal_requirements(train)).to eq(["~> #{version.split('.').first(2).join('.')}.0"])
+      expect(described_class::GUIDES.to_h { |file| [file, train.read(file)] }).to eq(guides)
     end
   end
 
-  it "rejects the partial root-lock update made by the upstream Ruby updater" do
+  it "requires guide preparation for a minor release, then accepts it" do
     captured_train do |train|
-      previous = train.version
-      version = next_version(train)
+      version = next_version(train, :minor)
+      floor = "~> #{version.split('.').first(2).join('.')}.0"
       propose_version(train, version)
-      edit(train, "Gemfile.lock") { |text| text.sub("connectrpc (#{previous})", "connectrpc (#{version})") }
-      expect { train.check! }.to raise_error(/Stale release preparation: Gemfile.lock/)
+      expect { train.check! }.to raise_error(/Stale release preparation: .*run mise run release:prepare/)
       train.prepare!
       expect(train.check!).to equal(train)
+      expect(internal_requirements(train)).to eq([floor])
+      expect(train.read("README.md")).to include("gem \"connectrpc-rack\", \"#{floor}\"")
+      snapshot = train.prepared_files
+      train.prepare!
+      expect(train.prepared_files).to eq(snapshot)
     end
   end
 
@@ -167,11 +138,7 @@ RSpec.describe ReleaseTrain do
     end
   end
 
-  it "rejects a missing local checksum, a changed push host and a dropped MFA requirement" do
-    captured_train do |train|
-      edit(train, "Gemfile.lock") { |text| text.sub("  connectrpc (#{train.version})\n", "") }
-      expect { train.check! }.to raise_error(%r{Local path/checksum inventory})
-    end
+  it "rejects a changed push host and a dropped MFA requirement" do
     captured_train do |train|
       edit(train, "connectrpc.gemspec") { |text| text.sub("https://rubygems.org", "https://gems.example") }
       expect { train.check! }.to raise_error(/Push host changed/)
@@ -192,6 +159,7 @@ RSpec.describe ReleaseTrain do
         text.sub('spec.add_dependency "connectrpc", local_requirement',
                  "spec.add_dependency \"connectrpc\", \"~> #{version}\"")
       end
+      expect { train.check! }.to raise_error(/Local dependency policy changed/)
       expect { train.prepare! }.to raise_error(/Local dependency policy changed/)
     end
   end

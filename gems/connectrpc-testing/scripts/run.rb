@@ -7,7 +7,7 @@ package = File.join(root, "gems/connectrpc-testing")
 environment = {
   "RUBOCOP_CACHE_ROOT" => File.join(root, "vendor/testing/rubocop"),
   "BUNDLE_GEMFILE" => File.join(package, "Gemfile"), "BUNDLE_IGNORE_CONFIG" => "true",
-  "BUNDLE_FROZEN" => "true", "BUNDLE_COOLDOWN" => "7", "BUNDLE_VERSION" => "4.0.23",
+  "BUNDLE_COOLDOWN" => "3", "BUNDLE_VERSION" => "4.0.23",
   "BUNDLE_PATH" => File.join(root, "vendor/testing/bundle"), "BUNDLE_DISABLE_SHARED_GEMS" => "true",
   "BUNDLE_USER_HOME" => File.join(root, "vendor/testing/bundler")
 }

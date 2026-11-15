@@ -60,21 +60,25 @@ from the public SPI alone.
 ## Qualified environment
 
 The initial target uses **Ubuntu 24.04 on x86_64**, **MRI 3.4.12 or 4.0.9**, and
-**Bundler 4.0.23** with the owning frozen, checksummed dependency bundles. Both
-MRI versions apply to the rows below unless a row says otherwise. The
-[CI workflow](../.github/workflows/ci.yml) defines the executed combinations;
+**Bundler 4.0.23**. Both MRI versions apply to the rows below unless a row says
+otherwise. Development locks are not committed: every CI run and fresh checkout
+resolves the newest versions the gemspecs and Gemfiles allow, within a
+three-day Bundler cooldown, and CI repeats that daily. A separate Ruby 3.4.12
+lane pins each runtime dependency to its declared floor (see
+[development](development.md#fresh-resolution-and-the-lowest-allowed-lane)).
+The [CI workflow](../.github/workflows/ci.yml) defines the executed combinations;
 [Mise tasks](../mise.toml) define their local equivalents.
 
-| Integration | Locked baseline | Scope of the evidence |
+| Integration | Tested range | Scope of the evidence |
 | --- | --- | --- |
-| Core, Rack, Testing | [Root](../Gemfile.lock), [Rack](../gems/connectrpc-rack/Gemfile.lock) and [Testing](../gems/connectrpc-testing/Gemfile.lock): google-protobuf 4.36.2 and Rack 3.2.7 where used | Portable Rack socket checks use rackup/WEBrick |
-| Native Async | [Async lock](../gems/connectrpc-async/Gemfile.lock): async 2.46.0, async-http 0.105.0, protocol-http2 0.29.2 | Requires an application-owned Async reactor and thread |
-| Falcon | [Falcon lock](../gems/connectrpc-falcon/Gemfile.lock): Falcon 0.57.0 and its locked native stack | Native RPC and explicit Rack/Rails fallback have separate execution contracts |
-| Rails supported profile | [Rails 8.1 lock](../gems/connectrpc-on-rails/gemfiles/rails_8.1.gemfile.lock): Rails/Action Pack 8.1.4 | Native unary controller execution on both MRI versions |
-| Rails compatibility evidence | [Rails 8.0 lock](../gems/connectrpc-on-rails/gemfiles/rails_8.0.gemfile.lock): Rails/Action Pack 8.0.5.1 | MRI 3.4.12 only; retained CI lane outside the supported Rails profile |
-| OpenTelemetry | [OTel lock](../gems/connectrpc-otel/Gemfile.lock): API 1.11.1, SDK 1.13.1, Rack instrumentation 0.31.2, NetHTTP instrumentation 0.29.2 | Tested coexistence includes native Rails 8.1.4. Other SDK/instrumentation combinations need their own evidence |
-| Prometheus metrics | [Prometheus lock](../gems/connectrpc-prometheus/Gemfile.lock): prometheus-client 5.0.0 | Default and `DirectFileStore` stores; real Rack, Async and Falcon hosts. Rails relies on the Rack path plus documentation |
-| Yabeda metrics | [Yabeda lock](../gems/connectrpc-yabeda/Gemfile.lock): yabeda 0.16.0 | Declaration and values through `yabeda/testing`; yabeda-prometheus naming is checked structurally, not installed |
+| Core, Rack, Testing | google-protobuf 4.36.2 (exact development pin); Rack newest allowed and floor 3.2.7 where used | Portable Rack socket checks use rackup/WEBrick |
+| Native Async | async, async-http, protocol-http2 and the rest of the stack at newest allowed and at the gemspec floors (async 2.46.0, async-http 0.105.0, protocol-http2 0.29.2) | Requires an application-owned Async reactor and thread |
+| Falcon | Falcon and its native stack at newest allowed and at the floors (Falcon 0.57.0) | Native RPC and explicit Rack/Rails fallback have separate execution contracts |
+| Rails supported profile | Newest Rails/Action Pack 8.1.x | Native unary controller execution on both MRI versions |
+| Rails compatibility evidence | Newest Rails/Action Pack 8.0.x and the Action Pack floor 8.0.5.1 | MRI 3.4.12 only; retained CI lanes outside the supported Rails profile |
+| OpenTelemetry | Newest allowed API, SDK, Rack and NetHTTP instrumentation, plus the API floor 1.11.1 | Tested coexistence includes native Rails 8.1. Other SDK/instrumentation combinations need their own evidence |
+| Prometheus metrics | prometheus-client newest allowed 5.x, plus the floor 5.0.0 | Default and `DirectFileStore` stores; real Rack, Async and Falcon hosts. Rails relies on the Rack path plus documentation |
+| Yabeda metrics | yabeda newest allowed 0.x, plus the floor 0.16.0 | Declaration and values through `yabeda/testing`; yabeda-prometheus naming is checked structurally, not installed |
 
 The official browser fixture runs against both MRI server versions. Its
 [artifact pins](../browser/artifacts.json) and [JS lock](../browser/bun.lock)
@@ -83,8 +87,9 @@ select grpc-web 2.1.1, google-protobuf 4.0.3, Playwright 1.64.1, Chromium
 listed [below](#grpc-web).
 
 The Ruby `>= 3.4` gemspec floor and broader dependency ranges allow installation;
-they do not qualify every matching version. Likewise, lockfile entries for
-other platforms do not prove runtime compatibility. macOS, Windows, ARM, JRuby,
+testing the newest and lowest allowed releases does not qualify every matching
+version between them. Likewise, lockfile entries for other platforms do not
+prove runtime compatibility. macOS, Windows, ARM, JRuby,
 TruffleRuby, Puma, every Rack server, and every combination of allowed framework
 and dependency versions are outside this initial supported environment. This
 does not assert they fail. The Rails 8.0 lane does not extend upstream maintenance.
@@ -228,7 +233,7 @@ inventory. `rbs:package` checks normal installed signature discovery and real
 generated consumers in both package composition orders. Package tasks use fresh
 external GEM_HOME environments.
 
-[CI](ci.md) assigns these tasks to frozen bundles and both Ruby lanes where
+[CI](ci.md) assigns these tasks to scoped bundles and both Ruby lanes where
 specified. Use `mise tasks` for actual task names. No passing count substitutes
 for an executed profile, a ledger's complete accounting or a missing test axis.
 

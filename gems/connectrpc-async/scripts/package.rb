@@ -6,6 +6,7 @@ require "rubygems/package"
 require "rbconfig"
 require "tmpdir"
 require_relative "../../../scripts/release_train"
+require_relative "support/activation"
 
 root = File.expand_path("../../..", __dir__)
 version = ReleaseTrain.new(root).version
@@ -56,10 +57,9 @@ expected = %w[LICENSE README.md lib/connectrpc/async.rb lib/connectrpc/async/ver
               lib/connectrpc/async/http1_connection.rb lib/connectrpc/async/http1_stream.rb].sort
 abort "Backend manifest changed" unless backend.contents.sort == expected
 expected_dependencies = {
-  "connectrpc" => local_requirement, "async-http" => "~> 0.105.0", "async" => "~> 2.46.0", "async-pool" => "~> 0.12.0",
-  "protocol-http2" => "~> 0.29.2", "protocol-http1" => "~> 0.41.1", "protocol-http" => "~> 0.72.1",
-  "io-endpoint" => "~> 0.19.0",
-  "io-stream" => "~> 0.14.0", "openssl" => "~> 4.0.2"
+  "connectrpc" => local_requirement, "async-http" => "~> 0.105.0", "async" => ">= 2.46.0, < 3",
+  "protocol-http2" => "~> 0.29.2", "protocol-http1" => "~> 0.41.1", "protocol-http" => ">= 0.72.1, < 1",
+  "io-endpoint" => ">= 0.19.0, < 1", "io-stream" => "~> 0.14.0", "openssl" => ">= 3.3"
 }
 actual = backend.spec.runtime_dependencies.to_h { |dependency| [dependency.name, dependency.requirement.to_s] }
 abort "Runtime dependencies changed" unless actual == expected_dependencies
@@ -98,14 +98,13 @@ Bundler.with_unbundled_env do
     FileUtils.cp_r(File.join(root, "spec/fixtures/generation/echo"), File.join(working, "generated"))
     environment = { "GEM_HOME" => File.join(temporary, "home"), "GEM_PATH" => File.join(temporary, "home"),
                     "RUBYOPT" => nil, "RUBYLIB" => nil, "RUBYGEMS_GEMDEPS" => nil,
-                    "CONNECTRPC_ASYNC_INSTALLED" => "1" }
+                    "CONNECTRPC_ASYNC_INSTALLED" => "1", **Activation.environment(installed: true) }
     ENV.each_key { |name| environment[name] = nil if name.start_with?("BUNDLE_", "BUNDLER_") }
     commands = [
       [RbConfig.ruby, "-S", "gem", "install", "--norc", archives.first, "--local", "--no-document"],
       [RbConfig.ruby, "-e",
        'require "connectrpc"; abort if defined?(ConnectRPC::Async) || defined?(Rack) || defined?(Rails)'],
-      [RbConfig.ruby, "-S", "gem", "install", "--norc", File.join(working, "json-3.1.0.gem"),
-       "--local", "--no-document"],
+      *Activation.install_commands(working),
       [RbConfig.ruby, "-S", "gem", "install", "--norc", archives.last, "--local", "--no-document"],
       [RbConfig.ruby, "-S", "gem", "install", "--norc", "google-protobuf", "--version", "4.36.2", "--local",
        "--no-document"],

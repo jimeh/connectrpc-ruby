@@ -111,7 +111,8 @@ source checking is a separate target from backend implementation checking.
 
 ## Development
 
-The independent frozen development bundle reuses existing exact registry pins.
+The independent development bundle resolves the newest allowed Rack and reuses
+the root tool pins; `floors:rack` repeats specs and package checks at Rack 3.2.7.
 Run from the repository root:
 
 ```sh

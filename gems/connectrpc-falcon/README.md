@@ -180,7 +180,8 @@ server_options { { cache: true } }
 The inherited Falcon `cache` DSL setting does not configure this host. `cache:`
 must be `true` or `false`; with no `rack_app`, either value has no effect.
 
-Opt-in retains the pinned Falcon 0.57.0 / async-http-cache 0.4.6 semantics.
+Opt-in uses Falcon's async-http-cache semantics, described here for Falcon
+0.57.0 / async-http-cache 0.4.6; newer allowed releases may differ.
 
 - Cache keys use authority, method and path, plus response `Vary` headers.
   Custom authorization headers are not automatically cache keys.
@@ -474,8 +475,10 @@ application-owned declarations.
 
 ## Development
 
-The independent checksummed bundle uses `vendor/falcon` and reports full optional
-library coverage under `coverage/falcon/<Ruby version>`:
+The independent bundle resolves the newest allowed dependencies into
+`vendor/falcon` and reports full optional library coverage under
+`coverage/falcon/<Ruby version>`. `floors:falcon` repeats specs and package
+checks with every runtime dependency at its gemspec floor:
 
 ```sh
 mise run falcon:setup

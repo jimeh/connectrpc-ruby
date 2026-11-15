@@ -14,8 +14,7 @@ RSpec.describe "CI runtime boundary" do
       "RUNNER_TOOL_CACHE" => File.dirname(ruby, 2),
       "CI_EXPECTED_RUBY_VERSION" => RUBY_VERSION,
       "PATH" => "#{File.dirname(ruby)}:#{ENV.fetch('PATH')}",
-      "BUNDLE_IGNORE_CONFIG" => "true", "BUNDLE_FROZEN" => "true",
-      "BUNDLE_DISABLE_SHARED_GEMS" => "true", "BUNDLE_VERSION" => "4.0.23",
+      "BUNDLE_IGNORE_CONFIG" => "true", "BUNDLE_DISABLE_SHARED_GEMS" => "true", "BUNDLE_VERSION" => "4.0.23",
       "BUNDLE_PATH" => File.join(root, "vendor/bundle")
     }
   end
@@ -56,9 +55,10 @@ RSpec.describe "CI runtime boundary" do
     end
   end
 
-  it "rejects bundle settings that bypass the cached frozen path" do
-    { "BUNDLE_PATH" => "/tmp/wrong-bundle", "BUNDLE_FROZEN" => "false",
-      "BUNDLE_IGNORE_CONFIG" => "false", "BUNDLE_VERSION" => "0.0.0" }.each do |key, value|
+  it "rejects bundle settings that bypass the cached path or require a committed lock" do
+    { "BUNDLE_PATH" => "/tmp/wrong-bundle", "BUNDLE_FROZEN" => "true", "BUNDLE_DEPLOYMENT" => "true",
+      "BUNDLE_LOCKFILE" => "/tmp/other.lock", "BUNDLE_IGNORE_CONFIG" => "false",
+      "BUNDLE_VERSION" => "0.0.0" }.each do |key, value|
       _output, error, status = guard(key => value)
       expect(status.success?).to be(false)
       expect(error).to include("unexpected #{key}")
@@ -133,16 +133,17 @@ RSpec.describe "CI check mapping" do
   let(:workflow) { YAML.load_file(File.expand_path("../.github/workflows/ci.yml", __dir__)) }
   let(:jobs) { workflow.fetch("jobs") }
 
-  it "preserves all 28 existing checks and adds browser and metrics leaves" do
+  it "preserves all 28 existing checks and adds browser, metrics and lowest-allowed leaves" do
     core = %w[static specs package interop conformance]
     backend = %w[async_specs async_interop]
     falcon = %w[falcon_specs falcon_interop]
     metrics = %w[prometheus yabeda]
-    expect(jobs.keys).to match_array([*core, "rails", *backend, "rack", "testing", "rbs", *falcon, "otel",
+    expect(jobs.keys).to match_array([*core, "rails", "floors", *backend, "rack", "testing", "rbs", *falcon, "otel",
                                       *metrics, "browser_grpc_web", "examples"])
     count = lambda do |names|
       jobs.slice(*names).values.sum do |job|
-        job.dig("strategy", "matrix", "ruby")&.size || job.dig("strategy", "matrix", "include")&.size || 1
+        matrix = job.dig("strategy", "matrix") || {}
+        matrix["ruby"]&.size || matrix["include"]&.size || matrix["leaf"]&.size || 1
       end
     end
     expect(count.call(core)).to eq(9)
@@ -152,13 +153,14 @@ RSpec.describe "CI check mapping" do
     expect(count.call(["rack"])).to eq(2)
     expect(count.call(["testing"])).to eq(2)
     expect(count.call(["rbs"])).to eq(2)
-    expect(count.call(jobs.keys - [*metrics, "browser_grpc_web", "examples"])).to eq(28)
+    expect(count.call(jobs.keys - [*metrics, "browser_grpc_web", "examples", "floors"])).to eq(28)
     expect(count.call(["otel"])).to eq(2)
     expect(count.call(["browser_grpc_web"])).to eq(2)
     expect(count.call(metrics)).to eq(4)
-    expect(count.call(jobs.keys - ["examples"])).to eq(34)
+    expect(count.call(["floors"])).to eq(5)
+    expect(count.call(jobs.keys - ["examples"])).to eq(39)
     jobs.each_value { |job| expect(job).not_to have_key("needs") }
-    jobs.except("static", "rails", "examples").each_value do |job|
+    jobs.except("static", "rails", "examples", "floors").each_value do |job|
       expect(job.dig("strategy", "fail-fast")).to be(false)
       expect(job.dig("strategy", "matrix", "ruby")).to eq(%w[3.4.12 4.0.9])
     end
@@ -178,6 +180,38 @@ RSpec.describe "CI check mapping" do
                                                   "mise run rbs:package"])
   end
 
+  it "runs daily and resolves fresh bundles without frozen mode" do
+    triggers = workflow.fetch("on", workflow[true])
+    expect(triggers.fetch("schedule")).to eq([{ "cron" => "37 4 * * *" }])
+    expect(triggers).to include("pull_request", "push", "workflow_dispatch")
+    expect(workflow.dig("concurrency", "group")).to include("github.event_name", "github.ref")
+    expect(workflow.fetch("env")).not_to include("BUNDLE_FROZEN", "BUNDLE_DEPLOYMENT", "BUNDLE_LOCKFILE")
+    cooldowns = jobs.values.filter_map { |job| job.dig("env", "BUNDLE_COOLDOWN") }.uniq
+    expect(cooldowns).to eq(["3"])
+  end
+
+  it "runs each lowest-allowed leaf on Ruby 3.4.12 through its Mise floors task" do
+    floors = jobs.fetch("floors")
+    expect(floors.dig("strategy", "fail-fast")).to be(false)
+    expect(floors.dig("strategy", "matrix", "leaf")).to eq(%w[async falcon rack rails otel])
+    expect(floors.fetch("env")).to include("CI_EXPECTED_RUBY_VERSION" => "3.4.12", "BUNDLE_COOLDOWN" => "3")
+    ruby = floors.fetch("steps").find { |step| step.fetch("uses", "").start_with?("ruby/setup-ruby@") }
+    expect(ruby.fetch("with")).to include("ruby-version" => "3.4.12", "bundler-cache" => false)
+    step = floors.fetch("steps").find { |entry| entry["run"]&.include?("floors:") }
+    expect(step).to include("run" => 'mise run "floors:$FLOORS_LEAF"',
+                            "env" => { "FLOORS_LEAF" => "${{ matrix.leaf }}" })
+    output, error, status = Open3.capture3("mise", "tasks", "--json")
+    expect(status.success?).to be(true), error
+    tasks = JSON.parse(output).to_h { |task| [task.fetch("name"), task] }
+    floors.dig("strategy", "matrix", "leaf").each do |leaf|
+      task = tasks.fetch("floors:#{leaf}")
+      expect(task.fetch("env")).to include("CONNECTRPC_DEPENDENCY_FLOORS=1")
+      expect(task.fetch("run")).to include(a_string_ending_with(" setup"), a_string_ending_with(" floors"),
+                                           a_string_ending_with(" test"), a_string_ending_with(" package"))
+    end
+    expect(tasks.fetch("floors:rails").fetch("env")).to include("RAILS_LANE=8.0")
+  end
+
   it "runs every runnable example pairing once, on one Ruby lane" do
     examples = jobs.fetch("examples")
     expect(examples).not_to have_key("strategy")
@@ -193,14 +227,14 @@ RSpec.describe "CI check mapping" do
                                                                     "mise run example:verify"])
   end
 
-  it "pins the three Rails Appraisal lanes and caches the selected frozen lock" do
+  it "pins the three Rails Appraisal lanes and caches the selected lane lock" do
     rails = jobs.fetch("rails")
     expected = [
       { "rails" => "8.0", "ruby" => "3.4.12" }, { "rails" => "8.1", "ruby" => "3.4.12" },
       { "rails" => "8.1", "ruby" => "4.0.9" }
     ]
     expect(rails.dig("strategy", "matrix", "include")).to eq(expected)
-    expect(rails.fetch("env")).to include("BUNDLE_COOLDOWN" => "7", "RAILS_LANE" => "${{ matrix.rails }}")
+    expect(rails.fetch("env")).to include("BUNDLE_COOLDOWN" => "3", "RAILS_LANE" => "${{ matrix.rails }}")
     setup = rails.fetch("steps").find { |step| step.fetch("uses", "").start_with?("ruby/setup-ruby@") }
     gemfile = "${{ github.workspace }}/gems/connectrpc-on-rails/gemfiles/rails_${{ matrix.rails }}.gemfile"
     expect(setup.dig("env", "BUNDLE_GEMFILE")).to eq(gemfile)
@@ -214,7 +248,7 @@ RSpec.describe "CI check mapping" do
     jobs.each do |name, job|
       steps = job.fetch("steps")
       ruby = steps.find { |step| step.fetch("uses", "").start_with?("ruby/setup-ruby@") }
-      expect(ruby.fetch("with")).to include("bundler" => "4.0.23", "bundler-cache" => name != "rbs",
+      expect(ruby.fetch("with")).to include("bundler" => "4.0.23", "bundler-cache" => !%w[rbs floors].include?(name),
                                             "cache-version" => "bundler-4.0.23-v1")
       mise = steps.find { |step| step.fetch("uses", "").start_with?("jdx/mise-action@") }
       expect(mise.fetch("with")).to include("add_shims_to_path" => false, "env" => false, "export_path" => false)
@@ -341,7 +375,7 @@ RSpec.describe "CI Mise task replacement" do
 end
 
 RSpec.describe "Optional Rails task context" do
-  it "keeps frozen Rails setup independent of root setup and preserves the task context in CI" do
+  it "keeps Rails setup independent of root setup and preserves the task context in CI" do
     ["setup:rails", "test:rails", "generation:check:rails", "build:rails", "check:package:rails"].each do |name|
       tasks = [nil, "ci"].map do |mode|
         output, error, status = Open3.capture3({ "MISE_ENV" => mode }, "mise", "tasks", "info", name, "--json")
@@ -350,7 +384,7 @@ RSpec.describe "Optional Rails task context" do
       end
       local, ci = tasks
       %w[env tools dir depends run].each { |field| expect(ci.fetch(field)).to eq(local.fetch(field)) }
-      expect(local.fetch("env")).to include("BUNDLE_COOLDOWN=7")
+      expect(local.fetch("env")).to include("BUNDLE_COOLDOWN=3")
       expect(local.fetch("depends")).not_to include("setup")
       expect(local.fetch("depends")).to eq(["setup:bundler"]) if name == "setup:rails"
     end
@@ -371,14 +405,14 @@ end
 RSpec.shared_examples "Optional backend CI boundary" do |backend_name, label|
   let(:root) { File.expand_path("..", __dir__) }
 
-  it "uses independent frozen bundles and separate backend commands in both Ruby lanes" do
+  it "uses independent bundles and separate backend commands in both Ruby lanes" do
     jobs = YAML.load_file(File.join(root, ".github/workflows/ci.yml")).fetch("jobs")
     ["#{backend_name}_specs", "#{backend_name}_interop"].each do |name|
       job = jobs.fetch(name)
       expect(job.fetch("env")).to include(
         "BUNDLE_GEMFILE" => "${{ github.workspace }}/gems/connectrpc-#{backend_name}/Gemfile",
         "BUNDLE_PATH" => "${{ github.workspace }}/vendor/#{backend_name}/bundle",
-        "BUNDLE_USER_HOME" => "${{ github.workspace }}/vendor/#{backend_name}/bundler", "BUNDLE_COOLDOWN" => "7"
+        "BUNDLE_USER_HOME" => "${{ github.workspace }}/vendor/#{backend_name}/bundler", "BUNDLE_COOLDOWN" => "3"
       )
     end
     commands = jobs.transform_values { |job| job.fetch("steps").filter_map { |step| step["run"] } }
@@ -420,8 +454,8 @@ RSpec.shared_examples "Optional backend CI boundary" do |backend_name, label|
     environment = {
       "RUNNER_TOOL_CACHE" => File.dirname(ruby, 2), "CI_EXPECTED_RUBY_VERSION" => RUBY_VERSION,
       "PATH" => "#{File.dirname(ruby)}:#{ENV.fetch('PATH')}",
-      "BUNDLE_IGNORE_CONFIG" => "true", "BUNDLE_FROZEN" => "true", "BUNDLE_DISABLE_SHARED_GEMS" => "true",
-      "BUNDLE_VERSION" => "4.0.23", "BUNDLE_COOLDOWN" => "7",
+      "BUNDLE_IGNORE_CONFIG" => "true", "BUNDLE_DISABLE_SHARED_GEMS" => "true",
+      "BUNDLE_VERSION" => "4.0.23", "BUNDLE_COOLDOWN" => "3",
       "BUNDLE_PATH" => File.join(root, "vendor/#{backend_name}/bundle"),
       "BUNDLE_GEMFILE" => File.join(backend, "Gemfile"),
       "BUNDLE_USER_HOME" => File.join(root, "vendor/#{backend_name}/bundler")
@@ -454,14 +488,14 @@ end
 RSpec.describe "Optional Rack CI boundary" do
   let(:root) { File.expand_path("..", __dir__) }
 
-  it "uses independent frozen bundles and separate middleware commands in both Ruby lanes" do
+  it "uses independent bundles and separate middleware commands in both Ruby lanes" do
     jobs = YAML.load_file(File.join(root, ".github/workflows/ci.yml")).fetch("jobs")
     %w[rack].each do |name|
       job = jobs.fetch(name)
       expect(job.fetch("env")).to include(
         "BUNDLE_GEMFILE" => "${{ github.workspace }}/gems/connectrpc-rack/Gemfile",
         "BUNDLE_PATH" => "${{ github.workspace }}/vendor/rack/bundle",
-        "BUNDLE_USER_HOME" => "${{ github.workspace }}/vendor/rack/bundler", "BUNDLE_COOLDOWN" => "7"
+        "BUNDLE_USER_HOME" => "${{ github.workspace }}/vendor/rack/bundler", "BUNDLE_COOLDOWN" => "3"
       )
     end
     commands = jobs.transform_values { |job| job.fetch("steps").filter_map { |step| step["run"] } }
@@ -494,8 +528,8 @@ RSpec.describe "Optional Rack CI boundary" do
     environment = {
       "RUNNER_TOOL_CACHE" => File.dirname(ruby, 2), "CI_EXPECTED_RUBY_VERSION" => RUBY_VERSION,
       "PATH" => "#{File.dirname(ruby)}:#{ENV.fetch('PATH')}",
-      "BUNDLE_IGNORE_CONFIG" => "true", "BUNDLE_FROZEN" => "true", "BUNDLE_DISABLE_SHARED_GEMS" => "true",
-      "BUNDLE_VERSION" => "4.0.23", "BUNDLE_COOLDOWN" => "7",
+      "BUNDLE_IGNORE_CONFIG" => "true", "BUNDLE_DISABLE_SHARED_GEMS" => "true",
+      "BUNDLE_VERSION" => "4.0.23", "BUNDLE_COOLDOWN" => "3",
       "BUNDLE_PATH" => File.join(root, "vendor/rack/bundle"), "BUNDLE_GEMFILE" => File.join(middleware, "Gemfile"),
       "BUNDLE_USER_HOME" => File.join(root, "vendor/rack/bundler")
     }

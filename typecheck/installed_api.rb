@@ -20,54 +20,31 @@ module InstalledAPI
     end
   end
 
-  def self.runtime_artifacts(root:, specifications:)
-    locks = APICheck::PACKAGES.map do |name|
-      if name == "on-rails"
-        File.join(root, "gems/connectrpc-on-rails/gemfiles/rails_8.1.gemfile.lock")
-      else
-        File.join(root, "gems/connectrpc-#{name}/Gemfile.lock")
-      end
-    end
-    versions = { "bundler" => Gem::Version.new("4.0.23") }
-    locks.each do |lock|
-      Bundler::LockfileParser.new(File.read(lock)).specs.each do |spec|
-        previous = versions[spec.name]
-        raise "Conflicting locked version for #{spec.name}" if previous && previous != spec.version
-
-        versions[spec.name] = spec.version
-      end
-    end
-    caches = Dir.glob(File.join(root, "vendor/{bundle,*/bundle}/ruby/*/cache/*.gem"))
+  # Every archive the scoped bundles cached for the running Ruby ABI. RubyGems
+  # local resolution then selects a closure that satisfies every accumulated
+  # requirement, platform and required_ruby_version, as a consumer install does.
+  def self.cached_archives(root:)
+    abi = RbConfig::CONFIG.fetch("ruby_version")
+    caches = Dir.glob(File.join(root, "vendor/{bundle,*/bundle}/ruby", abi, "cache/*.gem"))
     bundler_archive = Gem.loaded_specs.fetch("bundler").cache_file
     caches << bundler_archive if File.file?(bundler_archive)
-    index = caches.group_by { |file| Gem::Package.new(file).spec.name }
-    selected = {}
-    pending = specifications.flat_map(&:runtime_dependencies)
-    local_names = ["connectrpc", *APICheck::PACKAGES.map { |name| "connectrpc-#{name}" }]
-    until pending.empty?
-      dependency = pending.shift
-      next if local_names.include?(dependency.name) || selected.key?(dependency.name)
+    raise "No cached #{abi} archives; run the scoped optional setups first" if caches.empty?
 
-      candidate = index.fetch(dependency.name, []).find do |file|
-        spec = Gem::Package.new(file).spec
-        spec.version == versions.fetch(spec.name) && dependency.matches_spec?(spec) && Gem::Platform.match_spec?(spec)
-      end
-      raise "Missing frozen runtime archive: #{dependency}" unless candidate
-
-      selected[dependency.name] = candidate
-      pending.concat(Gem::Package.new(candidate).spec.runtime_dependencies)
-    end
-    raise "SDK entered runtime closure" if selected.key?("opentelemetry-sdk")
-
-    selected.values
+    caches.uniq { |file| File.basename(file) }
   end
 
   def self.check(root:, working:, output:)
     packages = archives(root: root, output: output)
-    artifacts = runtime_artifacts(root: root, specifications: packages.map(&:last))
-    FileUtils.cp(artifacts, working)
-    RBSHarness.capture!([RbConfig.ruby, "-S", "gem", "install", "--norc", "--local", "--no-document",
-                         *packages.map(&:first)], working: working)
+    FileUtils.cp(cached_archives(root: root), working)
+    begin
+      RBSHarness.capture!([RbConfig.ruby, "-S", "gem", "install", "--norc", "--local", "--no-document",
+                           *packages.map(&:first)], working: working)
+    rescue StandardError => e
+      raise "Cannot resolve the installed runtime closure from cached archives: #{e.message}"
+    end
+    sdk = Dir.glob(File.join(ENV.fetch("GEM_HOME"), "specifications/opentelemetry-sdk-*.gemspec"))
+    raise "SDK entered runtime closure" unless sdk.empty?
+
     %w[api falcon api_check.rb installed_runtime.rb installed_streaming.rb installed_web.rb].each do |name|
       FileUtils.cp_r(File.join(root, "typecheck", name), working)
     end

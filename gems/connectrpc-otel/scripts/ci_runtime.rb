@@ -13,11 +13,11 @@ check.call(Dir.pwd == backend, "unexpected working directory")
   "BUNDLE_GEMFILE" => File.join(backend, "Gemfile"),
   "BUNDLE_PATH" => File.join(root, "vendor/otel/bundle"),
   "BUNDLE_USER_HOME" => File.join(root, "vendor/otel/bundler"),
-  "BUNDLE_COOLDOWN" => "7"
+  "BUNDLE_COOLDOWN" => "3"
 }.each { |key, value| check.call(ENV.fetch(key) == value, "unexpected #{key}") }
 check.call(Bundler.settings[:path] == File.join(root, "vendor/otel/bundle"), "unexpected actual bundle path")
 check.call(Bundler.default_gemfile.to_s == File.join(backend, "Gemfile"), "unexpected actual Gemfile")
-# Reuse the exact root runtime/PATH/frozen-config guard in a separate process;
+# Reuse the exact root runtime/PATH/bundle-config guard in a separate process;
 # its root-bundle assertion remains intact for all nine core and Rails lanes.
 environment = { "BUNDLE_PATH" => File.join(root, "vendor/bundle"), "BUNDLE_GEMFILE" => File.join(root, "Gemfile") }
 system(environment, RbConfig.ruby, File.join(root, "scripts/ci_runtime.rb"), exception: true)

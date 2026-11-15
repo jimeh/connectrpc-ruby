@@ -25,7 +25,7 @@ Dir.mktmpdir("appraisals-", File.join(root, "vendor/rails/tmp")) do |temporary| 
     FileUtils.cp(File.join(root, relative), version_destination)
   end
   # Appraisal's real generator reads the development Gemfile, not the selected
-  # generated lane. Bundler has already activated the frozen selected bundle.
+  # generated lane. Bundler has already activated the selected lane bundle.
   original = ENV.fetch("BUNDLE_GEMFILE")
   begin
     ENV["BUNDLE_GEMFILE"] = File.join(destination, "Gemfile")

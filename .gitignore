@@ -14,3 +14,13 @@
 /.rubocop_cache/
 /mise.local.toml
 /mise.local.lock
+
+# Development bundles resolve fresh within gemspec constraints; locks stay local.
+/Gemfile.lock
+/gems/*/Gemfile.lock
+/gems/*/gemfiles/*.gemfile.lock
+# Generated lowest-allowed (CONNECTRPC_DEPENDENCY_FLOORS=1) wrappers and locks.
+Gemfile.floors
+*.floors.gemfile
+*.floors.lock
+*.floors.gemfile.lock

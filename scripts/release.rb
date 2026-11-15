@@ -6,10 +6,10 @@ train = ReleaseTrain.new
 case ARGV
 when ["check"]
   train.check!
-  puts "Release train #{train.version}: nine versions, instrumentation, ten locks and push hosts agree"
+  puts "Release train #{train.version}: nine versions, instrumentation, guides and push hosts agree"
 when ["prepare"]
   train.prepare!
-  puts "Prepared local locks and installation guides for #{train.version}; review and sign the diff"
+  puts "Prepared installation guides for #{train.version}; review and sign the diff"
 when ["build"]
   require_relative "release_candidate"
   puts "Candidate archives: #{ReleaseCandidate.new(train).build_from_git!}"

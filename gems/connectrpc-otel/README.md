@@ -218,10 +218,10 @@ rules.
 
 ## HTTP instrumentation coexistence
 
-The SDK-backed suite tests Rack instrumentation 0.31.2 (stable middleware,
-`use_rack_events: false`) and NetHTTP instrumentation 0.29.2, with the application
-installing a W3C global propagator. Native Rails 8.1.4 is tested through its real
-controller pipeline. Generic HTTP tracing remains enabled. The observed tree is:
+The SDK-backed suite tests the newest allowed Rack instrumentation (stable
+middleware, `use_rack_events: false`) and NetHTTP instrumentation, with the
+application installing a W3C global propagator. Native Rails 8.1 is tested
+through its real controller pipeline. Generic HTTP tracing remains enabled. The observed tree is:
 application -> RPC CLIENT -> HTTP CLIENT -> RPC SERVER and HTTP SERVER as
 siblings. NetHTTP injects its HTTP CLIENT; both server integrations extract that
 serialized parent. The RPC adapter deliberately does not inspect ambient HTTP
@@ -242,17 +242,18 @@ source checking is a separate target from backend implementation checking.
 
 From the repository root use `mise run otel:setup`, `otel:test`, `otel:check`,
 `otel:build`, `otel:package`, `otel:example`, and `otel:verify`.
-The independent checksummed development bundle includes the real SDK,
+The independent development bundle includes the real SDK,
 InMemorySpanExporter, HTTP instrumentations and local integration packages.
-Existing runtime closures and locks remain independent. Caches/archives are in
+The SDK and instrumentations float to their newest allowed releases; only
+tools stay pinned. Existing runtime closures remain independent. Caches/archives are in
 `vendor/otel`, and coverage is in `coverage/otel/<Ruby>/`. Both pinned Ruby
 3.4.12 and 4.0.9 CI leaves run `otel:verify`. `scripts/integration.rb` is also a
 runnable generated-client example with a real in-memory SDK exporter.
 
-The new lock's API/SDK were released 2026-09-16. New dependencies, including
-native variants, were checked against primary RubyGems release timestamps and
-API SHA256 values before adoption, under the seven-day cooldown. The versioned
-lock preserves the eligible existing cross-package graph.
+`floors:otel` repeats specs and package checks with the API and every other
+local package's runtime dependency at its gemspec floor, except Action Pack
+(Rails 8.0 rejects the json 3.x this bundle co-installs; `floors:rails` covers
+that floor).
 
 ## License
 

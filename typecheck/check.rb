@@ -14,7 +14,7 @@ Bundler.with_unbundled_env do
   environment = {
     "BUNDLE_GEMFILE" => File.join(root, "Gemfile"), "BUNDLE_PATH" => File.join(root, "vendor/bundle"),
     "BUNDLE_APP_CONFIG" => File.join(root, "vendor/rbs/root-config"),
-    "BUNDLE_USER_HOME" => File.join(root, "vendor/rbs/bundler"), "BUNDLE_FROZEN" => "true"
+    "BUNDLE_USER_HOME" => File.join(root, "vendor/rbs/bundler")
   }
   system(environment, RbConfig.ruby, "-S", "bundle", "_4.0.23_", "exec", RbConfig.ruby,
          File.join(__dir__, "generate.rb"), File.join(working, "generation"), exception: true)

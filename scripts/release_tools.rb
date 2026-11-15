@@ -16,7 +16,7 @@ module ReleaseTools
       "BUNDLE_APP_CONFIG" => File.join(OUTPUT, "config"),
       "BUNDLE_CACHE_PATH" => File.join(OUTPUT, "cache"),
       "BUNDLE_FROZEN" => "true", "BUNDLE_IGNORE_CONFIG" => "true",
-      "BUNDLE_DISABLE_SHARED_GEMS" => "true", "BUNDLE_COOLDOWN" => "7"
+      "BUNDLE_DISABLE_SHARED_GEMS" => "true", "BUNDLE_COOLDOWN" => "3"
     }
   end
 

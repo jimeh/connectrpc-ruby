@@ -1,4 +1,4 @@
-# Explicit opt-in for Falcon 0.57.0 / async-service 0.25.0 service configuration.
+# Explicit opt-in for Falcon >= 0.57.0 / async-service >= 0.25.0 service configuration.
 # These are the documented ConnectRPC DSL forms, not general method_missing.
 module Async
   module Service
