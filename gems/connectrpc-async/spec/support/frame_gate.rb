@@ -4,7 +4,7 @@ require "delegate"
 
 class FrameGate < SimpleDelegator
   attr_accessor :armed
-  attr_reader :started, :release
+  attr_reader :started, :release, :writer
 
   def initialize(socket, frame_type: nil)
     super(socket)
@@ -18,6 +18,7 @@ class FrameGate < SimpleDelegator
     return super unless @armed && (!@frame_type || buffer.to_s.getbyte(3) == @frame_type)
 
     @armed = false
+    @writer = Async::Task.current
     bytes = buffer.to_s
     __getobj__.write(bytes.byteslice(0, 5))
     @started.enqueue(true)

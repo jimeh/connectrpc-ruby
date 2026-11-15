@@ -5,15 +5,23 @@ RSpec.describe ConnectRPC::Async::ConnectionPolicy do
     policy = described_class.new
     expect(policy.backoff).to eq(ConnectRPC::Async::Backoff.new(base: 1.0, multiplier: 1.6, jitter: 0.2, max: 30.0))
     expect([policy.wait_for_ready, policy.max_pending_bytes]).to eq([false, 16 * 1024 * 1024])
+    expect([policy.retry_refused, policy.max_draining, policy.drain_timeout]).to eq([true, 1, nil])
     expect([policy, policy.backoff]).to all(be_frozen)
     expect(policy).to eq(described_class.new)
     expect(policy.hash).to eq(described_class.new.hash)
     expect(policy).not_to eq(described_class.new(max_pending_bytes: nil))
+    [{ retry_refused: false }, { max_draining: 2 }, { drain_timeout: 30 }].each do |options|
+      expect(described_class.new(**options)).not_to eq(policy)
+      expect(described_class.new(**options)).to eq(described_class.new(**options))
+      expect(described_class.new(**options).hash).to eq(described_class.new(**options).hash)
+    end
   end
 
   it "turns each feature off" do
-    policy = described_class.new(backoff: nil, max_pending_bytes: nil)
+    policy = described_class.new(backoff: nil, max_pending_bytes: nil, retry_refused: false, max_draining: 0)
     expect([policy.backoff, policy.max_pending_bytes, policy.wait_for_ready]).to eq([nil, nil, false])
+    expect([policy.retry_refused, policy.max_draining, policy.drain_timeout]).to eq([false, 0, nil])
+    expect(described_class.new(drain_timeout: 0.25).drain_timeout).to eq(0.25)
     expect(described_class.new(wait_for_ready: true).wait_for_ready).to be(true)
   end
 
@@ -22,7 +30,13 @@ RSpec.describe ConnectRPC::Async::ConnectionPolicy do
     [{ wait_for_ready: nil }, "wait_for_ready must be true or false"],
     [{ wait_for_ready: true, backoff: nil }, "wait_for_ready requires a backoff"],
     [{ max_pending_bytes: 0 }, "max_pending_bytes must be a positive integer or nil"],
-    [{ max_pending_bytes: 1.5 }, "max_pending_bytes must be a positive integer or nil"]
+    [{ max_pending_bytes: 1.5 }, "max_pending_bytes must be a positive integer or nil"],
+    [{ retry_refused: nil }, "retry_refused must be true or false"],
+    [{ max_draining: -1 }, "max_draining must be a nonnegative integer"],
+    [{ max_draining: 1.0 }, "max_draining must be a nonnegative integer"],
+    [{ drain_timeout: 0 }, "drain_timeout must be finite positive seconds"],
+    [{ drain_timeout: Float::INFINITY }, "drain_timeout must be finite positive seconds"],
+    [{ drain_timeout: false }, "drain_timeout must be finite positive seconds"]
   ].each do |options, message|
     it "rejects #{options.inspect}" do
       expect { described_class.new(**options) }.to raise_error(ArgumentError, message)

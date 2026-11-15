@@ -355,23 +355,65 @@ module ConnectRPC
       def exchange(operation)
         request = operation.fetch(:request)
         check_request!(request)
-        connection = dispatch(operation) do |guarded, task|
-          headers = request.headers.dup
-          headers["connect-timeout-ms"] = [request.deadline.timeout_ms] if request.deadline
-          body = request.http_method == "GET" ? nil : [request.body]
-          outgoing = ::Protocol::HTTP::Request[request.http_method, request.url.request_uri, Internal.fields(headers),
-                                               body, scheme: @origin.scheme, authority: @origin.authority]
-          # Stream ID allocation shares the wire dispatch guard.
-          response = guarded.create_response
-          operation[:response] = response
-          task.defer_cancel { guarded.write_request(response, outgoing) }
-          guarded
+        retried = false
+        loop do
+          connection = dispatch(operation) do |guarded, task|
+            headers = request.headers.dup
+            headers["connect-timeout-ms"] = [request.deadline.timeout_ms] if request.deadline
+            body = request.http_method == "GET" ? nil : [request.body]
+            outgoing = ::Protocol::HTTP::Request[request.http_method, request.url.request_uri,
+                                                 Internal.fields(headers), body,
+                                                 scheme: @origin.scheme, authority: @origin.authority]
+            # Stream ID allocation shares the wire dispatch guard.
+            response = guarded.create_response
+            operation[:response] = response
+            task.defer_cancel { guarded.write_request(response, outgoing) }
+            guarded
+          end
+          response = operation.fetch(:response)
+          begin
+            connection.read_response(response)
+            break
+          rescue ::Protocol::HTTP::RefusedError
+            # Only the header wait proves RFC 9113 non-processing: dispatch can
+            # convert a HEADERS write failure into the same error.
+            raise if retried || !@manager.retry_refused? || response.stream.response_headers?
+
+            retried = true
+            retire_refused(operation, response)
+          end
         end
         response = operation.fetch(:response)
-        connection.read_response(response)
         headers = Internal.headers(response)
         bytes = read_body(response, request)
         TransportResponse.new(status: response.status, headers: headers, body: bytes)
+      end
+
+      # The refused stream is closed, but its output may still be inside a
+      # deferred frame write. That output retires within the call's cleanup
+      # budget before the lease returns to acquisition; a stuck frame fails
+      # its connection and the call, which is not sent again.
+      def retire_refused(operation, response)
+        operation.delete(:response)
+        response.close
+        output = response.stream.output_task
+        if output && !output.finished?
+          expires = Internal.now + Internal::CLEANUP_SECONDS
+          deadline = operation.fetch(:request).deadline
+          expires = [expires, Internal.now + deadline.remaining].min if deadline
+          joiner = ::Async::Task.current.async(finished: false) { Internal.join(output) }
+          begin
+            Internal.wait(joiner, expires)
+          rescue ::Async::TimeoutError
+            # An expired call leaves its output to the call's own cleanup.
+            check_request!(operation.fetch(:request))
+            operation[:resource]&.abort
+            raise Error.new(:unavailable, "HTTP/2 refused stream output did not retire"), cause: nil
+          ensure
+            Internal.cancel(joiner)
+          end
+        end
+        reroute(operation)
       end
 
       def read_body(response, request)

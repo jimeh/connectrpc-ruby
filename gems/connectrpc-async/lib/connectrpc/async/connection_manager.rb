@@ -7,6 +7,11 @@ module ConnectRPC
       # accounting, one shared attempt at a time, backoff, admission bytes and
       # published state. Attempts run under the transport lifetime, outside any
       # RPC task or lifecycle; waiting calls only observe them.
+      #
+      # Open sockets never exceed `connection_limit + max_draining`: the
+      # active cap counts accounted connections outside the draining set, the
+      # attempt in progress and removed connections whose raw socket is still
+      # open; the draining set holds at most `max_draining` connections.
       class ConnectionManager
         UNAVAILABLE = "HTTP/2 transport admission is closed or full"
         CLOSING = "HTTP/2 transport is closing"
@@ -45,6 +50,9 @@ module ConnectRPC
           @setup = setup
           @abort_setup = abort_setup
           @connections = {}.compare_by_identity
+          @draining = {}.compare_by_identity
+          @reserved = {}.compare_by_identity
+          @drain_timers = {}.compare_by_identity
           @waiters = {}.compare_by_identity
           @attempt = nil
           @failures = 0
@@ -62,6 +70,7 @@ module ConnectRPC
         def usage = @connections.each_value.sum
 
         def connections = @connections.dup
+        def retry_refused? = @policy.retry_refused
 
         def check_reentry!
           return unless @dispatching.equal?(Fiber.current)
@@ -131,11 +140,12 @@ module ConnectRPC
         end
 
         # Removes the slot from accounting and wakes waiters before the
-        # potentially blocking close joins the connection's retirement.
+        # potentially blocking close joins the connection's retirement. The
+        # slot stays reserved until the close has raw-closed its socket.
         def retire(connection)
           return unless @connections.key?(connection)
 
-          @connections.delete(connection)
+          remove(connection)
           reconcile
           connection.close
           nil
@@ -152,13 +162,16 @@ module ConnectRPC
           publish(:closing)
           Internal.cancel(@timer)
           @timer = @retry_at = nil
+          # Close's own grace now bounds every drain.
+          @drain_timers.each_value { |timer| Internal.cancel(timer) }
+          @drain_timers.clear
           Internal.cancel(@attempt&.task)
           @progress.signal
         end
 
         def finish
           close
-          @connections.delete_if { |_, usage| usage.zero? }
+          @connections.select { |_, usage| usage.zero? }.each_key { |connection| remove(connection) }
           publish(:closed)
         end
 
@@ -172,7 +185,7 @@ module ConnectRPC
         end
 
         def usable_connection? = @connections.each_key.any? { |connection| usable?(connection) }
-        def slot_free? = @connections.size + (@attempt ? 1 : 0) < @connection_limit
+        def slot_free? = @connections.size - @draining.size + @reserved.size + (@attempt ? 1 : 0) < @connection_limit
         def demand? = @waiters.each_key.any? { |waiter| waiter.wait_for_ready || !waiter.joined&.failed? }
 
         def current_state
@@ -188,18 +201,85 @@ module ConnectRPC
         # has spare capacity, then republishes. Woken waiters take that capacity.
         def reconcile
           unless @closing
+            promote
             start_attempt if !@attempt && !@retry_at && slot_free? && demand? && !available
             publish(current_state)
           end
           @progress.signal
         end
 
+        # Called on GOAWAY and on resource abort, which raw-closes first. A
+        # removed connection's reservation ends once its socket is closed.
         def connection_unusable(resource)
           connection = resource.connection
-          return unless connection && @connections.key?(connection)
+          return unless connection
 
-          @connections.delete(connection) if @connections[connection].zero?
+          if @reserved.key?(connection)
+            return unless resource.finished?
+
+            @reserved.delete(connection)
+            return reconcile
+          end
+          return unless @connections.key?(connection)
+
+          if @connections[connection].zero?
+            remove(connection)
+            reconcile
+            # Close actively rather than relying on the reader, so the
+            # reservation always ends.
+            connection.close unless resource.finished?
+            return
+          end
+          if graceful_draining?(connection)
+            arm_drain_timer(connection)
+            @draining[connection] = true if @draining.size < @policy.max_draining
+          end
           reconcile
+        end
+
+        # A graceful GOAWAY with streams left to finish. An error GOAWAY
+        # closes the protocol connection and a local abort finishes the
+        # resource before this notification runs.
+        def graceful_draining?(connection)
+          !@closing && @connections[connection]&.positive? && connection.goaway_received? &&
+            !connection.closed? && !connection.resource.finished?
+        end
+
+        # Every removal from accounting ends draining membership and the drain
+        # timer, and reserves the slot until the raw socket is closed.
+        def remove(connection)
+          @connections.delete(connection)
+          @draining.delete(connection)
+          Internal.cancel(@drain_timers.delete(connection))
+          @reserved[connection] = true unless connection.resource.finished?
+        end
+
+        # A connection that kept its active slot because the draining set was
+        # full joins the set once a member leaves it.
+        def promote
+          @connections.each_key do |connection|
+            break if @draining.size >= @policy.max_draining
+            next if @draining.key?(connection)
+
+            @draining[connection] = true if graceful_draining?(connection)
+          end
+        end
+
+        # One timer per draining connection; a repeated GOAWAY does not
+        # restart it. Expiry aborts the connection's remaining streams.
+        def arm_drain_timer(connection)
+          timeout = @policy.drain_timeout
+          return if !timeout || @closing || @drain_timers.key?(connection)
+
+          timer = ::Async::Task.new(@lifetime, finished: false) do
+            @clock.sleep(timeout)
+            if @drain_timers[connection].equal?(timer)
+              @drain_timers.delete(connection)
+              connection.resource.abort if @connections.key?(connection)
+            end
+          end
+          @drain_timers[connection] = timer
+          timer.run
         end
 
         # Publishes the attempt before running its eager task, so a waiter

@@ -93,40 +93,36 @@ RSpec.describe "HTTP/2 stream and pool cleanup" do
   end
 
   %i[refused goaway].each do |failure|
-    it "never replays a #{failure} stream even when the backend labels it safe to retry" do
+    it "sends a #{failure} unary stream exactly once more and invokes the backend once" do
       reactor do |task|
         bound = IO::Endpoint.tcp("127.0.0.1", 0).bound
-        listener = bound.sockets.first
         observed = []
-        peer = task.async do
-          raw, = listener.accept
-          connection = Async::HTTP::Protocol::HTTP2.server(raw)
-          incoming = connection.requests.dequeue
+        invoked = []
+        peer = ConnectionPeer::RecordingServer.new(task, bound.sockets.first) do |incoming|
           observed << incoming.path
-          if failure == :refused
+          if observed.size > 1
+            invoked << incoming.path
+            incoming.send_response(Protocol::HTTP::Response[200, {}, ["ok"]])
+          elsif failure == :refused
             incoming.stream.send_reset_stream(Protocol::HTTP2::Error::REFUSED_STREAM)
           else
             frame = Protocol::HTTP2::GoawayFrame.new
             frame.pack(0, 0, "")
-            connection.write_frame(frame)
+            incoming.stream.connection.write_frame(frame)
           end
-          Async::Condition.new.wait
-        ensure
-          connection&.close
-          AsyncHelpers::INTERNAL.raw_close(raw)
         end
-        origin = "http://127.0.0.1:#{listener.local_address.ip_port}"
+        origin = "http://127.0.0.1:#{bound.sockets.first.local_address.ip_port}"
         transport = ConnectRPC::Async::Transport.new(origin: origin)
-        expect { transport.call(request("#{origin}/once")) }.to raise_error(ConnectRPC::Error) { |e|
-          expect(e.code).to eq("unavailable")
-        }
-        expect(observed).to eq(["/once"])
-        expect(listener.accept_nonblock(exception: false)).to eq(:wait_readable)
+        expect(transport.call(request("#{origin}/once")).body).to eq("ok")
+        expect(observed).to eq(["/once", "/once"])
+        expect(invoked).to eq(["/once"])
+        expect(peer.headers_frames.size).to eq(2)
+        # Only a GOAWAY retires the connection; REFUSED_STREAM leaves it healthy.
+        expect(peer.accepted).to eq(failure == :refused ? 1 : 2)
         expect(lease_usage(transport)).to eq(0)
       ensure
         transport&.close(grace: 0)
-        peer&.cancel
-        peer&.wait
+        peer&.stop
         bound&.close
       end
     end
