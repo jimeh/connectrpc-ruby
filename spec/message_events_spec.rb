@@ -122,6 +122,24 @@ RSpec.describe "Per-message lifecycle callbacks" do
       expect(messages(:server, :sent)).to be_empty
       expect(messages(:client, :received)).to be_empty
     end
+
+    it "fires no receive when the call is cancelled while the response decodes" do
+      rpc = declaration
+      source = ConnectRPC::CancellationSource.new
+      cancelling = binding.clone
+      cancelling.define_singleton_method(:decode) do |bytes, type:, **|
+        source.cancel if type == :response
+        bytes
+      end
+      target = server(rpc, ->(message, _) { message })
+      client = ConnectRPC::Client.new(base_url: "https://example.invalid", binding: cancelling,
+                                      transport: loopback(target, []), instrumentation: bus)
+      expect { client.call(rpc, "hi", cancellation: source.token) }.to raise_error(ConnectRPC::Error) { |error|
+        expect(error.code).to eq("canceled")
+      }
+      expect(messages(:server, :sent)).to eq([2])
+      expect(messages(:client, :received)).to be_empty
+    end
   end
 
   describe "Connect streaming server" do

@@ -233,8 +233,19 @@ RSpec.describe "Backend-neutral metrics" do
       event_type.new(type: type, state: state, previous_state: previous_state, outcome: outcome, duration: duration)
     end
 
-    it "initializes state gauges and maps state, attempt and admission events" do
-      observer = described_class.new(recorder: recorder, definitions: definitions, transport: "billing")
+    def observer(name = "billing") = described_class.new(recorder: recorder, definitions: definitions, transport: name)
+
+    # The last value set for each state series.
+    def state_gauge
+      recorder.calls.each_with_object({}) do |(op, key, labels, value), gauge|
+        gauge[labels.fetch(:state)] = value if op == :set && key == :client_connection_state
+      end
+    end
+
+    it "publishes state gauges on request and maps state, attempt and admission events" do
+      observer = self.observer
+      expect(recorder.calls).to be_empty
+      expect(observer.publish_state).to be_nil
       initial = recorder.calls.dup
       expect(initial).to eq(%w[idle connecting ready transient_failure closing closed].map do |state|
         [:set, :client_connection_state, { transport: "billing", state: state }, state == "idle" ? 1 : 0]
@@ -252,6 +263,34 @@ RSpec.describe "Backend-neutral metrics" do
          [:observe, :client_connection_attempt_seconds, { transport: "billing" }, 0.25],
          [:increment, :client_admission_rejected_total, { transport: "billing" }, 1]]
       )
+    end
+
+    it "zeros its own last published state, not the event's previous state" do
+      observer = self.observer
+      observer.publish_state
+      observer.call(event(:state_changed, state: :connecting, previous_state: :idle))
+      observer.call(event(:state_changed, state: :ready, previous_state: :connecting))
+      # A replacement connection manager starts at idle while ready is still published.
+      observer.call(event(:state_changed, state: :connecting, previous_state: :idle))
+      expect(state_gauge.select { |_, value| value == 1 }).to eq("connecting" => 1)
+      expect(state_gauge.fetch("ready")).to eq(0)
+    end
+
+    it "publishes the tracked state when a state change failed to record" do
+      # Like Yabeda before configure!: recording raises until the metrics exist.
+      sink = recorder
+      ready = false
+      gated = Object.new
+      %i[increment observe set].each do |op|
+        gated.define_singleton_method(op) { |*args| ready ? sink.public_send(op, *args) : raise(KeyError, "missing") }
+      end
+      observer = described_class.new(recorder: gated, definitions: definitions, transport: "billing")
+      expect { observer.call(event(:state_changed, state: :ready, previous_state: :connecting)) }
+        .to raise_error(KeyError)
+      ready = true
+      observer.publish_state
+      expect(state_gauge.select { |_, value| value == 1 }).to eq("ready" => 1)
+      expect(state_gauge.size).to eq(6)
     end
 
     ["", "Billing", "a-b", "x" * 65, :billing, nil].each do |name|

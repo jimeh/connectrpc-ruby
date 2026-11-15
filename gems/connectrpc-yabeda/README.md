@@ -67,9 +67,13 @@ transport = ConnectRPC::Async::Transport.new(
 ```
 
 Transport names match `/\A[a-z0-9_]{1,64}\z/` and must be unique per process;
-asking one `Metrics` for a repeated name raises `ArgumentError`. Async swallows
-connection observer `StandardError`s, so those failures are not reported
-through `on_error`. Callbacks may run from separate threads and fibers; Yabeda
+asking one `Metrics` for a repeated name raises `ArgumentError`. An observer
+built after `Yabeda.configure!` publishes `idle` 1 and 0 for the other states
+immediately. One built before it registers a Yabeda collector that publishes
+its current state on each `Yabeda.collect!`, such as a yabeda-prometheus scrape;
+until then its state series appear only as state changes record them. Async swallows connection observer
+`StandardError`s, including recording before `configure!`, so those failures
+are not reported through `on_error`. Callbacks may run from separate threads and fibers; Yabeda
 stores values in concurrent structures, and adapters own their own safety.
 
 ## Metrics and names
@@ -93,7 +97,11 @@ or yabeda-rails). The connectrpc-prometheus
 [multi-process guidance](../connectrpc-prometheus/README.md#multi-process)
 applies: the default store is correct for one process with any number of
 threads; use `DirectFileStore` only for forked workers that share one
-`/metrics` endpoint.
+`/metrics` endpoint. Under `DirectFileStore`, build connection observers per
+worker after fork. An observer built in the Puma or Unicorn master before fork,
+including one passed to a `ThreadedTransport` created there, writes the
+master's `idle` 1 to the store, and the summed state gauge keeps counting that
+entry.
 
 yabeda-prometheus 0.9.1 pins `prometheus-client >= 3, < 5`. prometheus-client
 4.x `DirectFileStore` calls `CGI.parse`, which Ruby 4.0 removed from the

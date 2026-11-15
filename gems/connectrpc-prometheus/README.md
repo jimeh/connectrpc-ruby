@@ -126,6 +126,11 @@ Under `DirectFileStore`, the connection state gauge is declared with
 default store rejects store settings, so other stores get none. Dead workers
 keep their last counter and gauge values until the directory is cleared.
 
+Build connection observers per worker after fork. An observer built in the Puma
+or Unicorn master before fork, including one passed to a `ThreadedTransport`
+created there, writes the master's `idle` 1 to the store, and the summed state
+gauge keeps counting that entry.
+
 ## Metrics
 
 Base labels `B` are `grpc_type`, `grpc_service`, `grpc_method` and

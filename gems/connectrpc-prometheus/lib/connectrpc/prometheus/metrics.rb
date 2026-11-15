@@ -23,9 +23,10 @@ module ConnectRPC
         @mutex.synchronize do
           raise ArgumentError, "transport #{transport.inspect} already has an observer" if @transports.key?(transport)
 
-          @transports[transport] = ::ConnectRPC::Metrics::ConnectionObserver.new(
-            recorder: @recorder, definitions: @definitions, transport: transport
-          )
+          observer = ::ConnectRPC::Metrics::ConnectionObserver.new(recorder: @recorder, definitions: @definitions,
+                                                                   transport: transport)
+          observer.publish_state
+          @transports[transport] = observer
         end
       end
 

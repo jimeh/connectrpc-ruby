@@ -56,11 +56,30 @@ RSpec.describe ConnectRPC::Yabeda::Metrics do
     gauge = adapter.gauges.fetch(metric("grpc_client_connection_state"))
     expect(gauge.fetch({ transport: "billing", state: "connecting" })).to eq(1)
     expect(gauge.fetch({ transport: "billing", state: "idle" })).to eq(0)
+    expect(gauge.fetch({ transport: "billing", state: "closed" })).to eq(0)
     expect(adapter.counters.fetch(metric("grpc_client_connection_attempts_total"))
                   .fetch({ transport: "billing", outcome: "ready" })).to eq(1)
     expect(adapter.histograms.fetch(metric("grpc_client_connection_attempt")).fetch({ transport: "billing" }))
       .to eq(0.5)
     expect { metrics.connection_observer(transport: "billing") }.to raise_error(ArgumentError)
+  end
+
+  it "builds a connection observer before Yabeda.configure! and publishes its state on collect" do
+    metrics = described_class.new
+    observer = metrics.connection_observer(transport: "early")
+    expect(Yabeda).not_to be_configured
+    Yabeda.configure!
+    Yabeda.collect!
+    gauge = adapter.gauges.fetch(metric("grpc_client_connection_state"))
+    expect(gauge.fetch({ transport: "early", state: "idle" })).to eq(1)
+    expect(gauge.fetch({ transport: "early", state: "ready" })).to eq(0)
+    event = Data.define(:type, :state, :previous_state, :outcome, :duration)
+    observer.call(event.new(type: :state_changed, state: :connecting, previous_state: :idle, outcome: nil,
+                            duration: nil))
+    expect(gauge.fetch({ transport: "early", state: "connecting" })).to eq(1)
+    expect(gauge.fetch({ transport: "early", state: "idle" })).to eq(0)
+    expect(adapter.counters.fetch(metric("grpc_client_connection_state_changes_total"))
+                  .fetch({ transport: "early", state: "connecting" })).to eq(1)
   end
 
   it "produces yabeda-prometheus names equal to the shared definitions" do

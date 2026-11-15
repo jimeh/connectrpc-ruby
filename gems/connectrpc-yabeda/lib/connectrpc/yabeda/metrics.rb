@@ -23,13 +23,16 @@ module ConnectRPC
       end
 
       # One observer per transport name; a repeated name would merge two transports' states.
+      # Before Yabeda.configure! the metrics do not exist, and configure blocks run
+      # before adapters register them, so a collector publishes the state instead.
       def connection_observer(transport:)
         @mutex.synchronize do
           raise ArgumentError, "transport #{transport.inspect} already has an observer" if @transports.key?(transport)
 
-          @transports[transport] = ::ConnectRPC::Metrics::ConnectionObserver.new(
-            recorder: @recorder, definitions: @definitions, transport: transport
-          )
+          observer = ::ConnectRPC::Metrics::ConnectionObserver.new(recorder: @recorder, definitions: @definitions,
+                                                                   transport: transport)
+          ::Yabeda.configured? ? observer.publish_state : ::Yabeda.collect { observer.publish_state }
+          @transports[transport] = observer
         end
       end
 

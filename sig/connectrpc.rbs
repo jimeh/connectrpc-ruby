@@ -834,6 +834,7 @@ module ConnectRPC
       TRANSPORT: Regexp
       def initialize: (recorder: _Recorder, definitions: Definitions, transport: String) -> void
       attr_reader transport: String
+      def publish_state: () -> nil
       def call: (_ConnectionEvent) -> nil
     end
   end

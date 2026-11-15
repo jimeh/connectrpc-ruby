@@ -9,6 +9,7 @@ subscriber = ConnectRPC::Metrics::Subscriber.new(recorder: recorder, definitions
 ConnectRPC::Instrumentation.new(subscribers: [subscriber])
 observer = ConnectRPC::Metrics::ConnectionObserver.new(recorder: recorder, definitions: definitions,
                                                        transport: "billing")
+observer.publish_state
 observer.call(APIConnectionEvent.new)
 observer.transport.size
 # @type var received: ConnectRPC::_ObserverMessageReceived

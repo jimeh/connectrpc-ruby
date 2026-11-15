@@ -150,7 +150,7 @@ module ConnectRPC
     def response_encoding!: (headers) -> encoding
     def validate_response!: (Integer, headers, String) -> nil
     def read_response: [Req, Resp] (TransportResponse, Method[Req, Resp], _Check?, ?Instrumentation::Handle?) -> Response[Resp]
-    def decode_response: [Req, Resp] (String, Method[Req, Resp], ?Instrumentation::Handle?) -> Resp
+    def decode_response: [Req, Resp] (String, Method[Req, Resp], _Check?, ?Instrumentation::Handle?) -> Resp
   end
   class Server
     @protocol: Array[server_protocol]
@@ -348,11 +348,13 @@ module ConnectRPC
       @recorder: _Recorder
       @labels: labels
       @keys: Hash[Symbol, Symbol]
+      @state: Symbol
+      @mutex: Thread::Mutex
       def self.transport!: (untyped) -> String
       private
-      def initialize_state: () -> void
-      def state_changed: (Symbol?, Symbol) -> void
+      def state_changed: (Symbol) -> void
       def attempt_finished: (Symbol?, Numeric?) -> void
+      def set_state: (Symbol, Integer) -> void
       def state_labels: (Symbol) -> labels
     end
   end
