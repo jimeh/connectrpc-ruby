@@ -92,7 +92,7 @@ RSpec.shared_examples "HTTP/2 deadlines and stream isolation" do
       headers = { "content-type" => ["application/proto"], "connect-timeout-ms" => ["2000"] }
       outgoing = request("#{origin}#{AsyncHelpers::ECHO::ECHO.path}", deadline: deadline, headers: headers)
       call = task.async { transport.call(outgoing) }
-      wait_until(task, "writer queued") { connection.writers.any? }
+      wait_until(task, "call queued on the connection guard") { guard_waiters(connection) == 1 }
       clock = 1.5
       release.enqueue(true)
       holder.wait

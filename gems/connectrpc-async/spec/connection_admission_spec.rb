@@ -101,7 +101,9 @@ RSpec.describe "HTTP/2 call admission by count and request bytes" do
       expect(pending_bytes(transport)).to eq(0)
       release.enqueue(true)
 
-      expired = request("#{origin}/held", body: "abcde", deadline: ConnectRPC::Deadline.new(0.1))
+      # Real elapsed time is the boundary under test; the handler entry below
+      # proves dispatch completed with ample margin before expiry.
+      expired = request("#{origin}/held", body: "abcde", deadline: ConnectRPC::Deadline.new(1))
       call = task.async(finished: false) { transport.call(expired) }
       entered.dequeue
       expect { call.wait }.to raise_error(ConnectRPC::Error) { |error| expect(error.code).to eq("deadline_exceeded") }
@@ -109,10 +111,10 @@ RSpec.describe "HTTP/2 call admission by count and request bytes" do
       release.enqueue(true)
 
       connection = transport.instance_variable_get(:@resources).first.connection
-      connection.define_singleton_method(:synchronize) do |&block|
+      connection.define_singleton_method(:synchronize) do |**options, &block|
         close! unless @closed_at_dispatch
         @closed_at_dispatch = true
-        super(&block)
+        super(**options, &block)
       end
       call = task.async { transport.call(request("#{origin}/held", body: "reroute")) }
       entered.dequeue

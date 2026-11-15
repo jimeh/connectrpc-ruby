@@ -156,10 +156,10 @@ RSpec.describe "HTTP/2 pre-dispatch closure" do
       connection = record.connection
       # A source-coupled race fixture closes after acquisition, at the dispatch
       # guard, while leaving the real manager, dispatch and socket logic intact.
-      connection.define_singleton_method(:synchronize) do |&block|
+      connection.define_singleton_method(:synchronize) do |**options, &block|
         close! unless @closed_at_dispatch
         @closed_at_dispatch = true
-        super(&block)
+        super(**options, &block)
       end
       expect(typed.echo(AsyncHelpers::MESSAGE.new(name: "once")).message.name).to eq("once")
       expect(observed).to eq(%w[warm once])

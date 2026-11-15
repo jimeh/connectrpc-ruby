@@ -197,9 +197,11 @@ requires a backoff, and `connection_policy: nil` is rejected.
   Readiness resets `failures`; bursts of calls and idle periods do not. A timer
   that expires with no waiting call starts nothing and the state returns to
   `idle`. GOAWAY is not a failure.
-- Calls are fail-fast by default. A call waits for at most one attempt and fails
-  with `unavailable` if that attempt fails, and calls arriving while the timer
-  runs fail at once unless a usable connection exists. With
+- Calls are fail-fast by default. A call fails with `unavailable` when an
+  attempt it joined fails and no usable connection exists; otherwise it keeps
+  waiting for capacity. A call whose attempt succeeded can still join a later
+  one, for example after another call took the new capacity. Calls arriving
+  while the timer runs fail at once unless a usable connection exists. With
   `wait_for_ready: true`, calls keep waiting through backoff and later attempts
   until their own deadline, cancellation or `close`.
 - `backoff: nil` removes the timer and the `transient_failure` state. A failed

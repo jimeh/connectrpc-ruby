@@ -82,7 +82,7 @@ RSpec.describe "HTTP/2 cancellation before dispatch and during cleanup" do
       pending = task.async(finished: false) do
         typed.echo(AsyncHelpers::MESSAGE.new(name: "cancel"), timeout: nil, cancellation: source.token)
       end
-      wait_until(task, "connection writer waiting") { !connection.writers.empty? }
+      wait_until(task, "call waiting on the connection guard") { guard_waiters(connection) == 1 }
       Thread.new { source.cancel }.value
       expect { pending.wait }.to raise_error(ConnectRPC::Error) { |e| expect(e.code).to eq("canceled") }
       expect(holder).not_to be_finished

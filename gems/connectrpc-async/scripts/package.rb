@@ -39,6 +39,7 @@ expected = %w[LICENSE README.md lib/connectrpc/async.rb sig/connectrpc-async.rbs
               lib/connectrpc/async/completion_join.rb
               lib/connectrpc/async/internal.rb lib/connectrpc/async/ingress.rb lib/connectrpc/async/tls.rb
               lib/connectrpc/async/connection.rb lib/connectrpc/async/application.rb
+              lib/connectrpc/async/connection_manager.rb lib/connectrpc/async/connection_policy.rb
               lib/connectrpc/async/stream_exchange.rb
               lib/connectrpc/async/tls_configuration.rb lib/connectrpc/async/server_session.rb
               lib/connectrpc/async/host.rb lib/connectrpc/async/transport.rb

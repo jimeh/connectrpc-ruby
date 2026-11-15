@@ -125,7 +125,9 @@ RSpec.describe "HTTP/2 TLS snapshots and authentication" do
           }
           rejected.close(grace: 0)
         end
-        task.yield
+        # With TLS 1.3 a client can observe rejection before the host's own
+        # handshake task records it; wait for both host-side failures.
+        wait_until(task, "both host handshake failures") { host.setup_errors.size == 2 }
         expect(seen.size).to eq(1)
         expect(host.setup_errors.size).to eq(2)
         expect(host.setup_errors.join).to match(/certificate verify failed|peer did not return a certificate/)

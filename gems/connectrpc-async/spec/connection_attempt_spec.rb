@@ -20,8 +20,10 @@ RSpec.describe "Shared HTTP/2 connection attempts" do
           events = []
           transport = recording_transport(origin, events, ca_file: ca_file)
           source = ConnectRPC::CancellationSource.new
+          # The deadline exit is real elapsed time, the boundary under test. The
+          # join synchronization below proves both callers wait before it expires.
           initiator = request("#{origin}/initiator",
-                              deadline: exit == :deadline ? ConnectRPC::Deadline.new(0.2) : nil)
+                              deadline: exit == :deadline ? ConnectRPC::Deadline.new(1) : nil)
           initiator.cancellation = source.token if exit == :cancellation
           first = task.async(finished: false) { transport.call(initiator) }
           wait_until(task, "attempt accepted") { peer.accepted == 1 }

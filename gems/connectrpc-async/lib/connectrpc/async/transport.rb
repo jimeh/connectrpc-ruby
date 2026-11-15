@@ -184,7 +184,7 @@ module ConnectRPC
           connection = acquire(operation, task)
           dispatched = false
           begin
-            return connection.synchronize do
+            return connection.synchronize(dispatch: true) do
               check_request!(request)
               raise Internal::UnusableConnection, "Connection is not reusable" unless @manager.usable?(connection)
 

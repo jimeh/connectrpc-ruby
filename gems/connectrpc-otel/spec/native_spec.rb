@@ -105,16 +105,19 @@ RSpec.describe "Native host tracing" do
       end
       parents = %w[initiator waiter].map { |name| provider.tracer("test").start_span(name) }
       probe.enable
+      source = ConnectRPC::CancellationSource.new
       initiator = task.async(finished: false) do
         OpenTelemetry::Trace.with_span(parents.first) do
-          typed.echo(AsyncHelpers::MESSAGE.new(name: "initiator"), timeout: 0.2)
+          typed.echo(AsyncHelpers::MESSAGE.new(name: "initiator"), timeout: nil, cancellation: source.token)
         end
       end
       clock.next_delay
       waiter = task.async do
         OpenTelemetry::Trace.with_span(parents.last) { typed.echo(AsyncHelpers::MESSAGE.new(name: "waiter"), timeout: nil) }
       end
-      expect { initiator.wait }.to raise_error(ConnectRPC::Error) { |error| expect(error.code).to eq("deadline_exceeded") }
+      wait_until(task, "both callers waiting") { transport.instance_variable_get(:@acquiring).size == 2 }
+      source.cancel
+      expect { initiator.wait }.to raise_error(ConnectRPC::Error) { |error| expect(error.code).to eq("canceled") }
       reserved.close
       host = ConnectRPC::Async::Host.new(server: server(instrumentation: bus), port: port).start
       clock.fire

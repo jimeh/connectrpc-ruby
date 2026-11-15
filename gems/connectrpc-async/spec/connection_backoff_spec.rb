@@ -109,9 +109,11 @@ RSpec.describe "HTTP/2 connection backoff" do
       source = ConnectRPC::CancellationSource.new
       cancelled = request("#{origin}/cancelled")
       cancelled.cancellation = source.token
+      # The deadline exit is real elapsed time, the boundary under test. The
+      # join synchronization proves the expiring caller waits before it leaves.
       leavers = [task.async(finished: false) { transport.call(cancelled) },
                  task.async(finished: false) do
-                   transport.call(request("#{origin}/expired", deadline: ConnectRPC::Deadline.new(0.05)))
+                   transport.call(request("#{origin}/expired", deadline: ConnectRPC::Deadline.new(1)))
                  end]
       wait_until(task, "four wait-for-ready callers") { transport.instance_variable_get(:@acquiring).size == 4 }
       expect(transport.connection_state).to eq(:transient_failure)

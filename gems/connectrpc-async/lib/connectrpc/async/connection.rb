@@ -29,15 +29,23 @@ module ConnectRPC
           @writer = nil
         end
 
-        def synchronize
+        # A dispatcher has allocated and written nothing while it waits, so it
+        # is not a retirement writer until it holds the guard. It then rechecks
+        # before registering, without yielding, and returns to acquisition.
+        def synchronize(dispatch: false)
           task = ::Async::Task.current
           return yield if @writer.equal?(task)
 
           raise UnusableConnection, "HTTP/2 connection closed" if @resource&.finished?
 
-          @writers[task] = true
+          @writers[task] = true unless dispatch
           begin
             @write_frame_guard.acquire do
+              if dispatch
+                raise UnusableConnection, "HTTP/2 connection closed" if @resource&.finished?
+
+                @writers[task] = true
+              end
               @writer = task
               begin
                 yield
@@ -535,12 +543,11 @@ module ConnectRPC
             @aborted = true
             @abort_during_drain = true if @drain_task && !@drained
             @cleanup = ::Async::Task.new(@lifetime, transient: true, finished: false) { retire(error) }
-            unusable
           end
           if owned
-            @cleanup.run if launch
+            start_cleanup if launch
           else
-            Internal.join_complete(@cleanup, failure: true) { @cleanup.run if launch }
+            Internal.join_complete(@cleanup, failure: true) { start_cleanup if launch }
           end
           nil
         end
@@ -594,6 +601,15 @@ module ConnectRPC
         end
 
         def retirement_completed? = !!@retirement_completed
+
+        # Retirement starts, closing raw TCP, before the owner notification
+        # can yield; a caller cancelled in that notification cannot leave it
+        # unstarted. The notification still precedes any retirement join.
+        def start_cleanup
+          @cleanup.run
+        ensure
+          unusable
+        end
 
         def retirement_roots
           outputs = (@connection ? @connection.streams.values : []).flat_map do |stream|

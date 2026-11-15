@@ -128,4 +128,60 @@ RSpec.describe "HTTP/2 connection growth and peer capacity" do
       bound&.close
     end
   end
+
+  # Every reconcile trigger runs before the woken waiter resumes, while another
+  # connection already has spare capacity. None may dial a third connection.
+  %i[retire unusable timer].each do |trigger|
+    it "does not expand on #{trigger} reconcile while another connection has spare capacity" do
+      reactor do |task|
+        bound = IO::Endpoint.tcp("127.0.0.1", 0).bound
+        refuse = trigger == :timer ? [2] : []
+        peer = ConnectionPeer::RecordingServer.new(task, bound.sockets.first, settings: streams_setting(1),
+                                                                              refuse: refuse)
+        origin = "http://127.0.0.1:#{bound.sockets.first.local_address.ip_port}"
+        events = []
+        policy = ConnectRPC::Async::ConnectionPolicy.new(wait_for_ready: trigger == :timer)
+        transport = recording_transport(origin, events, connection_limit: 2, connection_policy: policy)
+        manager = connection_manager(transport)
+        waiters = manager.instance_variable_get(:@waiters)
+        first = manager.acquire
+        if trigger == :timer
+          clock = install_clock(transport)
+          waiting = task.async { manager.acquire }
+          # The closed expansion backs off; the wait-for-ready waiter keeps demand.
+          clock.next_delay
+          expect(attempt_outcomes(events)).to eq(%i[ready closed])
+          progress = transport.instance_variable_get(:@progress)
+          wait_until(task, "waiter blocked during backoff") { progress.waiting_count == 1 }
+          # Fire first so the timer's reconcile runs before the released waiter.
+          clock.fire
+          manager.release(first)
+          expected = first
+        else
+          second = manager.acquire
+          waiting = task.async { manager.acquire }
+          wait_until(task, "capacity waiter blocked") { waiters.size == 1 }
+          manager.release(second)
+          if trigger == :retire
+            first.close!
+            manager.release(first)
+          else
+            manager.release(first)
+            # The GOAWAY notification hook, run before the woken waiter resumes.
+            first.resource.unusable
+          end
+          expected = second
+        end
+        expect(waiting.wait).to equal(expected)
+        manager.release(expected)
+        wait_until(task, "no attempt in flight") { manager.instance_variable_get(:@attempt).nil? }
+        expect(attempt_outcomes(events)).to eq(trigger == :timer ? %i[ready closed] : %i[ready ready])
+        expect(peer.accepted).to eq(2)
+      ensure
+        transport&.close(grace: 0)
+        peer&.stop
+        bound&.close
+      end
+    end
+  end
 end

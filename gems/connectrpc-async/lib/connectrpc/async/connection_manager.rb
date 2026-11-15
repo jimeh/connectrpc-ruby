@@ -184,10 +184,11 @@ module ConnectRPC
           :idle
         end
 
-        # Starts a demand-driven attempt when one is allowed, then republishes.
+        # Starts a demand-driven attempt when one is allowed and no connection
+        # has spare capacity, then republishes. Woken waiters take that capacity.
         def reconcile
           unless @closing
-            start_attempt if !@attempt && !@retry_at && slot_free? && demand?
+            start_attempt if !@attempt && !@retry_at && slot_free? && demand? && !available
             publish(current_state)
           end
           @progress.signal
@@ -202,15 +203,20 @@ module ConnectRPC
         end
 
         # Publishes the attempt before running its eager task, so a waiter
-        # never misses an attempt that finishes before it waits.
+        # never misses an attempt that finishes before it waits. The task
+        # exists first: close can cancel it while an observer yields, and an
+        # interrupted publisher still runs or abandons it.
         def start_attempt
           attempt = Attempt.new(@clock.now)
           @attempt = attempt
           resource = attempt.resource = @build.call
           resource.on_unusable = method(:connection_unusable)
-          publish(current_state)
-          attempt.task = ::Async::Task.new(@lifetime, finished: false) { run_attempt(attempt) }
-          attempt.task.run
+          task = attempt.task = ::Async::Task.new(@lifetime, finished: false) { run_attempt(attempt) }
+          begin
+            publish(current_state)
+          ensure
+            task.finished? ? abandon(attempt) : task.run
+          end
           attempt
         end
 

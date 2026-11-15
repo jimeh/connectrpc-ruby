@@ -105,6 +105,10 @@ module ConnectionPeer
 
   def connection_manager(transport) = transport.instance_variable_get(:@manager)
 
+  # Tasks blocked on a connection's frame guard, including unsent dispatchers
+  # that are deliberately not registered as retirement writers.
+  def guard_waiters(connection) = connection.instance_variable_get(:@write_frame_guard).waiting.size
+
   # Binding without listening reserves a port while TCP connect is refused.
   def refusing_socket
     socket = Socket.new(Socket::AF_INET, Socket::SOCK_STREAM, 0)
