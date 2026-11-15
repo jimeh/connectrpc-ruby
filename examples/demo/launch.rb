@@ -48,12 +48,8 @@ module DemoExample
     private
 
     def prepare_certificates
-      if Certs.usable?
-        puts "Using demo certificates in #{Certs.display_dir}"
-      else
-        Certs.issue_all
-        puts "Issued demo certificates in #{Certs.display_dir}"
-      end
+      verb = Certs.prepare! == :issued ? "Issued" : "Using"
+      puts "#{verb} demo certificates in #{Certs.display_dir}"
     end
 
     def mtls_flag(argv)

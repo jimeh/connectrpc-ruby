@@ -293,7 +293,11 @@ def discovery_cases(url, state)
               expected: ["https://127.0.0.1:9 needs the demo client certificate", "--mtls"])],
     [{ "CONNECTRPC_EXAMPLE_STATE" => "#{state}.nocerts/server.json" },
      Case.new(client: "async-http1", args: %w[greet --server rack --url https://127.0.0.1:9], status: 2,
-              expected: ["rack does not serve mutual TLS in these examples"])]
+              expected: ["rack does not serve mutual TLS in these examples"])],
+    # The scheme is case-insensitive, so an uppercase HTTPS:// URL is an mTLS call too.
+    [{ "CONNECTRPC_EXAMPLE_STATE" => "#{state}.nocerts/server.json" },
+     Case.new(client: "nethttp", args: %w[greet --server falcon --url HTTPS://127.0.0.1:9], status: 2,
+              expected: ["nethttp cannot present a client certificate"])]
   ]
 end
 

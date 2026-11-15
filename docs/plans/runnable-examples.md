@@ -110,7 +110,8 @@ success, nonzero on error or refusal.
 - Certificates: `examples/demo/certs.rb` issues an EC P-256 CA, a server leaf for
   `localhost`/`127.0.0.1` and a `demo-client` leaf, valid 7 days, into a `tls`
   directory next to the state file (`vendor/examples/tls` by default). Servers
-  reuse a set valid for at least another day. The set is staged and renamed into
+  reuse a set valid for at least another day, under a lock so simultaneous starts
+  do not replace each other's set. The set is staged and renamed into
   place. Nothing is committed.
 - Clients: `async-h2` and `async-http1` pass `ca_file`, `certificate_chain` and
   `private_key` for an `https://` URL. `nethttp` is refused, because the core

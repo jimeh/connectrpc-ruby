@@ -145,8 +145,9 @@ mise run example:client -- async-h2 greet Ada
 The first `--mtls` server issues a throwaway demo CA, a server certificate for
 `localhost` and `127.0.0.1`, and a client certificate for `demo-client`. It
 writes them to `vendor/examples/tls/`, next to the state file, and later servers
-reuse them until a day before they expire after 7 days. They exist only for
-these examples.
+reuse them until a day before they expire after 7 days. Renewing them replaces
+the CA, so restart any older `--mtls` server that is still running. They exist
+only for these examples.
 
 ```text
 Issued demo certificates in vendor/examples/tls

@@ -7,8 +7,8 @@ require_relative "certs"
 module DemoExample
   Options = Struct.new(:client, :server, :url, :rpc, :args, :codec, :get, :gzip, :protocol, keyword_init: true) do
     def encoding = gzip ? :gzip : :identity
-    # The example servers serve https:// only with --mtls.
-    def mtls? = url.start_with?("https://")
+    # The example servers serve https:// only with --mtls. URI lowercases the scheme.
+    def mtls? = URI(url).scheme == "https"
     def settings = [protocol, codec, encoding, ("GET" if get), ("mTLS" if mtls?)].compact.join(", ")
     def pairing = to_h.slice(:client, :server, :rpc, :protocol, :codec, :get).merge(mtls: mtls?)
 

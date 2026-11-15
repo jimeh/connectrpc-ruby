@@ -10,6 +10,8 @@ module DemoExample
   # Real deployments get these from their own PKI. The files live in a tls
   # directory next to the state file (vendor/examples/tls by default), and a
   # server started with --mtls reuses them until they are about to expire.
+  # Renewing them replaces the CA, so any older --mtls server still running
+  # must restart before clients can call it again.
   module Certs
     FILES = {
       ca: "ca.pem", server: "server.pem", server_key: "server-key.pem", client: "client.pem",
@@ -36,8 +38,22 @@ module DemoExample
       false
     end
 
+    # Returns :reused or :issued. The lock makes a server that starts at the
+    # same time as another wait, then reuse the set the other one issued
+    # instead of replacing it.
+    def prepare!
+      FileUtils.mkdir_p(File.dirname(dir))
+      File.open("#{dir}.lock", File::RDWR | File::CREAT, 0o600) do |lock|
+        lock.flock(File::LOCK_EX)
+        next :reused if usable?
+
+        issue_all
+        :issued
+      end
+    end
+
     # Writes the set to a private directory, then renames it into place, so a
-    # client or a second server never reads a half-written set.
+    # client never reads a half-written set.
     def issue_all
       staging = "#{dir}.#{Process.pid}"
       FileUtils.rm_rf(staging)
@@ -45,8 +61,6 @@ module DemoExample
       write_set(staging)
       FileUtils.rm_rf(dir)
       File.rename(staging, dir)
-    rescue Errno::EEXIST, Errno::ENOTEMPTY
-      FileUtils.rm_rf(staging) # Another server installed a set first; use that one.
     end
 
     def write_set(target)
