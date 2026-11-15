@@ -10,8 +10,10 @@ root = File.expand_path("../../..", __dir__)
 binary = File.join(root, "vendor/async/connect-go-peer")
 FileUtils.mkdir_p(File.dirname(binary))
 system("go", "mod", "verify", chdir: File.join(root, "interop"), exception: true)
-system("go", "build", "-mod=readonly", "-o", binary, File.join(__dir__, "../interop/peer.go"),
+peer_source = File.join(__dir__, "../interop/peer.go")
+system("go", "test", "-mod=readonly", "-race", "-v", peer_source, File.join(__dir__, "../interop/peer_test.go"),
        chdir: File.join(root, "interop"), exception: true)
+system("go", "build", "-mod=readonly", "-o", binary, peer_source, chdir: File.join(root, "interop"), exception: true)
 $LOAD_PATH.unshift(File.join(root, "spec/fixtures/generation/echo"))
 require "echo_connect"
 require_relative "../spec/support/helpers"

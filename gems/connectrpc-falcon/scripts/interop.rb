@@ -22,7 +22,8 @@ binary = File.join(root, "vendor/falcon/connect-go-peer")
 FileUtils.mkdir_p(File.dirname(binary))
 system("go", "mod", "verify", chdir: File.join(root, "interop"), exception: true)
 peer_sources = %w[peer.go web_rejection.go].map { |name| File.join(__dir__, "../interop", name) }
-system("go", "test", "-mod=readonly", "-v", *peer_sources, File.join(__dir__, "../interop/web_rejection_test.go"),
+peer_tests = %w[peer_test.go web_rejection_test.go].map { |name| File.join(__dir__, "../interop", name) }
+system("go", "test", "-mod=readonly", "-race", "-v", *peer_sources, *peer_tests,
        chdir: File.join(root, "interop"), exception: true)
 system("go", "build", "-mod=readonly", "-o", binary, *peer_sources,
        chdir: File.join(root, "interop"), exception: true)
