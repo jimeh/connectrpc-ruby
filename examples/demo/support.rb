@@ -1,0 +1,270 @@
+# frozen_string_literal: true
+
+require "json"
+require "fileutils"
+require "uri"
+
+# Demo plumbing, not ConnectRPC usage: the support table, the pairing check and
+# the state file, shared by the runnable servers, clients, launcher and
+# verification script. It loads no gems, so every owning bundle can use it.
+module DemoExample
+  ROOT = File.expand_path("../..", __dir__)
+  DEFAULT_PORT = 8080
+  README = "examples/README.md"
+
+  SHAPES = {
+    unary: "unary", server_stream: "server streaming", client_stream: "client streaming", bidi: "bidi streaming"
+  }.freeze
+  ALL = SHAPES.keys.freeze
+  H1_STREAMING = %i[unary server_stream client_stream].freeze
+  PROTOCOLS = { connect: "Connect", grpc: "gRPC" }.freeze
+
+  RPCS = {
+    "greet" => :unary, "fail" => :unary, "countdown" => :server_stream, "collect" => :client_stream, "chat" => :bidi
+  }.freeze
+
+  # What each server hosts, per HTTP version and protocol. Mirrors docs/support.md.
+  SERVERS = {
+    "rack" => { "HTTP/1.1" => { connect: [:unary] } },
+    "rails" => { "HTTP/1.1" => { connect: [:unary] } },
+    "async" => { "HTTP/2" => { connect: ALL, grpc: ALL } },
+    "falcon" => { "HTTP/1.1" => { connect: H1_STREAMING }, "HTTP/2" => { connect: ALL, grpc: ALL } }
+  }.freeze
+
+  # Each client speaks exactly one HTTP version.
+  CLIENTS = {
+    "nethttp" => { http: "HTTP/1.1", protocols: { connect: [:unary] } },
+    "async-h2" => { http: "HTTP/2", protocols: { connect: ALL, grpc: ALL } },
+    "async-http1" => { http: "HTTP/1.1", protocols: { connect: H1_STREAMING } }
+  }.freeze
+
+  # Which servers can require client certificates (--mtls) and which clients
+  # can present one. Mirrors docs/support.md: core NetHTTP has no client
+  # certificate option, and Rack and Rails have no qualified TLS profile.
+  MTLS_SERVERS = %w[async falcon].freeze
+  MTLS_CLIENTS = %w[async-h2 async-http1].freeze
+
+  # Raised for any pairing or target the examples deliberately do not attempt.
+  class Refusal < StandardError; end
+
+  # Reads a PORT value as a decimal number in range, or returns nil. Integer()
+  # alone would read a leading 0 as octal, so PORT=0700 would mean port 448.
+  def self.port(value, range)
+    number = Integer(value, 10) if value.match?(/\A\d+\z/)
+    number if number && range.cover?(number)
+  end
+
+  # Decides whether a client can call an RPC on a server before any network I/O.
+  module Support
+    module_function
+
+    def check!(client:, server:, rpc:, protocol: :connect, codec: :proto, get: false, mtls: false)
+      reason = option_reason(rpc, protocol, codec, get)
+      raise Refusal, "#{reason}.\nSee #{README} for the supported options." if reason
+
+      reason = pairing_reason(client, server, rpc, protocol, mtls)
+      return unless reason
+
+      raise Refusal, [
+        "#{reason}.", *alternatives(client, server, rpc, protocol, mtls), "See #{README} for the supported pairings."
+      ].join("\n")
+    end
+
+    def allowed?(client, server, rpc, protocol, mtls) = pairing_reason(client, server, rpc, protocol, mtls).nil?
+
+    def option_reason(rpc, protocol, codec, get)
+      return "gRPC requires the protobuf codec; drop --codec json" if protocol == :grpc && codec == :json
+      return "gRPC has no GET form; drop --get" if protocol == :grpc && get
+
+      "--get applies only to unary RPCs (greet, fail), not #{rpc}" if get && RPCS.fetch(rpc) != :unary
+    end
+
+    # A pair works only when the client can make the call at all, both sides
+    # support mutual TLS when the server requires it, and the server hosts that
+    # protocol and RPC shape on the client's one HTTP version.
+    def pairing_reason(client, server, rpc, protocol, mtls)
+      client_reason(client, rpc, protocol) || (mtls_reason(client, server) if mtls) ||
+        server_reason(client, server, rpc, protocol)
+    end
+
+    def client_reason(client, rpc, protocol)
+      shape = RPCS.fetch(rpc)
+      shapes = CLIENTS.fetch(client)[:protocols][protocol]
+      return "#{client} does not support #{PROTOCOLS[protocol]}; native gRPC needs HTTP/2" unless shapes
+      return if shapes.include?(shape)
+
+      "#{client} supports only #{names(shapes)} #{PROTOCOLS[protocol]} calls; #{rpc} is #{SHAPES[shape]}"
+    end
+
+    def mtls_reason(client, server)
+      unless MTLS_CLIENTS.include?(client)
+        return "#{client} cannot present a client certificate, so it cannot call an --mtls server"
+      end
+      return if MTLS_SERVERS.include?(server)
+
+      "#{server} does not serve mutual TLS in these examples; only #{MTLS_SERVERS.join(' and ')} accept --mtls"
+    end
+
+    def server_reason(client, server, rpc, protocol)
+      http = CLIENTS.fetch(client)[:http]
+      served = SERVERS.fetch(server)
+      return "#{client} uses #{http}, but #{server} serves only #{served.keys.join(' and ')}" unless served[http]
+
+      shapes = served[http][protocol]
+      return "#{server} does not serve #{PROTOCOLS[protocol]} over #{http}" unless shapes
+      return if shapes.include?(RPCS.fetch(rpc))
+
+      "#{server} serves only #{names(shapes)} #{PROTOCOLS[protocol]} calls over #{http}; " \
+        "#{rpc} is #{SHAPES[RPCS.fetch(rpc)]}"
+    end
+
+    def alternatives(client, server, rpc, protocol, mtls)
+      over = qualifier(protocol, mtls)
+      clients = CLIENTS.keys.select { |name| allowed?(name, server, rpc, protocol, mtls) }
+      servers = SERVERS.keys.select { |name| allowed?(client, name, rpc, protocol, mtls) }
+      lines = []
+      lines << "Clients that can call #{rpc} on #{server}#{over}: #{clients.join(', ')}" if clients.any?
+      lines << "Servers that #{client} can call #{rpc} on#{over}: #{servers.join(', ')}" if servers.any?
+      lines.empty? ? ["Pairings that can call #{rpc}#{over}: #{working_pairs(rpc, protocol, mtls)}"] : lines
+    end
+
+    def qualifier(protocol, mtls) = "#{' with --protocol grpc' if protocol == :grpc}#{' over mTLS' if mtls}"
+
+    def working_pairs(rpc, protocol, mtls)
+      pairs = CLIENTS.keys.product(SERVERS.keys).filter_map do |client, server|
+        "#{client} -> #{server}" if allowed?(client, server, rpc, protocol, mtls)
+      end
+      pairs.join(", ")
+    end
+
+    def names(shapes) = shapes.map { |shape| SHAPES[shape] }.join(", ")
+  end
+
+  # The state file the running server writes so clients can find it. Paths are
+  # absolute because the owning bundle runners change directory.
+  module State
+    module_function
+
+    def path = File.expand_path(ENV.fetch("CONNECTRPC_EXAMPLE_STATE", "vendor/examples/server.json"), ROOT)
+
+    def write(server:, url:)
+      FileUtils.mkdir_p(File.dirname(path))
+      temporary = "#{path}.#{Process.pid}"
+      File.write(temporary, JSON.generate(server: server, url: url, pid: Process.pid))
+      File.rename(temporary, path)
+    end
+
+    def remove
+      record = read
+      File.delete(path) if record.is_a?(Hash) && record["pid"] == Process.pid
+    rescue Errno::ENOENT
+      nil
+    end
+
+    def read
+      JSON.parse(File.read(path))
+    rescue Errno::ENOENT, JSON::ParserError
+      nil
+    end
+
+    # Returns the record of a server that is still running, or raises with how to start one.
+    def live!
+      record = read
+      raise Refusal, not_running("no state file at #{path}") unless record
+      raise Refusal, not_running("#{path} does not hold a server name, URL and pid") unless usable?(record)
+
+      Process.kill(0, record.fetch("pid"))
+      record
+    rescue Errno::ESRCH
+      raise Refusal, not_running("#{path} names pid #{record['pid']}, which has exited")
+    rescue Errno::EPERM
+      record
+    end
+
+    def usable?(record)
+      record.is_a?(Hash) && SERVERS.key?(record["server"]) && Target.url?(record["url"]) &&
+        record["pid"].is_a?(Integer) && record["pid"].positive?
+    end
+
+    def not_running(why)
+      "No running example server found (#{why}).\nStart one with: mise run example:server -- NAME " \
+        "(#{SERVERS.keys.join(', ')}), or pass --server NAME [--url URL]."
+    end
+  end
+
+  # Resolves which server a client calls and at what URL.
+  module Target
+    module_function
+
+    def resolve(server:, url:)
+      unless url.nil? || url?(url)
+        raise Refusal, "--url #{url} is not an http:// or https:// URL with a host " \
+                       "(and no credentials, query or fragment)"
+      end
+      return explicit(server, url) if server
+
+      record = State.live!
+      return [record.fetch("server"), record.fetch("url")] if url.nil? || same_url?(url, record.fetch("url"))
+
+      raise Refusal, "--url #{url} is not the running example server (#{record['server']} at #{record['url']}); " \
+                     "also pass --server NAME to name the server at that URL"
+    end
+
+    # --server names the host, so the pairing check can run without a state file.
+    # Without --url it reuses the state file's URL when that records the same
+    # server, and otherwise falls back to PORT. Either way it refuses a URL the
+    # state file says another server is running at.
+    def explicit(server, url)
+      raise Refusal, "Unknown server #{server}; choose one of: #{SERVERS.keys.join(', ')}" unless SERVERS.key?(server)
+
+      record = running_record
+      return [server, record.fetch("url")] if url.nil? && record&.fetch("server") == server
+
+      url ||= fallback_url
+      refuse_conflict!(server, url, record)
+      [server, url]
+    end
+
+    def refuse_conflict!(server, url, record)
+      return unless record && record.fetch("server") != server && same_address?(url, record.fetch("url"))
+
+      raise Refusal, "--server #{server} does not match the running example server at #{url} " \
+                     "(#{record['server']}); pass --url URL for the #{server} server, or drop --server"
+    end
+
+    def fallback_url
+      value = ENV.fetch("PORT", DEFAULT_PORT.to_s)
+      port = DemoExample.port(value, 1..65_535)
+      return "http://127.0.0.1:#{port}" if port
+
+      raise Refusal, "PORT=#{value} is not a port number from 1 to 65535; set it to the server's port or pass --url URL"
+    end
+
+    def running_record
+      State.live!
+    rescue Refusal
+      nil
+    end
+
+    # The same URL rule ConnectRPC::Client applies, checked before it can raise.
+    def url?(url)
+      uri = URI(url)
+      uri.is_a?(URI::HTTP) && !uri.host.to_s.empty? && !uri.userinfo && !uri.query && !uri.fragment
+    rescue URI::InvalidURIError, ArgumentError
+      false
+    end
+
+    # Compares parsed URLs, so case, a default or zero-padded port and a trailing
+    # slash do not hide a match.
+    def same_url?(left, right) = comparable(left) == comparable(right)
+
+    # One address hosts one server, whatever the scheme, so an http:// fallback
+    # URL still conflicts with an --mtls server recorded at https://.
+    def same_address?(left, right) = comparable(left)[1, 2] == comparable(right)[1, 2]
+
+    def comparable(url)
+      uri = URI(url)
+      [uri.scheme, uri.host.downcase, uri.port, uri.path.delete_suffix("/")]
+    end
+  end
+end

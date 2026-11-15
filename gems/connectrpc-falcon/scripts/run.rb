@@ -17,12 +17,15 @@ arguments = case command
             when "web_conformance" then ["exec", "ruby", File.join(root, "scripts/web_conformance.rb"), *ARGV]
             when "conformance" then ["exec", "ruby", File.join(root, "scripts/native_conformance.rb"), *ARGV]
             when "setup" then ["install"]
+            when "exec" then ["exec", *ARGV]
             when "test" then ["exec", "rspec", *ARGV]
             when "check" then ["exec", "rubocop", ".", "--config", File.join(root, ".rubocop.yml"), *ARGV]
             when "build", "package", "example", "interop", "streaming_interop" then ["exec", "ruby",
                                                                                      "scripts/#{command}.rb", *ARGV]
-            else abort "Usage: run.rb setup|test|check|build|package|example|interop"
+            else abort "Usage: run.rb setup|test|check|build|package|example|interop|exec"
             end
-puts "Falcon backend; Ruby #{RUBY_VERSION}; Bundler 4.0.23; Gemfile #{environment.fetch('BUNDLE_GEMFILE')}"
+unless command == "exec"
+  puts "Falcon backend; Ruby #{RUBY_VERSION}; Bundler 4.0.23; Gemfile #{environment.fetch('BUNDLE_GEMFILE')}"
+end
 $stdout.flush
 exec(environment, RbConfig.ruby, "-S", "bundle", "_4.0.23_", *arguments, chdir: backend)

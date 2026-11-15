@@ -166,6 +166,20 @@ depends = ["setup", "setup:generation"]
 tools."aqua:protocolbuffers/protobuf/protoc" = "36.2"
 run = "bundle _4.0.23_ exec ruby scripts/generated_example.rb"
 
+# Runnable two-terminal examples; each file runs in its owning bundle.
+[tasks."example:server"]
+description = "Serve a runnable example until Ctrl-C (rack, rails, async, falcon; --list; PORT overrides 8080)"
+run = "mise exec -- ruby scripts/example.rb server"
+
+[tasks."example:client"]
+description = "Call the running example server (nethttp, async-h2, async-http1 [RPC [ARGS...]] [options]; --list)"
+run = "mise exec -- ruby scripts/example.rb client"
+
+[tasks."example:verify"]
+description = "Run every supported example server/client pairing and representative refusals on ephemeral ports"
+depends = ["setup", "rack:setup", "setup:rails", "async:setup", "falcon:setup"]
+run = "mise exec -- ruby scripts/example_verify.rb"
+
 # Optional Rails bundle, independent of the root development bundle.
 [tasks."setup:rails"]
 description = "Install the frozen selected Rails Appraisal lane (RAILS_LANE=8.0 or 8.1)"

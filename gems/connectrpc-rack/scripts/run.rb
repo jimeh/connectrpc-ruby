@@ -14,11 +14,14 @@ environment = {
 command = ARGV.shift
 arguments = case command
             when "setup" then ["install"]
+            when "exec" then ["exec", *ARGV]
             when "test" then ["exec", "rspec", *ARGV]
             when "check" then ["exec", "rubocop", ".", "--config", File.join(root, ".rubocop.yml")]
             when "build", "package" then ["exec", "ruby", "scripts/#{command}.rb", *ARGV]
-            else abort "Usage: run.rb setup|test|check|build|package"
+            else abort "Usage: run.rb setup|test|check|build|package|exec"
             end
-puts "Rack middleware; Ruby #{RUBY_VERSION}; Bundler 4.0.23; Gemfile #{environment.fetch('BUNDLE_GEMFILE')}"
+unless command == "exec"
+  puts "Rack middleware; Ruby #{RUBY_VERSION}; Bundler 4.0.23; Gemfile #{environment.fetch('BUNDLE_GEMFILE')}"
+end
 $stdout.flush
 exec(environment, RbConfig.ruby, "-S", "bundle", "_4.0.23_", *arguments, chdir: middleware)

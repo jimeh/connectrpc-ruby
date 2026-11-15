@@ -21,6 +21,7 @@ environment = {
 command = ARGV.shift
 arguments = case command
             when "setup" then ["install"]
+            when "exec" then ["exec", *ARGV]
             when "test" then ["exec", "appraisal", "rails-#{lane}", "rspec", *ARGV]
             when "generation:check" then ["exec", "ruby", File.join(root, "scripts/check_appraisals.rb")]
             when "build" then ["exec", "ruby", "-r", File.join(root, "scripts/package_build"), "-e", <<~CODE]
@@ -31,9 +32,11 @@ arguments = case command
             CODE
             when "package" then ["exec", "appraisal", "rails-#{lane}", "ruby",
                                  File.join(root, "scripts/check_rails_package.rb")]
-            else abort "Usage: ruby scripts/rails.rb setup|test|generation:check|build|package [RSpec options]"
+            else abort "Usage: ruby scripts/rails.rb setup|test|generation:check|build|package|exec [arguments]"
             end
-puts "Rails lane #{lane} (#{version}); Ruby #{RUBY_VERSION}; Bundler 4.0.23"
-puts "Gemfile #{environment.fetch('BUNDLE_GEMFILE')}"
+unless command == "exec"
+  puts "Rails lane #{lane} (#{version}); Ruby #{RUBY_VERSION}; Bundler 4.0.23"
+  puts "Gemfile #{environment.fetch('BUNDLE_GEMFILE')}"
+end
 $stdout.flush
 exec(environment, RbConfig.ruby, "-S", "bundle", "_4.0.23_", *arguments, chdir: adapter)
