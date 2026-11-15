@@ -1,0 +1,29 @@
+syntax = "proto3";
+
+// Shared schema for the runnable server and client examples in examples/README.md.
+package demo.v1;
+
+message GreetRequest { string name = 1; }
+message GreetResponse { string greeting = 1; }
+
+message CountdownRequest { int32 from = 1; }
+message CountdownResponse { int32 number = 1; }
+
+message CollectRequest { string name = 1; }
+message CollectResponse { string summary = 1; }
+
+message ChatRequest { string text = 1; }
+message ChatResponse { string text = 1; }
+
+service DemoService {
+  // Unary. NO_SIDE_EFFECTS lets clients opt into Connect GET.
+  rpc Greet(GreetRequest) returns (GreetResponse) {
+    option idempotency_level = NO_SIDE_EFFECTS;
+  }
+  // Server streaming: one request, several responses.
+  rpc Countdown(CountdownRequest) returns (stream CountdownResponse);
+  // Client streaming: several requests, one response.
+  rpc Collect(stream CollectRequest) returns (CollectResponse);
+  // Bidirectional streaming: interleaved requests and responses.
+  rpc Chat(stream ChatRequest) returns (stream ChatResponse);
+}

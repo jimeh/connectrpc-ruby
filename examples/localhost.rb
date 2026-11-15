@@ -9,11 +9,11 @@ module EchoExample
   class Localhost
     attr_reader :url
 
-    def initialize(app)
+    def initialize(app, port: 0)
       ready = Queue.new
       @server = Server.new(
         app,
-        BindAddress: "127.0.0.1", Port: 0, AccessLog: [], Logger: WEBrick::Log.new(File::NULL),
+        BindAddress: "127.0.0.1", Port: port, AccessLog: [], Logger: WEBrick::Log.new(File::NULL),
         StartCallback: -> { ready << true }
       )
       @url = "http://127.0.0.1:#{@server.listeners.first.addr[1]}"

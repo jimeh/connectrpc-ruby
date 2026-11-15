@@ -48,6 +48,10 @@ and closes the host and its workers. Its schema comes from the shared
 [descriptor fixture](spec/fixtures/echo.proto). Go is needed only for interop
 and final verification, and those tasks install its project pin separately.
 
+To run a server and call it from another terminal, see the
+[runnable examples](examples/README.md): Rack, Rails, Async and Falcon servers
+with NetHTTP and Async clients.
+
 ## Generate services from protobuf
 
 `protoc-gen-connectrpc-ruby` generates mixed unary/streaming declarations, thin clients

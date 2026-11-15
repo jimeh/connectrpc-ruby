@@ -138,7 +138,7 @@ RSpec.describe "CI check mapping" do
     backend = %w[async_specs async_interop]
     falcon = %w[falcon_specs falcon_interop]
     expect(jobs.keys).to match_array([*core, "rails", *backend, "rack", "testing", "rbs", *falcon, "otel",
-                                      "browser_grpc_web"])
+                                      "browser_grpc_web", "examples"])
     count = lambda do |names|
       jobs.slice(*names).values.sum do |job|
         job.dig("strategy", "matrix", "ruby")&.size || job.dig("strategy", "matrix", "include")&.size || 1
@@ -151,12 +151,12 @@ RSpec.describe "CI check mapping" do
     expect(count.call(["rack"])).to eq(2)
     expect(count.call(["testing"])).to eq(2)
     expect(count.call(["rbs"])).to eq(2)
-    expect(count.call(jobs.keys - ["browser_grpc_web"])).to eq(28)
+    expect(count.call(jobs.keys - %w[browser_grpc_web examples])).to eq(28)
     expect(count.call(["otel"])).to eq(2)
     expect(count.call(["browser_grpc_web"])).to eq(2)
-    expect(count.call(jobs.keys)).to eq(30)
+    expect(count.call(jobs.keys - ["examples"])).to eq(30)
     jobs.each_value { |job| expect(job).not_to have_key("needs") }
-    jobs.except("static", "rails").each_value do |job|
+    jobs.except("static", "rails", "examples").each_value do |job|
       expect(job.dig("strategy", "fail-fast")).to be(false)
       expect(job.dig("strategy", "matrix", "ruby")).to eq(%w[3.4.12 4.0.9])
     end
@@ -173,6 +173,21 @@ RSpec.describe "CI check mapping" do
                                                              "mise run rack:conformance:web")
     expect(commands.fetch("rbs").first(3)).to eq(["mise run rbs:cache-platform", "mise run rbs:check",
                                                   "mise run rbs:package"])
+  end
+
+  it "runs every runnable example pairing once, on one Ruby lane" do
+    examples = jobs.fetch("examples")
+    expect(examples).not_to have_key("strategy")
+    expect(examples.fetch("env")).to include("CI_EXPECTED_RUBY_VERSION" => "4.0.9")
+    steps = examples.fetch("steps")
+    ruby = steps.find { |step| step.fetch("uses", "").start_with?("ruby/setup-ruby@") }
+    expect(ruby.fetch("with")).to include("ruby-version" => "4.0.9")
+    cache = steps.find { |step| step.fetch("uses", "").start_with?("actions/cache@") }
+    expect(cache.dig("with", "path").lines.map(&:strip)).to eq(%w[vendor/rack/bundle vendor/async/bundle
+                                                                  vendor/falcon/bundle])
+    expect(cache.dig("with", "key")).to include("steps.bundle-platform.outputs.platform", "hashFiles(")
+    expect(steps.filter_map { |step| step["run"] }.first(2)).to eq(["mise run rbs:cache-platform",
+                                                                    "mise run example:verify"])
   end
 
   it "pins the three Rails Appraisal lanes and caches the selected frozen lock" do

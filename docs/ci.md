@@ -21,6 +21,7 @@ serial cache primer or aggregate job:
 | RBS source/API/package | 3.4.12, 4.0.9 | `mise run rbs:check`, then `mise run rbs:package` |
 | Falcon specs/package | 3.4.12, 4.0.9 | `mise run falcon:test`, `mise run falcon:package`, `mise run falcon:conformance` |
 | Falcon Go interoperability | 3.4.12, 4.0.9 | `mise run falcon:interop`, `mise run falcon:interop:streaming` |
+| Runnable examples | 4.0.9 | `mise run example:verify` |
 
 Each matrix has `fail-fast: false`. Every check runs its commands on cache
 hits too. Package isolation still installs cached `.gem` artifacts offline and
@@ -65,8 +66,9 @@ coverage and harness outputs are allowed.
 
 ## Native caches and invalidation
 
-RBS uses an explicit dependency-bundle cache described below. Other lanes use
-their native setup-action caches. No lane caches test results.
+RBS uses an explicit dependency-bundle cache described below, and Runnable
+examples adds one for its optional bundles. Other lanes use their native
+setup-action caches. No lane caches test results.
 Cache misses, eviction or denied saves leave installation and verification
 required. Shared-key save reservation collisions are safe: saves happen only
 after complete installs/builds, with no partial primer job.
@@ -307,3 +309,16 @@ before downloading, verifying and building the independent reference. The local
 `browser:reference:setup` task explicitly installs locked Mise Go instead.
 Both task definitions retain `GOTOOLCHAIN=local`, `GOWORK=off` and
 `GOFLAGS=-mod=readonly`; CI does not install Go through Mise.
+
+## Runnable examples
+
+One check on Ruby 4.0.9 runs `example:verify`. It starts each
+[runnable example](../examples/README.md) server on an ephemeral plaintext port,
+runs every supported client, RPC and option combination against it plus
+representative refusals, and stops it with INT or TERM. Every client and
+server process has a bounded deadline with TERM then KILL escalation. The
+setup-ruby cache covers the root `vendor/bundle`; the selected Rails 8.1 lane
+installs its remaining gems into that path on each run. An explicit cache keyed
+by the Ruby ABI/platform/image (`rbs:cache-platform`) and the Rack, Async and
+Falcon locks restores `vendor/{rack,async,falcon}/bundle`. Existing example
+tasks keep their current jobs.

@@ -24,7 +24,8 @@ Dir.mktmpdir("generation-") do |temporary|
   protoc_output = File.join(temporary, "protoc")
   buf_output = File.join(temporary, "buf")
   echo_output = File.join(temporary, "echo")
-  [protoc_output, buf_output, echo_output].each { |dir| FileUtils.mkdir_p(dir) }
+  demo_output = File.join(temporary, "demo")
+  [protoc_output, buf_output, echo_output, demo_output].each { |dir| FileUtils.mkdir_p(dir) }
   system("protoc", "-I", source, "--ruby_out=#{protoc_output}", "--connectrpc-ruby_out=#{protoc_output}",
          "--plugin=protoc-gen-connectrpc-ruby=#{plugin}", *inputs, exception: true)
   # JSON is a YAML subset. Both entries are real local Buf plugin invocations;
@@ -39,6 +40,10 @@ Dir.mktmpdir("generation-") do |temporary|
   system("protoc", "-I", File.join(root, "spec/fixtures"), "--ruby_out=#{echo_output}",
          "--connectrpc-ruby_out=#{echo_output}", "--plugin=protoc-gen-connectrpc-ruby=#{plugin}",
          "echo.proto", exception: true)
+  # The runnable examples share one checked-in demo schema and its official output.
+  system("protoc", "-I", File.join(root, "examples/proto"), "--ruby_out=#{demo_output}",
+         "--connectrpc-ruby_out=#{demo_output}", "--plugin=protoc-gen-connectrpc-ruby=#{plugin}",
+         "demo/v1/demo.proto", exception: true)
   files = Dir.glob("**/*.rb", base: protoc_output).sort
   raise "Buf file set differs" unless files == Dir.glob("**/*.rb", base: buf_output).sort
 
@@ -47,7 +52,9 @@ Dir.mktmpdir("generation-") do |temporary|
       raise "protoc/Buf byte mismatch: #{name}"
     end
   end
-  { protoc_output => File.join(fixture, "ruby"), echo_output => File.join(fixture, "echo") }.each do |from, to|
+  outputs = { protoc_output => File.join(fixture, "ruby"), echo_output => File.join(fixture, "echo"),
+              demo_output => File.join(root, "examples/gen") }
+  outputs.each do |from, to|
     generated = Dir.glob("**/*.rb", base: from).sort
     if ARGV == ["--check"]
       existing = Dir.glob("**/*.rb", base: to).sort
@@ -70,5 +77,5 @@ Dir.mktmpdir("generation-") do |temporary|
     system(RbConfig.ruby, "-I", load_path, File.join(root, "scripts/generated_integration.rb"), exception: true)
   end
   puts "protoc 36.2 / Buf 1.75.0 glue parity: #{files.grep(/_connect\.rb\z/).size} files"
-  puts "Both official message outputs loaded; official echo: 2 files"
+  puts "Both official message outputs loaded; official echo: 2 files; runnable demo: 2 files"
 end

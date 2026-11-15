@@ -62,6 +62,9 @@ Mise owns setup ordering and verification composition.
 | `mise run generation:check` | Regenerate into temp trees, compare fixture bytes/glue parity, exercise both protoc and Buf output. |
 | `mise run example:generated` | Compile the greeting proto and run its generated localhost client/handlers in both codecs. |
 | `mise run example` | Run a typed ephemeral localhost Rack/NetHTTP example in both codecs. |
+| `mise run example:server -- NAME` | Serve a [runnable example](../examples/README.md) server until Ctrl-C; `PORT` overrides 8080. |
+| `mise run example:client -- NAME [RPC [ARGS...]]` | Call the running example server; `--list` prints servers, clients, RPCs and options. |
+| `mise run example:verify` | Run every supported example pairing and representative refusals on ephemeral ports. |
 | `mise run fixture:build` | Rebuild the shared descriptor fixture from its explicit Ruby schema builder. |
 | `mise run fixture:check` | Compare the checked-in descriptor bytes to the builder. |
 | `mise run setup:interop` | Install task-local Go 1.27.3 and download checksum-locked modules. |

@@ -8,6 +8,7 @@ AllCops:
     - coverage/**/*
     # Official protoc output is checked by regeneration, not rewritten by lint.
     - spec/fixtures/generation/**/*_pb.rb
+    - examples/gen/**/*_pb.rb
     - interop/grpc/ruby/**/*.rb
     # Appraisal output is byte-checked with its actual generator.
     - gems/connectrpc-rails/gemfiles/**/*
@@ -44,6 +45,7 @@ Metrics/BlockLength:
     - scripts/build_generation.rb
     - scripts/generated_integration.rb
     - scripts/generated_interop.rb
+    - scripts/example_verify.rb
     - scripts/interop.rb
     - scripts/conformance.rb
     - conformance/**/*.rb
@@ -78,6 +80,7 @@ Metrics/MethodLength:
     - gems/connectrpc-falcon/spec/**/*.rb
     - gems/connectrpc-async/scripts/**/*.rb
     - gems/connectrpc-falcon/scripts/**/*.rb
+    - scripts/example_verify.rb
     - scripts/interop.rb
     - scripts/conformance.rb
     - conformance/**/*.rb
@@ -110,6 +113,7 @@ Metrics/AbcSize:
     - gems/connectrpc-falcon/spec/**/*.rb
     - gems/connectrpc-async/scripts/**/*.rb
     - gems/connectrpc-falcon/scripts/**/*.rb
+    - scripts/example_verify.rb
     - scripts/interop.rb
     - scripts/conformance.rb
     - conformance/**/*.rb
@@ -142,6 +146,7 @@ Metrics/CyclomaticComplexity:
     - spec/support/socket_peer.rb
     - gems/connectrpc-async/spec/support/helpers.rb
     - gems/connectrpc-falcon/spec/support/helpers.rb
+    - scripts/example_verify.rb
     - conformance/ledger.rb
     - conformance/client.rb
     - conformance/server.rb
@@ -175,11 +180,13 @@ Naming/VariableNumber:
 Naming/ClassAndModuleCamelCase:
   Exclude:
     - spec/fixtures/generation/**/*_connect.rb
+    - examples/gen/**/*_connect.rb
 
 # The generated public seam deliberately spells out the forwarded option bag.
 Style/ArgumentsForwarding:
   Exclude:
     - spec/fixtures/generation/**/*_connect.rb
+    - examples/gen/**/*_connect.rb
 
 # These scripts execute a bounded, standalone fixture scenario in one process.
 Style/MixinUsage:
@@ -197,6 +204,8 @@ Naming/PredicateMethod:
 # Consumer fixtures exercise multiple independently signed callable objects.
 Style/OneClassPerFile:
   Exclude:
+    # A single-file Rails application defines its application and controller together.
+    - examples/servers/rails.rb
     - typecheck/consumers/support.rb
     - typecheck/api/support.rb
     - typecheck/installed_runtime.rb
