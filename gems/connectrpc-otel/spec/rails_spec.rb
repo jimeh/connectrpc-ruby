@@ -1,6 +1,6 @@
 # frozen_string_literal: true
 
-require "connectrpc/on_rails"
+require "connectrpc-on-rails"
 ENV["CONNECTRPC_ROOT"] = ROOT
 require_relative "../../connectrpc-on-rails/spec/support/application"
 
