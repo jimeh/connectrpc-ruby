@@ -45,10 +45,12 @@ RSpec.describe "ThreadedTransport construction and Connect unary from plain thre
         transport = threaded(origin: origin, **options)
         typed = client(transport, origin)
         callers = 8.times.map { |index| Thread.new { typed.echo(AsyncHelpers::MESSAGE.new(name: "c#{index}")) } }
-        expect(8.times.map { entered.pop }.sort).to eq(8.times.map { |index| "c#{index}" })
+        expect(8.times.map { pop_within(entered, "eight calls in the handler") }.sort)
+          .to eq(8.times.map { |index| "c#{index}" })
         expect([peer.peer.accepts.size, owner_threads(port).size]).to eq([1, 1])
         8.times { release << true }
-        expect(callers.map { |caller| caller.value.message.name }).to eq(8.times.map { |index| "c#{index}" })
+        expect(callers.map { |caller| value_within(caller, "a multiplexed caller").message.name })
+          .to eq(8.times.map { |index| "c#{index}" })
         expect([peer.peer.accepts.size, transport.connection_state, admitted(transport)]).to eq([1, :ready, 0])
         expect(transport.close).to be(true)
         expect(owner_threads(port)).to be_empty
@@ -74,7 +76,7 @@ RSpec.describe "ThreadedTransport construction and Connect unary from plain thre
     eventually("four streams dispatched") { peer.peer.headers_frames.size == 4 }
     expect([peer.peer.accepted, owner_threads(port).size]).to eq([2, 1])
     4.times { release << true }
-    expect(callers.map(&:value)).to eq(%w[/0 /1 /2 /3])
+    expect(callers.map { |caller| value_within(caller, "a caller on the grown pool") }).to eq(%w[/0 /1 /2 /3])
     expect(peer.peer.accepted).to eq(2)
   ensure
     4.times { release&.<<(true) }
@@ -152,12 +154,12 @@ RSpec.describe "ThreadedTransport construction and Connect unary from plain thre
                          connection_observer: ->(event) { events << [event.type, Thread.current] })
     typed = client(transport, origin)
     held = Thread.new { typed.echo(AsyncHelpers::MESSAGE.new(name: "held")) }
-    entered.pop
+    pop_within(entered, "the held call in the handler")
     expect { typed.echo(AsyncHelpers::MESSAGE.new(name: "rejected")) }.to unavailable_error
     observed = pop_until(events, "admission_rejected event") { |type, _| type == :admission_rejected }
     expect(observed.last).to equal(engine_of(transport).thread)
     release << true
-    expect(held.value.message.name).to eq("held")
+    expect(value_within(held, "the held caller").message.name).to eq("held")
     expect(admitted(transport)).to eq(0)
   ensure
     release&.<<(true)
@@ -182,7 +184,7 @@ RSpec.describe "ThreadedTransport construction and Connect unary from plain thre
     transport = threaded(origin: origin, connection_observer: observer)
     typed = client(transport, origin)
     expect(typed.echo(AsyncHelpers::MESSAGE.new(name: "ok")).message.name).to eq("ok")
-    2.times { expect(errors.pop).to be_a(AsyncHelpers::LIFECYCLE_ERROR) }
+    2.times { expect(pop_within(errors, "an observer LifecycleError")).to be_a(AsyncHelpers::LIFECYCLE_ERROR) }
     expect(on_owner(transport) { transport.close }.last).to be_a(AsyncHelpers::LIFECYCLE_ERROR)
     expect(on_owner(transport) { transport.connection_state }).to eq(%i[ok ready])
     expect(typed.echo(AsyncHelpers::MESSAGE.new(name: "still")).message.name).to eq("still")

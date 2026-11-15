@@ -51,6 +51,36 @@ module ThreadedHelpers
     def fire = @release << true
   end
 
+  # Holds the owner thread on the line after +text+ in the Engine method +name+
+  # until opened. The trace fires once, on the owner thread only.
+  class OwnerPause
+    attr_reader :held
+
+    def initialize(engine, name, text)
+      method = THREADED.const_get(:Engine).instance_method(name)
+      source, first = method.source_location
+      offset = File.readlines(source).drop(first).index { |line| line.strip == text }
+      raise "#{text.inspect} not found in Engine##{name}" unless offset
+
+      @held = Thread::Queue.new
+      @gate = Thread::Queue.new
+      armed = [true]
+      owner = engine.thread
+      @trace = TracePoint.new(:line) do
+        next unless Thread.current.equal?(owner) && armed.shift
+
+        @held << true
+        Fiber.blocking { @gate.pop }
+      end
+      @trace.enable(target: method, target_line: first + offset + 2)
+    end
+
+    def open
+      @trace.disable
+      @gate << true
+    end
+  end
+
   # Runs a block's peer inside its own Sync reactor thread until stopped.
   class PeerThread
     attr_reader :peer
@@ -70,7 +100,7 @@ module ThreadedHelpers
         raise
       end
       @thread.report_on_exception = false
-      @peer, = ready.pop
+      @peer, = ready.pop(timeout: 10) || raise("Timed out waiting for the peer thread to start")
       raise @peer if @peer.is_a?(Exception)
     end
 
@@ -121,7 +151,7 @@ module ThreadedHelpers
       held << true
       Fiber.blocking { gate.pop }
     })
-    held.pop
+    pop_within(held, "the owner to reach the hold")
     gate
   end
 
@@ -134,7 +164,7 @@ module ThreadedHelpers
         [:error, e]
       end
     })
-    result.pop
+    pop_within(result, "the owner to run the block")
   end
 
   def install_thread_clock(transport)
@@ -175,6 +205,21 @@ module ThreadedHelpers
   end
 
   def blocked?(thread) = thread.status == "sleep" || thread.stop?
+
+  # Bounded Thread#value that names the awaited work on timeout.
+  def value_within(thread, message, timeout: 10)
+    return thread.value if thread.join(timeout)
+
+    raise "Timed out waiting for #{message}; thread status: #{thread.status.inspect}"
+  end
+
+  # Bounded Queue#pop for queues that never carry nil.
+  def pop_within(queue, message, timeout: 10)
+    value = queue.pop(timeout: timeout)
+    raise "Timed out waiting for #{message}" if value.nil?
+
+    value
+  end
 
   def monotonic = Process.clock_gettime(Process::CLOCK_MONOTONIC)
 

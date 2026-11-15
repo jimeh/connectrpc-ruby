@@ -13,6 +13,7 @@ module ConnectRPC
       OWNER = :connectrpc_async_threaded_owner
       # Bounds front retries when each new owner stops before admitting the call.
       START_ATTEMPTS = 3
+      private_constant :UNAVAILABLE, :STOPPED, :OWNER, :START_ATTEMPTS
 
       # Count and byte admission for one process. Engines that replace a failed
       # owner share it, so a stopped engine's mailboxes stay charged.
@@ -77,6 +78,9 @@ module ConnectRPC
       # The H2 Transport, given the front's compiled TLS snapshot so the owner
       # never rereads TLS files.
       class Inner < Transport
+        # Until Transport takes a snapshot, super builds and discards a default
+        # client context for HTTPS (system roots only); user TLS files are never
+        # reread.
         def initialize(snapshot:, **)
           super(**)
           @snapshot = snapshot
@@ -193,6 +197,12 @@ module ConnectRPC
 
         private
 
+        # Owner-side admission and mailbox transactions defer Thread#kill and
+        # Thread#raise, also while this fiber waits for the lock, so a dying
+        # owner never leaves a call half settled or admission half released.
+        # Bodies never block; the reactor's own waits stay interruptible.
+        def transaction(&) = Thread.handle_interrupt(Object => :never) { @admission.lock.synchronize(&) }
+
         def own
           Thread.current.report_on_exception = false
           Thread.current.thread_variable_set(OWNER, @front)
@@ -240,12 +250,12 @@ module ConnectRPC
             outcome = [:error, e]
           ensure
             outcome ||= [:error, Error.new(:unavailable, STOPPED)]
-            @admission.lock.synchronize { settle(call, outcome) }
+            transaction { settle(call, outcome) }
           end
         end
 
         def emit_rejections
-          count = @admission.lock.synchronize do
+          count = transaction do
             @admission.notice = nil
             rejected = @admission.rejected
             @admission.rejected = 0
@@ -255,14 +265,17 @@ module ConnectRPC
         end
 
         # Owner death must not leave a caller waiting. Engine bookkeeping
-        # finishes before the front lock publishes any close outcome.
+        # finishes before the front lock publishes any close outcome, and an
+        # interrupt cannot stop either part.
         def finalize(outcome)
-          @admission.lock.synchronize do
-            @state = :stopped
-            @admission.notice = nil if @admission.notice.equal?(self)
-            @calls.dup.each_key { |call| settle(call, [:error, Error.new(:unavailable, STOPPED)]) }
+          Thread.handle_interrupt(Object => :never) do
+            transaction do
+              @state = :stopped
+              @admission.notice = nil if @admission.notice.equal?(self)
+              @calls.dup.each_key { |call| settle(call, [:error, Error.new(:unavailable, STOPPED)]) }
+            end
+            @front.send(:owner_finished, self, outcome)
           end
-          @front.send(:owner_finished, self, outcome)
         end
       end
       private_constant :Engine

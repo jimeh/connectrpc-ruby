@@ -502,6 +502,7 @@
     "ConnectRPC::Async::ThreadedTransport::Engine#state": {"kind":"attribute","visibility":"public","classification":"internal"},
     "ConnectRPC::Async::ThreadedTransport::Engine#state=": {"kind":"attribute","visibility":"public","classification":"internal"},
     "ConnectRPC::Async::ThreadedTransport::Engine#thread": {"kind":"attribute","visibility":"public","classification":"internal"},
+    "ConnectRPC::Async::ThreadedTransport::Engine#transaction": {"kind":"method","visibility":"private","parameters":"&","classification":"internal"},
     "ConnectRPC::Async::ThreadedTransport::Inner#initialize": {"kind":"method","visibility":"public","parameters":"snapshot:, **","classification":"internal"},
     "ConnectRPC::Async::ThreadedTransport::Inner#reject_admission": {"kind":"method","visibility":"public","parameters":"count","classification":"internal"},
     "ConnectRPC::Async::ThreadedTransport::LifecycleProxy#activate": {"kind":"method","visibility":"public","parameters":"&","classification":"internal"},

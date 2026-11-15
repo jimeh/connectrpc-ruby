@@ -20,13 +20,13 @@ RSpec.describe "ThreadedTransport close, owner failure and recovery" do
     transport = threaded(origin: origin)
     typed = client(transport, origin)
     pending = Thread.new { typed.echo(AsyncHelpers::MESSAGE.new(name: "pending")) }
-    entered.pop
+    pop_within(entered, "the pending call in the handler")
     closers = 2.times.map { Thread.new { transport.close(grace: 5) } }
     eventually("closers waiting") { transport.connection_state == :closing && closers.all? { |t| blocked?(t) } }
     expect { typed.echo(AsyncHelpers::MESSAGE.new(name: "free late")) }.to unavailable_error
     release << true
-    expect(pending.value.message.name).to eq("pending")
-    expect(closers.map(&:value)).to eq([true, true])
+    expect(value_within(pending, "the drained call").message.name).to eq("pending")
+    expect(closers.map { |closer| value_within(closer, "a closer") }).to eq([true, true])
     expect([transport.close(grace: 0), transport.connection_state, owner_threads(port)]).to eq([true, :closed, []])
     expect { typed.echo(AsyncHelpers::MESSAGE.new(name: "free after")) }.to unavailable_error
   ensure
@@ -42,9 +42,9 @@ RSpec.describe "ThreadedTransport close, owner failure and recovery" do
     origin = "http://127.0.0.1:#{peer.peer.port}"
     transport = threaded(origin: origin)
     pending = Thread.new { capture_error { client(transport, origin).echo(AsyncHelpers::MESSAGE.new(name: "cut")) } }
-    entered.pop
+    pop_within(entered, "the cut call in the handler")
     expect(transport.close(grace: 0)).to be(false)
-    error = pending.value
+    error = value_within(pending, "the cut call")
     expect([error.class, error.code]).to eq([ConnectRPC::Error, "unavailable"])
     expect(admitted(transport)).to eq(0)
   ensure
@@ -66,7 +66,7 @@ RSpec.describe "ThreadedTransport close, owner failure and recovery" do
     started = monotonic
     expect(transport.close(grace: 0.2)).to be(false)
     expect(monotonic - started).to be_between(0.3, 1.0)
-    error = pending.value
+    error = value_within(pending, "the stalled caller")
     expect([error.class, error.code]).to eq([ConnectRPC::Error, "unavailable"])
     expect(owner).to be_alive
     gate << true
@@ -88,9 +88,9 @@ RSpec.describe "ThreadedTransport close, owner failure and recovery" do
     closers = 2.times.map { Thread.new { capture_error { transport.close(grace: 1) } || :returned } }
     eventually("both closers waiting") { transport.connection_state == :closing && closers.all? { |t| blocked?(t) } }
     closers.first.raise(interrupt, "closer interrupted")
-    expect(closers.first.value).to be_a(interrupt)
+    expect(value_within(closers.first, "the interrupted closer")).to be_a(interrupt)
     expect(transport.connection_state).to eq(:closing)
-    expect(closers.last.value).to eq(:returned)
+    expect(value_within(closers.last, "the other closer")).to eq(:returned)
     expect(transport.close).to be(false)
   ensure
     gate&.<<(true)
@@ -107,11 +107,11 @@ RSpec.describe "ThreadedTransport close, owner failure and recovery" do
     transport = threaded(origin: origin, connection_observer: ->(event) { events << event })
     typed = client(transport, origin)
     pending = Thread.new { capture_error { typed.echo(AsyncHelpers::MESSAGE.new(name: "pending"), timeout: nil) } }
-    entered.pop
+    pop_within(entered, "the pending call in the handler")
     failed = engine_of(transport)
     started = monotonic
     failed.run_on_owner(-> { raise "injected owner failure" })
-    error = pending.value
+    error = value_within(pending, "the pending caller after the owner failed")
     expect([error.class, error.code]).to eq([ConnectRPC::Error, "unavailable"])
     expect(monotonic - started).to be < 1
     pop_until(events, "closed state event") { |event| event.type == :state_changed && event.state == :closed }
@@ -134,16 +134,72 @@ RSpec.describe "ThreadedTransport close, owner failure and recovery" do
     transport = threaded(origin: origin)
     typed = client(transport, origin)
     pending = Thread.new { capture_error { typed.echo(AsyncHelpers::MESSAGE.new(name: "pending"), timeout: nil) } }
-    entered.pop
+    pop_within(entered, "the pending call in the handler")
     killed = engine_of(transport)
     killed.thread.kill
-    error = pending.value
+    error = value_within(pending, "the pending caller after the owner was killed", timeout: 5)
     expect([error.class, error.code]).to eq([ConnectRPC::Error, "unavailable"])
     expect(killed.thread.join(5)).to equal(killed.thread)
     expect(killed.state).to eq(:stopped)
     expect(typed.echo(AsyncHelpers::MESSAGE.new(name: "free restarted")).message.name).to eq("free restarted")
     expect(engine_of(transport)).not_to equal(killed)
   ensure
+    release&.<<(true)
+    transport&.close(grace: 0)
+    peer&.stop
+  end
+
+  # The trace holds the owner inside settle, after reactor_done is set but
+  # before the reply is published, while the kill arrives.
+  it "finishes settling a reply when the owner is killed inside the settle bookkeeping" do
+    peer = threaded_host(server: server)
+    origin = "http://127.0.0.1:#{peer.peer.port}"
+    transport = threaded(origin: origin)
+    typed = client(transport, origin)
+    typed.echo(AsyncHelpers::MESSAGE.new(name: "warm"))
+    killed = engine_of(transport)
+    pause = ThreadedHelpers::OwnerPause.new(killed, :settle, "call.reactor_done = true")
+    caller = Thread.new { typed.echo(AsyncHelpers::MESSAGE.new(name: "settled"), timeout: nil) }
+    pop_within(pause.held, "the owner to pause inside settle")
+    killed.thread.kill
+    pause.open
+    reply = value_within(caller, "the caller after the owner was killed inside settle", timeout: 5)
+    expect(reply.message.name).to eq("settled")
+    expect(killed.thread.join(5)).to equal(killed.thread)
+    expect([killed.state, killed.admission.count, killed.admission.bytes, killed.calls.size]).to eq([:stopped, 0, 0, 0])
+    expect(typed.echo(AsyncHelpers::MESSAGE.new(name: "replacement")).message.name).to eq("replacement")
+    expect(engine_of(transport)).not_to equal(killed)
+  ensure
+    pause&.open
+    transport&.close(grace: 0)
+    peer&.stop
+  end
+
+  # The trace holds the owner inside release, after the count is returned but
+  # before the bytes and mailbox, while the kill arrives.
+  it "finishes releasing an abandoned call when the owner is killed inside the release bookkeeping" do
+    entered = Thread::Queue.new
+    release = Thread::Queue.new
+    peer = threaded_host(server: gated(entered, release))
+    origin = "http://127.0.0.1:#{peer.peer.port}"
+    transport = threaded(origin: origin)
+    typed = client(transport, origin)
+    typed.echo(AsyncHelpers::MESSAGE.new(name: "free warm"))
+    killed = engine_of(transport)
+    caller = Thread.new { typed.echo(AsyncHelpers::MESSAGE.new(name: "abandoned"), timeout: nil) }
+    pop_until(entered, "the abandoned call in the handler") { |name| name == "abandoned" }
+    pause = ThreadedHelpers::OwnerPause.new(killed, :release, "@admission.count -= 1")
+    caller.kill
+    expect(caller.join(5)).to equal(caller)
+    pop_within(pause.held, "the owner to pause inside release")
+    killed.thread.kill
+    pause.open
+    expect(killed.thread.join(5)).to equal(killed.thread)
+    expect([killed.state, killed.admission.count, killed.admission.bytes, killed.calls.size]).to eq([:stopped, 0, 0, 0])
+    expect(typed.echo(AsyncHelpers::MESSAGE.new(name: "free replacement")).message.name).to eq("free replacement")
+    expect(engine_of(transport)).not_to equal(killed)
+  ensure
+    pause&.open
     release&.<<(true)
     transport&.close(grace: 0)
     peer&.stop
@@ -202,7 +258,7 @@ RSpec.describe "ThreadedTransport close, owner failure and recovery" do
     expect([ready.connection_state, waiting.alive?]).to eq([:transient_failure, true])
     peer = threaded_host(server: server, port: port)
     [fast_clock, ready_clock].each(&:fire)
-    expect(waiting.value.message.name).to eq("waited")
+    expect(value_within(waiting, "the wait-for-ready caller").message.name).to eq("waited")
     expect(client(fast, origin).echo(AsyncHelpers::MESSAGE.new(name: "recovered")).message.name).to eq("recovered")
     expect(peer.peer.accepts.size).to eq(2)
   ensure

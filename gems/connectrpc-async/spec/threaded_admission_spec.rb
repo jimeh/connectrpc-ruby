@@ -56,11 +56,11 @@ RSpec.describe "ThreadedTransport two-owner admission" do
     typed = client(transport, origin)
     paused, resume = pause_take(transport)
     held = Thread.new { typed.echo(AsyncHelpers::MESSAGE.new(name: "held")) }
-    paused.pop
+    pop_within(paused, "the caller to pause before take")
     expect(admitted(transport)).to eq(1)
     expect { typed.echo(AsyncHelpers::MESSAGE.new(name: "replacement")) }.to unavailable_error
     resume << true
-    expect(held.value.message.name).to eq("held")
+    expect(value_within(held, "the held caller").message.name).to eq("held")
     expect(admitted(transport)).to eq(0)
     expect(typed.echo(AsyncHelpers::MESSAGE.new(name: "replacement")).message.name).to eq("replacement")
   ensure
@@ -76,7 +76,7 @@ RSpec.describe "ThreadedTransport two-owner admission" do
     typed = client(transport, origin)
     paused, resume = pause_take(transport)
     held = Thread.new { typed.echo(AsyncHelpers::MESSAGE.new(name: "held")) }
-    paused.pop
+    pop_within(paused, "the caller to pause before take")
     failed = engine_of(transport)
     failed.run_on_owner(-> { raise "injected owner failure" })
     expect(failed.thread.join(5)).to equal(failed.thread)
@@ -86,7 +86,7 @@ RSpec.describe "ThreadedTransport two-owner admission" do
     expect(replacement).not_to equal(failed)
     expect(replacement.admission).to equal(failed.admission)
     resume << true
-    expect(held.value.message.name).to eq("held")
+    expect(value_within(held, "the held caller").message.name).to eq("held")
     expect(admitted(transport)).to eq(0)
     expect(typed.echo(AsyncHelpers::MESSAGE.new(name: "replacement")).message.name).to eq("replacement")
     expect(peer.peer.accepts.size).to eq(2)

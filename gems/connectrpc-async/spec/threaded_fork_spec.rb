@@ -70,10 +70,10 @@ RSpec.describe "ThreadedTransport across fork" do
           peer, origin, transport = setup_peer(mode, ca_file, entered, release)
           typed = client(transport, origin)
           held = Thread.new { child_call(typed, "held") }
-          expect(entered.pop).to eq("held")
+          expect(pop_within(entered, "the held call in the handler")).to eq("held")
           expect(in_child { child_call(typed, "child") }).to eq([true, "child"])
           release << true
-          expect(held.value).to eq("held")
+          expect(value_within(held, "the held caller")).to eq("held")
           expect(child_call(typed, "parent again")).to eq("parent again")
           expect([peer.peer.accepts.size, admitted(transport)]).to eq([2, 0])
         ensure
@@ -100,11 +100,11 @@ RSpec.describe "ThreadedTransport across fork" do
           end
           typed = client(transport, origin)
           starter = Thread.new { child_call(typed, "starter") }
-          starting.pop
+          pop_within(starting, "the starter to hold the front lock")
           expect(transport.instance_variable_get(:@lock)).to be_locked
           expect(in_child { child_call(typed, "child") }).to eq([true, "child"])
           resume << true
-          expect(starter.value).to eq("starter")
+          expect(value_within(starter, "the starter")).to eq("starter")
           expect(child_call(typed, "parent again")).to eq("parent again")
           expect(peer.peer.accepts.size).to eq(2)
         ensure
@@ -158,7 +158,7 @@ RSpec.describe "ThreadedTransport across fork" do
     expect(report).to eq([true, '["unavailable", :closed, true]'])
     expect(transport.connection_state).to eq(:closing)
     gate << true
-    expect(closer.value).to be(true)
+    expect(value_within(closer, "the parent closer")).to be(true)
     expect(peer.peer.accepts.size).to eq(1)
   ensure
     gate&.<<(true)

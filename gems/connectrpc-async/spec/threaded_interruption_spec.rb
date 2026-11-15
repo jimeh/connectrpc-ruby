@@ -50,8 +50,8 @@ RSpec.describe "ThreadedTransport deadlines, interruption and cancellation" do
     end
     eventually("caller admitted and waiting") { admitted(transport) == 1 && blocked?(caller) }
     started = monotonic
-    Thread.new { source.cancel }.join
-    error = caller.value
+    value_within(Thread.new { source.cancel }, "the cancelling thread")
+    error = value_within(caller, "the cancelled caller")
     expect([error.class, error.code]).to eq([ConnectRPC::Error, "canceled"])
     expect(monotonic - started).to be < 1
     gate << true
@@ -75,7 +75,7 @@ RSpec.describe "ThreadedTransport deadlines, interruption and cancellation" do
       transport = threaded(origin: origin)
       typed = client(transport, origin)
       sibling = Thread.new { typed.echo(AsyncHelpers::MESSAGE.new(name: "sibling"), timeout: nil) }
-      expect(entered.pop).to eq("sibling")
+      expect(pop_within(entered, "the sibling in the handler")).to eq("sibling")
       victim = Thread.new do
         capture_error do
           if kind == :timeout
@@ -86,14 +86,14 @@ RSpec.describe "ThreadedTransport deadlines, interruption and cancellation" do
           end
         end
       end
-      expect(entered.pop).to eq("victim")
+      expect(pop_within(entered, "the victim in the handler")).to eq("victim")
       victim.raise(error_class, "interrupted") if kind == :raise
-      expect(victim.value).to be_a(error_class)
+      expect(value_within(victim, "the interrupted victim")).to be_a(error_class)
       eventually("actual peer CANCEL reached the handler Context") { contexts.fetch("victim").cancelled? }
       expect(contexts.fetch("victim").cancellation_reason).to eq(:canceled)
       expect(contexts.fetch("sibling")).not_to be_cancelled
       2.times { release << true }
-      expect(sibling.value.message.name).to eq("sibling")
+      expect(value_within(sibling, "the sibling").message.name).to eq("sibling")
       eventually("both admissions released") { admitted(transport).zero? }
       expect(typed.echo(AsyncHelpers::MESSAGE.new(name: "free after")).message.name).to eq("free after")
       expect(peer.peer.accepts.size).to eq(1)
@@ -102,6 +102,61 @@ RSpec.describe "ThreadedTransport deadlines, interruption and cancellation" do
       transport&.close(grace: 0)
       peer&.stop
     end
+  end
+
+  it "resets the stream when Thread#kill stops a blocked caller and keeps the connection" do
+    contexts = {}
+    entered = Thread::Queue.new
+    release = Thread::Queue.new
+    peer = gated_host(contexts, entered, release)
+    origin = "http://127.0.0.1:#{peer.peer.port}"
+    transport = threaded(origin: origin)
+    typed = client(transport, origin)
+    victim = Thread.new { typed.echo(AsyncHelpers::MESSAGE.new(name: "killed"), timeout: nil) }
+    expect(pop_within(entered, "the killed call in the handler")).to eq("killed")
+    victim.kill
+    expect(victim.join(5)).to equal(victim)
+    eventually("actual peer CANCEL reached the handler Context") { contexts.fetch("killed").cancelled? }
+    expect(contexts.fetch("killed").cancellation_reason).to eq(:canceled)
+    release << true
+    eventually("admission released") { admitted(transport).zero? }
+    expect(typed.echo(AsyncHelpers::MESSAGE.new(name: "free next")).message.name).to eq("free next")
+    expect(peer.peer.accepts.size).to eq(1)
+  ensure
+    release&.<<(true)
+    transport&.close(grace: 0)
+    peer&.stop
+  end
+
+  # Ruby cannot read the current mask, so the call's own wait overrides an
+  # enclosing handle_interrupt(... => :never) region. The handler stays gated,
+  # so only an interrupted wait can return before release.
+  it "interrupts a blocked call even inside an enclosing never-interrupt region" do
+    contexts = {}
+    entered = Thread::Queue.new
+    release = Thread::Queue.new
+    peer = gated_host(contexts, entered, release)
+    origin = "http://127.0.0.1:#{peer.peer.port}"
+    transport = threaded(origin: origin)
+    typed = client(transport, origin)
+    interrupt = Class.new(StandardError)
+    victim = Thread.new do
+      capture_error do
+        Thread.handle_interrupt(Object => :never) do
+          typed.echo(AsyncHelpers::MESSAGE.new(name: "masked"), timeout: nil)
+        end
+      end
+    end
+    expect(pop_within(entered, "the masked call in the handler")).to eq("masked")
+    victim.raise(interrupt, "interrupted")
+    expect(value_within(victim, "the masked caller")).to be_a(interrupt)
+    eventually("actual peer CANCEL reached the handler Context") { contexts.fetch("masked").cancelled? }
+    release << true
+    eventually("admission released") { admitted(transport).zero? }
+  ensure
+    release&.<<(true)
+    transport&.close(grace: 0)
+    peer&.stop
   end
 
   it "cancels through a token from another thread and the server observes the reset" do
@@ -116,9 +171,9 @@ RSpec.describe "ThreadedTransport deadlines, interruption and cancellation" do
     caller = Thread.new do
       capture_error { typed.echo(AsyncHelpers::MESSAGE.new(name: "token"), timeout: nil, cancellation: source.token) }
     end
-    expect(entered.pop).to eq("token")
-    Thread.new { source.cancel }.join
-    error = caller.value
+    expect(pop_within(entered, "the token call in the handler")).to eq("token")
+    value_within(Thread.new { source.cancel }, "the cancelling thread")
+    error = value_within(caller, "the cancelled caller")
     expect([error.class, error.code, error.cause]).to eq([ConnectRPC::Error, "canceled", nil])
     eventually("actual peer CANCEL reached the handler Context") { contexts.fetch("token").cancelled? }
     release << true
@@ -152,10 +207,10 @@ RSpec.describe "ThreadedTransport deadlines, interruption and cancellation" do
                                                                 headers: { "content-type" => ["application/proto"] })
     outgoing.lifecycle = lifecycle
     caller = Thread.new { capture_error { transport.call(outgoing) } }
-    expect(entered.pop).to eq("observed")
+    expect(pop_within(entered, "the observed call in the handler")).to eq("observed")
     started = monotonic
     caller.raise(Class.new(StandardError), "interrupted")
-    expect(caller.value.message).to eq("interrupted")
+    expect(value_within(caller, "the interrupted caller").message).to eq("interrupted")
     expect(monotonic - started).to be < 1
     eventually("actual peer CANCEL reached the handler Context") { contexts.fetch("observed").cancelled? }
     eventually("the reactor finished the abandoned call") { admitted(transport).zero? }

@@ -284,10 +284,17 @@ configuration errors raise at boot. `call`, `close(grace: 5)`,
   example by native code, the caller fails with `deadline_exceeded` after the
   deadline plus the 100 ms cleanup allowance and the call is cancelled once the
   owner resumes. A nil deadline waits for the reply, its cancellation token or
-  an interruption. `Timeout`, `Thread#raise` and `Thread#kill` cancel the call's
-  stream (the server sees `RST_STREAM(CANCEL)`) and the exception reaches the
-  caller unchanged; siblings and the connection survive. Core may still report
-  an already accepted cancellation or deadline instead, as with every transport.
+  an interruption. `Timeout` and `Thread#raise` cancel the call's stream (the
+  server sees `RST_STREAM(CANCEL)`) and their exception reaches the caller
+  unchanged. `Thread#kill` cancels the stream the same way and raises nothing.
+  Either way the call's admission is released once the owner finishes the
+  stream, and siblings and the connection survive. Core may still report an
+  already accepted cancellation or deadline instead, as with every transport.
+- The waits in `call` and `close` accept `Timeout`, `Thread#raise` and
+  `Thread#kill` even inside an enclosing
+  `Thread.handle_interrupt(... => :never)` region, because Ruby cannot read the
+  caller's mask. Core NetHTTP and the reactor-owned `Transport` defer those
+  interrupts inside such a region.
 - After fork, the child's first call builds its own owner thread and
   connection; it never writes to or closes the parent's. The compiled TLS
   snapshot is reused. A transport closed before fork stays closed; `close` in a
