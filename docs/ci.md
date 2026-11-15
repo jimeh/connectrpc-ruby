@@ -329,7 +329,7 @@ tasks keep their current jobs.
 ## Release workflows
 
 The separate `release-please.yml` workflow runs on pushes to main and manual dispatch.
-It opens or updates the draft release PR using an existing GitHub App from the
+It opens or updates the release PR using an existing GitHub App from the
 `release-please` environment. After a release PR merges, it tags the commit and
 creates a draft GitHub release. The tag starts `release.yml`, which publishes
 from the `release` environment.

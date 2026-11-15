@@ -116,7 +116,7 @@ class ReleaseTrain # rubocop:disable Metrics/ClassLength
     expected = {
       "release-type" => "ruby", "component" => "connectrpc", "version-file" => "lib/connectrpc/version.rb",
       "initial-version" => "0.1.0", "include-component-in-tag" => false, "include-v-in-tag" => true,
-      "bump-minor-pre-major" => true, "bump-patch-for-minor-pre-major" => true, "draft-pull-request" => true,
+      "bump-minor-pre-major" => true, "bump-patch-for-minor-pre-major" => true,
       # Publication adopts the draft; the forced tag keeps release history discoverable.
       "draft" => true, "force-tag-creation" => true
     }
