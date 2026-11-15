@@ -2,6 +2,7 @@
 
 libraries = %w[
   connectrpc/rack connectrpc/testing connectrpc/on_rails connectrpc/async connectrpc/falcon connectrpc/otel
+  connectrpc/prometheus connectrpc/yabeda
 ]
 libraries.reverse! if ARGV == ["reverse"]
 libraries.each { |name| require name }
@@ -15,7 +16,8 @@ versions = {
   "connectrpc" => ConnectRPC::VERSION, "connectrpc-rack" => ConnectRPC::Rack::VERSION,
   "connectrpc-on-rails" => ConnectRPC::OnRails::VERSION, "connectrpc-async" => ConnectRPC::Async::VERSION,
   "connectrpc-falcon" => ConnectRPC::Falcon::VERSION, "connectrpc-testing" => ConnectRPC::Testing::VERSION,
-  "connectrpc-otel" => ConnectRPC::OTel::VERSION
+  "connectrpc-otel" => ConnectRPC::OTel::VERSION, "connectrpc-prometheus" => ConnectRPC::Prometheus::VERSION,
+  "connectrpc-yabeda" => ConnectRPC::Yabeda::VERSION
 }
 versions.each do |name, version|
   raise "Installed runtime version differs: #{name}" unless version == Gem.loaded_specs.fetch(name).version.to_s
@@ -218,9 +220,24 @@ subscriber = ConnectRPC::OTel::Subscriber.new
 ConnectRPC::Instrumentation.new(subscribers: [subscriber])
 raise "SDK loaded late" if defined?(OpenTelemetry::SDK)
 
+# Both metrics sinks compose the same core layer in one installed process.
+registry = Prometheus::Client::Registry.new
+sinks = [ConnectRPC::Prometheus::Metrics.new(registry: registry), ConnectRPC::Yabeda::Metrics.new]
+Yabeda.configure!
+completion = ConnectRPC::Instrumentation::Completion.new(outcome: nil, processing_state: :not_started,
+                                                         decision: :host_rejected, delivery: :completed,
+                                                         error: nil, http_status: 501, duration: 0.0)
+sinks.each { |sink| sink.subscriber.start(call).finished(completion) }
+other = { grpc_type: "unknown", grpc_service: "_OTHER", grpc_method: "_OTHER", rpc_protocol: "connect" }
+unless registry.get(:grpc_server_rejected_total).get(labels: other.merge(reason: "host_rejected")).zero? &&
+       registry.get(:grpc_client_handled_total).get(labels: other.merge(grpc_code: "Unknown")).to_i == 1 &&
+       Yabeda.grpc_client_started_total.get(other) == 1
+  raise "Installed metrics sinks did not record"
+end
+
 puts "Installed optional runtime composition #{ARGV.first}: Rails subclass, Rack/Testing round trip, " \
      "native headers/session/TLS, callable stream, Struct pairs, Falcon inline DSL, " \
-     "Rails callbacks, API-only OTel/default propagation"
+     "Rails callbacks, API-only OTel/default propagation, Prometheus and Yabeda metrics"
 
 require_relative "installed_streaming"
 

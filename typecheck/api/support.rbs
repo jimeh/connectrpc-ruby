@@ -211,3 +211,41 @@ class APIStreamPublisher
   def initialize: () -> void
   def call: (ConnectRPC::StreamHead) -> nil
 end
+class APIRecorder
+  def initialize: () -> void
+  attr_reader calls: Array[[Symbol, ConnectRPC::Metrics::labels, Numeric]]
+  def increment: (Symbol, ConnectRPC::Metrics::labels, Integer) -> Array[[Symbol, ConnectRPC::Metrics::labels, Numeric]]
+  def observe: (Symbol, ConnectRPC::Metrics::labels, Numeric) -> Array[[Symbol, ConnectRPC::Metrics::labels, Numeric]]
+  def set: (Symbol, ConnectRPC::Metrics::labels, Numeric) -> Array[[Symbol, ConnectRPC::Metrics::labels, Numeric]]
+end
+class APIMetric
+  def initialize: () -> void
+  def increment: (by: Integer, labels: ConnectRPC::Metrics::labels) -> nil
+  def observe: (Numeric, labels: ConnectRPC::Metrics::labels) -> nil
+  def set: (Numeric, labels: ConnectRPC::Metrics::labels) -> nil
+end
+class APIRegistry
+  def initialize: () -> void
+  def counter: (Symbol, docstring: String, labels: Array[Symbol]) -> APIMetric
+  def histogram: (Symbol, docstring: String, labels: Array[Symbol], buckets: Array[Numeric]) -> APIMetric
+  def gauge: (Symbol, docstring: String, labels: Array[Symbol], store_settings: Hash[Symbol, Symbol]) -> APIMetric
+  private
+  def register: (*untyped) -> APIMetric
+end
+class APIConnectionEvent
+  def initialize: () -> void
+  def type: () -> Symbol
+  def state: () -> Symbol
+  def previous_state: () -> Symbol?
+  def outcome: () -> Symbol?
+  def duration: () -> Numeric?
+end
+class APIMessageObserver
+  def initialize: () -> void
+  def message_received: (Integer) -> nil
+  def message_sent: (Integer) -> nil
+end
+class BadAPIRecorder
+  def initialize: () -> void
+  def increment: (Symbol) -> nil
+end

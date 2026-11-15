@@ -36,7 +36,7 @@ RSpec.shared_examples "native streaming matrix" do
         exchange.close_send
         engine = ConnectRPC.const_get(:Streaming)
         frames = engine::Framing.new(input: exchange, request: false, wire_limit: 1024, limit: 1024)
-        expect(AsyncHelpers::MESSAGE.decode(frames.read_frame.last)).to eq(message)
+        expect(AsyncHelpers::MESSAGE.decode(frames.read_frame[1])).to eq(message)
         expect(frames.read_frame.first).to eq(2)
         expect(exchange.read(1)).to be_nil
         exchange.finish

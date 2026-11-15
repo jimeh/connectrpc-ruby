@@ -182,7 +182,7 @@ module ConnectRPC
     def dispatch: (String, headers, _Input?, codec, Context, ?lifecycle: Instrumentation::Handle?) -> TransportResponse
     def inflate_request: (String, headers, Context) -> String
     def decode_request: (String, Method[untyped, untyped], codec, Context) -> untyped
-    def encode_response: (untyped, Method[untyped, untyped], codec, Context, encoding?) -> TransportResponse
+    def encode_response: (untyped, Method[untyped, untyped], codec, Context, encoding?, ?Instrumentation::Handle?) -> TransportResponse
     def serialize_response: (untyped, Method[untyped, untyped], codec, Context) -> String
     def bare: (Integer, headers, ?context: Context?, ?cancellation: _Cancellation?) -> TransportResponse
     def request_context: (headers, ?Instrumentation::Handle?, ?_Cancellation?) -> Context
@@ -205,11 +205,13 @@ module ConnectRPC
     class Callbacks
       def self.discover: (Object, Instrumentation) -> Callbacks
       def self.callback: (Object, Symbol, Instrumentation) -> untyped
-      def initialize: (attach: (^() -> Object?)?, detach: (^(Object?) -> void)?, processing_finished: (^(Outcome) -> void)?, finished: (^(Completion) -> void)?) -> void
+      def initialize: (attach: (^() -> Object?)?, detach: (^(Object?) -> void)?, processing_finished: (^(Outcome) -> void)?, finished: (^(Completion) -> void)?, message_received: (^(Integer) -> void)?, message_sent: (^(Integer) -> void)?) -> void
       attr_reader attach: (^() -> Object?)?
       attr_reader detach: (^(Object?) -> void)?
       attr_reader processing_finished: (^(Outcome) -> void)?
       attr_reader finished: (^(Completion) -> void)?
+      attr_reader message_received: (^(Integer) -> void)?
+      attr_reader message_sent: (^(Integer) -> void)?
     end
     class Handle
       type pending = { delivery: delivery, error: Exception?, decision: decision, http_status: Integer? }
@@ -234,7 +236,10 @@ module ConnectRPC
       attr_accessor normalized_error: Exception?
       def begin_processing: (Object, ?String?) -> Float
       def processing_finished: (code: String?, ?http_status: Integer?, ?normalized_error: Exception?, ?error: Exception?, ?response_bytes: Integer?, ?response_metadata: headers) -> nil
+      def message_received: (Integer) -> nil
+      def message_sent: (Integer) -> nil
       private
+      def notify_message: (:message_received | :message_sent, Integer) -> nil
       def detach_tokens: (Array[[(^(Object?) -> void)?, Object?]]) -> nil
       def with_processing_completion: [T] () { () -> T } -> T
       def complete_processing: () -> nil
@@ -297,5 +302,58 @@ module ConnectRPC
     private
     def observe: (bool) -> cancellation_reason?
     def raise_reason: (cancellation_reason?) -> nil
+  end
+end
+
+module ConnectRPC
+  module Metrics
+    CODES: Hash[String, String]
+    OTHER: String
+    def self.code: (String | Symbol) -> String
+    def self.labels: (Instrumentation::Call) -> labels
+    class Definitions
+      UPSTREAM_HELP: Hash[Symbol, Hash[Symbol, String]]
+      def self.namespace!: (untyped) -> String
+      def self.buckets!: (untyped, String) -> Array[Numeric]
+      def self.bound?: (untyped) -> bool
+      private
+      def rpc_instruments: (:server | :client, Array[Numeric], Array[Numeric]) -> Array[Instrument]
+      def connection_instruments: (Array[Numeric]) -> Array[Instrument]
+      def counter: (:server | :client, String, Array[Symbol], String) -> Instrument
+      def gauge: (:server | :client, String, Array[Symbol], String) -> Instrument
+      def histogram: (:server | :client, String, Symbol, Array[Symbol], Array[Numeric], String) -> Instrument
+    end
+    class Subscriber
+      ROLE_KEYS: Array[Symbol]
+      SERVER_KEYS: Array[Symbol]
+      @recorder: _Recorder
+      @keys: Hash[Symbol, Hash[Symbol, Symbol]]
+      class Observer
+        @recorder: _Recorder
+        @keys: Hash[Symbol, Symbol]
+        @server: bool
+        @labels: labels
+        def initialize: (_Recorder, Hash[Symbol, Symbol], bool, labels) -> void
+        def message_received: (Integer) -> void
+        def message_sent: (Integer) -> void
+        def finished: (Instrumentation::Completion) -> void
+        def self.code: (Instrumentation::Outcome?) -> String?
+        private
+        def rejection: (Instrumentation::Completion) -> String?
+        def handled: (String, Float) -> void
+        def reject: (String) -> void
+      end
+    end
+    class ConnectionObserver
+      @recorder: _Recorder
+      @labels: labels
+      @keys: Hash[Symbol, Symbol]
+      def self.transport!: (untyped) -> String
+      private
+      def initialize_state: () -> void
+      def state_changed: (Symbol?, Symbol) -> void
+      def attempt_finished: (Symbol?, Numeric?) -> void
+      def state_labels: (Symbol) -> labels
+    end
   end
 end

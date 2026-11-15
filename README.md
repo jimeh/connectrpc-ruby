@@ -176,6 +176,8 @@ integrations you use:
 | [`connectrpc-falcon`](gems/connectrpc-falcon/README.md) | You host on Falcon workers and want native HTTP/1.1 and HTTP/2 RPC next to an ordinary Rack or Rails app, with managed TLS | `connectrpc/falcon` |
 | [`connectrpc-testing`](gems/connectrpc-testing/README.md) | You want real encoded client/server round trips in tests without opening sockets | `connectrpc/testing` |
 | [`connectrpc-otel`](gems/connectrpc-otel/README.md) | You want OpenTelemetry CLIENT and SERVER spans for each RPC | `connectrpc/otel` |
+| [`connectrpc-prometheus`](gems/connectrpc-prometheus/README.md) | You want go-grpc-prometheus compatible server, client and Async connection metrics in a prometheus-client registry | `connectrpc/prometheus` |
+| [`connectrpc-yabeda`](gems/connectrpc-yabeda/README.md) | You want the same metrics through Yabeda and any of its adapters | `connectrpc/yabeda` |
 
 Use the same version of `connectrpc` and every ConnectRPC gem in an
 application. Their `~>` dependency ranges allow patch versions to differ, but the

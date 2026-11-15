@@ -320,8 +320,8 @@ RSpec.describe "gRPC bounded framing and negotiation" do
 
   it "retains empty and fragmented adjacent messages without a Connect terminal" do
     reader = framing(frame("") + frame("two"))
-    expect(reader.read_frame).to eq([0, ""])
-    expect(reader.read_frame).to eq([0, "two"])
+    expect(reader.read_frame).to eq([0, "", 0])
+    expect(reader.read_frame).to eq([0, "two", 3])
     expect(reader.read_frame).to be_nil
   end
 
@@ -372,7 +372,7 @@ RSpec.describe "gRPC bounded framing and negotiation" do
     }
     compressed = ConnectRPC::Compression.encode("small", limit: 4096)
     reader = framing(frame(compressed, 1) + frame(compressed, 1), encoding: :gzip)
-    2.times { expect(reader.read_frame).to eq([1, "small"]) }
+    2.times { expect(reader.read_frame).to eq([1, "small", compressed.bytesize]) }
     expect(reader.read_frame).to be_nil
   end
 

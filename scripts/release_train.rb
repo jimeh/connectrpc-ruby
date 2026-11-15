@@ -6,7 +6,7 @@ require "rubygems"
 # Source preparation only. This helper never loads ConnectRPC or contacts a registry.
 class ReleaseTrain # rubocop:disable Metrics/ClassLength
   NAMES = %w[connectrpc connectrpc-rack connectrpc-async connectrpc-testing connectrpc-otel
-             connectrpc-on-rails connectrpc-falcon].freeze
+             connectrpc-on-rails connectrpc-falcon connectrpc-prometheus connectrpc-yabeda].freeze
   VERSION_FILES = NAMES.to_h do |name|
     file = if name == "connectrpc"
              "lib/connectrpc/version.rb"
@@ -15,19 +15,24 @@ class ReleaseTrain # rubocop:disable Metrics/ClassLength
            end
     [name, file]
   end.freeze
-  LOCKS = ["Gemfile.lock", *%w[rack async falcon testing otel].map do |name|
+  LOCKS = ["Gemfile.lock", *%w[rack async falcon testing otel prometheus yabeda].map do |name|
     "gems/connectrpc-#{name}/Gemfile.lock"
   end, *%w[8.0 8.1].map { |lane| "gems/connectrpc-on-rails/gemfiles/rails_#{lane}.gemfile.lock" }].freeze
   GUIDES = %w[README.md docs/design.md docs/unary.md gems/connectrpc-rack/README.md
               gems/connectrpc-on-rails/README.md gems/connectrpc-async/README.md gems/connectrpc-falcon/README.md
-              gems/connectrpc-testing/README.md gems/connectrpc-otel/README.md].freeze
+              gems/connectrpc-testing/README.md gems/connectrpc-otel/README.md
+              gems/connectrpc-prometheus/README.md gems/connectrpc-yabeda/README.md].freeze
   LOCK_PACKAGES = {
     "Gemfile.lock" => %w[connectrpc connectrpc-rack],
     "gems/connectrpc-rack/Gemfile.lock" => %w[connectrpc connectrpc-rack],
     "gems/connectrpc-async/Gemfile.lock" => %w[connectrpc connectrpc-async],
     "gems/connectrpc-falcon/Gemfile.lock" => %w[connectrpc connectrpc-async connectrpc-falcon],
     "gems/connectrpc-testing/Gemfile.lock" => %w[connectrpc connectrpc-testing],
-    "gems/connectrpc-otel/Gemfile.lock" => NAMES,
+    "gems/connectrpc-otel/Gemfile.lock" => %w[connectrpc connectrpc-rack connectrpc-async connectrpc-testing
+                                              connectrpc-otel connectrpc-on-rails connectrpc-falcon],
+    "gems/connectrpc-prometheus/Gemfile.lock" => %w[connectrpc connectrpc-rack connectrpc-async connectrpc-falcon
+                                                    connectrpc-testing connectrpc-prometheus],
+    "gems/connectrpc-yabeda/Gemfile.lock" => %w[connectrpc connectrpc-testing connectrpc-yabeda],
     "gems/connectrpc-on-rails/gemfiles/rails_8.0.gemfile.lock" => %w[connectrpc connectrpc-rack connectrpc-on-rails],
     "gems/connectrpc-on-rails/gemfiles/rails_8.1.gemfile.lock" => %w[connectrpc connectrpc-rack connectrpc-on-rails]
   }.freeze

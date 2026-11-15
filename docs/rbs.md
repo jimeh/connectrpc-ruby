@@ -198,6 +198,8 @@ target :app do
   library "connectrpc-async"
   library "connectrpc-falcon"
   library "connectrpc-otel"
+  library "connectrpc-prometheus"
+  library "connectrpc-yabeda"
   check "app"
   configure_code_diagnostics(Steep::Diagnostic::Ruby.strict)
 end
@@ -212,7 +214,8 @@ optional runtime require.
 | Owner | Supported API and extension SPI |
 | --- | --- |
 | Core | Method, non-generic Service, Client/Server options and calls, records, Metadata, CancellationSource/Token/Registration, Deadline/Context, Error/ErrorDetail, explicit NetHTTP and Google binding entry points |
-| Core shared, unary and observation SPI | `_Cancellation`, `_Binding`, `_Transport`, `_Input`, `_Handler`, `_Invoker`, callable clocks/error handlers, `_Subscriber`, four separate optional observer callback capabilities, host lifecycle Handle |
+| Core shared, unary and observation SPI | `_Cancellation`, `_Binding`, `_Transport`, `_Input`, `_Handler`, `_Invoker`, callable clocks/error handlers, `_Subscriber`, six separate optional observer callback capabilities, host lifecycle Handle |
+| Core metrics (`connectrpc/metrics`) | `Metrics::Definitions`, `Instrument`, `Subscriber` and `ConnectionObserver`; the `Metrics::_Recorder` sink SPI and the structural `Metrics::_ConnectionEvent` shape |
 | Core streaming and gRPC/Web SPI | `_StreamingTransport`, `_StreamExchange`, streaming input/output, `_GRPCTransport`, `_GRPCStreamExchange`, `_GRPCStatusCodec`, native server publication/output interfaces including `_GRPCWebOutput`; see the protocol-specific sections below |
 | Rack | Middleware constructor/call and shared `_App`, `_Body`, `_CallableBody`, `_Stream`, env and response contracts |
 | Testing | In-process Transport constructor/call, reusable as the core transport |
@@ -220,6 +223,8 @@ optional runtime require.
 | Async | Application/native HTTP capabilities, Host, Transport, HTTP1Transport, ServerSession/accepted handles, TLSConfiguration, complete static/provider record shapes, status/error callbacks, rotation/drain/identity |
 | Falcon | Endpoint's supported operations, Environment overrides and Server/native application/TLS lifecycle |
 | OTel | Subscriber configuration and narrow tracer-provider/tracer/span/propagator capabilities; SDK and context implementation remain application owned |
+| Prometheus | Metrics configuration, readers and `connection_observer`; narrow structural registry/metric capabilities for prometheus-client |
+| Yabeda | Metrics configuration, readers and `connection_observer`; Yabeda itself remains untyped and application configured |
 
 `Async::Host#close`, `Async::ServerSession#close` and `Falcon::Server#close`
 return `bool?`. Nil means a nonjoining owned request or coordinator reentry is
@@ -250,9 +255,10 @@ raw immutable header carrier. Native packages share core's private selection;
 it is not an additional public protocol API.
 
 Instrumentation subscribers return an opaque object or nil. They may implement
-any subset of attach, detach, processing_finished and finished. The separate
-`_ObserverAttach`, `_ObserverDetach`, `_ObserverProcessingFinished` and
-`_ObserverFinished` interfaces let applications deliberately check a capability;
+any subset of attach, detach, processing_finished, finished, message_received and
+message_sent. The separate `_ObserverAttach`, `_ObserverDetach`,
+`_ObserverProcessingFinished`, `_ObserverFinished`, `_ObserverMessageReceived` and
+`_ObserverMessageSent` interfaces let applications deliberately check a capability;
 returning an arbitrary object from `start` does not automatically validate all
 its optional callbacks. Core resolves methods once into private typed callback
 records at one reflection boundary. Call, Outcome and Completion are shallowly
@@ -374,7 +380,8 @@ and Falcon-only checks remain separate.
 archives, builds every owned signature package and checks each library through
 normal installed discovery. It checks composed environments in both load orders,
 real Rails subclass inclusion, Rack/Testing calls, native session/TLS operations,
-Falcon endpoint integration and API-only OTel without loading an SDK. The original
+Falcon endpoint integration, API-only OTel without loading an SDK, and both
+metrics sinks recording through one core metrics layer. The original
 package guards and generated installed callers remain. Complete negative batch
 logs are retained under `vendor/rbs/`, including nested installed API logs on
 failure. Core, optional and tool bundles stay independent; gem dependencies and
@@ -419,7 +426,7 @@ includes bounded response-head/read/finish waits. Existing unary `_Transport`
 consumers need no new method. New core streaming files participate in the strict
 implementation target, with private declarations outside gem archives. Installed
 checks generate real mixed services and run native Async/Falcon streaming over
-localhost with all seven normally installed packages, both composition orders,
+localhost with all nine normally installed packages, both composition orders,
 codecs and codings. These remain separate from independent Go/official evidence.
 Custom server hosts may pass `capabilities: Array[:server_stream | :client_stream |
 :bidi_stream]?` to `Server#call_stream`. Nil preserves the legacy `http2:` behavior;
@@ -456,6 +463,20 @@ start. All new core files enter the strict source set and internal signatures;
 API callers include exact client-mode, output, capability and CORS negatives.
 The installed consumer runs manual encoded Testing requests and real mixed
 Web/Connect H2 calls in both package load orders, without loading an OTel SDK.
+
+## Metrics types
+
+`require "connectrpc/metrics"` is optional and not loaded by `require
+"connectrpc"`; its signatures are part of core's `sig/` so sinks share one
+contract. Recorders implement `Metrics::_Recorder` (`increment`, `observe`,
+`set` with a Symbol key and Symbol-keyed String labels). Connection events are
+typed by the structural `Metrics::_ConnectionEvent`, so core signatures never
+reference Async. The metrics files join the strict implementation target with
+private declarations in `typecheck/internal/core.rbs`. The Prometheus package
+types its registry through narrow structural capabilities rather than
+prometheus-client signatures. API callers cover a custom recorder, the
+connection observer, both sinks and the message observer capabilities, with
+exact negatives for a malformed recorder and wrong namespace/group types.
 
 ## HTTP/1 client types
 

@@ -40,6 +40,8 @@ expected_core = %w[
   lib/connectrpc/deadline.rb lib/connectrpc/compression.rb lib/connectrpc/message_io.rb
   lib/connectrpc/get_query.rb
   lib/connectrpc/protocol.rb lib/connectrpc/client.rb lib/connectrpc/server.rb lib/connectrpc/instrumentation.rb
+  lib/connectrpc/metrics.rb lib/connectrpc/metrics/connection_observer.rb
+  lib/connectrpc/metrics/definitions.rb lib/connectrpc/metrics/subscriber.rb
   lib/connectrpc/bindings/google_protobuf.rb lib/connectrpc/transports/net_http.rb
   lib/connectrpc/generator.rb lib/connectrpc/generator/names.rb lib/connectrpc/generator/schema.rb
   lib/connectrpc/generator/renderer.rb lib/connectrpc/generator/runtime_names.rb

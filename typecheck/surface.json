@@ -825,6 +825,25 @@
   "gems/connectrpc-otel/lib/connectrpc/otel/version.rb": {
 
   },
+  "gems/connectrpc-prometheus/lib/connectrpc/prometheus.rb": {
+
+  },
+  "gems/connectrpc-prometheus/lib/connectrpc/prometheus/metrics.rb": {
+    "ConnectRPC::Prometheus::Metrics#connection_observer": {"kind":"method","visibility":"public","parameters":"transport:","classification":"supported"},
+    "ConnectRPC::Prometheus::Metrics#definitions": {"kind":"attribute","visibility":"public","classification":"supported"},
+    "ConnectRPC::Prometheus::Metrics#gauge_settings": {"kind":"method","visibility":"private","parameters":"","classification":"internal"},
+    "ConnectRPC::Prometheus::Metrics#initialize": {"kind":"method","visibility":"public","parameters":"registry: ::Prometheus::Client.registry, namespace: \"grpc\", duration_buckets: ::ConnectRPC::Metrics::Definitions::DURATION_BUCKETS, size_buckets: ::ConnectRPC::Metrics::Definitions::SIZE_BUCKETS","classification":"supported"},
+    "ConnectRPC::Prometheus::Metrics#register": {"kind":"method","visibility":"private","parameters":"instrument","classification":"internal"},
+    "ConnectRPC::Prometheus::Metrics#registry": {"kind":"attribute","visibility":"public","classification":"supported"},
+    "ConnectRPC::Prometheus::Metrics#subscriber": {"kind":"attribute","visibility":"public","classification":"supported"},
+    "ConnectRPC::Prometheus::Metrics::Recorder#increment": {"kind":"method","visibility":"public","parameters":"key, labels, by","classification":"internal"},
+    "ConnectRPC::Prometheus::Metrics::Recorder#initialize": {"kind":"method","visibility":"public","parameters":"metrics","classification":"internal"},
+    "ConnectRPC::Prometheus::Metrics::Recorder#observe": {"kind":"method","visibility":"public","parameters":"key, labels, value","classification":"internal"},
+    "ConnectRPC::Prometheus::Metrics::Recorder#set": {"kind":"method","visibility":"public","parameters":"key, labels, value","classification":"internal"}
+  },
+  "gems/connectrpc-prometheus/lib/connectrpc/prometheus/version.rb": {
+
+  },
   "gems/connectrpc-rack/lib/connectrpc/rack.rb": {
     "ConnectRPC::Rack#call": {"kind":"method","visibility":"public","parameters":"env","classification":"supported"},
     "ConnectRPC::Rack#initialize": {"kind":"method","visibility":"public","parameters":"app = nil, server:","classification":"supported"},
@@ -854,6 +873,26 @@
     "ConnectRPC::Testing::Transport::BytesReader#read": {"kind":"method","visibility":"public","parameters":"length","classification":"internal"}
   },
   "gems/connectrpc-testing/lib/connectrpc/testing/version.rb": {
+
+  },
+  "gems/connectrpc-yabeda/lib/connectrpc/yabeda.rb": {
+
+  },
+  "gems/connectrpc-yabeda/lib/connectrpc/yabeda/metrics.rb": {
+    "ConnectRPC::Yabeda::Metrics#connection_observer": {"kind":"method","visibility":"public","parameters":"transport:","classification":"supported"},
+    "ConnectRPC::Yabeda::Metrics#definitions": {"kind":"attribute","visibility":"public","classification":"supported"},
+    "ConnectRPC::Yabeda::Metrics#group": {"kind":"attribute","visibility":"public","classification":"supported"},
+    "ConnectRPC::Yabeda::Metrics#initialize": {"kind":"method","visibility":"public","parameters":"group: :grpc, duration_buckets: ::ConnectRPC::Metrics::Definitions::DURATION_BUCKETS, size_buckets: ::ConnectRPC::Metrics::Definitions::SIZE_BUCKETS","classification":"supported"},
+    "ConnectRPC::Yabeda::Metrics#subscriber": {"kind":"attribute","visibility":"public","classification":"supported"},
+    "ConnectRPC::Yabeda::Metrics.declaration": {"kind":"method","visibility":"public","parameters":"instrument","classification":"internal"},
+    "ConnectRPC::Yabeda::Metrics.declare": {"kind":"method","visibility":"public","parameters":"group_name, instruments","classification":"internal"},
+    "ConnectRPC::Yabeda::Metrics::Recorder#increment": {"kind":"method","visibility":"public","parameters":"key, labels, by","classification":"internal"},
+    "ConnectRPC::Yabeda::Metrics::Recorder#initialize": {"kind":"method","visibility":"public","parameters":"names","classification":"internal"},
+    "ConnectRPC::Yabeda::Metrics::Recorder#metric": {"kind":"method","visibility":"private","parameters":"key","classification":"internal"},
+    "ConnectRPC::Yabeda::Metrics::Recorder#observe": {"kind":"method","visibility":"public","parameters":"key, labels, value","classification":"internal"},
+    "ConnectRPC::Yabeda::Metrics::Recorder#set": {"kind":"method","visibility":"public","parameters":"key, labels, value","classification":"internal"}
+  },
+  "gems/connectrpc-yabeda/lib/connectrpc/yabeda/version.rb": {
 
   },
   "lib/connectrpc.rb": {
@@ -1177,7 +1216,7 @@
     "ConnectRPC::Instrumentation#start": {"kind":"method","visibility":"public","parameters":"owner:, role:, method:, carrier:, server_address: nil, server_port: nil, path: nil, protocol: :connect","classification":"internal"},
     "ConnectRPC::Instrumentation.carrier": {"kind":"method","visibility":"public","parameters":"headers","classification":"internal"},
     "ConnectRPC::Instrumentation::Call": {"kind":"Data","visibility":"public","members":["role","protocol","method","server_address","server_port","carrier"],"options":[],"classification":"spi"},
-    "ConnectRPC::Instrumentation::Callbacks": {"kind":"Data","visibility":"private","members":["attach","detach","processing_finished","finished"],"options":[],"classification":"internal"},
+    "ConnectRPC::Instrumentation::Callbacks": {"kind":"Data","visibility":"private","members":["attach","detach","processing_finished","finished","message_received","message_sent"],"options":[],"classification":"internal"},
     "ConnectRPC::Instrumentation::Callbacks.callback": {"kind":"method","visibility":"private","parameters":"observer, name, bus","classification":"internal"},
     "ConnectRPC::Instrumentation::Callbacks.discover": {"kind":"method","visibility":"public","parameters":"observer, bus","classification":"internal"},
     "ConnectRPC::Instrumentation::Completion": {"kind":"Data","visibility":"public","members":["outcome","processing_state","decision","delivery","error","http_status","duration"],"options":[],"classification":"spi"},
@@ -1192,9 +1231,12 @@
     "ConnectRPC::Instrumentation::Handle#host_rejected!": {"kind":"method","visibility":"public","parameters":"","classification":"spi"},
     "ConnectRPC::Instrumentation::Handle#host_rejected?": {"kind":"method","visibility":"public","parameters":"","classification":"spi"},
     "ConnectRPC::Instrumentation::Handle#initialize": {"kind":"method","visibility":"public","parameters":"bus, owner, path, observers","classification":"internal"},
+    "ConnectRPC::Instrumentation::Handle#message_received": {"kind":"method","visibility":"public","parameters":"bytes","classification":"internal"},
+    "ConnectRPC::Instrumentation::Handle#message_sent": {"kind":"method","visibility":"public","parameters":"bytes","classification":"internal"},
     "ConnectRPC::Instrumentation::Handle#normalized_error": {"kind":"attribute","visibility":"public","classification":"internal"},
     "ConnectRPC::Instrumentation::Handle#normalized_error=": {"kind":"attribute","visibility":"public","classification":"internal"},
     "ConnectRPC::Instrumentation::Handle#notify_finished": {"kind":"method","visibility":"private","parameters":"completion","classification":"internal"},
+    "ConnectRPC::Instrumentation::Handle#notify_message": {"kind":"method","visibility":"private","parameters":"name, bytes","classification":"internal"},
     "ConnectRPC::Instrumentation::Handle#notify_processing": {"kind":"method","visibility":"private","parameters":"outcome","classification":"internal"},
     "ConnectRPC::Instrumentation::Handle#now": {"kind":"method","visibility":"private","parameters":"","classification":"internal"},
     "ConnectRPC::Instrumentation::Handle#outcome": {"kind":"attribute","visibility":"public","classification":"internal"},
@@ -1246,6 +1288,49 @@
     "ConnectRPC::Service#service_method?": {"kind":"method","visibility":"private","parameters":"method, name","classification":"internal"},
     "ConnectRPC::Service#validate_methods!": {"kind":"method","visibility":"private","parameters":"name, methods","classification":"internal"}
   },
+  "lib/connectrpc/metrics.rb": {
+
+  },
+  "lib/connectrpc/metrics/connection_observer.rb": {
+    "ConnectRPC::Metrics::ConnectionObserver#attempt_finished": {"kind":"method","visibility":"private","parameters":"outcome, duration","classification":"internal"},
+    "ConnectRPC::Metrics::ConnectionObserver#call": {"kind":"method","visibility":"public","parameters":"event","classification":"supported"},
+    "ConnectRPC::Metrics::ConnectionObserver#initialize": {"kind":"method","visibility":"public","parameters":"recorder:, definitions:, transport:","classification":"supported"},
+    "ConnectRPC::Metrics::ConnectionObserver#initialize_state": {"kind":"method","visibility":"private","parameters":"","classification":"internal"},
+    "ConnectRPC::Metrics::ConnectionObserver#state_changed": {"kind":"method","visibility":"private","parameters":"previous, state","classification":"internal"},
+    "ConnectRPC::Metrics::ConnectionObserver#state_labels": {"kind":"method","visibility":"private","parameters":"state","classification":"internal"},
+    "ConnectRPC::Metrics::ConnectionObserver#transport": {"kind":"attribute","visibility":"public","classification":"supported"},
+    "ConnectRPC::Metrics::ConnectionObserver.transport!": {"kind":"method","visibility":"public","parameters":"name","classification":"internal"}
+  },
+  "lib/connectrpc/metrics/definitions.rb": {
+    "ConnectRPC::Metrics::Definitions#connection_instruments": {"kind":"method","visibility":"private","parameters":"durations","classification":"internal"},
+    "ConnectRPC::Metrics::Definitions#counter": {"kind":"method","visibility":"private","parameters":"role, name, labels, help","classification":"internal"},
+    "ConnectRPC::Metrics::Definitions#fetch": {"kind":"method","visibility":"public","parameters":"key","classification":"supported"},
+    "ConnectRPC::Metrics::Definitions#full_name": {"kind":"method","visibility":"public","parameters":"instrument","classification":"supported"},
+    "ConnectRPC::Metrics::Definitions#gauge": {"kind":"method","visibility":"private","parameters":"role, name, labels, help","classification":"internal"},
+    "ConnectRPC::Metrics::Definitions#histogram": {"kind":"method","visibility":"private","parameters":"role, name, unit, labels, buckets, help","classification":"internal"},
+    "ConnectRPC::Metrics::Definitions#initialize": {"kind":"method","visibility":"public","parameters":"namespace: \"grpc\", duration_buckets: DURATION_BUCKETS, size_buckets: SIZE_BUCKETS","classification":"supported"},
+    "ConnectRPC::Metrics::Definitions#instruments": {"kind":"attribute","visibility":"public","classification":"supported"},
+    "ConnectRPC::Metrics::Definitions#namespace": {"kind":"attribute","visibility":"public","classification":"supported"},
+    "ConnectRPC::Metrics::Definitions#rpc_instruments": {"kind":"method","visibility":"private","parameters":"role, durations, sizes","classification":"internal"},
+    "ConnectRPC::Metrics::Definitions.bound?": {"kind":"method","visibility":"private","parameters":"value","classification":"internal"},
+    "ConnectRPC::Metrics::Definitions.buckets!": {"kind":"method","visibility":"public","parameters":"values, name","classification":"internal"},
+    "ConnectRPC::Metrics::Definitions.namespace!": {"kind":"method","visibility":"public","parameters":"value","classification":"internal"},
+    "ConnectRPC::Metrics::Instrument": {"kind":"Data","visibility":"public","members":["key","kind","name","unit","labels","buckets","help"],"options":[],"classification":"supported"}
+  },
+  "lib/connectrpc/metrics/subscriber.rb": {
+    "ConnectRPC::Metrics.code": {"kind":"method","visibility":"public","parameters":"value","classification":"internal"},
+    "ConnectRPC::Metrics.labels": {"kind":"method","visibility":"public","parameters":"call","classification":"internal"},
+    "ConnectRPC::Metrics::Subscriber#initialize": {"kind":"method","visibility":"public","parameters":"recorder:, definitions:","classification":"supported"},
+    "ConnectRPC::Metrics::Subscriber#start": {"kind":"method","visibility":"public","parameters":"call","classification":"supported"},
+    "ConnectRPC::Metrics::Subscriber::Observer#finished": {"kind":"method","visibility":"public","parameters":"completion","classification":"internal"},
+    "ConnectRPC::Metrics::Subscriber::Observer#handled": {"kind":"method","visibility":"private","parameters":"code, duration","classification":"internal"},
+    "ConnectRPC::Metrics::Subscriber::Observer#initialize": {"kind":"method","visibility":"public","parameters":"recorder, keys, server, labels","classification":"internal"},
+    "ConnectRPC::Metrics::Subscriber::Observer#message_received": {"kind":"method","visibility":"public","parameters":"bytes","classification":"internal"},
+    "ConnectRPC::Metrics::Subscriber::Observer#message_sent": {"kind":"method","visibility":"public","parameters":"bytes","classification":"internal"},
+    "ConnectRPC::Metrics::Subscriber::Observer#reject": {"kind":"method","visibility":"private","parameters":"reason","classification":"internal"},
+    "ConnectRPC::Metrics::Subscriber::Observer#rejection": {"kind":"method","visibility":"private","parameters":"completion","classification":"internal"},
+    "ConnectRPC::Metrics::Subscriber::Observer.code": {"kind":"method","visibility":"public","parameters":"outcome","classification":"internal"}
+  },
   "lib/connectrpc/protocol.rb": {
     "ConnectRPC::Protocol.accept_encoding!": {"kind":"method","visibility":"public","parameters":"value, encoding","classification":"internal"},
     "ConnectRPC::Protocol.check_size!": {"kind":"method","visibility":"public","parameters":"bytes, limit","classification":"internal"},
@@ -1278,7 +1363,7 @@
     "ConnectRPC::Server#decode_request": {"kind":"method","visibility":"private","parameters":"bytes, method, codec, context","classification":"internal"},
     "ConnectRPC::Server#dispatch": {"kind":"method","visibility":"private","parameters":"path, headers, input, codec, context, lifecycle: nil","classification":"internal"},
     "ConnectRPC::Server#empty_get_body?": {"kind":"method","visibility":"private","parameters":"headers, input, deadline","classification":"internal"},
-    "ConnectRPC::Server#encode_response": {"kind":"method","visibility":"private","parameters":"message, method, codec, context, encoding","classification":"internal"},
+    "ConnectRPC::Server#encode_response": {"kind":"method","visibility":"private","parameters":"message, method, codec, context, encoding, lifecycle = nil","classification":"internal"},
     "ConnectRPC::Server#error_response": {"kind":"method","visibility":"private","parameters":"error, context, lifecycle = nil","classification":"internal"},
     "ConnectRPC::Server#get_headers": {"kind":"method","visibility":"private","parameters":"headers, values","classification":"internal"},
     "ConnectRPC::Server#handles?": {"kind":"method","visibility":"public","parameters":"path","classification":"supported"},
@@ -1484,7 +1569,7 @@
     "ConnectRPC::Streaming::Session#abandon": {"kind":"method","visibility":"public","parameters":"","classification":"internal"},
     "ConnectRPC::Streaming::Session#close_send": {"kind":"method","visibility":"public","parameters":"","classification":"internal"},
     "ConnectRPC::Streaming::Session#completed_receive": {"kind":"method","visibility":"private","parameters":"","classification":"internal"},
-    "ConnectRPC::Streaming::Session#decode_message": {"kind":"method","visibility":"private","parameters":"bytes","classification":"internal"},
+    "ConnectRPC::Streaming::Session#decode_message": {"kind":"method","visibility":"private","parameters":"bytes, length","classification":"internal"},
     "ConnectRPC::Streaming::Session#encode_message": {"kind":"method","visibility":"private","parameters":"message","classification":"internal"},
     "ConnectRPC::Streaming::Session#headers": {"kind":"method","visibility":"public","parameters":"","classification":"internal"},
     "ConnectRPC::Streaming::Session#receive": {"kind":"method","visibility":"public","parameters":"","classification":"internal"},

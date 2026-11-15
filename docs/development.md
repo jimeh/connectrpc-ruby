@@ -484,6 +484,25 @@ GEM_HOME, then run copied generated callers with actual SDK in-memory exports.
 See the [package guide](../gems/connectrpc-otel/README.md) for the precise trace
 baseline and unknown-method default-redaction limitation.
 
+## Optional metrics development
+
+Core's backend-neutral `connectrpc/metrics` layer is covered by the root suite
+(`mise run test -- spec/metrics_spec.rb spec/message_events_spec.rb`). The sinks
+have independent checksummed bundles: `mise run prometheus:setup` installs
+prometheus-client with the local Rack, Async, Falcon and testing packages under
+`vendor/prometheus`, and `mise run yabeda:setup` installs Yabeda with the testing
+package under `vendor/yabeda`. Each has discoverable `test`, `check`, `build`,
+`package`, `example` and `verify` leaves, coverage under
+`coverage/{prometheus,yabeda}/<Ruby>/`, and one CI leaf per pinned Ruby. Use
+`prometheus:test -- spec/hosts_spec.rb` for real Rack, Async and Falcon host
+completion and `spec/direct_file_store_spec.rb` for forked workers. The Yabeda
+bundle deliberately excludes yabeda-prometheus, whose `prometheus-client < 5`
+would split the version map shared by every package lock. Package checks
+install normal dependencies offline into a fresh external GEM_HOME and run the
+copied generated example. See the
+[Prometheus](../gems/connectrpc-prometheus/README.md) and
+[Yabeda](../gems/connectrpc-yabeda/README.md) guides for metric semantics.
+
 ## Native streaming verification
 
 `async:test` and `falcon:test` include the incremental shape/codec/coding/security

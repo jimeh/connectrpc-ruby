@@ -1,0 +1,14 @@
+module ConnectRPC
+  module Yabeda
+    VERSION: String
+    class Metrics
+      # Declares through Yabeda.configure: immediately when Yabeda is configured, otherwise at Yabeda.configure!.
+      def initialize: (?group: String | Symbol, ?duration_buckets: Array[Numeric], ?size_buckets: Array[Numeric]) -> void
+      attr_reader definitions: ::ConnectRPC::Metrics::Definitions
+      attr_reader group: Symbol
+      attr_reader subscriber: ::ConnectRPC::Metrics::Subscriber
+      # Raises ArgumentError when this Metrics already has an observer for the transport name.
+      def connection_observer: (transport: String) -> ::ConnectRPC::Metrics::ConnectionObserver
+    end
+  end
+end

@@ -383,7 +383,7 @@ run = "ruby typecheck/run.rb check"
 
 [tasks."rbs:package"]
 description = "Check installed RBS discovery and consumers outside the checkout"
-depends = ["rbs:runtime", "rbs:setup", "setup:generation", "rack:setup", "testing:setup", "setup:rails", "async:setup", "falcon:setup", "otel:setup"]
+depends = ["rbs:runtime", "rbs:setup", "setup:generation", "rack:setup", "testing:setup", "setup:rails", "async:setup", "falcon:setup", "otel:setup", "prometheus:setup", "yabeda:setup"]
 tools."aqua:protocolbuffers/protobuf/protoc" = "36.2"
 tools."aqua:bufbuild/buf" = "1.75.0"
 run = "ruby typecheck/run.rb package"
@@ -482,6 +482,88 @@ run = "mise exec -- ruby gems/connectrpc-otel/scripts/run.rb example"
 [tasks."otel:verify"]
 description = "Verify API-only packages and SDK-backed cross-package tracing"
 depends = ["otel:test", "otel:check", "otel:package", "otel:example"]
+
+# Optional metrics sinks over the core connectrpc/metrics layer; independent development bundles.
+
+[tasks."prometheus:tools"]
+description = "Require preinstalled pinned Ruby and Bundler for Prometheus"
+dir = "{{config_root}}/gems/connectrpc-prometheus"
+env = { BUNDLE_GEMFILE = "{{config_root}}/gems/connectrpc-prometheus/Gemfile", BUNDLE_PATH = "{{config_root}}/vendor/prometheus/bundle", BUNDLE_USER_HOME = "{{config_root}}/vendor/prometheus/bundler", BUNDLE_COOLDOWN = "7" }
+run = "mise exec -- ruby scripts/tools.rb"
+
+[tasks."prometheus:setup"]
+description = "Install the independent frozen Prometheus development bundle"
+depends = ["prometheus:tools"]
+run = "mise exec -- ruby gems/connectrpc-prometheus/scripts/run.rb setup"
+
+[tasks."prometheus:test"]
+description = "Run Prometheus metrics specs, including real Rack, Async and Falcon hosts"
+depends = ["prometheus:setup"]
+run = "mise exec -- ruby gems/connectrpc-prometheus/scripts/run.rb test"
+
+[tasks."prometheus:check"]
+description = "Parse and lint Prometheus package source"
+depends = ["prometheus:setup"]
+run = "mise exec -- ruby gems/connectrpc-prometheus/scripts/run.rb check"
+
+[tasks."prometheus:build"]
+description = "Build isolated core, testing and Prometheus archives"
+depends = ["prometheus:setup"]
+run = "mise exec -- ruby gems/connectrpc-prometheus/scripts/run.rb build"
+
+[tasks."prometheus:package"]
+description = "Install and exercise normal Prometheus metrics dependencies offline"
+depends = ["prometheus:build"]
+run = "mise exec -- ruby gems/connectrpc-prometheus/scripts/run.rb package"
+
+[tasks."prometheus:example"]
+description = "Run generated in-process RPCs and check Prometheus exposition"
+depends = ["prometheus:setup"]
+run = "mise exec -- ruby gems/connectrpc-prometheus/scripts/run.rb example"
+
+[tasks."prometheus:verify"]
+description = "Verify Prometheus metrics specs, source and packages"
+depends = ["prometheus:test", "prometheus:check", "prometheus:package", "prometheus:example"]
+
+[tasks."yabeda:tools"]
+description = "Require preinstalled pinned Ruby and Bundler for Yabeda"
+dir = "{{config_root}}/gems/connectrpc-yabeda"
+env = { BUNDLE_GEMFILE = "{{config_root}}/gems/connectrpc-yabeda/Gemfile", BUNDLE_PATH = "{{config_root}}/vendor/yabeda/bundle", BUNDLE_USER_HOME = "{{config_root}}/vendor/yabeda/bundler", BUNDLE_COOLDOWN = "7" }
+run = "mise exec -- ruby scripts/tools.rb"
+
+[tasks."yabeda:setup"]
+description = "Install the independent frozen Yabeda development bundle"
+depends = ["yabeda:tools"]
+run = "mise exec -- ruby gems/connectrpc-yabeda/scripts/run.rb setup"
+
+[tasks."yabeda:test"]
+description = "Run Yabeda metrics declaration and recording specs"
+depends = ["yabeda:setup"]
+run = "mise exec -- ruby gems/connectrpc-yabeda/scripts/run.rb test"
+
+[tasks."yabeda:check"]
+description = "Parse and lint Yabeda package source"
+depends = ["yabeda:setup"]
+run = "mise exec -- ruby gems/connectrpc-yabeda/scripts/run.rb check"
+
+[tasks."yabeda:build"]
+description = "Build isolated core, testing and Yabeda archives"
+depends = ["yabeda:setup"]
+run = "mise exec -- ruby gems/connectrpc-yabeda/scripts/run.rb build"
+
+[tasks."yabeda:package"]
+description = "Install and exercise normal Yabeda metrics dependencies offline"
+depends = ["yabeda:build"]
+run = "mise exec -- ruby gems/connectrpc-yabeda/scripts/run.rb package"
+
+[tasks."yabeda:example"]
+description = "Run generated in-process RPCs and check Yabeda test-adapter values"
+depends = ["yabeda:setup"]
+run = "mise exec -- ruby gems/connectrpc-yabeda/scripts/run.rb example"
+
+[tasks."yabeda:verify"]
+description = "Verify Yabeda metrics specs, source and packages"
+depends = ["yabeda:test", "yabeda:check", "yabeda:package", "yabeda:example"]
 
 [tasks."rbs:source"]
 description = "Strictly check all selected core implementation files and private state"
@@ -670,7 +752,7 @@ run = "ruby gems/connectrpc-async/scripts/run.rb http1_interop"
 
 # Release preparation never tags, creates a GitHub release, or publishes gems.
 [tasks."release:check"]
-description = "Check seven synchronized versions, frozen local locks and release guards offline"
+description = "Check nine synchronized versions, frozen local locks and release guards offline"
 run = "mise exec -- ruby scripts/release.rb check"
 
 [tasks."release:prepare"]
@@ -678,7 +760,7 @@ description = "Prepare local lock metadata and installation guides after a relea
 run = "mise exec -- ruby scripts/release.rb prepare"
 
 [tasks."release:build"]
-description = "Build and compare seven canonical candidate archives from a clean Ruby 3.4.12 checkout"
+description = "Build and compare nine canonical candidate archives from a clean Ruby 3.4.12 checkout"
 run = "mise exec -- ruby scripts/release.rb build"
 
 [tasks."release:tools"]
@@ -691,5 +773,5 @@ run = "mise exec -- ruby scripts/release.rb publish"
 
 [tasks."release:candidate"]
 description = "Validate installed combinations, generated consumers and canonical candidate archives"
-depends = ["release:check", "generation:check", "grpc:status:check", "check:package", "rack:package", "check:package:rails", "async:package", "falcon:package", "testing:package", "otel:package", "rbs:package"]
+depends = ["release:check", "generation:check", "grpc:status:check", "check:package", "rack:package", "check:package:rails", "async:package", "falcon:package", "testing:package", "otel:package", "prometheus:package", "yabeda:package", "rbs:package"]
 run = "mise run release:build"

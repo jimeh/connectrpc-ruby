@@ -420,7 +420,9 @@ See [design](design.md) for ownership and transport limits.
 Pass `instrumentation: ConnectRPC::Instrumentation.new(subscribers: [recorder])`
 to a Client or Server for synchronous per-call observation. A subscriber's
 `start(call)` returns an observer with optional `attach`, `detach(token)`,
-`processing_finished(outcome)` and `finished(completion)` methods. Core owns the
+`processing_finished(outcome)`, `finished(completion)`, `message_received(bytes)`
+and `message_sent(bytes)` methods. The message callbacks fire live, once per
+decoded or emitted message, with its encoded payload size. Core owns the
 application yield and isolates each StandardError from subscribers and the
 optional `on_error:` reporter. Original exceptions are process-local trusted
 subscriber data. Instrumentation is disabled by default and performs no lifecycle
@@ -431,6 +433,11 @@ this lifecycle into real Connect CLIENT/SERVER traces using an
 application-owned OpenTelemetry SDK. Core has no OpenTelemetry dependency. See
 [design](design.md#rpc-lifecycle-observation) for host ownership and
 `mise run otel:example` for a runnable generated caller with real SDK exports.
+
+For metrics, the optional `require "connectrpc/metrics"` layer in core records a
+fixed go-grpc-prometheus compatible metric set through a small recorder SPI.
+The [connectrpc-prometheus](../gems/connectrpc-prometheus/README.md) and
+[connectrpc-yabeda](../gems/connectrpc-yabeda/README.md) packages are its sinks.
 
 ## Runtime baseline and evidence
 

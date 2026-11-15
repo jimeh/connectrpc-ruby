@@ -53,3 +53,15 @@ description = "Validate action Ruby/Bundler and independent OpenTelemetry bundle
 dir = "{{config_root}}/gems/connectrpc-otel"
 env = { BUNDLE_GEMFILE = "{{config_root}}/gems/connectrpc-otel/Gemfile", BUNDLE_PATH = "{{config_root}}/vendor/otel/bundle", BUNDLE_USER_HOME = "{{config_root}}/vendor/otel/bundler", BUNDLE_COOLDOWN = "7" }
 run = "ruby scripts/ci_runtime.rb"
+
+[tasks."prometheus:tools"]
+description = "Validate action Ruby/Bundler and independent Prometheus bundle settings"
+dir = "{{config_root}}/gems/connectrpc-prometheus"
+env = { BUNDLE_GEMFILE = "{{config_root}}/gems/connectrpc-prometheus/Gemfile", BUNDLE_PATH = "{{config_root}}/vendor/prometheus/bundle", BUNDLE_USER_HOME = "{{config_root}}/vendor/prometheus/bundler", BUNDLE_COOLDOWN = "7" }
+run = "ruby scripts/ci_runtime.rb"
+
+[tasks."yabeda:tools"]
+description = "Validate action Ruby/Bundler and independent Yabeda bundle settings"
+dir = "{{config_root}}/gems/connectrpc-yabeda"
+env = { BUNDLE_GEMFILE = "{{config_root}}/gems/connectrpc-yabeda/Gemfile", BUNDLE_PATH = "{{config_root}}/vendor/yabeda/bundle", BUNDLE_USER_HOME = "{{config_root}}/vendor/yabeda/bundler", BUNDLE_COOLDOWN = "7" }
+run = "ruby scripts/ci_runtime.rb"
