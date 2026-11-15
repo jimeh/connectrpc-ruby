@@ -265,7 +265,7 @@ watchdog or wire timeout; the exact independent native cap remains
 Async foreign-thread listeners only resolve a tagged Promise. Its owner reactor
 arbitrates, stops private operation/setup tasks and performs bounded cleanup.
 Promise resolution order does not decide the RPC outcome. Healthy stream reset
-preserves the shared pool and siblings; a stuck deferred frame retains the one
+preserves the shared connection and siblings; a stuck deferred frame retains the one
 100 ms cleanup budget and raw-first whole-connection fallback.
 
 Native HTTP/2 creates a request cancellation source before processing,
@@ -315,7 +315,7 @@ does not supply the Rails controller lifecycle.
 See the [Rails controller guide](https://guides.rubyonrails.org/action_controller_overview.html).
 
 The optional [connectrpc-async package](../gems/connectrpc-async/README.md)
-selects Async HTTP/2 for standalone unary/streaming hosting and a matching pooled transport.
+selects Async HTTP/2 for standalone unary/streaming hosting and a matching transport.
 It uses the existing transport/server seams, generated definitions and Google
 binding without changing core Context or wire contracts. The application owns
 the reactor and close lifecycle. Private, version-bounded wrappers own writes,
@@ -327,6 +327,12 @@ accessor is the optional authorization seam; peer-presented chains are not
 claimed to be verified chains. See the package guide for session isolation,
 cleanup's 100ms allowance and deliberate whole-connection failure for a stuck
 frame. Native streaming uses the same ingress and cleanup boundaries. No production daemon claim is made.
+The H2 client's private, reactor-owned connection manager runs shared connection
+attempts outside every RPC lifecycle and owns stream accounting, capped jittered
+backoff, opt-in wait-for-ready and count/request-byte admission. A call returns
+to acquisition only when its connection became unusable before any stream ID or
+request byte; nothing that may have reached the server is resent. The package
+guide describes the policy, states and observer events.
 
 Connect streaming carries end-stream metadata in its body; native gRPC requires
 actual final HTTP/2 HEADERS, as described in the [gRPC guide](grpc.md).

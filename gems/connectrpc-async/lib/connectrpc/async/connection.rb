@@ -14,6 +14,10 @@ module ConnectRPC
         }
       end
 
+      # Raised before a writer enters the guard of a connection that can no
+      # longer start streams. Nothing has been written for that writer.
+      class UnusableConnection < IOError; end
+
       # Version-coupled wrappers around the selected stack, not a frame codec.
       module Connection
         attr_accessor :resource, :defer_close
@@ -25,15 +29,23 @@ module ConnectRPC
           @writer = nil
         end
 
-        def synchronize
+        # A dispatcher has allocated and written nothing while it waits, so it
+        # is not a retirement writer until it holds the guard. It then rechecks
+        # before registering, without yielding, and returns to acquisition.
+        def synchronize(dispatch: false)
           task = ::Async::Task.current
           return yield if @writer.equal?(task)
 
-          raise IOError, "HTTP/2 connection closed" if @resource&.finished?
+          raise UnusableConnection, "HTTP/2 connection closed" if @resource&.finished?
 
-          @writers[task] = true
+          @writers[task] = true unless dispatch
           begin
             @write_frame_guard.acquire do
+              if dispatch
+                raise UnusableConnection, "HTTP/2 connection closed" if @resource&.finished?
+
+                @writers[task] = true
+              end
               @writer = task
               begin
                 yield
@@ -389,6 +401,19 @@ module ConnectRPC
         def create_response
           ResponseStream.create(self, next_stream_id).response
         end
+
+        # Peer SETTINGS can change stream capacity for waiting acquisitions.
+        def update_remote_settings(changes)
+          super
+        ensure
+          @resource&.changed
+        end
+
+        def receive_goaway(frame)
+          super
+        ensure
+          @resource&.unusable
+        end
       end
 
       class ServerConnection < ::Async::HTTP::Protocol::HTTP2::Server
@@ -465,6 +490,9 @@ module ConnectRPC
       class Resource
         attr_accessor :raw, :socket, :connection, :task, :generation, :snapshot, :ready, :draining
         attr_reader :tasks, :progress, :activity_at
+        # Called when the connection stops accepting new streams, before any
+        # retirement join, so its owner can update accounting promptly.
+        attr_writer :on_unusable
 
         def initialize(progress:, generation: nil, snapshot: nil)
           @shared_progress = progress
@@ -503,6 +531,7 @@ module ConnectRPC
 
         def finished? = @aborted
         def finishing? = @finishing
+        def unusable = @on_unusable&.call(self)
 
         def abort(error = IOError.new("HTTP/2 connection closed"))
           return if @cleanup&.current?
@@ -516,9 +545,9 @@ module ConnectRPC
             @cleanup = ::Async::Task.new(@lifetime, transient: true, finished: false) { retire(error) }
           end
           if owned
-            @cleanup.run if launch
+            start_cleanup if launch
           else
-            Internal.join_complete(@cleanup, failure: true) { @cleanup.run if launch }
+            Internal.join_complete(@cleanup, failure: true) { start_cleanup if launch }
           end
           nil
         end
@@ -572,6 +601,15 @@ module ConnectRPC
         end
 
         def retirement_completed? = !!@retirement_completed
+
+        # Retirement starts, closing raw TCP, before the owner notification
+        # can yield; a caller cancelled in that notification cannot leave it
+        # unstarted. The notification still precedes any retirement join.
+        def start_cleanup
+          @cleanup.run
+        ensure
+          unusable
+        end
 
         def retirement_roots
           outputs = (@connection ? @connection.streams.values : []).flat_map do |stream|

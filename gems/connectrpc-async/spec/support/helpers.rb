@@ -104,6 +104,9 @@ module AsyncHelpers
     end
   end
 
+  # Stream leases held across every connection the transport accounts for.
+  def lease_usage(transport) = transport.instance_variable_get(:@manager).usage
+
   def wait_until(task, message = "condition")
     last_observed = nil
     task.with_timeout(2) do

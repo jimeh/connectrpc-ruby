@@ -43,6 +43,27 @@ module ConnectRPC
         value
       end
 
+      def self.finite(value, name, requirement)
+        unless value.is_a?(Numeric) && value.real? && value.finite? && yield(value)
+          raise ArgumentError, "#{name} must be a finite number #{requirement}"
+        end
+
+        value
+      end
+
+      # Monotonic time and scheduler-aware sleep. Specs replace a manager's
+      # clock to control backoff timing.
+      module MonotonicClock
+        def self.now = Internal.now
+
+        def self.sleep(seconds)
+          expires = now + seconds
+          while (remaining = expires - now).positive?
+            ::Kernel.sleep([remaining, MAX_WAIT].min)
+          end
+        end
+      end
+
       # Timeouts are injected only into a supervisor waiting on a private task.
       def self.wait(task, expires = nil)
         return task.wait unless expires

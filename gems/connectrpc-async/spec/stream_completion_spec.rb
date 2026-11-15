@@ -46,7 +46,7 @@ RSpec.describe "Native streaming terminal completion" do
           expect(result.cause).to be_nil
         end
         expect(transport.instance_variable_get(:@calls)).to be_empty
-        expect(transport.instance_variable_get(:@pool).resources.values.sum).to eq(0)
+        expect(lease_usage(transport)).to eq(0)
       ensure
         transport&.close(grace: 0)
         host&.close(grace: 0)

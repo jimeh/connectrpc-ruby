@@ -36,6 +36,14 @@ class APIProvider
   end
 end
 
+class APIConnectionObserver
+  def call(event)
+    event.state.to_s
+    event.outcome&.to_s
+    nil
+  end
+end
+
 class APIReporter
   def call(event)
     event[:status][:generation]&.succ

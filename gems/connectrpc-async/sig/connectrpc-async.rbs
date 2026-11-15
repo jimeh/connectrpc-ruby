@@ -89,8 +89,45 @@ module ConnectRPC
       def tls_status: () -> tls_status
       def peer_certificate: () -> OpenSSL::X509::Certificate?
     end
+    type connection_state = :idle | :connecting | :ready | :transient_failure | :closing | :closed
+    type connection_outcome = :ready | :refused | :timeout | :tls | :protocol | :closed | :other
+    class Backoff
+      def initialize: (?base: Numeric, ?multiplier: Numeric, ?jitter: Numeric, ?max: Numeric) -> void
+      attr_reader base: Numeric
+      attr_reader multiplier: Numeric
+      attr_reader jitter: Numeric
+      attr_reader max: Numeric
+      def ==: (untyped other) -> bool
+      def eql?: (untyped other) -> bool
+      def hash: () -> Integer
+    end
+    class ConnectionPolicy
+      def initialize: (?backoff: Backoff?, ?wait_for_ready: bool, ?max_pending_bytes: Integer?) -> void
+      attr_reader backoff: Backoff?
+      attr_reader wait_for_ready: bool
+      attr_reader max_pending_bytes: Integer?
+      def ==: (untyped other) -> bool
+      def eql?: (untyped other) -> bool
+      def hash: () -> Integer
+    end
+    # Frozen observation values, delivered on the owner reactor.
+    class ConnectionEvent
+      attr_reader type: :state_changed | :attempt_finished | :admission_rejected
+      attr_reader state: connection_state
+      attr_reader previous_state: connection_state?
+      attr_reader outcome: connection_outcome?
+      attr_reader duration: Float?
+      attr_reader active: Integer
+      attr_reader draining: Integer
+      attr_reader pending_calls: Integer
+      attr_reader pending_bytes: Integer
+    end
+    interface _ConnectionObserver
+      def call: (ConnectionEvent) -> void
+    end
     class Transport
-      def initialize: (origin: String, ?ca_file: String?, ?certificate_chain: Array[String]?, ?private_key: String?, ?connection_limit: Integer, ?max_requests: Integer, ?connect_timeout: Numeric) -> void
+      def initialize: (origin: String, ?ca_file: String?, ?certificate_chain: Array[String]?, ?private_key: String?, ?connection_limit: Integer, ?max_requests: Integer, ?connect_timeout: Numeric, ?connection_policy: ConnectionPolicy, ?connection_observer: (_ConnectionObserver | ^(ConnectionEvent) -> void)?) -> void
+      def connection_state: () -> connection_state
       def grpc_capabilities: () -> Array[grpc_cardinality]
     def open_grpc_stream: [T] (StreamRequest) { (_GRPCStreamExchange) -> T } -> T
     def streaming_capabilities: () -> Array[streaming_cardinality]

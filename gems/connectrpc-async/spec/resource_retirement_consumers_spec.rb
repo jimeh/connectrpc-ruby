@@ -178,18 +178,18 @@ RSpec.describe "Shared retirement output and client consumers" do
           writer_gate.hold($ERROR_INFO)
         end
         writer_entered.dequeue
-        pool = transport.instance_variable_get(:@pool)
-        expect(pool.resources.values).to eq([0])
-        aborter = task.async(finished: false) { pool.retire(resource.connection) }
+        manager = connection_manager(transport)
+        expect(manager.connections.values).to eq([0])
+        aborter = task.async(finished: false) { manager.retire(resource.connection) }
         writer_gate.entered.dequeue
-        # Existing Pool#retire deletes the slot before its close can join. A
-        # later RPC can connect even while the old resource's writer unwinds.
-        wait_until(task, "old pool slot retired") { pool.resources.empty? }
+        # The manager deletes the slot before its close can join. A later RPC
+        # can connect even while the old resource's writer unwinds.
+        wait_until(task, "old connection slot retired") { manager.connections.empty? }
         expect(aborter).not_to be_finished
         fresh = client(transport, state.fetch(:origin)).echo(AsyncHelpers::MESSAGE.new(name: "fresh"))
         expect(fresh.message.name).to eq("fresh")
-        expect(pool.resources.size).to eq(1)
-        expect(pool.resources.values.sum).to eq(0)
+        expect(manager.connections.size).to eq(1)
+        expect(manager.usage).to eq(0)
         expect(transport.instance_variable_get(:@resources)).to include(resource)
         expect(retirement_complete?(resource)).to be(false)
         closer = task.async(finished: false) { transport.close(grace: 0) }
@@ -200,7 +200,7 @@ RSpec.describe "Shared retirement output and client consumers" do
         join_retirement_tasks(task, aborter, closer, writer, resource.connection.reader_task, state.fetch(:call))
         expect(retirement_complete?(resource)).to be(true)
         expect(closer.result).to be(false)
-        expect(pool.resources).to be_empty
+        expect(manager.connections).to be_empty
         expect(transport.instance_variable_get(:@calls)).to be_empty
       ensure
         writer_gate&.release

@@ -57,7 +57,7 @@ RSpec.shared_examples "HTTP/2 deadlines and stream isolation" do
       expect(typed.echo(AsyncHelpers::MESSAGE.new(name: "after")).message.name).to eq("after")
       expect(observed).to eq(%w[warm after])
       expect(transport.instance_variable_get(:@resources).size).to eq(1)
-      expect(transport.instance_variable_get(:@pool).resources.values.sum).to eq(0)
+      expect(lease_usage(transport)).to eq(0)
     ensure
       release&.enqueue(true)
       transport&.close(grace: 0)
@@ -92,7 +92,9 @@ RSpec.shared_examples "HTTP/2 deadlines and stream isolation" do
       headers = { "content-type" => ["application/proto"], "connect-timeout-ms" => ["2000"] }
       outgoing = request("#{origin}#{AsyncHelpers::ECHO::ECHO.path}", deadline: deadline, headers: headers)
       call = task.async { transport.call(outgoing) }
-      wait_until(task, "writer queued") { connection.writers.any? }
+      # Falcon shares these examples without the async-only ConnectionPeer helpers.
+      guard = connection.instance_variable_get(:@write_frame_guard)
+      wait_until(task, "call queued on the connection guard") { guard.waiting.size == 1 }
       clock = 1.5
       release.enqueue(true)
       holder.wait
@@ -138,7 +140,7 @@ RSpec.shared_examples "HTTP/2 deadlines and stream isolation" do
       expect(sibling.wait.message.name).to eq("sibling")
       expect(typed.echo(AsyncHelpers::MESSAGE.new(name: "after")).message.name).to eq("after")
       expect(transport.instance_variable_get(:@resources).size).to eq(1)
-      expect(transport.instance_variable_get(:@pool).resources.values.sum).to eq(0)
+      expect(lease_usage(transport)).to eq(0)
     ensure
       gate&.release&.enqueue(true)
       release_handler&.enqueue(true)
@@ -196,7 +198,7 @@ RSpec.shared_examples "HTTP/2 deadlines and stream isolation" do
           expect(resource.raw).to be_closed
           expect(writer_tasks).to all(be_finished)
           expect(resource.connection.reader_task).to be_finished
-          expect(transport.instance_variable_get(:@pool).resources.values.sum).to eq(0)
+          expect(lease_usage(transport)).to eq(0)
         ensure
           transport&.close(grace: 0)
           peer_release&.enqueue(true)

@@ -26,6 +26,7 @@ require "echo_connect"
 require_relative "../../connectrpc-async/spec/support/helpers"
 require_relative "../../connectrpc-async/spec/support/hosting_helpers"
 require_relative "../../connectrpc-async/spec/support/frame_gate"
+require_relative "../../connectrpc-async/spec/support/connection_peer"
 require_relative "../../connectrpc-falcon/spec/support/helpers"
 
 module TraceHelpers
@@ -48,6 +49,7 @@ end
 RSpec.configure do |config|
   config.include AsyncHelpers
   config.include AsyncHostingHelpers
+  config.include ConnectionPeer
   config.include FalconHelpers
   config.include TraceHelpers
   config.order = :random

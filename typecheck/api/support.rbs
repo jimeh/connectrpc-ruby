@@ -17,6 +17,10 @@ class APIProvider
   def initialize: () -> void
   def call: () -> ConnectRPC::Async::tls_snapshot
 end
+class APIConnectionObserver
+  def initialize: () -> void
+  def call: (ConnectRPC::Async::ConnectionEvent) -> void
+end
 class APIReporter
   def initialize: () -> void
   def call: (ConnectRPC::Async::tls_event) -> void

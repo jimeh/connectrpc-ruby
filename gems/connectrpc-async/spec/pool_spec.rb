@@ -17,10 +17,10 @@ RSpec.describe "HTTP/2 pool ownership" do
       expect([entered.dequeue, entered.dequeue]).to match_array(%w[first second])
       expect(transport.instance_variable_get(:@resources).size).to eq(1)
       expect(host_session(host).instance_variable_get(:@resources).size).to eq(1)
-      expect(transport.instance_variable_get(:@pool).resources.values.sum).to eq(2)
+      expect(lease_usage(transport)).to eq(2)
       2.times { release.enqueue(true) }
       expect(calls.map { |call| call.wait.message.name }).to eq(%w[first second])
-      expect(transport.instance_variable_get(:@pool).resources.values.sum).to eq(0)
+      expect(lease_usage(transport)).to eq(0)
     ensure
       2.times { release&.enqueue(true) }
       transport&.close(grace: 0)
@@ -58,7 +58,7 @@ RSpec.describe "HTTP/2 pool ownership" do
       expect(held.wait.message.name).to eq("hold")
       expect(waiting.wait.message.name).to eq("nil")
       expect(seen).to eq(%w[hold nil])
-      expect(transport.instance_variable_get(:@pool).resources.values.sum).to eq(0)
+      expect(lease_usage(transport)).to eq(0)
     ensure
       release&.enqueue(true)
       transport&.close(grace: 0)
@@ -85,11 +85,11 @@ RSpec.describe "HTTP/2 pool ownership" do
       wait_until(task, "pool waiter started") { transport.instance_variable_get(:@calls).size == 2 }
       expect(transport.close(grace: 0)).to be(false)
       expect(transport.instance_variable_get(:@calls)).to be_empty
-      expect(transport.instance_variable_get(:@pool)).not_to be_busy
+      expect(lease_usage(transport)).to eq(0)
       [first, second].each do |call|
         expect { call.wait }.to raise_error(ConnectRPC::Error) { |e| expect(e.code).to eq("unavailable") }
       end
-      expect(transport.instance_variable_get(:@pool).resources).to be_empty
+      expect(connection_manager(transport).connections).to be_empty
       expect(transport.instance_variable_get(:@resources).map(&:raw)).to all(be_closed)
     ensure
       release&.enqueue(true)
@@ -120,7 +120,7 @@ RSpec.describe "HTTP/2 application task cancellation" do
       call.cancel
       call.wait
       expect(call).to be_cancelled
-      expect(transport.instance_variable_get(:@pool).resources.values.sum).to eq(0)
+      expect(lease_usage(transport)).to eq(0)
       expect(record.raw).not_to be_closed
       release.enqueue(true)
       expect(typed.echo(AsyncHelpers::MESSAGE.new(name: "after")).message.name).to eq("after")

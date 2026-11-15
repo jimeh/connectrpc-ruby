@@ -32,10 +32,10 @@ RSpec.describe "HTTP/2 stream and pool cleanup" do
       transport = ConnectRPC::Async::Transport.new(origin: origin)
       expect(transport.call(request("#{origin}/warm")).body).to eq("ok")
       requests.dequeue
-      pool = transport.instance_variable_get(:@pool)
+      manager = connection_manager(transport)
       connection = transport.instance_variable_get(:@resources).first.connection
       %i[idle open half_closed_local half_closed_remote closed].each do |state|
-        acquired = pool.acquire
+        acquired = manager.acquire
         response = acquired.create_response
         unless state == :idle
           target = { open: "/open", half_closed_local: "/half-local", half_closed_remote: "/half-remote",
@@ -52,10 +52,10 @@ RSpec.describe "HTTP/2 stream and pool cleanup" do
         expect(response.stream.pool).to be_nil
         transport.send(:cleanup, { connection: acquired, resource: acquired.resource, response: response })
         expect(response.stream.state).to eq(:closed)
-        expect(pool.resources.values.sum).to eq(0)
+        expect(manager.usage).to eq(0)
         nil
       end
-      acquired = pool.acquire
+      acquired = manager.acquire
       response = acquired.create_response
       response.send_request(Protocol::HTTP::Request["GET", "/race", {}, Protocol::HTTP::Body::Writable.new,
                                                     scheme: "http", authority: URI(origin).authority])
@@ -75,11 +75,11 @@ RSpec.describe "HTTP/2 stream and pool cleanup" do
       end
       incoming.stream.send_reset_stream(Protocol::HTTP2::Error::CANCEL)
       wait_until(task, "peer reset observed") { response.stream.closed? }
-      expect(pool.resources.values.sum).to eq(1)
+      expect(manager.usage).to eq(1)
       release.enqueue(true)
       holder.wait
       cleaning.wait
-      expect(pool.resources.values.sum).to eq(0)
+      expect(manager.usage).to eq(0)
       expect(transport.call(request("#{origin}/after")).body).to eq("ok")
       expect(transport.instance_variable_get(:@resources).size).to eq(1)
     ensure
@@ -122,7 +122,7 @@ RSpec.describe "HTTP/2 stream and pool cleanup" do
         }
         expect(observed).to eq(["/once"])
         expect(listener.accept_nonblock(exception: false)).to eq(:wait_readable)
-        expect(transport.instance_variable_get(:@pool).resources.values.sum).to eq(0)
+        expect(lease_usage(transport)).to eq(0)
       ensure
         transport&.close(grace: 0)
         peer&.cancel
@@ -134,39 +134,68 @@ RSpec.describe "HTTP/2 stream and pool cleanup" do
 end
 
 RSpec.describe "HTTP/2 pre-dispatch closure" do
-  it "does not reconnect a connection closed after pool acquisition; only a separate future call reconnects" do
+  def counting_host(observed)
+    ConnectRPC::Async::Host.new(server: server(echo: lambda { |message, _|
+      observed << message.name
+      message
+    })).start
+  end
+
+  it "reroutes a call whose connection closed at the dispatch guard to one new connection" do
     reactor do
-      host = ConnectRPC::Async::Host.new(server: server).start
+      observed = []
+      attempts = []
+      host = counting_host(observed)
       origin = "http://127.0.0.1:#{host.port}"
-      transport_class = Class.new(ConnectRPC::Async::Transport) do
-        attr_reader :attempts
-
-        private
-
-        def connect(operation)
-          @attempts = (@attempts || 0) + 1
-          super
-        end
-      end
-      transport = transport_class.new(origin: origin)
+      transport = ConnectRPC::Async::Transport.new(
+        origin: origin, connection_observer: ->(event) { attempts << event.outcome if event.type == :attempt_finished }
+      )
       typed = client(transport, origin)
       typed.echo(AsyncHelpers::MESSAGE.new(name: "warm"))
       record = transport.instance_variable_get(:@resources).first
       connection = record.connection
       # A source-coupled race fixture closes after acquisition, at the dispatch
-      # guard, while leaving the real pool, dispatch and socket logic intact.
-      connection.define_singleton_method(:synchronize) do |&block|
+      # guard, while leaving the real manager, dispatch and socket logic intact.
+      connection.define_singleton_method(:synchronize) do |**options, &block|
         close! unless @closed_at_dispatch
         @closed_at_dispatch = true
-        super(&block)
+        super(**options, &block)
       end
-      expect { typed.echo(AsyncHelpers::MESSAGE.new(name: "once")) }.to raise_error(ConnectRPC::Error) { |e|
-        expect(e.code).to eq("unavailable")
-      }
-      expect(transport.attempts).to eq(1)
+      expect(typed.echo(AsyncHelpers::MESSAGE.new(name: "once")).message.name).to eq("once")
+      expect(observed).to eq(%w[warm once])
+      expect(attempts).to eq(%i[ready ready])
       expect(record.raw).to be_closed
-      expect(typed.echo(AsyncHelpers::MESSAGE.new(name: "future")).message.name).to eq("future")
-      expect(transport.attempts).to eq(2)
+      expect(connection_manager(transport).connections.keys).not_to include(connection)
+      expect(lease_usage(transport)).to eq(0)
+      expect(transport.instance_variable_get(:@calls)).to be_empty
+    ensure
+      transport&.close(grace: 0)
+      host&.close(grace: 0)
+    end
+  end
+
+  it "publishes idle when the peer closes an idle connection and dials once for the next call" do
+    reactor do |task|
+      observed = []
+      states = []
+      host = counting_host(observed)
+      origin = "http://127.0.0.1:#{host.port}"
+      transport = ConnectRPC::Async::Transport.new(
+        origin: origin, connection_observer: ->(event) { states << event.state if event.type == :state_changed }
+      )
+      typed = client(transport, origin)
+      typed.echo(AsyncHelpers::MESSAGE.new(name: "warm"))
+      record = transport.instance_variable_get(:@resources).first
+      expect(transport.connection_state).to eq(:ready)
+      host_session(host).instance_variable_get(:@resources).first.abort
+      # No call is running; the death hook alone republishes the state.
+      wait_until(task, "idle after peer close") { transport.connection_state == :idle }
+      expect(connection_manager(transport).connections).to be_empty
+      expect(typed.echo(AsyncHelpers::MESSAGE.new(name: "next")).message.name).to eq("next")
+      expect(observed).to eq(%w[warm next])
+      expect(states).to eq(%i[connecting ready idle connecting ready])
+      expect(transport.instance_variable_get(:@resources).last).not_to equal(record)
+      expect(record.raw).to be_closed
     ensure
       transport&.close(grace: 0)
       host&.close(grace: 0)

@@ -44,7 +44,7 @@ RSpec.describe "HTTP/2 incremental response bodies" do
       }
       expect(transport.call(request("#{origin}/healthy")).body).to eq("healthy")
       expect(transport.instance_variable_get(:@resources).size).to eq(1)
-      expect(transport.instance_variable_get(:@pool).resources.values.sum).to eq(0)
+      expect(lease_usage(transport)).to eq(0)
     ensure
       transport&.close(grace: 0)
       bodies&.each(&:close)
@@ -92,7 +92,7 @@ RSpec.describe "Explicit HTTP/2 body cancellation" do
       expect { pending.wait }.to raise_error(ConnectRPC::Error) { |e| expect(e.code).to eq("canceled") }
       expect(transport.call(request("#{origin}/healthy")).body).to eq("healthy")
       expect(transport.instance_variable_get(:@resources).size).to eq(1)
-      expect(transport.instance_variable_get(:@pool).resources.values.sum).to eq(0)
+      expect(lease_usage(transport)).to eq(0)
     ensure
       transport&.close(grace: 0)
       bodies&.each(&:close)
