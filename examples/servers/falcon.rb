@@ -25,8 +25,10 @@ DemoExample::Launch.serve("falcon") do |launch|
   # without a restart (see demo/mtls.rb). The URL scheme and TLS options must agree.
   tls = {}
   if launch.mtls?
-    provider = DemoExample::MTLS.host_tls_provider { |version| puts "Loaded TLS certificates (version #{version})" }
-    tls = { tls_provider: provider, refresh_interval: 5 }
+    provider = DemoExample::MTLS.host_tls_provider { |version| puts "Read TLS certificates (version #{version})" }
+    # The host calls on_tls_error when it rejects what the provider returned, and keeps its last good certificates.
+    rejected = ->(event) { puts "Rejected TLS certificates (#{event[:category]})" }
+    tls = { tls_provider: provider, refresh_interval: 5, on_tls_error: rejected }
   end
   Sync do
     # Bind first so the actual port is known. The caller owns this bound endpoint.

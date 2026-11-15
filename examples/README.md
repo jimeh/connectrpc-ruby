@@ -143,13 +143,14 @@ mise run example:client -- async-h2 greet Ada
 ```
 
 The first `--mtls` server issues a throwaway demo CA, a server certificate for
-`localhost` and `127.0.0.1`, and a client certificate for `demo-client`. It
-writes them to `vendor/examples/tls/`, next to the state file, and later servers
-reuse them until a day before they expire. They exist only for these examples.
+`localhost` and `127.0.0.1`, and a client certificate for `demo-client`.
+`vendor/examples/tls/`, next to the state file, links to the current set, and
+later servers reuse it until a day before it expires. The certificates exist
+only for these examples.
 
 ```text
 Issued demo certificates in vendor/examples/tls
-Loaded TLS certificates (version 2c0a6b209ca29991)
+Read TLS certificates (version 2c0a6b209ca29991)
 falcon server listening on https://127.0.0.1:8080 (Ctrl-C to stop)
 ```
 
@@ -207,12 +208,14 @@ clients keep running. Both sides of the example show how:
 
 - **Server.** The host calls its `tls_provider:` at startup and then every
   `refresh_interval` seconds: 5 here, 60 by default. The demo provider rereads
-  the certificate files and uses a digest of them as the `version`. When the
-  version changes, new connections get the new certificates and the server
-  logs `Loaded TLS certificates`. A provider that fails or returns invalid
-  certificates leaves the last good set in place. Open connections keep the
-  certificate they started with. `host.drain_tls(grace:)` retires them: calls
-  already running finish, and later calls on those connections are refused.
+  the certificate files and uses a digest of them as the `version`. The server
+  logs `Read TLS certificates` for each new version. When the host accepts it,
+  new connections get the new certificates. When the provider fails or returns
+  invalid certificates, the host keeps the last good set, and the server logs
+  `Rejected TLS certificates` from its `on_tls_error:` hook. Open connections
+  keep the certificate they started with. `host.drain_tls(grace:)` retires
+  them: calls already running get `grace` seconds to finish, and later calls on
+  those connections are refused.
 - **Client.** A transport keeps the certificate and trust it was built with. A
   long-lived client rotates by building a new transport and client from the
   renewed files and closing the old transport once its calls finish. The
@@ -228,10 +231,10 @@ To watch a rotation, renew the certificates while an `--mtls` server runs:
 ruby -r ./examples/demo/certs -e DemoExample::Certs.renew!
 ```
 
-Within about 5 seconds the server logs a new `Loaded TLS certificates`
-version, and the next client call uses the new certificates.
+Within about 5 seconds the server logs a new `Read TLS certificates` version,
+and the next client call uses the new certificates.
 `mise run example:verify` checks that each `--mtls` server then presents the
-renewed certificate. Applications that push new certificates instead of polling
+renewed certificate and accepts the renewed client certificate. Applications that push new certificates instead of polling
 can use a static `tls:` hash and call `host.reload_tls`; see
 [TLS and client authentication](../gems/connectrpc-async/README.md#tls-and-client-authentication)
 in the Async README and

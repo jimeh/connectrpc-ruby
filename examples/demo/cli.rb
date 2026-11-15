@@ -63,7 +63,7 @@ module DemoExample
     end
 
     def require_certificates!(options)
-      return if Certs.present?
+      return if Certs.present?(:ca, :client, :client_key)
 
       raise Refusal, "#{options.url} needs the demo client certificate, but #{Certs.display_dir} has none.\n" \
                      "Start the server with: mise run example:server -- #{options.server} --mtls"

@@ -21,8 +21,10 @@ DemoExample::Launch.serve("async") do |launch|
   # demo/mtls.rb). Without TLS options the host serves h2c.
   tls = {}
   if launch.mtls?
-    provider = DemoExample::MTLS.host_tls_provider { |version| puts "Loaded TLS certificates (version #{version})" }
-    tls = { tls_provider: provider, refresh_interval: 5 }
+    provider = DemoExample::MTLS.host_tls_provider { |version| puts "Read TLS certificates (version #{version})" }
+    # The host calls on_tls_error when it rejects what the provider returned, and keeps its last good certificates.
+    rejected = ->(event) { puts "Rejected TLS certificates (#{event[:category]})" }
+    tls = { tls_provider: provider, refresh_interval: 5, on_tls_error: rejected }
   end
   # The application owns the reactor; the host runs inside it.
   Sync do |task|

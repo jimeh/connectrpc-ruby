@@ -329,27 +329,28 @@ def label(server, kase) = "#{server} <- #{kase.client} #{kase.args.join(' ')}"
 
 def monotonic = Process.clock_gettime(Process::CLOCK_MONOTONIC)
 
-# Renews the demo certificates under a running --mtls server, which must log
-# the new version and then present the renewed certificate on new handshakes.
-def rotation_problem(env, host, url, state)
+# Renews the demo certificates under a running --mtls server, which must read
+# the new version, present the renewed certificate on new handshakes and
+# accept the renewed client certificate on a real call.
+def rotation_problem(env, host, server, url, state)
   tls_dir = File.join(ROOT, File.dirname(state), "tls")
-  known = host.output.scan(/^Loaded TLS certificates \(version (\h+)\)$/).flatten
+  known = host.output.scan(/^Read TLS certificates \(version (\h+)\)$/).flatten
   return "server logged no TLS certificate version" if known.empty?
 
   renew = Child.new(env, [RbConfig.ruby, "-r", CERTS, "-e", "DemoExample::Certs.renew!"])
   status = renew.wait(READY_TIMEOUT) || renew.kill
   return "renewing the certificates failed:\n#{renew.output}" unless status&.success?
 
-  loaded = /^Loaded TLS certificates \(version (?!#{known.join('|')})\h+\)$/
-  return "server logged no new version within #{ROTATION_TIMEOUT}s" unless host.wait_for(loaded, ROTATION_TIMEOUT)
+  read = /^Read TLS certificates \(version (?!#{known.join('|')})\h+\)$/
+  return "server logged no new version within #{ROTATION_TIMEOUT}s" unless host.wait_for(read, ROTATION_TIMEOUT)
 
-  renewed_serial_problem(url, tls_dir)
+  renewed_serial_problem(url, tls_dir) || call_after_renewal_problem(env, host, server, url)
 ensure
   renew&.close
 end
 
-# The host publishes the new certificate right after it loads it, so poll
-# handshakes until it appears, within a bounded deadline.
+# The host publishes the new certificate after it validates what it read, so
+# poll handshakes until it appears, within a bounded deadline.
 def renewed_serial_problem(url, tls_dir)
   expected = OpenSSL::X509::Certificate.new(File.read(File.join(tls_dir, "server.pem"))).serial
   deadline = monotonic + ROTATION_TIMEOUT
@@ -357,7 +358,19 @@ def renewed_serial_problem(url, tls_dir)
     served = served_serial(url, tls_dir)
     return if served == expected
     return "server still presents serial #{served}, not the renewed #{expected}" if monotonic > deadline
+
+    sleep 0.1 # Poll interval only; the deadline bounds the wait.
   end
+end
+
+# Under TLS 1.3 the client finishes its handshake before the server checks the
+# client certificate, so only a completed call shows the renewed one is accepted.
+def call_after_renewal_problem(env, host, server, url)
+  kase = Case.new(client: "async-h2", args: ["greet", "Ada", "--server", server, "--url", url], status: 0,
+                  expected: ["headers: demo-served-by=#{server} #{MTLS_CLIENT}", "message: Hello, Ada!"],
+                  evidence: evidence("greet", []))
+  _label, problem, output = check(server, host, env, kase)
+  "call after renewal: #{problem}\n#{output}" if problem
 end
 
 # Completes one mutual TLS handshake as the demo client and returns the serial
@@ -494,7 +507,7 @@ begin
         failures << "#{label}: #{problem}\n#{output}" if problem
       end
       if mtls
-        problem = rotation_problem(env, child, url, state)
+        problem = rotation_problem(env, child, server, url, state)
         puts "#{problem ? 'FAIL' : 'ok  '} #{name} serves renewed certificates without a restart"
         failures << "#{name}: #{problem}\n#{child.output}" if problem
       end

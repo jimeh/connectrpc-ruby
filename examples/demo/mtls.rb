@@ -21,30 +21,34 @@ module DemoExample
     #
     # Passed as `tls:`, ConnectRPC::Async::Host and ConnectRPC::Falcon::Server
     # load it once at startup. host_tls_provider below reloads it instead.
+    # Every file comes from one issued set, so a renewal cannot mix old and new.
     def host_tls
-      { certificate_chain: [Certs.read(:server)], private_key: Certs.read(:server_key),
-        client_ca: [Certs.read(:ca)] }
+      set = Certs.current
+      { certificate_chain: [set.read(:server)], private_key: set.read(:server_key), client_ca: [set.read(:ca)] }
     end
 
     # The `tls_provider:` option of both hosts, for certificates that rotate
     # without a restart. The host calls it at startup and then every
     # `refresh_interval` seconds, and expects host_tls plus a `version`.
     #
-    # - A new version makes new connections use the new certificates.
-    # - The same version keeps the current ones, so an unchanged file is cheap.
+    # - A new version that passes validation makes new connections use the new
+    #   certificates.
+    # - The same version keeps the current certificates and open connections.
     # - If the call raises or returns invalid certificates, the host keeps the
-    #   last good set, logs the failure and tries again at the next refresh.
+    #   last good set, reports the failure to `on_tls_error:` and tries again at
+    #   the next refresh.
     #
     # Connections that are already open keep the certificate they started
     # with. `host.drain_tls(grace:)` retires them after a rotation: calls already
-    # running finish, and later calls on those connections are refused.
-    # on_change receives each new version.
-    def host_tls_provider(&on_change)
+    # running get `grace` seconds to finish, and later calls on those
+    # connections are refused. on_read receives each new version as it is
+    # read, before the host validates it.
+    def host_tls_provider(&on_read)
       current = nil
       lambda do
         tls = host_tls
         version = Digest::SHA256.hexdigest(tls.values.join)[0, 16]
-        on_change&.call(version) unless version == current
+        on_read&.call(version) unless version == current
         current = version
         { version: version, **tls }
       end
@@ -63,7 +67,8 @@ module DemoExample
     # renewed files, then close the old transport once its calls finish. These
     # example clients make one call per run, so each run reads the current files.
     def client_tls
-      { ca_file: Certs.path(:ca), certificate_chain: [Certs.read(:client)], private_key: Certs.read(:client_key) }
+      set = Certs.current
+      { ca_file: set.path(:ca), certificate_chain: [set.read(:client)], private_key: set.read(:client_key) }
     end
   end
 end

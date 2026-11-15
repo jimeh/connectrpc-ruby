@@ -111,8 +111,10 @@ success, nonzero on error or refusal.
   `localhost`/`127.0.0.1` and a `demo-client` leaf, valid 7 days, into a `tls`
   directory next to the state file (`vendor/examples/tls` by default). Servers
   reuse a set valid for at least another day, under a lock so simultaneous starts
-  do not replace each other's set. The set is staged and renamed into
-  place. Nothing is committed.
+  do not replace each other's set. Each issue writes a new set directory and
+  renames a new `tls` symlink over the old one, so readers resolve one complete
+  set; a replaced set is removed a minute after replacement. Nothing is
+  committed.
 - Clients: `async-h2` and `async-http1` pass `ca_file`, `certificate_chain` and
   `private_key` for an `https://` URL. `nethttp` is refused, because the core
   transport has no client certificate option. A client refuses when the
@@ -124,9 +126,11 @@ success, nonzero on error or refusal.
   with a content digest as `version`. `Certs.renew!` issues new leaves under the
   current CA, so peers that have not refreshed still trust each other. Comments
   and the README cover `drain_tls`, rotating a client by replacing its
-  transport, and overlapping trust when a CA changes. `example:verify` renews
-  under each running `--mtls` server and checks by TLS handshake that the
-  server presents the renewed certificate.
+  transport, and overlapping trust when a CA changes. The servers log `Read TLS
+  certificates` for each version the provider returns and `Rejected TLS
+  certificates` from `on_tls_error:`. `example:verify` renews under each
+  running `--mtls` server, checks by TLS handshake that the server presents the
+  renewed certificate, then makes a call that must show the verified client.
 - `examples/demo/mtls.rb` holds the host and client TLS options in one readable
   place.
 
