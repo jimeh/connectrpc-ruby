@@ -18,7 +18,8 @@ class ReleaseTrain # rubocop:disable Metrics/ClassLength
   LOCKS = ["Gemfile.lock", *%w[rack async falcon testing otel].map do |name|
     "gems/connectrpc-#{name}/Gemfile.lock"
   end, *%w[8.0 8.1].map { |lane| "gems/connectrpc-on-rails/gemfiles/rails_#{lane}.gemfile.lock" }].freeze
-  GUIDES = %w[README.md docs/design.md gems/connectrpc-rack/README.md gems/connectrpc-on-rails/README.md
+  GUIDES = %w[README.md docs/design.md docs/unary.md gems/connectrpc-rack/README.md
+              gems/connectrpc-on-rails/README.md gems/connectrpc-async/README.md gems/connectrpc-falcon/README.md
               gems/connectrpc-testing/README.md gems/connectrpc-otel/README.md].freeze
   LOCK_PACKAGES = {
     "Gemfile.lock" => %w[connectrpc connectrpc-rack],

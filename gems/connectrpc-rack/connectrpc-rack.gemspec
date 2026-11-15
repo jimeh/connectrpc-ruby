@@ -5,8 +5,10 @@ Gem::Specification.new do |spec|
   # Read without loading library code before SimpleCov starts.
   spec.version = File.read(File.join(__dir__, "lib/connectrpc/rack/version.rb"))[/VERSION = "([^"]+)"/, 1]
   spec.authors = ["jimeh"]
-  spec.summary = "Rack middleware for Connect unary RPCs"
-  spec.description = "Optional, experimental Rack integration for the unofficial ConnectRPC Ruby gem."
+  spec.summary = "Rack middleware for serving ConnectRPC unary services"
+  spec.description = "Serves connectrpc services from any Rack 3 application or server, falling through to an " \
+                     "existing app for unrelated paths. Supports Connect unary POST and GET and opt-in unary gRPC-" \
+                     "Web. Part of the unofficial connectrpc-ruby project. Experimental and not production ready."
   spec.homepage = "https://github.com/jimeh/connectrpc-ruby"
   spec.license = "MIT"
   spec.required_ruby_version = ">= 3.4"

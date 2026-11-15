@@ -5,8 +5,11 @@ Gem::Specification.new do |spec|
   # Read without loading library code before SimpleCov starts.
   spec.version = File.read(File.join(__dir__, "lib/connectrpc/otel/version.rb"))[/VERSION = "([^"]+)"/, 1]
   spec.authors = ["jimeh"]
-  spec.summary = "Optional OpenTelemetry traces for ConnectRPC unary calls"
-  spec.description = "Application-owned OpenTelemetry tracing through the ConnectRPC lifecycle. Experimental."
+  spec.summary = "OpenTelemetry tracing for ConnectRPC clients and servers"
+  spec.description = "Emits one OpenTelemetry CLIENT or SERVER span per Connect, native gRPC or gRPC-Web RPC " \
+                     "through the connectrpc instrumentation lifecycle. The application owns the SDK, sampling and " \
+                     "exporters. Part of the unofficial connectrpc-ruby project. Experimental and not production " \
+                     "ready."
   spec.homepage = "https://github.com/jimeh/connectrpc-ruby"
   spec.license = "MIT"
   spec.required_ruby_version = ">= 3.4"

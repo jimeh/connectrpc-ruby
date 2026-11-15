@@ -14,6 +14,7 @@ archives = %w[connectrpc connectrpc-async].map { |name| File.join(root, "vendor/
 core, backend = archives.map { |archive| Gem::Package.new(archive) }
 core_expected = %w[
   LICENSE README.md docs/development.md docs/design.md docs/rbs.md docs/streaming.md lib/connectrpc.rb
+  docs/unary.md
   lib/connectrpc/version.rb
   sig/connectrpc.rbs sig/manifest.yaml rbs/google_protobuf_4_36/runtime.rbs
   lib/connectrpc/generator/rbs_renderer.rb lib/connectrpc/generator/streaming_methods.rb

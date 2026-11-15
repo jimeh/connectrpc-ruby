@@ -5,8 +5,10 @@ Gem::Specification.new do |spec|
   # Read without loading library code before SimpleCov starts.
   spec.version = File.read(File.join(__dir__, "lib/connectrpc/on_rails/version.rb"))[/VERSION = "([^"]+)"/, 1]
   spec.authors = ["jimeh"]
-  spec.summary = "Native Rails controller execution for Connect unary RPCs"
-  spec.description = "Optional, experimental Rails lifecycle integration for the unofficial ConnectRPC Ruby gem."
+  spec.summary = "Run ConnectRPC unary handlers as native Rails controller actions"
+  spec.description = "Routes Connect unary RPCs to Rails controllers, so typed handlers run through the real " \
+                     "process_action chain with callbacks, rescue_from and Rails instrumentation. Part of the " \
+                     "unofficial connectrpc-ruby project. Experimental and not production ready."
   spec.homepage = "https://github.com/jimeh/connectrpc-ruby"
   spec.license = "MIT"
   spec.required_ruby_version = ">= 3.4"

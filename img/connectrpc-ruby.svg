@@ -1,0 +1,28 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-labelledby="title">
+  <title id="title">ConnectRPC for Ruby logo</title>
+  <defs>
+    <linearGradient id="crown" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#f26d6d"/>
+      <stop offset="1" stop-color="#d93a3a"/>
+    </linearGradient>
+    <linearGradient id="pavilion" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#c62f34"/>
+      <stop offset="1" stop-color="#8f1d24"/>
+    </linearGradient>
+  </defs>
+  <g fill="none" stroke="#5b8def" stroke-width="7" stroke-linecap="round">
+    <path d="M20 50 A48 48 0 0 1 100 30"/>
+    <path d="M108 78 A48 48 0 0 1 28 98"/>
+  </g>
+  <g fill="#5b8def">
+    <path d="M110 20 L112 42 L91 34 Z"/>
+    <path d="M18 108 L16 86 L37 94 Z"/>
+  </g>
+  <path d="M46 40 H82 L96 56 H32 Z" fill="url(#crown)"/>
+  <path d="M32 56 H96 L64 96 Z" fill="url(#pavilion)"/>
+  <g fill="none" stroke="#ffffff" stroke-opacity="0.55" stroke-width="2" stroke-linejoin="round">
+    <path d="M46 40 L55 56 L64 40 L73 56 L82 40"/>
+    <path d="M55 56 L64 96 L73 56"/>
+    <path d="M32 56 H96"/>
+  </g>
+</svg>
