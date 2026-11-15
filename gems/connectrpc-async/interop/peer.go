@@ -128,22 +128,12 @@ func serve(service protoreflect.ServiceDescriptor) {
 		mux.ServeHTTP(w, r)
 	})
 	server := &http.Server{Handler: handler, Protocols: protocols, ReadHeaderTimeout: 5 * time.Second}
+	var config *tls.Config
 	if os.Args[2] != "h2c" {
-		server.TLSConfig = tlsConfig(os.Args[3], os.Args[2] == "mtls", true)
+		config = tlsConfig(os.Args[3], os.Args[2] == "mtls", true)
 	}
-	done := make(chan error, 1)
-	scheme := "http"
-	go func() {
-		if server.TLSConfig == nil {
-			done <- server.Serve(listener)
-		} else {
-			done <- server.ServeTLS(listener, "", "")
-		}
-	}()
-	if server.TLSConfig != nil {
-		scheme = "https"
-	}
-	fmt.Println(scheme + "://" + listener.Addr().String())
+	origin, done := startServer(server, listener, config)
+	fmt.Println(origin)
 	// Parent closes stdin after reference and Ruby client assertions.
 	scanner := bufio.NewScanner(os.Stdin)
 	scanner.Scan()
@@ -152,6 +142,26 @@ func serve(service protoreflect.ServiceDescriptor) {
 	must(server.Shutdown(ctx))
 	err = <-done
 	check(errors.Is(err, http.ErrServerClosed), "Go server failed")
+}
+
+// startServer fixes the listener mode and advertised origin before Serve runs.
+// Serve's HTTP/2 setup installs an empty TLSConfig even for h2c, so the
+// server's TLSConfig cannot identify the listener's security once Serve starts.
+func startServer(server *http.Server, listener net.Listener, config *tls.Config) (string, <-chan error) {
+	scheme := "http"
+	if config != nil {
+		scheme = "https"
+	}
+	server.TLSConfig = config
+	done := make(chan error, 1)
+	go func() {
+		if scheme == "https" {
+			done <- server.ServeTLS(listener, "", "")
+		} else {
+			done <- server.Serve(listener)
+		}
+	}()
+	return scheme + "://" + listener.Addr().String(), done
 }
 
 type metadataExpectations struct {
