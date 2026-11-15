@@ -344,25 +344,23 @@ decision. A merged fix closes its specific defect, not the audit as a whole.
   opt-in through `ConnectRPC::Falcon::Server.new` or `server_options`. Native RPC
   stays outside fallback cache middleware. The [Falcon guide](../gems/connectrpc-falcon/README.md#run-a-service)
   retains the opt-in cache semantics and application responsibilities.
+- [#50](https://github.com/jimeh/connectrpc-ruby/pull/50), merged as `95ecf9f`,
+  resolved M4. Each Async Host listener retries named transient accept errors
+  with bounded backoff. The sixth consecutive retried failure or any other
+  listener error stops the Host, and `Host#wait` raises the original cause after
+  cleanup. The [Async guide](../gems/connectrpc-async/README.md) owns the
+  retried errors, delays and lifecycle semantics. This repair does not explain
+  historical H2 client or Falcon failures.
+- [#48](https://github.com/jimeh/connectrpc-ruby/pull/48), merged as `63b70f4`,
+  repaired custom observer detach unwind. Every successful attachment receives
+  one reverse-order detach attempt even when another detach raises a fatal
+  exception or throws. [Design](design.md#rpc-lifecycle-observation) keeps the
+  observer's own exception-safety obligations.
 - L12 is disclosed above as a Rack adapter limitation. This guide corrects
   L18's current documentation drift without declaring the audit complete.
 
 ### Still open
 
-- **Async Host accept failures (M4).** Runtime diagnosis at `073f95a` on both
-  pinned Rubies confirms that a controlled accept `EMFILE` silently fails the
-  listener task. The session and socket stay live and admitted RPCs continue,
-  but fresh typed RPCs time out without acceptance or dispatch. Calling `start`
-  again does not recover the listener. First-accept and configured-persistent
-  fault cases also reproduce; normal blocked-accept close passes. Repair policy
-  remains open: bounded transient retry with visible terminal failure, or
-  immediate visible host failure. The terminal observation mechanism is also
-  undecided. This Host diagnosis does not explain historical H2 client failures.
-- **Custom observer detach unwind.** A fatal or nonlocal exit in one detach can
-  skip earlier detaches. Require a repair or explicit support decision with
-  focused core/SDK evidence. The bundled OTel detach does not yield; historical
-  evidence does not prove cross-RPC contamination. The proposed repair remains
-  a gate until completed and qualified.
 - **Normalization and SPIs (L1/L3/L6, L2/L5).** Settle cause/error attribution,
   the exposed mutable unary cancellation owner versus the read-only SPI intent,
   and duplicate exchange `close_send` ownership. Contradictory intent is not a
