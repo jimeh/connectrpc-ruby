@@ -125,7 +125,7 @@ a socket.
 | Async Host | U/SS/CS/bidi | H2 prior-knowledge h2c, verified TLS `h2`, mTLS | `async:interop`, `async:interop:streaming`, `async:conformance`, native specs and installed callers |
 | Falcon native server | U/SS/CS on H1; U/SS/CS/bidi on H2 | H1 TCP/TLS/mTLS and H2 h2c/TLS/mTLS | `falcon:interop`, `falcon:interop:streaming`, `falcon:conformance`, `falcon:conformance:http1`, native specs and installed callers |
 | Async `Transport` | U/SS/CS/bidi | H2 h2c, verified TLS `h2`, mTLS | `async:interop`, `async:interop:streaming`, `async:conformance`, native specs and installed callers |
-| Async `ThreadedTransport` | U | H2 h2c, verified TLS `h2`, mTLS; from any thread | `async:interop` unary cases from plain threads, threaded specs and installed generated callers |
+| Async `ThreadedTransport` | Connect U/SS; gRPC U/SS | H2 h2c, verified TLS `h2`, mTLS; from any thread | `async:conformance:threaded`, `async:interop` unary, `async:interop:streaming` and `async:interop:grpc` cases from plain threads, threaded specs and installed generated callers |
 | Async `HTTP1Transport` | U/SS/CS | H1 TCP, verified TLS/mTLS; accepts only H1 ALPN or absent ALPN | `async:conformance:http1`, `async:interop:http1`, H1 specs and installed generated callers |
 
 The standalone Async Host remains strict H2. Selecting `HTTP1Transport` for a
@@ -134,9 +134,10 @@ client does not add H1 to that Host.
 Native clients require an application-owned Async reactor. Construction, I/O
 and close run on its reactor and thread; foreign-thread cancellation only
 signals that owner. The exception is `ThreadedTransport`: it drives the H2
-`Transport` from one owner thread per process for callers on any thread, and
-supports Connect unary only (POST and GET). There is no ordinary-thread
-streaming or gRPC facade.
+`Transport` from one owner thread per process for callers on any thread. It
+supports Connect unary (POST and GET) and server streaming, and native gRPC
+unary and server streaming; stream blocks run on the caller's thread. There is
+no ordinary-thread client or bidi streaming.
 The H2 `Transport` manages its own connections: shared attempts outside RPC
 lifecycles, capped jittered backoff, opt-in wait-for-ready, count and request-byte
 admission, rerouting only of calls that wrote nothing, replacement of a
@@ -191,7 +192,7 @@ compression and whole-body compression are outside the profile.
 Portable adapters reject streaming before reading input or invoking handlers;
 incapable clients reject it before codecs or I/O. There is no H1 bidi,
 HTTP/1.0 Connect streaming, HTTP/3, implicit protocol fallback, RPC replay,
-new backend or ordinary-thread integration beyond `ThreadedTransport`'s Connect unary in this contract. Faraday is
+new backend or ordinary-thread client or bidi streaming in this contract. Faraday is
 outside the profile.
 
 ## What the evidence establishes

@@ -23,4 +23,31 @@ ConnectRPC::Async::ThreadedTransport.new(origin: "http://example.invalid", conne
   event.type.to_s
   nil
 })
+stream = ConnectRPC::ServerStreamMethod.new(service: "demo.Service", name: "Watch", request_type: String,
+                                            response_type: String)
+Thread.new { client.server_stream(stream, "request", timeout: 2) { |reader| reader.each(&:upcase) } }.join
+grpc = ConnectRPC::Client.new(base_url: "https://example.invalid", binding: APIBinding.new, transport: transport,
+                              protocol: :grpc)
+Thread.new { grpc.call(method, "request", timeout: 2).message.to_s }.join
+transport.streaming_capabilities.each(&:to_s)
+transport.grpc_capabilities.each(&:to_s)
+request = ConnectRPC::StreamRequest.new(url: URI("https://example.invalid/demo.Service/Watch"), http_method: "POST",
+                                        headers: {})
+# @type var length: Integer?
+length = transport.open_stream(request) do |exchange|
+  exchange.write("opaque")
+  exchange.close_send
+  exchange.response_head(timeout: 1).status.succ
+  bytes = exchange.read(1, timeout: 1)
+  exchange.finish(timeout: 1)
+  exchange.abort
+  bytes&.bytesize
+end
+length&.succ
+transport.open_grpc_stream(request) do |exchange|
+  exchange.response_head(timeout: nil).end_stream
+  exchange.read(1, timeout: nil)&.bytesize
+  exchange.response_trailers&.each_value(&:size)
+  exchange.finish(timeout: nil)
+end
 transport.close(grace: 5) || transport.close

@@ -15,6 +15,9 @@ require_relative "../conformance/native_http1_ledger" if http1_client
 
 grpc = ENV["CONNECTRPC_CONFORMANCE_GRPC"] == "1"
 
+threaded = ENV["CONNECTRPC_CONFORMANCE_THREADED_CLIENT"] == "1"
+require_relative "../conformance/native_threaded_ledger" if threaded
+
 root = File.expand_path("..", __dir__)
 host = ARGV.shift || "async"
 directions = ARGV.empty? ? %w[client server] : [ARGV.shift]
@@ -26,6 +29,9 @@ raise "Usage: native_conformance.rb async|falcon [client|server [exact-name]]" u
 if http1_client && (host != "async" || directions != ["client"] || grpc || http1)
   raise "Native HTTP1 client profiles require Async client-only Connect mode"
 end
+if threaded && (host != "async" || directions != ["client"] || http1 || http1_client)
+  raise "Threaded client profiles require Async client-only Connect or gRPC mode"
+end
 if http1 && (host != "falcon" || directions != ["server"] || grpc)
   raise "HTTP1 profiles require Falcon server-only Connect mode"
 end
@@ -36,7 +42,9 @@ end
 version, status = Open3.capture2("connectconformance", "--version")
 raise "Wrong conformance runner" unless status.success? && version.strip == "connectconformance v1.0.6"
 
-protocol = if http1_client
+protocol = if threaded
+             "threaded"
+           elsif http1_client
              "native-http1-client"
            elsif http1
              "http1"
@@ -48,7 +56,8 @@ def native_command(root, profile, direction, selector, protocol)
   command = ["connectconformance", "--mode", direction, "--conf",
              File.join(root, "conformance/profile-#{protocol}-#{profile}.yaml"), "--vv"]
   command.push("--run", selector) if selector
-  adapter = protocol == "native-http1-client" ? "native_http1_client" : "native_#{direction}"
+  adapter = { "native-http1-client" => "native_http1_client",
+              "threaded" => "native_threaded_client" }.fetch(protocol, "native_#{direction}")
   command.push("--", RbConfig.ruby, "-I#{File.join(root, 'lib')}",
                File.join(root, "conformance/#{adapter}.rb"))
   command
@@ -65,8 +74,12 @@ def native_environment(telemetry, host, artifacts)
 end
 
 success = true
-%w[identity gzip].product(directions).each do |profile, direction| # rubocop:disable Metrics/BlockLength
-  ledger_type = if http1_client
+profiles = %w[identity gzip]
+profiles = profiles.map { |profile| "#{grpc ? 'grpc' : 'connect'}-#{profile}" } if threaded
+profiles.product(directions).each do |profile, direction| # rubocop:disable Metrics/BlockLength
+  ledger_type = if threaded
+                  Conformance::NativeThreadedLedger
+                elsif http1_client
                   Conformance::NativeHTTP1Ledger
                 elsif http1
                   Conformance::HTTP1Ledger

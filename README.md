@@ -201,7 +201,7 @@ streaming. H1 is HTTP/1.1 and H2 is HTTP/2.
 | --- | --- | --- |
 | Net::HTTP (core default) | U over H1, TCP or verified TLS | No |
 | Async `Transport` | U/SS/CS/bidi over H2 (h2c, TLS, mTLS) | U/SS/CS/bidi |
-| Async `ThreadedTransport` | U over H2, callable from any thread | No |
+| Async `ThreadedTransport` | U/SS over H2, callable from any thread | U/SS |
 | Async `HTTP1Transport` | U/SS/CS over H1 (TCP, TLS, mTLS) | No |
 
 Connect is the default protocol. Connect supports binary protobuf
@@ -212,9 +212,10 @@ explicitly; there is no Ruby gRPC-Web client.
 
 These limits apply across the matrix:
 
-- Streaming and gRPC from ordinary threads are not implemented yet; see
+- Client and bidi streaming from ordinary threads are not implemented yet; see
   [issue #29](https://github.com/jimeh/connectrpc-ruby/issues/29).
-  `ThreadedTransport` covers Connect unary only.
+  `ThreadedTransport` covers unary and server streaming, for Connect and
+  native gRPC.
 - The standalone Async `Host` is H2-only. Falcon is the Ruby H1 streaming host.
 - Native Connect streaming clients apply a one-second HTTP tail policy, even
   without an RPC deadline. See the [streaming guide](docs/streaming.md).

@@ -364,6 +364,8 @@ jobs:
         run: mise run async:conformance:grpc
       - name: Run async:conformance:http1
         run: mise run async:conformance:http1
+      - name: Run async:conformance:threaded
+        run: mise run async:conformance:threaded
       - name: Check workspace stayed clean
         if: always()
         run: |

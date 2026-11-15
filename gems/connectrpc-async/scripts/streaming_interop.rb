@@ -47,6 +47,24 @@ Dir.mktmpdir("streaming-interop-", File.join(root, "vendor/async")) do |fixtures
       ensure
         transport&.close(grace: 0)
       end
+      options = mode == "h2c" ? {} : { ca_file: File.join(fixtures, "ca.pem") }
+      options.merge!(helpers.host_tls(identities.fetch("client")).except(:client_ca)) if mode == "mtls"
+      threaded = ConnectRPC::Async::ThreadedTransport.new(origin: origin, **options)
+      begin
+        # The peer has one shared SS gate, so probes run one plain thread at a time.
+        %i[proto json].product(%i[identity gzip]).each do |codec, coding|
+          Thread.new do
+            core = ConnectRPC::Client.new(base_url: origin, binding: StreamingInterop::BINDING,
+                                          transport: threaded, codec: codec, encoding: coding)
+            StreamingInterop::ThreadedClientProbe.new(core).run
+          end.join
+          puts "PASS Ruby->Go streaming #{mode}/#{codec}/#{coding} SS incremental/error/bounds/cancel " \
+               "through ThreadedTransport from a plain thread"
+        end
+        raise "Threaded streaming close" unless threaded.close
+      ensure
+        threaded.close(grace: 0)
+      end
     ensure
       input.close
       unless process.join(5)

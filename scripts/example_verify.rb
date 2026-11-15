@@ -135,13 +135,14 @@ GRPC = [%w[--protocol grpc], %w[--protocol grpc --gzip]].freeze
 H1_UNARY = { "greet" => UNARY, "fail" => [[]] }.freeze
 H1_STREAMING = H1_UNARY.merge("countdown" => STREAM, "collect" => STREAM).freeze
 H2_ALL = H1_STREAMING.merge("chat" => STREAM).transform_values { |variants| variants + GRPC }.freeze
+THREADED = H1_UNARY.merge("countdown" => STREAM).transform_values { |variants| variants + GRPC }.freeze
 # Independent of the support table: what each pairing must actually do.
 ALLOWED = {
   "rack" => { "nethttp" => H1_UNARY, "async-http1" => H1_UNARY },
   "rails" => { "nethttp" => H1_UNARY, "async-http1" => H1_UNARY },
-  "async" => { "async-h2" => H2_ALL, "async-threaded" => H1_UNARY },
+  "async" => { "async-h2" => H2_ALL, "async-threaded" => THREADED },
   "falcon" => { "nethttp" => H1_UNARY, "async-http1" => H1_STREAMING, "async-h2" => H2_ALL,
-                "async-threaded" => H1_UNARY }
+                "async-threaded" => THREADED }
 }.freeze
 NETHTTP_STREAMING = ["nethttp", %w[countdown],
                      "nethttp supports only unary Connect calls; countdown is server streaming"].freeze
@@ -159,9 +160,10 @@ REFUSED = {
               NETHTTP_STREAMING,
               ["async-h2", %w[greet --protocol grpc --codec json], "gRPC requires the protobuf codec"],
               ["async-h2", %w[greet --protocol grpc --get], "gRPC has no GET form"],
-              ["async-threaded", %w[countdown],
-               "async-threaded supports only unary Connect calls; countdown is server streaming"],
-              ["async-threaded", %w[greet --protocol grpc], "async-threaded does not support gRPC"]],
+              ["async-threaded", %w[collect],
+               "async-threaded supports only unary, server streaming Connect calls; collect is client streaming"],
+              ["async-threaded", %w[chat --protocol grpc],
+               "async-threaded supports only unary, server streaming gRPC calls; chat is bidi streaming"]],
   "falcon" => [["async-http1", %w[chat], "async-http1 supports only unary, server streaming, client streaming " \
                                          "Connect calls; chat is bidi streaming"],
                ["async-http1", %w[greet --protocol grpc],
@@ -169,14 +171,16 @@ REFUSED = {
                ["nethttp", %w[greet --protocol grpc], "nethttp does not support gRPC; native gRPC needs HTTP/2"],
                NETHTTP_STREAMING,
                ["async-h2", %w[countdown --get], "--get applies only to unary RPCs"],
-               ["async-threaded", %w[chat], "async-threaded supports only unary Connect calls; chat is bidi streaming"]]
+               ["async-threaded", %w[chat],
+                "async-threaded supports only unary, server streaming Connect calls; chat is bidi streaming"]]
 }.freeze
 # Under --mtls, a representative set of calls covers each client, RPC shape and
 # option over TLS with client certificates.
 MTLS_H2 = { "greet" => [[], %w[--get --gzip]], "fail" => [[]], "countdown" => [%w[--gzip]],
             "collect" => [%w[--codec json]], "chat" => [[], %w[--protocol grpc]] }.freeze
 MTLS_H1 = { "greet" => [[], %w[--get]], "countdown" => [[]], "collect" => [%w[--gzip]] }.freeze
-MTLS_THREADED = { "greet" => [[], %w[--get --gzip]], "fail" => [[]] }.freeze
+MTLS_THREADED = { "greet" => [[], %w[--get --gzip], %w[--protocol grpc]], "fail" => [[]],
+                  "countdown" => [%w[--gzip], %w[--protocol grpc]] }.freeze
 MTLS_ALLOWED = {
   "async" => { "async-h2" => MTLS_H2, "async-threaded" => MTLS_THREADED },
   "falcon" => { "async-h2" => MTLS_H2, "async-http1" => MTLS_H1, "async-threaded" => MTLS_THREADED }

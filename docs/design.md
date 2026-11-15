@@ -345,7 +345,15 @@ thread. Core still encodes and decodes on the caller thread; only frozen bytes a
 headers cross a queue. Admission is held until both the owner has an outcome and
 the caller has taken or abandoned it, deadlines get a caller-side fallback for a
 stalled owner, and a forked child builds its own owner without touching inherited
-I/O. It supports Connect unary only.
+I/O. It supports Connect unary and server streaming and native gRPC unary and
+server streaming. A stream's block stays on the caller thread, so core's stream
+session keeps its thread affinity; the caller drives a private exchange proxy
+that posts one command at a time to a per-stream mailbox, and the owner runs the
+real exchange. Interrupting a caller fires the stream's cancellation before the
+owner is asked to stop, so a blocked read or write resets only that stream. A
+normal block exit waits for the engine's actual outcome, including a late gRPC
+cleanup failure. Client and bidi streaming need two caller threads on one
+session and stay unsupported.
 
 Connect streaming carries end-stream metadata in its body; native gRPC requires
 actual final HTTP/2 HEADERS, as described in the [gRPC guide](grpc.md).

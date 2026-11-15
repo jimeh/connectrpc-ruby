@@ -52,7 +52,7 @@ expected = %w[LICENSE README.md lib/connectrpc/async.rb lib/connectrpc/async/ver
               lib/connectrpc/async/stream_exchange.rb
               lib/connectrpc/async/tls_configuration.rb lib/connectrpc/async/server_session.rb
               lib/connectrpc/async/host.rb lib/connectrpc/async/transport.rb
-              lib/connectrpc/async/threaded_transport.rb
+              lib/connectrpc/async/threaded_transport.rb lib/connectrpc/async/threaded_stream.rb
               lib/connectrpc/async/http1_transport.rb lib/connectrpc/async/http1_exchange.rb
               lib/connectrpc/async/http1_connection.rb lib/connectrpc/async/http1_stream.rb].sort
 abort "Backend manifest changed" unless backend.contents.sort == expected
@@ -96,6 +96,11 @@ Bundler.with_unbundled_env do
     FileUtils.cp(File.join(__dir__, "integration.rb"), working)
     FileUtils.cp(File.join(__dir__, "../spec/support/helpers.rb"), File.join(working, "helpers.rb"))
     FileUtils.cp_r(File.join(root, "spec/fixtures/generation/echo"), File.join(working, "generated"))
+    streaming = File.join(working, "generated/generation")
+    FileUtils.mkdir_p(streaming)
+    %w[streaming_pb.rb streaming_connect.rb].each do |name|
+      FileUtils.cp(File.join(root, "spec/fixtures/generation/ruby/generation", name), streaming)
+    end
     environment = { "GEM_HOME" => File.join(temporary, "home"), "GEM_PATH" => File.join(temporary, "home"),
                     "RUBYOPT" => nil, "RUBYLIB" => nil, "RUBYGEMS_GEMDEPS" => nil,
                     "CONNECTRPC_ASYNC_INSTALLED" => "1", **Activation.environment(installed: true) }

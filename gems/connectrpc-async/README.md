@@ -26,7 +26,7 @@ Pick the component that matches what you need:
 | --- | --- |
 | [`Host`](#host) | Serve RPCs from a standalone HTTP/2 listener (h2c, TLS or mTLS) inside your Async reactor |
 | [`Transport`](#transport) | Call HTTP/2 services from inside an Async reactor, with pooled, multiplexed connections, streaming and gRPC |
-| [`ThreadedTransport`](#ordinary-threads) | Call Connect unary services over HTTP/2 from ordinary threads, such as Puma or Sidekiq workers, without running a reactor yourself |
+| [`ThreadedTransport`](#ordinary-threads) | Call Connect unary and server-streaming services, or native gRPC unary and server-streaming services, over HTTP/2 from ordinary threads, such as Puma or Sidekiq workers, without running a reactor yourself |
 | [`HTTP1Transport`](#explicit-http11-client) | Call Connect services that only speak HTTP/1.1, including unary, server streaming and client streaming |
 | [`Application`, `ServerSession`](#native-application-and-managed-tls) | Build another host on the native application and session, as [connectrpc-falcon](../connectrpc-falcon/README.md) does |
 
@@ -331,10 +331,11 @@ feature can be turned off: `backoff: nil`, `max_pending_bytes: nil`,
 
 `ThreadedTransport` lets threaded programs such as Puma, Sidekiq or plain
 threads share one client without an application reactor. It supports Connect
-unary only, POST and safe GET; streaming and gRPC from ordinary threads are not
-implemented, so core rejects those calls before any I/O. Streaming and gRPC
-from ordinary threads are tracked in
-[issue #29](https://github.com/jimeh/connectrpc-ruby/issues/29).
+unary (POST and safe GET) and server streaming, and native gRPC unary and server
+streaming. `streaming_capabilities` is `[:server_stream]` and
+`grpc_capabilities` is `[:unary, :server_stream]`, so core rejects client and
+bidi streaming before any I/O. Client and bidi streaming from ordinary threads
+are tracked in [issue #29](https://github.com/jimeh/connectrpc-ruby/issues/29).
 
 ```ruby
 require "connectrpc/async"
@@ -343,15 +344,16 @@ require "connectrpc/async"
 RPC = ConnectRPC::Async::ThreadedTransport.new(origin: "https://rpc.internal:8443")
 client = ConnectRPC::Client.new(base_url: "https://rpc.internal:8443", binding: binding, transport: RPC)
 
-client.call(method, message, timeout: 2) # Any thread.
-RPC.close(grace: 5)                      # Shutdown, for example in on_worker_shutdown.
+client.call(method, message, timeout: 2)                             # Any thread.
+client.server_stream(watch, message) { |reader| reader.each { ... } } # The block runs on this thread.
+RPC.close(grace: 5)                                                  # Shutdown, for example in on_worker_shutdown.
 ```
 
 It takes the same options as `Transport`, and they behave the same, including
 the [connection policy](#client-connection-management). The constructor
 validates them and compiles the TLS snapshot on the calling thread, so
-configuration errors raise at boot. `call`, `close(grace: 5)`,
-`connection_state` and `inspect` work from any thread.
+configuration errors raise at boot. `call`, `open_stream`, `open_grpc_stream`,
+`close(grace: 5)`, `connection_state` and `inspect` work from any thread.
 
 ### The owner thread
 
@@ -368,8 +370,8 @@ configuration errors raise at boot. `call`, `close(grace: 5)`,
   child closes only the child's owner.
 - If the owner thread dies, pending callers get `unavailable`, the observer sees
   the inner transport close, and the next call starts a new owner.
-- `call` and `close` from the owner thread, such as from a `connection_observer`,
-  raise `LifecycleError`.
+- `call`, the stream methods, exchange operations and `close` from the owner
+  thread, such as from a `connection_observer`, raise `LifecycleError`.
 
 ### Admission, deadlines and interrupts
 
@@ -394,6 +396,55 @@ configuration errors raise at boot. `call`, `close(grace: 5)`,
   caller's mask. Core NetHTTP defers those interrupts inside such a region.
   The reactor-owned `Transport` does not reliably defer them either, because
   masks are per fiber and the reactor delivers them to other fibers.
+
+### Streams from ordinary threads
+
+A stream's block runs on the caller's thread, so core's stream session keeps
+its thread affinity and no application code moves to the owner thread. The
+owner runs the real H2 exchange. The block receives a private exchange proxy;
+each `response_head`, `read`, `write`, `close_send`, `finish` and, for gRPC,
+`response_trailers` posts one command to the owner and waits for its result.
+
+- `open_stream` and `open_grpc_stream` wait until the owner has dispatched the
+  stream, so connection and dispatch failures raise before the block, as with
+  `Transport`. Each stream holds one admission slot and no request bytes until
+  both the owner has retired it and the caller has left.
+- One operation runs at a time per stream; a concurrent one raises
+  `StreamStateError`. `read(n)` returns at most `n` bytes and trailers stay
+  behind response EOF. Header maps and chunks reach the caller as their own
+  frozen copies.
+- An operation's wait is bounded by the deadline and by its own timeout, each
+  plus the 100 ms allowance. If the owner is stalled past that, the operation
+  fails with `deadline_exceeded`, or with `unavailable` for its own timeout, and
+  the stream is reset when the owner resumes.
+- A normal block exit waits for the owner's actual outcome, bounded only by the
+  deadline as unary calls are. A gRPC cleanup failure after the block returns
+  reaches the caller as `unavailable`; the caller never reports success
+  without the owner's outcome.
+- An exception, `Timeout`, `Thread#raise`, `Thread#kill`, `break` or `throw`
+  out of the block, or interrupting an operation, fires the stream's
+  cancellation before the owner is told to stop. A read or write blocked on the
+  wire therefore wakes and resets only that stream (`RST_STREAM(CANCEL)`);
+  siblings and the connection keep working. The original exception reaches the
+  caller without waiting for cleanup, and admission is released once the owner
+  retires the stream. If application code rescues such an interrupt and the
+  block then returns, the stream fails with `canceled`.
+- `abort`, which core calls when a reader abandons the stream, only queues the
+  request and never waits, so unwinding cannot block on a stalled owner. An
+  explicit abandon followed by a normal return keeps its normal outcome.
+- A retained exchange used after its block finished raises
+  `unavailable` (`HTTP/2 exchange is retired`), as does one inherited by a
+  forked child.
+- The block runs with interrupts enabled even inside an enclosing
+  `Thread.handle_interrupt(... => :never)` region, extending the same rule for
+  waits above to application code in the block. This is deliberate: the
+  transport's own bookkeeping stays masked, so an interrupt can never skip the
+  stream's cancellation or leak its admission.
+- Known difference from `Transport`: when a delivered remote gRPC error escapes
+  the block and the owner's later cleanup also fails, the caller still gets the
+  remote error unchanged, but the instrumentation completion reports delivery
+  as completed rather than aborted, because the exceptional exit does not wait
+  for cleanup.
 
 ### Closing
 

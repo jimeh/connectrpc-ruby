@@ -253,7 +253,7 @@ run = "ruby gems/connectrpc-async/scripts/run.rb interop"
 
 [tasks."async:verify"]
 description = "Verify optional HTTP/2 specs, source, packages and Go interoperability"
-depends = ["async:test", "async:check", "async:package", "async:interop", "async:interop:streaming", "async:conformance", "async:conformance:grpc", "async:interop:grpc", "async:conformance:http1", "async:interop:http1"]
+depends = ["async:test", "async:check", "async:package", "async:interop", "async:interop:streaming", "async:conformance", "async:conformance:grpc", "async:interop:grpc", "async:conformance:http1", "async:conformance:threaded", "async:interop:http1"]
 
 [tasks."async:tools"]
 description = "Prepare exact Ruby/Bundler for the independent backend bundle"
@@ -741,6 +741,16 @@ depends = ["async:setup", "setup:conformance"]
 tools."github:connectrpc/conformance" = "1.0.6"
 env.CONNECTRPC_CONFORMANCE_HTTP1_CLIENT = "1"
 run = "ruby gems/connectrpc-async/scripts/run.rb conformance async client"
+
+[tasks."async:conformance:threaded"]
+description = "Run separate strict official Connect and gRPC unary/server-stream client profiles through ThreadedTransport"
+depends = ["async:setup", "setup:conformance"]
+tools."github:connectrpc/conformance" = "1.0.6"
+env.CONNECTRPC_CONFORMANCE_THREADED_CLIENT = "1"
+run = [
+  "ruby gems/connectrpc-async/scripts/run.rb conformance async client",
+  "CONNECTRPC_CONFORMANCE_GRPC=1 ruby gems/connectrpc-async/scripts/run.rb conformance async client",
+]
 
 [tasks."async:interop:http1"]
 description = "Run pinned connect-go HTTP/1.1-only listeners against the explicit Ruby client"

@@ -7,8 +7,8 @@ Gem::Specification.new do |spec|
   spec.summary = "Async HTTP/2 host and HTTP/1.1 and HTTP/2 clients for ConnectRPC"
   spec.description = "Standalone Async HTTP/2 host and pooled client transports for connectrpc: Connect unary and " \
                      "streaming, native gRPC and server gRPC-Web over h2c, verified TLS and mTLS, an explicit " \
-                     "HTTP/1.1 client, and ThreadedTransport for Connect unary calls from ordinary threads. Part " \
-                     "of the unofficial connectrpc-ruby project. Experimental and not production ready."
+                     "HTTP/1.1 client, and ThreadedTransport for unary and server-streaming calls from ordinary " \
+                     "threads. Part of the unofficial connectrpc-ruby project. Experimental and not production ready."
   spec.authors = ["jimeh"]
   spec.homepage = "https://github.com/jimeh/connectrpc-ruby"
   spec.license = "MIT"

@@ -93,13 +93,7 @@ module StreamingInterop
     end
 
     def run
-      @core.server_stream(METHODS[0], MESSAGE.new(value: "gate")) do |reader|
-        StreamingInterop.check(reader.headers["x-head"] == ["early"], "SS early headers")
-        StreamingInterop.check(reader.receive.value == "first", "SS first before producer completion")
-        @core.call(METHODS[3], MESSAGE.new(value: "release"))
-        StreamingInterop.check(reader.receive.value == "gate" && reader.receive.nil?, "SS terminal")
-        StreamingInterop.check(reader.trailers["x-tail"] == ["done"], "SS trailers")
-      end
+      server_stream
       response = @core.client_stream(METHODS[1]) do |writer|
         writer.send_message(MESSAGE.new)
         Async::Task.current.with_timeout(3) do
@@ -121,6 +115,16 @@ module StreamingInterop
       end
       errors
       cancellation
+    end
+
+    def server_stream
+      @core.server_stream(METHODS[0], MESSAGE.new(value: "gate")) do |reader|
+        StreamingInterop.check(reader.headers["x-head"] == ["early"], "SS early headers")
+        StreamingInterop.check(reader.receive.value == "first", "SS first before producer completion")
+        @core.call(METHODS[3], MESSAGE.new(value: "release"))
+        StreamingInterop.check(reader.receive.value == "gate" && reader.receive.nil?, "SS terminal")
+        StreamingInterop.check(reader.trailers["x-tail"] == ["done"], "SS trailers")
+      end
     end
 
     def errors
@@ -146,6 +150,35 @@ module StreamingInterop
         StreamingInterop.check(e.code == "canceled" && e.cause.nil?, "Wrong canceled result")
       end
       StreamingInterop.check(@core.client_stream(METHODS[1]) { nil }.message.value == "0", "healthy after cancel")
+    end
+  end
+
+  # Server streaming and its unary control calls through ThreadedTransport from
+  # a plain thread. Client and bidi streaming stay unsupported there.
+  class ThreadedClientProbe < ClientProbe
+    def run
+      raise "ThreadedTransport probes run outside any reactor" if Fiber.scheduler
+
+      server_stream
+      errors
+      cancellation
+    end
+
+    def cancellation
+      source = ConnectRPC::CancellationSource.new
+      begin
+        gate = MESSAGE.new(value: "gate")
+        @core.server_stream(METHODS[0], gate, timeout: nil, cancellation: source.token) do |reader|
+          StreamingInterop.check(reader.receive.value == "first", "threaded cancellation wire progress")
+          source.cancel
+          reader.receive
+        end
+        raise "Missing threaded cancellation"
+      rescue ConnectRPC::Error => e
+        StreamingInterop.check(e.code == "canceled" && e.cause.nil?, "Wrong threaded canceled result")
+      end
+      StreamingInterop.check(@core.call(METHODS[3], MESSAGE.new(value: "status")).message.value.match?(/\A\d+\z/),
+                             "threaded transport healthy after cancel")
     end
   end
 end

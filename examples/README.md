@@ -101,7 +101,7 @@ deployments usually use `falcon host` with the service DSL, as in
 | `nethttp` | [clients/nethttp.rb](clients/nethttp.rb) | `setup` | Core default NetHTTP | HTTP/1.1: Connect unary, POST or `--get` |
 | `async-http1` | [clients/async_http1.rb](clients/async_http1.rb) | `async:setup` | `ConnectRPC::Async::HTTP1Transport` | HTTP/1.1: Connect unary, server and client streaming |
 | `async-h2` | [clients/async_h2.rb](clients/async_h2.rb) | `async:setup` | `ConnectRPC::Async::Transport` (h2c prior knowledge) | HTTP/2: Connect and gRPC, all four shapes |
-| `async-threaded` | [clients/async_threaded.rb](clients/async_threaded.rb) | `async:setup` | `ConnectRPC::Async::ThreadedTransport`, called from a plain thread with no application reactor | HTTP/2: Connect unary, POST or `--get` |
+| `async-threaded` | [clients/async_threaded.rb](clients/async_threaded.rb) | `async:setup` | `ConnectRPC::Async::ThreadedTransport`, called from a plain thread with no application reactor | HTTP/2: Connect and gRPC unary and server streaming; Connect unary POST or `--get` |
 
 ## Supported pairings
 
@@ -114,7 +114,7 @@ streaming. The [support table](demo/support.rb) mirrors the
 | `nethttp` | Connect U | Connect U | Refused: H2-only host | Connect U |
 | `async-http1` | Connect U | Connect U | Refused: H2-only host | Connect U/SS/CS |
 | `async-h2` | Refused: H1-only host | Refused: H1-only host | Connect and gRPC U/SS/CS/bidi | Connect and gRPC U/SS/CS/bidi |
-| `async-threaded` | Refused: H1-only host | Refused: H1-only host | Connect U | Connect U |
+| `async-threaded` | Refused: H1-only host | Refused: H1-only host | Connect and gRPC U/SS | Connect and gRPC U/SS |
 
 A client checks its pairing before it opens a connection. An unsupported
 pairing exits with status 2 and says why, which clients or servers would work,
