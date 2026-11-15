@@ -398,6 +398,15 @@ module ConnectRPC
         def send_body(...)
           super { |task| @output_task = task }
         end
+
+        # Any response HEADERS, including 1xx, show the server saw the request,
+        # so a later refusal no longer proves it was never processed.
+        def receive_initial_headers(headers, end_stream)
+          @response_headers = true
+          super
+        end
+
+        def response_headers? = !!@response_headers
       end
 
       class ClientConnection < ::Async::HTTP::Protocol::HTTP2::Client

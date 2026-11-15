@@ -108,8 +108,8 @@ deadlines. Nil RPC deadlines remain unbounded, while each connection attempt has
 its own `connect_timeout`. No redirects, proxy environment routing or HTTP/1
 fallback. The transport carries opaque encoded bytes; core owns compression and
 negotiation. [Client connection management](#client-connection-management)
-describes reconnection, backoff, admission and the single reroute exception to
-"no retries".
+describes reconnection, backoff, GOAWAY replacement, admission, rerouting of
+unsent calls and the single resend of a refused Connect unary call.
 
 Both objects provide `close(grace: 5)`: stop admission, await handlers/calls and
 complete wire streams, send GOAWAY when empty, then half-close and await EOF.
@@ -174,7 +174,10 @@ is on by default; these are the defaults:
 policy = ConnectRPC::Async::ConnectionPolicy.new(
   backoff: ConnectRPC::Async::Backoff.new(base: 1.0, multiplier: 1.6, jitter: 0.2, max: 30.0),
   wait_for_ready: false,
-  max_pending_bytes: 16 * 1024 * 1024
+  max_pending_bytes: 16 * 1024 * 1024,
+  retry_refused: true,
+  max_draining: 1,
+  drain_timeout: nil
 )
 transport = ConnectRPC::Async::Transport.new(origin: origin, connection_policy: policy,
                                              connection_observer: ->(event) { record(event) })
@@ -182,7 +185,10 @@ transport.connection_state # => :idle, :connecting, :ready, :transient_failure, 
 ```
 
 Invalid values raise `ArgumentError` at construction. `wait_for_ready: true`
-requires a backoff, and `connection_policy: nil` is rejected.
+requires a backoff, `max_draining` is a nonnegative integer, `drain_timeout` is
+nil or finite positive seconds, and `connection_policy: nil` is rejected. Each
+feature can be turned off: `backoff: nil`, `max_pending_bytes: nil`,
+`retry_refused: false`, `max_draining: 0` and `drain_timeout: nil`.
 
 - No socket opens before the first call. A connection is ready after TCP, TLS
   with hostname and ALPN `h2` verification, the client preface and the server's
@@ -207,28 +213,52 @@ requires a backoff, and `connection_policy: nil` is rejected.
   until their own deadline, cancellation or `close`.
 - `backoff: nil` removes the timer and the `transient_failure` state. A failed
   attempt fails every call that joined it, and the next call dials at once.
-- `connection_limit` counts open connections, reusable or not, plus the attempt
-  in progress. A call reuses the first connection with spare stream capacity,
-  which is the peer's `SETTINGS_MAX_CONCURRENT_STREAMS`, and opens another only
-  when none has capacity and a slot is free. A peer raising that limit wakes
+- `connection_limit` counts open connections outside the draining set, reusable
+  or not, plus the attempt in progress and any connection removed from
+  accounting whose socket is not yet closed. A call reuses the first connection
+  with spare stream capacity, which is the peer's
+  `SETTINGS_MAX_CONCURRENT_STREAMS`, and opens another only when none has
+  capacity and a slot is free. A peer raising that limit wakes
   waiting calls; lowering it never revokes a stream already acquired. While any
   connection is usable the state stays `ready`, even if an extra attempt failed
   and is backing off. Extra connections add capacity, not load spreading.
-- A connection that receives GOAWAY or dies takes no new streams. It counts as
-  draining and keeps its slot until its streams finish; replacing it while it
-  drains is not implemented yet. A connection that dies while idle republishes
-  the state immediately.
+- A connection that receives GOAWAY or dies takes no new streams and counts as
+  `draining` in observer events. After a graceful GOAWAY (`NO_ERROR`) with
+  streams still open, the connection joins the draining set while it has fewer
+  than `max_draining` members. It then leaves the `connection_limit` cap, so a
+  waiting call can open a replacement while it drains; GOAWAY alone never
+  dials, and replacement is not a failure for backoff. Otherwise it keeps its
+  slot until its streams finish, and joins the set when a member retires. The
+  client never has more than `connection_limit + max_draining` sockets open.
+  `drain_timeout` closes any graceful GOAWAY connection, in the set or not,
+  that still has streams after that many seconds; those streams fail with
+  `unavailable` and are not resent. `close` cancels drain timers, and its own
+  grace bounds the drain. An error GOAWAY or a dead connection fails its
+  remaining streams at once. A connection that dies or receives GOAWAY while
+  idle closes and republishes the state immediately.
 - Every call and stream takes one of `max_requests`. `Transport#call` (Connect
   unary) also reserves its encoded request bytes from `max_pending_bytes`: the
   POST body, or the request target for GET. Native gRPC unary and all streams
   reserve no bytes. A full count or byte budget, or a single call larger than
   the budget, fails immediately with `unavailable`. `max_pending_bytes: nil`
   admits by count only. Reservations last until the call's terminal outcome.
-- There are no retries, with one exception that is not a replay: a call whose
-  connection became unusable after acquisition but before any stream ID was
-  allocated or request byte written returns to acquisition with its existing
-  admission. Once request HEADERS start, a failed call is never resent; only a
-  separate later call reconnects.
+- A call whose connection became unusable after acquisition but before any
+  stream ID was allocated or request byte written returns to acquisition with
+  its existing admission. This reroute is not a replay.
+- There are no other retries, with one exception: with `retry_refused: true`, a
+  Connect unary call through `Transport#call` (POST or GET) is sent once more
+  when waiting for its response headers raises
+  `Protocol::HTTP::RefusedError` and no response HEADERS, not even 1xx, arrived.
+  The pinned protocol-http2 raises it only for streams the server provably never
+  processed: `RST_STREAM(REFUSED_STREAM)` and streams above a GOAWAY's last
+  stream id (RFC 9113 sections 6.8 and 8.7). The resend first retires the
+  refused stream's output within the 100ms cleanup allowance, then goes back
+  through ordinary acquisition with the same admission and deadline, so it may
+  reuse a healthy connection or wait for capacity. A second refusal, or a
+  refused output frame that stays stuck, fails the call with `unavailable`.
+  Native gRPC unary calls and all streams are never resent. Otherwise, once
+  request HEADERS start, a failed call is never resent; only a separate later
+  call reconnects.
 - `connection_observer` receives frozen `ConnectionEvent` values with `type`
   (`:state_changed`, `:attempt_finished` or `:admission_rejected`), `state`,
   `previous_state`, `outcome` (`:ready`, `:refused`, `:timeout`, `:tls`,
@@ -497,7 +527,9 @@ source checking is a separate target from backend implementation checking.
 Safe unary GET uses core `Client.new(use_get: true)` and declared
 `:no_side_effects` methods. Native HTTP/2 requests carry HEADERS with END_STREAM
 and a nil body; core owns query encoding, parsing and independent URL/payload
-limits. The transport never retries or falls back to POST.
+limits. The transport never falls back to POST; a refused GET is resent only
+under the refused-stream rule in
+[Client connection management](#client-connection-management).
 
 ## Explicit unary cancellation
 

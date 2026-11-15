@@ -181,11 +181,13 @@ module ConnectRPC
         request = operation.fetch(:request)
         task = ::Async::Task.current
         loop do
+          check_live!(operation)
           connection = acquire(operation, task)
           dispatched = false
           begin
             return connection.synchronize(dispatch: true) do
               check_request!(request)
+              check_live!(operation)
               raise Internal::UnusableConnection, "Connection is not reusable" unless @manager.usable?(connection)
 
               dispatched = true
@@ -197,6 +199,12 @@ module ConnectRPC
             reroute(operation)
           end
         end
+      end
+
+      # Once whole-operation cleanup starts, the call sends nothing new; the
+      # lease belongs to cleanup.
+      def check_live!(operation)
+        raise Error.new(:unavailable, "HTTP/2 exchange is retired"), cause: nil if operation[:cleaned]
       end
 
       def acquire(operation, task)
@@ -355,23 +363,105 @@ module ConnectRPC
       def exchange(operation)
         request = operation.fetch(:request)
         check_request!(request)
-        connection = dispatch(operation) do |guarded, task|
-          headers = request.headers.dup
-          headers["connect-timeout-ms"] = [request.deadline.timeout_ms] if request.deadline
-          body = request.http_method == "GET" ? nil : [request.body]
-          outgoing = ::Protocol::HTTP::Request[request.http_method, request.url.request_uri, Internal.fields(headers),
-                                               body, scheme: @origin.scheme, authority: @origin.authority]
-          # Stream ID allocation shares the wire dispatch guard.
-          response = guarded.create_response
-          operation[:response] = response
-          task.defer_cancel { guarded.write_request(response, outgoing) }
-          guarded
+        retried = false
+        loop do
+          connection = dispatch(operation) do |guarded, task|
+            headers = request.headers.dup
+            headers["connect-timeout-ms"] = [request.deadline.timeout_ms] if request.deadline
+            body = request.http_method == "GET" ? nil : [request.body]
+            outgoing = ::Protocol::HTTP::Request[request.http_method, request.url.request_uri,
+                                                 Internal.fields(headers), body,
+                                                 scheme: @origin.scheme, authority: @origin.authority]
+            # Stream ID allocation shares the wire dispatch guard.
+            response = guarded.create_response
+            operation[:response] = response
+            task.defer_cancel { guarded.write_request(response, outgoing) }
+            guarded
+          end
+          response = operation.fetch(:response)
+          begin
+            connection.read_response(response)
+            break
+          rescue ::Protocol::HTTP::RefusedError
+            # Only the header wait proves RFC 9113 non-processing: dispatch can
+            # convert a HEADERS write failure into the same error.
+            raise if retried || !@manager.retry_refused? || response.stream.response_headers?
+
+            retried = true
+            retire_refused(operation, response)
+          end
         end
         response = operation.fetch(:response)
-        connection.read_response(response)
         headers = Internal.headers(response)
         bytes = read_body(response, request)
         TransportResponse.new(status: response.status, headers: headers, body: bytes)
+      end
+
+      # The refused stream is closed, but its output may still be inside a
+      # deferred frame write. That output retires within the call's cleanup
+      # budget before the lease returns to acquisition; a stuck frame fails
+      # its connection and the call, which is not sent again.
+      def retire_refused(operation, response)
+        # The refused stream already stopped its output once. Cleanup still
+        # retires it after the response detaches; see #retire_stopped_output.
+        operation[:refused_output] = response.stream.output_task
+        operation.delete(:response)
+        response.close
+        request = operation.fetch(:request)
+        expires = Internal.now + Internal::CLEANUP_SECONDS
+        expires = [expires, Internal.now + request.deadline.remaining].min if request.deadline
+        unless output_retired?(operation[:refused_output], expires)
+          # An expired call leaves its output to the call's own cleanup.
+          check_request!(request)
+          # Raw-first abort ends the stuck frame's hazard and its ownership.
+          operation[:resource]&.abort
+          operation.delete(:refused_output)
+          raise Error.new(:unavailable, "HTTP/2 refused stream output did not retire"), cause: nil
+        end
+        operation.delete(:refused_output)
+        # A call whose cleanup started while it joined leaves the lease there.
+        check_live!(operation)
+        reroute(operation)
+      end
+
+      # A closed stream already stopped its output once. Cancelling the call
+      # task cascades a second cancellation into that output, which would stop
+      # a deferred frame write mid-frame. A stopped output that does not retire
+      # within the budget, or whose wait is interrupted, fails its connection
+      # raw-first instead. Until it retires, the call still holds that
+      # output's connection lease.
+      def retire_stopped_output(operation, expires)
+        output = stopped_output(operation)
+        output_retired?(output, expires)
+      ensure
+        operation[:resource]&.abort if output && !output.finished?
+        operation.delete(:refused_output)
+      end
+
+      # A refused output retiring for a retry, or a unary exchange's output
+      # whose stream closed, for example by a reset after response HEADERS.
+      # Stream operations keep their existing cleanup order.
+      def stopped_output(operation)
+        return operation[:refused_output] if operation[:refused_output]
+        return if operation.key?(:tasks)
+
+        stream = operation[:response]&.stream
+        stream.output_task if stream&.closed?
+      end
+
+      # Waits until `expires` for the output and reports whether it finished.
+      def output_retired?(output, expires)
+        return true unless output && !output.finished?
+
+        joiner = ::Async::Task.current.async(finished: false) { Internal.join(output) }
+        begin
+          Internal.wait(joiner, expires)
+        rescue ::Async::TimeoutError
+          nil
+        ensure
+          Internal.cancel(joiner)
+        end
+        output.finished?
       end
 
       def read_body(response, request)
@@ -400,7 +490,11 @@ module ConnectRPC
         cleanup_task = ::Async::Task.current.async(finished: false) do
           # The manager owns connection setup; a call owns only its own tasks.
           tasks = [operation[:task], *operation.fetch(:tasks, {}).keys].compact.uniq
-          tasks.each { |task| task.cancel unless task.finished? }
+          begin
+            retire_stopped_output(operation, expires)
+          ensure
+            tasks.each { |task| task.cancel unless task.finished? }
+          end
           # Cancel every task before joining in reverse ownership order.
           tasks.reverse_each do |task|
             operation[:grpc] ? (task.wait unless task.current?) : Internal.join(task)

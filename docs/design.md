@@ -329,10 +329,16 @@ cleanup's 100ms allowance and deliberate whole-connection failure for a stuck
 frame. Native streaming uses the same ingress and cleanup boundaries. No production daemon claim is made.
 The H2 client's private, reactor-owned connection manager runs shared connection
 attempts outside every RPC lifecycle and owns stream accounting, capped jittered
-backoff, opt-in wait-for-ready and count/request-byte admission. A call returns
-to acquisition only when its connection became unusable before any stream ID or
-request byte; nothing that may have reached the server is resent. The package
-guide describes the policy, states and observer events.
+backoff, opt-in wait-for-ready, count/request-byte admission and GOAWAY
+draining: a gracefully draining connection leaves the active cap while the
+draining set has room, so a replacement can open, and an optional drain timeout
+bounds it. A call returns to acquisition when its connection became unusable
+before any stream ID or request byte. A Connect unary call is sent once more
+only when its response-header wait raises the refused error that RFC 9113
+reserves for never-processed streams (`REFUSED_STREAM` or above a GOAWAY's last
+stream id) and no response HEADERS arrived. Nothing else that may have reached
+the server is resent. The package guide describes the policy, states and
+observer events.
 `ThreadedTransport` is the one hidden-reactor exception, and it is explicit: one
 owner thread per process runs a reactor and an H2 `Transport` for callers on any
 thread. Core still encodes and decodes on the caller thread; only frozen bytes and

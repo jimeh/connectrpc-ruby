@@ -6,6 +6,10 @@ policy = ConnectRPC::Async::ConnectionPolicy.new(backoff: backoff, wait_for_read
 policy.max_pending_bytes&.succ
 (policy == ConnectRPC::Async::ConnectionPolicy.new(backoff: nil)).to_s
 ConnectRPC::Async::ConnectionPolicy.new.backoff&.jitter&.zero?
+draining = ConnectRPC::Async::ConnectionPolicy.new(retry_refused: false, max_draining: 0, drain_timeout: 30)
+draining.retry_refused.to_s
+draining.max_draining.succ
+draining.drain_timeout&.positive?
 transport = ConnectRPC::Async::Transport.new(
   origin: "https://example.invalid", connection_policy: policy,
   connection_observer: lambda do |event|

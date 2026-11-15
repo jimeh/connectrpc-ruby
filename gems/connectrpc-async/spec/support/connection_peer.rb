@@ -1,26 +1,84 @@
 # frozen_string_literal: true
 
 module ConnectionPeer
-  # Records every backoff sleep and holds it until the example fires it.
+  # Records every manager sleep and holds it until the example fires it.
+  # `fire` releases the oldest pending sleep, or the next one if none waits;
+  # `sleeper` addresses one pending sleep, so concurrent backoff and drain
+  # timers can be released individually.
   class FakeClock
+    class Sleeper
+      attr_reader :seconds
+
+      def initialize(seconds)
+        @seconds = seconds
+        @release = Async::Promise.new
+      end
+
+      def fire = @release.resolve(true)
+      def fired? = @release.resolved?
+      def wait = @release.wait
+    end
+
     attr_reader :delays, :now
 
     def initialize
       @now = 0.0
       @delays = []
+      @pending = []
+      @credits = 0
       @requested = Async::Queue.new
-      @release = Async::Queue.new
     end
 
     def sleep(seconds)
+      sleeper = Sleeper.new(seconds)
       @delays << seconds
+      @pending << sleeper
+      if @credits.positive?
+        @credits -= 1
+        sleeper.fire
+      end
       @requested.enqueue(seconds)
-      @release.dequeue
+      sleeper.wait
       @now += seconds
+    ensure
+      @pending.delete(sleeper)
     end
 
     def next_delay = @requested.dequeue
-    def fire = @release.enqueue(true)
+    def sleepers = @pending.reject(&:fired?)
+    def sleeper(seconds) = sleepers.find { |entry| entry.seconds == seconds }
+
+    def fire
+      sleeper = sleepers.first
+      sleeper ? sleeper.fire : @credits += 1
+    end
+  end
+
+  # Open client sockets, including a setup attempt's. Only setup opens a
+  # socket, so sampling at each raw socket assignment records the true peak.
+  class SocketMeter
+    attr_reader :peak
+
+    def initialize(transport)
+      @resources = transport.instance_variable_get(:@resources)
+      @peak = 0
+      manager = transport.instance_variable_get(:@manager)
+      setup = manager.instance_variable_get(:@setup)
+      meter = self
+      manager.instance_variable_set(:@setup, lambda do |resource|
+        resource.define_singleton_method(:raw=) do |raw|
+          super(raw)
+          meter.observe
+        end
+        setup.call(resource)
+      end)
+    end
+
+    def live = @resources.count { |resource| resource.raw && !resource.raw.closed? }
+
+    def observe
+      @peak = [@peak, live].max
+    end
   end
 
   class SequenceRandom

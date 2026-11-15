@@ -107,9 +107,9 @@ module AsyncHelpers
   # Stream leases held across every connection the transport accounts for.
   def lease_usage(transport) = transport.instance_variable_get(:@manager).usage
 
-  def wait_until(task, message = "condition")
+  def wait_until(task, message = "condition", within: 2)
     last_observed = nil
-    task.with_timeout(2) do
+    task.with_timeout(within) do
       task.yield until (last_observed = yield)
     end
   rescue Async::TimeoutError

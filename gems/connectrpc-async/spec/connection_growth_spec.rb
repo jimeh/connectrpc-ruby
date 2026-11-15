@@ -73,14 +73,15 @@ RSpec.describe "HTTP/2 connection growth and peer capacity" do
     end
   end
 
-  it "counts a GOAWAY connection as draining in its slot until a waiting call takes the freed slot" do
+  it "with max_draining 0 keeps a GOAWAY connection in its slot until a waiting call takes the freed slot" do
     reactor do |task|
       bound = IO::Endpoint.tcp("127.0.0.1", 0).bound
       release = Async::Queue.new
       peer = holding_peer(task, bound.sockets.first, release, {})
       origin = "http://127.0.0.1:#{bound.sockets.first.local_address.ip_port}"
       events = []
-      transport = recording_transport(origin, events)
+      policy = ConnectRPC::Async::ConnectionPolicy.new(max_draining: 0)
+      transport = recording_transport(origin, events, connection_policy: policy)
       long = task.async { transport.call(request("#{origin}/long")) }
       wait_until(task, "long stream dispatched") { peer.headers_frames.size == 1 }
       _, stream_id, = peer.headers_frames.first

@@ -52,5 +52,6 @@
   "grpc_web_cors": "Ruby::ArgumentTypeMismatch",
   "grpc_web_output": "Ruby::ArgumentTypeMismatch",
   "connection_policy": "Ruby::ArgumentTypeMismatch",
-  "threaded_stream": "Ruby::NoMethod"
+  "threaded_stream": "Ruby::NoMethod",
+  "drain_policy": "Ruby::ArgumentTypeMismatch"
 }

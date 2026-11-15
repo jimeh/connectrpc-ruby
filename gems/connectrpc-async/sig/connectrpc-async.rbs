@@ -103,10 +103,13 @@ module ConnectRPC
       def hash: () -> Integer
     end
     class ConnectionPolicy
-      def initialize: (?backoff: Backoff?, ?wait_for_ready: bool, ?max_pending_bytes: Integer?) -> void
+      def initialize: (?backoff: Backoff?, ?wait_for_ready: bool, ?max_pending_bytes: Integer?, ?retry_refused: bool, ?max_draining: Integer, ?drain_timeout: Numeric?) -> void
       attr_reader backoff: Backoff?
       attr_reader wait_for_ready: bool
       attr_reader max_pending_bytes: Integer?
+      attr_reader retry_refused: bool
+      attr_reader max_draining: Integer
+      attr_reader drain_timeout: Numeric?
       def ==: (untyped other) -> bool
       def eql?: (untyped other) -> bool
       def hash: () -> Integer
