@@ -20,6 +20,7 @@ require_relative "support/helpers"
 require_relative "support/hosting_helpers"
 require_relative "support/tls_observed_host"
 require_relative "support/frame_gate"
+require_relative "support/rejected_media_body"
 require_relative "support/connection_peer"
 require_relative "support/threaded_helpers"
 

@@ -158,6 +158,7 @@ module ConnectRPC
       attr_writer encoding: encoding
       def initialize: (input: _StreamingInput?, ?output: _StreamingWriter?, request: bool, wire_limit: Integer, limit: Integer, ?encoding: encoding, ?terminal_wire_limit: Integer, ?terminal_limit: Integer, ?state: _Check?, ?on_error: (^(StandardError) -> void)?) -> void
       def read_frame: (?timeout: Numeric?, ?skip_data: bool) -> [Integer, String]?
+      def next_envelope?: (?timeout: Numeric?) -> bool
       def emit: (String, ?terminal: bool) -> nil
       private
       def initialize_state: (_Check?) -> void
@@ -217,6 +218,7 @@ module ConnectRPC
       def initialize: (binding: _Binding, method: declaration, codec: codec, state: Context | CallCancellation, input: _StreamingInput | (_StreamExchange | _GRPCStreamExchange), output: _StreamingOutput | (_StreamExchange | _GRPCStreamExchange), request_limit: Integer, response_limit: Integer, request_wire_limit: Integer, response_wire_limit: Integer, request_encoding: encoding, response_encoding: encoding, terminal_wire_limit: Integer, terminal_limit: Integer, ?server: bool, ?context: Context?, ?lifecycle: Instrumentation::Handle?, ?accept_encoding: Array[encoding], ?strategy: ConnectStrategy | GRPCProtocol::Strategy | GRPCWeb::Strategy, ?publish: (^() -> void)?) -> void
       def headers: () -> Metadata
       def receive: () -> untyped
+      def request_complete?: () -> bool
       def send_message: (untyped) -> nil
       def close_send: () -> nil
       def abandon: () -> nil

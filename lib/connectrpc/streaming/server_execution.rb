@@ -80,7 +80,7 @@ module ConnectRPC
 
     def single_stream_request(session)
       request = session.receive
-      return request if !request.nil? && session.receive.nil?
+      return request if !request.nil? && session.request_complete?
 
       raise Error.new(:unimplemented, "Expected exactly one request"), cause: nil
     end

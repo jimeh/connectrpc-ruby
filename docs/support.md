@@ -356,6 +356,9 @@ decision. A merged fix closes its specific defect, not the audit as a whole.
   one reverse-order detach attempt even when another detach raises a fatal
   exception or throws. [Design](design.md#rpc-lifecycle-observation) keeps the
   observer's own exception-safety obligations.
+- L4 and L7 are resolved. A gRPC client reads at most 262,144 bytes of a
+  rejected-media response body, and a surplus unary request envelope fails
+  before its payload is read or decoded, as the [gRPC guide](grpc.md) describes.
 - L12 is disclosed above as a Rack adapter limitation. This guide corrects
   L18's current documentation drift without declaring the audit complete.
 
@@ -365,8 +368,7 @@ decision. A merged fix closes its specific defect, not the audit as a whole.
   the exposed mutable unary cancellation owner versus the read-only SPI intent,
   and duplicate exchange `close_send` ownership. Contradictory intent is not a
   satisfied guarantee.
-- **gRPC bounds and upload cancellation (L4/L7, L10).** Bound rejected-media
-  draining and surplus-message decoding. Verify the current H2 unary
+- **H2 unary upload cancellation (L10).** Verify the current H2 unary
   cancellation reset on wire; unchanged source and historical probes do not
   establish its current result.
 - **Native lifecycle metadata and OTel (L8/L9/L11, host remnants of M1).**

@@ -57,6 +57,17 @@ module ConnectRPC
         [flags, bytes]
       end
 
+      # Validates the next envelope header without reading its payload.
+      # Returns false at a clean end of input.
+      def next_envelope?(timeout: nil)
+        prefix = exact(5, eof: true, timeout: timeout)
+        return false if prefix.nil?
+
+        flags, length = prefix.unpack("CN") #: [Integer, Integer]
+        validate_envelope(flags, length)
+        true
+      end
+
       def emit(bytes, terminal: false)
         flags, bytes = prepare_payload(bytes, terminal)
         @state&.check!

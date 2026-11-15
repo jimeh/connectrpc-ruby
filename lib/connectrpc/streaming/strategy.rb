@@ -56,22 +56,11 @@ module ConnectRPC
         head.end_stream ? Metadata.new.freeze : Protocol.metadata(values).freeze
       end
 
-      def reject_media(input, exchange, head, timeout) # rubocop:disable Metrics/AbcSize, Metrics/MethodLength, Metrics/PerceivedComplexity
-        if head.end_stream
-          terminal = head.headers
-        else
-          loop do
-            bytes = input.read(Streaming::FRAGMENT_SIZE, timeout: wait(timeout))
-            break if bytes.nil? || bytes.empty?
-          end
-          terminal = exchange.response_trailers || {}
-        end
+      def reject_media(input, exchange, head, timeout)
+        terminal = head.end_stream ? head.headers : drain_rejected_media(input, exchange, timeout)
         GRPCProtocol.check_fields!(terminal, @wire_limit)
-        code = if terminal.key?("grpc-status") || head.headers.key?("grpc-status")
-                 "internal"
-               else
-                 Error::HTTP_FALLBACK.fetch(head.status, "unknown")
-               end
+        grpc = terminal.key?("grpc-status") || head.headers.key?("grpc-status")
+        code = grpc ? "internal" : Error::HTTP_FALLBACK.fetch(head.status, "unknown")
         raise Error.new(code, "Unexpected gRPC response content type"), cause: nil
       end
 
@@ -89,6 +78,22 @@ module ConnectRPC
         fields = head.end_stream ? head.headers : exchange.response_trailers
         GRPCProtocol.parse_status(fields || {}, codec: @codec, http_status: head.status, metadata: metadata,
                                                 wire_limit: @wire_limit, limit: @limit, on_error: @on_error)
+      end
+
+      private
+
+      # Reads at most RECOVERY_LIMIT body bytes to reach EOF and the trailers.
+      # A larger body yields no fields, so the caller classifies from the head
+      # alone and call cleanup abandons the unread stream.
+      def drain_rejected_media(input, exchange, timeout)
+        remaining = Streaming::RECOVERY_LIMIT
+        loop do
+          bytes = input.read([Streaming::FRAGMENT_SIZE, remaining + 1].min, timeout: wait(timeout))
+          return exchange.response_trailers || {} if bytes.nil? || bytes.empty?
+
+          remaining -= bytes.bytesize
+          return {} if remaining.negative?
+        end
       end
     end
   end

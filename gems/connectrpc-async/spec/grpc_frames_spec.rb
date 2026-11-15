@@ -180,6 +180,51 @@ RSpec.describe "gRPC HTTP/2 frame evidence" do
       end
     end
   end
+
+  it "bounds rejected response media draining and resets instead of reading to EOF" do
+    total = 8 * 1024 * 1024
+    outcome = Thread::Queue.new
+    responder = lambda do |incoming|
+      headers = Protocol::HTTP::Headers.new([%w[content-type text/html]])
+      incoming.send_response(Protocol::HTTP::Response[503, headers, RejectedMediaBody.new(headers, total, outcome)])
+    end
+    with_grpc_peer(responder) do |core, declaration, transport|
+      failure = begin
+        core.bidi_stream(declaration) do |duplex|
+          duplex.close_send
+          duplex.receive
+        end
+      rescue ConnectRPC::Error => e
+        e
+      end
+      sent, closed = outcome.pop(timeout: 5)
+      expect(sent).to be <= (ConnectRPC.const_get(:Streaming)::RECOVERY_LIMIT + (256 * 1024))
+      expect(closed).not_to be_nil
+      expect(failure).to be_a(ConnectRPC::Error)
+      expect(failure.code).to eq("unavailable")
+      expect(transport.instance_variable_get(:@calls)).to be_empty
+    end
+  end
+
+  limit = ConnectRPC.const_get(:Streaming)::RECOVERY_LIMIT
+  { limit => "internal", limit + 1 => "unavailable" }.each do |total, code|
+    it "classifies a #{total}-byte rejected media body as #{code} at the drain bound" do
+      outcome = Thread::Queue.new
+      responder = lambda do |incoming|
+        headers = Protocol::HTTP::Headers.new([%w[content-type text/html]])
+        incoming.send_response(Protocol::HTTP::Response[503, headers, RejectedMediaBody.new(headers, total, outcome)])
+      end
+      with_grpc_peer(responder) do |core, declaration, transport|
+        expect do
+          core.bidi_stream(declaration) do |duplex|
+            duplex.close_send
+            duplex.receive
+          end
+        end.to raise_error(ConnectRPC::Error) { |error| expect(error.code).to eq(code) }
+        expect(transport.instance_variable_get(:@calls)).to be_empty
+      end
+    end
+  end
 end
 
 RSpec.describe "gRPC request field retention" do
@@ -234,6 +279,63 @@ RSpec.describe "gRPC request field retention" do
         AsyncHelpers::INTERNAL.raw_close(raw)
         host&.close(grace: 0)
       end
+    end
+  end
+end
+
+RSpec.describe "gRPC unary request cardinality" do
+  def unary_exchange(host, body)
+    raw = IO::Endpoint.tcp("127.0.0.1", host.port).connect
+    connection = Async::HTTP::Protocol::HTTP2.client(raw)
+    response = connection.create_response
+    response.send_request(Protocol::HTTP::Request["POST", AsyncHelpers::ECHO::ECHO.path,
+                                                  { "content-type" => "application/grpc" }, [body],
+                                                  scheme: "http", authority: "127.0.0.1:#{host.port}"])
+    connection.read_response(response)
+    response.read
+    response.headers["grpc-status"]
+  ensure
+    response&.close
+    connection&.close
+    AsyncHelpers::INTERNAL.raw_close(raw) if raw
+  end
+
+  def envelope(bytes) = [0, bytes.bytesize].pack("CN") + bytes
+
+  it "rejects a surplus unary request envelope before decoding it and still accepts exactly one" do
+    reactor do
+      decoded = []
+      binding = ConnectRPC::Bindings::GoogleProtobuf.new
+      binding.define_singleton_method(:decode) do |bytes, type:, codec:|
+        decoded << bytes
+        super(bytes, type: type, codec: codec)
+      end
+      seen = []
+      target = ConnectRPC::Server.new(services: [AsyncHelpers::ECHO::SERVICE], binding: binding, protocol: :grpc,
+                                      handlers: AsyncHelpers::ECHO.handlers(echo: lambda { |message, _|
+                                        seen << message
+                                        message
+                                      }, fail: ->(message, _) { message }))
+      host = ConnectRPC::Async::Host.new(server: target).start
+      first = AsyncHelpers::MESSAGE.encode(AsyncHelpers::MESSAGE.new(name: "only"))
+      undecodable = "\xFF".b * 32
+
+      status = unary_exchange(host, envelope(first) + envelope(undecodable))
+      expect(decoded).to eq([first])
+      expect(status).to eq(["12"])
+      expect(seen).to be_empty
+
+      decoded.clear
+      oversized = [0, (4 * 1024 * 1024) + 1].pack("CN")
+      expect(unary_exchange(host, envelope(first) + oversized)).to eq(["8"])
+      expect(decoded).to eq([first])
+
+      decoded.clear
+      expect(unary_exchange(host, envelope(first))).to eq(["0"])
+      expect(decoded).to eq([first])
+      expect(seen.map(&:name)).to eq(["only"])
+    ensure
+      host&.close(grace: 0)
     end
   end
 end

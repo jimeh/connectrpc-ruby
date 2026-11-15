@@ -35,6 +35,16 @@ These are retention bounds applied before application copies, excluding HPACK,
 CONTINUATION, parser temporary allocation, CPU and RSS. Message and independent
 wire limits remain 4 MiB per message. Ingress and output bounds are unchanged.
 
+Unary and server-streaming handlers receive exactly one request message, then
+end of input. A second request envelope fails with `unimplemented` once its
+5-byte header passes the normal envelope checks, before its payload is read,
+inflated or decoded. An oversized second envelope still fails with
+`resource_exhausted`. A client that receives a non-gRPC response content type
+reads at most 262,144 body bytes, within the call's normal waits, to reach the
+trailers. `grpc-status` in the head or trailers maps to `internal`; otherwise
+the HTTP status fallback applies. A larger body stops the read, classifies from
+the head alone and abandons the stream through the normal call cleanup.
+
 Clients require actual final HTTP/2 HEADERS and stream EOF. Trailers-only means
 initial final-response HEADERS with END_STREAM. Ordinary initial grpc-status is
 not terminal. Server terminal fields are staged behind processor completion;
