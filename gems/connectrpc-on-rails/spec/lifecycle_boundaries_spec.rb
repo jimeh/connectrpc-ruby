@@ -215,7 +215,7 @@ RSpec.describe "Rails lifecycle boundaries" do
 
   it "requires the optional adapter without eagerly loading Base/API or Google" do
     code = <<~CODE
-      require "connectrpc/rails"
+      require "connectrpc/on_rails"
       abort "Base eagerly loaded" unless ActionController.autoload?(:Base)
       abort "API eagerly loaded" unless ActionController.autoload?(:API)
       abort "Google eagerly loaded" if defined?(Google::Protobuf)
@@ -224,5 +224,17 @@ RSpec.describe "Rails lifecycle boundaries" do
     output, error, status = Open3.capture3(RbConfig.ruby, "-e", code)
     expect(status.success?).to be(true), error
     expect(output).to include("lazy require passed")
+  end
+
+  it "loads through the gem name that Bundler.require tries first" do
+    code = <<~CODE
+      require "connectrpc-on-rails"
+      abort "Adapter missing" unless defined?(ConnectRPC::OnRails::Controller)
+      abort "Entry point not loaded" unless $LOADED_FEATURES.any? { |path| path.end_with?("/connectrpc/on_rails.rb") }
+      puts "gem name require passed"
+    CODE
+    output, error, status = Open3.capture3(RbConfig.ruby, "-e", code)
+    expect(status.success?).to be(true), error
+    expect(output).to include("gem name require passed")
   end
 end

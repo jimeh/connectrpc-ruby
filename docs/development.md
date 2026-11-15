@@ -331,7 +331,7 @@ Project MIT licensing is approved. Publishing still needs separate, explicit aut
 
 ## Optional Rails development
 
-The self-contained [Rails adapter guide](../gems/connectrpc-rails/README.md)
+The self-contained [Rails adapter guide](../gems/connectrpc-on-rails/README.md)
 owns controller setup, lifecycle/security limits and generated-code placement.
 Root `Gemfile`, lock, runtime dependencies, setup and specs do not require Rails.
 Discover adapter commands with `mise tasks`:

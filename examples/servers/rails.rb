@@ -1,11 +1,11 @@
 # frozen_string_literal: true
 
 # Rails server: a single-file Rails application whose controller includes
-# ConnectRPC::Rails::Controller. Rails serves Connect unary calls over HTTP/1.1
+# ConnectRPC::OnRails::Controller. Rails serves Connect unary calls over HTTP/1.1
 # and runs normal controller callbacks around each handler.
 require "rails"
 require "action_controller/railtie"
-require "connectrpc/rails"
+require "connectrpc/on_rails"
 require_relative "../demo/launch"
 require_relative "../demo/handlers"
 require_relative "../localhost" # The same WEBrick wrapper the rack example uses.
@@ -22,7 +22,7 @@ end
 # The concern adds a `connect` action. The private hooks below configure it;
 # keep them private so Rails never routes to them.
 class DemoController < ActionController::API
-  include ConnectRPC::Rails::Controller
+  include ConnectRPC::OnRails::Controller
 
   private
 

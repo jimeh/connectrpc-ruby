@@ -2,7 +2,7 @@
 
 require "rails"
 require "action_controller/railtie"
-require "connectrpc/rails"
+require "connectrpc/on_rails"
 require "rackup/handler/webrick"
 require "tmpdir"
 
@@ -48,7 +48,7 @@ module BrowserRails
 end
 
 class BrowserPeerController < ActionController::Base # rubocop:disable Style/OneClassPerFile -- standalone fixture app
-  include ConnectRPC::Rails::Controller
+  include ConnectRPC::OnRails::Controller
 
   before_action :authenticate_rpc, only: :connect
   after_action :secure_rpc, only: :connect

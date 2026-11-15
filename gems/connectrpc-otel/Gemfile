@@ -6,8 +6,8 @@ gemspec
 gem "connectrpc", path: "../.."
 gem "connectrpc-async", path: "../connectrpc-async"
 gem "connectrpc-falcon", path: "../connectrpc-falcon"
+gem "connectrpc-on-rails", path: "../connectrpc-on-rails"
 gem "connectrpc-rack", path: "../connectrpc-rack"
-gem "connectrpc-rails", path: "../connectrpc-rails"
 gem "connectrpc-testing", path: "../connectrpc-testing"
 
 # Preserve the eligible, existing cross-package graph. SDK and HTTP instrumentation are development-only.

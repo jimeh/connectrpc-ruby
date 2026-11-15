@@ -46,7 +46,7 @@ The core Server owns unary proto/JSON negotiation, identity/opt-in gzip, bounded
 input/output, typed errors and cooperative deadlines. Synchronous Rack cannot
 interrupt blocked reads or arbitrary handlers or reliably detect disconnects.
 See [design](../../docs/design.md), [examples](../../examples/unary.rb) and the
-[optional Rails adapter](../connectrpc-rails/README.md) for native controller execution.
+[optional Rails adapter](../connectrpc-on-rails/README.md) for native controller execution.
 
 ## Development
 

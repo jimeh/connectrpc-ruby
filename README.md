@@ -8,7 +8,7 @@ provides Rack middleware. It is not production ready.
 
 Connect supports unary POST and opt-in safe unary GET, with identity or opt-in
 gzip encoding and `application/proto` or protobuf `application/json`. The optional
-[connectrpc-rails gem](gems/connectrpc-rails/README.md) runs generated unary
+[connectrpc-on-rails gem](gems/connectrpc-on-rails/README.md) runs generated unary
 handlers through native Rails controllers.
 
 Native Connect streaming uses the optional Async transport and Async/Falcon

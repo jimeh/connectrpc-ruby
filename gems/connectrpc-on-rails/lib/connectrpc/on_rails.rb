@@ -2,4 +2,4 @@
 
 require "action_controller"
 require "connectrpc/rack"
-require_relative "rails/controller"
+require_relative "on_rails/controller"

@@ -22,8 +22,8 @@ module InstalledAPI
 
   def self.runtime_artifacts(root:, specifications:)
     locks = APICheck::PACKAGES.map do |name|
-      if name == "rails"
-        File.join(root, "gems/connectrpc-rails/gemfiles/rails_8.1.gemfile.lock")
+      if name == "on-rails"
+        File.join(root, "gems/connectrpc-on-rails/gemfiles/rails_8.1.gemfile.lock")
       else
         File.join(root, "gems/connectrpc-#{name}/Gemfile.lock")
       end

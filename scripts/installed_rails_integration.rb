@@ -1,7 +1,8 @@
 # frozen_string_literal: true
 
 # Copied outside the checkout with generated fixtures by check_rails_package.rb.
-require "connectrpc/rails"
+# Load through the gem-name shim, as Bundler.require does.
+require "connectrpc-on-rails"
 abort "Eager Base/API load" unless ActionController.autoload?(:Base) && ActionController.autoload?(:API)
 require "rails"
 require "action_controller/railtie"
@@ -23,7 +24,7 @@ module InstalledIntegration
   end
 
   class InstalledEchoController < ActionController::API
-    include ConnectRPC::Rails::Controller
+    include ConnectRPC::OnRails::Controller
 
     before_action { connect_context.response_metadata.add("x-callback", "native") }
 
@@ -108,13 +109,15 @@ end
   puts "Installed Rails #{Rails.version} Ruby #{RUBY_VERSION}: #{codec}/#{encoding} typed success/error/detail passed"
   puts "Installed metadata/trailers + Rack::Lint passed"
 end
-%w[connectrpc connectrpc-rack connectrpc-rails actionpack railties rack google-protobuf].each do |name|
+%w[connectrpc connectrpc-rack connectrpc-on-rails actionpack railties rack google-protobuf].each do |name|
   spec = Gem.loaded_specs.fetch(name)
   abort "#{name} loaded outside isolated GEM_HOME" unless spec.full_gem_path.start_with?("#{ENV.fetch('GEM_HOME')}/")
 end
-source = ConnectRPC::Rails::Controller.instance_method(:connect).source_location.first
-unless source.start_with?(Gem.loaded_specs.fetch("connectrpc-rails").full_gem_path)
-  abort "Adapter source escaped installed archive"
+source = ConnectRPC::OnRails::Controller.instance_method(:connect).source_location.first
+adapter_path = Gem.loaded_specs.fetch("connectrpc-on-rails").full_gem_path
+abort "Adapter source escaped installed archive" unless source.start_with?(adapter_path)
+%w[lib/connectrpc-on-rails.rb lib/connectrpc/on_rails.rb].each do |file|
+  abort "Installed #{file} not loaded" unless $LOADED_FEATURES.include?(File.join(adapter_path, file))
 end
 
 core = Gem.loaded_specs.fetch("connectrpc")

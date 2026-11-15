@@ -4,7 +4,7 @@ require "json"
 require "timeout"
 require "zlib"
 
-RSpec.describe ConnectRPC::Rails::Controller do
+RSpec.describe ConnectRPC::OnRails::Controller do
   let(:binding) { ConnectRPC::Bindings::GoogleProtobuf.new }
   let(:type) { Example::V1::EchoMessage }
   let(:service) { Example::V1::EchoService }
@@ -150,9 +150,10 @@ RSpec.describe ConnectRPC::Rails::Controller do
     Rails.error.subscribe(reporter)
     response = rpc("HTTP_X_CASE" => "bug")
     expect(JSON.parse(response.body)).to include("code" => "internal", "message" => "Internal error")
-    report = reports.find { |error, options| error.message == "secret bug" && options[:source] == "connectrpc.rails" }
+    sourced = reports.select { |_error, options| options[:source] == "connectrpc.on_rails" }
+    report = sourced.find { |error, _options| error.message == "secret bug" }
     expect(report).not_to be_nil
-    expect(reports.count { |_error, options| options[:source] == "connectrpc.rails" }).to eq(1)
+    expect(sourced.size).to eq(1)
     expect(report.first.backtrace.join).to include("rpc_echo")
     expect(report.last[:handled]).to be(false)
   ensure

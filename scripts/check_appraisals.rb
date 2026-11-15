@@ -6,15 +6,15 @@ require "fileutils"
 require "tmpdir"
 
 root = File.expand_path("..", __dir__)
-adapter = File.join(root, "gems/connectrpc-rails")
+adapter = File.join(root, "gems/connectrpc-on-rails")
 FileUtils.mkdir_p(File.join(root, "vendor/rails/tmp"))
 Dir.mktmpdir("appraisals-", File.join(root, "vendor/rails/tmp")) do |temporary|
-  destination = File.join(temporary, "gems/connectrpc-rails")
+  destination = File.join(temporary, "gems/connectrpc-on-rails")
   FileUtils.mkdir_p(destination)
   FileUtils.mkdir_p(File.join(temporary, "lib/connectrpc"))
   FileUtils.cp(File.join(root, "connectrpc.gemspec"), temporary)
   FileUtils.cp(File.join(root, "lib/connectrpc/version.rb"), File.join(temporary, "lib/connectrpc"))
-  %w[Gemfile Appraisals connectrpc-rails.gemspec].each { |file| FileUtils.cp(File.join(adapter, file), destination) }
+  %w[Gemfile Appraisals connectrpc-on-rails.gemspec].each { |file| FileUtils.cp(File.join(adapter, file), destination) }
   FileUtils.mkdir_p(File.join(temporary, "gems/connectrpc-rack"))
   FileUtils.cp(File.join(root, "gems/connectrpc-rack/connectrpc-rack.gemspec"),
                File.join(temporary, "gems/connectrpc-rack"))

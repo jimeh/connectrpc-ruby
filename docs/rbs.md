@@ -194,7 +194,7 @@ target :app do
   library "connectrpc"
   library "connectrpc-rack" # Only the integrations in your application bundle.
   library "connectrpc-testing"
-  library "connectrpc-rails"
+  library "connectrpc-on-rails"
   library "connectrpc-async"
   library "connectrpc-falcon"
   library "connectrpc-otel"
@@ -319,7 +319,7 @@ outside its automatically loaded `sig/`:
 
 | Package | Explicit signature directory | Tested upstream versions |
 | --- | --- | --- |
-| `connectrpc-rails` | `rbs/action_controller_8` | actionpack 8.0.5.1 and 8.1.4 |
+| `connectrpc-on-rails` | `rbs/action_controller_8` | actionpack 8.0.5.1 and 8.1.4 |
 | `connectrpc-falcon` | `rbs/async_service_0_25` | Falcon 0.57.0, async-service 0.25.0 |
 
 Add only the selected bridge paths to an application's Steep target, using the

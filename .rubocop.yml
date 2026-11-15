@@ -11,7 +11,7 @@ AllCops:
     - examples/gen/**/*_pb.rb
     - interop/grpc/ruby/**/*.rb
     # Appraisal output is byte-checked with its actual generator.
-    - gems/connectrpc-rails/gemfiles/**/*
+    - gems/connectrpc-on-rails/gemfiles/**/*
 
 Style/StringLiterals:
   EnforcedStyle: double_quotes
@@ -32,7 +32,7 @@ Metrics/BlockLength:
     - spec/**/*.rb
     - gems/connectrpc-rack/spec/**/*.rb
     - gems/connectrpc-rack/scripts/**/*.rb
-    - gems/connectrpc-rails/spec/**/*.rb
+    - gems/connectrpc-on-rails/spec/**/*.rb
     - gems/connectrpc-async/spec/**/*.rb
     - gems/connectrpc-otel/spec/**/*.rb
     - gems/connectrpc-otel/scripts/**/*.rb
@@ -71,7 +71,7 @@ Metrics/MethodLength:
     - spec/**/*.rb
     - gems/connectrpc-rack/spec/**/*.rb
     - gems/connectrpc-rack/scripts/**/*.rb
-    - gems/connectrpc-rails/spec/**/*.rb
+    - gems/connectrpc-on-rails/spec/**/*.rb
     - gems/connectrpc-async/spec/**/*.rb
     - gems/connectrpc-otel/spec/**/*.rb
     - gems/connectrpc-otel/scripts/**/*.rb
@@ -104,7 +104,7 @@ Metrics/AbcSize:
     - spec/**/*.rb
     - gems/connectrpc-rack/spec/**/*.rb
     - gems/connectrpc-rack/scripts/**/*.rb
-    - gems/connectrpc-rails/spec/**/*.rb
+    - gems/connectrpc-on-rails/spec/**/*.rb
     - gems/connectrpc-async/spec/**/*.rb
     - gems/connectrpc-otel/spec/**/*.rb
     - gems/connectrpc-otel/scripts/**/*.rb
@@ -181,6 +181,11 @@ Naming/ClassAndModuleCamelCase:
   Exclude:
     - spec/fixtures/generation/**/*_connect.rb
     - examples/gen/**/*_connect.rb
+
+# Bundler.require loads a gem by its hyphenated name before its namespaced path.
+Naming/FileName:
+  Exclude:
+    - gems/connectrpc-on-rails/lib/connectrpc-on-rails.rb
 
 # The generated public seam deliberately spells out the forwarded option bag.
 Style/ArgumentsForwarding:
