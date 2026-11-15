@@ -185,21 +185,31 @@ module DemoExample
 
     # --server names the host, so the pairing check can run without a state file.
     # Without --url it reuses the state file's URL when that records the same
-    # server, and otherwise falls back to PORT, unless the state file says
-    # another server is running there.
+    # server, and otherwise falls back to PORT. Either way it refuses a URL the
+    # state file says another server is running at.
     def explicit(server, url)
       raise Refusal, "Unknown server #{server}; choose one of: #{SERVERS.keys.join(', ')}" unless SERVERS.key?(server)
-      return [server, url] if url
 
       record = running_record
-      return [server, record.fetch("url")] if record&.fetch("server") == server
+      return [server, record.fetch("url")] if url.nil? && record&.fetch("server") == server
 
-      fallback = "http://127.0.0.1:#{ENV.fetch('PORT', DEFAULT_PORT)}"
-      if record && same_url?(fallback, record.fetch("url"))
-        raise Refusal, "--server #{server} does not match the running example server at #{fallback} " \
-                       "(#{record['server']}); pass --url URL for the #{server} server, or drop --server"
-      end
-      [server, fallback]
+      url ||= fallback_url
+      refuse_conflict!(server, url, record)
+      [server, url]
+    end
+
+    def refuse_conflict!(server, url, record)
+      return unless record && record.fetch("server") != server && same_url?(url, record.fetch("url"))
+
+      raise Refusal, "--server #{server} does not match the running example server at #{url} " \
+                     "(#{record['server']}); pass --url URL for the #{server} server, or drop --server"
+    end
+
+    def fallback_url
+      port = ENV.fetch("PORT", DEFAULT_PORT.to_s)
+      return "http://127.0.0.1:#{port}" if port.match?(/\A\d+\z/) && (1..65_535).cover?(port.to_i)
+
+      raise Refusal, "PORT=#{port} is not a port number from 1 to 65535; set it to the server's port or pass --url URL"
     end
 
     def running_record

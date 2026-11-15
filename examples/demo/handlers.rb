@@ -69,14 +69,22 @@ module DemoExample
     Observer = Struct.new(:call) do
       def processing_finished(outcome)
         request = call.carrier
-        get = !request.key?("content-type") # Only GET succeeds without one; a POST without it gets 415.
-        headers = get ? outcome.response_metadata : request
+        http = http_method(outcome)
+        headers = http == "GET" ? outcome.response_metadata : request
         $stdout.write("served #{call.method&.name} request-id=#{first(request, 'demo-request-id')} " \
-                      "protocol=#{call.protocol} http=#{get ? 'GET' : 'POST'} codec=#{codec(headers)} " \
-                      "encoding=#{encoding(headers)} code=#{outcome.code}\n") # One write keeps lines whole.
+                      "protocol=#{call.protocol} http=#{http} codec=#{codec(headers)} " \
+                      "encoding=#{encoding(headers)} code=#{outcome.code || '-'}\n") # One write keeps lines whole.
       end
 
       private
+
+      # Inferred, not observed: only a Connect GET reaches the handler without a
+      # content-type, and a request rejected before dispatch has no code.
+      def http_method(outcome)
+        return "-" unless outcome.code
+
+        call.carrier.key?("content-type") ? "POST" : "GET"
+      end
 
       def first(headers, name) = headers.fetch(name, ["-"]).first
 

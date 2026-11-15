@@ -111,7 +111,11 @@ end
 Case = Struct.new(:client, :args, :status, :expected, :evidence, keyword_init: true)
 
 def run_client(env, kase)
-  child = Child.new(env, [RbConfig.ruby, LAUNCHER, "client", kase.client, *kase.args])
+  child = nil
+  # Defer Thread#kill until the spawned child is assigned, so ensure can always stop it.
+  Thread.handle_interrupt(Object => :never) do
+    child = Child.new(env, [RbConfig.ruby, LAUNCHER, "client", kase.client, *kase.args])
+  end
   status = child.wait(CLIENT_TIMEOUT)
   child.kill unless status
   [status, child.output]
@@ -238,6 +242,13 @@ def discovery_cases(url, state)
      Case.new(client: "nethttp", args: %w[greet --server rails], status: 2,
               expected: ["--server rails does not match the running example server at http://127.0.0.1:#{port} " \
                          "(rack); pass --url URL for the rails server, or drop --server"])],
+    # An explicit --url that the state file attributes to another server is refused too.
+    [{ "CONNECTRPC_EXAMPLE_STATE" => state },
+     Case.new(client: "nethttp", args: ["greet", "--server", "rails", "--url", url], status: 2,
+              expected: ["--server rails does not match the running example server at #{url} (rack)"])],
+    [{ "CONNECTRPC_EXAMPLE_STATE" => state, "PORT" => "abc" },
+     Case.new(client: "nethttp", args: %w[greet --server rails], status: 2,
+              expected: ["PORT=abc is not a port number from 1 to 65535"])],
     # A matching record wins over PORT.
     [{ "CONNECTRPC_EXAMPLE_STATE" => state, "PORT" => "9" },
      Case.new(client: "nethttp", args: %w[greet Ada --server rack], status: 0,
