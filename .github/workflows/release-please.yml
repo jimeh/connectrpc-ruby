@@ -1,6 +1,6 @@
 name: Release Please
 
-# Opens and updates the draft release PR. Merging it tags the commit and creates
+# Opens and updates the release PR. Merging it tags the commit and creates
 # a draft GitHub release; release.yml publishes from that tag.
 on:
   push:

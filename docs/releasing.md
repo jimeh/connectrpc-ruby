@@ -7,8 +7,8 @@ It remains experimental and does not adopt the stronger
 
 The pipeline has three stages:
 
-1. Every push to main runs Release Please, which opens or updates one draft
-   release PR for the whole train.
+1. Every push to main runs Release Please, which opens or updates one release
+   PR for the whole train.
 2. Merging that PR makes Release Please push a `vX.Y.Z` tag and create a draft
    GitHub release with the changelog.
 3. The tag starts the [release workflow](../.github/workflows/release.yml). It
@@ -51,14 +51,15 @@ that floor. External dependency constraints, resolved registry versions,
 checksums and tool pins are unchanged by release preparation. Matching versions
 do not add a runtime enforcement mechanism or adopt the support profile.
 
-## Prepare a draft release PR
+## Prepare a release PR
 
 The [Release Please workflow](../.github/workflows/release-please.yml) runs on
 every push to main, and on manual dispatch from main. It opens or updates the
-draft release PR. After a release PR merges, the next run pushes its tag and
-creates a draft GitHub release. The configuration sets `draft` and
-`force-tag-creation`: GitHub creates no tag for a draft release until it is
-published, and without the tag Release Please cannot find the previous release.
+release PR, ready for review rather than as a draft PR. After a release PR
+merges, the next run pushes its tag and creates a draft GitHub release. The
+configuration sets `draft` and `force-tag-creation`: GitHub creates no tag for a
+draft release until it is published, and without the tag Release Please cannot
+find the previous release.
 This workflow has no publishing job or OIDC permission.
 
 The job runs in the `release-please` environment, whose deployment branch
@@ -91,7 +92,7 @@ release-please 17.6.0. Review new pins and their embedded behavior before update
 
 For each release PR:
 
-1. Inspect the generated draft PR. For the first release, verify that the
+1. Inspect the generated release PR. For the first release, verify that the
    proposed version is exactly `0.1.0`; every release includes all seven gems.
 2. Check out that release branch. Run `mise run release:prepare` before frozen
    Bundler setup. This updates all eight local path locks, including digest-free
@@ -100,8 +101,8 @@ For each release PR:
    diff and commit with the existing signing configuration.
 3. Run `mise run release:check`, focused tests and the candidate procedure below.
    Capture the exact head and CI/review evidence after the final bot update.
-4. Mark the PR ready and merge it once the release decision is made. The
-   release workflow then waits for any `release` environment approval.
+4. Merge the PR once the release decision is made. The release workflow then
+   waits for any `release` environment approval.
 
 Release Please's Ruby updater changes only the first matching core entry in the
 root lock. It leaves other path records and local CHECKSUMS stale. The release
