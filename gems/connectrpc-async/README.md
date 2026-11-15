@@ -1,12 +1,53 @@
-# ConnectRPC Async
+<div align="center">
 
-Optional HTTP/2 hosting and explicit HTTP/1.1 and HTTP/2 transports. Require `connectrpc/async`
-explicitly. Core, Rails and Rack remain independent. This experimental package
-supports Connect unary and streaming, identity and opt-in core gzip, protobuf and ProtoJSON,
-h2c prior knowledge and TLS with verified peers and ALPN `h2`.
+<img height="128px" width="128px" src="../../img/connectrpc-ruby.svg" alt="connectrpc-ruby logo">
+
+# connectrpc-async
+
+**Async HTTP/2 host and HTTP/1.1 and HTTP/2 clients for ConnectRPC.**
+
+[![RubyGems](https://img.shields.io/gem/v/connectrpc-async?logo=rubygems&logoColor=white&label=RubyGems)](https://rubygems.org/gems/connectrpc-async)
+[![CI](https://img.shields.io/github/actions/workflow/status/jimeh/connectrpc-ruby/ci.yml?branch=main&logo=github&label=CI)](https://github.com/jimeh/connectrpc-ruby/actions/workflows/ci.yml)
+[![Docs](https://img.shields.io/badge/Docs-guides-0969da?logo=markdown&logoColor=white)](https://github.com/jimeh/connectrpc-ruby/tree/main/docs)
+[![License](https://img.shields.io/github/license/jimeh/connectrpc-ruby?label=License)](https://github.com/jimeh/connectrpc-ruby/blob/main/LICENSE)
+
+</div>
+
+`connectrpc-async` provides optional HTTP/2 hosting and explicit HTTP/1.1 and
+HTTP/2 client transports built on [Async](https://github.com/socketry/async).
+It supports Connect unary and streaming, native gRPC and server gRPC-Web,
+identity and opt-in core gzip, protobuf and ProtoJSON, h2c prior knowledge, and
+TLS with verified peers and ALPN `h2`. Core, Rails and Rack remain independent;
+require `connectrpc/async` explicitly.
+
+Pick the component that matches what you need:
+
+| Component | Use it to |
+| --- | --- |
+| [`Host`](#host) | Serve RPCs from a standalone HTTP/2 listener (h2c, TLS or mTLS) inside your Async reactor |
+| [`Transport`](#transport) | Call HTTP/2 services from inside an Async reactor, with pooled, multiplexed connections, streaming and gRPC |
+| [`ThreadedTransport`](#ordinary-threads) | Call Connect unary services over HTTP/2 from ordinary threads, such as Puma or Sidekiq workers, without running a reactor yourself |
+| [`HTTP1Transport`](#explicit-http11-client) | Call Connect services that only speak HTTP/1.1, including unary, server streaming and client streaming |
+| [`Application`, `ServerSession`](#native-application-and-managed-tls) | Build another host on the native application and session, as [connectrpc-falcon](../connectrpc-falcon/README.md) does |
+
+To serve HTTP/1.1 and HTTP/2 from Falcon workers next to a Rack or Rails app, use
+[connectrpc-falcon](../connectrpc-falcon/README.md).
+
+This package is experimental. See the [supported 0.x contract](../../docs/support.md)
+for the target support profile, matched package versions, compatibility policy
+and adoption gates.
+
+## Installation
+
+```ruby
+gem "connectrpc-async", "~> 0.1.0"
+```
+
+## Quick start
 
 The example assumes existing core `server`, `binding`, `method` and `message`
-objects, as shown in the repository unary examples.
+objects, as shown in the repository unary examples. It starts a host on an
+ephemeral port, calls it over h2c and closes both ends:
 
 ```ruby
 require "async"
@@ -26,32 +67,41 @@ Async do
 end.wait
 ```
 
+In this repository, `mise run async:example` runs the generated localhost
+example. The [runnable examples](../../examples/README.md) include Async
+servers and HTTP/1.1 and HTTP/2 clients, with mutual TLS.
+
+## Reactor ownership
+
 The application owns a long-lived reactor task. Construction, networking and
 lifecycle operations must use its reactor and thread. There is no hidden
 synchronous reactor thread; [`ThreadedTransport`](#ordinary-threads) is the
-explicit, separate object for ordinary threads. Scheduler-compatible I/O yields; CPU, native codecs
-and native DNS may block. Ensure graceful close before the owner exits. Owner
-cancellation aborts only owned sockets/tasks and makes no delivery promise.
+explicit, separate object for ordinary threads.
+
+Scheduler-compatible I/O yields; CPU, native codecs and native DNS may block.
+Ensure graceful close before the owner exits. Owner cancellation aborts only
+owned sockets/tasks and makes no delivery promise. Applications own the Async
+reactor, authorization and lifecycle.
+
+## Host
 
 `Host.new(server:, host: "127.0.0.1", port: 0, tls: nil, max_connections: 128,
 max_requests: 128, handshake_timeout: 10, idle_timeout: 60)` returns a host.
-`start` binds/listens before returning self; `port` and `addresses` expose the
-actual binding. States are new/running/closing/closed; hosts cannot restart.
-Connection admission happens before TLS/preface. Request admission fails with
-bare 503. Setup has one combined cooperative timeout. Idle expiry runs only
-without streams or handlers and can be disabled with nil.
 
-`Host#wait` supports application supervision. Before start it raises
-`LifecycleError`, unless the Host was already closed. Ordinary shutdown returns
-nil after all listener tasks stop; session retirement may still be running.
-External `close(grace:)` callers await the session's boolean drain outcome;
-resource-owned calls can return nil while shutdown is pending, as described
-below. Terminal listener failure instead makes `wait` raise the identical
-original exception after cooperative session abort, listener joins and actual
-finalization of its stored private exit task.
-Repeated/concurrent waits share that outcome; cancelling a waiter does not close
-the Host. Like other lifecycle operations, `wait` requires the owning reactor
-and thread.
+- `start` binds/listens before returning self; `port` and `addresses` expose the
+  actual binding.
+- States are new/running/closing/closed; hosts cannot restart.
+- Connection admission happens before TLS/preface. Request admission fails with
+  bare 503.
+- Setup has one combined cooperative timeout.
+- Idle expiry runs only without streams or handlers and can be disabled with nil.
+
+The Host serves HTTP/2 only. There is no HTTP/1 fallback or automatic replay.
+For TLS options, see [TLS and client authentication](#tls-and-client-authentication).
+
+### Supervise with `wait`
+
+`Host#wait` supports application supervision:
 
 ```ruby
 Async do
@@ -64,6 +114,19 @@ Async do
 end.wait
 ```
 
+Before start it raises `LifecycleError`, unless the Host was already closed.
+Ordinary shutdown returns nil after all listener tasks stop; session retirement
+may still be running. External `close(grace:)` callers await the session's
+boolean drain outcome; resource-owned calls can return nil while shutdown is
+pending, as described in [Close results](#close-results). Terminal listener
+failure instead makes `wait` raise the identical original exception after
+cooperative session abort, listener joins and actual finalization of its stored
+private exit task. Repeated/concurrent waits share that outcome; cancelling a
+waiter does not close the Host. Like other lifecycle operations, `wait`
+requires the owning reactor and thread.
+
+### Accept errors
+
 Each listener retries accept-only `EMFILE`, `ENFILE`, `ENOBUFS`, `ENOMEM`,
 `ECONNABORTED` and `EINTR` with private cooperative delays of 0.05, 0.1, 0.2,
 0.4 and 0.5 seconds. The sixth consecutive selected failure is terminal.
@@ -73,97 +136,69 @@ or TLS subsequently rejects the peer. Admitted RPCs and healthy listeners keep
 running during backoff. Other accept errors and unexpected listener errors are
 terminal. No RPC is replayed and no retry policy knobs are exposed.
 
+### Terminal failure and startup
+
 The first terminal listener cause closes every listener and forces raw-first
 session abort with zero drain time, then cooperative cancellation and joins.
 Server abort has no cleanup deadline and cannot forcibly interrupt nonyielding
 or cancellation-resistant application code. The stored exit task runs outside
 the session lifetime under the application owner and survives ordinary owner
 cancellation; `wait` joins its actual finalization before reporting the cause.
-Ordinary owner cancellation stops accepting and resolves ordinary waits after listener
-finalization, while session retirement may still be running. `close` retains
-its drain result and does not raise the stored listener cause. A terminal cause
-already observed during startup is raised by `start` after cleanup; bind/initial
-setup errors remain synchronous and subsequent `wait` returns nil. The Host cannot restart
-after close or failure. Caller-context validation, including the TLS provider
-and `on_tls_error` recursion guard, runs in the calling task before startup
-cleanup: a recursive initial `start` raises `LifecycleError` without creating
-the exit task or aborting the outer startup. An overlapping `start` from another
-task while startup is still in progress raises `LifecycleError` before binding,
-so it cannot leak a second listener set, reset startup state or abort the first
-start. Startup failure uses that same exit task and preserves
-its first caller/setup error, or an already recorded terminal cause, through
-repeated caller interruption. When an independent ordinary close already owns
-shutdown, startup exit stops only listeners and late acquisitions. It preserves
-that close's admitted RPCs, original grace and outcome without awaiting its peer
-drain. Partial failure inside upstream multi-address binding is outside this
-recovery policy.
+Ordinary owner cancellation stops accepting and resolves ordinary waits after
+listener finalization, while session retirement may still be running. `close`
+retains its drain result and does not raise the stored listener cause.
+
+A terminal cause already observed during startup is raised by `start` after
+cleanup; bind/initial setup errors remain synchronous and subsequent `wait`
+returns nil. The Host cannot restart after close or failure.
+
+- Caller-context validation, including the TLS provider and `on_tls_error`
+  recursion guard, runs in the calling task before startup cleanup: a recursive
+  initial `start` raises `LifecycleError` without creating the exit task or
+  aborting the outer startup.
+- An overlapping `start` from another task while startup is still in progress
+  raises `LifecycleError` before binding, so it cannot leak a second listener
+  set, reset startup state or abort the first start.
+- Startup failure uses that same exit task and preserves its first caller/setup
+  error, or an already recorded terminal cause, through repeated caller
+  interruption.
+- When an independent ordinary close already owns shutdown, startup exit stops
+  only listeners and late acquisitions. It preserves that close's admitted
+  RPCs, original grace and outcome without awaiting its peer drain.
+
+Partial failure inside upstream multi-address binding is outside this recovery
+policy.
+
+## Transport
 
 `Transport.new(origin:, ca_file: nil, certificate_chain: nil, private_key: nil,
 connection_limit: 1, max_requests: 128, connect_timeout: 10,
 connection_policy: ConnectionPolicy.new, connection_observer: nil)` implements
-core's transport seam. Origins contain only scheme/host/port. Request paths,
-including core's base prefix, remain intact. One connection multiplexes requests.
-Full admission fails with unavailable; acquisition waits honor finite RPC
-deadlines. Nil RPC deadlines remain unbounded, while each connection attempt has
-its own `connect_timeout`. No redirects, proxy environment routing or HTTP/1
-fallback. The transport carries opaque encoded bytes; core owns compression and
-negotiation. [Client connection management](#client-connection-management)
-describes reconnection, backoff, GOAWAY replacement, admission, rerouting of
-unsent calls and the single resend of a refused Connect unary call.
+core's transport seam for HTTP/2.
 
-Both objects provide `close(grace: 5)`: stop admission, await handlers/calls and
-complete wire streams, send GOAWAY when empty, then half-close and await EOF.
-External callers receive true when drained, false after forced teardown. Grace is finite and
-nonnegative; zero aborts. Repeated/concurrent calls share the first outcome.
-Finite deadlines begin in core before encoding and cover acquisition, headers and
-body. A shared connection attempt is bounded by `connect_timeout` instead.
-Timers use at most 86400-second waits without shortening logical deadlines.
-Client cleanup uses one total internal 100ms allowance. Ordinary cancellation resets
-its stream. A frame that cannot finish within cleanup deliberately fails the
-whole connection and siblings. Forced teardown closes raw TCP before cancelling
-and joining writers/readers, then performs buffered/TLS cleanup. These are
-cooperative bounds, not arbitrary native/application interruption guarantees.
+- Origins contain only scheme/host/port. Request paths, including core's base
+  prefix, remain intact.
+- One connection multiplexes requests. Full admission fails with unavailable;
+  acquisition waits honor finite RPC deadlines.
+- Nil RPC deadlines remain unbounded, while each connection attempt has its own
+  `connect_timeout`.
+- No redirects, proxy environment routing or HTTP/1 fallback.
+- The transport carries opaque encoded bytes; core owns compression and
+  negotiation.
 
-Forced teardown invalidates the connection immediately. External callers of
-private connection abort and server session abort/close then wait for owned
-tasks, their cleanup descendants and final buffered/TLS disposal. An owned task
-initiating or reentering abort requests retirement without waiting on cleanup
-that must join that same task. Each external abort/close joiner retains its own
-first interruption until cleanup completes.
-An external server close caller interrupted during a nonzero graceful drain
-requests forced session retirement, joins actual cleanup, then raises its
-identical first exception. Other callers retain their own result or exception,
-and an already-decided close outcome remains unchanged.
+[Client connection management](#client-connection-management) describes
+reconnection, backoff, GOAWAY replacement, admission, rerouting of unsent calls
+and the single resend of a refused Connect unary call. For TLS options, see
+[TLS and client authentication](#tls-and-client-authentication).
 
-Server `Host#close` and `ServerSession#close` return `bool?`. A resource-owned
-handler initiating positive-grace close starts the ordinary asynchronous drain
-and returns nil while shutdown is pending. Admitted siblings retain their grace
-and can continue processing. Owned repeated requests and cleanup/close coordinator
-reentry also return nil while pending, without joining cleanup that must join
-them. Nil neither decides the outcome nor publishes completion. Repeated requests
-share the original closer and expiry, even with a different grace argument.
-External callers join actual cleanup and receive its final boolean. Once closed,
-every call returns that same boolean, including coordinator reentry. Zero grace
-still forces teardown; explicit abort and already-decided outcomes are preserved.
-The client `Transport` and `HTTP1Transport` close return types remain `bool`.
+### Safe unary GET
 
-H2 connection release, acquisition or close can therefore wait beyond an RPC deadline
-for actual retirement. The 100 ms fallback allowance triggers destructive
-cleanup; it is not a hard deadline for that cleanup.
-
-Private task joins distinguish a resolved result from actual finalization. They
-block on required children and task-local progress/finalization notifications,
-retaining captured child identities through reparenting or transient changes.
-A scheduling opportunity after raw close establishes no completion boundary;
-all retained task joins still precede disposal and retirement publication.
-
-These joins require cooperative tasks and a live application reactor. A
-non-yielding handler or native operation can delay them indefinitely. Cleanup
-survives ordinary owner cancellation while an external waiter or lifetime guard
-keeps the task tree alive; reactor termination cannot guarantee completion.
-
-See the [supported 0.x contract](../../docs/support.md) for the target support
-profile, matched package versions, compatibility policy and adoption gates.
+Safe unary GET uses core `Client.new(use_get: true)` and declared
+`:no_side_effects` methods. Native HTTP/2 requests carry HEADERS with END_STREAM
+and a nil body; core owns query encoding, parsing and independent URL/payload
+limits. The transport never falls back to POST; a refused GET is resent only
+under the refused-stream rule in
+[Client connection management](#client-connection-management).
 
 ## Client connection management
 
@@ -190,6 +225,8 @@ nil or finite positive seconds, and `connection_policy: nil` is rejected. Each
 feature can be turned off: `backoff: nil`, `max_pending_bytes: nil`,
 `retry_refused: false`, `max_draining: 0` and `drain_timeout: nil`.
 
+### Connection attempts
+
 - No socket opens before the first call. A connection is ready after TCP, TLS
   with hostname and ALPN `h2` verification, the client preface and the server's
   first SETTINGS frame. TCP connect alone is not readiness.
@@ -198,6 +235,9 @@ feature can be turned off: `backoff: nil`, `max_pending_bytes: nil`,
   stops waiting without cancelling the attempt; the attempt continues until
   `connect_timeout` or `close`, and a connection that becomes ready stays for
   the next call. No attempt starts without a waiting call.
+
+### Backoff and waiting calls
+
 - After a failed attempt the manager waits
   `min(base * multiplier ** (failures - 1), max) * (1 - rand * jitter)` seconds
   before the next one. Jitter only shortens a delay, so `max` is a hard cap.
@@ -213,15 +253,27 @@ feature can be turned off: `backoff: nil`, `max_pending_bytes: nil`,
   until their own deadline, cancellation or `close`.
 - `backoff: nil` removes the timer and the `transient_failure` state. A failed
   attempt fails every call that joined it, and the next call dials at once.
+
+### Connections and admission
+
 - `connection_limit` counts open connections outside the draining set, reusable
   or not, plus the attempt in progress and any connection removed from
   accounting whose socket is not yet closed. A call reuses the first connection
   with spare stream capacity, which is the peer's
   `SETTINGS_MAX_CONCURRENT_STREAMS`, and opens another only when none has
-  capacity and a slot is free. A peer raising that limit wakes
-  waiting calls; lowering it never revokes a stream already acquired. While any
-  connection is usable the state stays `ready`, even if an extra attempt failed
-  and is backing off. Extra connections add capacity, not load spreading.
+  capacity and a slot is free. A peer raising that limit wakes waiting calls;
+  lowering it never revokes a stream already acquired. While any connection is
+  usable the state stays `ready`, even if an extra attempt failed and is backing
+  off. Extra connections add capacity, not load spreading.
+- Every call and stream takes one of `max_requests`. `Transport#call` (Connect
+  unary) also reserves its encoded request bytes from `max_pending_bytes`: the
+  POST body, or the request target for GET. Native gRPC unary and all streams
+  reserve no bytes. A full count or byte budget, or a single call larger than
+  the budget, fails immediately with `unavailable`. `max_pending_bytes: nil`
+  admits by count only. Reservations last until the call's terminal outcome.
+
+### GOAWAY and draining connections
+
 - A connection that receives GOAWAY or dies takes no new streams and counts as
   `draining` in observer events. After a graceful GOAWAY (`NO_ERROR`) with
   streams still open, the connection joins the draining set while it has fewer
@@ -230,18 +282,16 @@ feature can be turned off: `backoff: nil`, `max_pending_bytes: nil`,
   dials, and replacement is not a failure for backoff. Otherwise it keeps its
   slot until its streams finish, and joins the set when a member retires. The
   client never has more than `connection_limit + max_draining` sockets open.
-  `drain_timeout` closes any graceful GOAWAY connection, in the set or not,
+- `drain_timeout` closes any graceful GOAWAY connection, in the set or not,
   that still has streams after that many seconds; those streams fail with
   `unavailable` and are not resent. `close` cancels drain timers, and its own
-  grace bounds the drain. An error GOAWAY or a dead connection fails its
-  remaining streams at once. A connection that dies or receives GOAWAY while
-  idle closes and republishes the state immediately.
-- Every call and stream takes one of `max_requests`. `Transport#call` (Connect
-  unary) also reserves its encoded request bytes from `max_pending_bytes`: the
-  POST body, or the request target for GET. Native gRPC unary and all streams
-  reserve no bytes. A full count or byte budget, or a single call larger than
-  the budget, fails immediately with `unavailable`. `max_pending_bytes: nil`
-  admits by count only. Reservations last until the call's terminal outcome.
+  grace bounds the drain.
+- An error GOAWAY or a dead connection fails its remaining streams at once. A
+  connection that dies or receives GOAWAY while idle closes and republishes the
+  state immediately.
+
+### Reroutes and the refused-stream retry
+
 - A call whose connection became unusable after acquisition but before any
   stream ID was allocated or request byte written returns to acquisition with
   its existing admission. This reroute is not a replay.
@@ -256,9 +306,12 @@ feature can be turned off: `backoff: nil`, `max_pending_bytes: nil`,
   through ordinary acquisition with the same admission and deadline, so it may
   reuse a healthy connection or wait for capacity. A second refusal, or a
   refused output frame that stays stuck, fails the call with `unavailable`.
-  Native gRPC unary calls and all streams are never resent. Otherwise, once
+- Native gRPC unary calls and all streams are never resent. Otherwise, once
   request HEADERS start, a failed call is never resent; only a separate later
   call reconnects.
+
+### Observing connections
+
 - `connection_observer` receives frozen `ConnectionEvent` values with `type`
   (`:state_changed`, `:attempt_finished` or `:admission_rejected`), `state`,
   `previous_state`, `outcome` (`:ready`, `:refused`, `:timeout`, `:tls`,
@@ -279,7 +332,9 @@ feature can be turned off: `backoff: nil`, `max_pending_bytes: nil`,
 `ThreadedTransport` lets threaded programs such as Puma, Sidekiq or plain
 threads share one client without an application reactor. It supports Connect
 unary only, POST and safe GET; streaming and gRPC from ordinary threads are not
-implemented, so core rejects those calls before any I/O.
+implemented, so core rejects those calls before any I/O. Streaming and gRPC
+from ordinary threads are tracked in
+[issue #29](https://github.com/jimeh/connectrpc-ruby/issues/29).
 
 ```ruby
 require "connectrpc/async"
@@ -298,6 +353,8 @@ validates them and compiles the TLS snapshot on the calling thread, so
 configuration errors raise at boot. `call`, `close(grace: 5)`,
 `connection_state` and `inspect` work from any thread.
 
+### The owner thread
+
 - The first call in a process starts one owner thread, named
   `connectrpc-async HOST:PORT`, that runs an Async reactor and an H2
   `Transport`. Calls from every thread multiplex over its connections. Core
@@ -305,6 +362,17 @@ configuration errors raise at boot. `call`, `close(grace: 5)`,
   to the owner. The owner thread does not keep the process alive and there is no
   `at_exit` hook: process exit aborts its sockets raw-first, so call `close` from
   your server's shutdown hook for a graceful drain.
+- After fork, the child's first call builds its own owner thread and
+  connection; it never writes to or closes the parent's. The compiled TLS
+  snapshot is reused. A transport closed before fork stays closed; `close` in a
+  child closes only the child's owner.
+- If the owner thread dies, pending callers get `unavailable`, the observer sees
+  the inner transport close, and the next call starts a new owner.
+- `call` and `close` from the owner thread, such as from a `connection_observer`,
+  raise `LifecycleError`.
+
+### Admission, deadlines and interrupts
+
 - `max_requests` and `max_pending_bytes` count a call until both the owner has
   its outcome and the caller has taken it or left. Interrupted callers whose
   streams are still cleaning up, and completed replies not yet taken, stay
@@ -326,265 +394,21 @@ configuration errors raise at boot. `call`, `close(grace: 5)`,
   caller's mask. Core NetHTTP defers those interrupts inside such a region.
   The reactor-owned `Transport` does not reliably defer them either, because
   masks are per fiber and the reactor delivers them to other fibers.
-- After fork, the child's first call builds its own owner thread and
-  connection; it never writes to or closes the parent's. The compiled TLS
-  snapshot is reused. A transport closed before fork stays closed; `close` in a
-  child closes only the child's owner.
-- If the owner thread dies, pending callers get `unavailable`, the observer sees
-  the inner transport close, and the next call starts a new owner.
-- `close` stops admission at once and drains with the grace counted from the
-  call. Concurrent callers share the outcome; a transport that never started
-  returns true. If the owner is stalled past the grace plus the allowance,
-  `close` returns false, wakes pending callers with `unavailable` and does not
-  join the thread; the owner aborts when it resumes. An interrupted closer
-  re-raises its own exception while the others still get the outcome.
-- `call` and `close` from the owner thread, such as from a `connection_observer`,
-  raise `LifecycleError`.
+
+### Closing
+
+`close` stops admission at once and drains with the grace counted from the
+call. Concurrent callers share the outcome; a transport that never started
+returns true. If the owner is stalled past the grace plus the allowance,
+`close` returns false, wakes pending callers with `unavailable` and does not
+join the thread; the owner aborts when it resumes. An interrupted closer
+re-raises its own exception while the others still get the outcome.
+
+### Latency under CPU load
 
 MRI hands the GVL to a thread waking from I/O only after the running thread's
 time slice, 100 ms by default, so CPU-bound threads delay the owner thread.
 Lowering `RUBY_THREAD_TIMESLICE`, for example to 10, reduces that latency.
-
-## TLS and client authentication
-
-Applications load their own files. Host TLS is a complete hash:
-
-```ruby
-tls = {
-  certificate_chain: [File.read("leaf.pem"), File.read("intermediate.pem")],
-  private_key: File.read("key.pem"),
-  client_ca: nil # Or a nonempty array of explicit trust-anchor PEM certificates.
-}
-```
-
-Each certificate element contains exactly one PEM certificate, leaf first.
-Keys are unencrypted PEM private keys. Inputs are copied and parsed without
-password prompts; key possession, leaf validity and adjacent chain signatures
-are checked. Snapshots retain private parsed objects, redact inspection/errors,
-and compile fresh contexts before publication. Explicit intermediates, including
-an empty array, prevent auto-chaining through the client-auth trust store.
-Both roles require TLS >=1.2 and post-check ALPN `h2`. Clients always verify
-peer/hostname, including localhost, using system roots plus optional `ca_file`.
-Client chain/key must appear together; TLS options are invalid for h2c.
-
-A nonempty `client_ca` requires verified client certificates using only those
-anchors, with partial-chain trust enabled deliberately. A scoped intermediate
-can be the boundary; sibling issuers under its root are not trusted. Nil means
-server-only TLS and no client authentication. There is no optional-client mode.
-`host.peer_certificate` returns a detached authenticated client leaf only within
-that host's exact handler task; outside/child/other-host/plain/server-only TLS
-returns nil. It does not expose or claim a verified chain and does not change
-core Context. Applications own authorization based on that identity.
-
-`host.reload_tls(certificate_chain:, private_key:, client_ca:)` replaces the
-complete snapshot for newly accepted sockets on the same listener. Generation
-starts at 1 and increments only after successful validation; invalid candidates
-leave the last good snapshot intact. Existing connections retain their prior
-identity and authentication. Every generation has a fresh context/session ID,
-OP_NO_TICKET and SESSION_CACHE_OFF. Reuse is disabled; this does not claim that
-OpenSSL emits zero TLS 1.3 tickets. Replace a transport to change client identity.
-
-`host.drain_tls(grace: 5)` captures the current generation cutoff and retires
-only older accepted connections, including pending handshakes. Old later streams
-receive 503 while admitted streams finish. Pending handshakes abort immediately.
-A persistent retirement floor prevents old pending sockets from becoming live.
-The listener and current/newer generations survive concurrent reloads/drains.
-Close supersedes drains. Renewal alone does not instantly revoke existing peers.
-There are no file watchers, ACME, secret services or authentication policy DSLs.
-
-## Native application and managed TLS
-
-`Application.new(server:, fallback: nil)` is a reusable Protocol::HTTP callable.
-It routes whole registered service prefixes to core, splits the request target once, forwards the raw query to core, and returns
-bare 404 or calls the native fallback for unrelated paths. HTTP/1 requests do
-not need a stream object. Keep generic compression/cache middleware on fallback
-so core owns RPC encoded bytes and limits.
-
-Host accepts `tls_provider:`, `refresh_interval: 60`, `refresh_jitter: 0.1`,
-`refresh_timeout: 10` and `on_tls_error:`. `refresh_tls` coalesces immediate source
-checks; `tls_status` exposes safe state/generation and separate monotonic
-source-check/publication ages. Managed `reload_tls` conflicts with provider
-ownership. `TLSConfiguration` also exposes `start`, `refresh`, complete static
-`reload`, `close`, `generation` and `status`. Construction is reactor/thread
-bound; initial static/provider compilation happens on `start`, before accepts.
-
-Providers return exactly `version`, `certificate_chain`, `private_key` and
-`client_ca` symbol keys. A nonempty opaque String version identifies validated
-canonical content. Same version/content preserves generation; changed content
-under that version fails. A different previous version can deliberately roll
-back through a fresh generation. Missing/nil data never disables TLS. Background
-errors retain the last good snapshot and emit only safe immutable diagnostics.
-Concurrent callers join one owned attempt, and waiter cancellation does not
-cancel it. Timer intervals start after each completed attempt. Timeout and
-shutdown remain cooperative for arbitrary native/CPU application code.
-
-The earliest served identity-chain expiry is checked against actual wall time
-at accept and again at pending handshake start. There is no maximum staleness
-setting; established connections retain negotiated state until drain/close.
-The [Falcon guide](../connectrpc-falcon/README.md) explains complete provider
-semantics and safe diagnostics shared by both hosts.
-
-`ServerSession` is the small hosting SPI: start the worker session, synchronously
-`accept(raw)` before scheduling, then call the opaque accepted handle's `serve`.
-`schedule` attaches accepted work to the independent session lifetime. The handle
-also supports `close`, `wait_closed`, `timeout=` and `remote_address`, and exposes no SSLContext.
-`wait_closed` waits for actual connection retirement, including owned task
-unwind and final disposal, rather than merely observing invalidation. Retiring
-server connections retain their admission slot until this boundary. The H2
-client's private connection manager removes a retiring connection's slot and
-wakes waiting calls before joining its connection close.
-The session forwards TLS lifecycle/identity operations, bounded `close` and
-raw-first `abort` for listener/setup failure.
-The optional `stop_accepting:` callback runs after affinity/grace validation,
-before refresh stops and connection drain begins. Its one HTTP/1 construction hook is for the optional Falcon-local resource;
-HTTP/2 resources do not pretend to implement HTTP/1. The standalone Host keeps
-its strict h2 listener and composes the shared session.
-The shared session's private resource completion and lifetime-anchor operations
-are source-coupled to Falcon's local HTTP/1 resource. Use matched Async/Falcon
-package versions; these internals are not an additional public API or SPI.
-
-## Backend boundaries and verification
-
-Enable gzip with `encoding: :gzip` on the core client and server. Client
-`accept_encoding:` controls response negotiation independently. Core's
-`request_limit:` and `response_limit:` bound serialized/decompressed messages;
-the separate wire limits default to those same caps. The transport's
-`TransportRequest.response_limit` remains the encoded wire read cap. Defaults
-remain identity, and neither host nor transport performs transparent inflation.
-
-Core owns codecs, errors, metadata and serialized byte limits. The backend
-reads bounded chunks, reconstructs declared length from backend body.length,
-preserves raw repeated leading fields and leading `trailer-*`, and ignores real
-HTTP/2 trailing HEADERS for core metadata. The stack normalizes lengths using
-Ruby Integer: `+10`, hexadecimal and underscores can normalize before core;
-malformed/duplicate lengths may reset/close connections, and singleton header
-policies can produce bare errors before core. These outcomes are tested and
-are not a full protocol conformance claim. Settings use 16KiB frames, 64KiB
-stream windows and bounded stream admission; they do not bound total process
-memory or HPACK/header-continuation buffering.
-
-Native HTTP/2 request and response inputs use a private coalescing queue. Stream
-WINDOW_UPDATE replenishes only application-consumed or deliberately discarded
-DATA bytes. Padding, including its length octet, uses wire credit and is discarded
-without entering body bytes or Content-Length. Connection credit is independent,
-so unread bodies do not prevent healthy streams or control frames from advancing.
-The shared reader never waits for application consumption; serialized socket writes
-can still block. Stream over-credit resets that stream with FLOW_CONTROL_ERROR;
-connection over-credit fails the connection and its siblings. Upstream parsing and
-stream-state errors remain authoritative. This follows [HTTP/2 flow control](https://www.rfc-editor.org/rfc/rfc9113.html#section-5.2).
-
-With the current settings, each queue retains at most 65,536 payload bytes in at
-most five data entries, independent of frame count. Each returned native chunk is
-at most 16,384 bytes. The core input adapter can retain one such chunk's remainder;
-the shared reader can hold one decoded DATA frame of at most 16,384 bytes.
-Coalescing/copying can temporarily retain old and new bounded chunks. String byte
-length does not bound Ruby backing allocations or RSS. Caller-retained strings,
-buffered unary bodies, codecs/compression, socket/TLS buffers and HPACK/headers
-are separate allocations. These are ingress payload bounds, not a total memory
-or general denial-of-service guarantee. Streaming adds bounded output ownership without changing these ingress limits.
-
-Normal producer EOF drains preceding payload. Closing the consumer releases its
-queue once; later DATA is discarded while local output remains live, following
-the pinned backend's finish-input and NO_ERROR policy. Reset/error/owned teardown
-wakes readers and retires input references. Only peer CANCEL signals explicit
-RPC cancellation; credit accounting adds no lifecycle instrumentation.
-
-Discover `async:setup`, `async:test`, `async:check`, `async:build`, `async:package`,
-`async:example`, `async:interop`, and `async:verify` with `mise tasks`. The separate
-checksummed bundle uses `vendor/async` and coverage uses `coverage/async`.
-Independent connect-go tests exercise both directions/codecs over h2c/TLS/mTLS,
-with observed HTTP/2/ALPN and large typed wire-tail drains. Original core fixture
-and official conformance harnesses remain separate. Installed package checks use
-normal offline dependencies and a fresh GEM_HOME outside the checkout. This
-graph activates OpenSSL 4.0.2/JSON 3.1.0; installed core NetHTTP TLS/JSON with
-identity and gzip is also exercised under that activation. Focused combined
-specs cover actual gzip bytes over h2c/TLS in both codecs and independent host
-wire/inflated and transport wire/client inflated caps. Nothing is published.
-Original project work is [MIT licensed](LICENSE), copyright 2026 Jim Myhrberg.
-Both archives include the complete license and pin `allowed_push_host` to
-`https://rubygems.org`; only the [release workflow](../../docs/releasing.md)
-publishes them.
-
-## RPC observation
-
-Configure `instrumentation:` on the core Client/Server to enable the fixed
-neutral per-call lifecycle or the optional [OpenTelemetry adapter](../connectrpc-otel/README.md).
-Native hosts create explicit handles before request admission, activate the
-actual handler tasks, and finish after full-write/reset/cleanup evidence.
-Shared H2 client connection attempts run outside every RPC lifecycle, so tracing
-never parents connection setup to the call that triggered it. Use the transport's
-`connection_observer` for connection events.
-
-## Static signatures
-
-This package owns `sig/` and its discovery manifest. Add
-`library "connectrpc-async"` to a strict Steep target with this gem installed.
-See the [RBS guide](../../docs/rbs.md) for supported APIs, extension contracts,
-partial records, runtime validation and framework-signature limits.
-`mise run rbs:check` checks application callers for this package; strict core
-source checking is a separate target from backend implementation checking.
-
-Safe unary GET uses core `Client.new(use_get: true)` and declared
-`:no_side_effects` methods. Native HTTP/2 requests carry HEADERS with END_STREAM
-and a nil body; core owns query encoding, parsing and independent URL/payload
-limits. The transport never falls back to POST; a refused GET is resent only
-under the refused-stream rule in
-[Client connection management](#client-connection-management).
-
-## Explicit unary cancellation
-
-Pass `cancellation: source.token` to core or generated client calls, where
-`source = ConnectRPC::CancellationSource.new`. The source is permanent and
-shareable; only `source.cancel` initiates cancellation. `timeout: nil` keeps no
-RPC deadline or wire timeout. Context offers cooperative `cancelled?`,
-`cancellation_reason` and `check!`. See the [core guide](../../README.md) for
-listener, arbitration and registration lifetime rules.
-
-The Async transport accepts foreign-thread cancellation through a Promise;
-only the owner reactor stops private SDK tasks and performs stream cleanup.
-Healthy multiplexed siblings survive. A stuck frame retains the one 100 ms
-raw-first whole-connection cleanup fallback. Native HTTP/2 Context observes
-only an actual peer RST_STREAM(CANCEL), before input teardown. Other resets,
-normal half-close, connection loss and host shutdown do not fabricate explicit
-cancellation. Processing completion detaches the source independently of delivery.
-
-## Native streaming
-
-The core [streaming guide](../../docs/streaming.md) documents all three scoped
-Connect streaming shapes, typed generated clients/handlers, early headers,
-per-message limits and bounded ownership. Native Async/Falcon HTTP/2 supports
-both codecs and identity/gzip over h2c/TLS/mTLS. Falcon additionally serves Connect server and client
-streaming over HTTP/1.1,
-with protobuf/ProtoJSON and identity/gzip over TCP/TLS/mTLS. The standalone
-Async Host and original Async Transport remain H2-only. Use the independent
-`HTTP1Transport` below for Connect unary, server streaming and client streaming. See the streaming guide for Falcon's cooperative 500 ms total
-final-close budget and unchanged 100 ms / 256 KiB discard limits.
-The client's one-second absolute HTTP tail policy applies even with a nil RPC
-deadline and can reject otherwise valid late EOF or slow intermediaries.
-
-Use `async:conformance` and `async:interop:streaming` for the exact official native
-client/server inventories and independent pinned Go streaming matrix. Both belong
-to `async:verify`; original unary interoperability remains separate.
-
-## Native gRPC
-
-Native HTTP/2 supports unary, server streaming, client streaming and bidi gRPC
-with protobuf, identity/gzip, h2c, verified TLS and mTLS. Configure the core
-Client with `protocol: :grpc` and the Server with `:grpc` or `:auto`. Generated
-clients and handlers reuse the existing declarations. Portable HTTP/1 execution
-retains its early rejection guard. See the [gRPC guide](../../docs/grpc.md) for
-status codecs, actual final HEADERS, independent status bounds and native field
-retention limits. Connect's one-second terminal tail policy remains Connect-only.
-
-Use `async:conformance:grpc` for exact official inventories and
-`async:interop:grpc` for generated official grpc-go peer checks. Both belong
-to the owning verify task. `grpc:generation:check` reproduces official Go and
-Ruby peer outputs; `grpc:status:check` reproduces private Any/Status descriptors.
-
-## gRPC-Web
-
-The native H2 server supports explicitly enabled binary/text unary and server-stream gRPC-Web. Browser incremental delivery uses text.
-See the [Web guide](../../docs/grpc-web.md) for protocol, CORS, bounds and completion rules.
 
 ## Explicit HTTP/1.1 client
 
@@ -604,10 +428,14 @@ end.wait
 
 `HTTP1Transport.new(origin:, ca_file: nil, certificate_chain: nil, private_key:
 nil, connection_limit: 4, max_requests: 128, connect_timeout: 10)` is an explicit
-Connect H1 client. It supports safe unary GET, both codecs and identity/gzip
-through core, and SS/CS through the existing streaming SPI. It has no gRPC or
-bidi capability. Standalone Async Host remains H2-only; Falcon owns Ruby H1
-hosting. For ordinary threads, see [`ThreadedTransport`](#ordinary-threads).
+Connect H1 client. Pass it through the existing core/generated client's
+`transport:` option inside an application-owned Async reactor. It supports safe
+unary GET, both codecs and identity/gzip through core, and SS/CS through the
+existing streaming SPI. It has no gRPC or bidi capability. Standalone Async Host
+remains H2-only; Falcon owns Ruby H1 hosting. For ordinary threads, see
+[`ThreadedTransport`](#ordinary-threads).
+
+### Leases and capacity
 
 Each connection has one exclusive lease through setup, upload, full HTTP EOF
 and cleanup. Pending dials and retiring connections count toward the hard cap;
@@ -617,6 +445,8 @@ promised. `close(grace: 5)` stops admission and drains admitted operations,
 including waiters, returning false on forced teardown. Owner exit aborts owned
 resources. There is no hidden thread, pipelining, retry, replay or fallback.
 
+### Deadlines and reuse
+
 Finite RPC deadlines cover every wait including cleanup. Nil RPC deadlines add
 no watchdog; setup still has its own combined connect timeout. Foreign-thread
 cancellation only signals the reactor. Full native EOF, a successful joined
@@ -625,9 +455,13 @@ retires its connection. Clean close-delimited unary EOF is supported, but
 cannot detect an otherwise valid semantic truncation without Content-Length.
 TLS unexpected EOF without close_notify remains a transport error.
 
+### TLS
+
 TLS offers only `http/1.1`, accepts absent or H1 ALPN, and rejects every other
 negotiation before request bytes. Peer/hostname verification and mTLS remain
 enabled. TCP rejects TLS options. Replace the transport to change TLS identity.
+
+### Upload failures
 
 Response reads are independent of a blocked upload. A complete unary non-200
 response stops pending output destructively so core can validate its error;
@@ -637,10 +471,364 @@ policy. An unreported upload-tail failure returns unavailable even if a remote
 error terminal arrived, masking that error. `close_send` never raises writer
 failure; `finish` requires full HTTP EOF and joined cleanup under the supplied
 completion budget. A write-only caller without a deadline can still block when
-a peer neither consumes nor closes. See [streaming](../../docs/streaming.md#explicit-http11-client).
+a peer neither consumes nor closes. See
+[streaming](../../docs/streaming.md#explicit-http11-client).
+
+### HTTP/1.1 evidence
 
 `async:conformance:http1` runs separate strict official 1.0.6 native H1 CLIENT
 inventories: 386 identity and 352 gzip cases, including safe GET, both codecs,
 TCP/TLS and client certificates. `async:interop:http1` runs independent pinned
 connect-go H1-only TCP/TLS/mTLS listeners, with actual HTTP/1.1 and ALPN evidence.
 Existing H2, NetHTTP and Falcon server inventories remain separate.
+
+## Close and cleanup
+
+Both `Host` and `Transport` provide `close(grace: 5)`: stop admission, await
+handlers/calls and complete wire streams, send GOAWAY when empty, then
+half-close and await EOF. External callers receive true when drained, false
+after forced teardown. Grace is finite and nonnegative; zero aborts.
+Repeated/concurrent calls share the first outcome.
+
+Finite deadlines begin in core before encoding and cover acquisition, headers
+and body. A shared connection attempt is bounded by `connect_timeout` instead.
+Timers use at most 86400-second waits without shortening logical deadlines.
+
+### Cleanup allowance
+
+Client cleanup uses one total internal 100ms allowance. Ordinary cancellation
+resets its stream. A frame that cannot finish within cleanup deliberately fails
+the whole connection and siblings. Forced teardown closes raw TCP before
+cancelling and joining writers/readers, then performs buffered/TLS cleanup.
+These are cooperative bounds, not arbitrary native/application interruption
+guarantees.
+
+H2 connection release, acquisition or close can therefore wait beyond an RPC
+deadline for actual retirement. The 100 ms fallback allowance triggers
+destructive cleanup; it is not a hard deadline for that cleanup.
+
+### Forced teardown and retirement
+
+Forced teardown invalidates the connection immediately. External callers of
+private connection abort and server session abort/close then wait for owned
+tasks, their cleanup descendants and final buffered/TLS disposal. An owned task
+initiating or reentering abort requests retirement without waiting on cleanup
+that must join that same task. Each external abort/close joiner retains its own
+first interruption until cleanup completes.
+
+An external server close caller interrupted during a nonzero graceful drain
+requests forced session retirement, joins actual cleanup, then raises its
+identical first exception. Other callers retain their own result or exception,
+and an already-decided close outcome remains unchanged.
+
+### Close results
+
+Server `Host#close` and `ServerSession#close` return `bool?`:
+
+- A resource-owned handler initiating positive-grace close starts the ordinary
+  asynchronous drain and returns nil while shutdown is pending. Admitted
+  siblings retain their grace and can continue processing.
+- Owned repeated requests and cleanup/close coordinator reentry also return nil
+  while pending, without joining cleanup that must join them. Nil neither
+  decides the outcome nor publishes completion.
+- Repeated requests share the original closer and expiry, even with a different
+  grace argument.
+- External callers join actual cleanup and receive its final boolean. Once
+  closed, every call returns that same boolean, including coordinator reentry.
+- Zero grace still forces teardown; explicit abort and already-decided outcomes
+  are preserved.
+
+The client `Transport` and `HTTP1Transport` close return types remain `bool`.
+
+### Task joins
+
+Private task joins distinguish a resolved result from actual finalization. They
+block on required children and task-local progress/finalization notifications,
+retaining captured child identities through reparenting or transient changes.
+A scheduling opportunity after raw close establishes no completion boundary;
+all retained task joins still precede disposal and retirement publication.
+
+These joins require cooperative tasks and a live application reactor. A
+non-yielding handler or native operation can delay them indefinitely. Cleanup
+survives ordinary owner cancellation while an external waiter or lifetime guard
+keeps the task tree alive; reactor termination cannot guarantee completion.
+
+## TLS and client authentication
+
+Applications load their own files. Host TLS is a complete hash:
+
+```ruby
+tls = {
+  certificate_chain: [File.read("leaf.pem"), File.read("intermediate.pem")],
+  private_key: File.read("key.pem"),
+  client_ca: nil # Or a nonempty array of explicit trust-anchor PEM certificates.
+}
+```
+
+### Certificates and verification
+
+Each certificate element contains exactly one PEM certificate, leaf first.
+Keys are unencrypted PEM private keys. Inputs are copied and parsed without
+password prompts; key possession, leaf validity and adjacent chain signatures
+are checked. Snapshots retain private parsed objects, redact inspection/errors,
+and compile fresh contexts before publication. Explicit intermediates, including
+an empty array, prevent auto-chaining through the client-auth trust store.
+
+Both roles require TLS >=1.2 and post-check ALPN `h2`. Clients always verify
+peer/hostname, including localhost, using system roots plus optional `ca_file`.
+Client chain/key must appear together; TLS options are invalid for h2c.
+
+### Client authentication
+
+A nonempty `client_ca` requires verified client certificates using only those
+anchors, with partial-chain trust enabled deliberately. A scoped intermediate
+can be the boundary; sibling issuers under its root are not trusted. Nil means
+server-only TLS and no client authentication. There is no optional-client mode.
+
+`host.peer_certificate` returns a detached authenticated client leaf only within
+that host's exact handler task; outside/child/other-host/plain/server-only TLS
+returns nil. It does not expose or claim a verified chain and does not change
+core Context. Applications own authorization based on that identity.
+
+### Reload and drain
+
+`host.reload_tls(certificate_chain:, private_key:, client_ca:)` replaces the
+complete snapshot for newly accepted sockets on the same listener. Generation
+starts at 1 and increments only after successful validation; invalid candidates
+leave the last good snapshot intact. Existing connections retain their prior
+identity and authentication. Every generation has a fresh context/session ID,
+OP_NO_TICKET and SESSION_CACHE_OFF. Reuse is disabled; this does not claim that
+OpenSSL emits zero TLS 1.3 tickets. Replace a transport to change client identity.
+
+`host.drain_tls(grace: 5)` captures the current generation cutoff and retires
+only older accepted connections, including pending handshakes. Old later streams
+receive 503 while admitted streams finish. Pending handshakes abort immediately.
+A persistent retirement floor prevents old pending sockets from becoming live.
+The listener and current/newer generations survive concurrent reloads/drains.
+Close supersedes drains. Renewal alone does not instantly revoke existing peers.
+There are no file watchers, ACME, secret services or authentication policy DSLs.
+
+## Native application and managed TLS
+
+### Application
+
+`Application.new(server:, fallback: nil)` is a reusable Protocol::HTTP callable.
+It routes whole registered service prefixes to core, splits the request target
+once, forwards the raw query to core, and returns bare 404 or calls the native
+fallback for unrelated paths. HTTP/1 requests do not need a stream object. Keep
+generic compression/cache middleware on fallback so core owns RPC encoded bytes
+and limits.
+
+### Managed TLS providers
+
+Host accepts `tls_provider:`, `refresh_interval: 60`, `refresh_jitter: 0.1`,
+`refresh_timeout: 10` and `on_tls_error:`. `refresh_tls` coalesces immediate
+source checks; `tls_status` exposes safe state/generation and separate monotonic
+source-check/publication ages. Managed `reload_tls` conflicts with provider
+ownership. `TLSConfiguration` also exposes `start`, `refresh`, complete static
+`reload`, `close`, `generation` and `status`. Construction is reactor/thread
+bound; initial static/provider compilation happens on `start`, before accepts.
+
+Providers return exactly `version`, `certificate_chain`, `private_key` and
+`client_ca` symbol keys. A nonempty opaque String version identifies validated
+canonical content. Same version/content preserves generation; changed content
+under that version fails. A different previous version can deliberately roll
+back through a fresh generation. Missing/nil data never disables TLS. Background
+errors retain the last good snapshot and emit only safe immutable diagnostics.
+Concurrent callers join one owned attempt, and waiter cancellation does not
+cancel it. Timer intervals start after each completed attempt. Timeout and
+shutdown remain cooperative for arbitrary native/CPU application code.
+
+The earliest served identity-chain expiry is checked against actual wall time
+at accept and again at pending handshake start. There is no maximum staleness
+setting; established connections retain negotiated state until drain/close.
+The [Falcon guide](../connectrpc-falcon/README.md#tls-lifecycle) explains complete
+provider semantics and safe diagnostics shared by both hosts.
+
+### ServerSession hosting SPI
+
+`ServerSession` is the small hosting SPI: start the worker session, synchronously
+`accept(raw)` before scheduling, then call the opaque accepted handle's `serve`.
+`schedule` attaches accepted work to the independent session lifetime. The
+handle also supports `close`, `wait_closed`, `timeout=` and `remote_address`,
+and exposes no SSLContext.
+
+`wait_closed` waits for actual connection retirement, including owned task
+unwind and final disposal, rather than merely observing invalidation. Retiring
+server connections retain their admission slot until this boundary. The H2
+client's private connection manager removes a retiring connection's slot and
+wakes waiting calls before joining its connection close.
+
+The session forwards TLS lifecycle/identity operations, bounded `close` and
+raw-first `abort` for listener/setup failure. The optional `stop_accepting:`
+callback runs after affinity/grace validation, before refresh stops and
+connection drain begins. Its one HTTP/1 construction hook is for the optional
+Falcon-local resource; HTTP/2 resources do not pretend to implement HTTP/1. The
+standalone Host keeps its strict h2 listener and composes the shared session.
+
+The shared session's private resource completion and lifetime-anchor operations
+are source-coupled to Falcon's local HTTP/1 resource. Use matched Async/Falcon
+package versions; these internals are not an additional public API or SPI.
+
+## Backend boundaries and verification
+
+### Compression and limits
+
+Enable gzip with `encoding: :gzip` on the core client and server. Client
+`accept_encoding:` controls response negotiation independently. Core's
+`request_limit:` and `response_limit:` bound serialized/decompressed messages;
+the separate wire limits default to those same caps. The transport's
+`TransportRequest.response_limit` remains the encoded wire read cap. Defaults
+remain identity, and neither host nor transport performs transparent inflation.
+
+### Header and length handling
+
+Core owns codecs, errors, metadata and serialized byte limits. The backend
+reads bounded chunks, reconstructs declared length from backend body.length,
+preserves raw repeated leading fields and leading `trailer-*`, and ignores real
+HTTP/2 trailing HEADERS for core metadata. The stack normalizes lengths using
+Ruby Integer: `+10`, hexadecimal and underscores can normalize before core;
+malformed/duplicate lengths may reset/close connections, and singleton header
+policies can produce bare errors before core. These outcomes are tested and
+are not a full protocol conformance claim. Settings use 16KiB frames, 64KiB
+stream windows and bounded stream admission; they do not bound total process
+memory or HPACK/header-continuation buffering.
+
+### Ingress flow control
+
+Native HTTP/2 request and response inputs use a private coalescing queue. Stream
+WINDOW_UPDATE replenishes only application-consumed or deliberately discarded
+DATA bytes. Padding, including its length octet, uses wire credit and is
+discarded without entering body bytes or Content-Length. Connection credit is
+independent, so unread bodies do not prevent healthy streams or control frames
+from advancing. The shared reader never waits for application consumption;
+serialized socket writes can still block. Stream over-credit resets that stream
+with FLOW_CONTROL_ERROR; connection over-credit fails the connection and its
+siblings. Upstream parsing and stream-state errors remain authoritative. This
+follows [HTTP/2 flow control](https://www.rfc-editor.org/rfc/rfc9113.html#section-5.2).
+
+### Ingress bounds
+
+With the current settings, each queue retains at most 65,536 payload bytes in at
+most five data entries, independent of frame count. Each returned native chunk is
+at most 16,384 bytes. The core input adapter can retain one such chunk's remainder;
+the shared reader can hold one decoded DATA frame of at most 16,384 bytes.
+Coalescing/copying can temporarily retain old and new bounded chunks. String byte
+length does not bound Ruby backing allocations or RSS. Caller-retained strings,
+buffered unary bodies, codecs/compression, socket/TLS buffers and HPACK/headers
+are separate allocations. These are ingress payload bounds, not a total memory
+or general denial-of-service guarantee. Streaming adds bounded output ownership
+without changing these ingress limits.
+
+Normal producer EOF drains preceding payload. Closing the consumer releases its
+queue once; later DATA is discarded while local output remains live, following
+the pinned backend's finish-input and NO_ERROR policy. Reset/error/owned teardown
+wakes readers and retires input references. Only peer CANCEL signals explicit
+RPC cancellation; credit accounting adds no lifecycle instrumentation.
+
+### Verification evidence
+
+Independent connect-go tests exercise both directions/codecs over h2c/TLS/mTLS,
+with observed HTTP/2/ALPN and large typed wire-tail drains. Original core fixture
+and official conformance harnesses remain separate. Installed package checks use
+normal offline dependencies and a fresh GEM_HOME outside the checkout. This
+graph activates OpenSSL 4.0.2/JSON 3.1.0; installed core NetHTTP TLS/JSON with
+identity and gzip is also exercised under that activation. Focused combined
+specs cover actual gzip bytes over h2c/TLS in both codecs and independent host
+wire/inflated and transport wire/client inflated caps. Nothing is published.
+
+## Explicit unary cancellation
+
+Pass `cancellation: source.token` to core or generated client calls, where
+`source = ConnectRPC::CancellationSource.new`. The source is permanent and
+shareable; only `source.cancel` initiates cancellation. `timeout: nil` keeps no
+RPC deadline or wire timeout. Context offers cooperative `cancelled?`,
+`cancellation_reason` and `check!`. See the
+[unary guide](../../docs/unary.md#cancellation) for listener, arbitration and
+registration lifetime rules.
+
+The Async transport accepts foreign-thread cancellation through a Promise;
+only the owner reactor stops private SDK tasks and performs stream cleanup.
+Healthy multiplexed siblings survive. A stuck frame retains the one 100 ms
+raw-first whole-connection cleanup fallback. Native HTTP/2 Context observes
+only an actual peer RST_STREAM(CANCEL), before input teardown. Other resets,
+normal half-close, connection loss and host shutdown do not fabricate explicit
+cancellation. Processing completion detaches the source independently of delivery.
+
+## Native streaming
+
+The core [streaming guide](../../docs/streaming.md) documents all three scoped
+Connect streaming shapes, typed generated clients/handlers, early headers,
+per-message limits and bounded ownership. Native Async/Falcon HTTP/2 supports
+both codecs and identity/gzip over h2c/TLS/mTLS. Falcon additionally serves
+Connect server and client streaming over HTTP/1.1, with protobuf/ProtoJSON and
+identity/gzip over TCP/TLS/mTLS. The standalone Async Host and original Async
+Transport remain H2-only. Use the independent
+[`HTTP1Transport`](#explicit-http11-client) for Connect unary, server streaming
+and client streaming. See the streaming guide for Falcon's cooperative 500 ms
+total final-close budget and unchanged 100 ms / 256 KiB discard limits. The
+client's one-second absolute HTTP tail policy applies even with a nil RPC
+deadline and can reject otherwise valid late EOF or slow intermediaries.
+
+Use `async:conformance` and `async:interop:streaming` for the exact official
+native client/server inventories and independent pinned Go streaming matrix.
+Both belong to `async:verify`; original unary interoperability remains separate.
+
+## Native gRPC
+
+Native HTTP/2 supports unary, server streaming, client streaming and bidi gRPC
+with protobuf, identity/gzip, h2c, verified TLS and mTLS. Configure the core
+Client with `protocol: :grpc` and the Server with `:grpc` or `:auto`. Generated
+clients and handlers reuse the existing declarations. Portable HTTP/1 execution
+retains its early rejection guard. See the [gRPC guide](../../docs/grpc.md) for
+status codecs, actual final HEADERS, independent status bounds and native field
+retention limits. Connect's one-second terminal tail policy remains Connect-only.
+
+Use `async:conformance:grpc` for exact official inventories and
+`async:interop:grpc` for generated official grpc-go peer checks. Both belong
+to the owning verify task. `grpc:generation:check` reproduces official Go and
+Ruby peer outputs; `grpc:status:check` reproduces private Any/Status descriptors.
+
+## gRPC-Web
+
+The native H2 server supports explicitly enabled binary/text unary and
+server-stream gRPC-Web. Browser incremental delivery uses text. See the
+[Web guide](../../docs/grpc-web.md) for protocol, CORS, bounds and completion
+rules.
+
+## RPC observation
+
+Configure `instrumentation:` on the core Client/Server to enable the fixed
+neutral per-call lifecycle or the optional
+[OpenTelemetry adapter](../connectrpc-otel/README.md). Native hosts create
+explicit handles before request admission, activate the actual handler tasks,
+and finish after full-write/reset/cleanup evidence. Shared H2 client connection
+attempts run outside every RPC lifecycle, so tracing never parents connection
+setup to the call that triggered it. Use the transport's `connection_observer`
+for connection events.
+
+## Static signatures
+
+This package owns `sig/` and its discovery manifest. Add
+`library "connectrpc-async"` to a strict Steep target with this gem installed.
+See the [RBS guide](../../docs/rbs.md) for supported APIs, extension contracts,
+partial records, runtime validation and framework-signature limits.
+`mise run rbs:check` checks application callers for this package; strict core
+source checking is a separate target from backend implementation checking.
+
+## Development
+
+Discover `async:setup`, `async:test`, `async:check`, `async:build`,
+`async:package`, `async:example`, `async:interop`, and `async:verify` with
+`mise tasks`. The separate checksummed bundle uses `vendor/async` and coverage
+uses `coverage/async`. `async:verify` checks the independent bundle, installed
+packages and connect-go interoperability. Core require and core/Rails
+dependencies stay independent. The [backend evidence](#verification-evidence)
+above describes what these checks exercise.
+
+## License
+
+Original project work is [MIT licensed](LICENSE), copyright 2026 Jim Myhrberg.
+Both archives include the complete license and pin `allowed_push_host` to
+`https://rubygems.org`; only the [release workflow](../../docs/releasing.md)
+publishes them.

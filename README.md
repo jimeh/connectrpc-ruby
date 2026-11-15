@@ -38,8 +38,8 @@ declarations also speak native [gRPC](docs/grpc.md) and server-side
   hosts serve all four RPC shapes over Connect and gRPC.
 
 > [!WARNING]
-> This project is experimental. Version 0.1.0 of every gem is published on
-> RubyGems, but no release is declared supported or production ready yet. The
+> This project is experimental. Every gem is published on RubyGems, but no
+> release is declared supported or production ready yet. The
 > [supported 0.x contract](docs/support.md) defines the target profile.
 > Adoption depends on the open
 > [#26 findings](https://github.com/jimeh/connectrpc-ruby/issues/26) and release
@@ -178,7 +178,7 @@ integrations you use:
 | [`connectrpc-otel`](gems/connectrpc-otel/README.md) | You want OpenTelemetry CLIENT and SERVER spans for each RPC | `connectrpc/otel` |
 
 Use the same version of `connectrpc` and every ConnectRPC gem in an
-application. The `~> 0.1.0` ranges allow patch versions to differ, but the
+application. Their `~>` dependency ranges allow patch versions to differ, but the
 [support policy](docs/support.md#match-the-connectrpc-package-versions)
 requires matching versions.
 
@@ -217,7 +217,9 @@ These limits apply across the matrix:
 - Native Connect streaming clients apply a one-second HTTP tail policy, even
   without an RPC deadline. See the [streaming guide](docs/streaming.md).
 - There is no H1 bidi, HTTP/3, protocol fallback or RPC replay. Faraday is
-  unsupported.
+  unsupported. The Async H2 `Transport` resends a Connect unary call once only
+  when the server provably never processed its stream; see
+  [client connection management](gems/connectrpc-async/README.md#reroutes-and-the-refused-stream-retry).
 
 The [support contract](docs/support.md#protocol-and-host-matrix) lists the
 evidence behind each row, the qualified Ruby and dependency versions, and the

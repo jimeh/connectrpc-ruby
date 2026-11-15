@@ -101,7 +101,7 @@ Include `ConnectRPC::Falcon::Environment` in each service:
 
 - `connectrpc_server` (required) constructs a `ConnectRPC::Server` in the worker.
 - `rack_app` supplies the optional fallback.
-- `tls` or `tls_provider` supplies the TLS source; see [TLS](#tls).
+- `tls` or `tls_provider` supplies the TLS source; see [TLS lifecycle](#tls-lifecycle).
 - `server_options` supplies shared limits and host options such as `cache:`.
 - `url` describes the listener.
 
@@ -195,7 +195,7 @@ insufficient. Use appropriate `Vary` headers for deliberately shared content
 that depends on request headers. These are upstream cache semantics, not a
 promise of full RFC cache policy support.
 
-## TLS
+## TLS lifecycle
 
 ### Provide TLS material
 
