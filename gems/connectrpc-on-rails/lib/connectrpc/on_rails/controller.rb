@@ -94,10 +94,10 @@ module ConnectRPC
       def connect_report(error)
         return if ActionDispatch::ExceptionWrapper.rescue_responses.key?(error.class.name)
 
-        logger&.error { "[connectrpc.on_rails] #{error.full_message(highlight: false)}" }
+        logger&.error { "[connectrpc.rails] #{error.full_message(highlight: false)}" }
         return unless defined?(::Rails) && ::Rails.respond_to?(:error)
 
-        ::Rails.error.report(error, handled: false, source: "connectrpc.on_rails")
+        ::Rails.error.report(error, handled: false, source: "connectrpc.rails")
       end
 
       def connect_status_error(status)

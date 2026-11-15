@@ -150,10 +150,9 @@ RSpec.describe ConnectRPC::OnRails::Controller do
     Rails.error.subscribe(reporter)
     response = rpc("HTTP_X_CASE" => "bug")
     expect(JSON.parse(response.body)).to include("code" => "internal", "message" => "Internal error")
-    sourced = reports.select { |_error, options| options[:source] == "connectrpc.on_rails" }
-    report = sourced.find { |error, _options| error.message == "secret bug" }
+    report = reports.find { |error, options| error.message == "secret bug" && options[:source] == "connectrpc.rails" }
     expect(report).not_to be_nil
-    expect(sourced.size).to eq(1)
+    expect(reports.count { |_error, options| options[:source] == "connectrpc.rails" }).to eq(1)
     expect(report.first.backtrace.join).to include("rpc_echo")
     expect(report.last[:handled]).to be(false)
   ensure

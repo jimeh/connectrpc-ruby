@@ -35,7 +35,7 @@ RSpec.describe "Rails error reporting" do
       expect(rpc("/rate/example.v1.EchoService/Echo").status).to eq(429)
       expect(rpc("/base/example.v1.EchoService/Echo").status).to eq(500)
       expect(reports).to be_empty
-      expect(output.string).not_to include("[connectrpc.on_rails]")
+      expect(output.string).not_to include("[connectrpc.rails]")
     end
   end
 
@@ -49,7 +49,7 @@ RSpec.describe "Rails error reporting" do
       expect(response.status).to eq(503)
       expect(JSON.parse(response.body)["code"]).to eq("unavailable")
       expect(reports).to be_empty
-      expect(output.string).not_to include("[connectrpc.on_rails]")
+      expect(output.string).not_to include("[connectrpc.rails]")
     end
   ensure
     ActionDispatch::ExceptionWrapper.rescue_responses = original if original
@@ -60,7 +60,7 @@ RSpec.describe "Rails error reporting" do
     expect(JSON.parse(response.body)).to include("code" => "internal", "message" => "Internal error")
     expect(output.string).to include("RuntimeError", "rpc_echo")
     expect(output.string.scan("secret bug").size).to eq(1)
-    expect(output.string.scan("[connectrpc.on_rails]").size).to eq(1)
+    expect(output.string.scan("[connectrpc.rails]").size).to eq(1)
     expect(response.body).not_to include("secret bug")
   end
 end
