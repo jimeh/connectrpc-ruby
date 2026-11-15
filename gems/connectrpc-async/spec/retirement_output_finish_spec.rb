@@ -2,8 +2,8 @@
 
 require_relative "support/retirement_helpers"
 
-# Resource#abort marks the resource finished, then retirement closes raw TCP and
-# yields before it marks the connection closed. An output task that is already
+# Retirement closes raw TCP, and Resource#abort marks the resource finished,
+# before close! marks the connection closed. An output task that is already
 # ready runs in that window and must finish locally without writing.
 RSpec.describe "Output finishing inside the retirement window" do
   include RetirementHelpers
@@ -44,16 +44,44 @@ RSpec.describe "Output finishing inside the retirement window" do
     host&.close(grace: 0)
   end
 
+  # Records [connection closed, resource finished, raw closed] when the
+  # stream's output first finishes, proving which retirement window it hit.
+  def finish_states(stream, &)
+    states = []
+    trace = TracePoint.new(:call) do |event|
+      next unless event.method_id == :finish_output && event.self.equal?(stream) && states.empty?
+
+      connection = stream.connection
+      states << [connection.closed?, connection.resource.finished?, connection.resource.raw.closed?]
+    end
+    trace.enable(&)
+    states
+  end
+
+  def server_output(host, failure)
+    resource = host.instance_variable_get(:@session).instance_variable_get(:@resources).first
+    stream = resource.connection.streams.values.first
+    output = stream.response_task
+    expect(output).not_to be_finished
+    # Wake the output task with a body failure; it runs once the caller yields.
+    stream.instance_variable_get(:@output).instance_variable_get(:@body).body.close(failure)
+    [resource, stream, output]
+  end
+
   it "completes a client request body that ends inside the window without a background failure" do
     reactor do |task|
       open_chat(task) do |_host, exchange|
         operation = exchange.instance_variable_get(:@operation)
         resource = operation.fetch(:resource)
-        output = operation.fetch(:response).stream.output_task
+        stream = operation.fetch(:response).stream
+        output = stream.output_task
         expect(output).not_to be_finished
-        # Wake the output task, then start retirement before it can run.
-        exchange.instance_variable_get(:@body).close_write
-        resource.abort
+        states = finish_states(stream) do
+          # Wake the output task, then start retirement before it can run.
+          exchange.instance_variable_get(:@body).close_write
+          resource.abort
+        end
+        expect(states).to eq([[false, true, true]])
         expect(retirement_complete?(resource)).to be(true)
         expect(output).to be_completed
       end
@@ -63,13 +91,23 @@ RSpec.describe "Output finishing inside the retirement window" do
   it "keeps a server response body's own failure inside the window rather than attempting a reset" do
     reactor do |task|
       open_chat(task) do |host, _exchange|
-        resource = host.instance_variable_get(:@session).instance_variable_get(:@resources).first
-        stream = resource.connection.streams.values.first
-        output = stream.response_task
-        expect(output).not_to be_finished
         failure = IOError.new("response body failed")
-        stream.instance_variable_get(:@output).instance_variable_get(:@body).body.close(failure)
-        resource.abort
+        resource, stream, output = server_output(host, failure)
+        states = finish_states(stream) { resource.abort }
+        expect(states).to eq([[false, true, true]])
+        expect(retirement_complete?(resource)).to be(true)
+        expect { output.wait }.to raise_error(equal(failure))
+      end
+    end
+  end
+
+  it "keeps a server response body's own failure after session raw close and before resource abort" do
+    reactor do |task|
+      open_chat(task) do |host, _exchange|
+        failure = IOError.new("response body failed")
+        resource, stream, output = server_output(host, failure)
+        states = finish_states(stream) { host.instance_variable_get(:@session).abort }
+        expect(states).to eq([[false, false, true]])
         expect(retirement_complete?(resource)).to be(true)
         expect { output.wait }.to raise_error(equal(failure))
       end
