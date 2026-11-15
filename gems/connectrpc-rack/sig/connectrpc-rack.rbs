@@ -1,5 +1,6 @@
 module ConnectRPC
   class Rack
+    VERSION: String
     type env = Hash[String, Object]
     type response_headers = Hash[String, String | Array[String]]
     type response = [Integer, response_headers, _Body | _CallableBody]

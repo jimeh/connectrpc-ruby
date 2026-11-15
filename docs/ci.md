@@ -325,3 +325,16 @@ installs its remaining gems into that path on each run. An explicit cache keyed
 by the Ruby ABI/platform/image (`rbs:cache-platform`) and the Rack, Async and
 Falcon locks restores `vendor/{rack,async,falcon}/bundle`. Existing example
 tasks keep their current jobs.
+
+## Release workflows
+
+The separate `release-please.yml` workflow runs on pushes to main and manual dispatch.
+It opens or updates the draft release PR using an existing GitHub App from the
+`release-please` environment. After a release PR merges, it tags the commit and
+creates a draft GitHub release. The tag starts `release.yml`, which publishes
+from the `release` environment.
+The 31 CI checks above retain their mapping. `check:static` also runs the offline
+`release:check` invariant for all seven versions and all eight local path locks.
+Frozen Bundler installs in each owning CI lane prove the prepared locks are accepted
+by Bundler. See [release preparation](releasing.md) for the candidate procedure and
+remaining App/account setup.

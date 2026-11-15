@@ -11,7 +11,8 @@ module SignatureArchive
   def self.check(archive, root:)
     package = Gem::Package.new(archive)
     spec = package.spec
-    raise "Publication guard lost: #{spec.name}" unless spec.metadata["allowed_push_host"] == "https://gems.invalid"
+    raise "Push host changed: #{spec.name}" unless spec.metadata["allowed_push_host"] == "https://rubygems.org"
+    raise "MFA requirement lost: #{spec.name}" unless spec.metadata["rubygems_mfa_required"] == "true"
     raise "MIT metadata lost: #{spec.name}" unless spec.licenses == ["MIT"]
     raise "Type tool runtime dependency: #{spec.name}" if spec.runtime_dependencies.any? do |dependency|
       %w[rbs steep].include?(dependency.name)

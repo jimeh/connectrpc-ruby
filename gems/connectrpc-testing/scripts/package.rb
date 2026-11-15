@@ -7,11 +7,15 @@ require "rubygems/package"
 require "stringio"
 require "tmpdir"
 
+require_relative "../../../scripts/release_train"
+
 root = File.expand_path("../../..", __dir__)
+version = ReleaseTrain.new(root).version
+local_requirement = ReleaseTrain.new(root).requirement
 package_root = File.dirname(__dir__)
 output = File.join(root, "vendor/testing/pkg")
-core_archive = File.join(output, "connectrpc-0.1.0.gem")
-testing_archive = File.join(output, "connectrpc-testing-0.1.0.gem")
+core_archive = File.join(output, "connectrpc-#{version}.gem")
+testing_archive = File.join(output, "connectrpc-testing-#{version}.gem")
 core = Gem::Package.new(core_archive)
 testing = Gem::Package.new(testing_archive)
 expected_core = %w[
@@ -39,16 +43,17 @@ expected_core = %w[
   lib/connectrpc/generator.rb lib/connectrpc/generator/names.rb lib/connectrpc/generator/schema.rb
   lib/connectrpc/generator/renderer.rb lib/connectrpc/generator/runtime_names.rb
 ].sort
-expected_testing = %w[LICENSE README.md lib/connectrpc/testing.rb sig/connectrpc-testing.rbs sig/manifest.yaml
+expected_testing = %w[LICENSE README.md lib/connectrpc/testing.rb lib/connectrpc/testing/version.rb
+                      sig/connectrpc-testing.rbs sig/manifest.yaml
                       lib/connectrpc/testing/transport.rb].sort
 abort "Unexpected core manifest" unless core.contents.sort == expected_core
 abort "Unexpected testing manifest" unless testing.contents.sort == expected_testing
 abort "Core runtime dependencies changed" unless core.spec.runtime_dependencies.empty?
 dependencies = testing.spec.runtime_dependencies
 abort "Unexpected testing dependencies" unless dependencies.size == 1 && dependencies.first.name == "connectrpc" &&
-                                               dependencies.first.requirement.to_s == "~> 0.1.0"
+                                               dependencies.first.requirement.to_s == local_requirement
 [core, testing].each do |archive|
-  abort "Publication guard missing" unless archive.spec.metadata["allowed_push_host"] == "https://gems.invalid"
+  abort "Push host missing" unless archive.spec.metadata["allowed_push_host"] == "https://rubygems.org"
   abort "MIT metadata missing" unless archive.spec.licenses == ["MIT"]
 end
 license = File.binread(File.join(root, "LICENSE"))
@@ -119,7 +124,7 @@ Bundler.with_unbundled_env do
       expected.each do |name|
         spec = Gem.loaded_specs.fetch(name)
         abort "Loaded outside GEM_HOME" unless spec.full_gem_path.start_with?("#{ENV.fetch('GEM_HOME')}/")
-        abort "Push guard missing" unless spec.metadata["allowed_push_host"] == "https://gems.invalid"
+        abort "Push host missing" unless spec.metadata["allowed_push_host"] == "https://rubygems.org"
       end
       { ConnectRPC::Server => ["connectrpc", "lib/connectrpc/server.rb"],
         ConnectRPC::Testing::Transport => ["connectrpc-testing", "lib/connectrpc/testing/transport.rb"] }.each do |type, files|
@@ -146,7 +151,7 @@ Bundler.with_unbundled_env do
       run.call("-S", "gem", "install", "--norc", File.basename(artifact), "--local", "--no-document")
     end
     run.call("-I", working, "integration.rb")
-    puts "Installed archive manifests, MIT notice, dependency and push guards passed"
+    puts "Installed archive manifests, MIT notice, dependency and push host passed"
   end
 end
 abort "Core package executable mode must be 0755" if mode_failure

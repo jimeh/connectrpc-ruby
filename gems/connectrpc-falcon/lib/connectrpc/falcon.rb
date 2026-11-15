@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "connectrpc/async"
+require_relative "falcon/version"
 require "falcon/server"
 require "falcon/environment/server"
 require "async/http/endpoint"

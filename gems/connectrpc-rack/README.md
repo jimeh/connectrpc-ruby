@@ -3,7 +3,7 @@
 Optional, experimental Rack middleware for the unofficial Connect unary Ruby gem.
 Requires Ruby >= 3.4, `connectrpc ~> 0.1.0` and `rack >= 3.2.7, < 4`.
 This package uses the [MIT license](LICENSE), copyright 2026 Jim Myhrberg.
-Publication remains disabled by its `https://gems.invalid` guard.
+It is released with the whole [release train](../../docs/releasing.md).
 
 See the [supported 0.x contract](../../docs/support.md) for the target support
 profile, matched package versions, compatibility policy and adoption gates.
@@ -66,7 +66,7 @@ Focused specs accept selectors, for example
 `mise run rack:test -- spec/rack_spec.rb`. Bundles, Bundler state, lint cache and
 archives live under `vendor/rack`; coverage is `coverage/rack/<Ruby>/` and starts
 before the middleware require. `rack:package` builds its own core/Rack archives,
-checks exact manifests/dependencies/publication guards, installs core alone and
+checks exact manifests/dependencies/push hosts, installs core alone and
 then resolves the Rack package offline in a fresh external GEM_HOME. Real Google
 proto/JSON identity/gzip calls, safe errors/details and metadata run under
 Rack::Lint over ephemeral localhost NetHTTP, using installed sources only.

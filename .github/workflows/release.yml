@@ -1,0 +1,57 @@
+name: Release
+
+# Publishes the draft GitHub release that Release Please created with a v* tag.
+# Re-run, or dispatch on the same tag, to resume a partial publication: existing
+# draft assets and RubyGems versions are verified against the rebuilt candidate,
+# never replaced. RubyGems trusted publishers name this file and environment.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  MISE_ENV: ci
+  MISE_LOCKED: "1"
+
+jobs:
+  publish:
+    name: Publish
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-24.04
+    environment: release
+    timeout-minutes: 30
+    permissions:
+      contents: write # upload assets to the draft release, then publish it
+      id-token: write # RubyGems trusted publishing and Sigstore signing
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # No dependency caches: published bytes must not depend on restored state.
+      - uses: ruby/setup-ruby@7f797815d8adceb1c412e7abefdd1ab4abc47a5f # v1.335.0
+        with:
+          ruby-version: "3.4.12"
+          bundler: "4.0.23"
+      - uses: jdx/mise-action@82a612c5ab8bcda7cc5db6b7e81a8e7584c3dc6e # v5.2.3
+        with:
+          version: "2026.10.19"
+          add_shims_to_path: false
+          env: false
+          export_path: false
+          install: false
+          cache: false
+      - name: Install signing tools
+        run: mise run release:tools
+      - name: Build candidate
+        run: mise run release:build
+      - name: Attest, push and publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUBYGEMS_OWNER: jimeh
+        run: mise run release:publish

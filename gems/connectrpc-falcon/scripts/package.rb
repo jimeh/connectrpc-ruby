@@ -5,27 +5,32 @@ require "fileutils"
 require "rubygems/package"
 require "rbconfig"
 require "tmpdir"
+require_relative "../../../scripts/release_train"
+
 root = File.expand_path("../../..", __dir__)
+version = ReleaseTrain.new(root).version
+local_requirement = ReleaseTrain.new(root).requirement
 archives = %w[connectrpc connectrpc-async connectrpc-falcon].map do |name|
-  File.join(root, "vendor/falcon/pkg/#{name}-0.1.0.gem")
+  File.join(root, "vendor/falcon/pkg/#{name}-#{version}.gem")
 end
 packages = archives.map { |archive| Gem::Package.new(archive) }
-expected = %w[LICENSE README.md examples/falcon.rb lib/connectrpc/falcon.rb sig/connectrpc-falcon.rbs sig/manifest.yaml
+expected = %w[LICENSE README.md examples/falcon.rb lib/connectrpc/falcon.rb lib/connectrpc/falcon/version.rb
+              sig/connectrpc-falcon.rbs sig/manifest.yaml
               lib/connectrpc/falcon/completion_join.rb
               rbs/async_service_0_25/service.rbs lib/connectrpc/falcon/endpoint.rb
               lib/connectrpc/falcon/environment.rb lib/connectrpc/falcon/http1.rb
               lib/connectrpc/falcon/rack_guard.rb lib/connectrpc/falcon/server.rb].sort
 abort "Falcon manifest changed" unless packages.last.contents.sort == expected
 expected_dependencies = {
-  "connectrpc-async" => "~> 0.1.0", "falcon" => "~> 0.57.0", "protocol-rack" => "~> 0.23.0",
+  "connectrpc-async" => local_requirement, "falcon" => "~> 0.57.0", "protocol-rack" => "~> 0.23.0",
   "async-service" => "~> 0.25.0", "async-container" => "~> 0.38.0", "async-utilization" => "~> 0.5.0",
   "protocol-http1" => "~> 0.41.1"
 }
 actual = packages.last.spec.runtime_dependencies.to_h { |dependency| [dependency.name, dependency.requirement.to_s] }
 abort "Falcon runtime dependencies changed" unless actual == expected_dependencies
 packages.each do |package|
-  unless package.spec.metadata["allowed_push_host"] == "https://gems.invalid" && package.spec.license == "MIT"
-    abort "Publication guard missing"
+  unless package.spec.metadata["allowed_push_host"] == "https://rubygems.org" && package.spec.license == "MIT"
+    abort "Push host missing"
   end
 end
 unless File.binread(File.expand_path("../LICENSE", __dir__)) == File.binread(File.join(root, "LICENSE"))
@@ -74,4 +79,4 @@ Bundler.with_unbundled_env do
     commands.each { |command| system(environment, *command, chdir: working, exception: true) }
   end
 end
-puts "Exact Falcon manifest, normal offline dependencies, actual DSL/workers and publication guards passed"
+puts "Exact Falcon manifest, normal offline dependencies, actual DSL/workers and push hosts passed"

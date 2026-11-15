@@ -34,7 +34,7 @@ task :syntax do
                    "gems/connectrpc-rack/lib/**/*.rb", "gems/connectrpc-rack/spec/**/*.rb",
                    "gems/connectrpc-rack/scripts/**/*.rb", "gems/connectrpc-rack/*.gemspec",
                    "gems/connectrpc-rack/Gemfile",
-                   "typecheck/**/*.rb", "typecheck/Gemfile",
+                   "typecheck/**/*.rb", "typecheck/Gemfile", "release/Gemfile",
                    "gems/connectrpc-falcon/lib/**/*.rb", "gems/connectrpc-falcon/spec/**/*.rb",
                    "gems/connectrpc-falcon/scripts/**/*.rb", "gems/connectrpc-falcon/examples/**/*.rb",
                    "gems/connectrpc-falcon/*.gemspec", "gems/connectrpc-falcon/Gemfile",
