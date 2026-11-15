@@ -181,11 +181,13 @@ module ConnectRPC
         request = operation.fetch(:request)
         task = ::Async::Task.current
         loop do
+          check_live!(operation)
           connection = acquire(operation, task)
           dispatched = false
           begin
             return connection.synchronize(dispatch: true) do
               check_request!(request)
+              check_live!(operation)
               raise Internal::UnusableConnection, "Connection is not reusable" unless @manager.usable?(connection)
 
               dispatched = true
@@ -197,6 +199,12 @@ module ConnectRPC
             reroute(operation)
           end
         end
+      end
+
+      # Once whole-operation cleanup starts, the call sends nothing new; the
+      # lease belongs to cleanup.
+      def check_live!(operation)
+        raise Error.new(:unavailable, "HTTP/2 exchange is retired"), cause: nil if operation[:cleaned]
       end
 
       def acquire(operation, task)
@@ -375,9 +383,6 @@ module ConnectRPC
             connection.read_response(response)
             break
           rescue ::Protocol::HTTP::RefusedError
-            # The refused stream already stopped its output once. The call
-            # owns it until it retires; see #retire_refused_output.
-            operation[:refused_output] = response.stream.output_task
             # Only the header wait proves RFC 9113 non-processing: dispatch can
             # convert a HEADERS write failure into the same error.
             raise if retried || !@manager.retry_refused? || response.stream.response_headers?
@@ -397,6 +402,9 @@ module ConnectRPC
       # budget before the lease returns to acquisition; a stuck frame fails
       # its connection and the call, which is not sent again.
       def retire_refused(operation, response)
+        # The refused stream already stopped its output once. Cleanup still
+        # retires it after the response detaches; see #retire_stopped_output.
+        operation[:refused_output] = response.stream.output_task
         operation.delete(:response)
         response.close
         request = operation.fetch(:request)
@@ -411,20 +419,34 @@ module ConnectRPC
           raise Error.new(:unavailable, "HTTP/2 refused stream output did not retire"), cause: nil
         end
         operation.delete(:refused_output)
+        # A call whose cleanup started while it joined leaves the lease there.
+        check_live!(operation)
         reroute(operation)
       end
 
-      # Cancelling the call task cascades a second cancellation into its
-      # output, which would stop a deferred frame write mid-frame. A refused
-      # output that does not retire within the budget, or whose wait is
-      # interrupted, fails its connection raw-first instead. Until it retires,
-      # the call still holds that output's connection lease.
-      def retire_refused_output(operation, expires)
-        output = operation[:refused_output]
+      # A closed stream already stopped its output once. Cancelling the call
+      # task cascades a second cancellation into that output, which would stop
+      # a deferred frame write mid-frame. A stopped output that does not retire
+      # within the budget, or whose wait is interrupted, fails its connection
+      # raw-first instead. Until it retires, the call still holds that
+      # output's connection lease.
+      def retire_stopped_output(operation, expires)
+        output = stopped_output(operation)
         output_retired?(output, expires)
       ensure
         operation[:resource]&.abort if output && !output.finished?
         operation.delete(:refused_output)
+      end
+
+      # A refused output retiring for a retry, or a unary exchange's output
+      # whose stream closed, for example by a reset after response HEADERS.
+      # Stream operations keep their existing cleanup order.
+      def stopped_output(operation)
+        return operation[:refused_output] if operation[:refused_output]
+        return if operation.key?(:tasks)
+
+        stream = operation[:response]&.stream
+        stream.output_task if stream&.closed?
       end
 
       # Waits until `expires` for the output and reports whether it finished.
@@ -469,7 +491,7 @@ module ConnectRPC
           # The manager owns connection setup; a call owns only its own tasks.
           tasks = [operation[:task], *operation.fetch(:tasks, {}).keys].compact.uniq
           begin
-            retire_refused_output(operation, expires)
+            retire_stopped_output(operation, expires)
           ensure
             tasks.each { |task| task.cancel unless task.finished? }
           end
