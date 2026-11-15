@@ -5,6 +5,8 @@ require "open3"
 require "rbconfig"
 require "tmpdir"
 require "yaml"
+require_relative "../scripts/dependency_floors"
+require_relative "../scripts/release_train"
 
 RSpec.describe "CI runtime boundary" do
   let(:root) { File.expand_path("..", __dir__) }
@@ -210,6 +212,16 @@ RSpec.describe "CI check mapping" do
                                            a_string_ending_with(" test"), a_string_ending_with(" package"))
     end
     expect(tasks.fetch("floors:rails").fetch("env")).to include("RAILS_LANE=8.0")
+  end
+
+  it "runs a floors leaf for every released package with third-party runtime dependencies" do
+    expected = ReleaseTrain::NAMES.reject { |name| DependencyFloors.floors([name]).empty? }.map do |name|
+      name == "connectrpc-on-rails" ? "rails" : name.delete_prefix("connectrpc-")
+    end
+    expect(jobs.dig("floors", "strategy", "matrix", "leaf")).to match_array(expected)
+    output, error, status = Open3.capture3("mise", "tasks", "info", "floors", "--json")
+    expect(status.success?).to be(true), error
+    expect(JSON.parse(output).fetch("depends")).to match_array(expected.map { |leaf| "floors:#{leaf}" })
   end
 
   it "runs every runnable example pairing once, on one Ruby lane" do

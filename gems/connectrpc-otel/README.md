@@ -251,9 +251,9 @@ tools stay pinned. Existing runtime closures remain independent. Caches/archives
 runnable generated-client example with a real in-memory SDK exporter.
 
 `floors:otel` repeats specs and package checks with the API and every other
-local package's runtime dependency at its gemspec floor, except Action Pack
-(Rails 8.0 rejects the json 3.x this bundle co-installs; `floors:rails` covers
-that floor).
+local package's runtime dependency at its gemspec floor. That lane alone
+constrains `json` to `< 3`, because the Action Pack floor's ActiveSupport passes
+a JSON option that json 3.x rejects.
 
 ## License
 

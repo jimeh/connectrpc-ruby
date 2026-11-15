@@ -47,13 +47,15 @@ adapter jobs). No job sets `BUNDLE_FROZEN`; the runtime guard rejects
 ignored, so the workspace-clean steps still pass. The daily schedule catches
 upstream releases that break either the newest or the lowest allowed versions.
 The concurrency group includes the event name, so a scheduled run and a push
-to `main` do not cancel each other.
+to `main` do not cancel each other. GitHub disables scheduled workflows in a
+public repository after 60 days without repository activity; if that happens,
+re-enable the workflow in the Actions tab.
 
 The lowest-allowed matrix runs `floors:async`, `floors:falcon`, `floors:rack`,
 `floors:rails` (Rails 8.0 lane) and `floors:otel` on Ruby 3.4.12. Each task sets
 `CONNECTRPC_DEPENDENCY_FLOORS=1`, generates its ignored wrapper Gemfile,
 installs it, asserts every runtime dependency resolved exactly at its declared
-floor (the OTel leaf leaves Action Pack floating; see development), then runs
+floor (the OTel leaf also constrains `json` to `< 3`; see development), then runs
 that package's specs and installed-package check. Because the
 wrapper does not exist before the task runs, these jobs disable the setup-ruby
 bundle cache and install from the registry each time. See

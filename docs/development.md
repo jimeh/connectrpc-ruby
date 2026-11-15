@@ -342,11 +342,13 @@ mise run floors:otel
 mise run floors         # all five
 ```
 
-Floors do not apply to development tools or transitive-only dependencies. The
-OTel bundle leaves Action Pack floating: Rails 8.0's ActiveSupport passes JSON
-`quirks_mode`, which json 3.x rejects, and that cross-package bundle co-installs
-json 3.x. The Action Pack floor keeps its own proof in `floors:rails`. The
-installed package checks expect the release RubyGems activates, which can be a
+Floors do not apply to development tools or transitive-only dependencies. A
+launcher can add a floors-only constraint on a transitive gem through
+`DependencyFloors.gemfile(..., constraints: { ... })`; the wrapper declares it,
+and real Gemfiles never do. The OTel launcher constrains `json` to `< 3`
+because its tools otherwise resolve json 3.x, which rejects the JSON
+`quirks_mode` option that the Action Pack floor's ActiveSupport (Rails 8.0)
+passes. The installed package checks expect the release RubyGems activates, which can be a
 newer Ruby default gem (for example Ruby 3.4's openssl 3.3.x) than the floor.
 
 A new optional gem under `gems/connectrpc-<name>/` follows the same model:
@@ -532,6 +534,9 @@ Discover the focused `rbs:source`, `rbs:api`, `rbs:inventory` and capture-only
 and composed optional environments outside the checkout, using the existing
 scoped optional setups to populate offline archives. RubyGems resolves the
 installed closure from the running Ruby ABI's cached archives. Run both on each pinned Ruby.
+Locally, that closure comes from the union of the scoped bundle caches, so
+`rbs:package` assumes those bundles were refreshed recently: stale ignored local
+locks can leave packages on different versions. CI resolves every bundle fresh.
 These leaves keep their Bundler state, caches, bundle and package outputs under
 `vendor/rbs/` and add no runtime or root-bundle dependencies.
 

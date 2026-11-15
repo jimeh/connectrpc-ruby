@@ -1,5 +1,6 @@
 # frozen_string_literal: true
 
+require "tmpdir"
 require_relative "../scripts/dependency_floors"
 
 RSpec.describe DependencyFloors do
@@ -36,5 +37,49 @@ RSpec.describe DependencyFloors do
     expect(described_class.wrapper_path("/repo/gemfiles/rails_8.0.gemfile"))
       .to eq("/repo/gemfiles/rails_8.0.floors.gemfile")
     expect { described_class.wrapper_path("/repo/gems.rb") }.to raise_error(/Cannot derive a floors wrapper name/)
+  end
+
+  describe ".check!" do
+    def specs(**versions)
+      versions.map { |name, version| Struct.new(:name, :version).new(name.to_s, Gem::Version.new(version)) }
+    end
+
+    it "passes and prints each floor when the bundle resolved it exactly" do
+      expect { described_class.check!(specs("connectrpc-rack": "0.1.0", rack: "3.2.7")) }
+        .to output("floor rack 3.2.7\n").to_stdout
+    end
+
+    it "rejects drift, a missing floor dependency and a bundle without floors" do
+      expect { described_class.check!(specs("connectrpc-rack": "0.1.0", rack: "3.2.8")) }
+        .to raise_error(/Floor drift: rack resolved 3.2.8, expected 3.2.7/)
+      expect { described_class.check!(specs("connectrpc-on-rails": "0.1.0", rack: "3.2.7")) }
+        .to raise_error(/Floor dependency actionpack is missing from the bundle/)
+      expect { described_class.check!(specs("connectrpc-testing": "0.1.0", rake: "13.4.2")) }
+        .to raise_error(/No floor-managed dependencies in this bundle/)
+    end
+  end
+
+  it "evaluates a Gemfile with floors pinned, missing floors appended once and floors-only constraints added" do
+    Dir.mktmpdir("connectrpc-floors-") do |directory|
+      gemfile = File.join(directory, "Gemfile")
+      File.write(gemfile, <<~RUBY)
+        source "https://rubygems.org"
+        gem "connectrpc-on-rails", path: #{File.join(described_class::ROOT, 'gems/connectrpc-on-rails').dump}
+        gem "rake", "13.4.2"
+        group :test do
+          gem "rack", ">= 3", require: false
+        end
+      RUBY
+      dsl = Bundler::Dsl.new
+      described_class.evaluate(dsl, gemfile, constraints: { "json" => "< 3" })
+      dependencies = dsl.dependencies.to_h { |dependency| [dependency.name, dependency] }
+
+      expect(dsl.dependencies.map(&:name).tally.values).to all(eq(1))
+      expect(dependencies.fetch("rack")).to have_attributes(requirement: requirement("= 3.2.7"),
+                                                            groups: [:test], autorequire: [])
+      expect(dependencies.fetch("actionpack").requirement).to eq(requirement("= 8.0.5.1"))
+      expect(dependencies.fetch("json").requirement).to eq(requirement("< 3"))
+      expect(dependencies.fetch("rake").requirement).to eq(requirement("= 13.4.2"))
+    end
   end
 end
