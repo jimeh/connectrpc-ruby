@@ -2,6 +2,7 @@
 
 # Starts every runnable example server on an ephemeral port, runs every
 # supported client call against it plus representative refusals, then stops it.
+# The Async and Falcon servers run again with --mtls for a representative set.
 require "fileutils"
 require "json"
 require "rbconfig"
@@ -159,28 +160,50 @@ REFUSED = {
                NETHTTP_STREAMING,
                ["async-h2", %w[countdown --get], "--get applies only to unary RPCs"]]
 }.freeze
-SIGNALS = { "rack" => "INT", "rails" => "TERM", "async" => "INT", "falcon" => "TERM" }.freeze
+# Under --mtls, a representative set of calls covers each client, RPC shape and
+# option over TLS with client certificates.
+MTLS_H2 = { "greet" => [[], %w[--get --gzip]], "fail" => [[]], "countdown" => [%w[--gzip]],
+            "collect" => [%w[--codec json]], "chat" => [[], %w[--protocol grpc]] }.freeze
+MTLS_H1 = { "greet" => [[], %w[--get]], "countdown" => [[]], "collect" => [%w[--gzip]] }.freeze
+MTLS_ALLOWED = {
+  "async" => { "async-h2" => MTLS_H2 },
+  "falcon" => { "async-h2" => MTLS_H2, "async-http1" => MTLS_H1 }
+}.freeze
+NETHTTP_MTLS = ["nethttp", %w[greet], "nethttp cannot present a client certificate, so it cannot call an --mtls server"]
+               .freeze
+MTLS_REFUSED = {
+  "async" => [NETHTTP_MTLS, ["async-http1", %w[greet], "async-http1 uses HTTP/1.1, but async serves only HTTP/2"]],
+  "falcon" => [NETHTTP_MTLS, ["async-http1", %w[chat], "async-http1 supports only unary, server streaming, " \
+                                                       "client streaming Connect calls; chat is bidi streaming"]]
+}.freeze
+# Each server run: the server, the signal that stops it, and whether it runs with --mtls.
+RUNS = [["rack", "INT", false], ["rails", "TERM", false], ["async", "INT", false], ["falcon", "TERM", false],
+        ["async", "INT", true], ["falcon", "TERM", true]].freeze
+MTLS_CLIENT = "demo-client=CN=demo-client"
 METHODS = { "greet" => "Greet", "fail" => "Greet", "countdown" => "Countdown", "collect" => "Collect",
             "chat" => "Chat" }.freeze
+
+# The protocol, codec and encoding that a client option variant asks for.
+def requested(variant)
+  [variant.include?("grpc") ? "grpc" : "connect", variant.include?("json") ? "json" : "proto",
+   variant.include?("--gzip") ? "gzip" : "identity"]
+end
 
 # What the server must report receiving: the client's banner alone cannot show
 # that it actually sent the protocol, codec, method and encoding it was asked for.
 def evidence(rpc, variant)
-  protocol = variant.include?("grpc") ? "grpc" : "connect"
-  codec = variant.include?("json") ? "json" : "proto"
-  encoding = variant.include?("--gzip") ? "gzip" : "identity"
+  protocol, codec, encoding = requested(variant)
   http = variant.include?("--get") ? "GET" : "POST"
   "#{METHODS.fetch(rpc)} protocol=#{protocol} http=#{http} codec=#{codec} encoding=#{encoding} " \
     "code=#{rpc == 'fail' ? 'invalid_argument' : 'OK'}"
 end
 
-def expected_output(server, rpc, variant)
-  protocol = variant.include?("grpc") ? "grpc" : "connect"
-  codec = variant.include?("json") ? "json" : "proto"
-  encoding = variant.include?("--gzip") ? "gzip" : "identity"
-  banner = "at http://127.0.0.1:"
-  options = "(#{protocol}, #{codec}, #{encoding}#{', GET' if variant.include?('--get')})"
-  served = "headers: demo-served-by=#{server}"
+# Under mTLS the handler also reports the client certificate the host verified.
+def expected_output(server, rpc, variant, mtls)
+  protocol, codec, encoding = requested(variant)
+  banner = "at #{mtls ? 'https' : 'http'}://127.0.0.1:"
+  options = "(#{protocol}, #{codec}, #{encoding}#{', GET' if variant.include?('--get')}#{', mTLS' if mtls})"
+  served = "headers: demo-served-by=#{server}#{" #{MTLS_CLIENT}" if mtls}"
   expected = case rpc
              when "greet" then [served, "message: Hello, Ada!", "trailers: demo-greeted=Ada"]
              when "fail" then ["error: invalid_argument: name is required"]
@@ -191,13 +214,13 @@ def expected_output(server, rpc, variant)
   [rpc == "fail" ? 1 : 0, [banner, options, *expected]]
 end
 
-def cases_for(server, url)
+def cases_for(server, url, mtls)
   explicit = ["--server", server, "--url", url]
-  allowed = ALLOWED.fetch(server).flat_map do |client, rpcs|
+  allowed = (mtls ? MTLS_ALLOWED : ALLOWED).fetch(server).flat_map do |client, rpcs|
     rpcs.flat_map do |rpc, variants|
       variants.map do |variant|
         arguments = { "greet" => %w[Ada], "countdown" => %w[3], "collect" => %w[Ada Grace], "chat" => %w[Ada Grace] }
-        status, expected = expected_output(server, rpc, variant)
+        status, expected = expected_output(server, rpc, variant, mtls)
         Case.new(client: client, args: [rpc, *arguments.fetch(rpc, []), *variant, *explicit],
                  status: status, expected: expected, evidence: evidence(rpc, variant))
       end
@@ -208,7 +231,7 @@ def cases_for(server, url)
   allowed << Case.new(client: allowed.first.client, args: ["greet", "Ada", "--url", url], status: 0,
                       expected: ["headers: demo-served-by=#{server}", "message: Hello, Ada!"],
                       evidence: evidence("greet", []))
-  refused = REFUSED.fetch(server).map do |client, args, reason|
+  refused = (mtls ? MTLS_REFUSED : REFUSED).fetch(server).map do |client, args, reason|
     guide = reason.start_with?("gRPC", "--get") ? "supported options" : "supported pairings"
     Case.new(client: client, args: [*args, *explicit], status: 2,
              expected: ["Refused: #{reason}", "See examples/README.md for the #{guide}."])
@@ -263,11 +286,31 @@ def discovery_cases(url, state)
      Case.new(client: "nethttp", args: %w[greet], status: 2,
               expected: ["No running example server found (no state file", "mise run example:server -- NAME"])],
     [{ "CONNECTRPC_EXAMPLE_STATE" => stale },
-     Case.new(client: "nethttp", args: %w[greet], status: 2, expected: ["names pid #{dead}, which has exited"])]
+     Case.new(client: "nethttp", args: %w[greet], status: 2, expected: ["names pid #{dead}, which has exited"])],
+    # An https:// URL needs the demo client certificate, which only an --mtls server issues.
+    [{ "CONNECTRPC_EXAMPLE_STATE" => "#{state}.nocerts/server.json" },
+     Case.new(client: "async-h2", args: %w[greet --server falcon --url https://127.0.0.1:9], status: 2,
+              expected: ["https://127.0.0.1:9 needs the demo client certificate", "--mtls"])],
+    [{ "CONNECTRPC_EXAMPLE_STATE" => "#{state}.nocerts/server.json" },
+     Case.new(client: "async-http1", args: %w[greet --server rack --url https://127.0.0.1:9], status: 2,
+              expected: ["rack does not serve mutual TLS in these examples"])]
   ]
 end
 
 def label(server, kase) = "#{server} <- #{kase.client} #{kase.args.join(' ')}"
+
+# A server without mutual TLS support refuses --mtls before it binds a port.
+def server_refusal_problem(env)
+  child = Child.new(env.merge("PORT" => "0"), [RbConfig.ruby, LAUNCHER, "server", "rack", "--mtls"])
+  status = child.wait(READY_TIMEOUT) || child.kill
+  return "rack --mtls timed out" unless status
+  return "rack --mtls exited #{status.exitstatus.inspect}, expected 2:\n#{child.output}" unless status.exitstatus == 2
+  return if child.output.include?("Refused: rack does not serve mutual TLS in these examples")
+
+  "rack --mtls printed:\n#{child.output}"
+ensure
+  child&.close
+end
 
 def check(server, host, env, kase)
   status, output = run_client(env, kase)
@@ -324,20 +367,26 @@ failures = []
 totals = Hash.new(0)
 puts "Runnable examples; Ruby #{RUBY_VERSION}; Rails lane #{ENV.fetch('RAILS_LANE', '8.1')}"
 begin
-  SIGNALS.each do |server, signal|
+  problem = server_refusal_problem({ "CONNECTRPC_EXAMPLE_STATE" => "#{state_dir}/refused.json" })
+  puts "#{problem ? 'FAIL' : 'ok  '} rack --mtls refused"
+  failures << problem if problem
+  RUNS.each do |server, signal, mtls|
+    name = mtls ? "#{server} --mtls" : server
     # A relative override resolves against the repository root even though runners change directory.
-    state = "#{state_dir}/#{server}.json"
+    # The --mtls runs share the demo certificates in #{state_dir}/tls.
+    state = "#{state_dir}/#{server}#{'-mtls' if mtls}.json"
     env = { "CONNECTRPC_EXAMPLE_STATE" => state }
-    child = Child.new(env.merge("PORT" => "0"), [RbConfig.ruby, LAUNCHER, "server", server])
+    child = Child.new(env.merge("PORT" => "0"), [RbConfig.ruby, LAUNCHER, "server", server, *("--mtls" if mtls)])
     begin
-      url = child.wait_for_line(%r{#{server} server listening on (http://127\.0\.0\.1:\d+)}, READY_TIMEOUT)[1]
+      scheme = mtls ? "https" : "http"
+      url = child.wait_for_line(%r{#{server} server listening on (#{scheme}://127\.0\.0\.1:\d+)}, READY_TIMEOUT)[1]
       record = JSON.parse(File.read(File.join(ROOT, state)))
-      raise "#{server}: state file records #{record.inspect}" unless record["server"] == server && record["url"] == url
+      raise "#{name}: state file records #{record.inspect}" unless record["server"] == server && record["url"] == url
 
-      allowed, refused = cases_for(server, url)
+      allowed, refused = cases_for(server, url, mtls)
       pairs = [*allowed, *refused].map { |kase| [env, kase] }
       pairs += discovery_cases(url, state) if server == "rack"
-      run_all(server, child, pairs).each do |label, problem, output|
+      run_all(name, child, pairs).each do |label, problem, output|
         puts "#{problem ? 'FAIL' : 'ok  '} #{label}"
         failures << "#{label}: #{problem}\n#{output}" if problem
       end
@@ -346,13 +395,13 @@ begin
       totals[:refused] += refusals
       status = child.stop(signal, STOP_TIMEOUT)
       stopped = status&.success? && child.output.include?("#{server} server stopped")
-      raise "#{server} did not stop cleanly on SIG#{signal}:\n#{child.output}" unless stopped
-      raise "#{server} left its state file behind" if File.exist?(File.join(ROOT, state))
+      raise "#{name} did not stop cleanly on SIG#{signal}:\n#{child.output}" unless stopped
+      raise "#{name} left its state file behind" if File.exist?(File.join(ROOT, state))
 
-      puts "ok   #{server} stopped on SIG#{signal}"
+      puts "ok   #{name} stopped on SIG#{signal}"
       totals[:servers] += 1
     rescue StandardError => e
-      failures << "#{server}: #{e.message}"
+      failures << "#{name}: #{e.message}"
     ensure
       child.close
     end
@@ -365,5 +414,5 @@ unless failures.empty?
   warn "\n#{failures.join("\n\n")}"
   abort "Runnable examples failed: #{failures.size} problem(s)"
 end
-puts "Runnable examples passed: #{totals[:servers]} servers, #{totals[:allowed]} supported calls, " \
+puts "Runnable examples passed: #{totals[:servers]} server runs, #{totals[:allowed]} supported calls, " \
      "#{totals[:refused]} refusals"

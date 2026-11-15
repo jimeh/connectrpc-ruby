@@ -2,12 +2,15 @@
 
 require "optparse"
 require "uri"
-require_relative "support"
+require_relative "certs"
 
 module DemoExample
   Options = Struct.new(:client, :server, :url, :rpc, :args, :codec, :get, :gzip, :protocol, keyword_init: true) do
     def encoding = gzip ? :gzip : :identity
-    def settings = [protocol, codec, encoding, ("GET" if get)].compact.join(", ")
+    # The example servers serve https:// only with --mtls.
+    def mtls? = url.start_with?("https://")
+    def settings = [protocol, codec, encoding, ("GET" if get), ("mTLS" if mtls?)].compact.join(", ")
+    def pairing = to_h.slice(:client, :server, :rpc, :protocol, :codec, :get).merge(mtls: mtls?)
 
     # Native transports take only scheme, host and port.
     def origin
@@ -28,7 +31,9 @@ module DemoExample
           collect NAMES...   Client streaming (default: Ada Grace)
           chat NAMES...      Bidi streaming, one reply per name (default: Ada Grace)
       Without --server or --url the client calls the server recorded in
-      #{State.path.delete_prefix("#{ROOT}/")}. See #{README}.
+      #{State.path.delete_prefix("#{ROOT}/")}. An https:// server URL means the
+      server runs with --mtls, and the client presents the demo client
+      certificate from #{Certs.display_dir}. See #{README}.
     TEXT
     DEFAULTS = { rpc: "greet", codec: :proto, get: false, gzip: false, protocol: :connect }.freeze
 
@@ -52,8 +57,16 @@ module DemoExample
       raise Refusal, "Unknown RPC #{options.rpc}; choose one of: #{RPCS.keys.join(', ')}" unless RPCS.key?(options.rpc)
 
       options.server, options.url = Target.resolve(server: options.server, url: options.url)
-      Support.check!(**options.to_h.slice(:client, :server, :rpc, :protocol, :codec, :get))
+      Support.check!(**options.pairing)
+      require_certificates!(options) if options.mtls?
       options
+    end
+
+    def require_certificates!(options)
+      return if Certs.present?
+
+      raise Refusal, "#{options.url} needs the demo client certificate, but #{Certs.display_dir} has none.\n" \
+                     "Start the server with: mise run example:server -- #{options.server} --mtls"
     end
 
     # Each long option name becomes the matching Options field.

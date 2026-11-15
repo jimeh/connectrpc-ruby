@@ -17,11 +17,13 @@ These files show how to use ConnectRPC:
 | [demo/handlers.rb](demo/handlers.rb) | The service implementation, one handler per RPC shape, and the `ConnectRPC::Server` the hosts share |
 | [demo/calls.rb](demo/calls.rb) | Calling each RPC shape through the generated client |
 | [demo/call_log.rb](demo/call_log.rb) | An instrumentation subscriber that logs each RPC on the server |
+| [demo/mtls.rb](demo/mtls.rb) | The TLS options a host and a client need for [mutual TLS](#mutual-tls) |
 | [proto/demo/v1/demo.proto](proto/demo/v1/demo.proto) | The schema; [gen/](gen/) holds its generated Ruby |
 
 The rest is demo plumbing that you can skip: [demo/cli.rb](demo/cli.rb) parses
 client arguments, [demo/support.rb](demo/support.rb) holds the support table and
-state file, [demo/launch.rb](demo/launch.rb) handles the port and Ctrl-C, and
+state file, [demo/launch.rb](demo/launch.rb) handles the port, `--mtls` and
+Ctrl-C, [demo/certs.rb](demo/certs.rb) issues the demo certificates, and
 `scripts/example.rb` picks each file's bundle.
 
 ## Quick start
@@ -77,7 +79,8 @@ If a bundle is missing, the launcher prints the setup command to run.
 ## Servers
 
 Each server binds `127.0.0.1:8080`. Set `PORT` to use another port; `PORT=0`
-picks a free one and the ready line shows it.
+picks a free one and the ready line shows it. The `async` and `falcon` servers
+also accept `--mtls`; see [Mutual TLS](#mutual-tls).
 
 | Name | File | Setup task | Hosting | Serves |
 | --- | --- | --- | --- | --- |
@@ -125,6 +128,82 @@ See examples/README.md for the supported pairings.
 Anything the table allows reaches the library. If the library rejects it
 anyway, the client prints that error rather than hiding it.
 
+## Mutual TLS
+
+With mutual TLS (mTLS), each side presents a certificate and verifies the
+other's. Start the `async` or `falcon` server with `--mtls` to serve TLS and
+require a client certificate, then call it as usual:
+
+```sh
+# Terminal 1
+mise run example:server -- falcon --mtls
+
+# Terminal 2
+mise run example:client -- async-h2 greet Ada
+```
+
+The first `--mtls` server issues a throwaway demo CA, a server certificate for
+`localhost` and `127.0.0.1`, and a client certificate for `demo-client`. It
+writes them to `vendor/examples/tls/`, next to the state file, and later servers
+reuse them until a day before they expire after 7 days. They exist only for
+these examples.
+
+```text
+Issued demo certificates in vendor/examples/tls
+falcon server listening on https://127.0.0.1:8080 (Ctrl-C to stop)
+```
+
+The client sees the `https://` URL in the state file, so it trusts the demo CA
+and presents the client certificate. The handler gets the certificate that the
+server verified and returns its subject in a `demo-client` header:
+
+```text
+async-h2 -> falcon at https://127.0.0.1:8080 (connect, proto, identity, mTLS)
+request: demo-request-id=5c1f9a2e
+headers: demo-served-by=falcon demo-client=CN=demo-client
+message: Hello, Ada!
+trailers: demo-greeted=Ada
+```
+
+Three pieces configure it:
+
+- The server passes a `tls:` hash to `ConnectRPC::Async::Host` or
+  `ConnectRPC::Falcon::Server`, built by `MTLS.host_tls` in
+  [demo/mtls.rb](demo/mtls.rb). The hash holds its certificate chain, its
+  private key, and `client_ca`, the CAs it accepts client certificates from. A
+  non-empty `client_ca` makes the client certificate mandatory.
+- The client passes `ca_file:`, `certificate_chain:` and `private_key:` to
+  `ConnectRPC::Async::Transport` or `HTTP1Transport`, built by
+  `MTLS.client_tls`. The client always verifies the server's certificate and
+  hostname.
+- Inside a handler, `host.peer_certificate` returns the client certificate that
+  the host verified for the call. [servers/async.rb](servers/async.rb) and
+  [servers/falcon.rb](servers/falcon.rb) pass it to the handlers. A real
+  application would authorize the call from it.
+
+`async-h2` can call either mTLS server, and `async-http1` can call `falcon` over
+HTTP/1.1 with TLS. `nethttp` is refused because the core NetHTTP transport has no
+client certificate option, and `rack` and `rails` refuse `--mtls` because they
+have no qualified TLS profile.
+
+To watch the server enforce the client certificate, call it with curl:
+
+```sh
+curl --cacert vendor/examples/tls/ca.pem \
+  --cert vendor/examples/tls/client.pem --key vendor/examples/tls/client-key.pem \
+  -H 'content-type: application/json' -d '{"name":"Ada"}' \
+  https://127.0.0.1:8080/demo.v1.DemoService/Greet
+```
+
+This prints `{"greeting":"Hello, Ada!"}`. Without `--cert` and `--key`, the
+server ends the handshake with a `certificate required` alert. Without
+`--cacert`, curl cannot verify the server's certificate and refuses to connect.
+
+Production servers load certificates from their own CA, and both hosts can
+reload them without a restart. See
+[TLS and client authentication](../gems/connectrpc-async/README.md#tls-and-client-authentication)
+in the Async README.
+
 ## RPCs and options
 
 ```text
@@ -142,7 +221,7 @@ mise run example:client -- NAME [RPC [ARGS...]] [options]
 | Option | Effect |
 | --- | --- |
 | `--server NAME` | Name the server you are calling. See [Finding the server](#finding-the-server). |
-| `--url URL` | Call this URL. Without `--server`, it must match the running server's URL. |
+| `--url URL` | Call this URL. Without `--server`, it must match the running server's URL. An `https://` URL makes an [mTLS](#mutual-tls) call. |
 | `--codec proto\|json` | Protobuf (default) or ProtoJSON. |
 | `--get` | Connect GET for unary calls (`Greet` is declared `NO_SIDE_EFFECTS`). |
 | `--gzip` | Compress requests and accept gzip responses. |
@@ -233,8 +312,9 @@ hosts.
 
 `mise run example:verify` starts each server on an ephemeral port, runs every
 supported client, RPC and option combination plus representative refusals, and
-then stops the server with INT or TERM. CI runs it in the "Runnable examples"
-job.
+then stops the server with INT or TERM. It then runs the `async` and `falcon`
+servers again with `--mtls` for a representative set of calls, and checks the
+`demo-client` header on each. CI runs it in the "Runnable examples" job.
 
 For every supported call, the verifier finds the server's
 [call log](#server-call-log) line with the client's `demo-request-id`. It checks

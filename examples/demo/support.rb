@@ -38,6 +38,12 @@ module DemoExample
     "async-http1" => { http: "HTTP/1.1", protocols: { connect: H1_STREAMING } }
   }.freeze
 
+  # Which servers can require client certificates (--mtls) and which clients
+  # can present one. Mirrors docs/support.md: core NetHTTP has no client
+  # certificate option, and Rack and Rails have no qualified TLS profile.
+  MTLS_SERVERS = %w[async falcon].freeze
+  MTLS_CLIENTS = %w[async-h2 async-http1].freeze
+
   # Raised for any pairing or target the examples deliberately do not attempt.
   class Refusal < StandardError; end
 
@@ -45,19 +51,19 @@ module DemoExample
   module Support
     module_function
 
-    def check!(client:, server:, rpc:, protocol: :connect, codec: :proto, get: false)
+    def check!(client:, server:, rpc:, protocol: :connect, codec: :proto, get: false, mtls: false)
       reason = option_reason(rpc, protocol, codec, get)
       raise Refusal, "#{reason}.\nSee #{README} for the supported options." if reason
 
-      reason = pairing_reason(client, server, rpc, protocol)
+      reason = pairing_reason(client, server, rpc, protocol, mtls)
       return unless reason
 
       raise Refusal, [
-        "#{reason}.", *alternatives(client, server, rpc, protocol), "See #{README} for the supported pairings."
+        "#{reason}.", *alternatives(client, server, rpc, protocol, mtls), "See #{README} for the supported pairings."
       ].join("\n")
     end
 
-    def allowed?(client, server, rpc, protocol) = pairing_reason(client, server, rpc, protocol).nil?
+    def allowed?(client, server, rpc, protocol, mtls) = pairing_reason(client, server, rpc, protocol, mtls).nil?
 
     def option_reason(rpc, protocol, codec, get)
       return "gRPC requires the protobuf codec; drop --codec json" if protocol == :grpc && codec == :json
@@ -66,10 +72,12 @@ module DemoExample
       "--get applies only to unary RPCs (greet, fail), not #{rpc}" if get && RPCS.fetch(rpc) != :unary
     end
 
-    # A pair works only when the client can make the call at all, and the server
-    # hosts that protocol and RPC shape on the client's one HTTP version.
-    def pairing_reason(client, server, rpc, protocol)
-      client_reason(client, rpc, protocol) || server_reason(client, server, rpc, protocol)
+    # A pair works only when the client can make the call at all, both sides
+    # support mutual TLS when the server requires it, and the server hosts that
+    # protocol and RPC shape on the client's one HTTP version.
+    def pairing_reason(client, server, rpc, protocol, mtls)
+      client_reason(client, rpc, protocol) || (mtls_reason(client, server) if mtls) ||
+        server_reason(client, server, rpc, protocol)
     end
 
     def client_reason(client, rpc, protocol)
@@ -79,6 +87,15 @@ module DemoExample
       return if shapes.include?(shape)
 
       "#{client} supports only #{names(shapes)} #{PROTOCOLS[protocol]} calls; #{rpc} is #{SHAPES[shape]}"
+    end
+
+    def mtls_reason(client, server)
+      unless MTLS_CLIENTS.include?(client)
+        return "#{client} cannot present a client certificate, so it cannot call an --mtls server"
+      end
+      return if MTLS_SERVERS.include?(server)
+
+      "#{server} does not serve mutual TLS in these examples; only #{MTLS_SERVERS.join(' and ')} accept --mtls"
     end
 
     def server_reason(client, server, rpc, protocol)
@@ -94,19 +111,21 @@ module DemoExample
         "#{rpc} is #{SHAPES[RPCS.fetch(rpc)]}"
     end
 
-    def alternatives(client, server, rpc, protocol)
-      over = protocol == :grpc ? " with --protocol grpc" : ""
-      clients = CLIENTS.keys.select { |name| allowed?(name, server, rpc, protocol) }
-      servers = SERVERS.keys.select { |name| allowed?(client, name, rpc, protocol) }
+    def alternatives(client, server, rpc, protocol, mtls)
+      over = qualifier(protocol, mtls)
+      clients = CLIENTS.keys.select { |name| allowed?(name, server, rpc, protocol, mtls) }
+      servers = SERVERS.keys.select { |name| allowed?(client, name, rpc, protocol, mtls) }
       lines = []
       lines << "Clients that can call #{rpc} on #{server}#{over}: #{clients.join(', ')}" if clients.any?
       lines << "Servers that #{client} can call #{rpc} on#{over}: #{servers.join(', ')}" if servers.any?
-      lines.empty? ? ["Pairings that can call #{rpc}#{over}: #{working_pairs(rpc, protocol)}"] : lines
+      lines.empty? ? ["Pairings that can call #{rpc}#{over}: #{working_pairs(rpc, protocol, mtls)}"] : lines
     end
 
-    def working_pairs(rpc, protocol)
+    def qualifier(protocol, mtls) = "#{' with --protocol grpc' if protocol == :grpc}#{' over mTLS' if mtls}"
+
+    def working_pairs(rpc, protocol, mtls)
       pairs = CLIENTS.keys.product(SERVERS.keys).filter_map do |client, server|
-        "#{client} -> #{server}" if allowed?(client, server, rpc, protocol)
+        "#{client} -> #{server}" if allowed?(client, server, rpc, protocol, mtls)
       end
       pairs.join(", ")
     end

@@ -50,7 +50,7 @@ and final verification, and those tasks install its project pin separately.
 
 To run a server and call it from another terminal, see the
 [runnable examples](examples/README.md): Rack, Rails, Async and Falcon servers
-with NetHTTP and Async clients.
+with NetHTTP and Async clients, including mutual TLS.
 
 ## Generate services from protobuf
 

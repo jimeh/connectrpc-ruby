@@ -13,8 +13,11 @@ module DemoExample
   # ConnectRPC. Handlers receive typed protobuf messages and a context, and
   # return or send typed messages.
   class Handlers
-    def initialize(served_by)
+    # client_certificate, when given, returns the client certificate the host
+    # verified for the current call, or nil (see servers/async.rb).
+    def initialize(served_by, client_certificate: nil)
       @served_by = served_by
+      @client_certificate = client_certificate
     end
 
     # The generated helper checks that every RPC has a handler.
@@ -29,7 +32,7 @@ module DemoExample
       raise ConnectRPC::Error.new(:invalid_argument, "name is required") if request.name.empty?
 
       # Response headers go out before the message, trailers after it.
-      context.response_metadata.add("demo-served-by", @served_by)
+      add_headers(context)
       context.response_trailers.add("demo-greeted", request.name)
       Demo::V1::GreetResponse.new(greeting: "Hello, #{request.name}!")
     end
@@ -38,7 +41,7 @@ module DemoExample
     def countdown(request, writer, context)
       raise ConnectRPC::Error.new(:invalid_argument, "from must be 1..10") unless (1..10).cover?(request.from)
 
-      context.response_metadata.add("demo-served-by", @served_by)
+      add_headers(context)
       request.from.downto(1) { |number| writer.send_message(Demo::V1::CountdownResponse.new(number: number)) }
       context.response_trailers.add("demo-countdown", "done")
     end
@@ -47,14 +50,24 @@ module DemoExample
     def collect(reader, context)
       names = []
       reader.each { |message| names << message.name } # rubocop:disable Style/MapIntoArray -- readers have no map.
-      context.response_metadata.add("demo-served-by", @served_by)
+      add_headers(context)
       Demo::V1::CollectResponse.new(summary: "Collected #{names.size} names: #{names.join(', ')}")
     end
 
     # Bidirectional streaming: reply to each message as soon as it arrives.
     def chat(duplex, context)
-      context.response_metadata.add("demo-served-by", @served_by)
+      add_headers(context)
       duplex.each { |message| duplex.send_message(Demo::V1::ChatResponse.new(text: "Hello, #{message.text}!")) }
+    end
+
+    private
+
+    # Every RPC names the server that answered. Under mTLS it also names the
+    # client the host verified; an application would authorize calls from it.
+    def add_headers(context)
+      context.response_metadata.add("demo-served-by", @served_by)
+      certificate = @client_certificate&.call
+      context.response_metadata.add("demo-client", certificate.subject.to_utf8) if certificate
     end
   end
 
@@ -62,9 +75,9 @@ module DemoExample
   # It accepts both codecs, and `encoding: :gzip` also accepts gzip. Native
   # HTTP/2 hosts pass `protocol: :auto` to serve Connect and gRPC on the same
   # port. The instrumentation prints the per-RPC log line (see call_log.rb).
-  def self.connect_server(served_by:, protocol: :connect)
+  def self.connect_server(served_by:, protocol: :connect, client_certificate: nil)
+    handlers = Handlers.new(served_by, client_certificate: client_certificate).to_h
     ConnectRPC::Server.new(services: [Demo::V1::DemoService::SERVICE], binding: ConnectRPC::Bindings::GoogleProtobuf.new,
-                           handlers: Handlers.new(served_by).to_h, protocol: protocol, encoding: :gzip,
-                           instrumentation: instrumentation)
+                           handlers: handlers, protocol: protocol, encoding: :gzip, instrumentation: instrumentation)
   end
 end

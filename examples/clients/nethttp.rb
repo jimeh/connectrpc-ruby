@@ -1,7 +1,8 @@
 # frozen_string_literal: true
 
 # NetHTTP client: core's default, dependency-free transport. It makes Connect
-# unary calls over HTTP/1.1, with POST or opt-in GET.
+# unary calls over HTTP/1.1, with POST or opt-in GET. It has no client
+# certificate option, so it cannot call a server started with --mtls.
 require_relative "../demo/cli"
 require_relative "../demo/calls"
 

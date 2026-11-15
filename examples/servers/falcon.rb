@@ -1,8 +1,8 @@
 # frozen_string_literal: true
 
-# Falcon server: ConnectRPC::Falcon::Server on one plaintext endpoint. HTTP/1.1
-# clients get Connect unary and SS/CS streaming; HTTP/2 clients also get bidi and
-# native gRPC.
+# Falcon server: ConnectRPC::Falcon::Server on one endpoint, plaintext by default
+# or TLS that requires a client certificate with --mtls. HTTP/1.1 clients get
+# Connect unary and SS/CS streaming; HTTP/2 clients also get bidi and native gRPC.
 #
 # Production deployments normally use `falcon host` with the service DSL, which
 # adds process workers and restarts; see gems/connectrpc-falcon/examples/falcon.rb.
@@ -11,15 +11,23 @@ require "async"
 require "connectrpc/falcon"
 require_relative "../demo/launch"
 require_relative "../demo/handlers"
+require_relative "../demo/mtls"
 
 DemoExample::Launch.serve("falcon") do |launch|
-  server = DemoExample.connect_server(served_by: "falcon", protocol: :auto)
+  host = nil
+  # Inside a handler, host.peer_certificate returns the client certificate the
+  # server verified for that call. It is nil without --mtls.
+  server = DemoExample.connect_server(served_by: "falcon", protocol: :auto,
+                                      client_certificate: -> { host.peer_certificate })
+  # With --mtls the endpoint is https:// and the server requires a client
+  # certificate signed by the demo CA. The URL scheme and `tls:` must agree.
+  tls = DemoExample::MTLS.host_tls if launch.mtls?
   Sync do
     # Bind first so the actual port is known. The caller owns this bound endpoint.
-    endpoint = ConnectRPC::Falcon::Endpoint.parse("http://127.0.0.1:#{launch.port}").bound
-    host = ConnectRPC::Falcon::Server.new(server: server, endpoint: endpoint)
+    endpoint = ConnectRPC::Falcon::Endpoint.parse("#{launch.scheme}://127.0.0.1:#{launch.port}").bound
+    host = ConnectRPC::Falcon::Server.new(server: server, endpoint: endpoint, tls: tls)
     host.run
-    launch.ready("http://127.0.0.1:#{endpoint.sockets.first.local_address.ip_port}")
+    launch.ready("#{launch.scheme}://127.0.0.1:#{endpoint.sockets.first.local_address.ip_port}")
     launch.wait_for_shutdown
   ensure
     host&.close(grace: 5)

@@ -33,6 +33,10 @@ supported alternatives; it never appears to work by accident.
 - Rails: add `webrick 1.9.2` as a development gem to the Rails Appraisal lanes and
   regenerate both lane gemfiles/locks with Appraisal, so the Rails server runs from
   its own lane (`RAILS_LANE` selects 8.0 or 8.1).
+- Mutual TLS (added 2026-11-15 after the first review rounds): `example:server --
+  async|falcon --mtls` serves TLS and requires a client certificate. The server
+  issues a throwaway demo CA, server and client certificate on demand. Clients
+  use mTLS automatically for an `https://` URL. See [Mutual TLS](#mutual-tls).
 
 ## Constraints
 
@@ -97,6 +101,25 @@ RPC commands: `greet [NAME]` (default), `countdown [N]`, `collect NAMES...`,
 `--codec proto|json`, `--get`, `--gzip`, `--protocol connect|grpc`. Output prints
 messages, response metadata/trailers and errors (`code: message`). Exit 0 on
 success, nonzero on error or refusal.
+
+### Mutual TLS
+
+- Servers: `async` and `falcon` accept `--mtls` and pass a `tls:` hash with
+  `client_ca`, so a verified client certificate is mandatory. `rack` and `rails`
+  refuse `--mtls` with exit 2, since `docs/support.md` qualifies no TLS for them.
+- Certificates: `examples/demo/certs.rb` issues an EC P-256 CA, a server leaf for
+  `localhost`/`127.0.0.1` and a `demo-client` leaf, valid 7 days, into a `tls`
+  directory next to the state file (`vendor/examples/tls` by default). Servers
+  reuse a set valid for at least another day. The set is staged and renamed into
+  place. Nothing is committed.
+- Clients: `async-h2` and `async-http1` pass `ca_file`, `certificate_chain` and
+  `private_key` for an `https://` URL. `nethttp` is refused, because the core
+  transport has no client certificate option. A client refuses when the
+  certificate files are missing.
+- Evidence: handlers return the subject of `host.peer_certificate` in a
+  `demo-client` response header, which shows the server verified the client.
+- `examples/demo/mtls.rb` holds the host and client TLS options in one readable
+  place.
 
 ### Pairing check
 
@@ -193,7 +216,7 @@ success, nonzero on error or refusal.
 
 ## Non-goals
 
-- TLS/mTLS (existing integration scripts cover it), gRPC-Web clients, Testing and
+- Server-only TLS, and TLS for Rack, Rails or NetHTTP, gRPC-Web clients, Testing and
   OTel in the server/client matrix, Puma or other Rack servers, production
   deployment guidance, detecting a mislabelled `--server`.
 - Changing the behavior of existing example tasks.
@@ -212,7 +235,9 @@ success, nonzero on error or refusal.
 | State-file discovery across runner `chdir` | `example:verify` state-file-only client runs |
 | Lint, syntax, workflow | `mise run check` (includes `lint:workflows`), `async:check`, `falcon:check`, `rack:check` |
 | Final handoff | `mise run verify` then `mise run rack:verify` |
-| Manual | Two-terminal run of one pair per server, Ctrl-C shutdown |
+| mTLS pairs work and the server verifies the client | `example:verify` `--mtls` runs check the `demo-client` header; perturbing `client_ca: nil` fails them |
+| Unsupported mTLS pairs fail clearly | `example:verify`: `rack --mtls`, `nethttp` to an mTLS server, missing certificates |
+| Manual | Two-terminal run of one pair per server, Ctrl-C shutdown; curl with and without a client certificate |
 
 ## Open questions
 

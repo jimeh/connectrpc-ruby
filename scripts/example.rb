@@ -1,7 +1,7 @@
 # frozen_string_literal: true
 
 # Runs one runnable example server or client in the bundle that owns it:
-#   ruby scripts/example.rb server NAME
+#   ruby scripts/example.rb server NAME [--mtls]
 #   ruby scripts/example.rb client NAME [RPC [ARGS...]] [options]
 #   ruby scripts/example.rb --list
 require "rbconfig"
@@ -31,16 +31,18 @@ unless examples.fetch("server").keys == DemoExample::SERVERS.keys &&
 end
 
 if ARGV.include?("--list")
-  puts "Servers (mise run example:server -- NAME; PORT overrides #{DemoExample::DEFAULT_PORT}):"
+  puts "Servers (mise run example:server -- NAME [--mtls]; PORT overrides #{DemoExample::DEFAULT_PORT}):"
   DemoExample::SERVERS.each do |name, served|
     puts "  #{name.ljust(12)} #{served.map { |http, protocols| "#{http} #{protocols.keys.join('+')}" }.join(', ')}"
   end
+  puts "  --mtls: serve TLS and require a client certificate (#{DemoExample::MTLS_SERVERS.join(', ')})"
   puts "Clients (mise run example:client -- NAME [RPC [ARGS...]] [options]):"
   DemoExample::CLIENTS.each do |name, speaks|
     puts "  #{name.ljust(12)} #{speaks[:http]} #{speaks[:protocols].keys.join('+')}"
   end
   puts "RPCs: #{DemoExample::RPCS.map { |rpc, shape| "#{rpc} (#{DemoExample::SHAPES[shape]})" }.join(', ')}"
   puts "Options: --server NAME --url URL --codec proto|json --get --gzip --protocol connect|grpc"
+  puts "mTLS clients (for an https:// server): #{DemoExample::MTLS_CLIENTS.join(', ')}"
   puts "See #{DemoExample::README}."
   exit
 end
