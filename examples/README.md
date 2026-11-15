@@ -145,12 +145,11 @@ mise run example:client -- async-h2 greet Ada
 The first `--mtls` server issues a throwaway demo CA, a server certificate for
 `localhost` and `127.0.0.1`, and a client certificate for `demo-client`. It
 writes them to `vendor/examples/tls/`, next to the state file, and later servers
-reuse them until a day before they expire after 7 days. Renewing them replaces
-the CA, so restart any older `--mtls` server that is still running. They exist
-only for these examples.
+reuse them until a day before they expire. They exist only for these examples.
 
 ```text
 Issued demo certificates in vendor/examples/tls
+Loaded TLS certificates (version 2c0a6b209ca29991)
 falcon server listening on https://127.0.0.1:8080 (Ctrl-C to stop)
 ```
 
@@ -168,11 +167,12 @@ trailers: demo-greeted=Ada
 
 Three pieces configure it:
 
-- The server passes a `tls:` hash to `ConnectRPC::Async::Host` or
-  `ConnectRPC::Falcon::Server`, built by `MTLS.host_tls` in
-  [demo/mtls.rb](demo/mtls.rb). The hash holds its certificate chain, its
+- The server passes `tls_provider:` to `ConnectRPC::Async::Host` or
+  `ConnectRPC::Falcon::Server`, built by `MTLS.host_tls_provider` in
+  [demo/mtls.rb](demo/mtls.rb). The provider returns its certificate chain, its
   private key, and `client_ca`, the CAs it accepts client certificates from. A
-  non-empty `client_ca` makes the client certificate mandatory.
+  non-empty `client_ca` makes the client certificate mandatory. Certificates
+  that never change can go in a static `tls:` hash instead.
 - The client passes `ca_file:`, `certificate_chain:` and `private_key:` to
   `ConnectRPC::Async::Transport` or `HTTP1Transport`, built by
   `MTLS.client_tls`. The client always verifies the server's certificate and
@@ -200,10 +200,43 @@ This prints `{"greeting":"Hello, Ada!"}`. Without `--cert` and `--key`, the
 server ends the handshake with a `certificate required` alert. Without
 `--cacert`, curl cannot verify the server's certificate and refuses to connect.
 
-Production servers load certificates from their own CA, and both hosts can
-reload them without a restart. See
+### Short-lived certificates
+
+Certificates that expire in hours or days have to be replaced while servers and
+clients keep running. Both sides of the example show how:
+
+- **Server.** The host calls its `tls_provider:` at startup and then every
+  `refresh_interval` seconds: 5 here, 60 by default. The demo provider rereads
+  the certificate files and uses a digest of them as the `version`. When the
+  version changes, new connections get the new certificates and the server
+  logs `Loaded TLS certificates`. A provider that fails or returns invalid
+  certificates leaves the last good set in place. Open connections keep the
+  certificate they started with. `host.drain_tls(grace:)` retires them: calls
+  already running finish, and later calls on those connections are refused.
+- **Client.** A transport keeps the certificate and trust it was built with. A
+  long-lived client rotates by building a new transport and client from the
+  renewed files and closing the old transport once its calls finish. The
+  example clients make one call per run, so each run reads the current files.
+- **CA.** Renewal issues new server and client certificates under the same CA,
+  so peers that have not refreshed yet still trust the new ones. To change a CA,
+  trust the old and new CAs together (`client_ca` takes a list, and `ca_file`
+  can hold several certificates) until every peer has moved over.
+
+To watch a rotation, renew the certificates while an `--mtls` server runs:
+
+```sh
+ruby -r ./examples/demo/certs -e DemoExample::Certs.renew!
+```
+
+Within about 5 seconds the server logs a new `Loaded TLS certificates`
+version, and the next client call uses the new certificates.
+`mise run example:verify` checks that each `--mtls` server then presents the
+renewed certificate. Applications that push new certificates instead of polling
+can use a static `tls:` hash and call `host.reload_tls`; see
 [TLS and client authentication](../gems/connectrpc-async/README.md#tls-and-client-authentication)
-in the Async README.
+in the Async README and
+[TLS lifecycle](../gems/connectrpc-falcon/README.md#tls-lifecycle) in the Falcon
+README.
 
 ## RPCs and options
 
@@ -315,8 +348,9 @@ hosts.
 `mise run example:verify` starts each server on an ephemeral port, runs every
 supported client, RPC and option combination plus representative refusals, and
 then stops the server with INT or TERM. It then runs the `async` and `falcon`
-servers again with `--mtls` for a representative set of calls, and checks the
-`demo-client` header on each. CI runs it in the "Runnable examples" job.
+servers again with `--mtls` for a representative set of calls, checks the
+`demo-client` header on each, and renews the certificates to check that each
+server presents the new one without a restart. CI runs it in the "Runnable examples" job.
 
 For every supported call, the verifier finds the server's
 [call log](#server-call-log) line with the client's `demo-request-id`. It checks

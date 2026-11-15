@@ -20,12 +20,18 @@ DemoExample::Launch.serve("falcon") do |launch|
   server = DemoExample.connect_server(served_by: "falcon", protocol: :auto,
                                       client_certificate: -> { host.peer_certificate })
   # With --mtls the endpoint is https:// and the server requires a client
-  # certificate signed by the demo CA. The URL scheme and `tls:` must agree.
-  tls = DemoExample::MTLS.host_tls if launch.mtls?
+  # certificate signed by the demo CA. The provider rereads the certificate files
+  # every 5 seconds (the default is 60), so renewed certificates take effect
+  # without a restart (see demo/mtls.rb). The URL scheme and TLS options must agree.
+  tls = {}
+  if launch.mtls?
+    provider = DemoExample::MTLS.host_tls_provider { |version| puts "Loaded TLS certificates (version #{version})" }
+    tls = { tls_provider: provider, refresh_interval: 5 }
+  end
   Sync do
     # Bind first so the actual port is known. The caller owns this bound endpoint.
     endpoint = ConnectRPC::Falcon::Endpoint.parse("#{launch.scheme}://127.0.0.1:#{launch.port}").bound
-    host = ConnectRPC::Falcon::Server.new(server: server, endpoint: endpoint, tls: tls)
+    host = ConnectRPC::Falcon::Server.new(server: server, endpoint: endpoint, **tls)
     host.run
     launch.ready("#{launch.scheme}://127.0.0.1:#{endpoint.sockets.first.local_address.ip_port}")
     launch.wait_for_shutdown

@@ -119,6 +119,14 @@ success, nonzero on error or refusal.
   certificate files are missing.
 - Evidence: handlers return the subject of `host.peer_certificate` in a
   `demo-client` response header, which shows the server verified the client.
+- Rotation (added 2026-11-15 at Jim's request): both servers use
+  `tls_provider:` with `refresh_interval: 5`, and the provider rereads the files
+  with a content digest as `version`. `Certs.renew!` issues new leaves under the
+  current CA, so peers that have not refreshed still trust each other. Comments
+  and the README cover `drain_tls`, rotating a client by replacing its
+  transport, and overlapping trust when a CA changes. `example:verify` renews
+  under each running `--mtls` server and checks by TLS handshake that the
+  server presents the renewed certificate.
 - `examples/demo/mtls.rb` holds the host and client TLS options in one readable
   place.
 
@@ -236,6 +244,7 @@ success, nonzero on error or refusal.
 | State-file discovery across runner `chdir` | `example:verify` state-file-only client runs |
 | Lint, syntax, workflow | `mise run check` (includes `lint:workflows`), `async:check`, `falcon:check`, `rack:check` |
 | Final handoff | `mise run verify` then `mise run rack:verify` |
+| Certificate rotation without a restart | `example:verify` renewal check; a provider that logs a new version but serves the old certificate fails it |
 | mTLS pairs work and the server verifies the client | `example:verify` `--mtls` runs check the `demo-client` header; perturbing `client_ca: nil` fails them |
 | Unsupported mTLS pairs fail clearly | `example:verify`: `rack --mtls`, `nethttp` to an mTLS server, missing certificates |
 | Manual | Two-terminal run of one pair per server, Ctrl-C shutdown; curl with and without a client certificate |

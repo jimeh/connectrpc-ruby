@@ -317,7 +317,8 @@ One check on Ruby 4.0.9 runs `example:verify`. It starts each
 runs every supported client, RPC and option combination against it plus
 representative refusals, and stops it with INT or TERM. The Async and Falcon
 servers then run again with `--mtls` and generated throwaway certificates for a
-representative set of calls. Every client and
+representative set of calls, and renew those certificates to check that each
+server presents the new one without a restart. Every client and
 server process has a bounded deadline with TERM then KILL escalation. The
 setup-ruby cache covers the root `vendor/bundle`; the selected Rails 8.1 lane
 installs its remaining gems into that path on each run. An explicit cache keyed

@@ -16,11 +16,17 @@ DemoExample::Launch.serve("async") do |launch|
   server = DemoExample.connect_server(served_by: "async", protocol: :auto,
                                       client_certificate: -> { host.peer_certificate })
   # With --mtls the host serves TLS and requires a client certificate signed by
-  # the demo CA. Without `tls:` it serves h2c.
-  tls = DemoExample::MTLS.host_tls if launch.mtls?
+  # the demo CA. The provider rereads the certificate files every 5 seconds (the
+  # default is 60), so renewed certificates take effect without a restart (see
+  # demo/mtls.rb). Without TLS options the host serves h2c.
+  tls = {}
+  if launch.mtls?
+    provider = DemoExample::MTLS.host_tls_provider { |version| puts "Loaded TLS certificates (version #{version})" }
+    tls = { tls_provider: provider, refresh_interval: 5 }
+  end
   # The application owns the reactor; the host runs inside it.
   Sync do |task|
-    host = ConnectRPC::Async::Host.new(server: server, port: launch.port, tls: tls).start
+    host = ConnectRPC::Async::Host.new(server: server, port: launch.port, **tls).start
     launch.ready("#{launch.scheme}://127.0.0.1:#{host.port}")
     shutdown = task.async do
       launch.wait_for_shutdown

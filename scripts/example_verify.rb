@@ -4,8 +4,11 @@
 # supported client call against it plus representative refusals, then stops it.
 # The Async and Falcon servers run again with --mtls for a representative set.
 require "fileutils"
+require "io/wait"
 require "json"
+require "openssl"
 require "rbconfig"
+require "socket"
 require "uri"
 require_relative "../examples/demo/support"
 
@@ -15,6 +18,8 @@ READY_TIMEOUT = 120
 CLIENT_TIMEOUT = 60
 STOP_TIMEOUT = 20
 EVIDENCE_TIMEOUT = 10
+ROTATION_TIMEOUT = 30
+CERTS = File.join(ROOT, "examples/demo/certs.rb")
 WORKERS = 4
 
 # One child process in its own process group, with combined output captured
@@ -322,6 +327,69 @@ end
 
 def label(server, kase) = "#{server} <- #{kase.client} #{kase.args.join(' ')}"
 
+def monotonic = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+
+# Renews the demo certificates under a running --mtls server, which must log
+# the new version and then present the renewed certificate on new handshakes.
+def rotation_problem(env, host, url, state)
+  tls_dir = File.join(ROOT, File.dirname(state), "tls")
+  known = host.output.scan(/^Loaded TLS certificates \(version (\h+)\)$/).flatten
+  return "server logged no TLS certificate version" if known.empty?
+
+  renew = Child.new(env, [RbConfig.ruby, "-r", CERTS, "-e", "DemoExample::Certs.renew!"])
+  status = renew.wait(READY_TIMEOUT) || renew.kill
+  return "renewing the certificates failed:\n#{renew.output}" unless status&.success?
+
+  loaded = /^Loaded TLS certificates \(version (?!#{known.join('|')})\h+\)$/
+  return "server logged no new version within #{ROTATION_TIMEOUT}s" unless host.wait_for(loaded, ROTATION_TIMEOUT)
+
+  renewed_serial_problem(url, tls_dir)
+ensure
+  renew&.close
+end
+
+# The host publishes the new certificate right after it loads it, so poll
+# handshakes until it appears, within a bounded deadline.
+def renewed_serial_problem(url, tls_dir)
+  expected = OpenSSL::X509::Certificate.new(File.read(File.join(tls_dir, "server.pem"))).serial
+  deadline = monotonic + ROTATION_TIMEOUT
+  loop do
+    served = served_serial(url, tls_dir)
+    return if served == expected
+    return "server still presents serial #{served}, not the renewed #{expected}" if monotonic > deadline
+  end
+end
+
+# Completes one mutual TLS handshake as the demo client and returns the serial
+# of the certificate the server presented.
+def served_serial(url, tls_dir)
+  uri = URI(url)
+  context = OpenSSL::SSL::SSLContext.new
+  context.set_params(verify_mode: OpenSSL::SSL::VERIFY_PEER, ca_file: File.join(tls_dir, "ca.pem"))
+  context.add_certificate(OpenSSL::X509::Certificate.new(File.read(File.join(tls_dir, "client.pem"))),
+                          OpenSSL::PKey.read(File.read(File.join(tls_dir, "client-key.pem"))))
+  context.alpn_protocols = ["h2"]
+  socket = Socket.tcp(uri.host, uri.port, connect_timeout: 5)
+  tls = OpenSSL::SSL::SSLSocket.new(socket, context)
+  tls.sync_close = true
+  tls.hostname = uri.host
+  handshake(tls, socket, monotonic + 5)
+  tls.peer_cert.serial
+ensure
+  tls ? tls.close : socket&.close
+end
+
+def handshake(tls, socket, deadline)
+  tls.connect_nonblock
+rescue IO::WaitReadable, IO::WaitWritable => e
+  remaining = deadline - monotonic
+  ready = remaining.positive? &&
+          (e.is_a?(IO::WaitReadable) ? socket.wait_readable(remaining) : socket.wait_writable(remaining))
+  raise "TLS handshake timed out" unless ready
+
+  retry
+end
+
 # Servers that must exit before binding a port: the name, extra environment,
 # server arguments, exit status and message.
 SERVER_REFUSALS = [
@@ -424,6 +492,11 @@ begin
       run_all(name, child, pairs).each do |label, problem, output|
         puts "#{problem ? 'FAIL' : 'ok  '} #{label}"
         failures << "#{label}: #{problem}\n#{output}" if problem
+      end
+      if mtls
+        problem = rotation_problem(env, child, url, state)
+        puts "#{problem ? 'FAIL' : 'ok  '} #{name} serves renewed certificates without a restart"
+        failures << "#{name}: #{problem}\n#{child.output}" if problem
       end
       refusals = pairs.count { |_, kase| kase.status == 2 }
       totals[:allowed] += pairs.size - refusals
