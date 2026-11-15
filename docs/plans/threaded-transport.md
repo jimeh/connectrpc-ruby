@@ -44,7 +44,7 @@ Jim accepted these choices on 2026-11-15:
 | Question | Decision |
 | --- | --- |
 | Package and name | `ConnectRPC::Async::ThreadedTransport` in `connectrpc-async`. It uses `Client.new(transport:)` like the other transports. |
-| Defaults | Go-like: one connection, fail-fast, backoff of 1 s growing by 1.6x with 20% jitter and a hard 30 s cap, one extra draining connection, 16 MiB of admitted request bytes, refused unary calls retried once. |
+| Defaults | Go-like: one connection, fail-fast, backoff of 1 s growing by 1.6x with 20% jitter and a hard 30 s cap, one extra draining connection, 16 MiB of admitted request bytes, refused Connect unary calls retried once. |
 | Tuning | Every policy value is configurable, and each feature can be turned off: `backoff: nil`, `max_pending_bytes: nil`, `retry_refused: false`, `max_draining: 0`. `wait_for_ready` requires a backoff. |
 | Effect on `Async::Transport` | The connection policy is on by default for every H2 `Transport`, not only `ThreadedTransport`. There is no legacy mode. Jim chose this on 2026-11-15, reversing an earlier opt-in choice, because nothing has been released and nobody depends on today's behavior yet. It overrides #28's request to preserve existing behavior. |
 | Delivery | Four PRs: the #28 manager core, threaded Connect unary, GOAWAY replacement with refused-stream retry, then the stream proxy. Client and bidi streaming from threads come later. |
@@ -211,9 +211,9 @@ users recognize them.
 | State | Meaning | Leaves when |
 | --- | --- | --- |
 | `idle` | No usable connection and no attempt. The constructor starts here; no socket is opened before demand. | A call arrives: `connecting`. |
-| `connecting` | One attempt is in progress. | Readiness: `ready`. Failure: `transient_failure`, or `idle` when `backoff` is `nil`. |
+| `connecting` | No usable connection, and one attempt is in progress. | Readiness: `ready`. Failure: `transient_failure`, or `idle` when `backoff` is `nil`. |
 | `ready` | At least one active connection accepts new streams. | The last active connection fails or retires: `idle`, or `connecting` if calls are waiting. |
-| `transient_failure` | The last attempt failed and the backoff timer runs. | The timer fires: `connecting` if wait-for-ready calls are waiting, otherwise `idle`. |
+| `transient_failure` | No usable connection, the last attempt failed and the backoff timer runs. | The timer fires: `connecting` if wait-for-ready calls are waiting, otherwise `idle`. |
 | `closing`, `closed` | `close` was called or the owner exited. | Terminal. |
 
 Readiness means TCP connect, TLS with hostname and ALPN `h2` verification, the
@@ -226,24 +226,30 @@ first frame and requires it to be SETTINGS (`client.rb`,
 ### Call admission and waiting
 
 1. **Admission.** Each call reserves one admission slot from `max_requests`.
-   A unary call also reserves its encoded request bytes
+   A Connect unary call through `Transport#call` also reserves its encoded
+   request bytes
    from `max_pending_bytes`. For POST these are the body bytes. For GET they
    are the request-target bytes, because core moves the encoded message into
    the query and sends an empty body (`lib/connectrpc/client.rb:174-179`). If
    either budget is exhausted, the call fails immediately with `unavailable`.
    The reservation lasts until the call's terminal outcome. Streams reserve a
    slot but no bytes, because their output is already bounded to one queued and
-   one in-flight fragment.
-2. **Acquisition.** If an active connection has free stream capacity, the call
-   takes it. Otherwise the outcome depends on the state:
-   - `idle`, or every active connection at its stream limit with spare
-     `connection_limit`: start the shared attempt, or join the one in progress,
-     and wait for it.
-   - `connecting`: wait for the current attempt.
-   - `transient_failure`: fail fast with `unavailable`, unless wait-for-ready
-     is set.
-   - all connections at their stream limit with no spare capacity: wait for
-     stream capacity, as the pool does today.
+   one in-flight fragment. Native gRPC unary counts as a stream here: core
+   sends it through `open_grpc_stream`, not `Transport#call`
+   (`lib/connectrpc/client.rb:49-52`).
+2. **Acquisition.** If a reusable connection has spare stream capacity, the
+   call takes it. Otherwise the call checks these rules in order:
+   - **An attempt is in progress:** wait for it.
+   - **The backoff timer is running:** if no usable connection exists, the
+     state is `transient_failure` and a fail-fast call fails with
+     `unavailable`. If a usable connection exists but is full, the call waits
+     for stream capacity on it. No new attempt starts before the timer fires.
+     A wait-for-ready call waits in both cases.
+   - **A connection slot is free:** start the shared attempt and wait for it.
+     Slots are counted against `connection_limit`. Active connections, draining
+     connections that kept their active slot, and the attempt in progress each
+     use one.
+   - **No slot is free:** wait for stream capacity, as the pool does today.
 3. **Waiting.** A waiter blocks on a condition until its own deadline or
    cancellation, then leaves. Fail-fast callers wait for at most one attempt; if
    it fails, they fail. Wait-for-ready callers stay through backoff and later
@@ -253,10 +259,11 @@ first frame and requires it to be SETTINGS (`client.rb`,
    already in progress runs to completion within `connect_timeout`, even after
    its last waiter leaves. A connection that becomes ready then stays as an idle
    active connection for the next call. No new attempt starts without a waiting
-   call. A backoff timer keeps running after the last waiter leaves, so the
-   state stays `transient_failure` and fail-fast calls keep failing until it
-   fires. When it fires without waiters, it starts nothing and the state becomes
-   `idle`. Only `close` cancels an in-progress attempt or a pending timer.
+   call. A backoff timer keeps running after the last waiter leaves. Without a
+   usable connection, the state stays `transient_failure` and fail-fast calls
+   keep failing until it fires. When it fires without waiters, it starts
+   nothing, and the state becomes `idle`, or stays `ready` if a connection is
+   usable. Only `close` cancels an in-progress attempt or a pending timer.
 5. **Dispatch guard.** Under the connection's write guard, the call rechecks its
    deadline and cancellation and checks that the connection is still reusable.
    If the connection died before any request bytes were written, the call
@@ -271,13 +278,24 @@ first frame and requires it to be SETTINGS (`client.rb`,
 ### Multiple connections
 
 `connection_limit` allows more than one active connection, in `Transport` and
-`ThreadedTransport` alike. The manager opens another connection only when every
-active connection has reached its peer's concurrent-stream limit and fewer than
-`connection_limit` exist. Otherwise a call reuses the first connection with
-spare stream capacity. Today's pool grows the same way: `async-pool` 0.12.0
-reuses the first resource with spare capacity and creates one only when none
-has any (`async-pool-0.12.0/lib/async/pool/controller.rb`,
-`acquire_or_create_resource`). Attempts stay coalesced, one at a time.
+`ThreadedTransport` alike. The manager opens another connection only when no
+reusable connection has spare stream capacity and a slot is free, by the
+acquisition rules above. A connection that received GOAWAY is not reusable, so
+it never blocks growth while a slot is free, even with `max_draining: 0`.
+Otherwise a call reuses the first reusable connection with spare stream
+capacity. Today's pool grows the same way: `async-pool` 0.12.0 reuses the first
+viable resource with spare capacity and creates one only when none has any
+(`async-pool-0.12.0/lib/async/pool/controller.rb:371-396`). Attempts stay
+coalesced, one at a time.
+
+The published state follows the most usable connection. It is `ready` while at
+least one connection accepts new streams, even if an attempt to add another
+connection is in progress or failed and is backing off. A failed expansion
+attempt still counts toward `failures` and arms the backoff timer, so a
+saturated connection never triggers repeated dials. Calls wait for stream
+capacity on the existing connection meanwhile and take it as soon as it frees.
+`connecting` and `transient_failure` describe only the case with no usable
+connection.
 
 Extra connections therefore add stream capacity, not load spreading. Spreading
 calls across connections, for example to reach several backends behind an L4
@@ -313,8 +331,12 @@ With fail-fast callers, the cap bounds how long calls keep failing after the
 server returns, before the next attempt.
 
 With `backoff: nil` there is no timer and no `transient_failure` state. A failed
-attempt fails only the calls waiting on it and returns the state to `idle`, so
-the next call starts a new attempt at once. This matches today's pool. The
+attempt fails every call waiting on it and returns the state to `idle`. Nothing
+redials automatically, and the next call starts a new attempt at once. Today's
+pool also lets the next call dial immediately, but it differs in one way: it
+serializes acquisitions, so after one caller's dial fails, a queued caller runs
+its own dial instead of sharing the failure
+(`async-pool-0.12.0/lib/async/pool/controller.rb:315-340`). The
 `:attempt_finished` event still reports each failure.
 
 ### Observations
@@ -585,9 +607,14 @@ The pinned protocol-http2 0.29.2 closes two kinds of streams with
 reset with `REFUSED_STREAM` (`stream.rb:253`). RFC 9113 defines both as never
 processed ([§6.8][rfc-goaway], [§8.7][rfc-refused]).
 
-With `retry_refused: true`, the default, a unary call whose stream is refused
-before response headers is sent again once, within the same deadline. Unary request bodies are
-complete strings, so resending them is exact. The retry goes back through
+With `retry_refused: true`, the default, a Connect unary call through
+`Transport#call` whose stream is refused before response headers is sent again
+once, within the same deadline. Its request body is a complete string, so
+resending it is exact. Native gRPC unary is not retried. Core sends it through
+`open_grpc_stream`, and the transport sees only a streaming exchange, with no
+complete request body to resend (`lib/connectrpc/client.rb:49-52`,
+`lib/connectrpc/streaming/streams.rb:7`). Retrying it would need a separate
+replay seam. The retry goes back through
 ordinary acquisition with the call's existing admission. It picks no particular
 connection:
 
@@ -652,23 +679,44 @@ and the supported/SPI inventory, and the Async README, `docs/support.md` and
 `docs/design.md` for the capability it delivers. Tests synchronize on accepted
 connections, frames, handler entry and completion signals, never fixed sleeps.
 
+PRs A, B and C change the H2 `Transport` client that the OTel and Falcon bundles
+also use, in `gems/connectrpc-otel/spec/` and Falcon's fallback spec and
+scripts. Neither `verify` nor `async:verify` runs those bundles (`mise.toml`),
+so those PRs also run `otel:verify` and `falcon:verify` on both Rubies.
+
+### Existing tests that change
+
+Default-on behavior deliberately changes what these tests assert. Each owning
+PR rewrites them and keeps the coverage they provide:
+
+| Test | Today | After | PR |
+| --- | --- | --- | --- |
+| `gems/connectrpc-async/spec/stream_cleanup_spec.rb:136-175` | A connection closed at the dispatch guard fails the call | The same call reroutes and succeeds; nothing was written | A |
+| `gems/connectrpc-async/spec/cancellation_spec.rb:101-127` | Cancelling the only caller during TLS setup retires the setup task and socket | The caller is cancelled promptly and dispatches nothing; the shared attempt retires at its own `connect_timeout` or at `close`, with socket and task retirement still asserted | A |
+| `gems/connectrpc-otel/spec/native_spec.rb:26-29,51-52` | `setup_connection` runs inside a valid RPC span context, for Async and Falcon hosts | Setup runs with no RPC parent; each exchange and handler keeps its proper span | A |
+| `gems/connectrpc-async/spec/pool_spec.rb:20-23,88-92` | Inspects `@pool` usage | Asserts the manager's equivalent slot and stream accounting | A |
+| `gems/connectrpc-async/spec/grpc_cleanup_spec.rb:77-94` | Injects release failures into `Async::Pool` | Injects the same failures at the manager's release; exactly-once release, cleanup ownership and error provenance stay covered | A |
+| `gems/connectrpc-async/spec/stream_cleanup_spec.rb:95-133` | Refused and GOAWAY-refused unary streams fail with `unavailable` | Connect unary is sent exactly once more; the no-replay assertions for ambiguous failures stay | C |
+
 ### PR A: connection manager core
 
 Scope: the private manager, `ConnectionPolicy`, `ConnectionEvent`,
 `connection_policy:` and `connection_observer:` on `Transport`, and
 `connection_state`. Shared attempts, backoff, wait-for-ready, the byte budget
-and the dispatch guard reroute, all on by default. The Async README's
+and the dispatch guard reroute. The manager applies by default; wait-for-ready
+stays off unless configured. The Async README's
 `Transport` section changes with it, because it says a failed call never
 reconnects and only a later call opens a fresh connection.
 
 | Concern | Evidence |
 | --- | --- |
 | Backoff growth, hard cap including jitter, jitter range and reset only at SETTINGS readiness | Deterministic specs with an injected clock and random source |
-| Turning features off | `backoff: nil` starts a new attempt on the next call after a failure, with no timer or `transient_failure`; `max_pending_bytes: nil` admits by count only; `wait_for_ready: true` with `backoff: nil` raises `ArgumentError`; every invalid setting is rejected at construction |
+| Turning features off | `backoff: nil`: several callers joined to one failed dial all fail, nothing redials automatically, and a later call starts a fresh attempt at once, with no timer or `transient_failure`; `max_pending_bytes: nil` admits by count only; `wait_for_ready: true` with `backoff: nil` raises `ArgumentError`; every invalid setting is rejected at construction |
 | No reset from bursts; no new attempt without a waiting call; an in-progress attempt finishes within `connect_timeout` after its last waiter leaves; a timer that fires without waiters starts nothing; `close` cancels both | Same deterministic specs |
 | Shared attempt survives a short-deadline or cancelled initiator | Real TLS peer that stalls the handshake under a gate; second waiter completes |
 | Recovery after refused connections | Peer refuses, then listens. Concurrent wait-for-ready waiters share paced attempts. A frame-observing peer shows that expired and cancelled waiters sent no request HEADERS or DATA, which handler counts alone cannot prove. Survivors dispatch once. Fail-fast callers fail during `transient_failure`. |
 | Growth beyond one connection | A peer advertising `SETTINGS_MAX_CONCURRENT_STREAMS` of 2 with `connection_limit: 2`: the third concurrent call opens a second connection, the fifth waits for capacity, and no third socket opens |
+| Failed expansion | Deterministic clock: with connection A saturated, the attempt for B fails. The state stays `ready`, calls wait for and take A's freed capacity, and B is not dialled again before the backoff fires |
 | Count and byte limits during an outage | Admission rejects predictably for POST bodies and GET request targets; events report the rejection |
 | Dead-before-dispatch reroute | Peer closes an idle connection; the next call uses a new one with one server invocation |
 | No replay | POST and GET probes observe request HEADERS and DATA progress, then inject an ambiguous failure: a reset after headers, EOF after a partial or complete body, and connection loss after the handler ran. The failed call is not resent, judged by both transmitted frames and invocations; only a separately issued call reconnects. |
@@ -697,15 +745,18 @@ close; interruption; owner-thread failure.
 ### PR C: GOAWAY replacement and refused retry
 
 Scope: draining connections, replacement attempts, `drain_timeout` and the
-single refused-unary retry, all on by default. The Async README's "No retries"
+single refused Connect unary retry. Replacement and the retry apply by
+default; there is no drain timeout unless configured. The Async README's "No retries"
 statement changes to name the refused exception.
 
 | Concern | Evidence |
 | --- | --- |
 | Replacement while draining | Peer sends graceful GOAWAY with a live long stream and several new calls; a replacement opens; the socket count stays within `connection_limit + max_draining` |
 | Full draining set | A second GOAWAY while the draining set is full keeps today's slot behavior |
+| `max_draining: 0` | With `connection_limit: 1`, a GOAWAY connection with an accepted stream keeps the only slot; new calls, including a refused retry, wait for it to retire. With `connection_limit: 2`, a replacement opens in the free slot. |
 | Drain timeout | Remaining streams fail with `unavailable` and are not resent |
-| Refused unary retry | `REFUSED_STREAM` and above-last-id streams, for POST and GET, are sent exactly once more; server invocation count is one |
+| Refused Connect unary retry | `REFUSED_STREAM` and above-last-id streams, for POST and GET, are sent exactly once more; server invocation count is one |
+| No gRPC unary retry | A refused native gRPC unary call fails with `unavailable` after one transmission |
 | Refusal capacity | Standalone `REFUSED_STREAM` with a live sibling on the default single connection: the retry reuses that connection and the sibling completes. Above-last-id refusal with the draining set full: the retry waits for capacity or fails per the waiting rules, and no accepted sibling is aborted. A second refusal fails with `unavailable`. |
 | No stream retry | Refused streams fail with `unavailable` |
 | `retry_refused: false` | Refused unary calls fail with `unavailable` after one transmission |
