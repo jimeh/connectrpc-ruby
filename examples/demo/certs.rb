@@ -41,9 +41,11 @@ module DemoExample
     def dir = File.join(File.dirname(State.path), "tls")
     def display_dir = dir.delete_prefix("#{ROOT}/")
 
-    # The set the tls symlink points at now, or nil before the first issue.
+    # The set the tls symlink points at now, or nil before the first issue. A
+    # real tls directory from older examples counts as no set, so a reader never
+    # holds a path that the next issue replaces.
     def current
-      Generation.new(File.realpath(dir))
+      Generation.new(File.realpath(dir)) if File.symlink?(dir)
     rescue Errno::ENOENT
       nil
     end
