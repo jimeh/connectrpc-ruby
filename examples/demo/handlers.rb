@@ -53,10 +53,56 @@ module DemoExample
     end
   end
 
+  # Prints one line per RPC describing what actually arrived, read from the
+  # request headers the server saw:
+  #
+  #   served Greet request-id=1f2e3d4c protocol=connect http=POST codec=json encoding=gzip code=OK
+  #
+  # A Connect GET has no body, so no content headers; its codec and compression
+  # travel in the query string instead. For GET the line reports the codec and
+  # encoding the server answered with, which it chose from that query and the
+  # client's Accept-Encoding.
+  class CallLog
+    # Instrumentation calls start once per RPC; the returned observer receives the outcome.
+    def start(call) = Observer.new(call)
+
+    Observer = Struct.new(:call) do
+      def processing_finished(outcome)
+        request = call.carrier
+        get = !request.key?("content-type") # Only GET succeeds without one; a POST without it gets 415.
+        headers = get ? outcome.response_metadata : request
+        $stdout.write("served #{call.method&.name} request-id=#{first(request, 'demo-request-id')} " \
+                      "protocol=#{call.protocol} http=#{get ? 'GET' : 'POST'} codec=#{codec(headers)} " \
+                      "encoding=#{encoding(headers)} code=#{outcome.code}\n") # One write keeps lines whole.
+      end
+
+      private
+
+      def first(headers, name) = headers.fetch(name, ["-"]).first
+
+      def codec(headers)
+        case first(headers, "content-type")
+        when /json\z/ then "json"
+        when /proto\z/, "application/grpc" then "proto"
+        else "unknown"
+        end
+      end
+
+      # Connect unary, Connect streaming and gRPC each name compression differently.
+      def encoding(headers)
+        values = headers.values_at("content-encoding", "connect-content-encoding", "grpc-encoding").compact
+        values.first&.first || "identity"
+      end
+    end
+  end
+
+  def self.instrumentation = ConnectRPC::Instrumentation.new(subscribers: [CallLog.new])
+
   # Every server accepts gzip and both codecs. Native HTTP/2 hosts pass
   # `protocol: :auto` to serve Connect and gRPC on the same port.
   def self.connect_server(served_by:, protocol: :connect)
     ConnectRPC::Server.new(services: [Demo::V1::DemoService::SERVICE], binding: ConnectRPC::Bindings::GoogleProtobuf.new,
-                           handlers: Handlers.new(served_by).to_h, protocol: protocol, encoding: :gzip)
+                           handlers: Handlers.new(served_by).to_h, protocol: protocol, encoding: :gzip,
+                           instrumentation: instrumentation)
   end
 end

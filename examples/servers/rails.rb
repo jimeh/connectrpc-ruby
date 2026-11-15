@@ -28,6 +28,8 @@ class DemoController < ActionController::API
   def connect_binding = ConnectRPC::Bindings::GoogleProtobuf.new
   def connect_handlers = DemoExample::Handlers.new("rails").to_h
   def connect_limits = { encoding: :gzip }
+  # Logs each RPC, like the other servers.
+  def connect_instrumentation = DemoExample.instrumentation
 end
 
 DemoApplication.initialize!

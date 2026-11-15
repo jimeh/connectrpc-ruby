@@ -25,15 +25,31 @@ The server prints its URL and serves until Ctrl-C:
 falcon server listening on http://127.0.0.1:8080 (Ctrl-C to stop)
 ```
 
-The client prints the messages, this demo's `demo-*` response headers and
-trailers, or the RPC error:
+The client sends a random `demo-request-id` as request metadata, then prints
+the messages, this demo's `demo-*` response headers and trailers, or the RPC
+error:
 
 ```text
 async-h2 -> falcon at http://127.0.0.1:8080 (connect, proto, identity)
+request: demo-request-id=5c1f9a2e
 message: Hello, Ada!
 message: Hello, Grace!
 headers: demo-served-by=falcon
 ```
+
+The server logs one line per RPC with that ID and what actually arrived: the
+protocol, HTTP method, codec and compression it read from the request headers,
+and the result code:
+
+```text
+served Chat request-id=5c1f9a2e protocol=connect http=POST codec=proto encoding=identity code=OK
+```
+
+The log comes from a `ConnectRPC::Instrumentation` subscriber in
+[handlers.rb](demo/handlers.rb); the Rails server installs the same one through
+its private `connect_instrumentation` hook. A Connect GET has no body and no
+content headers, because its codec and compression travel in the query string,
+so for GET the line shows the codec and encoding the server answered with.
 
 `mise run example:client -- --list` prints every server, client, RPC and option.
 If a bundle is missing, the launcher prints the exact setup command to run.
@@ -124,15 +140,33 @@ path; a relative path resolves from the repository root. Without `--server` or
 the file is missing or its process has exited.
 
 `--server NAME` tells the client which host it is talking to, so it can call a
-server that the state file does not describe. Name the actual host: the client
-cannot detect a mislabelled `--server`.
+server that the state file does not describe. Without `--url` it uses the
+recorded URL when the state file names the same server, and otherwise
+`http://127.0.0.1:$PORT` (8080 by default). It refuses when the state file says
+a different server runs at that address. Name the actual host: the client
+cannot detect a mislabelled `--server` at an address the state file does not
+describe.
+
+`--url` must be an `http://` or `https://` URL with a host and no credentials,
+query or fragment. A state file without a known server name, a URL and a numeric
+process ID counts as no running server.
 
 ## gRPC-Web
 
-Each of these hosts can also serve gRPC-Web when its `ConnectRPC::Server`
-enables it, for example with `protocol: %i[connect grpc grpc_web]`. The example
-servers leave it off because there is no Ruby gRPC-Web client to call them. See
-the [gRPC-Web guide](../docs/grpc-web.md) for per-host limits and the
+The example servers leave gRPC-Web off because there is no Ruby gRPC-Web client
+to call them. Each host can enable it:
+
+- `rack`, `async` and `falcon` add `:grpc_web` to their `ConnectRPC::Server`
+  protocols. Rack serves only HTTP/1.1, which has no native gRPC, so it uses
+  `protocol: %i[connect grpc_web]`; `async` and `falcon` replace `:auto` with
+  `protocol: %i[connect grpc grpc_web]` to keep native gRPC.
+- `rails` has no `ConnectRPC::Server` of its own; its controller enables
+  gRPC-Web through the private `connect_protocol`, `connect_status_codec` and
+  `connect_cors` hooks, with explicit POST and OPTIONS routes.
+
+Browsers also need CORS: pass a `cors:` policy to the server, or return one from
+`connect_cors` in Rails, unless outer middleware already owns CORS. See the
+[gRPC-Web guide](../docs/grpc-web.md) for per-host limits and the
 [browser fixture](../browser/) for an official browser client against real Ruby
 hosts.
 
@@ -152,6 +186,12 @@ hosts.
 
 `mise run example:verify` starts each server on an ephemeral port, runs every
 supported client, RPC and option combination plus representative refusals, and
-then stops the server with INT or TERM. CI runs it in the "Runnable examples"
-job. The generated files in [gen/](gen/) come from `mise run generation:build`;
+then stops the server with INT or TERM. For every supported call it finds the
+server's log line with the client's `demo-request-id` and checks the protocol,
+HTTP method, codec, encoding and code the server observed, so a client that
+ignored `--protocol`, `--codec`, `--get` or `--gzip` fails even though the reply
+looks the same. For GET the server cannot see the request's own codec or
+compression, so the check relies on the codec and encoding of the server's
+answer, which come from the GET query and the client's Accept-Encoding. CI runs
+it in the "Runnable examples" job. The generated files in [gen/](gen/) come from `mise run generation:build`;
 `mise run generation:check` keeps them reproducible.

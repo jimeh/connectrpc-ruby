@@ -1,5 +1,6 @@
 # frozen_string_literal: true
 
+require "securerandom"
 require_relative "handlers"
 
 module DemoExample
@@ -16,49 +17,52 @@ module DemoExample
     # Returns true on success and false after printing the RPC error.
     def run(service, options)
       puts "#{options.client} -> #{options.server} at #{options.url} (#{options.settings})"
-      call(service, options.rpc, options.args)
+      # Request metadata: the server logs this ID next to what it received.
+      metadata = { "demo-request-id" => [SecureRandom.hex(4)] }
+      show("request", metadata)
+      call(service, options.rpc, options.args, metadata)
       true
     rescue ConnectRPC::Error => e
       warn "error: #{e.code}: #{e.message}"
       false
     end
 
-    def call(service, rpc, args)
+    def call(service, rpc, args, metadata)
       args = DEFAULT_ARGS.fetch(rpc) if rpc == "fail" || args.empty?
       case rpc
-      when "greet", "fail" then greet(service, args.first)
-      when "countdown" then countdown(service, args.first.to_i) # The server rejects anything outside 1..10.
-      when "collect" then collect(service, args)
-      when "chat" then chat(service, args)
+      when "greet", "fail" then greet(service, args.first, metadata)
+      when "countdown" then countdown(service, args.first.to_i, metadata) # The server rejects anything outside 1..10.
+      when "collect" then collect(service, args, metadata)
+      when "chat" then chat(service, args, metadata)
       end
     end
 
-    def greet(service, name)
-      response = service.greet(Demo::V1::GreetRequest.new(name: name), timeout: TIMEOUT)
+    def greet(service, name, metadata)
+      response = service.greet(Demo::V1::GreetRequest.new(name: name), metadata: metadata, timeout: TIMEOUT)
       show("headers", response.metadata)
       puts "message: #{response.message.greeting}"
       show("trailers", response.trailers)
     end
 
-    def countdown(service, from)
-      service.countdown(Demo::V1::CountdownRequest.new(from: from), timeout: TIMEOUT) do |reader|
+    def countdown(service, from, metadata)
+      service.countdown(Demo::V1::CountdownRequest.new(from: from), metadata: metadata, timeout: TIMEOUT) do |reader|
         show("headers", reader.headers)
         reader.each { |message| puts "message: #{message.number}" }
         show("trailers", reader.trailers)
       end
     end
 
-    def collect(service, names)
+    def collect(service, names, metadata)
       # Leaving the block closes the request stream; then the single response arrives.
-      response = service.collect(timeout: TIMEOUT) do |writer|
+      response = service.collect(metadata: metadata, timeout: TIMEOUT) do |writer|
         names.each { |name| writer.send_message(Demo::V1::CollectRequest.new(name: name)) }
       end
       show("headers", response.metadata)
       puts "message: #{response.message.summary}"
     end
 
-    def chat(service, names)
-      service.chat(timeout: TIMEOUT) do |duplex|
+    def chat(service, names, metadata)
+      service.chat(metadata: metadata, timeout: TIMEOUT) do |duplex|
         names.each do |name|
           duplex.send_message(Demo::V1::ChatRequest.new(text: name))
           puts "message: #{duplex.receive.text}" # Each reply arrives before the next send.

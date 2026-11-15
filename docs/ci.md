@@ -2,8 +2,8 @@
 
 The workflow runs on pull requests and pushes to `main`, on Ubuntu 24.04.
 It has nine core, three optional Rails, four optional HTTP/2, two optional Rack,
-two optional in-process testing, two optional RBS and four Falcon checks, with no
-serial cache primer or aggregate job:
+two optional in-process testing, two optional RBS, four Falcon checks and one
+runnable-examples check, with no serial cache primer or aggregate job:
 
 | Check | Ruby | Canonical commands |
 | --- | --- | --- |

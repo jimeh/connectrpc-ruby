@@ -2,6 +2,7 @@
 
 require "json"
 require "fileutils"
+require "uri"
 
 # Plain-Ruby support shared by the runnable servers, clients, launcher and
 # verification script. It loads no gems, so every owning bundle can use it.
@@ -127,7 +128,8 @@ module DemoExample
     end
 
     def remove
-      File.delete(path) if read&.fetch("pid", nil) == Process.pid
+      record = read
+      File.delete(path) if record.is_a?(Hash) && record["pid"] == Process.pid
     rescue Errno::ENOENT
       nil
     end
@@ -142,6 +144,7 @@ module DemoExample
     def live!
       record = read
       raise Refusal, not_running("no state file at #{path}") unless record
+      raise Refusal, not_running("#{path} does not hold a server name, URL and pid") unless usable?(record)
 
       Process.kill(0, record.fetch("pid"))
       record
@@ -149,6 +152,11 @@ module DemoExample
       raise Refusal, not_running("#{path} names pid #{record['pid']}, which has exited")
     rescue Errno::EPERM
       record
+    end
+
+    def usable?(record)
+      record.is_a?(Hash) && SERVERS.key?(record["server"]) && Target.url?(record["url"]) &&
+        record["pid"].is_a?(Integer) && record["pid"].positive?
     end
 
     def not_running(why)
@@ -162,6 +170,10 @@ module DemoExample
     module_function
 
     def resolve(server:, url:)
+      unless url.nil? || url?(url)
+        raise Refusal, "--url #{url} is not an http:// or https:// URL with a host " \
+                       "(and no credentials, query or fragment)"
+      end
       return explicit(server, url) if server
 
       record = State.live!
@@ -172,18 +184,36 @@ module DemoExample
     end
 
     # --server names the host, so the pairing check can run without a state file.
+    # Without --url it reuses the state file's URL when that records the same
+    # server, and otherwise falls back to PORT, unless the state file says
+    # another server is running there.
     def explicit(server, url)
       raise Refusal, "Unknown server #{server}; choose one of: #{SERVERS.keys.join(', ')}" unless SERVERS.key?(server)
+      return [server, url] if url
 
-      [server, url || running_url(server) || "http://127.0.0.1:#{ENV.fetch('PORT', DEFAULT_PORT)}"]
+      record = running_record
+      return [server, record.fetch("url")] if record&.fetch("server") == server
+
+      fallback = "http://127.0.0.1:#{ENV.fetch('PORT', DEFAULT_PORT)}"
+      if record && same_url?(fallback, record.fetch("url"))
+        raise Refusal, "--server #{server} does not match the running example server at #{fallback} " \
+                       "(#{record['server']}); pass --url URL for the #{server} server, or drop --server"
+      end
+      [server, fallback]
     end
 
-    # Reuses the state file's URL only when it records the server that --server names.
-    def running_url(server)
-      record = State.live!
-      record.fetch("url") if record.fetch("server") == server
+    def running_record
+      State.live!
     rescue Refusal
       nil
+    end
+
+    # The same URL rule ConnectRPC::Client applies, checked before it can raise.
+    def url?(url)
+      uri = URI(url)
+      uri.is_a?(URI::HTTP) && !uri.host.to_s.empty? && !uri.userinfo && !uri.query && !uri.fragment
+    rescue URI::InvalidURIError, ArgumentError
+      false
     end
 
     def same_url?(left, right) = left.delete_suffix("/") == right.delete_suffix("/")

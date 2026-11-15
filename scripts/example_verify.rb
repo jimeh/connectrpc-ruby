@@ -5,6 +5,7 @@
 require "fileutils"
 require "json"
 require "rbconfig"
+require "uri"
 require_relative "../examples/demo/support"
 
 ROOT = DemoExample::ROOT
@@ -12,6 +13,7 @@ LAUNCHER = File.join(ROOT, "scripts/example.rb")
 READY_TIMEOUT = 120
 CLIENT_TIMEOUT = 60
 STOP_TIMEOUT = 20
+EVIDENCE_TIMEOUT = 10
 WORKERS = 4
 
 # One child process in its own process group, with combined output captured
@@ -22,32 +24,41 @@ class Child
     @pid = Process.spawn(env, *command, out: writer, err: writer, in: File::NULL, pgroup: true, chdir: ROOT)
     writer.close
     @waiter = Process.detach(@pid)
-    @lines = Queue.new
     @output = +""
+    @ended = false
     @lock = Mutex.new
+    @changed = ConditionVariable.new
     @pump = Thread.new do
-      @reader.each_line do |line|
-        @lock.synchronize { @output << line }
-        @lines << line
-      end
+      @reader.each_line { |line| update { @output << line } }
     ensure
-      @lines.close
+      update { @ended = true }
     end
   end
 
   def output = @lock.synchronize { @output.dup }
 
-  def wait_for_line(pattern, timeout)
+  # Returns the first match in the captured output, or nil once the output ends
+  # or the deadline passes. Every wakeup rechecks the deadline.
+  def wait_for(pattern, timeout)
     deadline = now + timeout
-    loop do
-      line = @lines.pop(timeout: [deadline - now, 0].max)
-      match = line&.match(pattern)
-      return match if match
-      next if line
+    scanned = 0
+    @lock.synchronize do
+      loop do
+        # The pump appends whole lines, so each pass scans only lines added since the last.
+        match = @output.match(pattern, scanned)
+        scanned = @output.size
+        remaining = deadline - now
+        return match if match || @ended || remaining <= 0
 
-      reason = @lines.closed? ? "exited" : "timed out after #{timeout}s"
-      raise "#{reason} before printing #{pattern.inspect}; output:\n#{output}"
+        @changed.wait(@lock, remaining)
+      end
     end
+  end
+
+  def wait_for_line(pattern, timeout)
+    wait_for(pattern, timeout) ||
+      raise("#{@ended ? 'exited' : "timed out after #{timeout}s"} before printing #{pattern.inspect}; " \
+            "output:\n#{output}")
   end
 
   # Returns the exit status, or nil when the process outlives the timeout.
@@ -84,9 +95,20 @@ class Child
   end
 
   def now = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+
+  private
+
+  def update
+    @lock.synchronize do
+      yield
+      @changed.broadcast
+    end
+  end
 end
 
-Case = Struct.new(:client, :args, :status, :expected, keyword_init: true)
+# evidence is the method name and facts the server must log for the call
+# (around its request ID), or nil when no server line is checked.
+Case = Struct.new(:client, :args, :status, :expected, :evidence, keyword_init: true)
 
 def run_client(env, kase)
   child = Child.new(env, [RbConfig.ruby, LAUNCHER, "client", kase.client, *kase.args])
@@ -134,6 +156,19 @@ REFUSED = {
                ["async-h2", %w[countdown --get], "--get applies only to unary RPCs"]]
 }.freeze
 SIGNALS = { "rack" => "INT", "rails" => "TERM", "async" => "INT", "falcon" => "TERM" }.freeze
+METHODS = { "greet" => "Greet", "fail" => "Greet", "countdown" => "Countdown", "collect" => "Collect",
+            "chat" => "Chat" }.freeze
+
+# What the server must report receiving: the client's banner alone cannot show
+# that it actually sent the protocol, codec, method and encoding it was asked for.
+def evidence(rpc, variant)
+  protocol = variant.include?("grpc") ? "grpc" : "connect"
+  codec = variant.include?("json") ? "json" : "proto"
+  encoding = variant.include?("--gzip") ? "gzip" : "identity"
+  http = variant.include?("--get") ? "GET" : "POST"
+  "#{METHODS.fetch(rpc)} protocol=#{protocol} http=#{http} codec=#{codec} encoding=#{encoding} " \
+    "code=#{rpc == 'fail' ? 'invalid_argument' : 'OK'}"
+end
 
 def expected_output(server, rpc, variant)
   protocol = variant.include?("grpc") ? "grpc" : "connect"
@@ -160,14 +195,15 @@ def cases_for(server, url)
         arguments = { "greet" => %w[Ada], "countdown" => %w[3], "collect" => %w[Ada Grace], "chat" => %w[Ada Grace] }
         status, expected = expected_output(server, rpc, variant)
         Case.new(client: client, args: [rpc, *arguments.fetch(rpc, []), *variant, *explicit],
-                 status: status, expected: expected)
+                 status: status, expected: expected, evidence: evidence(rpc, variant))
       end
     end
   end
   # The first call finds the server through the state file alone; another passes only a matching --url.
   allowed.first.args -= explicit
   allowed << Case.new(client: allowed.first.client, args: ["greet", "Ada", "--url", url], status: 0,
-                      expected: ["headers: demo-served-by=#{server}", "message: Hello, Ada!"])
+                      expected: ["headers: demo-served-by=#{server}", "message: Hello, Ada!"],
+                      evidence: evidence("greet", []))
   refused = REFUSED.fetch(server).map do |client, args, reason|
     guide = reason.start_with?("gRPC", "--get") ? "supported options" : "supported pairings"
     Case.new(client: client, args: [*args, *explicit], status: 2,
@@ -181,7 +217,31 @@ def discovery_cases(url, state)
   Process.wait(dead)
   stale = "#{state}.stale"
   File.write(File.join(ROOT, stale), JSON.generate(server: "rack", url: url, pid: dead))
+  invalid_url = "--url localhost:8080 is not an http:// or https:// URL with a host"
+  port = URI(url).port.to_s
+  malformed = [{ server: "rack", url: url, pid: Process.pid.to_s }, { server: "nope", url: url, pid: Process.pid },
+               { server: "rack", pid: Process.pid }].each_with_index.map do |record, index|
+    File.write(File.join(ROOT, "#{state}.malformed#{index}"), JSON.generate(record))
+    [{ "CONNECTRPC_EXAMPLE_STATE" => "#{state}.malformed#{index}" },
+     Case.new(client: "nethttp", args: %w[greet], status: 2,
+              expected: ["#{File.basename(state)}.malformed#{index} does not hold a server name, URL and pid"])]
+  end
   [
+    *malformed,
+    [{ "CONNECTRPC_EXAMPLE_STATE" => state },
+     Case.new(client: "nethttp", args: %w[greet --url localhost:8080], status: 2, expected: [invalid_url])],
+    [{ "CONNECTRPC_EXAMPLE_STATE" => state },
+     Case.new(client: "nethttp", args: %w[greet --server rack --url localhost:8080], status: 2,
+              expected: [invalid_url])],
+    # --server without --url falls back to PORT, which here is where the state file says rack runs.
+    [{ "CONNECTRPC_EXAMPLE_STATE" => state, "PORT" => port },
+     Case.new(client: "nethttp", args: %w[greet --server rails], status: 2,
+              expected: ["--server rails does not match the running example server at http://127.0.0.1:#{port} " \
+                         "(rack); pass --url URL for the rails server, or drop --server"])],
+    # A matching record wins over PORT.
+    [{ "CONNECTRPC_EXAMPLE_STATE" => state, "PORT" => "9" },
+     Case.new(client: "nethttp", args: %w[greet Ada --server rack], status: 0,
+              expected: ["nethttp -> rack at #{url}", "message: Hello, Ada!"], evidence: evidence("greet", []))],
     [{ "CONNECTRPC_EXAMPLE_STATE" => state },
      Case.new(client: "nethttp", args: %w[greet --url http://127.0.0.1:9], status: 2,
               expected: ["--url http://127.0.0.1:9 is not the running example server (rack at #{url})"])],
@@ -196,31 +256,56 @@ def discovery_cases(url, state)
   ]
 end
 
-def check(server, env, kase)
+def label(server, kase) = "#{server} <- #{kase.client} #{kase.args.join(' ')}"
+
+def check(server, host, env, kase)
   status, output = run_client(env, kase)
-  label = "#{server} <- #{kase.client} #{kase.args.join(' ')}"
   problem = if status.nil? then "timed out"
             elsif status.exitstatus != kase.status then "exit #{status.exitstatus.inspect}, expected #{kase.status}"
             elsif (missing = kase.expected.reject { |text| output.include?(text) }).any?
               "missing #{missing.map(&:inspect).join(', ')}"
+            elsif kase.evidence then evidence_problem(host, output, kase.evidence)
             end
-  [label, problem, output]
+  [label(server, kase), problem, output]
 end
 
-def run_all(server, pairs)
+# The server prints its line as the call finishes, possibly after the client exits.
+def evidence_problem(host, output, expected)
+  id = output[/^request: demo-request-id=(\h+)$/, 1]
+  return "printed no demo-request-id" unless id
+
+  line = host.wait_for(/^served \w+ request-id=#{id} .*$/, EVIDENCE_TIMEOUT)&.to_s
+  return "server logged no call with demo-request-id=#{id} within #{EVIDENCE_TIMEOUT}s" unless line
+
+  method, facts = expected.split(" ", 2)
+  wanted = "served #{method} request-id=#{id} #{facts}"
+  "server logged #{line.inspect}, expected #{wanted.inspect}" unless line == wanted
+end
+
+# Each worker records its own failures, so every worker finishes and every
+# client it started is stopped by run_client.
+def run_all(server, host, pairs)
   work = Queue.new
   pairs.each_with_index { |pair, index| work << [index, pair] }
   work.close
   results = []
-  Array.new(WORKERS) do
+  workers = Array.new(WORKERS) do
     Thread.new do
       while (item = work.pop)
         index, (env, kase) = item
-        results[index] = check(server, env, kase)
+        results[index] = begin
+          check(server, host, env, kase)
+        rescue StandardError => e
+          [label(server, kase), "verifier error: #{e.class}: #{e.message}", e.full_message(highlight: false)]
+        end
       end
     end
-  end.each(&:join)
+  end
+  workers.each(&:join)
   results
+ensure
+  # An interrupt leaves workers mid-call; killing them runs run_client's cleanup.
+  workers&.each { |worker| worker.kill.join(STOP_TIMEOUT) }
 end
 
 state_dir = "vendor/examples/verify-#{Process.pid}"
@@ -241,12 +326,13 @@ begin
       allowed, refused = cases_for(server, url)
       pairs = [*allowed, *refused].map { |kase| [env, kase] }
       pairs += discovery_cases(url, state) if server == "rack"
-      run_all(server, pairs).each do |label, problem, output|
+      run_all(server, child, pairs).each do |label, problem, output|
         puts "#{problem ? 'FAIL' : 'ok  '} #{label}"
         failures << "#{label}: #{problem}\n#{output}" if problem
       end
-      totals[:allowed] += allowed.size
-      totals[:refused] += pairs.size - allowed.size
+      refusals = pairs.count { |_, kase| kase.status == 2 }
+      totals[:allowed] += pairs.size - refusals
+      totals[:refused] += refusals
       status = child.stop(signal, STOP_TIMEOUT)
       stopped = status&.success? && child.output.include?("#{server} server stopped")
       raise "#{server} did not stop cleanly on SIG#{signal}:\n#{child.output}" unless stopped
