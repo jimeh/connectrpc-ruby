@@ -92,6 +92,8 @@ for long streams, sizes stay Connect-unary-only).
     meaning, no histogram disabling in this PR.
   - `Metrics::Subscriber.new(recorder:, definitions:)` (Instrumentation subscriber).
   - `Metrics::ConnectionObserver.new(recorder:, definitions:, transport:)` (callable).
+    It records nothing at construction; sinks call `#publish_state` once their
+    metrics exist (Prometheus immediately, Yabeda after `configure!` or on collect).
   - Recorder SPI: `increment(key, labels, by)`, `observe(key, labels, value)`,
     `set(key, labels, value)`.
 
@@ -162,7 +164,7 @@ Label `transport`: app-chosen, `/\A[a-z0-9_]{1,64}\z/`, unique per process.
 | `grpc_client_connection_attempts_total` | counter | `transport`, `outcome` |
 | `grpc_client_connection_attempt_seconds` | histogram | `transport` |
 | `grpc_client_connection_state_changes_total` | counter | `transport`, `state` |
-| `grpc_client_connection_state` | gauge, 1 for current state (initialized to `idle`) | `transport`, `state` |
+| `grpc_client_connection_state` | gauge, 1 for current state (`idle` until the first change, published by `#publish_state`) | `transport`, `state` |
 | `grpc_client_admission_rejected_total` | counter | `transport` |
 
 Under `DirectFileStore` the state gauge sums to the number of workers in each

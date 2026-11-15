@@ -215,7 +215,7 @@ optional runtime require.
 | --- | --- |
 | Core | Method, non-generic Service, Client/Server options and calls, records, Metadata, CancellationSource/Token/Registration, Deadline/Context, Error/ErrorDetail, explicit NetHTTP and Google binding entry points |
 | Core shared, unary and observation SPI | `_Cancellation`, `_Binding`, `_Transport`, `_Input`, `_Handler`, `_Invoker`, callable clocks/error handlers, `_Subscriber`, six separate optional observer callback capabilities, host lifecycle Handle |
-| Core metrics (`connectrpc/metrics`) | `Metrics::Definitions`, `Instrument`, `Subscriber` and `ConnectionObserver`; the `Metrics::_Recorder` sink SPI and the structural `Metrics::_ConnectionEvent` shape |
+| Core metrics (`connectrpc/metrics`) | `Metrics::Definitions`, `Instrument`, `Subscriber` and `ConnectionObserver` (custom sinks call its `publish_state` once their metrics exist); the `Metrics::_Recorder` sink SPI and the structural `Metrics::_ConnectionEvent` shape |
 | Core streaming and gRPC/Web SPI | `_StreamingTransport`, `_StreamExchange`, streaming input/output, `_GRPCTransport`, `_GRPCStreamExchange`, `_GRPCStatusCodec`, native server publication/output interfaces including `_GRPCWebOutput`; see the protocol-specific sections below |
 | Rack | Middleware constructor/call and shared `_App`, `_Body`, `_CallableBody`, `_Stream`, env and response contracts |
 | Testing | In-process Transport constructor/call, reusable as the core transport |
