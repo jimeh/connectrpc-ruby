@@ -244,6 +244,9 @@ def discovery_cases(url, state)
   Process.wait(dead)
   stale = "#{state}.stale"
   File.write(File.join(ROOT, stale), JSON.generate(server: "rack", url: url, pid: dead))
+  mtls_record = "#{state}.mtls"
+  File.write(File.join(ROOT, mtls_record),
+             JSON.generate(server: "falcon", url: url.sub("http://", "https://"), pid: Process.pid))
   invalid_url = "--url localhost:8080 is not an http:// or https:// URL with a host"
   port = URI(url).port.to_s
   malformed = [{ server: "rack", url: url, pid: Process.pid.to_s }, { server: "nope", url: url, pid: Process.pid },
@@ -270,6 +273,12 @@ def discovery_cases(url, state)
      Case.new(client: "nethttp", args: %w[greet --server rails], status: 2,
               expected: ["--server rails does not match the running example server at http://127.0.0.1:#{port} " \
                          "(rack)"])],
+    # The conflict check compares addresses, so an http:// fallback still conflicts with an
+    # https:// record. The record is synthetic: this verifier's own pid keeps it live.
+    [{ "CONNECTRPC_EXAMPLE_STATE" => mtls_record, "PORT" => port },
+     Case.new(client: "nethttp", args: %w[greet --server rack], status: 2,
+              expected: ["--server rack does not match the running example server at http://127.0.0.1:#{port} " \
+                         "(falcon)"])],
     # A zero-padded or uppercase --url still matches, and the client calls the recorded URL.
     [{ "CONNECTRPC_EXAMPLE_STATE" => state },
      Case.new(client: "nethttp", args: ["greet", "Ada", "--url", "HTTP://127.0.0.1:0#{port}/"], status: 0,

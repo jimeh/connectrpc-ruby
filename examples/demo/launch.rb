@@ -48,7 +48,11 @@ module DemoExample
 
     private
 
+    # Only a failed bind is about PORT. Other errors, such as an unwritable
+    # state directory, are raised again so they keep their path.
     def bind_failure(error)
+      raise error unless error.message.include?("bind(2)")
+
       reason = if error.is_a?(Errno::EACCES)
                  "needs privileges this process lacks. Set PORT to 1024 or above"
                else

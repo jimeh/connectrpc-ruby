@@ -226,7 +226,7 @@ module DemoExample
     end
 
     def refuse_conflict!(server, url, record)
-      return unless record && record.fetch("server") != server && same_url?(url, record.fetch("url"))
+      return unless record && record.fetch("server") != server && same_address?(url, record.fetch("url"))
 
       raise Refusal, "--server #{server} does not match the running example server at #{url} " \
                      "(#{record['server']}); pass --url URL for the #{server} server, or drop --server"
@@ -257,6 +257,10 @@ module DemoExample
     # Compares parsed URLs, so case, a default or zero-padded port and a trailing
     # slash do not hide a match.
     def same_url?(left, right) = comparable(left) == comparable(right)
+
+    # One address hosts one server, whatever the scheme, so an http:// fallback
+    # URL still conflicts with an --mtls server recorded at https://.
+    def same_address?(left, right) = comparable(left)[1, 2] == comparable(right)[1, 2]
 
     def comparable(url)
       uri = URI(url)
