@@ -126,6 +126,11 @@ module ConnectRPC
           super_method = method(:close).super_method
           super_method.call(error)
         end
+
+        # Retirement closes raw TCP, and abort marks the resource finished,
+        # before close! marks this connection closed. Session retirement closes
+        # every raw socket before it aborts each resource.
+        def retiring? = closed? || !!@resource&.finished? || !!@resource&.raw&.closed?
       end
 
       class GRPCHeaderError < ::Protocol::HTTP2::HeaderError
@@ -367,9 +372,9 @@ module ConnectRPC
         end
 
         def finish_output(error = nil)
-          # Raw abort has already retired the connection. Its owned tasks must
-          # finish locally rather than attempting another reset on that socket.
-          return if @connection.closed?
+          # Owned output of a retiring connection must finish locally rather
+          # than attempt another write or reset on its closed socket.
+          return if @connection.retiring?
 
           writable = !closed? && !@response_reset && error.nil?
           super
@@ -382,10 +387,10 @@ module ConnectRPC
 
         attr_reader :output_task
 
-        # A raw-first destructive abort has already retired this connection.
-        # Output unwinding must not attempt another reset on its closed socket.
+        # Output unwinding on a retiring connection must not attempt another
+        # write or reset on its closed socket.
         def finish_output(error = nil)
-          return if @connection.closed?
+          return if @connection.retiring?
 
           super
         end
