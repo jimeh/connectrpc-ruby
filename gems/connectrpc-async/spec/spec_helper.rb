@@ -21,11 +21,13 @@ require_relative "support/hosting_helpers"
 require_relative "support/tls_observed_host"
 require_relative "support/frame_gate"
 require_relative "support/connection_peer"
+require_relative "support/threaded_helpers"
 
 RSpec.configure do |config|
   config.include AsyncHelpers
   config.include AsyncHostingHelpers
   config.include ConnectionPeer
+  config.include ThreadedHelpers
   config.order = :random
   config.disable_monkey_patching!
 end

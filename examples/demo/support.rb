@@ -35,14 +35,15 @@ module DemoExample
   CLIENTS = {
     "nethttp" => { http: "HTTP/1.1", protocols: { connect: [:unary] } },
     "async-h2" => { http: "HTTP/2", protocols: { connect: ALL, grpc: ALL } },
-    "async-http1" => { http: "HTTP/1.1", protocols: { connect: H1_STREAMING } }
+    "async-http1" => { http: "HTTP/1.1", protocols: { connect: H1_STREAMING } },
+    "async-threaded" => { http: "HTTP/2", protocols: { connect: [:unary] } }
   }.freeze
 
   # Which servers can require client certificates (--mtls) and which clients
   # can present one. Mirrors docs/support.md: core NetHTTP has no client
   # certificate option, and Rack and Rails have no qualified TLS profile.
   MTLS_SERVERS = %w[async falcon].freeze
-  MTLS_CLIENTS = %w[async-h2 async-http1].freeze
+  MTLS_CLIENTS = %w[async-h2 async-http1 async-threaded].freeze
 
   # Raised for any pairing or target the examples deliberately do not attempt.
   class Refusal < StandardError; end
@@ -90,7 +91,11 @@ module DemoExample
     def client_reason(client, rpc, protocol)
       shape = RPCS.fetch(rpc)
       shapes = CLIENTS.fetch(client)[:protocols][protocol]
-      return "#{client} does not support #{PROTOCOLS[protocol]}; native gRPC needs HTTP/2" unless shapes
+      unless shapes
+        return "#{client} does not support #{PROTOCOLS[protocol]}" if CLIENTS.fetch(client)[:http] == "HTTP/2"
+
+        return "#{client} does not support #{PROTOCOLS[protocol]}; native gRPC needs HTTP/2"
+      end
       return if shapes.include?(shape)
 
       "#{client} supports only #{names(shapes)} #{PROTOCOLS[protocol]} calls; #{rpc} is #{SHAPES[shape]}"

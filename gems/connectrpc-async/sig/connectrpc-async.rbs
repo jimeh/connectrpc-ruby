@@ -136,6 +136,14 @@ module ConnectRPC
       def call: (TransportRequest) -> TransportResponse
       def close: (?grace: Numeric) -> bool
     end
+    # Connect unary from any thread through one owner thread per process.
+    # call and close raise LifecycleError on that owner thread.
+    class ThreadedTransport
+      def initialize: (origin: String, ?ca_file: String?, ?certificate_chain: Array[String]?, ?private_key: String?, ?connection_limit: Integer, ?max_requests: Integer, ?connect_timeout: Numeric, ?connection_policy: ConnectionPolicy, ?connection_observer: (_ConnectionObserver | ^(ConnectionEvent) -> void)?) -> void
+      def connection_state: () -> connection_state
+      def call: (TransportRequest) -> TransportResponse
+      def close: (?grace: Numeric) -> bool
+    end
     class HTTP1Transport
       def initialize: (origin: String, ?ca_file: String?, ?certificate_chain: Array[String]?, ?private_key: String?, ?connection_limit: Integer, ?max_requests: Integer, ?connect_timeout: Numeric) -> void
       def streaming_capabilities: () -> Array[:server_stream | :client_stream]

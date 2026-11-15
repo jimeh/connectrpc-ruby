@@ -450,8 +450,11 @@ existing core/generated client's `transport:` option inside an application-owned
 Async reactor. TLS/mTLS verifies peer and hostname, offers only `http/1.1`, and
 accepts absent ALPN for legacy H1 servers. There is no gRPC, bidi, replay or
 protocol fallback. See the [package guide](gems/connectrpc-async/README.md#explicit-http11-client)
-for lease capacity, deadlines and upload failure limits. Ordinary-thread
-persistent clients remain [issue #29](https://github.com/jimeh/connectrpc-ruby/issues/29).
+for lease capacity, deadlines and upload failure limits. For ordinary threads
+such as Puma or Sidekiq workers, `ThreadedTransport` shares one persistent HTTP/2
+connection across threads for Connect unary; see the
+[package guide](gems/connectrpc-async/README.md#ordinary-threads). Streaming and
+gRPC from ordinary threads remain [issue #29](https://github.com/jimeh/connectrpc-ruby/issues/29).
 
 See the optional [in-process testing package](gems/connectrpc-testing/README.md) for real encoded client/server round trips without sockets.
 

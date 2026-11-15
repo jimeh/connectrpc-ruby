@@ -23,7 +23,8 @@ examples = {
   "server" => { "rack" => [:rack, "rack.rb"], "rails" => [:rails, "rails.rb"], "async" => [:async, "async.rb"],
                 "falcon" => [:falcon, "falcon.rb"] },
   "client" => { "nethttp" => [:root, "nethttp.rb"], "async-h2" => [:async, "async_h2.rb"],
-                "async-http1" => [:async, "async_http1.rb"] }
+                "async-http1" => [:async, "async_http1.rb"],
+                "async-threaded" => [:async, "async_threaded.rb"] }
 }
 unless examples.fetch("server").keys == DemoExample::SERVERS.keys &&
        examples.fetch("client").keys == DemoExample::CLIENTS.keys

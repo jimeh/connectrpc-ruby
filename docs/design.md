@@ -333,6 +333,13 @@ backoff, opt-in wait-for-ready and count/request-byte admission. A call returns
 to acquisition only when its connection became unusable before any stream ID or
 request byte; nothing that may have reached the server is resent. The package
 guide describes the policy, states and observer events.
+`ThreadedTransport` is the one hidden-reactor exception, and it is explicit: one
+owner thread per process runs a reactor and an H2 `Transport` for callers on any
+thread. Core still encodes and decodes on the caller thread; only frozen bytes and
+headers cross a queue. Admission is held until both the owner has an outcome and
+the caller has taken or abandoned it, deadlines get a caller-side fallback for a
+stalled owner, and a forked child builds its own owner without touching inherited
+I/O. It supports Connect unary only.
 
 Connect streaming carries end-stream metadata in its body; native gRPC requires
 actual final HTTP/2 HEADERS, as described in the [gRPC guide](grpc.md).
