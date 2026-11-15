@@ -71,15 +71,15 @@ RSpec.describe DependencyFloors do
         end
       RUBY
       dsl = Bundler::Dsl.new
-      described_class.evaluate(dsl, gemfile, constraints: { "json" => "< 3" })
+      described_class.evaluate(dsl, gemfile, constraints: { "json" => "< 3", "rack" => "< 4", "rake" => "< 14" })
       dependencies = dsl.dependencies.to_h { |dependency| [dependency.name, dependency] }
 
       expect(dsl.dependencies.map(&:name).tally.values).to all(eq(1))
-      expect(dependencies.fetch("rack")).to have_attributes(requirement: requirement("= 3.2.7"),
+      expect(dependencies.fetch("rack")).to have_attributes(requirement: requirement("= 3.2.7", "< 4"),
                                                             groups: [:test], autorequire: [])
       expect(dependencies.fetch("actionpack").requirement).to eq(requirement("= 8.0.5.1"))
       expect(dependencies.fetch("json").requirement).to eq(requirement("< 3"))
-      expect(dependencies.fetch("rake").requirement).to eq(requirement("= 13.4.2"))
+      expect(dependencies.fetch("rake").requirement).to eq(requirement("= 13.4.2", "< 14"))
     end
   end
 end

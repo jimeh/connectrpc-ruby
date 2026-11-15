@@ -14,8 +14,8 @@ require "rubygems"
 # cannot coexist with; they never appear in the real Gemfiles.
 module DependencyFloors
   # `bundle exec` loads this file through the wrapper before it runs as the checker script.
-  ROOT = File.expand_path("..", __dir__) unless const_defined?(:ROOT)
-  ENVIRONMENT = "CONNECTRPC_DEPENDENCY_FLOORS" unless const_defined?(:ENVIRONMENT)
+  ROOT = File.expand_path("..", __dir__) unless const_defined?(:ROOT, false)
+  ENVIRONMENT = "CONNECTRPC_DEPENDENCY_FLOORS" unless const_defined?(:ENVIRONMENT, false)
 
   module_function
 
