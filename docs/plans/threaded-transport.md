@@ -43,7 +43,7 @@ Jim accepted these choices on 2026-11-15:
 | Question | Decision |
 | --- | --- |
 | Package and name | `ConnectRPC::Async::ThreadedTransport` in `connectrpc-async`. It uses `Client.new(transport:)` like the other transports. |
-| Threaded defaults | Go-like: one connection, fail-fast, backoff of 1 s growing by 1.6x with ±20% jitter and capped at 30 s, one extra draining connection, 16 MiB of admitted request bytes. |
+| Threaded defaults | Go-like: one connection, fail-fast, backoff of 1 s growing by 1.6x with 20% jitter and a hard 30 s cap, one extra draining connection, 16 MiB of admitted request bytes. |
 | Effect on `Async::Transport` | The new connection policy is opt-in through `connection_policy:`. Without it, the existing transport keeps today's behavior. |
 | Delivery | Four PRs: the #28 manager core, threaded Connect unary, GOAWAY replacement with refused-stream retry, then the stream proxy. Client and bidi streaming from threads come later. |
 
@@ -207,12 +207,15 @@ first frame and requires it to be SETTINGS (`client.rb`,
 
 ### Call admission and waiting
 
-1. **Admission.** Each call reserves one admission slot from `max_requests`,
-   plus its unary request body bytes from `max_pending_bytes` when a policy is
-   set. If either budget is exhausted, the call fails immediately with
-   `unavailable`. The reservation lasts until the call's terminal outcome.
-   Streams reserve a slot but no bytes, because their output is already bounded
-   to one queued and one in-flight fragment.
+1. **Admission.** Each call reserves one admission slot from `max_requests`.
+   When a policy is set, a unary call also reserves its encoded request bytes
+   from `max_pending_bytes`. For POST these are the body bytes. For GET they
+   are the request-target bytes, because core moves the encoded message into
+   the query and sends an empty body (`lib/connectrpc/client.rb:174-179`). If
+   either budget is exhausted, the call fails immediately with `unavailable`.
+   The reservation lasts until the call's terminal outcome. Streams reserve a
+   slot but no bytes, because their output is already bounded to one queued and
+   one in-flight fragment.
 2. **Acquisition.** If an active connection has free stream capacity, the call
    takes it. Otherwise the outcome depends on the state:
    - `idle`, or every active connection at its stream limit with spare
@@ -224,13 +227,19 @@ first frame and requires it to be SETTINGS (`client.rb`,
    - all connections at their stream limit with no spare capacity: wait for
      stream capacity, as the pool does today.
 3. **Waiting.** A waiter blocks on a condition until its own deadline or
-   cancellation, then leaves. Leaving never cancels the shared attempt. The
-   attempt runs to completion within `connect_timeout`, and a connection that
-   becomes ready with no waiters left stays as an idle active connection for the
-   next call. Fail-fast callers wait for at most one attempt; if it fails, they
-   fail. Wait-for-ready callers stay through backoff and later attempts until
-   their deadline. With a nil deadline they wait until cancellation or `close`.
-4. **Dispatch guard.** Under the connection's write guard, the call rechecks its
+   cancellation, then leaves. Fail-fast callers wait for at most one attempt; if
+   it fails, they fail. Wait-for-ready callers stay through backoff and later
+   attempts until their deadline. With a nil deadline they wait until
+   cancellation or `close`.
+4. **Demand disappearing.** Leaving never cancels the shared attempt. An attempt
+   already in progress runs to completion within `connect_timeout`, even after
+   its last waiter leaves. A connection that becomes ready then stays as an idle
+   active connection for the next call. No new attempt starts without a waiting
+   call. A backoff timer keeps running after the last waiter leaves, so the
+   state stays `transient_failure` and fail-fast calls keep failing until it
+   fires. When it fires without waiters, it starts nothing and the state becomes
+   `idle`. Only `close` cancels an in-progress attempt or a pending timer.
+5. **Dispatch guard.** Under the connection's write guard, the call rechecks its
    deadline and cancellation and checks that the connection is still reusable.
    If the connection died before any request bytes were written, the call
    returns to acquisition. This is not a replay, because nothing was sent. Once
@@ -242,17 +251,25 @@ first frame and requires it to be SETTINGS (`client.rb`,
 After a failed attempt, the delay is:
 
 ```text
-min(backoff_base * backoff_multiplier ** (failures - 1), backoff_max) * (1 + uniform(-jitter, +jitter))
+delay = min(backoff_base * backoff_multiplier ** (failures - 1), backoff_max) * (1 - uniform(0, jitter))
 ```
+
+Jitter only shortens the delay, so `backoff_max` is a hard maximum: the default
+never waits longer than 30 s, and capped delays still spread between 24 s and
+30 s. This differs from the gRPC spec, which applies symmetric jitter after the
+cap and can exceed it by the jitter fraction. Clamping symmetric jitter at the
+cap would instead make every capped delay identical and remove the spread
+across processes.
 
 `failures` counts consecutive failed attempts. The manager schedules the delay
 on the monotonic clock. A burst of calls does not reset it. When the timer fires
 with no waiters, the state returns to `idle`, but `failures` is kept, so the
 next attempt that fails backs off from where it left off. Readiness resets
-`failures` to zero. GOAWAY is not a failure and does not count. The defaults
-follow the [gRPC connection backoff spec][grpc-backoff], except that the cap is
-30 s rather than 120 s. With fail-fast callers, the cap bounds how long calls
-fail after the server returns, before the next attempt.
+`failures` to zero. GOAWAY is not a failure and does not count. The base,
+multiplier and jitter fraction follow the
+[gRPC connection backoff spec][grpc-backoff]; the cap is 30 s rather than 120 s.
+With fail-fast callers, the cap bounds how long calls keep failing after the
+server returns, before the next attempt.
 
 ### Observations
 
@@ -331,7 +348,11 @@ core Client: decode, commit
   bounded by admission: each admitted unary call has at most one command
   outstanding, each stream has at most one per direction, and `close` adds one.
 - **Reply mailbox.** Each call has its own mailbox. The reactor posts exactly one
-  terminal result, a `TransportResponse` or an error, to it.
+  terminal result, a `TransportResponse` or an error, to it. The mailbox has
+  two owners, the reactor and the caller, and a small mutex-guarded state
+  records which of them has finished. A caller that abandons the call marks the
+  mailbox abandoned, and the reactor then drops its result instead of posting
+  it.
 - **Encoding and decoding.** Core already encodes the request before calling
   the transport and decodes after it returns, so both stay on the caller thread.
   Only opaque bytes and frozen header maps cross threads.
@@ -357,15 +378,22 @@ admission, the inbox wait, acquisition, connection setup, wire I/O and decoding.
 - **Interruption.** Any exception that reaches the waiting caller fires the
   interrupt signal and is re-raised unchanged. This includes `Timeout::Error`,
   Rack::Timeout's exceptions, `Interrupt`, and `Thread#kill` through `ensure`.
-  The caller does not wait for the reactor to confirm.
+  The caller marks its mailbox abandoned and does not wait for the reactor to
+  confirm. The stalled-reactor `deadline_exceeded` path abandons the mailbox
+  the same way.
 - **Exception masking.** `Thread.handle_interrupt(Object => :never)` protects
   admission, inbox push and signal firing. Asynchronous exceptions are allowed
   only during the blocking wait, so a `Thread#raise` cannot leak an admission
   slot or skip the cancel.
-- **Releasing admission.** The admission slot and bytes are released when the
-  reactor reports the terminal outcome, not when the caller leaves. Otherwise
-  interrupted callers could exceed `max_requests` while their streams are
-  still being cleaned up.
+- **Releasing admission.** The admission slot and bytes are released only when
+  both owners are done: the reactor has reported the terminal outcome, and the
+  caller has taken the result or abandoned the call. Whichever side finishes
+  second releases. Releasing when the caller leaves would let interrupted
+  callers exceed `max_requests` while their streams are still being cleaned up.
+  Releasing when the reactor finishes would let paused callers hold completed
+  responses outside the bound. Completed responses waiting in mailboxes
+  therefore stay within `max_requests` responses of at most `response_limit`
+  bytes each.
 - **Instrumentation.** The reactor sees the RPC lifecycle through a detachable
   proxy. After the caller leaves, the reactor's `record_failure` and `activate`
   calls become no-ops. Core's `Instrumentation::Handle` is not built for
@@ -396,13 +424,27 @@ initializer and first using it in a worker is the intended pattern.
 
 ### Lifecycle
 
-- **Close.** `close(grace: 5)` can run on any thread. It stops admission on the
-  caller side immediately, so new calls fail with `unavailable`. It then posts
-  `close` to the engine, which runs the existing graceful `Transport#close`:
-  drain, GOAWAY when empty, forced teardown when the grace expires. Then the
-  owner thread exits and is joined. Close returns the drain outcome, and
-  concurrent callers share it. A transport that never started returns `true`.
-  Closed is terminal.
+- **Close.** `close(grace: 5)` can run on any thread except the owner thread,
+  where it raises `LifecycleError` like any other reentrant use. It stops
+  admission on the caller side immediately, so new calls fail with
+  `unavailable`. The grace starts when `close` is called. Close posts a `close`
+  command whose deadline is that start plus the grace. The engine runs the
+  existing graceful `Transport#close` with whatever grace remains when it
+  dequeues the command: drain, GOAWAY when empty, forced teardown when the grace
+  expires. Then the owner thread exits and is joined. Close returns the drain
+  outcome, and concurrent callers share it. A transport that never started
+  returns `true`. Closed is terminal.
+- **Stalled owner during close.** The closing caller waits for the outcome until
+  the grace plus the 100 ms cleanup allowance has passed. If the owner has not
+  finished by then, because native code or a non-yielding operation blocks the
+  reactor, close fires every pending call's interrupt signal, records the
+  outcome `false`, and returns without joining the thread. The owner aborts with
+  no grace left when it resumes, then exits. Close cannot interrupt the blocking
+  native code itself; this is the same cooperative limit the Async README
+  documents.
+- **Interrupted close waiter.** An exception that reaches a waiting closer is
+  re-raised unchanged. Shutdown continues on the owner thread, and other closers
+  still receive the shared outcome.
 - **Process exit.** The transport adds no `at_exit` hook. Ruby kills the owner
   thread at exit, and the reactor's unwinding aborts owned sockets raw-first.
   Callers that want a graceful drain call `close` from their server's shutdown
@@ -418,20 +460,46 @@ The user's stream block keeps running on the caller thread. Core's stream
 session therefore keeps its thread affinity, and no application code moves to
 a hidden thread.
 
-The reactor runs `transport.open_stream(request) { |exchange| ... }` inside a
-task that serves one stream mailbox. The caller receives an exchange proxy whose
-`response_head`, `read`, `write`, `close_send`, `finish` and `abort` methods
-each post one command and wait for its result.
+The reactor runs `transport.open_stream(request) { |exchange| ... }`, or
+`open_grpc_stream` for native gRPC, inside a task that serves one stream
+mailbox. The caller receives an exchange proxy. The Connect proxy forwards
+`response_head`, `read`, `write`, `close_send`, `finish` and `abort`. The gRPC
+proxy also forwards `response_trailers`, which core needs to validate gRPC
+completion and recover remote errors (`lib/connectrpc/streaming/strategy.rb:67-90`).
+The proxy keeps the engine's response-EOF gate on trailers
+(`gems/connectrpc-async/lib/connectrpc/async/stream_exchange.rb:305-309`), with
+repeated fields intact and trailers kept separate from the initial headers.
+Each proxy method posts one command and waits for its result.
 
 - **Bounds.** Each stream has at most one command in flight. A `read(n)`
   returns at most `n` bytes, so retention stays within the existing ingress and
-  output bounds.
+  output bounds. Admission follows the same two-owner rule as unary calls.
+- **Out-of-band cancellation.** The mailbox serves commands one at a time, so a
+  queued `abort` cannot reach a `read` or `write` that is blocked on the
+  reactor. On caller interruption or a proxy operation's stalled-reactor expiry,
+  the caller therefore fires the stream's interrupt signal first. Through the
+  existing cancellation Promise, that wakes the blocked operation, resets the
+  stream and keeps siblings alive
+  (`gems/connectrpc-async/lib/connectrpc/async/transport.rb:95-110`). Only after
+  firing the signal does the caller post `abort`, which coordinates the
+  reactor's exit from the stream block. `StreamExchange#abort` alone only closes
+  the output body (`stream_exchange.rb:272-274`).
 - **Timeouts.** Timeouts passed to proxy operations get the same allowance and
-  stalled-reactor fallback as unary calls. Caller interruption posts `abort`.
-- **Block exit.** When the block exits, normally or by exception, the caller
-  posts the matching terminal command. It then waits, up to the cleanup
-  allowance, for the reactor's `open_stream` to return, so stream accounting
-  completes before the caller continues.
+  stalled-reactor fallback as unary calls.
+- **Normal block exit.** The caller posts the terminal command, then waits for
+  the reactor's `open_stream` or `open_grpc_stream` to return its actual
+  outcome. The wait is bounded only as unary waits are: by the deadline plus the
+  allowance, with no extra bound for a nil deadline. A cleanup failure the
+  engine raises after the block returns must reach the caller. Native gRPC can
+  do that (`transport.rb:74-85`). If the bounded wait expires first, the caller
+  fails with `deadline_exceeded`. It never reports success without the
+  engine's outcome.
+- **Exceptional block exit.** The caller fires the interrupt signal, posts
+  `abort`, abandons the mailbox and re-raises its original exception unchanged,
+  without waiting for cleanup. Admission stays held until the engine finishes
+  retiring the stream. The 100 ms cleanup allowance triggers destructive
+  cleanup and does not mean retirement is complete, so the caller never treats
+  it as a completion signal.
 - **Capabilities.** PR D advertises Connect `[:server_stream]` and gRPC
   `[:unary, :server_stream]`. Native gRPC unary uses the gRPC stream exchange,
   so gRPC clients can use `ThreadedTransport` only from PR D on. Core already
@@ -475,11 +543,27 @@ reset with `REFUSED_STREAM` (`stream.rb:253`). RFC 9113 defines both as never
 processed ([§6.8][rfc-goaway], [§8.7][rfc-refused]).
 
 With a connection policy, a unary call whose stream is refused before response
-headers is sent again once, on another connection, within the same deadline.
-Unary request bodies are complete strings, so resending them is exact. Streams
-are never resent, because the caller already holds the exchange and may have
-written messages. Without a policy, refused calls keep failing with
-`unavailable`, as the existing no-replay specs assert.
+headers is sent again once, within the same deadline. Unary request bodies are
+complete strings, so resending them is exact. The retry goes back through
+ordinary acquisition with the call's existing admission. It picks no particular
+connection:
+
+- **Standalone `REFUSED_STREAM`.** The connection stays healthy and reusable
+  (`protocol-http2-0.29.2/lib/protocol/http2/stream.rb:248-259`), so the retry
+  may use the same connection. A refusal never retires a connection and never
+  aborts its accepted siblings.
+- **Above GOAWAY's last stream id.** The connection is draining and accepts no
+  new streams, so acquisition uses another active connection or the replacement
+  attempt the GOAWAY rules allow.
+- **No capacity.** If no connection can take the retry, the usual waiting rules
+  apply: fail-fast calls fail with `unavailable` when the state is
+  `transient_failure`, and all calls wait for stream capacity up to their
+  deadline.
+
+A second refusal fails the call with `unavailable`. Streams are never resent,
+because the caller already holds the exchange and may have written messages.
+Without a policy, refused calls keep failing with `unavailable`, as the existing
+no-replay specs assert.
 
 ## Non-goals
 
@@ -500,7 +584,10 @@ written messages. Without a policy, refused calls keep failing with
 | --- | --- |
 | Reactor blocked by native code, such as DNS or a codec | Caller deadline plus allowance fires; the caller fails and the interrupt signal cancels when the reactor resumes. Nil-deadline calls wait, as with today's Transport. Documented as a cooperative limit. |
 | `Thread#raise` lands during bookkeeping | Interrupts masked except during the blocking wait. |
-| Interrupted caller while its stream is still cleaning up | Admission held until the reactor reports the outcome. |
+| Interrupted caller while its stream is still cleaning up | Admission held until both the reactor's outcome and the caller's consumption or abandonment. |
+| Paused caller holding a completed response | Same two-owner rule: completed replies stay within `max_requests` responses of at most `response_limit` bytes. |
+| Blocked stream read or write when the caller is interrupted | Interrupt signal fired out of band before `abort` is queued. |
+| Reactor stalled during `close` | Close returns `false` after grace plus allowance, fires pending interrupts and leaves the owner to abort when it resumes. |
 | Late lifecycle mutation after the caller left | Detachable lifecycle proxy. |
 | Fork while calls are in flight or while the engine starts | Child ignores inherited state; tests fork in each of these states. |
 | Server down at boot or during a deploy | Fail-fast callers get `unavailable` quickly; demand-driven attempts with backoff recover; wait-for-ready callers wait until their deadline. |
@@ -528,12 +615,13 @@ and the dispatch guard reroute.
 
 | Concern | Evidence |
 | --- | --- |
-| Backoff growth, cap, jitter bounds and reset only at SETTINGS readiness | Deterministic specs with an injected clock and random source |
-| No reset from bursts; no timer or attempt after demand ends or close starts | Same deterministic specs |
+| Backoff growth, hard cap including jitter, jitter range and reset only at SETTINGS readiness | Deterministic specs with an injected clock and random source |
+| No reset from bursts; no new attempt without a waiting call; an in-progress attempt finishes within `connect_timeout` after its last waiter leaves; a timer that fires without waiters starts nothing; `close` cancels both | Same deterministic specs |
 | Shared attempt survives a short-deadline or cancelled initiator | Real TLS peer that stalls the handshake under a gate; second waiter completes |
-| Recovery after refused connections | Peer refuses, then listens. Concurrent wait-for-ready waiters share paced attempts; expired waiters send no request bytes, judged by server invocation counts; survivors dispatch once. Fail-fast callers fail during `transient_failure`. |
-| Count and byte limits during an outage | Admission rejects predictably; events report the rejection |
+| Recovery after refused connections | Peer refuses, then listens. Concurrent wait-for-ready waiters share paced attempts. A frame-observing peer shows that expired and cancelled waiters sent no request HEADERS or DATA, which handler counts alone cannot prove. Survivors dispatch once. Fail-fast callers fail during `transient_failure`. |
+| Count and byte limits during an outage | Admission rejects predictably for POST bodies and GET request targets; events report the rejection |
 | Dead-before-dispatch reroute | Peer closes an idle connection; the next call uses a new one with one server invocation |
+| No replay with a policy | Policy-enabled POST and GET probes observe request HEADERS and DATA progress, then inject an ambiguous failure: a reset after headers, EOF after a partial or complete body, and connection loss after the handler ran. The failed call is not resent, judged by both transmitted frames and invocations; only a separately issued call reconnects. |
 | Legacy behavior | Existing pool, lifecycle and no-replay specs pass unchanged without a policy |
 | Attempts outside RPC context | OTel bundle spec: no attempt span is parented to the first RPC |
 | Close | Wakes waiters, stops timers and attempts, keeps existing outcomes |
@@ -547,10 +635,12 @@ close; interruption; owner-thread failure.
 | --- | --- |
 | Multiplexing from many threads | Generated client on 8 threads over h2c, TLS and mTLS; the server observes one connection |
 | Deadline covers the inbox wait and a stalled reactor | Test hook holds the reactor; caller returns `deadline_exceeded` within the allowance and admission is released after the reactor resumes |
+| Admission covers completed replies | A paused caller holds a completed reply; a replacement call cannot take its slot until the caller consumes it; an abandoned reply is dropped and its slot released |
 | Interruption | `Timeout.timeout` and `Thread#raise`: the server observes `RST_STREAM(CANCEL)`, the sibling completes and the connection is reused |
 | Fork | Fork while idle, with calls in flight on other threads, and during engine start, over TLS and mTLS. The child gets a new connection; the parent's connection keeps working after the child exits. |
 | Outage recovery end to end | Server stops and restarts; fail-fast and wait-for-ready behavior as designed |
-| Close and lifecycle | Graceful and forced drain, concurrent close, calls after close, close in a child, reentrant call from the owner thread |
+| Close and lifecycle | Graceful and forced drain, concurrent close, calls after close, close in a child, reentrant `call` and `close` from the owner thread |
+| Close with a stalled owner | Test hook holds the reactor; close returns `false` after grace plus allowance and fires pending interrupts; the owner aborts and exits when released. Interrupting one of two concurrent closers re-raises in that closer only. |
 | Owner thread failure | Injected failure; pending callers get `unavailable` promptly; the next call restarts |
 | Interoperability and packaging | `async:interop` unary cases through `ThreadedTransport`; installed generated callers and RBS on both Rubies |
 
@@ -562,6 +652,7 @@ close; interruption; owner-thread failure.
 | Full draining set | A second GOAWAY while the draining set is full keeps today's slot behavior |
 | Drain timeout | Remaining streams fail with `unavailable` and are not resent |
 | Refused unary retry | `REFUSED_STREAM` and above-last-id streams, for POST and GET, are sent exactly once more; server invocation count is one |
+| Refusal capacity | Standalone `REFUSED_STREAM` with a live sibling on the default single connection: the retry reuses that connection and the sibling completes. Above-last-id refusal with the draining set full: the retry waits for capacity or fails per the waiting rules, and no accepted sibling is aborted. A second refusal fails with `unavailable`. |
 | No stream retry | Refused streams fail with `unavailable` |
 | Error GOAWAY | At or below the last id: fail, no retry |
 | Legacy behavior | Existing no-replay specs unchanged without a policy |
@@ -572,7 +663,9 @@ close; interruption; owner-thread failure.
 | --- | --- |
 | Connect server streaming and gRPC unary and server streaming from threads | Generated clients over h2c, TLS and mTLS, both codecs where applicable |
 | Early headers, bounded reads and finish | Proxy operations against controlled peers |
-| Caller interruption mid-stream | Stream is reset and a sibling stream keeps progressing |
+| Caller interruption mid-stream | Interruption during a gated nil-deadline `read` and during a blocked `write`: the stream is reset, a sibling keeps progressing, the caller's original exception is re-raised and admission is released after retirement |
+| gRPC trailers | `response_trailers` through the proxy for ordinary and trailers-only responses, success and error, with repeated fields and EOF gating |
+| Completion outcome | Delayed retirement and a late gRPC cleanup failure after the block returns reach the caller; the caller never reports success without the engine's outcome |
 | Stalled consumer | Another thread's stream on the same connection keeps progressing |
 | Conformance | Official native client conformance for Connect U/SS and gRPC U/SS run through `ThreadedTransport`, as a separate inventory |
 
@@ -586,10 +679,14 @@ what it delivers.
 
 ## Open questions
 
-None block the design. These are worth checking during implementation:
+None block the design. Review changed one detail of an accepted default: Jim
+chose ±20% jitter with a 30 s cap, and this design makes the jitter shorten
+delays only, so 30 s is a hard maximum and capped delays still spread out (see
+[Backoff](#backoff)). Symmetric jitter would exceed the cap by up to 6 s.
+Revert to symmetric jitter if matching gRPC exactly matters more.
 
-- Whether `max_pending_bytes` should also count GET query bytes. The current
-  recommendation is no, because the URL limit already bounds them.
+This is worth checking during implementation:
+
 - Whether the owner thread should be named per origin, such as
   `connectrpc-async rpc.internal:8443`, for easier debugging. The current
   recommendation is yes, without credentials or paths.
