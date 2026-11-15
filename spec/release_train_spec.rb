@@ -63,7 +63,7 @@ RSpec.describe ReleaseTrain do
       ARGV.each { |file| require file }
       abort "Loaded optional dependency" if defined?(::Rack) || defined?(::Rails) || defined?(::Async) ||
                                             defined?(::Falcon) || defined?(::OpenTelemetry)
-      puts JSON.generate([ConnectRPC::VERSION, ConnectRPC::Rack::VERSION, ConnectRPC::Rails::VERSION,
+      puts JSON.generate([ConnectRPC::VERSION, ConnectRPC::Rack::VERSION, ConnectRPC::OnRails::VERSION,
                           ConnectRPC::Async::VERSION, ConnectRPC::Falcon::VERSION,
                           ConnectRPC::Testing::VERSION, ConnectRPC::OTel::VERSION])
     RUBY
@@ -99,7 +99,7 @@ RSpec.describe ReleaseTrain do
             expect(checksums.lines).to include("  #{name} (#{version})\n"),
                                        "#{file}: CHECKSUMS must contain #{name} (#{version})"
           end
-          local_dependency = /^ {6}(connectrpc(?:-[a-z]+)?) \(/
+          local_dependency = /^ {6}(connectrpc(?:-[a-z]+)*) \(/
           original_paths = original.split(/(?=^[A-Z][A-Z ]*\n)/).select { |section| section.start_with?("PATH\n") }.join
           dependencies = original_paths.scan(local_dependency).flatten
           expected_dependencies = dependencies.map { |name| "      #{name} (#{floor})\n" }

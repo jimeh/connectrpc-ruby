@@ -13,7 +13,7 @@ require_relative "api/support"
 
 versions = {
   "connectrpc" => ConnectRPC::VERSION, "connectrpc-rack" => ConnectRPC::Rack::VERSION,
-  "connectrpc-rails" => ConnectRPC::Rails::VERSION, "connectrpc-async" => ConnectRPC::Async::VERSION,
+  "connectrpc-on-rails" => ConnectRPC::OnRails::VERSION, "connectrpc-async" => ConnectRPC::Async::VERSION,
   "connectrpc-falcon" => ConnectRPC::Falcon::VERSION, "connectrpc-testing" => ConnectRPC::Testing::VERSION,
   "connectrpc-otel" => ConnectRPC::OTel::VERSION
 }

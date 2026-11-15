@@ -18,8 +18,8 @@ Dir.mktmpdir("appraisals-", File.join(root, "vendor/rails/tmp")) do |temporary| 
   FileUtils.mkdir_p(File.join(temporary, "gems/connectrpc-rack"))
   FileUtils.cp(File.join(root, "gems/connectrpc-rack/connectrpc-rack.gemspec"),
                File.join(temporary, "gems/connectrpc-rack"))
-  %w[rack rails].each do |name|
-    relative = "gems/connectrpc-#{name}/lib/connectrpc/#{name}/version.rb"
+  %w[gems/connectrpc-rack/lib/connectrpc/rack/version.rb
+     gems/connectrpc-on-rails/lib/connectrpc/on_rails/version.rb].each do |relative|
     version_destination = File.join(temporary, relative)
     FileUtils.mkdir_p(File.dirname(version_destination))
     FileUtils.cp(File.join(root, relative), version_destination)

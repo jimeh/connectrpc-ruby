@@ -221,7 +221,7 @@ renaming either breaks publication. `release:publish` runs these steps:
    1. `connectrpc`.
    2. `connectrpc-rack`, `connectrpc-async`, `connectrpc-testing` and
       `connectrpc-otel`.
-   3. `connectrpc-rails` after Rack, and `connectrpc-falcon` after Async.
+   3. `connectrpc-on-rails` after Rack, and `connectrpc-falcon` after Async.
 
    For each gem missing from RubyGems.org, it signs the archive with
    `sigstore-cli` using the job's GitHub OIDC identity and pushes it with

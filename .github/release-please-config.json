@@ -15,7 +15,7 @@
       "force-tag-creation": true,
       "extra-files": [
         "gems/connectrpc-rack/lib/connectrpc/rack/version.rb",
-        "gems/connectrpc-rails/lib/connectrpc/rails/version.rb",
+        "gems/connectrpc-on-rails/lib/connectrpc/on_rails/version.rb",
         "gems/connectrpc-async/lib/connectrpc/async/version.rb",
         "gems/connectrpc-falcon/lib/connectrpc/falcon/version.rb",
         "gems/connectrpc-testing/lib/connectrpc/testing/version.rb",

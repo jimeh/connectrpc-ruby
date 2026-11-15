@@ -6,19 +6,19 @@ require "rubygems"
 # Source preparation only. This helper never loads ConnectRPC or contacts a registry.
 class ReleaseTrain # rubocop:disable Metrics/ClassLength
   NAMES = %w[connectrpc connectrpc-rack connectrpc-async connectrpc-testing connectrpc-otel
-             connectrpc-rails connectrpc-falcon].freeze
+             connectrpc-on-rails connectrpc-falcon].freeze
   VERSION_FILES = NAMES.to_h do |name|
     file = if name == "connectrpc"
              "lib/connectrpc/version.rb"
            else
-             "gems/#{name}/lib/connectrpc/#{name.delete_prefix('connectrpc-')}/version.rb"
+             "gems/#{name}/lib/connectrpc/#{name.delete_prefix('connectrpc-').tr('-', '_')}/version.rb"
            end
     [name, file]
   end.freeze
   LOCKS = ["Gemfile.lock", *%w[rack async falcon testing otel].map do |name|
     "gems/connectrpc-#{name}/Gemfile.lock"
-  end, *%w[8.0 8.1].map { |lane| "gems/connectrpc-rails/gemfiles/rails_#{lane}.gemfile.lock" }].freeze
-  GUIDES = %w[README.md docs/design.md gems/connectrpc-rack/README.md gems/connectrpc-rails/README.md
+  end, *%w[8.0 8.1].map { |lane| "gems/connectrpc-on-rails/gemfiles/rails_#{lane}.gemfile.lock" }].freeze
+  GUIDES = %w[README.md docs/design.md gems/connectrpc-rack/README.md gems/connectrpc-on-rails/README.md
               gems/connectrpc-testing/README.md gems/connectrpc-otel/README.md].freeze
   LOCK_PACKAGES = {
     "Gemfile.lock" => %w[connectrpc connectrpc-rack],
@@ -27,8 +27,8 @@ class ReleaseTrain # rubocop:disable Metrics/ClassLength
     "gems/connectrpc-falcon/Gemfile.lock" => %w[connectrpc connectrpc-async connectrpc-falcon],
     "gems/connectrpc-testing/Gemfile.lock" => %w[connectrpc connectrpc-testing],
     "gems/connectrpc-otel/Gemfile.lock" => NAMES,
-    "gems/connectrpc-rails/gemfiles/rails_8.0.gemfile.lock" => %w[connectrpc connectrpc-rack connectrpc-rails],
-    "gems/connectrpc-rails/gemfiles/rails_8.1.gemfile.lock" => %w[connectrpc connectrpc-rack connectrpc-rails]
+    "gems/connectrpc-on-rails/gemfiles/rails_8.0.gemfile.lock" => %w[connectrpc connectrpc-rack connectrpc-on-rails],
+    "gems/connectrpc-on-rails/gemfiles/rails_8.1.gemfile.lock" => %w[connectrpc connectrpc-rack connectrpc-on-rails]
   }.freeze
   attr_reader :root
 
@@ -101,7 +101,7 @@ class ReleaseTrain # rubocop:disable Metrics/ClassLength
   def prepared_files
     files = LOCKS.to_h { |file| [file, prepared_lock(read(file))] }
     GUIDES.each do |file|
-      files[file] = read(file).gsub(/(connectrpc(?:-[a-z]+)?["`, ]+)~> 0\.\d+\.\d+/, "\\1#{requirement}")
+      files[file] = read(file).gsub(/(connectrpc(?:-[a-z]+)*["`, ]+)~> 0\.\d+\.\d+/, "\\1#{requirement}")
     end
     files["docs/development.md"] = read("docs/development.md").gsub(%r{pkg/connectrpc-0\.\d+\.\d+\.gem},
                                                                     "pkg/connectrpc-#{version}.gem")
@@ -141,8 +141,8 @@ class ReleaseTrain # rubocop:disable Metrics/ClassLength
     check_configuration!
     LOCK_PACKAGES.each do |file, names|
       content = read(file)
-      specifications = content.scan(/^ {4}(connectrpc(?:-[a-z]+)?) \([^\n)]+\)$/).flatten
-      checksums = content.scan(/^ {2}(connectrpc(?:-[a-z]+)?) \([^\n)]+\)$/).flatten
+      specifications = content.scan(/^ {4}(connectrpc(?:-[a-z]+)*) \([^\n)]+\)$/).flatten
+      checksums = content.scan(/^ {2}(connectrpc(?:-[a-z]+)*) \([^\n)]+\)$/).flatten
       unless specifications.sort == names.sort && checksums.sort == names.sort
         raise "Local path/checksum inventory changed: #{file}"
       end
