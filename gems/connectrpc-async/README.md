@@ -293,8 +293,9 @@ configuration errors raise at boot. `call`, `close(grace: 5)`,
 - The waits in `call` and `close` accept `Timeout`, `Thread#raise` and
   `Thread#kill` even inside an enclosing
   `Thread.handle_interrupt(... => :never)` region, because Ruby cannot read the
-  caller's mask. Core NetHTTP and the reactor-owned `Transport` defer those
-  interrupts inside such a region.
+  caller's mask. Core NetHTTP defers those interrupts inside such a region.
+  The reactor-owned `Transport` does not reliably defer them either, because
+  masks are per fiber and the reactor delivers them to other fibers.
 - After fork, the child's first call builds its own owner thread and
   connection; it never writes to or closes the parent's. The compiled TLS
   snapshot is reused. A transport closed before fork stays closed; `close` in a
