@@ -74,7 +74,7 @@ end
 
 class APIController < ActionController::API
   before_action :observe_connect
-  include ConnectRPC::Rails::Controller
+  include ConnectRPC::OnRails::Controller
 
   def inspect_context
     connect_context&.response_metadata&.add("callback", "yes")
@@ -165,7 +165,7 @@ class APIHosting
 end
 
 class APIBaseController < ActionController::Base
-  include ConnectRPC::Rails::Controller
+  include ConnectRPC::OnRails::Controller
 
   before_action :observe_connect
 

@@ -10,7 +10,7 @@ require_relative "../typecheck/archive"
 
 RSpec.describe "Canonical package builds" do
   root = File.expand_path("..", __dir__)
-  directories = [root, *%w[async falcon rack rails testing otel].map { |name| "#{root}/gems/connectrpc-#{name}" }]
+  directories = [root, *%w[async falcon on-rails rack testing otel].map { |name| "#{root}/gems/connectrpc-#{name}" }]
 
   def archive_files(archive)
     files = {}

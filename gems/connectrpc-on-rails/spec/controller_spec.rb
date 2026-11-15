@@ -4,7 +4,7 @@ require "json"
 require "timeout"
 require "zlib"
 
-RSpec.describe ConnectRPC::Rails::Controller do
+RSpec.describe ConnectRPC::OnRails::Controller do
   let(:binding) { ConnectRPC::Bindings::GoogleProtobuf.new }
   let(:type) { Example::V1::EchoMessage }
   let(:service) { Example::V1::EchoService }

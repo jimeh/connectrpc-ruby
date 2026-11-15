@@ -31,19 +31,19 @@ PATH
       protocol-rack (~> 0.23.0)
 
 PATH
+  remote: ../connectrpc-on-rails
+  specs:
+    connectrpc-on-rails (0.1.0)
+      actionpack (>= 8.0.5.1, < 8.2)
+      connectrpc (~> 0.1.0)
+      connectrpc-rack (~> 0.1.0)
+
+PATH
   remote: ../connectrpc-rack
   specs:
     connectrpc-rack (0.1.0)
       connectrpc (~> 0.1.0)
       rack (>= 3.2.7, < 4)
-
-PATH
-  remote: ../connectrpc-rails
-  specs:
-    connectrpc-rails (0.1.0)
-      actionpack (>= 8.0.5.1, < 8.2)
-      connectrpc (~> 0.1.0)
-      connectrpc-rack (~> 0.1.0)
 
 PATH
   remote: ../connectrpc-testing
@@ -382,9 +382,9 @@ DEPENDENCIES
   connectrpc!
   connectrpc-async!
   connectrpc-falcon!
+  connectrpc-on-rails!
   connectrpc-otel!
   connectrpc-rack!
-  connectrpc-rails!
   connectrpc-testing!
   console (= 1.38.0)
   crass (= 1.0.8)
@@ -486,9 +486,9 @@ CHECKSUMS
   connectrpc (0.1.0)
   connectrpc-async (0.1.0)
   connectrpc-falcon (0.1.0)
+  connectrpc-on-rails (0.1.0)
   connectrpc-otel (0.1.0)
   connectrpc-rack (0.1.0)
-  connectrpc-rails (0.1.0)
   connectrpc-testing (0.1.0)
   console (1.38.0) sha256=35b82f59130e95e9be6b832d9e539c8b3988fc192e4a8e9a86ab4922f44ad5de
   crass (1.0.8) sha256=7a0145c7a2c59f8e7923b3a69ce819c444823a00a5127d805298fea13be24efe

@@ -3,8 +3,8 @@
 require_relative "harness"
 
 module APICheck
-  PACKAGES = %w[rack testing rails async falcon otel].freeze
-  BRIDGES = { "rails" => "rbs/action_controller_8", "falcon" => "rbs/async_service_0_25" }.freeze
+  PACKAGES = %w[rack testing on-rails async falcon otel].freeze
+  BRIDGES = { "on-rails" => "rbs/action_controller_8", "falcon" => "rbs/async_service_0_25" }.freeze
 
   def self.bridge_paths(root:, installed:)
     BRIDGES.map do |name, relative|

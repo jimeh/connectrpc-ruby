@@ -1,7 +1,7 @@
 # frozen_string_literal: true
 
 Gem::Specification.new do |spec|
-  spec.name = "connectrpc-rails"
+  spec.name = "connectrpc-on-rails"
   spec.version = "0.1.0"
   spec.authors = ["jimeh"]
   spec.summary = "Native Rails controller execution for Connect unary RPCs"

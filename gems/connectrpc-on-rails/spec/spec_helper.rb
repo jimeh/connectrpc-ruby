@@ -11,7 +11,7 @@ SimpleCov.start do
 end
 
 require "bundler"
-require "connectrpc/rails"
+require "connectrpc-on-rails"
 require_relative "support/application"
 
 abort "Unexpected Bundler" unless Bundler::VERSION == "4.0.23"

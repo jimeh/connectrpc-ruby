@@ -15,7 +15,7 @@ $LOAD_PATH.unshift(fixture_root)
 require "echo_connect"
 
 module RailsIntegration
-  ROOT = Dir.mktmpdir("connectrpc-rails-app-", ENV.fetch("CONNECTRPC_RAILS_TMPDIR", nil))
+  ROOT = Dir.mktmpdir("connectrpc-on-rails-app-", ENV.fetch("CONNECTRPC_RAILS_TMPDIR", nil))
   FileUtils.cp_r(Dir.glob(File.expand_path("app/*", __dir__)), ROOT)
 
   class Application < ::Rails::Application

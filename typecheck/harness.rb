@@ -81,7 +81,7 @@ module RBSHarness
       loader = RBS::EnvironmentLoader.new
       #{core ? "loader.add(path: Pathname(#{core.dump})); loader.add(library: 'uri')" : "loader.add(library: 'connectrpc')"}
       env = RBS::Environment.from_loader(loader).resolve_type_names
-      forbidden = %w[::Google ::Rack ::Rails ::Async ::Falcon ::OpenTelemetry ::ConnectRPC::Rack ::ConnectRPC::Rails ::ConnectRPC::Async ::ConnectRPC::Falcon ::ConnectRPC::OTel ::ConnectRPC::Testing]
+      forbidden = %w[::Google ::Rack ::Rails ::Async ::Falcon ::OpenTelemetry ::ConnectRPC::Rack ::ConnectRPC::OnRails ::ConnectRPC::Async ::ConnectRPC::Falcon ::ConnectRPC::OTel ::ConnectRPC::Testing]
       abort 'Core signatures introduce optional declarations' if env.class_decls.keys.any? { |key| forbidden.any? { |name| key.to_s == name || key.to_s.start_with?(name + '::') } }
       puts 'Core signature loading introduces no optional namespaces'
     RUBY_CODE

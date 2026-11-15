@@ -1,7 +1,7 @@
 # frozen_string_literal: true
 
 module ConnectRPC
-  module Rails
+  module OnRails
     module Controller # rubocop:disable Metrics/ModuleLength
       extend ActiveSupport::Concern
 

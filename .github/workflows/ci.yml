@@ -247,7 +247,7 @@ jobs:
           persist-credentials: false
       - uses: ruby/setup-ruby@7f797815d8adceb1c412e7abefdd1ab4abc47a5f # v1.335.0
         env:
-          BUNDLE_GEMFILE: ${{ github.workspace }}/gems/connectrpc-rails/gemfiles/rails_${{ matrix.rails }}.gemfile
+          BUNDLE_GEMFILE: ${{ github.workspace }}/gems/connectrpc-on-rails/gemfiles/rails_${{ matrix.rails }}.gemfile
         with:
           ruby-version: ${{ matrix.ruby }}
           bundler: "4.0.23"

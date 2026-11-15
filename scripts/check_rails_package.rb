@@ -7,7 +7,7 @@ require "rbconfig"
 require "tmpdir"
 
 root = File.expand_path("..", __dir__)
-archives = %w[connectrpc connectrpc-rack connectrpc-rails].map do |name|
+archives = %w[connectrpc connectrpc-rack connectrpc-on-rails].map do |name|
   File.join(root, "vendor/rails/pkg/#{name}-0.1.0.gem")
 end
 core, middleware, adapter = archives.map { |archive| Gem::Package.new(archive) }
@@ -38,9 +38,8 @@ core_files = %w[
   lib/connectrpc/bindings/google_protobuf.rb lib/connectrpc/transports/net_http.rb
 ].sort
 abort "Core manifest changed" unless core.contents.sort == core_files.sort && core.spec.runtime_dependencies.empty?
-expected = %w[LICENSE README.md lib/connectrpc/rails.rb sig/connectrpc-rails.rbs sig/manifest.yaml
-              rbs/action_controller_8/controller.rbs
-              lib/connectrpc/rails/controller.rb]
+expected = %w[LICENSE README.md lib/connectrpc-on-rails.rb lib/connectrpc/on_rails.rb sig/connectrpc-on-rails.rbs
+              sig/manifest.yaml rbs/action_controller_8/controller.rbs lib/connectrpc/on_rails/controller.rb]
 abort "Unexpected Rails manifest" unless adapter.contents.sort == expected.sort
 expected_dependencies = {
   "connectrpc" => "~> 0.1.0", "actionpack" => ">= 8.0.5.1, < 8.2", "connectrpc-rack" => "~> 0.1.0"
@@ -53,7 +52,7 @@ abort "Unexpected Rails dependencies: #{actual}" unless actual == expected_depen
     abort "Publication guard/license missing"
   end
 end
-%w[connectrpc-rack connectrpc-rails].each do |name|
+%w[connectrpc-rack connectrpc-on-rails].each do |name|
   unless File.binread(File.join(root, "gems", name, "LICENSE")) == File.binread(File.join(root, "LICENSE"))
     abort "Package-local license differs from root LICENSE: #{name}"
   end
@@ -74,7 +73,7 @@ rack_dependencies = middleware.spec.runtime_dependencies.to_h do |dependency|
 end
 abort "Rack dependencies changed" unless rack_dependencies == { "connectrpc" => "~> 0.1.0", "rack" => ">= 3.2.7, < 4" }
 specs = Bundler.load.specs.to_h { |spec| [spec.name, spec] }
-pending = %w[connectrpc-rails railties google-protobuf]
+pending = %w[connectrpc-on-rails railties google-protobuf]
 required = {}
 until pending.empty?
   name = pending.shift
@@ -104,7 +103,7 @@ core_check = <<~'CODE'
   puts "Isolated core without Rails passed"
 CODE
 Bundler.with_unbundled_env do
-  Dir.mktmpdir("connectrpc-rails-package-", ENV.fetch("CONNECTRPC_RAILS_TMPDIR", nil)) do |temporary|
+  Dir.mktmpdir("connectrpc-on-rails-package-", ENV.fetch("CONNECTRPC_RAILS_TMPDIR", nil)) do |temporary|
     working = File.join(temporary, "outside-checkout")
     FileUtils.mkdir_p(working)
     FileUtils.cp(artifacts + archives, working)

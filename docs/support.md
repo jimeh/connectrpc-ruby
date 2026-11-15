@@ -46,7 +46,7 @@ Ruby methods into extension points.
 ### Match the ConnectRPC package versions
 
 Support requires the **same version** of `connectrpc` and every optional
-ConnectRPC gem used by the application: `connectrpc-rack`, `connectrpc-rails`,
+ConnectRPC gem used by the application: `connectrpc-rack`, `connectrpc-on-rails`,
 `connectrpc-async`, `connectrpc-falcon`, `connectrpc-testing` and `connectrpc-otel`.
 Only the packages actually used need to be installed.
 
@@ -69,8 +69,8 @@ MRI versions apply to the rows below unless a row says otherwise. The
 | Core, Rack, Testing | [Root](../Gemfile.lock), [Rack](../gems/connectrpc-rack/Gemfile.lock) and [Testing](../gems/connectrpc-testing/Gemfile.lock): google-protobuf 4.36.2 and Rack 3.2.7 where used | Portable Rack socket checks use rackup/WEBrick |
 | Native Async | [Async lock](../gems/connectrpc-async/Gemfile.lock): async 2.46.0, async-http 0.105.0, protocol-http2 0.29.2 | Requires an application-owned Async reactor and thread |
 | Falcon | [Falcon lock](../gems/connectrpc-falcon/Gemfile.lock): Falcon 0.57.0 and its locked native stack | Native RPC and explicit Rack/Rails fallback have separate execution contracts |
-| Rails supported profile | [Rails 8.1 lock](../gems/connectrpc-rails/gemfiles/rails_8.1.gemfile.lock): Rails/Action Pack 8.1.4 | Native unary controller execution on both MRI versions |
-| Rails compatibility evidence | [Rails 8.0 lock](../gems/connectrpc-rails/gemfiles/rails_8.0.gemfile.lock): Rails/Action Pack 8.0.5.1 | MRI 3.4.12 only; retained CI lane outside the supported Rails profile |
+| Rails supported profile | [Rails 8.1 lock](../gems/connectrpc-on-rails/gemfiles/rails_8.1.gemfile.lock): Rails/Action Pack 8.1.4 | Native unary controller execution on both MRI versions |
+| Rails compatibility evidence | [Rails 8.0 lock](../gems/connectrpc-on-rails/gemfiles/rails_8.0.gemfile.lock): Rails/Action Pack 8.0.5.1 | MRI 3.4.12 only; retained CI lane outside the supported Rails profile |
 | OpenTelemetry | [OTel lock](../gems/connectrpc-otel/Gemfile.lock): API 1.11.1, SDK 1.13.1, Rack instrumentation 0.31.2, NetHTTP instrumentation 0.29.2 | Tested coexistence includes native Rails 8.1.4. Other SDK/instrumentation combinations need their own evidence |
 
 The official browser fixture runs against both MRI server versions. Its

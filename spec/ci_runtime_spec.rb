@@ -199,7 +199,7 @@ RSpec.describe "CI check mapping" do
     expect(rails.dig("strategy", "matrix", "include")).to eq(expected)
     expect(rails.fetch("env")).to include("BUNDLE_COOLDOWN" => "7", "RAILS_LANE" => "${{ matrix.rails }}")
     setup = rails.fetch("steps").find { |step| step.fetch("uses", "").start_with?("ruby/setup-ruby@") }
-    gemfile = "${{ github.workspace }}/gems/connectrpc-rails/gemfiles/rails_${{ matrix.rails }}.gemfile"
+    gemfile = "${{ github.workspace }}/gems/connectrpc-on-rails/gemfiles/rails_${{ matrix.rails }}.gemfile"
     expect(setup.dig("env", "BUNDLE_GEMFILE")).to eq(gemfile)
     commands = rails.fetch("steps").filter_map { |step| step["run"] }
     expect(commands.first(3)).to eq(["mise run test:rails", "mise run generation:check:rails",

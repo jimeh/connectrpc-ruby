@@ -1,7 +1,7 @@
 # frozen_string_literal: true
 
 class BadController
-  include ConnectRPC::Rails::Controller
+  include ConnectRPC::OnRails::Controller
 
   def fail_reader
     connect_context.check!

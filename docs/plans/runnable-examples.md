@@ -84,7 +84,7 @@ writes a state file (below), and shuts down cleanly on INT/TERM with a bounded w
 | Server | Hosting | Protocols | Shapes |
 | --- | --- | --- | --- |
 | `rack` | `ConnectRPC::Rack` on WEBrick via `examples/localhost.rb` (add an optional `port:` keyword defaulting to 0) | Connect | U |
-| `rails` | Single-file `Rails::Application` (railties + action_controller), explicit route, controller including `ConnectRPC::Rails::Controller`, served through the same WEBrick host | Connect | U |
+| `rails` | Single-file `Rails::Application` (railties + action_controller), explicit route, controller including `ConnectRPC::OnRails::Controller`, served through the same WEBrick host | Connect | U |
 | `async` | `ConnectRPC::Async::Host` (h2c) inside an application-owned `Async` reactor, `host.wait` | Connect + gRPC (`protocol: :auto`) | U/SS/CS/bidi |
 | `falcon` | `ConnectRPC::Falcon::Server` with a pre-bound `Endpoint` inside `Async` (supports port 0; close the caller-owned bound endpoint on shutdown); comment points to the DSL form in `gems/connectrpc-falcon/examples/falcon.rb` | H1: Connect only. H2: Connect + gRPC | H1: Connect U/SS/CS. H2: Connect and gRPC U/SS/CS/bidi |
 

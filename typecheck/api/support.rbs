@@ -41,7 +41,7 @@ class APIRequest
   def body: () -> ConnectRPC::Async::_Body?
 end
 class APIController < ActionController::API
-  include ConnectRPC::Rails::Controller
+  include ConnectRPC::OnRails::Controller
   def inspect_context: () -> String?
   private
   def observe_connect: () -> nil
@@ -82,7 +82,7 @@ class BadAPIObserver
   def finished: (String) -> void
 end
 class BadController
-  include ConnectRPC::Rails::Controller
+  include ConnectRPC::OnRails::Controller
   def fail_reader: () -> nil
 end
 
@@ -101,7 +101,7 @@ class APIHosting
 end
 
 class APIBaseController < ActionController::Base
-  include ConnectRPC::Rails::Controller
+  include ConnectRPC::OnRails::Controller
   private
   def observe_connect: () -> nil
 end

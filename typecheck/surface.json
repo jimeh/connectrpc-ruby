@@ -666,6 +666,36 @@
     "ConnectRPC::Falcon::Server#tls_generation": {"kind":"method","visibility":"public","parameters":"","classification":"supported"},
     "ConnectRPC::Falcon::Server#tls_status": {"kind":"method","visibility":"public","parameters":"","classification":"supported"}
   },
+  "gems/connectrpc-on-rails/lib/connectrpc-on-rails.rb": {
+
+  },
+  "gems/connectrpc-on-rails/lib/connectrpc/on_rails.rb": {
+
+  },
+  "gems/connectrpc-on-rails/lib/connectrpc/on_rails/controller.rb": {
+    "ConnectRPC::OnRails::Controller#connect": {"kind":"method","visibility":"public","parameters":"","classification":"spi"},
+    "ConnectRPC::OnRails::Controller#connect_apply_response": {"kind":"method","visibility":"private","parameters":"result, cors_owned:","classification":"internal"},
+    "ConnectRPC::OnRails::Controller#connect_binding": {"kind":"method","visibility":"private","parameters":"","classification":"spi"},
+    "ConnectRPC::OnRails::Controller#connect_context": {"kind":"attribute","visibility":"private","classification":"spi"},
+    "ConnectRPC::OnRails::Controller#connect_cors": {"kind":"method","visibility":"private","parameters":"","classification":"supported"},
+    "ConnectRPC::OnRails::Controller#connect_dispatch": {"kind":"method","visibility":"private","parameters":"&invoker","classification":"internal"},
+    "ConnectRPC::OnRails::Controller#connect_env": {"kind":"method","visibility":"private","parameters":"service","classification":"internal"},
+    "ConnectRPC::OnRails::Controller#connect_handlers": {"kind":"method","visibility":"private","parameters":"","classification":"spi"},
+    "ConnectRPC::OnRails::Controller#connect_instrumentation": {"kind":"method","visibility":"private","parameters":"","classification":"spi"},
+    "ConnectRPC::OnRails::Controller#connect_limits": {"kind":"method","visibility":"private","parameters":"","classification":"spi"},
+    "ConnectRPC::OnRails::Controller#connect_method": {"kind":"attribute","visibility":"private","classification":"spi"},
+    "ConnectRPC::OnRails::Controller#connect_prepare_request": {"kind":"method","visibility":"private","parameters":"","classification":"internal"},
+    "ConnectRPC::OnRails::Controller#connect_protocol": {"kind":"method","visibility":"private","parameters":"","classification":"supported"},
+    "ConnectRPC::OnRails::Controller#connect_report": {"kind":"method","visibility":"private","parameters":"error","classification":"internal"},
+    "ConnectRPC::OnRails::Controller#connect_request": {"kind":"attribute","visibility":"private","classification":"spi"},
+    "ConnectRPC::OnRails::Controller#connect_route_prefix": {"kind":"method","visibility":"private","parameters":"service","classification":"internal"},
+    "ConnectRPC::OnRails::Controller#connect_run_lifecycle": {"kind":"method","visibility":"private","parameters":"","classification":"internal"},
+    "ConnectRPC::OnRails::Controller#connect_service": {"kind":"method","visibility":"private","parameters":"","classification":"spi"},
+    "ConnectRPC::OnRails::Controller#connect_status_codec": {"kind":"method","visibility":"private","parameters":"","classification":"supported"},
+    "ConnectRPC::OnRails::Controller#connect_status_error": {"kind":"method","visibility":"private","parameters":"status","classification":"internal"},
+    "ConnectRPC::OnRails::Controller#connect_vary_header": {"kind":"method","visibility":"private","parameters":"values","classification":"internal"},
+    "ConnectRPC::OnRails::Controller#process_action": {"kind":"method","visibility":"private","parameters":"name, ...","classification":"internal"}
+  },
   "gems/connectrpc-otel/lib/connectrpc/otel.rb": {
 
   },
@@ -695,33 +725,6 @@
     "ConnectRPC::Rack::Body#discard": {"kind":"method","visibility":"public","parameters":"error","classification":"internal"},
     "ConnectRPC::Rack::Body#each": {"kind":"method","visibility":"public","parameters":"&","classification":"internal"},
     "ConnectRPC::Rack::Body#initialize": {"kind":"method","visibility":"public","parameters":"body, lifecycle","classification":"internal"}
-  },
-  "gems/connectrpc-rails/lib/connectrpc/rails.rb": {
-
-  },
-  "gems/connectrpc-rails/lib/connectrpc/rails/controller.rb": {
-    "ConnectRPC::Rails::Controller#connect": {"kind":"method","visibility":"public","parameters":"","classification":"spi"},
-    "ConnectRPC::Rails::Controller#connect_apply_response": {"kind":"method","visibility":"private","parameters":"result, cors_owned:","classification":"internal"},
-    "ConnectRPC::Rails::Controller#connect_binding": {"kind":"method","visibility":"private","parameters":"","classification":"spi"},
-    "ConnectRPC::Rails::Controller#connect_context": {"kind":"attribute","visibility":"private","classification":"spi"},
-    "ConnectRPC::Rails::Controller#connect_cors": {"kind":"method","visibility":"private","parameters":"","classification":"supported"},
-    "ConnectRPC::Rails::Controller#connect_dispatch": {"kind":"method","visibility":"private","parameters":"&invoker","classification":"internal"},
-    "ConnectRPC::Rails::Controller#connect_env": {"kind":"method","visibility":"private","parameters":"service","classification":"internal"},
-    "ConnectRPC::Rails::Controller#connect_handlers": {"kind":"method","visibility":"private","parameters":"","classification":"spi"},
-    "ConnectRPC::Rails::Controller#connect_instrumentation": {"kind":"method","visibility":"private","parameters":"","classification":"spi"},
-    "ConnectRPC::Rails::Controller#connect_limits": {"kind":"method","visibility":"private","parameters":"","classification":"spi"},
-    "ConnectRPC::Rails::Controller#connect_method": {"kind":"attribute","visibility":"private","classification":"spi"},
-    "ConnectRPC::Rails::Controller#connect_prepare_request": {"kind":"method","visibility":"private","parameters":"","classification":"internal"},
-    "ConnectRPC::Rails::Controller#connect_protocol": {"kind":"method","visibility":"private","parameters":"","classification":"supported"},
-    "ConnectRPC::Rails::Controller#connect_report": {"kind":"method","visibility":"private","parameters":"error","classification":"internal"},
-    "ConnectRPC::Rails::Controller#connect_request": {"kind":"attribute","visibility":"private","classification":"spi"},
-    "ConnectRPC::Rails::Controller#connect_route_prefix": {"kind":"method","visibility":"private","parameters":"service","classification":"internal"},
-    "ConnectRPC::Rails::Controller#connect_run_lifecycle": {"kind":"method","visibility":"private","parameters":"","classification":"internal"},
-    "ConnectRPC::Rails::Controller#connect_service": {"kind":"method","visibility":"private","parameters":"","classification":"spi"},
-    "ConnectRPC::Rails::Controller#connect_status_codec": {"kind":"method","visibility":"private","parameters":"","classification":"supported"},
-    "ConnectRPC::Rails::Controller#connect_status_error": {"kind":"method","visibility":"private","parameters":"status","classification":"internal"},
-    "ConnectRPC::Rails::Controller#connect_vary_header": {"kind":"method","visibility":"private","parameters":"values","classification":"internal"},
-    "ConnectRPC::Rails::Controller#process_action": {"kind":"method","visibility":"private","parameters":"name, ...","classification":"internal"}
   },
   "gems/connectrpc-testing/lib/connectrpc/testing.rb": {
 

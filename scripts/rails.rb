@@ -5,7 +5,7 @@ require "rbconfig"
 require "English"
 
 root = File.expand_path("..", __dir__)
-adapter = File.join(root, "gems/connectrpc-rails")
+adapter = File.join(root, "gems/connectrpc-on-rails")
 lane = ENV.fetch("RAILS_LANE", "8.1")
 version = { "8.0" => "8.0.5.1", "8.1" => "8.1.4" }.fetch(lane)
 # Check before Appraisal's legacy fallback can try installing Bundler globally.

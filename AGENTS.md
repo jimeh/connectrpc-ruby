@@ -10,7 +10,7 @@ transports and explicit optional generator. `exe/protoc-gen-connectrpc-ruby` is
 the standard protoc/Buf plugin. `examples/` owns ephemeral localhost hosting
 and the two-terminal runnable servers/clients, and `interop/` the pinned independent Go peer.
 `connectrpc.gemspec` owns core package metadata and files. The optional
-`gems/connectrpc-rails/` package owns native Rails controller execution and its
+`gems/connectrpc-on-rails/` package owns native Rails controller execution and its
 Appraisal lanes. The optional `gems/connectrpc-async/` package owns the standalone HTTP/2 host,
 transport, independent bundle and `async:` tasks. The optional `gems/connectrpc-falcon/` package composes the shared Async native
 application, TLS manager and server session with real Falcon workers and a local

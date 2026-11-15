@@ -85,7 +85,7 @@ also accept `--mtls`; see [Mutual TLS](#mutual-tls).
 | Name | File | Setup task | Hosting | Serves |
 | --- | --- | --- | --- | --- |
 | `rack` | [servers/rack.rb](servers/rack.rb) | `rack:setup` | `ConnectRPC::Rack` on WEBrick | HTTP/1.1: Connect unary |
-| `rails` | [servers/rails.rb](servers/rails.rb) | `setup:rails` | Single-file Rails app, controller includes `ConnectRPC::Rails::Controller` | HTTP/1.1: Connect unary |
+| `rails` | [servers/rails.rb](servers/rails.rb) | `setup:rails` | Single-file Rails app, controller includes `ConnectRPC::OnRails::Controller` | HTTP/1.1: Connect unary |
 | `async` | [servers/async.rb](servers/async.rb) | `async:setup` | `ConnectRPC::Async::Host` in an application-owned reactor | HTTP/2: Connect and gRPC, all four shapes |
 | `falcon` | [servers/falcon.rb](servers/falcon.rb) | `falcon:setup` | `ConnectRPC::Falcon::Server` on a pre-bound endpoint | HTTP/1.1: Connect unary, server and client streaming. HTTP/2: Connect and gRPC, all four shapes |
 

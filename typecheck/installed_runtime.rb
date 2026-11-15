@@ -1,6 +1,8 @@
 # frozen_string_literal: true
 
-libraries = %w[connectrpc/rack connectrpc/testing connectrpc/rails connectrpc/async connectrpc/falcon connectrpc/otel]
+libraries = %w[
+  connectrpc/rack connectrpc/testing connectrpc/on_rails connectrpc/async connectrpc/falcon connectrpc/otel
+]
 libraries.reverse! if ARGV == ["reverse"]
 libraries.each { |name| require name }
 require "action_controller"
@@ -18,7 +20,7 @@ Gem.loaded_specs.each_value do |spec|
 end
 
 class InstalledController < ActionController::API
-  include ConnectRPC::Rails::Controller
+  include ConnectRPC::OnRails::Controller
 end
 raise "Only connect is a controller action" unless InstalledController.action_methods.include?("connect") &&
                                                    !InstalledController.action_methods.include?("connect_service")

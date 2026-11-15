@@ -1,8 +1,8 @@
 # frozen_string_literal: true
 
-require "connectrpc/rails"
+require "connectrpc-on-rails"
 ENV["CONNECTRPC_ROOT"] = ROOT
-require_relative "../../connectrpc-rails/spec/support/application"
+require_relative "../../connectrpc-on-rails/spec/support/application"
 
 RSpec.describe "Native Rails RPC spans" do
   let(:telemetry) { tracing }

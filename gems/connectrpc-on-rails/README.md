@@ -1,4 +1,4 @@
-# connectrpc-rails
+# connectrpc-on-rails
 
 Optional native Rails controller execution for the experimental, unofficial
 ConnectRPC unary Ruby gem. The core gem remains independent of Rails and has
@@ -10,13 +10,14 @@ profile, matched package versions, compatibility policy and adoption gates.
 
 ## Use a controller
 
-Add `connectrpc-rails` and your chosen protobuf binding dependency to your
+Add `connectrpc-on-rails` and your chosen protobuf binding dependency to your
 application Gemfile. Runtime dependencies are `connectrpc ~> 0.1.0`,
 `connectrpc-rack ~> 0.1.0`, and `actionpack >= 8.0.5.1, < 8.2`.
 The Rack package supplies the `rack >= 3.2.7, < 4` requirement. The application
 chooses its controller base, binding, authentication, and security policy.
-Requiring `connectrpc/rails` loads neither `ActionController::Base` nor
-`ActionController::API`, and does not load Google protobuf.
+Requiring `connectrpc/on_rails` loads neither `ActionController::Base` nor
+`ActionController::API`, and does not load Google protobuf. `Bundler.require`
+loads the same entry point through `connectrpc-on-rails`.
 
 Generate official protobuf messages and Connect service glue as described in
 the [root README](../../README.md). Keep generated files outside Zeitwerk's
@@ -31,12 +32,12 @@ Ordinary application controllers retain normal Rails reload behavior.
 For the repository's generated `Example::V1::EchoService` fixture:
 
 ```ruby
-require "connectrpc/rails"
+require "connectrpc/on_rails"
 require "connectrpc/bindings/google_protobuf"
 require "echo_connect"
 
 class EchoController < ApplicationController
-  include ConnectRPC::Rails::Controller
+  include ConnectRPC::OnRails::Controller
 
   private
 
@@ -238,7 +239,7 @@ automatically failures. Configuration before Server construction is outside it.
 ## Static signatures
 
 This package owns `sig/` and its discovery manifest. Add
-`library "connectrpc-rails"` to a strict Steep target with this gem installed.
+`library "connectrpc-on-rails"` to a strict Steep target with this gem installed.
 See the [RBS guide](../../docs/rbs.md) for supported APIs, extension contracts,
 partial records, runtime validation and framework-signature limits.
 `mise run rbs:check` checks application callers for this package; strict core

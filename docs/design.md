@@ -305,7 +305,7 @@ profiles. Interceptors and Faraday remain future work; production readiness
 remains subject to the support contract's adoption gates. Unsupported
 modes/options are rejected rather than represented as buffered streaming.
 
-The optional [connectrpc-rails gem](../gems/connectrpc-rails/README.md) uses the
+The optional [connectrpc-on-rails gem](../gems/connectrpc-on-rails/README.md) uses the
 invoker boundary to run native controller callbacks, authentication,
 `rescue_from` and instrumentation after bounded core decode. It depends on `connectrpc-rack` for Rack translation and keeps hosting
 dependencies out of core. It preserves native

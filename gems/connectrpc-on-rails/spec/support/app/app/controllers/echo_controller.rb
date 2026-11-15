@@ -1,7 +1,7 @@
 # frozen_string_literal: true
 
 class EchoController < ActionController::API
-  include ConnectRPC::Rails::Controller
+  include ConnectRPC::OnRails::Controller
 
   before_action :rpc_before, only: :connect
   around_action :rpc_around, only: :connect
