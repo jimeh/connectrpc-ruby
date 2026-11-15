@@ -14,7 +14,8 @@ module DemoExample
 
     def initialize(name, argv)
       @name = name
-      @port = Integer(ENV.fetch("PORT", DEFAULT_PORT))
+      @port = DemoExample.port(ENV.fetch("PORT", DEFAULT_PORT.to_s), 0..65_535) ||
+              abort("PORT=#{ENV.fetch('PORT')} is not a port number from 0 to 65535 (PORT=0 picks a free one).")
       @mtls = mtls_flag(argv)
     end
 
@@ -30,8 +31,8 @@ module DemoExample
       %w[INT TERM].each { |signal| trap(signal) { writer.write_nonblock("#{signal}\n", exception: false) } }
       yield self
       puts "#{@name} server stopped"
-    rescue Errno::EADDRINUSE
-      abort "Port #{port} is already in use. Set PORT to another port (PORT=0 picks a free one)."
+    rescue Errno::EADDRINUSE, Errno::EACCES => e
+      abort bind_failure(e)
     ensure
       State.remove
     end
@@ -46,6 +47,15 @@ module DemoExample
     end
 
     private
+
+    def bind_failure(error)
+      reason = if error.is_a?(Errno::EACCES)
+                 "needs privileges this process lacks. Set PORT to 1024 or above"
+               else
+                 "is already in use. Set PORT to another port"
+               end
+      "Port #{port} #{reason} (PORT=0 picks a free one)."
+    end
 
     def prepare_certificates
       verb = Certs.prepare! == :issued ? "Issued" : "Using"

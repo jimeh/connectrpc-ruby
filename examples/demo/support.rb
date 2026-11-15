@@ -47,6 +47,13 @@ module DemoExample
   # Raised for any pairing or target the examples deliberately do not attempt.
   class Refusal < StandardError; end
 
+  # Reads a PORT value as a decimal number in range, or returns nil. Integer()
+  # alone would read a leading 0 as octal, so PORT=0700 would mean port 448.
+  def self.port(value, range)
+    number = Integer(value, 10) if value.match?(/\A\d+\z/)
+    number if number && range.cover?(number)
+  end
+
   # Decides whether a client can call an RPC on a server before any network I/O.
   module Support
     module_function
@@ -226,10 +233,11 @@ module DemoExample
     end
 
     def fallback_url
-      port = ENV.fetch("PORT", DEFAULT_PORT.to_s)
-      return "http://127.0.0.1:#{port}" if port.match?(/\A\d+\z/) && (1..65_535).cover?(port.to_i)
+      value = ENV.fetch("PORT", DEFAULT_PORT.to_s)
+      port = DemoExample.port(value, 1..65_535)
+      return "http://127.0.0.1:#{port}" if port
 
-      raise Refusal, "PORT=#{port} is not a port number from 1 to 65535; set it to the server's port or pass --url URL"
+      raise Refusal, "PORT=#{value} is not a port number from 1 to 65535; set it to the server's port or pass --url URL"
     end
 
     def running_record
@@ -246,6 +254,13 @@ module DemoExample
       false
     end
 
-    def same_url?(left, right) = left.delete_suffix("/") == right.delete_suffix("/")
+    # Compares parsed URLs, so case, a default or zero-padded port and a trailing
+    # slash do not hide a match.
+    def same_url?(left, right) = comparable(left) == comparable(right)
+
+    def comparable(url)
+      uri = URI(url)
+      [uri.scheme, uri.host.downcase, uri.port, uri.path.delete_suffix("/")]
+    end
   end
 end

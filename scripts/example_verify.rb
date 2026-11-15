@@ -265,6 +265,16 @@ def discovery_cases(url, state)
      Case.new(client: "nethttp", args: %w[greet --server rails], status: 2,
               expected: ["--server rails does not match the running example server at http://127.0.0.1:#{port} " \
                          "(rack); pass --url URL for the rails server, or drop --server"])],
+    # PORT is decimal: a zero-padded PORT names the same port, so the conflict is still caught.
+    [{ "CONNECTRPC_EXAMPLE_STATE" => state, "PORT" => "0#{port}" },
+     Case.new(client: "nethttp", args: %w[greet --server rails], status: 2,
+              expected: ["--server rails does not match the running example server at http://127.0.0.1:#{port} " \
+                         "(rack)"])],
+    # A zero-padded or uppercase --url still matches, and the client calls the recorded URL.
+    [{ "CONNECTRPC_EXAMPLE_STATE" => state },
+     Case.new(client: "nethttp", args: ["greet", "Ada", "--url", "HTTP://127.0.0.1:0#{port}/"], status: 0,
+              expected: ["nethttp -> rack at #{url} ", "message: Hello, Ada!"],
+              evidence: evidence("greet", []))],
     # An explicit --url that the state file attributes to another server is refused too.
     [{ "CONNECTRPC_EXAMPLE_STATE" => state },
      Case.new(client: "nethttp", args: ["greet", "--server", "rails", "--url", url], status: 2,
@@ -303,15 +313,25 @@ end
 
 def label(server, kase) = "#{server} <- #{kase.client} #{kase.args.join(' ')}"
 
-# A server without mutual TLS support refuses --mtls before it binds a port.
-def server_refusal_problem(env)
-  child = Child.new(env.merge("PORT" => "0"), [RbConfig.ruby, LAUNCHER, "server", "rack", "--mtls"])
-  status = child.wait(READY_TIMEOUT) || child.kill
-  return "rack --mtls timed out" unless status
-  return "rack --mtls exited #{status.exitstatus.inspect}, expected 2:\n#{child.output}" unless status.exitstatus == 2
-  return if child.output.include?("Refused: rack does not serve mutual TLS in these examples")
+# Servers that must exit before binding a port: the name, extra environment,
+# server arguments, exit status and message.
+SERVER_REFUSALS = [
+  ["rack --mtls", { "PORT" => "0" }, %w[rack --mtls], 2, "Refused: rack does not serve mutual TLS in these examples"],
+  ["rack PORT=abc", { "PORT" => "abc" }, %w[rack], 1, "PORT=abc is not a port number from 0 to 65535"],
+  ["rack PORT=65536", { "PORT" => "65536" }, %w[rack], 1, "PORT=65536 is not a port number from 0 to 65535"]
+].freeze
 
-  "rack --mtls printed:\n#{child.output}"
+def server_refusal_problem(env, refusal)
+  name, extra, args, expected_status, message = refusal
+  child = Child.new(env.merge(extra), [RbConfig.ruby, LAUNCHER, "server", *args])
+  status = child.wait(READY_TIMEOUT) || child.kill
+  return "#{name} timed out" unless status
+  unless status.exitstatus == expected_status
+    return "#{name} exited #{status.exitstatus.inspect}, expected #{expected_status}:\n#{child.output}"
+  end
+  return if child.output.include?(message)
+
+  "#{name} printed:\n#{child.output}"
 ensure
   child&.close
 end
@@ -371,9 +391,11 @@ failures = []
 totals = Hash.new(0)
 puts "Runnable examples; Ruby #{RUBY_VERSION}; Rails lane #{ENV.fetch('RAILS_LANE', '8.1')}"
 begin
-  problem = server_refusal_problem({ "CONNECTRPC_EXAMPLE_STATE" => "#{state_dir}/refused.json" })
-  puts "#{problem ? 'FAIL' : 'ok  '} rack --mtls refused"
-  failures << problem if problem
+  SERVER_REFUSALS.each do |refusal|
+    problem = server_refusal_problem({ "CONNECTRPC_EXAMPLE_STATE" => "#{state_dir}/refused.json" }, refusal)
+    puts "#{problem ? 'FAIL' : 'ok  '} #{refusal.first} refused"
+    failures << problem if problem
+  end
   RUNS.each do |server, signal, mtls|
     name = mtls ? "#{server} --mtls" : server
     # A relative override resolves against the repository root even though runners change directory.

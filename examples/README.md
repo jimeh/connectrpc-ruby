@@ -78,8 +78,8 @@ If a bundle is missing, the launcher prints the setup command to run.
 
 ## Servers
 
-Each server binds `127.0.0.1:8080`. Set `PORT` to use another port; `PORT=0`
-picks a free one and the ready line shows it. The `async` and `falcon` servers
+Each server binds `127.0.0.1:8080`. Set `PORT` to another decimal port number;
+`PORT=0` picks a free one and the ready line shows it. The `async` and `falcon` servers
 also accept `--mtls`; see [Mutual TLS](#mutual-tls).
 
 | Name | File | Setup task | Hosting | Serves |
@@ -271,7 +271,8 @@ server that the state file does not describe. The client then calls:
    a number from 1 to 65535.
 
 The client refuses when the state file says a different server runs at the URL
-it would call. It cannot detect a wrong `--server` at an address the state file
+it would call. It compares parsed URLs, so `HTTP://127.0.0.1:08080/` matches
+`http://127.0.0.1:8080`. It cannot detect a wrong `--server` at an address the state file
 does not describe, so name the host that is actually running there.
 
 `--url` must be an `http://` or `https://` URL with a host and no credentials,
