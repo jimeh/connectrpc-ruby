@@ -3,8 +3,9 @@
 require_relative "support"
 
 module DemoExample
-  # Server lifecycle shared by every example server: the port, the ready line,
-  # the state file clients use to find the server, and Ctrl-C/TERM handling.
+  # Demo plumbing, not ConnectRPC usage: the server lifecycle shared by every
+  # example server. It reads PORT, prints the ready line, writes the state file
+  # clients use to find the server, and turns Ctrl-C or TERM into a shutdown.
   class Launch
     def self.serve(name, &) = new(name).serve(&)
 

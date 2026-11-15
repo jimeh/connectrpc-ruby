@@ -1,17 +1,44 @@
 # Runnable examples
 
 Start the server of your choice in one terminal and call it from the client of
-your choice in another. Every server and client is one short file built on the
-same [demo schema](proto/demo/v1/demo.proto) and [shared handlers](demo/handlers.rb),
-so the files differ only in how they host or call ConnectRPC.
+your choice in another. Each server and client is one short file that shows how
+to host or call ConnectRPC that way. They all share one
+[demo schema](proto/demo/v1/demo.proto), so any client can call any server that
+supports the call.
+
+## Where to read
+
+These files show how to use ConnectRPC:
+
+| File | Shows |
+| --- | --- |
+| [servers/](servers/) | One file per host: Rack, Rails, Async and Falcon |
+| [clients/](clients/) | One file per transport: NetHTTP, Async HTTP/1.1 and Async HTTP/2 |
+| [demo/handlers.rb](demo/handlers.rb) | The service implementation, one handler per RPC shape, and the `ConnectRPC::Server` the hosts share |
+| [demo/calls.rb](demo/calls.rb) | Calling each RPC shape through the generated client |
+| [demo/call_log.rb](demo/call_log.rb) | An instrumentation subscriber that logs each RPC on the server |
+| [proto/demo/v1/demo.proto](proto/demo/v1/demo.proto) | The schema; [gen/](gen/) holds its generated Ruby |
+
+The rest is demo plumbing that you can skip: [demo/cli.rb](demo/cli.rb) parses
+client arguments, [demo/support.rb](demo/support.rb) holds the support table and
+state file, [demo/launch.rb](demo/launch.rb) handles the port and Ctrl-C, and
+`scripts/example.rb` picks each file's bundle.
 
 ## Quick start
+
+Each server and client runs in the bundle of the package it uses. Install the
+bundles once before the first run. This pair needs the root bundle, the Falcon
+bundle for the server and the Async bundle for the client:
 
 ```sh
 mise run setup
 mise run falcon:setup
 mise run async:setup
+```
 
+Start the server in one terminal and call it from another:
+
+```sh
 # Terminal 1
 mise run example:server -- falcon
 
@@ -37,22 +64,15 @@ message: Hello, Grace!
 headers: demo-served-by=falcon
 ```
 
-The server logs one line per RPC with that ID and what actually arrived: the
-protocol, HTTP method, codec and compression it read from the request headers,
-and the result code:
+The server prints one line per RPC with the same ID, showing what arrived (see
+[Server call log](#server-call-log)):
 
 ```text
 served Chat request-id=5c1f9a2e protocol=connect http=POST codec=proto encoding=identity code=OK
 ```
 
-The log comes from a `ConnectRPC::Instrumentation` subscriber in
-[handlers.rb](demo/handlers.rb); the Rails server installs the same one through
-its private `connect_instrumentation` hook. A Connect GET has no body and no
-content headers, because its codec and compression travel in the query string,
-so for GET the line shows the codec and encoding the server answered with.
-
 `mise run example:client -- --list` prints every server, client, RPC and option.
-If a bundle is missing, the launcher prints the exact setup command to run.
+If a bundle is missing, the launcher prints the setup command to run.
 
 ## Servers
 
@@ -121,8 +141,8 @@ mise run example:client -- NAME [RPC [ARGS...]] [options]
 
 | Option | Effect |
 | --- | --- |
-| `--server NAME` | Name the server you are calling, instead of reading the state file. |
-| `--url URL` | Call this URL. Alone, it must match the running server's URL. |
+| `--server NAME` | Name the server you are calling. See [Finding the server](#finding-the-server). |
+| `--url URL` | Call this URL. Without `--server`, it must match the running server's URL. |
 | `--codec proto\|json` | Protobuf (default) or ProtoJSON. |
 | `--get` | Connect GET for unary calls (`Greet` is declared `NO_SIDE_EFFECTS`). |
 | `--gzip` | Compress requests and accept gzip responses. |
@@ -130,6 +150,29 @@ mise run example:client -- NAME [RPC [ARGS...]] [options]
 
 A successful call exits 0, an RPC error prints `error: code: message` and
 exits 1, and a refusal exits 2.
+
+## Server call log
+
+Every example server prints one line per RPC:
+
+```text
+served Greet request-id=1f2e3d4c protocol=connect http=POST codec=json encoding=gzip code=OK
+```
+
+The line comes from a `ConnectRPC::Instrumentation` subscriber in
+[demo/call_log.rb](demo/call_log.rb). The Rack, Async and Falcon servers pass it
+to `ConnectRPC::Server.new(instrumentation:)`; the Rails controller returns it
+from its private `connect_instrumentation` hook.
+
+- `request-id` is the `demo-request-id` metadata the client sent.
+- `protocol`, `codec` and `encoding` come from the request headers the server
+  received.
+- `http` is inferred from those headers. A Connect GET has no body and no
+  content headers, because its codec and compression travel in the query
+  string. For GET, `codec` and `encoding` describe the server's response, which
+  it chose from that query and the client's Accept-Encoding.
+- `code` is the RPC result. A request rejected before any handler ran, such as
+  a POST without a content type, prints `http=-` and `code=-`.
 
 ## Finding the server
 
@@ -139,13 +182,17 @@ path; a relative path resolves from the repository root. Without `--server` or
 `--url`, a client calls the recorded server, or explains how to start one when
 the file is missing or its process has exited.
 
-`--server NAME` tells the client which host it is talking to, so it can call a
-server that the state file does not describe. Without `--url` it uses the
-recorded URL when the state file names the same server, and otherwise
-`http://127.0.0.1:$PORT` (8080 by default). It refuses when the state file says
-a different server runs at that address. Name the actual host: the client
-cannot detect a mislabelled `--server` at an address the state file does not
-describe.
+`--server NAME` tells the client which host it is calling, so it can call a
+server that the state file does not describe. The client then calls:
+
+1. `--url`, when given.
+2. Otherwise the recorded URL, when the state file names the same server.
+3. Otherwise `http://127.0.0.1:$PORT`, where `PORT` defaults to 8080 and must be
+   a number from 1 to 65535.
+
+The client refuses when the state file says a different server runs at the URL
+it would call. It cannot detect a wrong `--server` at an address the state file
+does not describe, so name the host that is actually running there.
 
 `--url` must be an `http://` or `https://` URL with a host and no credentials,
 query or fragment. A state file without a known server name, a URL and a numeric
@@ -186,12 +233,16 @@ hosts.
 
 `mise run example:verify` starts each server on an ephemeral port, runs every
 supported client, RPC and option combination plus representative refusals, and
-then stops the server with INT or TERM. For every supported call it finds the
-server's log line with the client's `demo-request-id` and checks the protocol,
-HTTP method, codec, encoding and code the server observed, so a client that
-ignored `--protocol`, `--codec`, `--get` or `--gzip` fails even though the reply
-looks the same. For GET the server cannot see the request's own codec or
-compression, so the check relies on the codec and encoding of the server's
-answer, which come from the GET query and the client's Accept-Encoding. CI runs
-it in the "Runnable examples" job. The generated files in [gen/](gen/) come from `mise run generation:build`;
+then stops the server with INT or TERM. CI runs it in the "Runnable examples"
+job.
+
+For every supported call, the verifier finds the server's
+[call log](#server-call-log) line with the client's `demo-request-id`. It checks
+the protocol, HTTP method, codec, encoding and code against what the client
+asked for. A client that ignored `--protocol`, `--codec`, `--get` or `--gzip`
+therefore fails, even though its reply looks the same. For GET, the check uses
+the codec and encoding of the server's response, as the call log section
+explains.
+
+The generated files in [gen/](gen/) come from `mise run generation:build`, and
 `mise run generation:check` keeps them reproducible.

@@ -16,8 +16,9 @@ module DemoExample
     end
   end
 
-  # Parses client arguments, finds the target server and refuses unsupported
-  # pairings before the client opens any connection.
+  # Demo plumbing, not ConnectRPC usage: parses client arguments, finds the
+  # target server and refuses unsupported pairings before the client opens any
+  # connection.
   module CLI
     USAGE = <<~TEXT.freeze
       RPCs:

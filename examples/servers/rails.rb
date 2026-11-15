@@ -8,7 +8,7 @@ require "action_controller/railtie"
 require "connectrpc/rails"
 require_relative "../demo/launch"
 require_relative "../demo/handlers"
-require_relative "../localhost"
+require_relative "../localhost" # The same WEBrick wrapper the rack example uses.
 
 class DemoApplication < Rails::Application
   config.load_defaults Rails::VERSION::STRING.split(".").first(2).join(".")
@@ -19,6 +19,8 @@ class DemoApplication < Rails::Application
   config.secret_key_base = "runnable-example-only-not-a-secret-" * 2
 end
 
+# The concern adds a `connect` action. The private hooks below configure it;
+# keep them private so Rails never routes to them.
 class DemoController < ActionController::API
   include ConnectRPC::Rails::Controller
 
@@ -27,8 +29,8 @@ class DemoController < ActionController::API
   def connect_service = Demo::V1::DemoService::SERVICE
   def connect_binding = ConnectRPC::Bindings::GoogleProtobuf.new
   def connect_handlers = DemoExample::Handlers.new("rails").to_h
+  # Accept gzip and print the per-RPC log line, like the other servers.
   def connect_limits = { encoding: :gzip }
-  # Logs each RPC, like the other servers.
   def connect_instrumentation = DemoExample.instrumentation
 end
 

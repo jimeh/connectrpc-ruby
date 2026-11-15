@@ -4,7 +4,8 @@ require "json"
 require "fileutils"
 require "uri"
 
-# Plain-Ruby support shared by the runnable servers, clients, launcher and
+# Demo plumbing, not ConnectRPC usage: the support table, the pairing check and
+# the state file, shared by the runnable servers, clients, launcher and
 # verification script. It loads no gems, so every owning bundle can use it.
 module DemoExample
   ROOT = File.expand_path("../..", __dir__)
