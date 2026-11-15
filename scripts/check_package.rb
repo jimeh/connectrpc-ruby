@@ -32,6 +32,7 @@ archive = File.join(root, "pkg", specification.file_name)
 package = Gem::Package.new(archive)
 expected = %w[
   LICENSE README.md docs/development.md docs/design.md docs/rbs.md docs/streaming.md lib/connectrpc.rb
+  docs/unary.md
   lib/connectrpc/version.rb
   sig/connectrpc.rbs sig/manifest.yaml rbs/google_protobuf_4_36/runtime.rbs
   lib/connectrpc/generator/rbs_renderer.rb lib/connectrpc/generator/streaming_methods.rb

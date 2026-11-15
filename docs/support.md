@@ -97,7 +97,7 @@ are target profile capabilities, subject to the adoption gates.
 Connect clients default to protobuf (`:proto`) and identity encoding. ProtoJSON
 requires `codec: :json`; servers accept both codecs. Gzip, client GET and optional
 integrations require explicit configuration. Gzip negotiation and independent
-wire and decoded limits remain those in the [core guide](../README.md) and
+wire and decoded limits remain those in the [unary guide](unary.md#compress-with-gzip) and
 [streaming guide](streaming.md).
 
 Every unary entry below supports POST and eligible GET. GET is opt-in on the

@@ -5,8 +5,11 @@ Gem::Specification.new do |spec|
   # Read without loading library code before SimpleCov starts.
   spec.version = File.read(File.join(__dir__, "lib/connectrpc/testing/version.rb"))[/VERSION = "([^"]+)"/, 1]
   spec.authors = ["jimeh"]
-  spec.summary = "In-process transport for real ConnectRPC unary round trips"
-  spec.description = "Optional synchronous testing transport using an application-owned core Server."
+  spec.summary = "In-process transport for real ConnectRPC unary round trips in tests"
+  spec.description = "Synchronous transport that passes fully encoded Connect unary requests from a connectrpc " \
+                     "client to an application-owned server without sockets, exercising codecs, errors, metadata, " \
+                     "safe GET and compression. Part of the unofficial connectrpc-ruby project. Experimental and " \
+                     "not production ready."
   spec.homepage = "https://github.com/jimeh/connectrpc-ruby"
   spec.license = "MIT"
   spec.required_ruby_version = ">= 3.4"

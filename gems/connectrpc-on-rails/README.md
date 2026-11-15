@@ -1,33 +1,72 @@
+<div align="center">
+
+<img height="128px" width="128px" src="../../img/connectrpc-ruby.svg" alt="connectrpc-ruby logo">
+
 # connectrpc-on-rails
 
-Optional native Rails controller execution for the experimental, unofficial
-ConnectRPC unary Ruby gem. The core gem remains independent of Rails and has
-zero runtime dependencies. This adapter reuses its Server invoker and the
-optional [connectrpc-rack](../connectrpc-rack/README.md) translation. It does not add another protocol implementation.
+**Run ConnectRPC unary handlers as native Rails controller actions.**
 
-See the [supported 0.x contract](../../docs/support.md) for the target support
-profile, matched package versions, compatibility policy and adoption gates.
+[![RubyGems](https://img.shields.io/gem/v/connectrpc-on-rails?logo=rubygems&logoColor=white&label=RubyGems)](https://rubygems.org/gems/connectrpc-on-rails)
+[![CI](https://img.shields.io/github/actions/workflow/status/jimeh/connectrpc-ruby/ci.yml?branch=main&logo=github&label=CI)](https://github.com/jimeh/connectrpc-ruby/actions/workflows/ci.yml)
+[![Docs](https://img.shields.io/badge/Docs-guides-0969da?logo=markdown&logoColor=white)](https://github.com/jimeh/connectrpc-ruby/tree/main/docs)
+[![License](https://img.shields.io/github/license/jimeh/connectrpc-ruby?label=License)](https://github.com/jimeh/connectrpc-ruby/blob/main/LICENSE)
 
-## Use a controller
+</div>
+
+`connectrpc-on-rails` runs generated Connect unary handlers inside native Rails
+controllers. Handlers execute through Rails' real `process_action` chain, so
+`before_action` callbacks, `rescue_from`, around-action cleanup and Rails
+instrumentation all apply. Use it when your RPCs need the authentication,
+error handling and request context your Rails controllers already have. To
+mount a service in front of Rails without controller callbacks, use
+[connectrpc-rack](../connectrpc-rack/README.md) instead.
+
+The core gem remains independent of Rails and has zero runtime dependencies.
+This adapter reuses its Server invoker and the connectrpc-rack translation. It
+does not add another protocol implementation. Streaming, native gRPC and
+production hosting are outside this adapter.
+
+The package is experimental and not production ready. See the
+[supported 0.x contract](../../docs/support.md) for the target support profile,
+matched package versions, compatibility policy and adoption gates.
+
+## Installation
 
 Add `connectrpc-on-rails` and your chosen protobuf binding dependency to your
-application Gemfile. Runtime dependencies are `connectrpc ~> 0.1.0`,
-`connectrpc-rack ~> 0.1.0`, and `actionpack >= 8.0.5.1, < 8.2`.
-The Rack package supplies the `rack >= 3.2.7, < 4` requirement. The application
-chooses its controller base, binding, authentication, and security policy.
+application Gemfile:
+
+```ruby
+gem "connectrpc-on-rails", "~> 0.1.0"
+gem "google-protobuf", ">= 4.36.2", "< 5"
+```
+
+Runtime dependencies are `connectrpc ~> 0.1.0`, `connectrpc-rack ~> 0.1.0`, and
+`actionpack >= 8.0.5.1, < 8.2`. The Rack package supplies the
+`rack >= 3.2.7, < 4` requirement. The application chooses its controller base,
+binding, authentication, and security policy.
+
 Requiring `connectrpc/on_rails` loads neither `ActionController::Base` nor
 `ActionController::API`, and does not load Google protobuf. `Bundler.require`
 loads the same entry point through `connectrpc-on-rails`.
 
+## Usage
+
+### 1. Generate code outside Zeitwerk
+
 Generate official protobuf messages and Connect service glue as described in
-the [root README](../../README.md). Keep generated files outside Zeitwerk's
-managed paths. For example, use `generated/rpc`, add that directory to
-`$LOAD_PATH`, and require `echo_connect` from an initializer. If placing generated
-files under `lib`, explicitly ignore their directory in the application's
-Zeitwerk configuration before eager loading. Generated filenames do not match
-the constants they define, generated glue requires its message files, and it
-intentionally rejects `load`/redefinition. These files are non-reloadable.
-Ordinary application controllers retain normal Rails reload behavior.
+the [unary guide](../../docs/unary.md#generate-services-from-protobuf). Keep
+generated files outside Zeitwerk's managed paths. For example, use
+`generated/rpc`, add that directory to `$LOAD_PATH`, and require `echo_connect`
+from an initializer.
+
+If placing generated files under `lib`, explicitly ignore their directory in
+the application's Zeitwerk configuration before eager loading. Generated
+filenames do not match the constants they define, generated glue requires its
+message files, and it intentionally rejects `load`/redefinition. These files are
+non-reloadable. Ordinary application controllers retain normal Rails reload
+behavior.
+
+### 2. Include the controller concern
 
 For the repository's generated `Example::V1::EchoService` fixture:
 
@@ -60,6 +99,8 @@ class EchoController < ApplicationController
 end
 ```
 
+### 3. Route the service
+
 Use normal named controller routing, optionally under a literal scope:
 
 ```ruby
@@ -71,19 +112,47 @@ end
 `via: :all` lets core return the protocol's unsupported-verb response.
 `format: false` preserves dots in service names. Dynamic scope segments are
 not supported. Route/service mismatches raise a configuration error.
+
 The adapter strips only the matched route's literal prefix. Unknown RPC names,
 deeper suffixes, method case and raw escapes reach core unchanged after that
 boundary. Rails itself normalizes duplicate/trailing slashes and escape case
 before controller dispatch, so path acceptance differs from a direct Rack mount.
 
+## Controller hooks
+
 Only `connect` is an action supplied by the concern. Keep the three required
 configuration hooks and typed handlers private, using prefixed handler names to
-avoid controller/Kernel method collisions. `connect_limits` is optional and
-accepts core `request_limit:`, `response_limit:`, `request_wire_limit:`,
-`response_wire_limit:`, `get_query_limit:` and `encoding:` keywords; omitted options
-use core's 4 MiB defaults. Private `connect_request`, `connect_context`, and
-`connect_method` expose the same typed objects to callbacks and handlers.
-Handlers return typed messages. There is no render helper or routing DSL.
+avoid controller/Kernel method collisions. Handlers return typed messages.
+There is no render helper or routing DSL.
+
+| Private hook | Required | Purpose |
+| --- | --- | --- |
+| `connect_service` | Yes | The generated `SERVICE` this controller serves |
+| `connect_binding` | Yes | The message binding, such as `ConnectRPC::Bindings::GoogleProtobuf.new` |
+| `connect_handlers` | Yes | The handler map, usually from the generated `handlers(...)` |
+| `connect_limits` | No | Core limit and encoding keywords |
+| `connect_instrumentation` | No | A `ConnectRPC::Instrumentation`, default nil; see [RPC observation](#rpc-observation) |
+| `connect_protocol`, `connect_status_codec`, `connect_cors` | No | Enable unary gRPC-Web; see [gRPC-Web](#grpc-web) |
+
+`connect_limits` accepts core `request_limit:`, `response_limit:`,
+`request_wire_limit:`, `response_wire_limit:`, `get_query_limit:` and
+`encoding:` keywords; omitted options use core's 4 MiB defaults.
+
+Private `connect_request`, `connect_context`, and `connect_method` expose the
+same typed objects to callbacks and handlers.
+
+### Gzip
+
+To enable unary gzip, return `encoding: :gzip` from the private `connect_limits`
+hook. Core validates wire length, inflates under the decoded request limit, and
+decodes before callbacks and native instrumentation. JSON scalar bodies still
+bypass Rails body-parameter parsing. Negotiated success responses are compressed
+after native execution; errors remain identity.
+
+A compression/size failure after execution does not rerun callbacks, and native
+process-action instrumentation can record 200 before core replaces the response
+with its final error. Wire limits default to the corresponding message limits;
+gzip framing overhead must fit too.
 
 ## Lifecycle and errors
 
@@ -91,10 +160,13 @@ Core negotiates, validates deadlines and bounds, reads, and decodes before
 running native Rails callbacks. Authentication callbacks therefore run after
 up to 4 MiB of input has been decoded by default. Preflight failures do not run
 controller callbacks or emit `process_action.action_controller` events.
+
 Callbacks, `rescue_from`, around-action cleanup and instrumentation use Rails'
 real `process_action` chain. Native completion occurs before core serializes
 the typed result. Configuration, handlers, server and context are evaluated
 fresh for each request. Synchronize any application-owned shared state.
+
+### Raise Connect errors
 
 Raise `ConnectRPC::Error` to reject a request or map an application exception.
 Its deliberate code, safe message, typed details, metadata and trailers survive.
@@ -108,19 +180,34 @@ rescue_from ConnectRPC::Error do |error|
 end
 ```
 
+### How Rails outcomes map to Connect codes
+
 Raw native render/head halts and exceptions covered by Rails'
 `rescue_responses` use only the unambiguous inverse of Connect HTTP statuses:
-401/403/404/429/499/501/503/504 become unauthenticated/permission_denied/
-not_found/resource_exhausted/canceled/unimplemented/unavailable/
-deadline_exceeded. Messages are generic. Ambiguous 400/409/500, redirects,
-unmapped statuses, and success without a typed result become `internal`.
-A non-200 native halt after the handler also prevents typed success. Raw Rails
-bodies and exception messages never become protocol error messages.
+
+| Rails status | Connect code |
+| --- | --- |
+| 401 | `unauthenticated` |
+| 403 | `permission_denied` |
+| 404 | `not_found` |
+| 429 | `resource_exhausted` |
+| 499 | `canceled` |
+| 501 | `unimplemented` |
+| 503 | `unavailable` |
+| 504 | `deadline_exceeded` |
+
+Messages are generic. Ambiguous 400/409/500, redirects, unmapped statuses, and
+success without a typed result become `internal`. A non-200 native halt after
+the handler also prevents typed success. Raw Rails bodies and exception
+messages never become protocol error messages.
+
 Exceptions explicitly registered in Rails' `rescue_responses` remain expected
 outcomes and do not produce adapter error reports or exception logs. Unexpected
 exceptions are logged with their original backtraces and reported through
 `Rails.error` before safe core normalization. Request preparation uses the same
 classification, including application overrides to `rescue_responses`.
+
+### Limits of controller execution
 
 Controller instrumentation describes controller execution: a deliberate Connect
 exception can appear as a Rails 500, while successful controller execution can
@@ -153,7 +240,41 @@ headers, CSP, authentication headers and cookies survive; repeated Rack 3
 values remain arrays. Downstream Rails/Rack middleware retains its normal
 ownership of request ids, ETags, content length and other final host behavior.
 
-## Verification and tested combinations
+## gRPC-Web
+
+Private `connect_protocol`, `connect_status_codec` and `connect_cors` hooks
+enable binary/text unary gRPC-Web through the real controller invoker.
+POST/OPTIONS routes are explicit; auth, callbacks, cookies, security headers and
+Rails CSRF/origin controls remain active. See the
+[Web guide](../../docs/grpc-web.md) for protocol, CORS, bounds and completion
+rules.
+
+## RPC observation
+
+Configure `instrumentation:` on the core Client/Server to enable the fixed
+neutral per-call lifecycle or the optional
+[OpenTelemetry adapter](../connectrpc-otel/README.md). Native controllers
+override private `connect_instrumentation` (default nil), separately from
+`connect_limits`. Escaping original failures are captured before
+reporting/normalization; successfully handled `rescue_from` exceptions are not
+automatically failures. Configuration before Server construction is outside it.
+
+## Static signatures
+
+This package owns `sig/` and its discovery manifest. Add
+`library "connectrpc-on-rails"` to a strict Steep target with this gem installed.
+See the [RBS guide](../../docs/rbs.md) for supported APIs, extension contracts,
+partial records, runtime validation and framework-signature limits.
+`mise run rbs:check` checks application callers for this package; strict core
+source checking is a separate target from backend implementation checking.
+
+The finite upstream compatibility signatures in `rbs/action_controller_8` are
+explicit opt-ins, separate from normal gem discovery. See the
+[RBS guide](../../docs/rbs.md#opt-in-framework-compatibility) for tested
+versions, supported framework forms and how to avoid duplicate
+application-owned declarations.
+
+## Tested combinations
 
 The target supported Rails profile is 8.1. Rails 8.0 remains compatibility
 evidence outside that profile. The tested combinations use Linux x64 and
@@ -170,6 +291,8 @@ These rows do not promise every framework/runtime combination. As checked on
 ending 2026-11-07 for 8.0 and 2027-10-10 for 8.1. The 8.0 compatibility lane
 is not a promise to extend upstream maintenance.
 
+## Development
+
 From the repository root:
 
 ```sh
@@ -185,6 +308,7 @@ mise run verify
 `setup:rails`, `test:rails`, `generation:check:rails`, `build:rails`,
 `check:package:rails`, and `verify:rails` select `RAILS_LANE=8.1` by default.
 Tests accept RSpec paths/options relative to this adapter directory.
+
 Actual Appraisal 2.5.0 runs under the selected frozen lane bundle, with no extra
 base lock. `BUNDLE_COOLDOWN=7` applies to every adapter bundle process; the plain
 Gemfile source is necessary because Appraisal cannot parse source keywords.
@@ -199,58 +323,18 @@ uses root `vendor/bundle` by ABI; adapter artifacts and coverage live under
 `vendor/rails`. SimpleCov starts before adapter requires and includes every
 adapter library file, independently of core coverage.
 
-`check:package:rails` builds all three core/Rack/Rails archives, checks exact manifests and metadata,
-and installs them with conventional offline dependency resolution into fresh
-GEM_HOME/GEM_PATH outside the checkout. Installed generated clients perform
-binary/JSON success and structured error calls through a real Rails application
-and Rack::Lint, loading integration code only from the installed archive.
-See [development](../../docs/development.md) for the separate core protocol,
-generation, Go interoperability and official conformance evidence.
+`check:package:rails` builds all three core/Rack/Rails archives, checks exact
+manifests and metadata, and installs them with conventional offline dependency
+resolution into fresh GEM_HOME/GEM_PATH outside the checkout. Installed
+generated clients perform binary/JSON success and structured error calls
+through a real Rails application and Rack::Lint, loading integration code only
+from the installed archive. See [development](../../docs/development.md) for the
+separate core protocol, generation, Go interoperability and official
+conformance evidence.
 
-## Status and licensing
+## License
 
-Experimental and not production ready. Streaming, native gRPC and production
-hosting are outside this adapter. Explicit binary/text unary gRPC-Web uses the
-private hooks described below.
 Original project work is [MIT licensed](LICENSE), copyright 2026 Jim Myhrberg.
 Both gem archives include the complete license and pin `allowed_push_host` to
 `https://rubygems.org`; only the [release workflow](../../docs/releasing.md)
 publishes them. Verification authorizes no publication.
-
-
-To enable unary gzip, return `encoding: :gzip` from the private `connect_limits`
-hook. Core validates wire length, inflates under the decoded request limit, and
-decodes before callbacks and native instrumentation. JSON scalar bodies still
-bypass Rails body-parameter parsing. Negotiated success responses are compressed
-after native execution; errors remain identity. A compression/size failure after
-execution does not rerun callbacks, and native process-action instrumentation can
-record 200 before core replaces the response with its final error. Wire limits
-default to the corresponding message limits; gzip framing overhead must fit too.
-
-## RPC observation
-
-Configure `instrumentation:` on the core Client/Server to enable the fixed
-neutral per-call lifecycle or the optional [OpenTelemetry adapter](../connectrpc-otel/README.md).
-Native controllers override private `connect_instrumentation` (default nil),
-separately from `connect_limits`. Escaping original failures are captured before
-reporting/normalization; successfully handled `rescue_from` exceptions are not
-automatically failures. Configuration before Server construction is outside it.
-
-## Static signatures
-
-This package owns `sig/` and its discovery manifest. Add
-`library "connectrpc-on-rails"` to a strict Steep target with this gem installed.
-See the [RBS guide](../../docs/rbs.md) for supported APIs, extension contracts,
-partial records, runtime validation and framework-signature limits.
-`mise run rbs:check` checks application callers for this package; strict core
-source checking is a separate target from backend implementation checking.
-
-The finite upstream compatibility signatures in `rbs/action_controller_8` are explicit
-opt-ins, separate from normal gem discovery. See the [RBS guide](../../docs/rbs.md#opt-in-framework-compatibility)
-for tested versions, supported framework forms and how to avoid duplicate
-application-owned declarations.
-
-## gRPC-Web
-
-Private connect_protocol, connect_status_codec and connect_cors hooks enable binary/text unary gRPC-Web through the real controller invoker. POST/OPTIONS routes are explicit; auth, callbacks, cookies, security headers and Rails CSRF/origin controls remain active.
-See the [Web guide](../../docs/grpc-web.md) for protocol, CORS, bounds and completion rules.

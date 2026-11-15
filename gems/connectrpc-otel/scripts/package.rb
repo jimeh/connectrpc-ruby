@@ -17,6 +17,7 @@ core = Gem::Package.new(File.join(output, "connectrpc-#{version}.gem"))
 otel = Gem::Package.new(File.join(output, "connectrpc-otel-#{version}.gem"))
 expected_core = %w[
   LICENSE README.md docs/development.md docs/design.md docs/rbs.md docs/streaming.md exe/protoc-gen-connectrpc-ruby
+  docs/unary.md
   sig/connectrpc.rbs sig/manifest.yaml rbs/google_protobuf_4_36/runtime.rbs
   lib/connectrpc/generator/rbs_renderer.rb lib/connectrpc/generator/streaming_methods.rb
   lib/connectrpc/streaming/method.rb lib/connectrpc/streaming/framing.rb lib/connectrpc/streaming/streams.rb

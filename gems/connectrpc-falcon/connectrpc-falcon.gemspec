@@ -4,7 +4,11 @@ Gem::Specification.new do |spec|
   spec.name = "connectrpc-falcon"
   # Read without loading library code before SimpleCov starts.
   spec.version = File.read(File.join(__dir__, "lib/connectrpc/falcon/version.rb"))[/VERSION = "([^"]+)"/, 1]
-  spec.summary = "Optional Falcon worker hosting for ConnectRPC unary"
+  spec.summary = "Falcon worker hosting for ConnectRPC with Rack and Rails fallback"
+  spec.description = "Serves connectrpc services from Falcon process workers over HTTP/1.1 and HTTP/2, next to an " \
+                     "explicit Rack or Rails fallback app, with worker-local managed TLS and graceful drain. " \
+                     "Supports Connect unary and streaming, native gRPC and server gRPC-Web. Part of the " \
+                     "unofficial connectrpc-ruby project. Experimental and not production ready."
   spec.authors = ["jimeh"]
   spec.homepage = "https://github.com/jimeh/connectrpc-ruby"
   spec.license = "MIT"
