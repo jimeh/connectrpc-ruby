@@ -53,6 +53,8 @@ module ConnectRPC
       def reject_media: (_StreamingInput, _GRPCStreamExchange, GRPCHead, Numeric?) -> bot
       def recoverable?: (_GRPCStreamExchange) -> bool
       def terminal: (_GRPCStreamExchange, Metadata) -> [Error?, Metadata]
+      private
+      def drain_rejected_media: (_StreamingInput, _GRPCStreamExchange, Numeric?) -> headers
     end
     class ServerState
       attr_reader headers: headers

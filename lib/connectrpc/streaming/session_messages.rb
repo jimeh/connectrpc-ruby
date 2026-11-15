@@ -15,6 +15,20 @@ module ConnectRPC
         operation(:reading) { receive_message }
       end
 
+      # Server single-request methods: true only at a clean end of input.
+      # A surplus envelope is rejected from its header, before its payload.
+      def request_complete?
+        operation(:reading) do
+          next true if @eof
+
+          leading
+          next false if @reader.next_envelope?
+
+          receive_eof
+          true
+        end
+      end
+
       def send_message(message)
         operation(:writing) do
           validate_send(message)
