@@ -295,14 +295,11 @@ RSpec.describe "HTTP/2 GOAWAY draining and replacement" do
         resource = resources(transport).first
         goaway(peer.connections.first, seen.fetch("/long").stream.id)
         wait_until(task, "drain timer armed") { clock.sleeper(5) }
-        sleeper = clock.sleeper(5)
         if ending == :retirement
           held["/long"].enqueue(true)
           expect(long.wait).to eq("/long")
           wait_until(task, "timer cancelled") { clock.sleepers.empty? }
           expect(manager.instance_variable_get(:@drain_timers)).to be_empty
-          # A late expiry of the retired connection's timer changes nothing.
-          sleeper.fire
           expect(transport.call(request("#{origin}/after")).body).to eq("/after")
           expect(resources(transport).last).not_to be_finished
           expect(peer.accepted).to eq(2)

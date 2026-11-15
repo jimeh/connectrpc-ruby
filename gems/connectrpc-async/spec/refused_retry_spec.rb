@@ -4,10 +4,11 @@ require "protocol/http/body/writable"
 
 RSpec.describe "HTTP/2 refused Connect unary retry" do
   # Peer state shared with the examples: per-path counts, the latest incoming
-  # request per path, /long holds and the requests the backend processed.
+  # request per path, each transmission's connect-timeout-ms, /long holds and
+  # the requests the backend processed.
   def peer_state
-    { seen: Hash.new(0), streams: {}, held: Hash.new { |hash, path| hash[path] = Async::Queue.new },
-      invocations: [] }
+    { seen: Hash.new(0), streams: {}, timeouts: Hash.new { |hash, path| hash[path] = [] },
+      held: Hash.new { |hash, path| hash[path] = Async::Queue.new }, invocations: [] }
   end
 
   # Refuses the first `refusals` matching streams with REFUSED_STREAM
@@ -19,6 +20,7 @@ RSpec.describe "HTTP/2 refused Connect unary retry" do
       path = incoming.path
       count = state[:seen][path] += 1
       state[:streams][path] = incoming
+      state[:timeouts][path] << incoming.headers["connect-timeout-ms"]&.to_s
       if refused.call(path) && count <= refusals
         refuse(incoming, kind, before)
       else
@@ -58,6 +60,17 @@ RSpec.describe "HTTP/2 refused Connect unary retry" do
   def acquiring(transport) = transport.instance_variable_get(:@acquiring)
   def resources(transport) = transport.instance_variable_get(:@resources)
   def attempt(transport) = connection_manager(transport).instance_variable_get(:@attempt)
+  def operation(transport) = transport.instance_variable_get(:@calls).keys.first
+
+  # Holds the next DATA frame (optionally only the given stream's) after its
+  # frame header, before its payload reaches the socket.
+  def gate_data(transport, stream_id: nil)
+    resource = resources(transport).first
+    gate = FrameGate.new(resource.socket, frame_type: Protocol::HTTP2::DataFrame::TYPE, stream_id: stream_id)
+    resource.connection.stream.instance_variable_set(:@io, gate)
+    gate.armed = true
+    [resource, gate]
+  end
 
   def released(state)
     state[:held].each_value { |queue| queue.enqueue(true) }
@@ -72,14 +85,20 @@ RSpec.describe "HTTP/2 refused Connect unary retry" do
         origin = origin_for(bound)
         events = []
         transport = recording_transport(origin, events)
+        deadline = ConnectRPC::Deadline.new(30)
         outgoing = if verb == "GET"
-                     request("#{origin}/refused?message=abc", method: "GET")
+                     request("#{origin}/refused?message=abc", method: "GET", deadline: deadline)
                    else
-                     request("#{origin}/refused", body: "payload")
+                     request("#{origin}/refused", body: "payload", deadline: deadline)
                    end
         path = verb == "GET" ? "/refused?message=abc" : "/refused"
         expect(transport.call(outgoing).body).to eq(path)
         expect(peer.headers_frames.size).to eq(2)
+        # The resend carries a timeout rebuilt from the remaining deadline.
+        first, resent = state[:timeouts][path].map { |value| Integer(value) }
+        expect(state[:timeouts][path].size).to eq(2)
+        expect(resent).to be_positive
+        expect(resent).to be <= first
         expect(state[:invocations]).to eq([[path, verb == "GET" ? nil : "payload"]])
         expect(peer.accepted).to eq(kind == :reset ? 1 : 2)
         expect(attempt_outcomes(events)).to eq(kind == :reset ? [:ready] : %i[ready ready])
@@ -189,40 +208,44 @@ RSpec.describe "HTTP/2 refused Connect unary retry" do
     end
   end
 
-  it "retires a refused stream's in-flight DATA output before resending" do
-    # A generous cleanup allowance keeps the release of the held frame inside
-    # the budget on a loaded machine; the stuck example covers its expiry.
-    stub_const("ConnectRPC::Async::Internal::CLEANUP_SECONDS", 5)
-    reactor do |task|
-      bound = IO::Endpoint.tcp("127.0.0.1", 0).bound
-      state = peer_state
-      peer = refusing_peer(task, bound.sockets.first, state)
-      origin = origin_for(bound)
-      transport = ConnectRPC::Async::Transport.new(origin: origin)
-      expect(transport.call(request("#{origin}/warm")).body).to eq("/warm")
-      resource = resources(transport).first
-      gate = FrameGate.new(resource.socket, frame_type: Protocol::HTTP2::DataFrame::TYPE)
-      resource.connection.stream.instance_variable_set(:@io, gate)
-      gate.armed = true
-      call = task.async(finished: false) { transport.call(request("#{origin}/refused", body: "x" * 4096)).body }
-      gate.started.dequeue
-      operation = transport.instance_variable_get(:@calls).keys.first
-      output = gate.writer
-      retired_at_resend = nil
-      state[:on_invoke] = ->(path) { retired_at_resend = output.finished? if path == "/refused" }
-      wait_until(task, "refusal observed while DATA is held") { operation[:response].nil? }
-      expect(output).not_to be_finished
-      gate.release.enqueue(true)
-      expect(call.wait).to eq("/refused")
-      expect(retired_at_resend).to be(true)
-      expect(state[:invocations].map(&:first)).to eq(%w[/warm /refused])
-      expect([peer.accepted, peer.headers_frames.size]).to eq([1, 3])
-      expect(lease_usage(transport)).to eq(0)
-    ensure
-      gate&.release&.enqueue(true)
-      transport&.close(grace: 0)
-      peer&.stop
-      bound&.close
+  # A REFUSED_STREAM resend reuses the healthy connection, whose write guard
+  # would serialize it anyway; a resend above a GOAWAY's last id goes to a
+  # replacement connection, so only the retirement join orders it.
+  [[:reset, 1], [:goaway, 2]].each do |kind, accepted|
+    it "retires a refused stream's in-flight DATA output before resending (#{kind})" do
+      # A generous cleanup allowance keeps the release of the held frame inside
+      # the budget on a loaded machine; the stuck example covers its expiry.
+      stub_const("ConnectRPC::Async::Internal::CLEANUP_SECONDS", 5)
+      reactor do |task|
+        bound = IO::Endpoint.tcp("127.0.0.1", 0).bound
+        state = peer_state
+        peer = refusing_peer(task, bound.sockets.first, state, kind: kind)
+        origin = origin_for(bound)
+        transport = ConnectRPC::Async::Transport.new(origin: origin)
+        expect(transport.call(request("#{origin}/warm")).body).to eq("/warm")
+        _, gate = gate_data(transport)
+        call = task.async(finished: false) { transport.call(request("#{origin}/refused", body: "x" * 4096)).body }
+        gate.started.dequeue
+        current = operation(transport)
+        output = gate.writer
+        retired_at_resend = nil
+        state[:on_invoke] = ->(path) { retired_at_resend = output.finished? if path == "/refused" }
+        wait_until(task, "refusal observed while DATA is held") { current[:response].nil? }
+        expect(output).not_to be_finished
+        # The held output keeps the lease, so nothing redials or resends yet.
+        expect([peer.accepted, peer.headers_frames.size, lease_usage(transport)]).to eq([1, 2, 1])
+        gate.release.enqueue(true)
+        expect(call.wait).to eq("/refused")
+        expect(retired_at_resend).to be(true)
+        expect(state[:invocations].map(&:first)).to eq(%w[/warm /refused])
+        expect([peer.accepted, peer.headers_frames.size]).to eq([accepted, 3])
+        expect(lease_usage(transport)).to eq(0)
+      ensure
+        gate&.release&.enqueue(true)
+        transport&.close(grace: 0)
+        peer&.stop
+        bound&.close
+      end
     end
   end
 
@@ -257,6 +280,140 @@ RSpec.describe "HTTP/2 refused Connect unary retry" do
     end
   end
 
+  # A refused stream's output can still be inside a held DATA write when the
+  # call ends. Cancelling the call must not cut that frame short on a
+  # connection that stays usable: the stuck frame fails its connection.
+  {
+    deadline: ["deadline_exceeded", {}, 1],
+    cancellation: ["canceled", {}, 1],
+    no_retry: ["unavailable", { retry_refused: false }, 1],
+    second_refusal: ["unavailable", {}, 2]
+  }.each do |ending, (code, settings, transmissions)|
+    it "fails the connection raw-first when a refused stream's held DATA outlives the call (#{ending})" do
+      joining = %i[deadline cancellation].include?(ending)
+      # These calls end while the retry joins the held output, so that join's
+      # allowance must outlast them.
+      stub_const("ConnectRPC::Async::Internal::CLEANUP_SECONDS", 30) if joining
+      reactor do |task|
+        bound = IO::Endpoint.tcp("127.0.0.1", 0).bound
+        state = peer_state
+        peer = refusing_peer(task, bound.sockets.first, state, refusals: ending == :second_refusal ? 2 : 1)
+        origin = origin_for(bound)
+        policy = ConnectRPC::Async::ConnectionPolicy.new(**settings)
+        transport = ConnectRPC::Async::Transport.new(origin: origin, connection_policy: policy)
+        expect(transport.call(request("#{origin}/warm")).body).to eq("/warm")
+        # After /warm (stream 1) and the first /refused (stream 3), a second
+        # refusal holds the resend's DATA on stream 5.
+        resource, gate = gate_data(transport, stream_id: ending == :second_refusal ? 5 : nil)
+        source = ConnectRPC::CancellationSource.new
+        # The deadline variant measures real elapsed time: its expiry during
+        # the retry's output join is the boundary under test.
+        outgoing = request("#{origin}/refused", body: "x" * 4096,
+                                                deadline: ending == :deadline ? ConnectRPC::Deadline.new(2) : nil)
+        outgoing.cancellation = source.token if ending == :cancellation
+        call = task.async(finished: false) { transport.call(outgoing) }
+        gate.started.dequeue
+        output = gate.writer
+        if joining
+          current = operation(transport)
+          wait_until(task, "retry joins the held output", within: 0.5) do
+            current[:response].nil? && current[:refused_output]
+          end
+          # Whole-operation cleanup keeps its usual allowance.
+          stub_const("ConnectRPC::Async::Internal::CLEANUP_SECONDS", 0.1)
+          source.cancel if ending == :cancellation
+        end
+        expect { call.wait }.to raise_error(ConnectRPC::Error) { |error| expect(error.code).to eq(code) }
+        expect(resource).to be_finished
+        expect(output).to be_finished
+        expect(lease_usage(transport)).to eq(0)
+        expect(peer.headers_frames.size).to eq(transmissions + 1)
+        expect(transport.call(request("#{origin}/after")).body).to eq("/after")
+        expect(state[:invocations].map(&:first)).to eq(%w[/warm /after])
+        expect([peer.accepted, peer.headers_frames.size]).to eq([2, transmissions + 2])
+        expect(lease_usage(transport)).to eq(0)
+      ensure
+        gate&.release&.enqueue(true)
+        transport&.close(grace: 0)
+        peer&.stop
+        bound&.close
+      end
+    end
+  end
+
+  it "keeps the connection when a refused stream's held DATA completes within cleanup" do
+    # A generous cleanup allowance keeps the release inside the budget on a
+    # loaded machine.
+    stub_const("ConnectRPC::Async::Internal::CLEANUP_SECONDS", 5)
+    reactor do |task|
+      bound = IO::Endpoint.tcp("127.0.0.1", 0).bound
+      state = peer_state
+      peer = refusing_peer(task, bound.sockets.first, state)
+      origin = origin_for(bound)
+      policy = ConnectRPC::Async::ConnectionPolicy.new(retry_refused: false)
+      transport = ConnectRPC::Async::Transport.new(origin: origin, connection_policy: policy)
+      expect(transport.call(request("#{origin}/warm")).body).to eq("/warm")
+      resource, gate = gate_data(transport)
+      call = task.async(finished: false) { transport.call(request("#{origin}/refused", body: "x" * 4096)) }
+      gate.started.dequeue
+      current = operation(transport)
+      output = gate.writer
+      wait_until(task, "cleanup joins the held output") { current[:cleaned] }
+      # The call keeps its lease until the output retires.
+      expect([output.finished?, lease_usage(transport)]).to eq([false, 1])
+      gate.release.enqueue(true)
+      expect { call.wait }.to unavailable_error
+      expect([resource.finished?, output.finished?]).to eq([false, true])
+      expect(lease_usage(transport)).to eq(0)
+      expect(transport.call(request("#{origin}/after")).body).to eq("/after")
+      expect([peer.accepted, peer.headers_frames.size]).to eq([1, 3])
+    ensure
+      gate&.release&.enqueue(true)
+      transport&.close(grace: 0)
+      peer&.stop
+      bound&.close
+    end
+  end
+
+  it "never resends when the HEADERS write fails during dispatch" do
+    reactor do |task|
+      bound = IO::Endpoint.tcp("127.0.0.1", 0).bound
+      state = peer_state
+      peer = refusing_peer(task, bound.sockets.first, state)
+      origin = origin_for(bound)
+      transport = ConnectRPC::Async::Transport.new(origin: origin)
+      expect(transport.call(request("#{origin}/warm")).body).to eq("/warm")
+      connection = resources(transport).first.connection
+      streams = []
+      failures = []
+      allow(connection).to receive(:create_response).and_wrap_original do |original|
+        original.call.tap do |response|
+          streams << response.stream
+          allow(response.stream).to receive(:send_headers).and_raise(IOError, "HEADERS write failed")
+        end
+      end
+      allow(connection).to receive(:write_request).and_wrap_original do |original, *args|
+        original.call(*args)
+      rescue StandardError => e
+        failures << e
+        raise
+      end
+      expect { transport.call(request("#{origin}/refused", body: "payload")) }.to unavailable_error
+      # The pinned async-http reports the failed write as a refusal, which
+      # does not prove the server never processed the stream.
+      expect(failures.map(&:class)).to eq([Protocol::HTTP::RefusedError])
+      expect(streams.size).to eq(1)
+      expect(streams.first).to have_received(:send_headers).once
+      expect(peer.headers_frames.size).to eq(1)
+      expect(state[:invocations].map(&:first)).to eq(%w[/warm])
+      expect(lease_usage(transport)).to eq(0)
+    ensure
+      transport&.close(grace: 0)
+      peer&.stop
+      bound&.close
+    end
+  end
+
   %i[deadline cancellation close].each do |ending|
     it "ends a refused retry waiting for capacity on #{ending} without resending" do
       reactor do |task|
@@ -270,11 +427,14 @@ RSpec.describe "HTTP/2 refused Connect unary retry" do
         wait_until(task, "long stream accepted") { state[:streams].key?("/long") }
         source = ConnectRPC::CancellationSource.new
         # The deadline variant measures real elapsed time: its expiry while
-        # the retry waits is the boundary under test.
-        outgoing = request("#{origin}/refused", deadline: ending == :deadline ? ConnectRPC::Deadline.new(1) : nil)
+        # the retry waits is the boundary under test. The wait for the retry
+        # is bounded well inside that deadline, so it is observed first.
+        outgoing = request("#{origin}/refused", deadline: ending == :deadline ? ConnectRPC::Deadline.new(2) : nil)
         outgoing.cancellation = source.token if ending == :cancellation
         refused = task.async(finished: false) { transport.call(outgoing) }
-        wait_until(task, "refused retry waits") { state[:seen]["/refused"] == 1 && acquiring(transport).size == 1 }
+        wait_until(task, "refused retry waits", within: 0.5) do
+          state[:seen]["/refused"] == 1 && acquiring(transport).size == 1
+        end
         case ending
         when :deadline
           expect { refused.wait }.to raise_error(ConnectRPC::Error) { |e| expect(e.code).to eq("deadline_exceeded") }

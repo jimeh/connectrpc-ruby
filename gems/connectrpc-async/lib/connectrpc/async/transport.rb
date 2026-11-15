@@ -375,6 +375,9 @@ module ConnectRPC
             connection.read_response(response)
             break
           rescue ::Protocol::HTTP::RefusedError
+            # The refused stream already stopped its output once. The call
+            # owns it until it retires; see #retire_refused_output.
+            operation[:refused_output] = response.stream.output_task
             # Only the header wait proves RFC 9113 non-processing: dispatch can
             # convert a HEADERS write failure into the same error.
             raise if retried || !@manager.retry_refused? || response.stream.response_headers?
@@ -396,24 +399,47 @@ module ConnectRPC
       def retire_refused(operation, response)
         operation.delete(:response)
         response.close
-        output = response.stream.output_task
-        if output && !output.finished?
-          expires = Internal.now + Internal::CLEANUP_SECONDS
-          deadline = operation.fetch(:request).deadline
-          expires = [expires, Internal.now + deadline.remaining].min if deadline
-          joiner = ::Async::Task.current.async(finished: false) { Internal.join(output) }
-          begin
-            Internal.wait(joiner, expires)
-          rescue ::Async::TimeoutError
-            # An expired call leaves its output to the call's own cleanup.
-            check_request!(operation.fetch(:request))
-            operation[:resource]&.abort
-            raise Error.new(:unavailable, "HTTP/2 refused stream output did not retire"), cause: nil
-          ensure
-            Internal.cancel(joiner)
-          end
+        request = operation.fetch(:request)
+        expires = Internal.now + Internal::CLEANUP_SECONDS
+        expires = [expires, Internal.now + request.deadline.remaining].min if request.deadline
+        unless output_retired?(operation[:refused_output], expires)
+          # An expired call leaves its output to the call's own cleanup.
+          check_request!(request)
+          # Raw-first abort ends the stuck frame's hazard and its ownership.
+          operation[:resource]&.abort
+          operation.delete(:refused_output)
+          raise Error.new(:unavailable, "HTTP/2 refused stream output did not retire"), cause: nil
         end
+        operation.delete(:refused_output)
         reroute(operation)
+      end
+
+      # Cancelling the call task cascades a second cancellation into its
+      # output, which would stop a deferred frame write mid-frame. A refused
+      # output that does not retire within the budget, or whose wait is
+      # interrupted, fails its connection raw-first instead. Until it retires,
+      # the call still holds that output's connection lease.
+      def retire_refused_output(operation, expires)
+        output = operation[:refused_output]
+        output_retired?(output, expires)
+      ensure
+        operation[:resource]&.abort if output && !output.finished?
+        operation.delete(:refused_output)
+      end
+
+      # Waits until `expires` for the output and reports whether it finished.
+      def output_retired?(output, expires)
+        return true unless output && !output.finished?
+
+        joiner = ::Async::Task.current.async(finished: false) { Internal.join(output) }
+        begin
+          Internal.wait(joiner, expires)
+        rescue ::Async::TimeoutError
+          nil
+        ensure
+          Internal.cancel(joiner)
+        end
+        output.finished?
       end
 
       def read_body(response, request)
@@ -442,7 +468,11 @@ module ConnectRPC
         cleanup_task = ::Async::Task.current.async(finished: false) do
           # The manager owns connection setup; a call owns only its own tasks.
           tasks = [operation[:task], *operation.fetch(:tasks, {}).keys].compact.uniq
-          tasks.each { |task| task.cancel unless task.finished? }
+          begin
+            retire_refused_output(operation, expires)
+          ensure
+            tasks.each { |task| task.cancel unless task.finished? }
+          end
           # Cancel every task before joining in reverse ownership order.
           tasks.reverse_each do |task|
             operation[:grpc] ? (task.wait unless task.current?) : Internal.join(task)
