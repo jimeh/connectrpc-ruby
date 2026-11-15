@@ -85,6 +85,36 @@ Dir.mktmpdir("integration-", Dir.pwd) do |directory|
     end
   end
 
+  # A generated caller on plain threads through ThreadedTransport, with no
+  # application reactor; the Host runs on its own reactor thread.
+  [false, true].each do |tls|
+    ready = Thread::Queue.new
+    stop = Thread::Queue.new
+    hosting = Thread.new do
+      Sync do
+        host = ConnectRPC::Async::Host.new(server: server, tls: tls ? host_tls(leaf, anchors: [ca]) : nil).start
+        ready << host.port
+        stop.pop
+        host.close
+      end
+    end
+    origin = "#{tls ? 'https' : 'http'}://localhost:#{ready.pop}"
+    options = tls ? { ca_file: ca_file, **host_tls(identity).except(:client_ca) } : {}
+    transport = ConnectRPC::Async::ThreadedTransport.new(origin: origin, **options)
+    message = AsyncHelpers::MESSAGE.new(name: "threaded", data: "\x00\xff".b)
+    results = [false, true].product(%i[proto json]).map do |get, codec|
+      Thread.new { client(transport, origin, codec: codec, use_get: get).echo(message).message }
+    end.map(&:value)
+    raise "Installed threaded generated caller" unless results.all?(message)
+    raise "Installed threaded close" unless transport.close
+
+    puts "PASS installed generated ThreadedTransport #{tls ? 'mTLS h2' : 'h2c'} POST/GET proto/json from plain threads"
+  ensure
+    transport&.close
+    stop&.<<(true)
+    hosting&.join
+  end
+
   # Exercise core NetHTTP identity/gzip after this graph activates
   # OpenSSL 4.0.2 and JSON 3.1.0, with trust scoped to this child process.
   require "webrick"

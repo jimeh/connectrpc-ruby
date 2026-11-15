@@ -93,6 +93,38 @@ Dir.mktmpdir("interop-", File.join(root, "vendor/async")) do |fixtures|
       ensure
         transport&.close
       end
+
+      # The same typed unary cases from plain threads, with no application reactor.
+      options = { origin: origin }
+      options[:ca_file] = File.join(fixtures, "ca.pem") unless mode == "h2c"
+      options.merge!(host_tls(client_identity).except(:client_ca)) if mode == "mtls"
+      threaded = ConnectRPC::Async::ThreadedTransport.new(**options)
+      begin
+        message = AsyncHelpers::MESSAGE.new(name: "", count: 9_007_199_254_740_993, mood: :HAPPY, data: "\x00\xff".b)
+        # The Go peer's handlers declare no idempotency level, so it answers GET with 405.
+        %i[proto json].map do |codec|
+          Thread.new do
+            typed = client(threaded, origin, codec: codec)
+            response = typed.echo(message, metadata: { "x-request" => %w[a b] })
+            unless response.message == message && response.metadata["x-echo"] == %w[a b] &&
+                   response.trailers["x-tail"] == %w[three four]
+              raise "Threaded #{mode}/#{codec} response"
+            end
+
+            begin
+              typed.fail(message)
+              raise "Expected threaded typed error"
+            rescue ConnectRPC::Error => e
+              raise "Threaded typed error" unless e.code == "invalid_argument" && e.metadata["x-error"] == %w[a b]
+            end
+          end
+        end.each(&:join)
+        raise "Threaded close" unless threaded.close
+
+        puts "PASS generated Ruby->Go #{mode} proto/json unary through ThreadedTransport from plain threads"
+      ensure
+        threaded.close
+      end
     ensure
       input.close
       unless process.join(10)

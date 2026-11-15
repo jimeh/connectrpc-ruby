@@ -172,7 +172,7 @@ description = "Serve a runnable example until Ctrl-C (rack, rails, async, falcon
 run = "mise exec -- ruby scripts/example.rb server"
 
 [tasks."example:client"]
-description = "Call the running example server (nethttp, async-h2, async-http1 [RPC [ARGS...]] [options]; --list)"
+description = "Call the running example server (nethttp, async-h2, async-http1, async-threaded [RPC [ARGS...]] [options]; --list)"
 run = "mise exec -- ruby scripts/example.rb client"
 
 [tasks."example:verify"]

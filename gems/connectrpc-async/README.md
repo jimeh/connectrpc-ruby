@@ -28,7 +28,8 @@ end.wait
 
 The application owns a long-lived reactor task. Construction, networking and
 lifecycle operations must use its reactor and thread. There is no hidden
-synchronous reactor thread. Scheduler-compatible I/O yields; CPU, native codecs
+synchronous reactor thread; [`ThreadedTransport`](#ordinary-threads) is the
+explicit, separate object for ordinary threads. Scheduler-compatible I/O yields; CPU, native codecs
 and native DNS may block. Ensure graceful close before the owner exits. Owner
 cancellation aborts only owned sockets/tasks and makes no delivery promise.
 
@@ -242,6 +243,69 @@ requires a backoff, and `connection_policy: nil` is rejected.
   call succeeds. `close` additionally stops admission, fails waiting calls with
   `unavailable`, and cancels the backoff timer and any attempt, raw socket
   first.
+
+## Ordinary threads
+
+`ThreadedTransport` lets threaded programs such as Puma, Sidekiq or plain
+threads share one client without an application reactor. It supports Connect
+unary only, POST and safe GET; streaming and gRPC from ordinary threads are not
+implemented, so core rejects those calls before any I/O.
+
+```ruby
+require "connectrpc/async"
+
+# Boot, for example in an initializer. No thread or socket starts here.
+RPC = ConnectRPC::Async::ThreadedTransport.new(origin: "https://rpc.internal:8443")
+client = ConnectRPC::Client.new(base_url: "https://rpc.internal:8443", binding: binding, transport: RPC)
+
+client.call(method, message, timeout: 2) # Any thread.
+RPC.close(grace: 5)                      # Shutdown, for example in on_worker_shutdown.
+```
+
+It takes the same options as `Transport`, and they behave the same, including
+the [connection policy](#client-connection-management). The constructor
+validates them and compiles the TLS snapshot on the calling thread, so
+configuration errors raise at boot. `call`, `close(grace: 5)`,
+`connection_state` and `inspect` work from any thread.
+
+- The first call in a process starts one owner thread, named
+  `connectrpc-async HOST:PORT`, that runs an Async reactor and an H2
+  `Transport`. Calls from every thread multiplex over its connections. Core
+  encodes and decodes on the caller thread; only frozen bytes and headers cross
+  to the owner. The owner thread does not keep the process alive and there is no
+  `at_exit` hook: process exit aborts its sockets raw-first, so call `close` from
+  your server's shutdown hook for a graceful drain.
+- `max_requests` and `max_pending_bytes` count a call until both the owner has
+  its outcome and the caller has taken it or left. Interrupted callers whose
+  streams are still cleaning up, and completed replies not yet taken, stay
+  within the bound. Full admission fails with `unavailable` and emits
+  `:admission_rejected` on the owner thread.
+- A finite deadline also bounds the caller's wait: if the owner is stalled, for
+  example by native code, the caller fails with `deadline_exceeded` after the
+  deadline plus the 100 ms cleanup allowance and the call is cancelled once the
+  owner resumes. A nil deadline waits for the reply, its cancellation token or
+  an interruption. `Timeout`, `Thread#raise` and `Thread#kill` cancel the call's
+  stream (the server sees `RST_STREAM(CANCEL)`) and the exception reaches the
+  caller unchanged; siblings and the connection survive. Core may still report
+  an already accepted cancellation or deadline instead, as with every transport.
+- After fork, the child's first call builds its own owner thread and
+  connection; it never writes to or closes the parent's. The compiled TLS
+  snapshot is reused. A transport closed before fork stays closed; `close` in a
+  child closes only the child's owner.
+- If the owner thread dies, pending callers get `unavailable`, the observer sees
+  the inner transport close, and the next call starts a new owner.
+- `close` stops admission at once and drains with the grace counted from the
+  call. Concurrent callers share the outcome; a transport that never started
+  returns true. If the owner is stalled past the grace plus the allowance,
+  `close` returns false, wakes pending callers with `unavailable` and does not
+  join the thread; the owner aborts when it resumes. An interrupted closer
+  re-raises its own exception while the others still get the outcome.
+- `call` and `close` from the owner thread, such as from a `connection_observer`,
+  raise `LifecycleError`.
+
+MRI hands the GVL to a thread waking from I/O only after the running thread's
+time slice, 100 ms by default, so CPU-bound threads delay the owner thread.
+Lowering `RUBY_THREAD_TIMESLICE`, for example to 10, reduces that latency.
 
 ## TLS and client authentication
 
@@ -503,7 +567,7 @@ nil, connection_limit: 4, max_requests: 128, connect_timeout: 10)` is an explici
 Connect H1 client. It supports safe unary GET, both codecs and identity/gzip
 through core, and SS/CS through the existing streaming SPI. It has no gRPC or
 bidi capability. Standalone Async Host remains H2-only; Falcon owns Ruby H1
-hosting. Ordinary-thread persistence remains issue #29.
+hosting. For ordinary threads, see [`ThreadedTransport`](#ordinary-threads).
 
 Each connection has one exclusive lease through setup, upload, full HTTP EOF
 and cleanup. Pending dials and retiring connections count toward the hard cap;
