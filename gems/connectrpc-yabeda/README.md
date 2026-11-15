@@ -1,26 +1,41 @@
+<div align="center">
+
+<img height="128px" width="128px" src="../../img/connectrpc-ruby.svg" alt="connectrpc-ruby logo">
+
 # connectrpc-yabeda
 
-Optional, experimental [Yabeda](https://github.com/yabeda-rb/yabeda) metrics for
-ConnectRPC servers and clients. It declares the same RPC, message, rejection and
-Async connection metrics as [connectrpc-prometheus](../connectrpc-prometheus/README.md)
-through `Yabeda.configure`, so any Yabeda adapter (Prometheus, Datadog, StatsD,
-...) receives them.
+**Yabeda metrics for ConnectRPC clients and servers.**
 
-The runtime dependencies are `connectrpc ~> 0.1.0` and `yabeda >= 0.16, < 1`.
-This package does not depend on `prometheus-client` or an adapter; the
-application chooses and configures its adapters. Core and the HTTP/framework
-packages do not depend on Yabeda.
+[![RubyGems](https://img.shields.io/gem/v/connectrpc-yabeda?logo=rubygems&logoColor=white&label=RubyGems)](https://rubygems.org/gems/connectrpc-yabeda)
+[![CI](https://img.shields.io/github/actions/workflow/status/jimeh/connectrpc-ruby/ci.yml?branch=main&logo=github&label=CI)](https://github.com/jimeh/connectrpc-ruby/actions/workflows/ci.yml)
+[![Docs](https://img.shields.io/badge/Docs-guides-0969da?logo=markdown&logoColor=white)](https://github.com/jimeh/connectrpc-ruby/tree/main/docs)
+[![License](https://img.shields.io/github/license/jimeh/connectrpc-ruby?label=License)](https://github.com/jimeh/connectrpc-ruby/blob/main/LICENSE)
 
-See the [supported 0.x contract](../../docs/support.md) for the target support
-profile, matched package versions, compatibility policy and adoption gates.
+</div>
 
-## Install and configure
+`connectrpc-yabeda` declares the same RPC, message, rejection and Async
+connection metrics as [connectrpc-prometheus](../connectrpc-prometheus/README.md)
+through [Yabeda](https://github.com/yabeda-rb/yabeda), so any Yabeda adapter
+(Prometheus, Datadog, StatsD and others) receives them. Use it when your
+application already records metrics through Yabeda.
+
+The package is experimental. See the [supported 0.x contract](../../docs/support.md)
+for the target support profile, matched package versions, compatibility policy
+and adoption gates.
+
+## Installation
 
 ```ruby
-# Gemfile
 gem "connectrpc-yabeda", "~> 0.1.0"
 gem "yabeda-prometheus" # or another Yabeda adapter
 ```
+
+The only runtime dependencies are `connectrpc ~> 0.1.0` and
+`yabeda >= 0.16, < 1`. This package does not depend on `prometheus-client` or
+any adapter; the application chooses and configures its adapters. Core and the
+HTTP/framework packages do not depend on Yabeda.
+
+## Usage
 
 ```ruby
 require "connectrpc/yabeda"
@@ -98,10 +113,7 @@ against yabeda-prometheus's `group_name_unit` rule. Caches and archives are in
 3.4.12 and 4.0.9 CI leaves run `yabeda:verify`.
 
 yabeda 0.16.0 was released 2026-03-12 and its dependency closure was adopted
-under the seven-day cooldown. Original project work is
-[MIT licensed](LICENSE), copyright 2026 Jim Myhrberg. All package archives pin
-`allowed_push_host=https://rubygems.org`; these checks never publish or release
-a gem.
+under the seven-day cooldown.
 
 ## Static signatures
 
@@ -109,3 +121,9 @@ This package owns `sig/` and its discovery manifest. Add
 `library "connectrpc-yabeda"` to a strict Steep target with this gem installed.
 See the [RBS guide](../../docs/rbs.md) for supported APIs and extension
 contracts.
+
+## License
+
+Original project work is [MIT licensed](LICENSE), copyright 2026 Jim Myhrberg.
+All package archives pin `allowed_push_host=https://rubygems.org`; these checks
+never publish or release a gem.

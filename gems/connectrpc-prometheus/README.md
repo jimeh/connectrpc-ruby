@@ -1,27 +1,43 @@
+<div align="center">
+
+<img height="128px" width="128px" src="../../img/connectrpc-ruby.svg" alt="connectrpc-ruby logo">
+
 # connectrpc-prometheus
 
-Optional, experimental Prometheus metrics for ConnectRPC servers and clients:
-RPC counts by code, latency, message counts and encoded sizes, server
-rejections and Async client connection health. Names and labels follow
+**Prometheus metrics for ConnectRPC clients and servers.**
+
+[![RubyGems](https://img.shields.io/gem/v/connectrpc-prometheus?logo=rubygems&logoColor=white&label=RubyGems)](https://rubygems.org/gems/connectrpc-prometheus)
+[![CI](https://img.shields.io/github/actions/workflow/status/jimeh/connectrpc-ruby/ci.yml?branch=main&logo=github&label=CI)](https://github.com/jimeh/connectrpc-ruby/actions/workflows/ci.yml)
+[![Docs](https://img.shields.io/badge/Docs-guides-0969da?logo=markdown&logoColor=white)](https://github.com/jimeh/connectrpc-ruby/tree/main/docs)
+[![License](https://img.shields.io/github/license/jimeh/connectrpc-ruby?label=License)](https://github.com/jimeh/connectrpc-ruby/blob/main/LICENSE)
+
+</div>
+
+`connectrpc-prometheus` records server, client and Async client connection
+metrics for ConnectRPC in a `prometheus-client` registry: RPC counts by code,
+latency, message counts and encoded sizes, server rejections and connection
+health. Names and labels follow
 [go-grpc-middleware `providers/prometheus`](https://github.com/grpc-ecosystem/go-grpc-middleware/tree/main/providers/prometheus),
-so dashboards built on go-grpc-prometheus queries keep working.
+so dashboards built on go-grpc-prometheus queries keep working. Use the
+[Yabeda package](../connectrpc-yabeda/README.md) instead when your application
+records metrics through Yabeda.
 
-The runtime dependencies are `connectrpc ~> 0.1.0` and
-`prometheus-client >= 5.0, < 6`. Core and the HTTP/framework packages do not
-depend on Prometheus. The shared, backend-neutral layer lives in core as the
-optional `require "connectrpc/metrics"`; the
-[Yabeda package](../connectrpc-yabeda/README.md) records the same metrics
-through Yabeda.
+The package is experimental. See the [supported 0.x contract](../../docs/support.md)
+for the target support profile, matched package versions, compatibility policy
+and adoption gates.
 
-See the [supported 0.x contract](../../docs/support.md) for the target support
-profile, matched package versions, compatibility policy and adoption gates.
-
-## Install and configure
+## Installation
 
 ```ruby
-# Gemfile
 gem "connectrpc-prometheus", "~> 0.1.0"
 ```
+
+The only runtime dependencies are `connectrpc ~> 0.1.0` and
+`prometheus-client >= 5.0, < 6`. The shared, backend-neutral layer lives in core
+as the optional `require "connectrpc/metrics"`. Core and the HTTP/framework
+packages do not depend on Prometheus.
+
+## Usage
 
 ```ruby
 require "connectrpc/prometheus"
@@ -184,10 +200,7 @@ example that checks the text exposition.
 
 prometheus-client 5.0.0 was released 2026-08-29 and adopted under the seven-day
 cooldown; it changes only Ruby support versus 4.2.5, whose `DirectFileStore`
-calls `CGI.parse`, which Ruby 4.0 removed. Original project work is
-[MIT licensed](LICENSE), copyright 2026 Jim Myhrberg. All package archives pin
-`allowed_push_host=https://rubygems.org`; these checks never publish or release
-a gem.
+calls `CGI.parse`, which Ruby 4.0 removed.
 
 ## Static signatures
 
@@ -195,3 +208,9 @@ This package owns `sig/` and its discovery manifest. Add
 `library "connectrpc-prometheus"` to a strict Steep target with this gem
 installed. The registry is typed through narrow structural capabilities. See the
 [RBS guide](../../docs/rbs.md) for supported APIs and extension contracts.
+
+## License
+
+Original project work is [MIT licensed](LICENSE), copyright 2026 Jim Myhrberg.
+All package archives pin `allowed_push_host=https://rubygems.org`; these checks
+never publish or release a gem.
