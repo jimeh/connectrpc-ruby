@@ -22,7 +22,7 @@ module ConnectRPC
       # a dead peer would leave stuck. Shared by client and server connections.
       module Liveness
         # Tasks waiting to acquire the frame guard, including unsent dispatchers.
-        def guard_waiting? = !@write_frame_guard.waiting.empty?
+        def guard_waiting? = !@frame_guard.waiting.empty?
 
         # Stream output tasks, retained past their stream's removal: a reset
         # stream's output can still be inside a deferred frame write.
@@ -58,6 +58,8 @@ module ConnectRPC
 
         def initialize(...)
           super
+          # Every frame write reaches this guard through #synchronize.
+          @frame_guard = ::Async::Semaphore.new(1)
           @writers = {}
           @writer = nil
         end
@@ -73,7 +75,7 @@ module ConnectRPC
 
           @writers[task] = true unless dispatch
           begin
-            @write_frame_guard.acquire do
+            @frame_guard.acquire do
               if dispatch
                 raise UnusableConnection, "HTTP/2 connection closed" if @resource&.finished?
 
@@ -129,7 +131,7 @@ module ConnectRPC
         end
 
         def consume_local_window(frame)
-          if frame.length > @local_window.available
+          if frame.length > local_window.available
             raise ::Protocol::HTTP2::FlowControlError, "DATA exceeds connection receive window"
           end
 
@@ -143,7 +145,7 @@ module ConnectRPC
         end
 
         def close(error = nil)
-          @requests&.close
+          close_requests
           if @defer_close
             @resource&.changed
           elsif @resource
@@ -154,7 +156,7 @@ module ConnectRPC
         end
 
         def finish_close(error = nil)
-          @requests&.close
+          close_requests
           # Skip our override while retaining upstream queue/reader/framer cleanup.
           super_method = method(:close).super_method
           super_method.call(error)
@@ -164,6 +166,11 @@ module ConnectRPC
         # before close! marks this connection closed. Session retirement closes
         # every raw socket before it aborts each resource.
         def retiring? = closed? || !!@resource&.finished? || !!@resource&.raw&.closed?
+
+        private
+
+        # Only server connections have a request queue.
+        def close_requests = nil
       end
 
       class GRPCHeaderError < ::Protocol::HTTP2::HeaderError
@@ -243,7 +250,7 @@ module ConnectRPC
               raise GRPCHeaderError.new("Nonfinal gRPC trailing HEADERS", ::Protocol::HTTP2::Error::PROTOCOL_ERROR)
             end
           end
-          @headers.trailer!
+          self.headers.trailer!
           super
         end
 
@@ -255,7 +262,7 @@ module ConnectRPC
         end
 
         def receive_data(frame)
-          if %i[open half_closed_local].include?(@state) && frame.length > @local_window.available
+          if %i[open half_closed_local].include?(state) && frame.length > local_window.available
             @input&.retire(::Protocol::HTTP2::StreamError.for(::Protocol::HTTP2::Error::FLOW_CONTROL_ERROR))
             send_reset_stream(::Protocol::HTTP2::Error::FLOW_CONTROL_ERROR)
             return
@@ -279,9 +286,7 @@ module ConnectRPC
               @grpc_error ||= Error.new(code, "HTTP/2 stream reset")
             end
           end
-          unless @state == :idle || frame.unpack == ::Protocol::HTTP2::Error::NO_ERROR
-            @input&.retire(nil, discard: true)
-          end
+          @input&.retire(nil, discard: true) unless state == :idle || frame.unpack == ::Protocol::HTTP2::Error::NO_ERROR
           super
         end
 
@@ -306,26 +311,26 @@ module ConnectRPC
         # Credit cannot help a retiring connection, whose guard or closed
         # socket would fail a consumer that is only reading buffered input.
         def reclaim_input(amount)
-          return if closed? || @state == :half_closed_remote || @connection.retiring?
+          return if closed? || state == :half_closed_remote || connection.retiring?
 
           @reclaimed_input = (@reclaimed_input || 0) + amount
           request_window_update
         end
 
         def request_window_update
-          return unless @reclaimed_input&.positive? && @local_window.limited?
+          return unless @reclaimed_input&.positive? && local_window.limited?
 
-          @connection.synchronize do
-            next if closed? || @state == :half_closed_remote || @connection.retiring?
-            next unless @reclaimed_input.positive? && @local_window.limited?
+          connection.synchronize do
+            next if closed? || state == :half_closed_remote || connection.retiring?
+            next unless @reclaimed_input.positive? && local_window.limited?
 
             ::Async::Task.current.defer_cancel do
               amount = @reclaimed_input
               @reclaimed_input = 0
               # Reserve credit before flush can yield to the reader. A peer
               # may spend the update as soon as it reaches the socket.
-              @local_window.expand(amount)
-              frame = ::Protocol::HTTP2::WindowUpdateFrame.new(@id)
+              local_window.expand(amount)
+              frame = ::Protocol::HTTP2::WindowUpdateFrame.new(id)
               frame.pack(amount)
               write_frame(frame)
             end
@@ -368,7 +373,7 @@ module ConnectRPC
 
           @output = Output.new(self, body, trailer)
           @output.start do |task|
-            @connection.output_started(task)
+            connection.output_started(task)
             yield task if block_given?
           end
         end
@@ -412,7 +417,7 @@ module ConnectRPC
         def finish_output(error = nil)
           # Owned output of a retiring connection must finish locally rather
           # than attempt another write or reset on its closed socket.
-          return if @connection.retiring?
+          return if connection.retiring?
 
           writable = !closed? && !@response_reset && error.nil?
           super
@@ -428,7 +433,7 @@ module ConnectRPC
         # Output unwinding on a retiring connection must not attempt another
         # write or reset on its closed socket.
         def finish_output(error = nil)
-          return if @connection.retiring?
+          return if connection.retiring?
 
           super
         end
@@ -480,12 +485,18 @@ module ConnectRPC
         include Connection
 
         def accept_stream(stream_id)
-          refused = upkeep&.refuse?(stream_id)
-          ::Protocol::HTTP2::Connection.instance_method(:accept_stream).bind_call(self, stream_id) do
-            (refused ? RefusedStream : RequestStream).create(self, stream_id)
-          end
+          super
         ensure
           @resource&.stream_opened
+        end
+
+        # async-http's accept_stream always passes a Request::Stream factory,
+        # so remote streams replace it. Local IDs keep the given block.
+        def create_stream(id = next_stream_id, &)
+          return super unless valid_remote_stream_id?(id)
+
+          refused = upkeep&.refuse?(id)
+          super { (refused ? RefusedStream : RequestStream).create(self, id) }
         end
 
         # Streams above a drain's cutoff are refused after normal bookkeeping.
@@ -493,15 +504,15 @@ module ConnectRPC
         def receive_headers(frame)
           upkeep = self.upkeep
           stream_id = frame.stream_id
-          return super unless upkeep&.refuse?(stream_id) && !@streams.key?(stream_id)
+          return super unless upkeep&.refuse?(stream_id) && !streams.key?(stream_id)
 
-          if stream_id <= @remote_stream_id
+          if stream_id <= remote_stream_id
             decode_headers(frame.unpack)
             return
           end
 
           super
-          stream = @streams[stream_id]
+          stream = streams[stream_id]
           upkeep.refuse(stream) if stream.is_a?(RefusedStream)
         end
 
@@ -510,7 +521,7 @@ module ConnectRPC
         # after a local GOAWAY closed the connection is ignored rather than
         # answered with a second, PROTOCOL_ERROR GOAWAY.
         def receive_ping(frame)
-          return if @state == :closed
+          return if state == :closed
 
           upkeep = self.upkeep
           return super unless upkeep&.answers_pings?
@@ -537,7 +548,7 @@ module ConnectRPC
         # Never raises a drain's frozen cutoff to the highest stream seen.
         def send_goaway(error_code = 0, message = "")
           frame = ::Protocol::HTTP2::GoawayFrame.new
-          frame.pack(upkeep&.cutoff || @remote_stream_id, error_code, message)
+          frame.pack(upkeep&.cutoff || remote_stream_id, error_code, message)
           write_frame(frame)
         ensure
           close!
@@ -548,7 +559,7 @@ module ConnectRPC
         # No connection-wide barrier: reset and response failures are local to
         # this stream. Application work is a separately stoppable host task.
         def each(task: ::Async::Task.current)
-          while (request = @requests.dequeue)
+          while (request = requests.dequeue)
             next if request.stream.closed?
 
             worker = ::Async::Task.new(task, finished: false) do |_worker, incoming|
@@ -585,6 +596,8 @@ module ConnectRPC
         end
 
         private
+
+        def close_requests = requests&.close
 
         def close_request(response, request)
           response&.close

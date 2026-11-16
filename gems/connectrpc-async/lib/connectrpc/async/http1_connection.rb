@@ -30,7 +30,7 @@ module ConnectRPC
             # The pinned native parser compares the transfer token literally.
             # Our validation already permits exactly one case-insensitive token.
             headers["transfer-encoding"] = "chunked" if leading.key?("transfer-encoding")
-            @persistent &&= persistent?(@response_version, method, headers)
+            self.persistent &&= persistent?(@response_version, method, headers)
             if status.between?(100, 199)
               interim += 1
               raise IOError, "Too many interim responses" if interim > 16
@@ -39,7 +39,6 @@ module ConnectRPC
             end
             body = read_response_body(method, status, headers)
             receive_end_stream! unless body
-            @count += 1
             return [StreamHead.new(status: status, headers: leading), body]
           end
         end
