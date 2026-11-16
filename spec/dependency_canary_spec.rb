@@ -107,8 +107,23 @@ RSpec.describe DependencyCanary do
   end
 
   it "keeps every declaration when canary mode is off, even after the lift is installed" do
-    with_environment(described_class::ENVIRONMENT => nil) do
-      expect(described_class.lift_declaration("connectrpc-async", "async-http", ["~> 0.105.0"])).to be_nil
+    Gem::Specification.prepend(described_class::Lifting)
+    expect(Gem::Specification.ancestors).to include(described_class::Lifting)
+    Dir.mktmpdir("connectrpc-canary-off-") do |directory|
+      package = "connectrpc-canary-off-#{File.basename(directory)}"
+      path = File.join(directory, "#{package}.gemspec")
+      File.write(path, <<~RUBY)
+        Gem::Specification.new do |spec|
+          spec.name = #{package.dump}
+          spec.version = "0.1.0"
+          spec.summary = "fixture"
+          spec.authors = ["fixture"]
+          spec.add_dependency "async-http", "~> 0.105.0"
+        end
+      RUBY
+      spec = with_environment(described_class::ENVIRONMENT => nil) { Gem::Specification.load(path) }
+      expect(spec.dependencies.map(&:requirement)).to eq([requirement("~> 0.105.0")])
+      expect(described_class.lifts.keys.select { |key| key.first == package }).to be_empty
     end
   end
 
@@ -187,7 +202,7 @@ RSpec.describe CanaryDriver do
       expect(described_class.classify("suite", outcome("2 examples, 0 failures", exit_status: 0)).result)
         .to eq(:passed)
       timeout = described_class.classify("suite", outcome("partial", exit_status: nil, timed_out: true))
-      expect(timeout.to_a).to eq(["suite", :timeout, ["no exit within its deadline; a hang"]])
+      expect(timeout.to_a).to eq(["suite", :timeout, ["did not finish within its deadline; a hang"]])
     end
 
     it "names each broken contract when the guard fails require" do
@@ -211,6 +226,17 @@ RSpec.describe CanaryDriver do
       phase = described_class.classify("suite", outcome(output))
       expect(phase.to_a).to eq(["suite", :boot_failure,
                                 ["LoadError: cannot load such file -- async/http/protocol/http2/output"]])
+      before_suite = <<~TEXT
+        An error occurred in a `before(:suite)` hook.
+        Failure/Error: Reactor.start
+
+        NameError:
+          uninitialized constant Async::Reactor
+
+        0 examples, 0 failures, 1 error occurred outside of examples
+      TEXT
+      expect(described_class.classify("suite", outcome(before_suite)).to_a)
+        .to eq(["suite", :boot_failure, ["NameError: uninitialized constant Async::Reactor"]])
     end
 
     it "lists failed examples and notes that a failed worked-around example can mean an upstream fix" do
@@ -237,6 +263,46 @@ RSpec.describe CanaryDriver do
       expect(plain.details).to eq(["./spec/host_spec.rb:12 Host"])
     end
 
+    it "keeps failed examples and reports errors raised outside examples, such as in after hooks" do
+      # RSpec 3.13 output for a failed example plus after(:context) and after(:suite) hook errors.
+      output = <<~TEXT
+        An error occurred in an `after(:context)` hook.
+        Failure/Error: after(:context) { server.close }
+
+        IOError:
+          closed stream
+        # ./spec/upstream_contract_spec.rb:20:in 'block (2 levels) in <top (required)>'
+
+        An error occurred in an `after(:suite)` hook.
+        Failure/Error: config.after(:suite) { Reactor.stop }
+
+        ArgumentError:
+          reactor already stopped
+        # ./spec/spec_helper.rb:30:in 'block (2 levels) in <top (required)>'
+
+        Failures:
+
+          1) connectrpc-async upstream contract worked around Output#start
+             Failure/Error: expect(output).to be_started
+
+        Finished in 0.01185 seconds (files took 0.05909 seconds to load)
+        2 examples, 1 failure, 2 errors occurred outside of examples
+
+        Failed examples:
+
+        rspec ./spec/upstream_contract_spec.rb:463 # connectrpc-async upstream contract worked around Output#start
+      TEXT
+      phase = described_class.classify("contract", outcome(output))
+      expect(phase.to_a).to eq(
+        ["contract", :example_failures,
+         ["./spec/upstream_contract_spec.rb:463 connectrpc-async upstream contract worked around Output#start",
+          described_class::WORKED_AROUND, "error in an `after(:context)` hook: IOError: closed stream",
+          "error in an `after(:suite)` hook: ArgumentError: reactor already stopped"]]
+      )
+      hook_only = output.sub(/^Failures:.*/m, "2 examples, 0 failures, 1 error occurred outside of examples\n")
+      expect(described_class.classify("suite", outcome(hook_only)).result).to eq(:failed)
+    end
+
     it "keeps an unrecognized failure distinct from the named classes" do
       phase = described_class.classify("suite", outcome("Segmentation fault", exit_status: 139))
       expect(phase.to_a).to eq(["suite", :failed, ["exit status 139 without a recognized rspec failure"]])
@@ -245,8 +311,12 @@ RSpec.describe CanaryDriver do
     it "reports the report phase as passed, a hang, or failed with its last line" do
       expect(described_class.report_phase(outcome("lifted ...", exit_status: 0)).result).to eq(:passed)
       expect(described_class.report_phase(outcome("", exit_status: nil, timed_out: true)).result).to eq(:timeout)
-      failed = described_class.report_phase(outcome("Bundler loaded\nNo patch pin was lifted; retire it\n\n"))
-      expect(failed.to_a).to eq(["report", :failed, ["No patch pin was lifted; retire it"]])
+      # The report script aborts with the reason as its only output line.
+      reason = "No patch pin was lifted; retire or retarget the pins-lifted canary lane"
+      failed = described_class.report_phase(outcome("#{reason}\n"))
+      expect(failed.to_a).to eq(["report", :failed, [reason]])
+      held = described_class.report_phase(outcome("lifted ...\n", exit_status: 0).tap { |run| run.held_open = true })
+      expect(held.to_a).to eq(["report", :failed, [described_class::HELD_OPEN]])
     end
 
     it "summarizes every phase as a Markdown table and passes only when all passed" do
@@ -270,7 +340,7 @@ RSpec.describe CanaryDriver do
       out = StringIO.new
       script = "$stdout.sync = true; puts :first; warn :second; exit 3"
       outcome = described_class::Bounded.run([RbConfig.ruby, "-e", script], seconds: 30, out: out)
-      expect(outcome.to_a).to eq(["first\nsecond\n", 3, false])
+      expect(outcome.to_a).to eq(["first\nsecond\n", 3, false, false])
       expect(out.string).to eq(outcome.output)
     end
 
@@ -306,6 +376,31 @@ RSpec.describe CanaryDriver do
         sleep 0.05 until gone?(child) || described_class::Bounded.monotonic > deadline
         expect(gone?(child)).to be(true), "child #{child} survived the group kill"
       end
+    end
+
+    # A leader that exits 0 while a forked descendant keeps the merged output pipe open.
+    def leftover_script = "$stdout.sync = true; puts fork { sleep }; puts 'leader finished'"
+
+    it "fails a phase whose leftover descendant holds the output open after its leader exits, and kills it" do
+      started = described_class::Bounded.monotonic
+      outcome = described_class::Bounded.run([RbConfig.ruby, "-e", leftover_script], seconds: 30, out: StringIO.new)
+      expect(described_class::Bounded.monotonic - started).to be < 15
+      expect(outcome.exit_status).to eq(0)
+      phase = described_class.classify("suite", outcome)
+      expect(phase.result).to eq(:failed)
+      expect(phase.details.last).to match(/leftover process kept the output open.*process group was killed/)
+      child = Integer(outcome.output.lines.first)
+      deadline = described_class::Bounded.monotonic + 10
+      sleep 0.05 until gone?(child) || described_class::Bounded.monotonic > deadline
+      expect(gone?(child)).to be(true), "leftover #{child} survived the group kill"
+    end
+
+    it "reports a timeout when the deadline expires while a leftover descendant holds the output" do
+      stub_const("#{described_class}::Bounded::DRAIN_GRACE", 60)
+      outcome = described_class::Bounded.run([RbConfig.ruby, "-e", leftover_script], seconds: 3, out: StringIO.new)
+      expect(outcome.output).to end_with("leader finished\n"), "the leader did not finish before the deadline"
+      expect(outcome.exit_status).to eq(0), "the leader did not exit on its own before the deadline"
+      expect(described_class.classify("suite", outcome).result).to eq(:timeout)
     end
   end
 end

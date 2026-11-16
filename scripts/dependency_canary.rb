@@ -205,6 +205,11 @@ if $PROGRAM_NAME == __FILE__
   abort "Run with #{DependencyCanary::ENVIRONMENT}=1 under the canary bundle" unless DependencyCanary.enabled?
   abort "Not running under a canary wrapper: #{ENV.fetch('BUNDLE_GEMFILE', nil)}" unless
     File.basename(Bundler.default_gemfile.to_s) == "Gemfile.canary"
-  lockfile = Bundler::LockfileParser.new(Bundler.read_file(Bundler.default_lockfile))
-  DependencyCanary::Report.print!(Bundler.load.specs, lockfile)
+  begin
+    lockfile = Bundler::LockfileParser.new(Bundler.read_file(Bundler.default_lockfile))
+    DependencyCanary::Report.print!(Bundler.load.specs, lockfile)
+  rescue RuntimeError => e
+    # The driver reports the last output line, so end with the reason, not a backtrace.
+    abort e.message
+  end
 end

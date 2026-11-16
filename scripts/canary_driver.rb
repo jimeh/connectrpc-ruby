@@ -23,15 +23,24 @@ module CanaryDriver
     boot_failure: "boot failure", example_failures: "example failures", failed: "failed"
   }.freeze
   WORKED_AROUND = "a failed \"worked around\" example can mean upstream fixed that behavior; delete its workaround"
+  TIMED_OUT = "did not finish within its deadline; a hang"
+  HELD_OPEN = "a leftover process kept the output open after the command exited; its process group was killed"
+  # RSpec's report of an error raised in a hook outside any example.
+  HOOK_ERROR = /^An error occurred in (an? `[^`]+` hook)\.\n.*?^([A-Z][\w:]*):\n +([^\n]+)/m
 
   Phase = Struct.new(:name, :result, :details)
 
   # Runs a command in its own process group, streaming and keeping its merged
   # output. On expiry the whole group gets TERM, then KILL after a grace period.
+  # Output ends at EOF, at the deadline, or DRAIN_GRACE after the leader exits;
+  # a descendant still holding it then is a leftover, and the group is killed.
   module Bounded
     KILL_GRACE = 5
+    DRAIN_GRACE = 3
+    # How often a read wait checks whether the leader has exited.
+    POLL = 0.25
 
-    Outcome = Struct.new(:output, :exit_status, :timed_out)
+    Outcome = Struct.new(:output, :exit_status, :timed_out, :held_open)
 
     module_function
 
@@ -43,36 +52,53 @@ module CanaryDriver
       writer.close
       waiter = ::Process.detach(pid)
       deadline = monotonic + seconds
-      output = stream(reader, deadline, out)
-      Outcome.new(output, *finish(pid, waiter, deadline))
+      output, ending = stream(reader, waiter, deadline, out)
+      Outcome.new(output, *finish(pid, waiter, deadline, ending))
     ensure
       reader&.close
       # Also reaps anything the command left running in its group.
       signal_group("KILL", pid) if pid
     end
 
-    def stream(reader, deadline, out)
+    # The output and why reading stopped: :eof, :deadline or :held_open.
+    def stream(reader, waiter, deadline, out)
       output = +""
-      while (remaining = deadline - monotonic).positive? && reader.wait_readable(remaining)
-        chunk = reader.read_nonblock(65_536, exception: false)
-        break if chunk.nil?
-        next if chunk == :wait_readable
-
-        out.write(chunk)
-        out.flush
-        output << chunk
+      drained_by = nil
+      loop do
+        drained_by ||= monotonic + DRAIN_GRACE unless waiter.alive?
+        stop, ending = stop_at(deadline, drained_by)
+        return [output, ending] unless (remaining = stop - monotonic).positive?
+        return [output, :eof] if reached_eof?(reader, [remaining, POLL].min, out, output)
       end
-      output
     end
 
-    # The exit status and whether the deadline expired first.
-    def finish(pid, waiter, deadline)
+    # When reading must stop and why: the deadline, or DRAIN_GRACE after the leader exited.
+    def stop_at(deadline, drained_by)
+      drained_by && drained_by < deadline ? [drained_by, :held_open] : [deadline, :deadline]
+    end
+
+    # Copies what arrives within `seconds` to `out` and `output`; true at EOF.
+    def reached_eof?(reader, seconds, out, output)
+      return false unless reader.wait_readable(seconds)
+
+      chunk = reader.read_nonblock(65_536, exception: false)
+      return chunk.nil? unless chunk.is_a?(String)
+
+      out.write(chunk)
+      out.flush
+      output << chunk
+      false
+    end
+
+    # The exit status, whether the deadline expired first (for the leader or its
+    # output), and whether a leftover process held the output after the leader exited.
+    def finish(pid, waiter, deadline, ending)
       finished = waiter.join([deadline - monotonic, 0].max)
       unless finished
         signal_group("TERM", pid)
         signal_group("KILL", pid) unless waiter.join(KILL_GRACE)
       end
-      [waiter.value.exitstatus, !finished]
+      [waiter.value.exitstatus, !finished || ending == :deadline, ending == :held_open]
     end
 
     def signal_group(signal, pid)
@@ -86,14 +112,22 @@ module CanaryDriver
 
   # Classifies one rspec phase from its exit status, deadline and output.
   def classify(name, outcome)
-    return Phase.new(name, :timeout, ["no exit within its deadline; a hang"]) if outcome.timed_out
-    return Phase.new(name, :passed, []) if outcome.exit_status&.zero?
+    return Phase.new(name, :timeout, [TIMED_OUT]) if outcome.timed_out
 
-    output = outcome.output.gsub(ANSI, "")
-    if output.match?(/occurred outside of examples|An error occurred while loading/)
+    phase = if outcome.exit_status&.zero?
+              Phase.new(name, :passed, [])
+            else
+              rspec_failure(name, outcome.output.gsub(ANSI, ""), outcome.exit_status)
+            end
+    leftover(phase, outcome)
+  end
+
+  # A load error stops every example; anything else is reported per example.
+  def rspec_failure(name, output, exit_status)
+    if output.match?(/An error occurred while loading|^0 examples, /)
       load_failure(name, output)
     else
-      example_failure(name, output, outcome.exit_status)
+      example_failure(name, output, exit_status)
     end
   end
 
@@ -107,22 +141,40 @@ module CanaryDriver
     Phase.new(name, :boot_failure, errors.empty? ? ["error outside of examples; see the log"] : errors.first(5))
   end
 
+  # Failed example ids, then any error RSpec raised outside examples, such as in an after hook.
   def example_failure(name, output, exit_status)
     failed = output.scan(%r{^rspec (\./\S+) # (.+)$}).map { |location, description| "#{location} #{description.strip}" }
-    if failed.empty?
-      return Phase.new(name, :failed, ["exit status #{exit_status.inspect} without a recognized rspec failure"])
-    end
-
     failed << WORKED_AROUND if failed.any? { |line| line.include?("worked around") }
-    Phase.new(name, :example_failures, failed)
+    outside = hook_errors(output)
+    return Phase.new(name, :example_failures, failed + outside) unless failed.empty?
+    return Phase.new(name, :failed, outside) unless outside.empty?
+
+    Phase.new(name, :failed, ["exit status #{exit_status.inspect} without a recognized rspec failure"])
+  end
+
+  def hook_errors(output)
+    output.scan(HOOK_ERROR).map { |hook, error, message| "error in #{hook}: #{error}: #{message}" }.uniq
+  end
+
+  # A phase cannot pass while a leftover process held its output after it exited.
+  def leftover(phase, outcome)
+    return phase unless outcome.held_open
+
+    phase.result = :failed if phase.result == :passed
+    phase.details << HELD_OPEN
+    phase
   end
 
   # The report is not rspec: it passes, times out, or fails with its last line.
   def report_phase(outcome)
-    return Phase.new("report", :timeout, ["no exit within its deadline"]) if outcome.timed_out
-    return Phase.new("report", :passed, []) if outcome.exit_status&.zero?
+    return Phase.new("report", :timeout, [TIMED_OUT]) if outcome.timed_out
 
-    Phase.new("report", :failed, outcome.output.lines.map(&:strip).reject(&:empty?).last(1))
+    phase = if outcome.exit_status&.zero?
+              Phase.new("report", :passed, [])
+            else
+              Phase.new("report", :failed, outcome.output.lines.map(&:strip).reject(&:empty?).last(1))
+            end
+    leftover(phase, outcome)
   end
 
   def summary_markdown(package, phases)

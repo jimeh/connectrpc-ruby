@@ -442,16 +442,19 @@ outside Bundler:
 2. `spec/upstream_contract_spec.rb`, then the rest of the suite. Each phase
    runs in its own process group under a wall-clock deadline (5 and 30
    minutes); on expiry the driver kills the group, so a hang is still reported
-   and the other phase still runs.
+   and the other phase still runs. A process the phase leaves behind holding
+   its output fails the phase a few seconds after the command exits, and the
+   driver kills its group.
 
 The summary classifies each phase as passed, a timeout (hang), a contract guard
 failure (the `UpstreamContractError` raised at require, with each broken
-contract), a boot failure (another load error, such as a removed upstream file
-or class), or example failures with their ids. A failed "worked around" example
-can mean upstream fixed that behavior; delete the workaround it names rather
-than treating it as a break. In GitHub Actions the report and summary are also
-appended to the job summary. CI runs the lane on Ruby 3.4.12 only; it has no Ruby
-4.0.9 leg.
+contract), a boot failure (another load error, or an error before any example
+ran, such as a removed upstream file or class), or example failures with their
+ids and any error raised outside examples, such as in an `after` hook. A failed
+"worked around" example can mean upstream fixed that behavior; delete the
+workaround it names rather than treating it as a break. In GitHub Actions the
+report and summary are also appended to the job summary. CI runs the lane on
+Ruby 3.4.12 only; it has no Ruby 4.0.9 leg.
 
 ### Cooldowns and updates
 
