@@ -157,6 +157,10 @@ Checkout permissions and bytes remain unchanged, and each package lane builds
 its own archives in its existing output directory. `spec/package_build_spec.rb`
 checks real archive headers, complete file bytes, manifests and metadata under
 umasks `002` and `022` using group-writable fixture inputs.
+Gemspec manifests resolve from the gemspec's own directory, so loading one does
+not depend on the working directory. RubyGems still reads payload files relative
+to its own working directory, so run a direct `gem build` from the owning
+directory, for example `gem -C gems/connectrpc-async build connectrpc-async.gemspec`.
 
 `check:package` asserts an explicit reviewed package manifest, zero runtime
 dependencies, MIT metadata and complete license bytes, and the push host. It runs `gem install --norc --local`

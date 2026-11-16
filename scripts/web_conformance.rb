@@ -12,6 +12,7 @@ selector = ARGV.shift
 raise "Usage: web_conformance.rb async|falcon|rack [exact-name]" unless %w[async falcon
                                                                            rack].include?(host) && ARGV.empty?
 
+ledger = Conformance::WebLedger.new(host: host, selected: selector)
 version, status = Open3.capture2("connectconformance", "--version")
 raise "Wrong conformance runner" unless status.success? && version.strip == "connectconformance v1.0.6"
 
@@ -40,7 +41,7 @@ File.open(File.join(directory, "runner.log"), "w") do |log|
 end
 puts raw
 events = File.readlines(environment.fetch("CONFORMANCE_TELEMETRY")).map { |line| JSON.parse(line) }
-summary = Conformance::WebLedger.new(host: host, selected: selector).parse(raw, events, process.exitstatus)
+summary = ledger.parse(raw, events, process.exitstatus)
 File.write(File.join(directory, "summary.json"), "#{JSON.pretty_generate(summary)}\n")
 puts "Web #{host}: #{summary.fetch(:executed)} executed; #{summary.fetch(:passed)} passed; artifacts #{directory}"
 exit(process.success? && summary.fetch(:failed).zero? ? 0 : 1)

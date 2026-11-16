@@ -415,6 +415,31 @@ RSpec.describe "Optional Rails task context" do
   end
 end
 
+RSpec.describe "Package bundle isolation in CI" do
+  it "keeps jobs with a package Gemfile from reaching root setup through task dependencies" do
+    jobs = YAML.load_file(File.expand_path("../.github/workflows/ci.yml", __dir__)).fetch("jobs")
+    output, error, status = Open3.capture3({ "MISE_ENV" => "ci" }, "mise", "tasks", "--json")
+    expect(status.success?).to be(true), error
+    depends = JSON.parse(output).to_h { |task| [task.fetch("name"), task.fetch("depends")] }
+    closure = lambda do |name, seen = []|
+      next seen if seen.include?(name)
+
+      depends.fetch(name).reduce(seen + [name]) { |visited, dependency| closure.call(dependency.split.first, visited) }
+    end
+    commands = jobs.flat_map do |job_name, job|
+      job.fetch("steps").flat_map do |step|
+        gemfile = step.dig("env", "BUNDLE_GEMFILE") || job.dig("env", "BUNDLE_GEMFILE")
+        next [] unless gemfile && step["run"]
+
+        step["run"].scan(/mise run "?([^\s";&|]+)/).flatten.map { |task| "#{job_name}: #{task}" }
+      end
+    end
+    expect(commands).to include("async_interop: async:interop:grpc", "falcon_interop: falcon:interop:grpc")
+    offenders = commands.select { |command| closure.call(command.split.last).include?("setup") }
+    expect(offenders).to be_empty
+  end
+end
+
 RSpec.describe "Task-local tool activation" do
   it "runs tool-owning commands directly so nested Mise cannot remove their tools" do
     output, error, status = Open3.capture3("mise", "tasks", "--json")

@@ -16,14 +16,14 @@ Gem::Specification.new do |spec|
   spec.metadata["allowed_push_host"] = "https://rubygems.org"
   spec.metadata["rubygems_mfa_required"] = "true"
   spec.metadata["source_code_uri"] = spec.homepage
-  spec.files = Dir.glob("lib/**/*.rb") + Dir.glob("exe/*") + Dir.glob("sig/**/*.{rbs,yaml}") +
-               Dir.glob("rbs/**/*.rbs") + %w[lib/connectrpc/bindings/descriptors/status.bin
-                                             third_party/google/rpc/status.proto third_party/google/LICENSE
-                                             third_party/protobuf-LICENSE third_party/README.md
-                                             docs/grpc.md docs/grpc-web.md LICENSE README.md
-                                             docs/development.md docs/design.md
-                                             docs/rbs.md
-                                             docs/streaming.md docs/unary.md]
+  spec.files = Dir.glob("lib/**/*.rb", base: __dir__) + Dir.glob("exe/*", base: __dir__) +
+               Dir.glob("sig/**/*.{rbs,yaml}", base: __dir__) + Dir.glob("rbs/**/*.rbs", base: __dir__) +
+               %w[lib/connectrpc/bindings/descriptors/status.bin
+                  third_party/google/rpc/status.proto third_party/google/LICENSE
+                  third_party/protobuf-LICENSE third_party/README.md
+                  docs/grpc.md docs/grpc-web.md LICENSE README.md
+                  docs/development.md docs/design.md docs/rbs.md
+                  docs/streaming.md docs/unary.md]
   spec.require_paths = ["lib"]
   spec.bindir = "exe"
   spec.executables = ["protoc-gen-connectrpc-ruby"]

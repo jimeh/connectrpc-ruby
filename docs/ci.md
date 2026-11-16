@@ -1,10 +1,12 @@
 # CI
 
 The workflow runs on pull requests, pushes to `main`, manual dispatch and a
-daily schedule (04:37 UTC), on Ubuntu 24.04. It has nine core, three optional
-Rails, four optional HTTP/2, two optional Rack, two optional in-process testing,
-two optional RBS, four Falcon checks, nine lowest-allowed dependency checks and
-one runnable-examples check, with no serial cache primer or aggregate job:
+daily schedule (04:37 UTC), on Ubuntu 24.04. It has 48 checks: nine core, three
+optional Rails, four optional HTTP/2, two optional Rack, two optional in-process
+testing, two optional RBS, four Falcon, two OpenTelemetry, two Prometheus, two
+Yabeda, two health, two Sentry, two browser gRPC-Web, nine lowest-allowed
+dependency checks and one runnable-examples check, with no serial cache primer
+or aggregate job:
 
 | Check | Ruby | Canonical commands |
 | --- | --- | --- |
@@ -16,15 +18,19 @@ one runnable-examples check, with no serial cache primer or aggregate job:
 | Rails 8.0 | 3.4.12 | `mise run test:rails`, `generation:check:rails`, `check:package:rails` with `RAILS_LANE=8.0` |
 | Rails 8.1 | 3.4.12, 4.0.9 | Same Rails commands with `RAILS_LANE=8.1` |
 | Lowest allowed async, falcon, rack, rails, otel, prometheus, yabeda, health, sentry | 3.4.12 | `mise run floors:<leaf>` |
-| Async specs/package | 3.4.12, 4.0.9 | `mise run async:test`, `mise run async:package`, `mise run async:conformance` |
-| Async Go interoperability | 3.4.12, 4.0.9 | `mise run async:interop`, `mise run async:interop:streaming` |
+| Async specs/package | 3.4.12, 4.0.9 | `mise run async:test`, `mise run async:package`, `mise run async:conformance`, `async:conformance:grpc`, `async:conformance:http1`, `async:conformance:threaded` |
+| Async Go interoperability | 3.4.12, 4.0.9 | `mise run async:interop`, `mise run async:interop:streaming`, `async:interop:http1`, `async:interop:grpc` |
 | Rack specs/check/package | 3.4.12, 4.0.9 | `mise run rack:test`, `mise run rack:check`, `mise run rack:package` |
 | In-process testing | 3.4.12, 4.0.9 | `mise run testing:verify` |
 | RBS source/API/package | 3.4.12, 4.0.9 | `mise run rbs:check`, then `mise run rbs:package` |
-| Falcon specs/package | 3.4.12, 4.0.9 | `mise run falcon:test`, `mise run falcon:package`, `mise run falcon:conformance` |
-| Falcon Go interoperability | 3.4.12, 4.0.9 | `mise run falcon:interop`, `mise run falcon:interop:streaming` |
+| Falcon specs/package | 3.4.12, 4.0.9 | `mise run falcon:test`, `mise run falcon:package`, `mise run falcon:conformance`, `falcon:conformance:grpc`, `falcon:conformance:http1` |
+| Falcon Go interoperability | 3.4.12, 4.0.9 | `mise run falcon:interop`, `mise run falcon:interop:streaming`, `falcon:interop:grpc` |
+| OpenTelemetry integration/package | 3.4.12, 4.0.9 | `mise run otel:verify` |
+| Prometheus metrics | 3.4.12, 4.0.9 | `mise run prometheus:verify` |
+| Yabeda metrics | 3.4.12, 4.0.9 | `mise run yabeda:verify` |
 | Health service | 3.4.12, 4.0.9 | `mise run health:verify` |
 | Sentry tracing | 3.4.12, 4.0.9 | `mise run sentry:verify` |
+| Browser gRPC-Web | 3.4.12, 4.0.9 | `mise run browser:verify`, then `async:conformance:web`, `falcon:conformance:web` and `rack:conformance:web` |
 | Runnable examples | 4.0.9 | `mise run example:verify` |
 
 Each matrix has `fail-fast: false`. Every check runs its commands on cache
@@ -189,7 +195,11 @@ and Go actions, with lock-keyed native backend caches under
 `vendor/async/bundle` and the existing pinned module/build caches. Their selected
 Gemfile is `gems/connectrpc-async/Gemfile`; Bundler user state is separate under
 `vendor/async/bundler`, and the three-day cooldown applies.
-Core setup/spec jobs install no backend dependencies.
+Core setup/spec jobs install no backend dependencies. Backend jobs never reach
+root `setup`: `async:interop:grpc` and `falcon:interop:grpc` run the official
+gRPC peer generation check through their own backend bundle instead of root
+`grpc:generation:check`, so the job's `BUNDLE_GEMFILE` is never installed into
+the root `vendor/bundle`.
 
 `async:tools` has a complete CI override preserving its task environment and
 working directory while replacing local runtime preparation with exact

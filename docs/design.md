@@ -435,8 +435,9 @@ class/module conflicts. Fixed runtime protection applies to package ancestors,
 official message/enum assignments and target service declarations in the loaded
 import/type closure. Compatible `Google`/`Google::Protobuf` package modules may
 be shared, including equivalent `ruby_package` mappings. Direct replacement of
-those modules, reserved roots such as `ConnectRPC`/`File`, and concrete protobuf
-runtime names such as `Google::Protobuf::DescriptorPool` are rejected. Known
+those modules, reserved roots such as `ConnectRPC`/`File` (including the stdlib
+roots the runtime loads, such as `URI`, `Zlib`, `Net` and `OpenSSL`), and concrete
+protobuf runtime names such as `Google::Protobuf::DescriptorPool` are rejected. Known
 official protobuf types are accepted only under their canonical file, proto name
 and Ruby namespace, preserving WKT imports without allowing application types to
 replace them. The fixed policy follows the pinned protobuf sources, rather than
