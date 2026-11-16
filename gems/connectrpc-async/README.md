@@ -211,14 +211,17 @@ nonnegative or nil and requires `max_connection_age`.
   connection drains gracefully. `max_connection_age_grace` seconds after age
   expiry, whatever the drain's progress, it is aborted; nil waits indefinitely.
 - **Control frames.** With keepalive, PING ACKs, GOAWAYs, drain PINGs and
-  refusals are written by a per-connection control writer, so a frame stuck in
-  an outbound write cannot stop the connection reading. A control frame whose
-  own write does not finish within the 100 ms cleanup allowance fails the
-  connection. One waiting behind another stream's stuck frame waits until that
-  frame finishes or the connection retires through server PINGs, age grace or
-  close. The `too_many_pings` GOAWAY is stricter: it must be written within
-  100 ms of the third strike, or the connection is aborted. Without keepalive,
-  the reader answers client PINGs itself, as before.
+  refusals are written by a per-connection control writer, so the reader never
+  blocks writing its own replies. The reader can still stall at its next buffer
+  refill, which flushes pending output, behind an outbound write that does not
+  finish. Each control frame must be written within `timeout` seconds of being
+  queued, including any wait behind another stream's stuck frame, and its own
+  write within the 100 ms cleanup allowance; otherwise the connection is
+  aborted. Server PINGs, age grace and close also bound a stuck connection. The
+  `too_many_pings` GOAWAY is stricter: it must be written within 100 ms of the
+  third strike, or the connection is aborted. Without keepalive, the reader
+  answers client PINGs itself, as before, and idle drain frames use the
+  20-second default `timeout`.
 
 Idle and age expiry drain a connection in three steps, as grpc-go does:
 

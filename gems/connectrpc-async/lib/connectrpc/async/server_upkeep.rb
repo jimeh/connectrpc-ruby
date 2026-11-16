@@ -4,15 +4,17 @@ module ConnectRPC
   module Async
     module Internal
       # Writes one server connection's control frames (PING ACKs, GOAWAYs,
-      # drain PINGs and refusals) off its reader. Frames queue without
-      # yielding and are written in order. A control frame whose own write
-      # cannot finish within the cleanup allowance fails the connection
-      # raw-first. Waiting behind another writer's frame is bounded by that
-      # frame's owners: server keepalive, age grace or session close.
+      # drain PINGs and refusals) off its reader, so the reader never blocks
+      # writing its own replies. Frames queue without yielding and are written
+      # in order. Each must be written within `timeout` of being queued,
+      # including any wait behind another writer's frame, and its own write,
+      # once it holds the frame guard, within the cleanup allowance. Otherwise
+      # the connection fails raw-first.
       class ControlWriter
-        def initialize(resource, clock:)
+        def initialize(resource, clock:, timeout:)
           @resource = resource
           @clock = clock
+          @timeout = timeout
           @queue = ::Async::Queue.new
         end
 
@@ -27,7 +29,7 @@ module ConnectRPC
         # writer stopped or failed first.
         def write(frame)
           written = ::Async::Promise.new
-          @queue.enqueue([frame, written])
+          @queue.enqueue([frame, @clock.now + @timeout, written])
           written
         end
 
@@ -36,8 +38,8 @@ module ConnectRPC
         def run
           written = nil
           loop do
-            frame, written = @queue.dequeue
-            deliver(frame)
+            frame, deadline, written = @queue.dequeue
+            deliver(frame, deadline)
             written.resolve(true)
           end
         rescue StandardError => e
@@ -47,20 +49,30 @@ module ConnectRPC
           @queue.dequeue.last.resolve(false) until @queue.empty?
         end
 
-        def deliver(frame)
+        # Earlier frames meet earlier deadlines, so time spent queued behind
+        # them is already within this frame's bound.
+        def deliver(frame, deadline)
           connection = @resource.connection
+          queued = watchdog(deadline - @clock.now, "HTTP/2 control frame was not written in time")
           connection.synchronize do
-            timer = ::Async::Task.new(::Async::Task.current, finished: false) do
-              @clock.sleep(CLEANUP_SECONDS)
-              @resource.abort(IOError.new("HTTP/2 control frame write stalled"))
-            end
-            timer.run
+            stalled = watchdog(CLEANUP_SECONDS, "HTTP/2 control frame write stalled")
             begin
               connection.write_frame(frame)
             ensure
-              Internal.cancel(timer)
+              Internal.cancel(stalled)
             end
           end
+        ensure
+          Internal.cancel(queued)
+        end
+
+        def watchdog(seconds, message)
+          timer = ::Async::Task.new(::Async::Task.current, finished: false) do
+            @clock.sleep(seconds) if seconds.positive?
+            @resource.abort(IOError.new(message))
+          end
+          timer.run
+          timer
         end
       end
 
@@ -112,6 +124,9 @@ module ConnectRPC
         MAX_STREAM_ID = 0x7fff_ffff
         ACK_SECONDS = 5
         EOF_SECONDS = 1
+        # ServerKeepalive's default timeout, bounding control frames when only
+        # idle_timeout drains the connection.
+        CONTROL_SECONDS = 20
 
         attr_reader :cutoff
 
@@ -122,7 +137,7 @@ module ConnectRPC
           @random = random
           @keepalive = keepalive
           @idle_timeout = idle_timeout
-          @writer = ControlWriter.new(resource, clock: clock)
+          @writer = ControlWriter.new(resource, clock: clock, timeout: keepalive&.timeout || CONTROL_SECONDS)
           if keepalive&.min_time
             @strikes = PingStrikes.new(clock: clock, min_time: keepalive.min_time,
                                        permit_without_calls: keepalive.permit_without_calls)
@@ -134,16 +149,16 @@ module ConnectRPC
           @violated = false
         end
 
+        # Starting each task can yield. A connection that starts retiring or
+        # draining meanwhile, after its upkeep was stopped, gets no more.
         def start
           @writer.start(@parent)
-          if (time = @keepalive&.time)
+          if (time = @keepalive&.time) && upkeep?
             @resource.keep_alive(@parent, clock: @clock, time: time, timeout: @keepalive.timeout, always: true)
           end
-          if @idle_timeout
-            maintain { track_idle }
-            maintain { watch_idle }
-          end
-          maintain { watch_age(@keepalive.max_connection_age) } if @keepalive&.max_connection_age
+          maintain { track_idle } if @idle_timeout && upkeep?
+          maintain { watch_idle } if @idle_timeout && upkeep?
+          maintain { watch_age(@keepalive.max_connection_age) } if @keepalive&.max_connection_age && upkeep?
           self
         end
 
@@ -185,6 +200,8 @@ module ConnectRPC
         end
 
         private
+
+        def upkeep? = !@resource.finished? && !@resource.finishing? && !@resource.draining
 
         def maintain(&block)
           task = ::Async::Task.new(@parent, finished: false) { |current| block.call(current) }

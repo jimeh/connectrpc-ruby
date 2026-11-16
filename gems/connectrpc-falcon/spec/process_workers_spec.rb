@@ -476,7 +476,9 @@ RSpec.describe "Real Falcon process-worker lifecycle" do
   end
 
   # The forked worker cannot share a fake clock, so its real timers run with
-  # short values; each check waits for the observed frames or EOF.
+  # short values; each check waits for the observed frames or EOF. The silent
+  # client's PING timeout (about 0.4 s) must beat its age drain (at least
+  # 1.35 s with jitter), so it sees no GOAWAY.
   it "applies server keepalive in a real worker: enforcement, PING timeout and age drain" do
     reactor do |task|
       reader, writer = IO.pipe
@@ -488,7 +490,7 @@ RSpec.describe "Real Falcon process-worker lifecycle" do
                                handlers: AsyncHelpers::ECHO.handlers(echo: ->(message, _) { message },
                                                                      fail: ->(message, _) { message }))
       end
-      keepalive = ConnectRPC::Async::ServerKeepalive.new(time: 0.2, timeout: 0.2, max_connection_age: 0.6)
+      keepalive = ConnectRPC::Async::ServerKeepalive.new(time: 0.2, timeout: 0.2, max_connection_age: 1.5)
       config = configuration(writer, make_core: make_core, count: 1, keepalive: keepalive)
       cluster = FalconProcessFixtures::FalconProcessCluster.new(config, reader, writer)
       cluster.event(:running)
@@ -503,7 +505,7 @@ RSpec.describe "Real Falcon process-worker lifecycle" do
       wait_until(task, "unanswered server PING closes the connection") { silent.eof? }
       expect(silent.wire.pings).not_to be_empty
       expect(silent.wire.goaways).to eq([])
-      wait_until(task, "age drain GOAWAY pair and EOF") { aging.eof? }
+      wait_until(task, "age drain GOAWAY pair and EOF", within: 5) { aging.eof? }
       expect(aging.wire.goaways).to eq([[KeepaliveClient::MAX_STREAM_ID, 0, "max_age"], [0, 0, "max_age"]])
       cluster.stop
       cluster.event(:closing)

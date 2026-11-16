@@ -461,10 +461,11 @@
     "ConnectRPC::Async::ServerSession::Accepted#wait_closed": {"kind":"method","visibility":"public","parameters":"","classification":"spi"}
   },
   "gems/connectrpc-async/lib/connectrpc/async/server_upkeep.rb": {
-    "ConnectRPC::Async::Internal::ControlWriter#deliver": {"kind":"method","visibility":"private","parameters":"frame","classification":"internal"},
-    "ConnectRPC::Async::Internal::ControlWriter#initialize": {"kind":"method","visibility":"public","parameters":"resource, clock:","classification":"internal"},
+    "ConnectRPC::Async::Internal::ControlWriter#deliver": {"kind":"method","visibility":"private","parameters":"frame, deadline","classification":"internal"},
+    "ConnectRPC::Async::Internal::ControlWriter#initialize": {"kind":"method","visibility":"public","parameters":"resource, clock:, timeout:","classification":"internal"},
     "ConnectRPC::Async::Internal::ControlWriter#run": {"kind":"method","visibility":"private","parameters":"","classification":"internal"},
     "ConnectRPC::Async::Internal::ControlWriter#start": {"kind":"method","visibility":"public","parameters":"parent","classification":"internal"},
+    "ConnectRPC::Async::Internal::ControlWriter#watchdog": {"kind":"method","visibility":"private","parameters":"seconds, message","classification":"internal"},
     "ConnectRPC::Async::Internal::ControlWriter#write": {"kind":"method","visibility":"public","parameters":"frame","classification":"internal"},
     "ConnectRPC::Async::Internal::PingStrikes#initialize": {"kind":"method","visibility":"public","parameters":"clock:, min_time:, permit_without_calls:","classification":"internal"},
     "ConnectRPC::Async::Internal::PingStrikes#reset": {"kind":"method","visibility":"public","parameters":"","classification":"internal"},
@@ -484,6 +485,7 @@
     "ConnectRPC::Async::Internal::ServerUpkeep#stream_opened": {"kind":"method","visibility":"public","parameters":"","classification":"internal"},
     "ConnectRPC::Async::Internal::ServerUpkeep#stream_written": {"kind":"method","visibility":"public","parameters":"","classification":"internal"},
     "ConnectRPC::Async::Internal::ServerUpkeep#track_idle": {"kind":"method","visibility":"private","parameters":"","classification":"internal"},
+    "ConnectRPC::Async::Internal::ServerUpkeep#upkeep?": {"kind":"method","visibility":"private","parameters":"","classification":"internal"},
     "ConnectRPC::Async::Internal::ServerUpkeep#violate": {"kind":"method","visibility":"private","parameters":"","classification":"internal"},
     "ConnectRPC::Async::Internal::ServerUpkeep#watch_age": {"kind":"method","visibility":"private","parameters":"age","classification":"internal"},
     "ConnectRPC::Async::Internal::ServerUpkeep#watch_idle": {"kind":"method","visibility":"private","parameters":"","classification":"internal"}

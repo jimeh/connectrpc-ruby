@@ -506,11 +506,14 @@ module ConnectRPC
         end
 
         # With server keepalive, the reader only decides; the control writer
-        # sends the ACK, so a held outbound frame cannot stall reading.
+        # sends the ACK, so the reader never blocks writing it. A PING read
+        # after a local GOAWAY closed the connection is ignored rather than
+        # answered with a second, PROTOCOL_ERROR GOAWAY.
         def receive_ping(frame)
+          return if @state == :closed
+
           upkeep = self.upkeep
           return super unless upkeep&.answers_pings?
-          raise ::Protocol::HTTP2::ProtocolError, "Cannot receive ping in state #{@state}" if @state == :closed
 
           if frame.acknowledgement?
             @resource.ping_acknowledged(frame.unpack)

@@ -48,9 +48,17 @@ module KeepaliveClient
     def eof? = reader.finished?
   end
 
-  def keepalive_client(task, port)
+  # With a `tls` context the client negotiates h2 over TLS; `raw` stays TCP.
+  def keepalive_client(task, port, tls: nil)
     raw = IO::Endpoint.tcp("127.0.0.1", port).connect
-    connection = Async::HTTP::Protocol::HTTP2::Client.new(IO::Stream(raw))
+    socket = raw
+    if tls
+      socket = OpenSSL::SSL::SSLSocket.new(raw, tls)
+      socket.sync_close = true
+      socket.hostname = "localhost"
+      socket.connect
+    end
+    connection = Async::HTTP::Protocol::HTTP2::Client.new(IO::Stream(socket))
     wire = Wire.new
     connection.define_singleton_method(:read_frame) do
       super() { |frame| wire.record(frame) }

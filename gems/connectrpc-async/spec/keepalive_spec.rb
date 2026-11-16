@@ -335,7 +335,7 @@ RSpec.describe "HTTP/2 client keepalive" do
       end
     end
 
-    it "accepts a matching ACK read before the PING writer returns" do
+    it "accepts a matching ACK read before the PING writer returns, without waiting for the writer" do
       reactor do |task|
         bound = IO::Endpoint.tcp("127.0.0.1", 0).bound
         held = holds
@@ -352,19 +352,55 @@ RSpec.describe "HTTP/2 client keepalive" do
         ping = gate(resource, Protocol::HTTP2::PingFrame::TYPE, whole: true)
         clock.advance(10)
         ping.started.dequeue
-        # The ACK cancels the probe deadline while the writer is still held.
+        # The ACK cancels the probe deadline and schedules the next probe from
+        # its read while the writer is still held.
         wait_until(task, "PING reached the peer") { peer.ping_payloads == [payload(1)] }
-        wait_until(task, "probe deadline cancelled") { clock.sleepers.empty? }
+        wait_until(task, "only the next probe's sleep, due at 20") { clock.sleepers.map(&:due) == [20] }
         clock.advance(5)
         expect(resource).not_to be_finished
         ping.release.enqueue(true)
-        await_due(task, clock, 20)
         held["/long"].enqueue(true)
         expect(long.wait.body).to eq("/long")
         expect([resource.finished?, closed_outcomes(events)]).to eq([false, []])
       ensure
         held&.each_value { |queue| queue.enqueue(true) }
         ping&.release&.enqueue(true)
+        transport&.close(grace: 0)
+        peer&.stop
+        bound&.close
+      end
+    end
+
+    it "rejects a matching ACK read after the deadline, before the deadline's timer runs" do
+      reactor do |task|
+        bound = IO::Endpoint.tcp("127.0.0.1", 0).bound
+        held = holds
+        invocations = []
+        peer = keepalive_peer(task, bound.sockets.first, held, invocations)
+        peer.ack_pings = false
+        origin = origin_for(bound)
+        events = []
+        transport = recording_transport(origin, events, connection_policy: keepalive_policy)
+        clock = install_clock(transport)
+        long = task.async(finished: false) { transport.call(request("#{origin}/long")) }
+        wait_until(task, "long call invoked") { invocations == ["/long"] }
+        resource = resources(transport).first
+        await_due(task, clock, 10)
+        clock.advance(10)
+        wait_until(task, "keepalive PING on the wire") { peer.ping_payloads == [payload(1)] }
+        await_due(task, clock, 15)
+        ack = Protocol::HTTP2::PingFrame.new
+        ack.pack(payload(1))
+        ack.acknowledgement!
+        clock.advance(5)
+        # The reader's steps for an ACK read now, without yielding to the timer.
+        resource.frame_read
+        resource.connection.receive_ping(ack)
+        wait_until(task, "connection retired") { resource.finished? }
+        expect { long.wait }.to unavailable_error
+        expect(closed_outcomes(events)).to eq([:keepalive_timeout])
+      ensure
+        held&.each_value { |queue| queue.enqueue(true) }
         transport&.close(grace: 0)
         peer&.stop
         bound&.close

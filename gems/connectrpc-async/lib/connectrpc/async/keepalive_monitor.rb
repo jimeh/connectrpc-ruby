@@ -38,9 +38,11 @@ module ConnectRPC
           @read_at = @clock.now
         end
 
+        # The ACK counts only if it was read before the deadline, even when the
+        # deadline's timer has not run yet.
         def acknowledged(payload)
-          expected, outcome = @probe
-          outcome.resolve(:acknowledged) if outcome && expected == payload
+          expected, deadline, outcome = @probe
+          outcome.resolve(:acknowledged) if outcome && expected == payload && @read_at < deadline
         end
 
         def wake = @wake.signal
@@ -59,13 +61,15 @@ module ConnectRPC
         # The deadline is fixed before the writer competes for the frame guard.
         # The supervisor waits outside the guard; expiry or a failed write
         # records the reason, then aborts raw-first, which also ends a writer
-        # stuck behind or inside another frame.
+        # stuck behind or inside another frame. After a timely ACK the writer
+        # is left to finish as a child of this task, which retirement still
+        # captures; a later probe queues behind it under its own deadline.
         def probe
           @sequence += 1
           payload = [@sequence].pack("Q>")
           deadline = @clock.now + @timeout
           outcome = ::Async::Promise.new
-          @probe = [payload, outcome]
+          @probe = [payload, deadline, outcome]
           parent = ::Async::Task.current
           writer = ::Async::Task.new(parent, finished: false) do
             @resource.connection.send_ping(payload)
@@ -79,11 +83,7 @@ module ConnectRPC
           end
           writer.run
           timer.run
-          if outcome.wait == :acknowledged
-            Internal.cancel(timer)
-            Internal.join(writer)
-            return true
-          end
+          return true if outcome.wait == :acknowledged
 
           @resource.record_close(REASON)
           @resource.abort(IOError.new("HTTP/2 keepalive PING was not acknowledged"))
