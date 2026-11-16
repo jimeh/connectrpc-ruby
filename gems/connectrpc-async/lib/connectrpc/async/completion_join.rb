@@ -5,7 +5,8 @@ module ConnectRPC
     module Internal
       # A result is distinct from task finalization and retained child ownership.
       class CompletionJoin
-        # Installed only on a selected instance, with independent state per gem.
+        # Installed only on a selected instance. connectrpc-falcon aliases this
+        # class, so every join on a task shares one observation.
         module Consume
           def consume
             result = super

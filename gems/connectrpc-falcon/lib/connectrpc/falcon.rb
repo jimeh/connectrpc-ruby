@@ -19,3 +19,6 @@ require_relative "falcon/rack_guard"
 require_relative "falcon/http1"
 require_relative "falcon/server"
 require_relative "falcon/environment"
+require_relative "falcon/upstream_contract"
+
+ConnectRPC::Falcon.const_get(:UpstreamContract).verify!

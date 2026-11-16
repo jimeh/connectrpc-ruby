@@ -20,7 +20,8 @@ expected = %w[LICENSE README.md examples/falcon.rb lib/connectrpc/falcon.rb lib/
               lib/connectrpc/falcon/completion_join.rb
               rbs/async_service_0_25/service.rbs lib/connectrpc/falcon/endpoint.rb
               lib/connectrpc/falcon/environment.rb lib/connectrpc/falcon/http1.rb
-              lib/connectrpc/falcon/rack_guard.rb lib/connectrpc/falcon/server.rb].sort
+              lib/connectrpc/falcon/rack_guard.rb lib/connectrpc/falcon/server.rb
+              lib/connectrpc/falcon/upstream_contract.rb].sort
 abort "Falcon manifest changed" unless packages.last.contents.sort == expected
 expected_dependencies = {
   "connectrpc-async" => local_requirement, "falcon" => ">= 0.57.0, < 1", "protocol-rack" => ">= 0.23.0, < 1",
