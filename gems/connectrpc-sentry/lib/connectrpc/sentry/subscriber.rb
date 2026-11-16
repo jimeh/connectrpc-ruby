@@ -398,7 +398,7 @@ module ConnectRPC
 
         # Saves and restores the current span; pushes only when there is none to restore.
         # A server child remembers the scope its handler runs on, wherever it started.
-        def attach # rubocop:disable Metrics/MethodLength
+        def attach
           return unless @guard.attachable?
 
           scope = ::Sentry.get_current_scope
@@ -409,14 +409,7 @@ module ConnectRPC
             return [:span, scope, previous]
           end
 
-          hub = ::Sentry.get_current_hub
-          hub.push_scope
-          scope = hub.current_scope
-          # A server child's pushed scope starts from the RPC's start scope, so request data survives.
-          Support.copy_scope(scope, @scope) if @nested
-          scope.set_span(@span)
-          @handler_scope = scope if @nested
-          [:scope, hub, scope]
+          push(::Sentry.get_current_hub)
         end
 
         def detach(token)
@@ -447,6 +440,22 @@ module ConnectRPC
         end
 
         private
+
+        # A server child's pushed scope starts from the RPC's start scope, so request data survives.
+        # The pushed scope is popped again if seeding it fails, since no detach token exists then.
+        def push(hub) # rubocop:disable Metrics/MethodLength
+          hub.push_scope
+          scope = hub.current_scope
+          begin
+            Support.copy_scope(scope, @scope) if @nested
+            scope.set_span(@span)
+          rescue StandardError
+            hub.pop_scope if hub.current_scope.equal?(scope)
+            raise
+          end
+          @handler_scope = scope if @nested
+          [:scope, hub, scope]
+        end
 
         # Names Sentry's HTTP server transaction after the RPC route.
         def rename

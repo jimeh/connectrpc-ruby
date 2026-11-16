@@ -177,6 +177,30 @@ RSpec.describe "Span lifetime, promotion and finish scope" do
     end
   end
 
+  it "pops the scope it pushed when seeding it from the start scope raises" do
+    sentry(isolation: :fiber)
+    instrumentation = bus
+    caller = handle = nil
+    Fiber.new do
+      caller = start_caller("host")
+      # A Thread cannot be duplicated, so Scope#dup of the start scope raises after the push.
+      Sentry.set_context(:probe, worker: Thread.current)
+      handle = instrumentation.start(owner: self, role: :server, method: ECHO::ECHO, carrier: {})
+    end.resume
+    base = Sentry.get_current_scope
+    Sentry.set_tags(base: "kept")
+    inside = handle.activate { [Sentry.get_current_scope, scope_span] }
+    expect(inside).to eq([base, nil])
+    expect(Sentry.get_current_scope).to equal(base)
+    expect(base.tags).to eq(base: "kept")
+    expect(lifecycle_errors.map(&:class)).to eq([TypeError])
+    lifecycle_errors.clear
+    handle.begin_processing(self)
+    handle.processing_finished(code: "OK")
+    handle.finish(delivery: :completed)
+    caller.finish
+  end
+
   it "pushes and pops its own scope when a child attaches in a context without a current span" do
     sentry(isolation: :fiber)
     instrumentation = bus

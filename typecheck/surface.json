@@ -986,6 +986,7 @@
     "ConnectRPC::Sentry::Subscriber::Child#prepare": {"kind":"method","visibility":"private","parameters":"scope","classification":"internal"},
     "ConnectRPC::Sentry::Subscriber::Child#processing_finished": {"kind":"method","visibility":"public","parameters":"outcome","classification":"internal"},
     "ConnectRPC::Sentry::Subscriber::Child#promote": {"kind":"method","visibility":"private","parameters":"","classification":"internal"},
+    "ConnectRPC::Sentry::Subscriber::Child#push": {"kind":"method","visibility":"private","parameters":"hub","classification":"internal"},
     "ConnectRPC::Sentry::Subscriber::Child#rename": {"kind":"method","visibility":"private","parameters":"","classification":"internal"},
     "ConnectRPC::Sentry::Subscriber::Guard#attachable?": {"kind":"method","visibility":"public","parameters":"","classification":"internal"},
     "ConnectRPC::Sentry::Subscriber::Guard#initialize": {"kind":"method","visibility":"public","parameters":"","classification":"internal"},

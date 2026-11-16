@@ -142,8 +142,10 @@ that has no span to restore; a nested server span seeds that scope from the
 scope the RPC started on. A nested server span's error event and promoted
 transaction use the scope its handler ran on, even when the RPC started in
 another fiber or thread. When that context already holds its own unrelated
-span, its scope is left as is, so start-scope request data is not added. Finishing an owned or promoted transaction runs in
-`Sentry.with_scope` on a cleared copy of the RPC scope (tags, user, contexts,
+span, its scope is left as is, so start-scope request data is not added. If
+seeding a pushed scope fails, the child pops it again before the handler runs.
+Finishing an owned or promoted transaction runs in `Sentry.with_scope` on a
+cleared copy of the RPC scope (tags, user, contexts,
 `rack_env`, level and event processors), never on whatever scope the finishing
 host fiber or thread holds. Error events use a copy too. Copies are
 independent, so the RPC tags an error event adds never reach the request scope
