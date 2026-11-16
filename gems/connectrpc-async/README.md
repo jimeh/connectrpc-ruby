@@ -40,7 +40,7 @@ and adoption gates.
 ## Installation
 
 ```ruby
-gem "connectrpc-async", "~> 0.1.0"
+gem "connectrpc-async", "~> 0.2.0"
 ```
 
 ## Quick start

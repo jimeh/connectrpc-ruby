@@ -27,10 +27,10 @@ and adoption gates.
 ## Installation
 
 ```ruby
-gem "connectrpc-health", "~> 0.1.0"
+gem "connectrpc-health", "~> 0.2.0"
 ```
 
-The runtime dependencies are `connectrpc ~> 0.1.0` and
+The runtime dependencies are `connectrpc ~> 0.2.0` and
 `google-protobuf >= 4.36.2, < 5`. Core and the hosting packages do not depend
 on this package.
 
