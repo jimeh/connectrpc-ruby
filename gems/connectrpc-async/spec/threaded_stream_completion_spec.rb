@@ -172,17 +172,21 @@ RSpec.describe "ThreadedTransport stream completion outcome" do
     end
   end
 
-  # Only a StandardError after a successful finish waits, and only for the
-  # cleanup allowance; every other exit returns without waiting.
+  # Only a ConnectRPC::Error after a successful finish, as core raises remote
+  # errors, waits, and only for the cleanup allowance. Every other exit,
+  # including a Timeout or other StandardError after finish, does not wait.
   {
-    finished_error: true, finished_exception: false, finished_throw: false, unfinished_error: false
+    finished_error: true, finished_standard_error: false, finished_timeout: false, finished_exception: false,
+    finished_throw: false, unfinished_error: false
   }.each do |kind, waits|
     it "#{waits ? 'waits only the allowance' : 'does not wait'} for a stalled owner on a #{kind} exit" do
       peer = threaded_host(server: mixed_server)
       origin = "http://127.0.0.1:#{peer.peer.port}"
       transport = threaded(origin: origin)
       mixed_client(transport, origin).lookup(item("warm"))
-      failure = Class.new(kind == :finished_exception ? Exception : StandardError)
+      failure = { finished_error: ConnectRPC::Error, finished_timeout: Timeout::Error }.fetch(kind) do
+        Class.new(kind == :finished_exception ? Exception : StandardError)
+      end
       gates = Thread::Queue.new
       caller = Thread.new do
         started = nil
@@ -196,7 +200,7 @@ RSpec.describe "ThreadedTransport stream completion outcome" do
               gates << hold_owner(transport)
               started = monotonic
               throw :out, :thrown if kind == :finished_throw
-              raise failure, "application"
+              raise failure == ConnectRPC::Error ? failure.new(:not_found, "application") : failure.new("application")
             end
           end
         end

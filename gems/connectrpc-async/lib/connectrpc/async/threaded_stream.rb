@@ -75,7 +75,7 @@ module ConnectRPC
 
         # A cached head is returned only while the exchange is still usable.
         def response_head(timeout: nil)
-          @front.send(:check_usable, @stream) if @response_head
+          @front.send(:check_usable, @stream, @request) if @response_head
           head(timeout)
         end
 
@@ -215,7 +215,9 @@ module ConnectRPC
               # The block runs interruptible even inside a caller's never-interrupt
               # region; this method's bookkeeping stays masked.
               value = Thread.handle_interrupt(Object => :immediate) { yield exchange }
-            rescue StandardError
+            rescue Error
+              # Only a remote error core raises after finish waits; a Timeout or
+              # other interrupt keeps the no-wait path below.
               exit_after_error(stream, request) if owned?(stream)
               raise
             end
@@ -300,10 +302,13 @@ module ConnectRPC
         take(stream) if await_stream(stream, request, timeout: 0) == :result
       end
 
-      def check_usable(stream)
+      def check_usable(stream, request)
         retired = !owned?(stream) ||
                   stream.engine.admission.lock.synchronize { stream.broken || stream.exited || stream.caller_done }
-        raise Error.new(:unavailable, RETIRED), cause: nil if retired
+        return unless retired
+
+        check_request!(request)
+        raise Error.new(:unavailable, RETIRED), cause: nil
       end
 
       def stream_operation(stream, request, command)

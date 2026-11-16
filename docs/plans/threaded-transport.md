@@ -568,7 +568,7 @@ Each proxy method posts one command and waits for its result.
   cleanup and does not mean retirement is complete, so the caller never treats
   it as a completion signal.
 - **Error after a finished stream.** Core raises remote errors from inside the
-  block after the exchange's `finish` returned. A `StandardError` that leaves
+  block after the exchange's `finish` returned. A `ConnectRPC::Error` that leaves
   the block after a successful `finish` therefore posts the normal exit and
   waits for the engine's outcome, bounded by the cleanup allowance and by the
   deadline or an accepted cancellation plus the allowance, then re-raises the

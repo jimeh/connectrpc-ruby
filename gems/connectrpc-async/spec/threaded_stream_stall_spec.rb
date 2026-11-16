@@ -248,6 +248,49 @@ RSpec.describe "ThreadedTransport streams with stalled consumers, owners and clo
     end
   end
 
+  %i[raise break].each do |leave|
+    it "wakes another thread's operation with the retired error when the block leaves by #{leave} before finish" do
+      entered = Thread::Queue.new
+      release = Thread::Queue.new
+      peer = gated_host(entered, release)
+      origin = "http://127.0.0.1:#{peer.peer.port}"
+      transport = threaded(origin: origin)
+      exchanges = Thread::Queue.new
+      proceed = Thread::Queue.new
+      scope = Thread.new do
+        capture_error do
+          transport.open_stream(stream_request(origin, watch_method)) do |exchange|
+            exchange.write(envelope(item("shared")))
+            exchange.close_send
+            exchanges << exchange
+            proceed.pop
+            break :left if leave == :break
+
+            raise ArgumentError, "left early"
+          end
+        end
+      end
+      exchange = pop_within(exchanges, "the shared exchange")
+      operation = Thread.new { capture_error { exchange.read(1024) } }
+      pop_within(entered, "the stream in the handler")
+      eventually("the other thread's operation waiting on the owner") do
+        busy_streams(transport) == 1 && blocked?(operation)
+      end
+      proceed << true
+      left = value_within(scope, "the block's early exit")
+      expect(left).to(leave == :break ? be_nil : be_a(ArgumentError))
+      error = value_within(operation, "the other thread's read", timeout: 3)
+      expect([error.class, error.code, error.message])
+        .to eq([ConnectRPC::Error, "unavailable", "HTTP/2 exchange is retired"])
+      eventually("admission released after the owner retires the stream") { admitted(transport).zero? }
+    ensure
+      proceed&.<<(true)
+      release&.<<(true)
+      transport&.close(grace: 0)
+      peer&.stop
+    end
+  end
+
   it "drains an open stream during graceful close and refuses new streams" do
     entered = Thread::Queue.new
     release = Thread::Queue.new

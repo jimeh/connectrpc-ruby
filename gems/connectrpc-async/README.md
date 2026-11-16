@@ -430,8 +430,8 @@ each `response_head`, `read`, `write`, `close_send`, `finish` and, for gRPC,
   retires the stream. If application code rescues such an interrupt and the
   block then returns, the stream fails with `canceled`.
 - Core raises a remote error, such as `not_found`, from inside the block after
-  the exchange's `finish` returned. So when a `StandardError` leaves the block
-  after a successful `finish`, the owner finishes the stream normally and the
+  the exchange's `finish` returned. So when a `ConnectRPC::Error` leaves the
+  block after a successful `finish`, the owner finishes the stream normally and the
   caller waits for its outcome, for at most the 100 ms allowance and never past
   the deadline or an accepted cancellation plus the allowance. Admission is
   released before the error returns, and a late gRPC cleanup failure is
@@ -441,7 +441,11 @@ each `response_head`, `read`, `write`, `close_send`, `finish` and, for gRPC,
   cancellation and returns the error without the owner's outcome; admission is
   then released once the owner retires the stream, and its late delivery facts
   are not reported. An interrupt during the wait propagates as above. Other
-  exceptions, `throw`, `break` and errors before `finish` never wait.
+  exceptions, including `Timeout::Error`, `throw`, `break` and errors before
+  `finish` never wait. Core raises some errors before `finish`, such as an HTTP
+  status error from a proxy or a rejected gRPC content type; their admission is
+  released once the owner retires the stream, so back-to-back failures near
+  `max_requests` can briefly see `unavailable`.
 - `abort`, which core calls when a reader abandons the stream, only queues the
   request and never waits, so unwinding cannot block on a stalled owner. An
   explicit abandon followed by a normal return keeps its normal outcome.

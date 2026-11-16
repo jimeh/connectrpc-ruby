@@ -446,7 +446,7 @@
     "ConnectRPC::Async::ThreadedTransport#await_stream": {"kind":"method","visibility":"private","parameters":"stream, request, seq: nil, timeout: nil","classification":"internal"},
     "ConnectRPC::Async::ThreadedTransport#begin_operation": {"kind":"method","visibility":"private","parameters":"stream, request, command","classification":"internal"},
     "ConnectRPC::Async::ThreadedTransport#break_stream": {"kind":"method","visibility":"private","parameters":"stream","classification":"internal"},
-    "ConnectRPC::Async::ThreadedTransport#check_usable": {"kind":"method","visibility":"private","parameters":"stream","classification":"internal"},
+    "ConnectRPC::Async::ThreadedTransport#check_usable": {"kind":"method","visibility":"private","parameters":"stream, request","classification":"internal"},
     "ConnectRPC::Async::ThreadedTransport#exit_after_error": {"kind":"method","visibility":"private","parameters":"stream, request","classification":"internal"},
     "ConnectRPC::Async::ThreadedTransport#exit_stream": {"kind":"method","visibility":"private","parameters":"stream, request","classification":"internal"},
     "ConnectRPC::Async::ThreadedTransport#expired!": {"kind":"method","visibility":"private","parameters":"request, status","classification":"internal"},
