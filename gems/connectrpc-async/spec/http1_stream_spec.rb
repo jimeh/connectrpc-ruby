@@ -54,7 +54,7 @@ RSpec.describe AsyncHelpers::INTERNAL::HTTP1Stream, "TLS read failures" do
   end
 end
 
-RSpec.describe AsyncHelpers::INTERNAL::HTTP1Stream, "read semantics" do
+RSpec.describe AsyncHelpers::INTERNAL::HTTP1Stream, "buffering semantics" do
   let(:pair) { Socket.pair(:UNIX, :STREAM, 0) }
   let(:socket) { pair.first }
   let(:peer) { pair.last }
@@ -100,6 +100,14 @@ RSpec.describe AsyncHelpers::INTERNAL::HTTP1Stream, "read semantics" do
     expect(stream.read(10)).to eq("tail")
     expect(stream.read(10)).to be_nil
     expect(stream.read(0)).to eq("")
+  end
+
+  it "buffers non-ASCII UTF-8 and binary writes together as raw bytes" do
+    text = "café"
+    bytes = "\xFF\x00".b
+    stream.write(text)
+    stream.write(bytes, flush: true)
+    expect(peer.read(text.bytesize + bytes.bytesize)).to eq(text.b + bytes)
   end
 
   it "caps each readpartial at 16 KiB and raises EOFError once drained" do
