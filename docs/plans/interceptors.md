@@ -763,8 +763,9 @@ end
 ```
 
 This example validates the server-streaming request and outgoing messages
-sent through `send_message`. It does not validate incoming messages on
-client-streaming or bidi endpoints; a read-side wrapper must override both
+sent through `send_message`. It does not validate incoming messages on any
+readable endpoint, such as a server `RequestReader` or either side of a bidi
+stream; a read-side wrapper must override both
 `receive` and `each`, as **Delegation** below explains.
 
 - **Order.** Core applies wrappers innermost first. The application block or
@@ -1239,8 +1240,10 @@ Evidence:
   streaming.
 - Read-side wrappers: a validating wrapper that overrides `receive` and
   `each` rejects an invalid message whether the handler or application reads
-  with `receive` or with `each`, on client-streaming and bidi endpoints for
-  both roles.
+  with `receive` or with `each`. The readable endpoints are tested: the server
+  `RequestReader` on client streaming, both roles on bidi, and the client
+  `ResponseReader` on server streaming. The client `RequestWriter` on client
+  streaming has no read methods.
 - Escaped wrapper use raises `StreamStateError`; a wrapper `close_send`
   followed by core completion reaches a strict exchange's `close_send` once
   (needs L5). A wrapper missing an endpoint method fails at wrap time.
