@@ -411,9 +411,10 @@ decision. A merged fix closes its specific defect, not the audit as a whole.
   and no longer reach root `setup`. L16: gemspec manifests no longer depend on
   the working directory, and a direct `gem build` from the wrong directory now
   fails instead of packaging another package's files.
-- This PR resolves L8, L9 and L11. Server outcomes record request metadata when
-  processing begins, every server Context keeps mutable request metadata, and
-  OTel uppercases only gRPC and gRPC-Web status codes in `error.type`, as
+- [#81](https://github.com/jimeh/connectrpc-ruby/pull/81) resolves L8, L9 and
+  L11. Server outcomes record request metadata when processing begins, every
+  server Context keeps mutable request metadata, and OTel uppercases only gRPC
+  and gRPC-Web status codes in `error.type`, as
   [design](design.md#rpc-lifecycle-observation) and the
   [OTel guide](../gems/connectrpc-otel/README.md) describe.
 - L12 is disclosed above as a Rack adapter limitation. This guide corrects
