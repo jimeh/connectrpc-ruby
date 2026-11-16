@@ -29,14 +29,16 @@ task :syntax do
                    "gems/connectrpc-on-rails/*.gemspec", "gems/connectrpc-on-rails/Gemfile",
                    "gems/connectrpc-on-rails/Appraisals",
                    "gems/connectrpc-async/lib/**/*.rb", "gems/connectrpc-async/spec/**/*.rb",
-                   "gems/connectrpc-async/scripts/**/*.rb", "gems/connectrpc-async/*.gemspec",
+                   "gems/connectrpc-async/scripts/**/*.rb", "gems/connectrpc-async/soak/**/*.rb",
+                   "gems/connectrpc-async/*.gemspec",
                    "gems/connectrpc-async/Gemfile",
                    "gems/connectrpc-rack/lib/**/*.rb", "gems/connectrpc-rack/spec/**/*.rb",
                    "gems/connectrpc-rack/scripts/**/*.rb", "gems/connectrpc-rack/*.gemspec",
                    "gems/connectrpc-rack/Gemfile",
                    "typecheck/**/*.rb", "typecheck/Gemfile", "release/Gemfile",
                    "gems/connectrpc-falcon/lib/**/*.rb", "gems/connectrpc-falcon/spec/**/*.rb",
-                   "gems/connectrpc-falcon/scripts/**/*.rb", "gems/connectrpc-falcon/examples/**/*.rb",
+                   "gems/connectrpc-falcon/scripts/**/*.rb", "gems/connectrpc-falcon/soak/**/*.rb",
+                   "gems/connectrpc-falcon/examples/**/*.rb",
                    "gems/connectrpc-falcon/*.gemspec", "gems/connectrpc-falcon/Gemfile",
                    *%w[otel prometheus yabeda health sentry].flat_map do |name|
                      %W[gems/connectrpc-#{name}/{lib,spec,scripts}/**/*.rb gems/connectrpc-#{name}/*.gemspec

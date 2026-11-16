@@ -44,6 +44,8 @@ Metrics/BlockLength:
     - gems/connectrpc-testing/spec/**/*.rb
     - gems/connectrpc-testing/scripts/**/*.rb
     - gems/connectrpc-falcon/spec/**/*.rb
+    - gems/connectrpc-async/soak/**/*.rb
+    - gems/connectrpc-falcon/soak/**/*.rb
     - gems/connectrpc-async/scripts/**/*.rb
     - gems/connectrpc-falcon/scripts/**/*.rb
     - scripts/check_package.rb
@@ -92,6 +94,8 @@ Metrics/MethodLength:
     - gems/connectrpc-testing/spec/**/*.rb
     - gems/connectrpc-testing/scripts/**/*.rb
     - gems/connectrpc-falcon/spec/**/*.rb
+    - gems/connectrpc-async/soak/**/*.rb
+    - gems/connectrpc-falcon/soak/**/*.rb
     - gems/connectrpc-async/scripts/**/*.rb
     - gems/connectrpc-falcon/scripts/**/*.rb
     - scripts/example_verify.rb
@@ -134,6 +138,8 @@ Metrics/AbcSize:
     - gems/connectrpc-testing/spec/**/*.rb
     - gems/connectrpc-testing/scripts/**/*.rb
     - gems/connectrpc-falcon/spec/**/*.rb
+    - gems/connectrpc-async/soak/**/*.rb
+    - gems/connectrpc-falcon/soak/**/*.rb
     - gems/connectrpc-async/scripts/**/*.rb
     - gems/connectrpc-falcon/scripts/**/*.rb
     - scripts/example_verify.rb
@@ -170,6 +176,8 @@ Metrics/CyclomaticComplexity:
     - spec/support/socket_peer.rb
     - gems/connectrpc-async/spec/support/helpers.rb
     - gems/connectrpc-falcon/spec/support/helpers.rb
+    - gems/connectrpc-async/soak/**/*.rb
+    - gems/connectrpc-falcon/soak/**/*.rb
     - scripts/example_verify.rb
     - scripts/grpc_keepalive_interop.rb
     - conformance/ledger.rb
@@ -191,6 +199,8 @@ Metrics/PerceivedComplexity:
     - spec/support/socket_peer.rb
     - gems/connectrpc-async/spec/support/helpers.rb
     - gems/connectrpc-falcon/spec/support/helpers.rb
+    - gems/connectrpc-async/soak/**/*.rb
+    - gems/connectrpc-falcon/soak/**/*.rb
     - scripts/grpc_keepalive_interop.rb
     - conformance/ledger.rb
     - conformance/client.rb
