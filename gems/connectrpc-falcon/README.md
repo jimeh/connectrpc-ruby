@@ -348,6 +348,8 @@ enforcement with `too_many_pings`, and the graceful age drain. `idle_timeout`
 drains idle HTTP/2 connections gracefully. HTTP/1 connections have no keepalive
 and are still closed once idle. See
 [Server keepalive](../connectrpc-async/README.md#server-keepalive).
+`falcon:interop:grpc` also runs a grpc-go bidi stream through an age drain on
+two real workers over TLS.
 
 ```ruby
 server_options do

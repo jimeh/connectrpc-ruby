@@ -16,6 +16,8 @@ environment = {
 command = ARGV.shift
 arguments = case command
             when "grpc_interop" then ["exec", "ruby", File.join(root, "scripts/grpc_interop.rb"), *ARGV]
+            when "grpc_keepalive_interop"
+              ["exec", "ruby", File.join(root, "scripts/grpc_keepalive_interop.rb"), *ARGV]
             when "web_conformance" then ["exec", "ruby", File.join(root, "scripts/web_conformance.rb"), *ARGV]
             when "conformance" then ["exec", "ruby", File.join(root, "scripts/native_conformance.rb"), *ARGV]
             when "setup" then ["install"]

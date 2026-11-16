@@ -237,6 +237,14 @@ these steps follows the control frame rules above.
 Rails and Rack hosts cannot offer any of this; see
 [support](../../docs/support.md#http2-keepalive-and-connection-age).
 
+`async:interop:keepalive` checks keepalive in both directions against the
+pinned grpc-go peer over h2c, TLS and mTLS. The Ruby client is checked against
+grpc-go PING enforcement, both compliant and over-eager with `too_many_pings`.
+grpc-go's documented client keepalive and its BDP PINGs are checked against
+the default `ServerKeepalive`, along with a raw PING flood and an age drain
+with a bidi stream in flight. It belongs to `async:verify`. grpc-go clients
+PING at most every 10 seconds, so the run takes about 45 seconds.
+
 ## Transport
 
 `Transport.new(origin:, ca_file: nil, certificate_chain: nil, private_key: nil,

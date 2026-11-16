@@ -1,6 +1,5 @@
 # frozen_string_literal: true
 
-require "json"
 require "open3"
 require "tmpdir"
 require "connectrpc/async"
@@ -39,16 +38,6 @@ module GRPCInterop
                              },
                              bidi: ->(duplex, _context) { duplex.each { |message| duplex.send_message(message) } }
                            ))
-  end
-
-  # Host and Falcon worker options. CONNECTRPC_INTEROP_SERVER_KEEPALIVE holds
-  # ServerKeepalive keywords as JSON, for example {"max_connection_age": 1};
-  # without it both hosts keep their default keepalive.
-  def self.host_options
-    settings = ENV.fetch("CONNECTRPC_INTEROP_SERVER_KEEPALIVE", nil)
-    return {} unless settings
-
-    { keepalive: ConnectRPC::Async::ServerKeepalive.new(**JSON.parse(settings, symbolize_names: true)) }
   end
 
   def self.probe(client) # rubocop:disable Metrics/AbcSize, Metrics/MethodLength
@@ -168,7 +157,6 @@ Dir.mktmpdir("grpc-interop-", File.join(root, "vendor/grpc")) do |fixtures| # ru
             events writer
             connectrpc_server { GRPCInterop.server }
             tls tls
-            server_options GRPCInterop.host_options
           end
         end
         host = FalconProcessFixtures::FalconProcessCluster.new(configuration, reader, writer)
@@ -178,7 +166,7 @@ Dir.mktmpdir("grpc-interop-", File.join(root, "vendor/grpc")) do |fixtures| # ru
 
         port = host.service.port
       else
-        host = ConnectRPC::Async::Host.new(server: GRPCInterop.server, tls: tls, **GRPCInterop.host_options).start
+        host = ConnectRPC::Async::Host.new(server: GRPCInterop.server, tls: tls).start
         port = host.port
       end
       origin = "#{scheme}://127.0.0.1:#{port}"

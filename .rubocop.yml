@@ -52,6 +52,7 @@ Metrics/BlockLength:
     - scripts/generated_interop.rb
     - scripts/example_verify.rb
     - scripts/interop.rb
+    - scripts/grpc_keepalive_interop.rb
     - scripts/conformance.rb
     - conformance/**/*.rb
 
@@ -95,6 +96,7 @@ Metrics/MethodLength:
     - gems/connectrpc-falcon/scripts/**/*.rb
     - scripts/example_verify.rb
     - scripts/interop.rb
+    - scripts/grpc_keepalive_interop.rb
     - scripts/conformance.rb
     - conformance/**/*.rb
     - examples/localhost.rb
@@ -136,6 +138,7 @@ Metrics/AbcSize:
     - gems/connectrpc-falcon/scripts/**/*.rb
     - scripts/example_verify.rb
     - scripts/interop.rb
+    - scripts/grpc_keepalive_interop.rb
     - scripts/conformance.rb
     - conformance/**/*.rb
 
@@ -168,6 +171,7 @@ Metrics/CyclomaticComplexity:
     - gems/connectrpc-async/spec/support/helpers.rb
     - gems/connectrpc-falcon/spec/support/helpers.rb
     - scripts/example_verify.rb
+    - scripts/grpc_keepalive_interop.rb
     - conformance/ledger.rb
     - conformance/client.rb
     - conformance/server.rb
@@ -187,6 +191,7 @@ Metrics/PerceivedComplexity:
     - spec/support/socket_peer.rb
     - gems/connectrpc-async/spec/support/helpers.rb
     - gems/connectrpc-falcon/spec/support/helpers.rb
+    - scripts/grpc_keepalive_interop.rb
     - conformance/ledger.rb
     - conformance/client.rb
     - conformance/server.rb
