@@ -11,13 +11,13 @@ module ConnectRPC
                                  on_error: ->(error) { lifecycle&.record_failure(error) })
     end
 
-    def grpc_stream_request(url, metadata, deadline, state, lifecycle)
+    def grpc_stream_request(url, metadata, deadline, cancellation, lifecycle)
       headers = metadata.to_h.merge("content-type" => [GRPCProtocol::CONTENT_TYPE], "te" => ["trailers"],
                                     "grpc-accept-encoding" => [@accept_encoding.join(",")])
       headers["grpc-encoding"] = ["gzip"] if @encoding == :gzip
       headers["grpc-timeout"] = [GRPCProtocol.timeout(deadline)] if deadline
       StreamRequest.new(url: url, http_method: "POST", headers: headers, deadline: deadline,
-                        cancellation: state, lifecycle: lifecycle)
+                        cancellation: cancellation, lifecycle: lifecycle)
     end
   end
 end

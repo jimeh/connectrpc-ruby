@@ -147,6 +147,14 @@ RSpec.describe "gRPC public callers and status codec" do
     end
   end
 
+  it "calls the native exchange close_send once for a server stream" do
+    core, method, exchange = client(body: envelope("reply"), kind: ConnectRPC::ServerStreamMethod)
+    calls = 0
+    exchange.define_singleton_method(:close_send) { calls += 1 }
+    core.server_stream(method, "q") { |reader| reader.each { nil } }
+    expect(calls).to eq(1)
+  end
+
   it "preserves rich message and opaque Any bytes without global Status registration" do
     error = ConnectRPC::Error.new(:not_found, "rich % café", details: [
                                     ConnectRPC::ErrorDetail.new(type: "unknown.Opaque", value: "\x00\xFFunknown".b)
@@ -161,6 +169,7 @@ RSpec.describe "gRPC public callers and status codec" do
   end
 
   it "compares rich unknown status against the raw leading-zero numeric code before mapping unknown" do
+    require "connectrpc/bindings/google_protobuf"
     descriptor = Google::Protobuf::FileDescriptorSet.decode(File.binread("lib/connectrpc/bindings/descriptors/status.bin"))
     pool = Google::Protobuf::DescriptorPool.new
     descriptor.file.each { |file| pool.add_serialized_file(Google::Protobuf::FileDescriptorProto.encode(file)) }

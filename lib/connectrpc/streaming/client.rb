@@ -64,7 +64,8 @@ module ConnectRPC
     def run_stream(method, request, metadata, timeout:, cancellation:, lifecycle:, injection:, &) # rubocop:disable Metrics/MethodLength
       scope = Streaming::ClientScope.new(lifecycle)
       scope.run(timeout, cancellation) do |state, deadline|
-        outgoing = stream_request(method, stream_metadata(metadata, injection, lifecycle), deadline, state, lifecycle)
+        outgoing = stream_request(method, stream_metadata(metadata, injection, lifecycle), deadline, state.view,
+                                  lifecycle)
         transport = @transport #: _StreamingTransport
         work = lambda do |exchange|
           session = new_client_stream_session(method, state, exchange, lifecycle)
@@ -86,11 +87,11 @@ module ConnectRPC
       metadata
     end
 
-    def stream_request(method, metadata, deadline, state, lifecycle) # rubocop:disable Metrics/MethodLength
+    def stream_request(method, metadata, deadline, cancellation, lifecycle) # rubocop:disable Metrics/MethodLength
       url = @base_url.dup
       base_path = @base_url.path #: String
       url.path = base_path.delete_suffix("/") + method.path
-      return grpc_stream_request(url, metadata, deadline, state, lifecycle) if @protocol == :grpc
+      return grpc_stream_request(url, metadata, deadline, cancellation, lifecycle) if @protocol == :grpc
 
       headers = metadata.to_h.merge("content-type" => [Streaming::CONTENT_TYPES.fetch(@codec)],
                                     "connect-protocol-version" => ["1"],
@@ -98,7 +99,7 @@ module ConnectRPC
       headers["connect-content-encoding"] = ["gzip"] if @encoding == :gzip
       headers["connect-timeout-ms"] = [deadline.timeout_ms] if deadline
       StreamRequest.new(url: url, http_method: "POST", headers: headers, deadline: deadline,
-                        cancellation: state, lifecycle: lifecycle)
+                        cancellation: cancellation, lifecycle: lifecycle)
     end
   end
 end

@@ -443,3 +443,105 @@ RSpec.describe "Deadline observation across the read-only cancellation SPI" do
     worker&.join(1)
   end
 end
+
+RSpec.describe "Read-only transport cancellation view" do
+  let(:source) { ConnectRPC::CancellationSource.new }
+  let(:binding) do
+    Object.new.tap do |codec|
+      codec.define_singleton_method(:encode) { |message, **| message.b }
+      codec.define_singleton_method(:decode) { |bytes, **| bytes }
+    end
+  end
+  let(:method_options) { { service: "view.Test", name: "Call", request_type: String, response_type: String } }
+
+  def client(transport)
+    ConnectRPC::Client.new(base_url: "http://example.invalid", binding: binding, transport: transport)
+  end
+
+  # Cancels the shared source from inside the transport and records what the
+  # transport could observe through the cancellation it was handed.
+  def observe(cancellation)
+    fired = []
+    cancellation.on_cancel { fired << true }
+    source.cancel
+    code = begin
+      cancellation.check!
+    rescue ConnectRPC::Error => e
+      e.code
+    end
+    { reason: cancellation.reason, cancelled: cancellation.cancelled?, check: code, fired: fired }
+  end
+
+  def expect_read_only(cancellation, observed)
+    expect(cancellation).not_to be_a(ConnectRPC::CallCancellation)
+    expect(cancellation).not_to respond_to(:commit!)
+    expect(cancellation).not_to respond_to(:close)
+    expect(observed).to eq(reason: :canceled, cancelled: true, check: "canceled", fired: [true])
+  end
+
+  it "hands a unary transport a read-only view of the call cancellation" do
+    captured = observed = nil
+    transport = lambda do |request|
+      captured = request.cancellation
+      observed = observe(captured)
+      ConnectRPC::TransportResponse.new(status: 200, headers: { "content-type" => ["application/proto"] }, body: "ok")
+    end
+    expect do
+      client(transport).call(ConnectRPC::Method.new(**method_options), "q", cancellation: source.token)
+    end.to raise_error(ConnectRPC::Error) { |e| expect(e.code).to eq("canceled") }
+    expect_read_only(captured, observed)
+  end
+
+  it "hands a streaming transport a read-only view of the call cancellation" do
+    captured = observed = nil
+    probe = method(:observe)
+    transport = Object.new
+    transport.define_singleton_method(:streaming_capabilities) { [:server_stream] }
+    transport.define_singleton_method(:open_stream) do |request, &|
+      captured = request.cancellation
+      observed = probe.call(captured)
+      raise ConnectRPC::Error.new(:unavailable, "stream stopped"), cause: nil
+    end
+    expect do
+      client(transport).server_stream(ConnectRPC::ServerStreamMethod.new(**method_options), "q",
+                                      cancellation: source.token) { nil }
+    end.to raise_error(ConnectRPC::Error) { |e| expect(e.code).to eq("canceled") }
+    expect_read_only(captured, observed)
+  end
+
+  describe ".with_request" do
+    def request(cancellation)
+      ConnectRPC::TransportRequest.new(url: URI("http://example.invalid/view.Test/Call"), http_method: "POST",
+                                       headers: {}, body: "", deadline: ConnectRPC::Deadline.new(30),
+                                       cancellation: cancellation)
+    end
+
+    it "passes a core view through without a second arbiter or completion" do
+      state = ConnectRPC::CallCancellation.new(cancellation: source.token)
+      original = request(state.view)
+      yielded = ConnectRPC::CallCancellation.with_request(original) { |outgoing| outgoing }
+      expect(yielded).to equal(original)
+      source.cancel
+      expect(state.reason).to eq(:canceled)
+    ensure
+      state&.close
+    end
+
+    { "a plain token" => -> { source.token },
+      "a raw call cancellation" => -> { ConnectRPC::CallCancellation.new(cancellation: source.token) } }
+      .each do |label, cancellation|
+      it "wraps #{label} in its own arbiter and yields only its read-only view" do
+        original = request(instance_exec(&cancellation))
+        nested = nil
+        yielded = ConnectRPC::CallCancellation.with_request(original) do |outgoing|
+          nested = ConnectRPC::CallCancellation.with_request(outgoing) { |inner| inner }
+          outgoing
+        end
+        expect(yielded).not_to equal(original)
+        expect(yielded.cancellation).to be_a(ConnectRPC::CallCancellation::View)
+        expect(yielded.cancellation).not_to respond_to(:commit!)
+        expect(nested).to equal(yielded)
+      end
+    end
+  end
+end

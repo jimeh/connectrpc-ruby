@@ -39,10 +39,10 @@ module ConnectRPC
       values
     end
 
-    def self.payload(values, limit:, deadline: nil)
+    def self.payload(values, limit:, deadline: nil, on_error: nil)
       message = values.fetch("message")
       bytes = if values["base64"] == "1"
-                decode_base64(message, limit)
+                decode_base64(message, limit, on_error)
               else
                 text = message.dup.force_encoding(Encoding::UTF_8)
                 raise Error.new(:invalid_argument, "Invalid GET message UTF-8") unless text.valid_encoding?
@@ -54,7 +54,7 @@ module ConnectRPC
       bytes
     end
 
-    def self.decode_base64(message, limit)
+    def self.decode_base64(message, limit, on_error = nil)
       raise Error.new(:invalid_argument, "Invalid GET base64") unless /\A[A-Za-z0-9_-]*={0,2}\z/.match?(message)
 
       unpadded = message.delete_suffix("==").delete_suffix("=")
@@ -71,8 +71,9 @@ module ConnectRPC
       end
 
       bytes
-    rescue ArgumentError
-      raise Error.new(:invalid_argument, "Invalid GET base64")
+    rescue ArgumentError => e
+      on_error&.call(e)
+      raise Error.new(:invalid_argument, "Invalid GET base64"), cause: nil
     end
 
     def self.build(url, bytes, codec:, encoding:, limit:, deadline: nil)

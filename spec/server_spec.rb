@@ -100,3 +100,91 @@ RSpec.describe ConnectRPC::Server do
     expect(EchoExample::Message.decode(response.body).name).to eq("invoked")
   end
 end
+
+RSpec.describe "Nil server responses" do
+  # Encodes nil as an empty message, so only core can reject a nil response.
+  let(:binding) do
+    Object.new.tap do |codec|
+      codec.define_singleton_method(:encode) { |message, **| message.to_s.b }
+      codec.define_singleton_method(:decode) { |bytes, **| bytes }
+    end
+  end
+  let(:declarations) do
+    [ConnectRPC::Method, ConnectRPC::ServerStreamMethod, ConnectRPC::ClientStreamMethod].to_h do |kind|
+      [kind, kind.new(service: "nil.Test", name: kind.name.split("::").last, request_type: String,
+                      response_type: String)]
+    end
+  end
+  let(:handlers) do
+    { ConnectRPC::Method => ->(_request, _context) {},
+      ConnectRPC::ServerStreamMethod => ->(_request, writer, _context) { writer.send_message(nil) },
+      ConnectRPC::ClientStreamMethod => lambda { |reader, _context|
+        reader.each { nil }
+        nil
+      } }
+  end
+  let(:server) do
+    require "connectrpc/bindings/google_protobuf"
+    ConnectRPC::Server.new(services: [ConnectRPC::Service.new(name: "nil.Test", methods: declarations.values)],
+                           binding: binding, protocol: %i[connect grpc grpc_web],
+                           status_codec: ConnectRPC::Bindings::GoogleProtobuf.new,
+                           handlers: declarations.to_h { |kind, rpc| [rpc.path, handlers.fetch(kind)] })
+  end
+
+  def frame(bytes, flag = 0) = [flag, bytes.bytesize].pack("CN") + bytes
+
+  def native_input(bytes)
+    StringIO.new(bytes).tap { |source| source.define_singleton_method(:read) { |length, **| super(length) } }
+  end
+
+  def native_output(written, finished)
+    Object.new.tap do |output|
+      output.define_singleton_method(:write) { |chunk, **| written << chunk }
+      output.define_singleton_method(:finish) { |headers:| finished.merge!(headers) }
+      output.define_singleton_method(:abort) { nil }
+    end
+  end
+
+  def terminal_frame(bytes)
+    offset = 0
+    loop do
+      flag, length = bytes.byteslice(offset, 5).unpack("CN")
+      return bytes.byteslice(offset + 5, length) if flag.anybits?(2) || flag.anybits?(128)
+
+      offset += 5 + length
+    end
+  end
+
+  it "rejects a nil Connect unary handler result as internal" do
+    response = server.call(path: declarations[ConnectRPC::Method].path, http_method: "POST",
+                           headers: { "content-type" => ["application/proto"] }, input: StringIO.new("hello"))
+    expect(response.status).to eq(500)
+    expect(JSON.parse(response.body)).to include("code" => "internal", "message" => "Nil response message")
+  end
+
+  [ConnectRPC::ServerStreamMethod, ConnectRPC::ClientStreamMethod].each do |kind|
+    it "ends a Connect #{kind.name.split('::').last} with internal for a nil response" do
+      written = +""
+      server.call_stream(path: declarations[kind].path, http_method: "POST",
+                         headers: { "content-type" => ["application/connect+proto"] },
+                         input: native_input(frame("hello")), output: native_output(written, {}),
+                         publish: ->(_) {}, http2: true)
+      error = JSON.parse(terminal_frame(written)).fetch("error")
+      expect(error).to include("code" => "internal", "message" => "Nil response message")
+    end
+  end
+
+  it "ends a native gRPC unary call with status 13 for a nil response" do
+    finished = {}
+    server.call_grpc(path: declarations[ConnectRPC::Method].path, http_method: "POST",
+                     headers: { "content-type" => ["application/grpc"] }, input: native_input(frame("hello")),
+                     output: native_output(+"", finished), publish: ->(_) {}, http2: true)
+    expect(finished).to include("grpc-status" => ["13"], "grpc-message" => ["Nil response message"])
+  end
+
+  it "ends a gRPC-Web unary call with status 13 for a nil response" do
+    response = server.call(path: declarations[ConnectRPC::Method].path, http_method: "POST",
+                           headers: { "content-type" => ["application/grpc-web"] }, input: StringIO.new(frame("hello")))
+    expect(terminal_frame(response.body)).to include("grpc-status: 13\r\n", "grpc-message: Nil response message\r\n")
+  end
+end

@@ -34,6 +34,16 @@ module ConnectRPC
         end
       end
 
+      # Core calls an exchange's close_send at most once. Claim before calling,
+      # so a fiber yield inside the exchange cannot let another path close it again.
+      def close_exchange_send
+        return if @send_closed
+
+        @send_closed = true
+        output = @output #: _StreamExchange
+        output.close_send
+      end
+
       def record_send_failure(error)
         @lifecycle&.record_failure(error)
         @state.check!
@@ -43,6 +53,13 @@ module ConnectRPC
         end
         @send_failure = error if error.is_a?(Error) && error.code == "unavailable"
         raise error
+      end
+
+      # A nil from a server handler is an implementation fault, not a peer argument.
+      def nil_message_error
+        return Error.new(:internal, "Nil response message") if @server
+
+        Error.new(:invalid_argument, "Nil is not a streaming message")
       end
 
       def recovery_read_timeout(length)

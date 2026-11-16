@@ -72,7 +72,7 @@ module ConnectRPC
       end
       outgoing = build_request(method, request, metadata, active, lifecycle)
       outgoing.deadline = deadline
-      outgoing.cancellation = state
+      outgoing.cancellation = active.view
       outgoing.headers["connect-timeout-ms"] = [deadline.timeout_ms] if deadline
       outgoing.lifecycle = lifecycle if lifecycle
       active.check!
@@ -165,7 +165,7 @@ module ConnectRPC
       body
     rescue CodecError => e
       lifecycle&.record_failure(e)
-      raise Error.new(:invalid_argument, "Cannot encode request")
+      raise Error.new(:invalid_argument, "Cannot encode request"), cause: nil
     end
 
     def build_request(method, request, metadata, deadline, lifecycle = nil) # rubocop:disable Metrics/MethodLength, Metrics/AbcSize, Metrics/CyclomaticComplexity, Metrics/PerceivedComplexity
@@ -199,7 +199,7 @@ module ConnectRPC
                                on_error: ->(error) { lifecycle&.record_failure(error) })
     rescue Zlib::Error => e
       lifecycle&.record_failure(e)
-      raise Error.new(:internal, "Cannot compress request")
+      raise Error.new(:internal, "Cannot compress request"), cause: nil
     end
 
     def response_body(response, headers, deadline, lifecycle = nil)
@@ -217,13 +217,13 @@ module ConnectRPC
                                on_error: ->(error) { lifecycle&.record_failure(error) })
     rescue Compression::Malformed => e
       lifecycle&.record_failure(e)
-      raise Error.new(:internal, "Cannot decompress response") if status == 200
+      raise Error.new(:internal, "Cannot decompress response"), cause: nil if status == 200
 
       # Malformed error Bare-Messages use HTTP fallback, preserving metadata.
       ""
     rescue Zlib::Error => e
       lifecycle&.record_failure(e)
-      raise Error.new(:internal, "Cannot decompress response")
+      raise Error.new(:internal, "Cannot decompress response"), cause: nil
     end
 
     def response_encoding!(headers)
@@ -244,16 +244,22 @@ module ConnectRPC
     end
 
     def read_response(response, method, deadline, lifecycle = nil)
-      headers = Protocol.headers(response.headers)
-      body = response_body(response, headers, deadline, lifecycle)
-      validate_response!(response.status, headers, body)
+      headers, body = accept_response(response, deadline, lifecycle)
       message = decode_response(body, method, deadline, lifecycle)
       lifecycle&.message_received(response.body.bytesize)
       Response.new(message: message, metadata: Protocol.metadata(headers),
                    trailers: Protocol.metadata(headers, trailers: true))
+    end
+
+    def accept_response(response, deadline, lifecycle)
+      headers = Protocol.headers(response.headers)
+      body = response_body(response, headers, deadline, lifecycle)
+      validate_response!(response.status, headers, body)
+      [headers, body]
     rescue ArgumentError => e
+      # Header names and values with invalid encodings fail String case and pattern checks.
       lifecycle&.record_failure(e)
-      raise Error.new(:internal, "Malformed response metadata")
+      raise Error.new(:internal, "Malformed response metadata"), cause: nil
     end
 
     def decode_response(bytes, method, deadline, lifecycle = nil)
@@ -263,7 +269,7 @@ module ConnectRPC
       message
     rescue CodecError => e
       lifecycle&.record_failure(e)
-      raise Error.new(:internal, "Cannot decode response")
+      raise Error.new(:internal, "Cannot decode response"), cause: nil
     end
   end
 end

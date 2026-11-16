@@ -5,7 +5,7 @@ module ConnectRPC
   class Client
     private
     def client_stream_strategy: (?Instrumentation::Handle?) -> (Streaming::ConnectStrategy | GRPCProtocol::Strategy)
-    def grpc_stream_request: (URI::Generic, Metadata, Deadline?, CallCancellation, Instrumentation::Handle?) -> StreamRequest
+    def grpc_stream_request: (URI::Generic, Metadata, Deadline?, CallCancellation::View, Instrumentation::Handle?) -> StreamRequest
   end
   module GRPCProtocol
     CONTENT_TYPE: String

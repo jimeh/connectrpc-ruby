@@ -96,6 +96,8 @@ Unsupported request encoding returns `unimplemented` listing supported codings. 
 version, timeout, or request decoding returns `invalid_argument`. Limits return
 `resource_exhausted`. Unexpected application exceptions return generic
 `internal`; deliberate `Error` messages are application-controlled safe text.
+A nil response message is `internal` on every server protocol, checked before the
+binding encodes it.
 Standard Connect-to-HTTP and fallback HTTP-to-Connect tables are used. Null, absent and unrecognized wire codes use the HTTP fallback while preserving
 valid message and details. Malformed bodies, code types or details use the
 HTTP fallback without decoding those error fields. Error details preserve a type name and binary bytes, with
@@ -243,16 +245,24 @@ transition requests cancellation; its timestamp does not determine the call's
 serialized winner. Completion directly rechecks source state, including after
 decoding or exceptional codec/transport paths. HTTP response receipt alone
 cannot complete the client. Instrumentation and callbacks run outside state
-locks, and only the executing fibers complete instrumentation. Original failures
-remain available to lifecycle observers; normalized canceled/deadline/transport
-errors have fixed safe messages and no sensitive rescued cause.
+locks, and only the executing fibers complete instrumentation. Every error core
+normalizes from a rescued exception has a fixed safe message and no `cause`;
+lifecycle observers receive the original failure.
 
 `TransportRequest.deadline` remains the actual Deadline or nil.
-`TransportRequest.cancellation` implements `_Cancellation`: `cancelled?`,
-`reason`, `check!`, and `on_cancel`. Transports only observe this call-owned SPI;
-they cannot complete the client. Server accepts the same read-only seam and
-creates its own processing arbitration. Testing forwards it without completing
-the client's state. Context exposes its combined reason, with no token reader.
+`TransportRequest.cancellation` and `StreamRequest.cancellation` implement
+`_Cancellation`: `cancelled?`, `reason`, `check!`, and `on_cancel`. Core passes
+a read-only view of the call's arbiter without completion methods, so
+transports only observe this call-owned SPI and cannot complete the client.
+`CallCancellation.with_request` passes that view through unchanged and gives
+any other token its own arbiter, yielding only that arbiter's view. Server
+accepts the same read-only seam and creates its own processing arbitration.
+Testing forwards it without completing the client's state. Context exposes its
+combined reason, with no token reader.
+
+Custom transports migrating from earlier releases receive the read-only view.
+Code that called `commit!` or `close` on `request.cancellation`, which was never
+part of the typed SPI, must stop; core completes the call itself.
 
 NetHTTP installs socket ownership before startup, attaches raw TCP at the TLS
 hook or after plain startup, and closes a newly exposed socket immediately if

@@ -115,6 +115,24 @@ RSpec.describe ConnectRPC::Client do
     expect { client.call(method, 12) }.to raise_error(ConnectRPC::Error, "Cannot encode request")
   end
 
+  it "propagates non-codec binding decode failures unchanged" do
+    failure = ArgumentError.new("binding bug")
+    allow(binding).to receive(:decode).and_raise(failure)
+    expect { client.call(method, "hello") }.to raise_error(failure)
+  end
+
+  it "maps response headers with invalid encodings to internal before decode" do
+    invalid = "\xff".dup.force_encoding(Encoding::UTF_8)
+    expect(binding).not_to receive(:decode)
+    [{ "x-#{invalid}" => ["value"] }, { "content-type" => ["application/#{invalid}"] },
+     { "content-encoding" => [invalid] }].each do |fields|
+      reply.headers = { "content-type" => ["application/proto"] }.merge(fields)
+      expect { client.call(method, "hello") }.to raise_error(ConnectRPC::Error, "Malformed response metadata") { |e|
+        expect(e.code).to eq("internal")
+      }
+    end
+  end
+
   { "text/plain" => "unknown", "application/json" => "internal", "application/grpc" => "internal" }.each do |type, code|
     it "rejects a 200 #{type} response as #{code}" do
       reply.headers["content-type"] = [type]

@@ -417,15 +417,20 @@ decision. A merged fix closes its specific defect, not the audit as a whole.
   and gRPC-Web status codes in `error.type`, as
   [design](design.md#rpc-lifecycle-observation) and the
   [OTel guide](../gems/connectrpc-otel/README.md) describe.
+- [#84](https://github.com/jimeh/connectrpc-ruby/pull/84) resolves L1, L2,
+  L3, L5 and L6. Errors that core normalizes from a rescued exception carry no
+  `cause`; lifecycle observers receive the original (L1). Transports receive a
+  read-only `CallCancellation::View` without completion methods (L2). A
+  binding exception other than `CodecError` reaches the client caller unchanged
+  (L3). Core calls a stream exchange's `close_send` at most once (L5). A nil
+  server response is `internal` on every protocol (L6). The
+  [design](design.md) and [streaming guide](streaming.md#custom-transport-spi)
+  own these contracts.
 - L12 is disclosed above as a Rack adapter limitation. This guide corrects
   L18's current documentation drift without declaring the audit complete.
 
 ### Still open
 
-- **Normalization and SPIs (L1/L3/L6, L2/L5).** Settle cause/error attribution,
-  the exposed mutable unary cancellation owner versus the read-only SPI intent,
-  and duplicate exchange `close_send` ownership. Contradictory intent is not a
-  satisfied guarantee.
 - **H2 unary upload cancellation (L10).** Verify the current H2 unary
   cancellation reset on wire; unchanged source and historical probes do not
   establish its current result.

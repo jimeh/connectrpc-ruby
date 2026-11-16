@@ -196,7 +196,8 @@ module ConnectRPC
       method = @methods[path]
       raise Error.new(:unimplemented, "Unknown method") unless method.is_a?(Method)
 
-      bytes = GetQuery.payload(values, limit: @request_wire_limit, deadline: context)
+      bytes = GetQuery.payload(values, limit: @request_wire_limit, deadline: context,
+                                       on_error: ->(error) { context.record_failure(error) })
       wire_bytes = bytes.bytesize
       lifecycle.request_bytes = wire_bytes if lifecycle
       bytes = inflate_request(bytes, negotiated, context)
@@ -282,7 +283,7 @@ module ConnectRPC
       bytes
     rescue Compression::Malformed => e
       context.record_failure(e)
-      raise Error.new(:invalid_argument, "Cannot decompress request")
+      raise Error.new(:invalid_argument, "Cannot decompress request"), cause: nil
     end
 
     def decode_request(bytes, method, codec, context)
@@ -292,7 +293,7 @@ module ConnectRPC
       request
     rescue CodecError => e
       context.record_failure(e)
-      raise Error.new(:invalid_argument, "Cannot decode request")
+      raise Error.new(:invalid_argument, "Cannot decode request"), cause: nil
     end
 
     def encode_response(message, method, codec, context, encoding, lifecycle = nil) # rubocop:disable Metrics/MethodLength, Metrics/ParameterLists
@@ -312,6 +313,8 @@ module ConnectRPC
 
     def serialize_response(message, method, codec, context)
       context.check!
+      raise Error.new(:internal, "Nil response message"), cause: nil if message.nil?
+
       body = @binding.encode(message, type: method.response_type, codec: codec)
       context.check!
       Protocol.check_size!(body, @response_limit)
@@ -335,7 +338,7 @@ module ConnectRPC
                   lifecycle: lifecycle, cancellation: cancellation)
     rescue ArgumentError => e
       lifecycle&.record_failure(e)
-      raise Error.new(:invalid_argument, "Malformed request metadata")
+      raise Error.new(:invalid_argument, "Malformed request metadata"), cause: nil
     end
 
     def validate_headers!(headers)

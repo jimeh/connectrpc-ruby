@@ -107,9 +107,7 @@ module ConnectRPC
 
       def finish_transport(expires)
         exchange = @input #: _StreamExchange
-        output = @output #: _StreamExchange
-        output.close_send
-        @send_closed = true
+        close_exchange_send
         exchange.finish(timeout: completion_timeout(expires))
         @state.check!
         completion_timeout(expires)
