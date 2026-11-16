@@ -53,7 +53,7 @@ evaluator = configuration.environments.fetch(0).evaluator
 raise "Falcon DSL values differ" unless evaluator.count == 2 && evaluator.url == "http://127.0.0.1:9292"
 raise "Falcon DSL server differs" unless evaluator.connectrpc_server.is_a?(ConnectRPC::Server)
 raise "Falcon DSL fallback differs" unless evaluator.rack_app.call("PATH_INFO" => "/ordinary").first == 200
-unless evaluator.server_options == { idle_timeout: nil, max_connections: 8, cache: true }
+unless evaluator.server_options == { idle_timeout: nil, max_connections: 8, cache: true, keepalive: nil }
   raise "Falcon DSL options differ"
 end
 
