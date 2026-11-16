@@ -225,7 +225,7 @@ module ConnectRPC
           remaining = expires - now
           return if remaining <= 0
 
-          # Pinned framed reads have no length argument and return <=64 KiB.
+          # protocol-http1's framed reads have no length argument and return <=64 KiB.
           # Reserve a whole block before each read, including adapter remainder.
           chunk = ::Async::Task.current.with_timeout(remaining) { @body.read }
           @discarded += chunk.bytesize if chunk
@@ -275,7 +275,7 @@ module ConnectRPC
               remaining = @expires - now
               raise ::Async::TimeoutError, "Rejected Web input did not finish" if remaining <= 0
 
-              # Pinned Fixed/Chunked reads are <=64 KiB and preserve framing,
+              # protocol-http1's Fixed/Chunked reads are <=64 KiB and preserve framing,
               # including a core input adapter's discarded readahead remainder.
               ::Async::Task.current.with_timeout(remaining) { @body.read }
             end

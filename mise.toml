@@ -980,6 +980,36 @@ run = [
 description = "Run every lowest-allowed dependency lane (Ruby 3.4.12)"
 depends = ["floors:async", "floors:falcon", "floors:rack", "floors:rails", "floors:otel", "floors:prometheus", "floors:yabeda", "floors:health", "floors:sentry"]
 
+# Pins-lifted canary lane: non-gating, run daily by .github/workflows/canary.yml.
+# CONNECTRPC_DEPENDENCY_CANARY=1 makes the launcher use an ignored Gemfile.canary
+# wrapper that lifts each third-party `~> x.y.z` patch pin of the local packages
+# to `< next major`, with its own lock, bundle path and Bundler user state under
+# vendor/<pkg>/canary; see scripts/dependency_canary.rb and scripts/canary_driver.rb.
+# Each run resolves fresh.
+[tasks."canary:async"]
+description = "Non-gating pins-lifted canary: Async upstream contract and suite with patch pins lifted"
+depends = ["async:tools"]
+env.CONNECTRPC_DEPENDENCY_CANARY = "1"
+run = [
+  "rm -f gems/connectrpc-async/Gemfile.canary.lock",
+  "mise exec -- ruby gems/connectrpc-async/scripts/run.rb setup",
+  "mise exec -- ruby gems/connectrpc-async/scripts/run.rb canary",
+]
+
+[tasks."canary:falcon"]
+description = "Non-gating pins-lifted canary: Falcon upstream contract and suite with patch pins lifted"
+depends = ["falcon:tools"]
+env.CONNECTRPC_DEPENDENCY_CANARY = "1"
+run = [
+  "rm -f gems/connectrpc-falcon/Gemfile.canary.lock",
+  "mise exec -- ruby gems/connectrpc-falcon/scripts/run.rb setup",
+  "mise exec -- ruby gems/connectrpc-falcon/scripts/run.rb canary",
+]
+
+[tasks.canary]
+description = "Run both non-gating pins-lifted canary lanes (Ruby 3.4.12)"
+depends = ["canary:async", "canary:falcon"]
+
 # Release preparation never tags, creates a GitHub release, or publishes gems.
 [tasks."release:check"]
 description = "Check eleven synchronized versions, installation guides and release guards offline"

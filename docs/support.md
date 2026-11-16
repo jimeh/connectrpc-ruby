@@ -74,7 +74,7 @@ The [CI workflow](../.github/workflows/ci.yml) defines the executed combinations
 | Integration | Tested range | Scope of the evidence |
 | --- | --- | --- |
 | Core, Rack, Testing | google-protobuf 4.36.2 (exact development pin); Rack newest allowed and floor 3.2.7 where used | Portable Rack socket checks use rackup/WEBrick |
-| Native Async | async, async-http, protocol-http2 and the rest of the stack at newest allowed and at the gemspec floors (async 2.46.0, async-http 0.105.0, protocol-http2 0.29.2) | Requires an application-owned Async reactor and thread |
+| Native Async | async, async-http, protocol-http2 and the rest of the stack at newest allowed and at the gemspec floors (async 2.46.0, async-http 0.105.0, protocol-http2 0.29.2). async-http and protocol-http2 are patch-pinned; async takes `< 3` behind the require-time finalization guard (see [dependency constraints](development.md#gem-dependency-constraints)) | Requires an application-owned Async reactor and thread |
 | Falcon | Falcon and its native stack at newest allowed and at the floors (Falcon 0.57.0) | Native RPC and explicit Rack/Rails fallback have separate execution contracts |
 | Rails supported profile | Newest Rails/Action Pack 8.1.x | Native unary controller execution on both MRI versions |
 | Rails compatibility evidence | Newest Rails/Action Pack 8.0.x and the Action Pack floor 8.0.5.1 | MRI 3.4.12 only; retained CI lanes outside the supported Rails profile |

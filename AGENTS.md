@@ -53,8 +53,10 @@ Keep runtime dependencies deliberate and package checks isolated. Own-gem
 development locks are ignored: bundles resolve the newest allowed versions, and
 `CONNECTRPC_DEPENDENCY_FLOORS=1` (`floors:*` tasks) proves gemspec floors. Follow
 the constraint policy in [development](docs/development.md) before changing a
-gemspec requirement; only tool Gemfile pins stay exact. Original
-project work is MIT licensed. Gems pin `allowed_push_host` to
+gemspec requirement; only tool Gemfile pins stay exact. The non-gating
+`canary:*` tasks (daily `canary.yml`) run the Async/Falcon suites with the
+remaining patch pins lifted; a green run is the evidence for bumping a pin.
+Original project work is MIT licensed. Gems pin `allowed_push_host` to
 `https://rubygems.org` and require MFA; only the tag-triggered
 `.github/workflows/release.yml` publishes (see [releasing](docs/releasing.md)).
 Do not merge release PRs, push `v*` tags, run or dispatch the release workflow,
@@ -112,5 +114,8 @@ start and every attach.
 Public API changes must update the owning gem's signatures, the supported/SPI
 inventory and focused caller evidence. Read [RBS guidance](docs/rbs.md) before
 changing those surfaces; run `rbs:check` for consumers, inventory and strict core
-implementation checking, and `rbs:package` for installed discovery. Framework
-compatibility declarations outside `sig/` remain explicit opt-ins.
+implementation checking, and `rbs:package` for installed discovery. The
+`rbs:inventory` snapshot (`typecheck/surface.json`) also fails on added, removed
+or re-signatured private lib methods, so lib refactors need `mise run rbs:check`
+too. Framework compatibility declarations outside `sig/` remain explicit
+opt-ins.

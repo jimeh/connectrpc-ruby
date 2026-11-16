@@ -290,22 +290,52 @@ set hostile proxy environment variables and restore their previous state.
 ### Gem dependency constraints
 
 Users resolve our gemspec requirements, never our development locks, so the
-gemspecs are the dependency contract:
+gemspecs are the dependency contract. Each third-party runtime dependency falls
+into one of three tiers, and internal gems follow the train:
 
-- The floor of each third-party runtime requirement is the release the project
-  currently tests, for example `rack >= 3.2.7` or `falcon >= 0.57.0`.
-- Pre-1.0 dependencies whose public API is all we use are capped below 1 (or
-  below the next major for 1.x+ gems).
-- Dependencies coupled to private internals keep patch-only `~> x.y.z`
-  requirements: async, async-http, protocol-http2, protocol-http1 and io-stream
-  in connectrpc-async, and protocol-http1 in connectrpc-falcon. Each gemspec
-  names these in a comment, and
-  [issue #68](https://github.com/jimeh/connectrpc-ruby/issues/68) tracks
-  reducing that coupling.
-- Internal gems keep the train's `~> M.m.0` requirement.
+1. **Floor and cap.** For dependencies whose public API is all we use, the
+   floor is the release the project currently tests, for example
+   `rack >= 3.2.7` or `falcon >= 0.57.0`. Pre-1.0 dependencies are capped below
+   1, and 1.x+ gems below their next major.
+2. **Guarded coupling.** A dependency whose internals we rely on may take a
+   floor-and-cap range only when all of the following hold:
+   - `require` detects the coupling at boot. A contract check runs before any
+     request, fails loudly with a named error (`UpstreamContractError`) and has
+     no opt-out.
+   - An `upstream_contract_spec.rb` example pins each relied-on behavior and
+     each worked-around behavior.
+   - The daily newest-allowed CI run exercises it.
+
+   Coupling does not qualify when a boot check cannot observe it: ordering
+   under concurrency, flow-control accounting or eager-start races. Neither do
+   replaced methods whose failure mode is a hang or silent misbehavior under
+   load, nor anything checked only by its shape. The only member is `async`
+   in connectrpc-async (`>= 2.46.0, < 3`): the
+   `ConnectRPC::Async::Internal::UpstreamContract` finalization probe proves at
+   require that Async still calls the per-instance `#consume` the completion
+   joins depend on.
+3. **Patch-pinned.** Everything else coupled to private internals keeps a
+   patch-only `~> x.y.z` requirement, named with its reason in the gemspec
+   comment:
+
+   | Gem | Package | Requirement | Reason | What would unblock it |
+   | --- | --- | --- | --- | --- |
+   | async-http | connectrpc-async | `~> 0.105.0` | Own copies of `read_in_background` and `Output#start` publish their task before the eager first pass; an `Output` subclass calls the private `stream`/`passthrough`; the `Stream` module writes `@input`/`@output` and reads `@length`; `Server#each` is an owned loop. The require guard checks their shape, but not the eager-start ordering or ivar roles they replace, and reverting them hangs the suite. | Upstream ask U2 in [issue #68](https://github.com/jimeh/connectrpc-ruby/issues/68): publish the reader and output tasks before their first run, a stream-class hook, and a `Stream#length` reader. |
+   | protocol-http2 | connectrpc-async | `~> 0.29.2` | Receive-window enforcement (`consume_local_window` and the stream `receive_data` check) and recording credit before writing WINDOW_UPDATE replace its flow-control accounting. | Upstream ask U3 in issue #68: enforce receive flow control and expand the local window before writing WINDOW_UPDATE. |
+
+   connectrpc-falcon has no patch pins of its own. Its `HTTP1Connection`
+   subclasses async-http's `HTTP1::Server`, and Falcon's `UpstreamContract`
+   checks its `Endpoint` hooks at require; connectrpc-async's async-http pin
+   holds that coupling.
+4. **Internal gems** keep the train's `~> M.m.0` requirement.
 
 Raise a floor only when code needs a newer release, and prove it in the
-lowest-allowed lane below.
+lowest-allowed lane below. To bump a patch pin, update the gemspec requirement
+and its comment, `UpstreamContract::TESTED` and the package check's expected
+requirement strings (`gems/<gem>/scripts/package.rb`). A green
+[pins-lifted canary](#pins-lifted-canary) run at the new release is the
+evidence. Moving a dependency between tiers updates the gemspec comment and
+this list.
 
 ### Fresh resolution and the lowest-allowed lane
 
@@ -373,6 +403,55 @@ A new optional gem under `gems/connectrpc-<name>/` follows the same model:
 - Add a `floors:<name>` task and CI leaf when the gem has third-party runtime
   dependencies. Package checks resolve archives from the bundle it resolved,
   never from hard-coded versions.
+
+### Pins-lifted canary
+
+The pins-lifted canary is a non-gating daily lane for the patch pins above. It
+resolves each local package's third-party `~> x.y.z` pin at its newest release
+below the next major (`< 1` for 0.x), runs the Async or Falcon upstream contract
+spec and suite, and reports which contract broke, before anyone bumps a pin:
+
+```sh
+mise run canary:async
+mise run canary:falcon
+mise run canary         # both
+```
+
+`CONNECTRPC_DEPENDENCY_CANARY=1` makes the launcher write an ignored
+`Gemfile.canary` beside the package Gemfile. It evaluates the real Gemfile
+through [`scripts/dependency_canary.rb`](../scripts/dependency_canary.rb),
+which first prepends a module onto `Gem::Specification` that widens the patch
+pins of every local gemspec loaded afterwards. That includes connectrpc-async
+inside the Falcon bundle and the `bundle exec` children. Bundler derives an
+ignored `Gemfile.canary.lock`, and the bundle and Bundler user state (including
+its index cache) live in `vendor/<pkg>/canary/`, so normal and floors bundles,
+locks and caches never see the lifted requirements. Canary and floors mode
+cannot be combined, and canary mode allows only the launcher's `setup`, `test`,
+`exec` and `canary` commands, never `build` or `package`.
+
+Each task deletes the canary lock, installs the bundle (a resolution failure
+fails here), then runs [`scripts/canary_driver.rb`](../scripts/canary_driver.rb)
+outside Bundler:
+
+1. A report lists each lifted dependency (its pin, lifted range, resolved
+   version, and whether that is within or beyond the pin) and the resolved
+   socketry stack: the newest eligible releases after the three-day cooldown.
+   It checks that the canary lock recorded the lifted requirements, and it
+   fails when nothing was lifted, which means the lane should be retired or
+   retargeted.
+2. `spec/upstream_contract_spec.rb`, then the rest of the suite. Each phase
+   runs in its own process group under a wall-clock deadline (5 and 30
+   minutes); on expiry the driver kills the group, so a hang is still reported
+   and the other phase still runs.
+
+The summary classifies each phase as passed, a timeout (hang), a contract guard
+failure (the `UpstreamContractError` raised at require, with each broken
+contract), a boot failure (another load error, such as a removed upstream file
+or class), or example failures with their ids. A failed "worked around" example
+can mean upstream fixed that behavior; delete the workaround it names rather
+than treating it as a break. In GitHub Actions the report and summary are also
+appended to the job summary. CI runs the lane on Ruby 3.4.12 only; it has no Ruby
+4.0.9 leg.
 
 ### Cooldowns and updates
 
