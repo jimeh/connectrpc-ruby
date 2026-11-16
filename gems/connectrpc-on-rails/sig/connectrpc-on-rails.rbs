@@ -13,6 +13,7 @@ module ConnectRPC
       def connect_status_codec: () -> _GRPCStatusCodec?
       def connect_cors: () -> GRPCWebCORS?
       def connect_instrumentation: () -> Instrumentation?
+      def connect_interceptors: () -> Array[server_interceptor]
       # Outside active decoded execution these readers have no established value.
       attr_reader connect_request: Object?
       attr_reader connect_context: Context?

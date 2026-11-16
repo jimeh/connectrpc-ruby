@@ -6,6 +6,7 @@ require "connectrpc/bindings/google_protobuf"
 $LOAD_PATH.unshift(File.expand_path("../gen", __dir__))
 require "demo/v1/demo_connect"
 require_relative "call_log"
+require_relative "request_id"
 
 module DemoExample
   # The DemoService implementation: one handler per RPC. Every example server
@@ -74,10 +75,12 @@ module DemoExample
   # Builds the ConnectRPC::Server that the Rack, Async and Falcon examples host.
   # It accepts both codecs, and `encoding: :gzip` also accepts gzip. Native
   # HTTP/2 hosts pass `protocol: :auto` to serve Connect and gRPC on the same
-  # port. The instrumentation prints the per-RPC log line (see call_log.rb).
+  # port. The instrumentation prints the per-RPC log line (see call_log.rb), and
+  # the interceptor echoes the request ID (see request_id.rb).
   def self.connect_server(served_by:, protocol: :connect, client_certificate: nil)
     handlers = Handlers.new(served_by, client_certificate: client_certificate).to_h
     ConnectRPC::Server.new(services: [Demo::V1::DemoService::SERVICE], binding: ConnectRPC::Bindings::GoogleProtobuf.new,
-                           handlers: handlers, protocol: protocol, encoding: :gzip, instrumentation: instrumentation)
+                           handlers: handlers, protocol: protocol, encoding: :gzip, instrumentation: instrumentation,
+                           interceptors: INTERCEPTORS)
   end
 end

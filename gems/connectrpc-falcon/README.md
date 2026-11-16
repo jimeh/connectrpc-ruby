@@ -471,6 +471,22 @@ cancellation. Processing completion detaches the source independently of deliver
 Falcon HTTP/1 and portable Rack/Rails do not add peer detection or application
 token env injection. Application handlers remain cooperative.
 
+## Interceptors
+
+Server interceptors configured on the core Server from `connectrpc_server` run
+for every native RPC, on HTTP/2 and HTTP/1.1:
+[unary](../../docs/unary.md#interceptors) calls through `server_unary`, and
+[streams](../../docs/streaming.md#interceptors) through `server_stream`. They
+run after core decodes a unary or server-streaming request, around the handler,
+with the first interceptor listed outermost. They run in the session's
+processing task, so `peer_certificate` works inside them as it does in the
+handler.
+
+The native Server's interceptors do not apply to the explicit Rack fallback. A
+Rack mount behind it configures its own Server, and a Rails application uses
+its controllers'
+[`connect_interceptors`](../connectrpc-on-rails/README.md#interceptors) hook.
+
 ## RPC observation
 
 Configure `instrumentation:` on the core Client/Server to enable the fixed

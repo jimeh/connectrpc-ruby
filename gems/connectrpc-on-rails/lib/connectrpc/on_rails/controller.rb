@@ -24,6 +24,7 @@ module ConnectRPC
       def connect_handlers = raise NotImplementedError, "Implement private connect_handlers"
       def connect_limits = {}
       def connect_instrumentation = nil
+      def connect_interceptors = []
       def connect_protocol = :connect
       def connect_status_codec = nil
       def connect_cors = nil
@@ -45,6 +46,7 @@ module ConnectRPC
         env = connect_env(service)
         server = Server.new(services: [service], binding: connect_binding, handlers: @connect_handlers,
                             invoker: invoker, instrumentation: connect_instrumentation,
+                            interceptors: connect_interceptors,
                             protocol: connect_protocol, status_codec: connect_status_codec, cors: connect_cors,
                             **connect_limits)
         ConnectRPC::Rack.new(server: server).__send__(:transfer_response, env) do |result, cors_owned|

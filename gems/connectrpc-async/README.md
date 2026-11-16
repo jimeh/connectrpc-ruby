@@ -1047,6 +1047,22 @@ server-stream gRPC-Web. Browser incremental delivery uses text. See the
 [Web guide](../../docs/grpc-web.md) for protocol, CORS, bounds and completion
 rules.
 
+## Interceptors
+
+Server interceptors configured on the core Server cover every RPC the native
+host serves: [unary](../../docs/unary.md#interceptors) calls through
+`server_unary`, and server, client and bidi
+[streams](../../docs/streaming.md#interceptors) through `server_stream`, on
+Connect and native gRPC, plus unary and server-stream gRPC-Web. They run after
+core decodes a unary or server-streaming request, around the handler, with the
+first interceptor listed outermost. They run in the per-request processing
+task, so `host.peer_certificate` returns the authenticated client leaf inside an
+interceptor and its stream wrappers, the same as in the handler. A continuation
+called from a child task fails with `InterceptorStateError`.
+
+Client interceptors run on the calling task or thread for `Transport`,
+`HTTP1Transport` and `ThreadedTransport`, before core encodes the request.
+
 ## RPC observation
 
 Configure `instrumentation:` on the core Client/Server to enable the fixed

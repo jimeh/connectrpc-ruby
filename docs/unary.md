@@ -549,6 +549,12 @@ invoker, so a custom invoker is the innermost layer. They do not run for 405,
 failures. A declared method without a handler reaches the chain and fails with
 the invoker's `unimplemented` error.
 
+In Rails, controllers return server interceptors from the private
+[`connect_interceptors`](../gems/connectrpc-on-rails/README.md#interceptors)
+hook. The Rails invoker is the innermost layer, so interceptors run before
+callbacks, CSRF verification and `rescue_from`, and a successful call still
+needs the whole controller chain to succeed.
+
 `ServerUnaryCall` exposes `method`, `protocol` (`:connect`, `:grpc` or
 `:grpc_web`), `request`, `request=` (until dispatch) and `context`, the same
 `Context` the handler receives:

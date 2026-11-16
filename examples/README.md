@@ -17,6 +17,7 @@ These files show how to use ConnectRPC:
 | [demo/handlers.rb](demo/handlers.rb) | The service implementation, one handler per RPC shape, and the `ConnectRPC::Server` the hosts share |
 | [demo/calls.rb](demo/calls.rb) | Calling each RPC shape through the generated client |
 | [demo/call_log.rb](demo/call_log.rb) | An instrumentation subscriber that logs each RPC on the server |
+| [demo/request_id.rb](demo/request_id.rb) | A [server interceptor](#server-interceptor) that echoes the request ID on every RPC shape |
 | [demo/mtls.rb](demo/mtls.rb) | The TLS options a host and a client need for [mutual TLS](#mutual-tls) |
 | [proto/demo/v1/demo.proto](proto/demo/v1/demo.proto) | The schema; [gen/](gen/) holds its generated Ruby |
 
@@ -56,14 +57,14 @@ falcon server listening on http://127.0.0.1:8080 (Ctrl-C to stop)
 
 The client sends a random `demo-request-id` as request metadata, then prints
 the messages, this demo's `demo-*` response headers and trailers, or the RPC
-error:
+error. The server's interceptor echoes the request ID as a response header:
 
 ```text
 async-h2 -> falcon at http://127.0.0.1:8080 (connect, proto, identity)
 request: demo-request-id=5c1f9a2e
 message: Hello, Ada!
 message: Hello, Grace!
-headers: demo-served-by=falcon
+headers: demo-request-id=5c1f9a2e demo-served-by=falcon
 ```
 
 The server prints one line per RPC with the same ID, showing what arrived (see
@@ -163,7 +164,7 @@ server verified and returns its subject in a `demo-client` header:
 ```text
 async-h2 -> falcon at https://127.0.0.1:8080 (connect, proto, identity, mTLS)
 request: demo-request-id=5c1f9a2e
-headers: demo-served-by=falcon demo-client=CN=demo-client
+headers: demo-request-id=5c1f9a2e demo-served-by=falcon demo-client=CN=demo-client
 message: Hello, Ada!
 trailers: demo-greeted=Ada
 ```
@@ -292,6 +293,24 @@ from its private `connect_instrumentation` hook.
 - `code` is the RPC result. A request rejected before any handler ran, such as
   a POST without a content type, prints `http=-` and `code=-`.
 
+## Server interceptor
+
+Every example server runs the interceptor in
+[demo/request_id.rb](demo/request_id.rb). It copies the client's
+`demo-request-id` request metadata into a `demo-request-id` response header
+before the handler runs, so each client prints the ID it sent on its `headers:`
+line. One object covers every RPC shape: `server_unary` wraps unary calls and
+`server_stream` wraps the streaming shapes. A call without the header, such as
+the curl call in [Mutual TLS](#mutual-tls), passes through unchanged.
+
+The Rack, Async and Falcon servers pass it to
+`ConnectRPC::Server.new(interceptors:)`; the Rails controller returns it from
+its private `connect_interceptors` hook, which runs it before the controller's
+callbacks. See [interceptors](../docs/unary.md#interceptors) and
+[stream interceptors](../docs/streaming.md#interceptors) for the rules and the
+[Rails README](../gems/connectrpc-on-rails/README.md#interceptors) for its
+order.
+
 ## Finding the server
 
 The running server records its name, URL and process ID in
@@ -363,7 +382,9 @@ the protocol, HTTP method, codec, encoding and code against what the client
 asked for. A client that ignored `--protocol`, `--codec`, `--get` or `--gzip`
 therefore fails, even though its reply looks the same. For GET, the check uses
 the codec and encoding of the server's response, as the call log section
-explains.
+explains. Each successful call's `headers:` line must also hold exactly the
+expected `demo-*` headers, including the request ID that the
+[interceptor](#server-interceptor) echoed.
 
 The generated files in [gen/](gen/) come from `mise run generation:build`, and
 `mise run generation:check` keeps them reproducible.

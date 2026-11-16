@@ -10,6 +10,10 @@ Rails.application.routes.draw do
   match "/base/example.v1.EchoService(/*rpc)", to: "base_echo#connect", via: :all, format: false
   match "/rate/example.v1.EchoService(/*rpc)", to: "rate#connect", via: :all, format: false
   match "/rescue/example.v1.EchoService(/*rpc)", to: "rescue_echo#connect", via: :all, format: false
+  scope "/intercepted" do
+    match "/example.v1.EchoService(/*rpc)", to: "intercepted_echo#connect", via: :all, format: false
+    match "/base/example.v1.EchoService(/*rpc)", to: "intercepted_base_echo#connect", via: :all, format: false
+  end
   match "/wrong/other.Service(/*rpc)", to: "echo#connect", via: :all, format: false
   match "/example.Array(/*rpc)", to: "array#connect", via: :all, format: false
   match "/example.Scalar(/*rpc)", to: "scalar#connect", via: :all, format: false

@@ -25,8 +25,17 @@ module InstalledIntegration
     config.logger = Logger.new(File::NULL)
   end
 
+  class InstalledInterceptor
+    def server_unary(call)
+      call.context.response_metadata.add("x-intercepted", call.method.name)
+      yield
+    end
+  end
+
   class InstalledEchoController < ActionController::API
     include ConnectRPC::OnRails::Controller
+
+    INTERCEPTORS = [InstalledInterceptor.new].freeze
 
     before_action { connect_context.response_metadata.add("x-callback", "native") }
 
@@ -36,6 +45,7 @@ module InstalledIntegration
     def connect_limits = { encoding: :gzip }
     def connect_binding = ConnectRPC::Bindings::GoogleProtobuf.new
     def connect_handlers = Example::V1::EchoService.handlers(echo: method(:rpc_echo), fail: method(:rpc_fail))
+    def connect_interceptors = INTERCEPTORS
 
     def rpc_echo(message, context)
       context.response_trailers.add("x-installed", "yes")
@@ -111,6 +121,19 @@ end
   puts "Installed Rails #{Rails.version} Ruby #{RUBY_VERSION}: #{codec}/#{encoding} typed success/error/detail passed"
   puts "Installed metadata/trailers + Rack::Lint passed"
 end
+# The installed connect_interceptors hook wraps the controller invoker on success and error responses.
+hooked = Example::V1::EchoService::Client.new(client: ConnectRPC::Client.new(
+  base_url: "http://www.example.com/rpc", binding: binding, transport: transport
+))
+response = hooked.echo(Example::V1::EchoMessage.new(name: "hook"))
+abort "Installed interceptor hook failed" unless response.metadata["x-intercepted"] == ["Echo"]
+begin
+  hooked.fail(Example::V1::EchoMessage.new(name: "hook"))
+  abort "Expected hooked error missing"
+rescue ConnectRPC::Error => e
+  abort "Installed interceptor error metadata failed" unless e.metadata["x-intercepted"] == ["Fail"]
+end
+puts "Installed Rails connect_interceptors hook passed"
 %w[connectrpc connectrpc-rack connectrpc-on-rails actionpack railties rack google-protobuf].each do |name|
   spec = Gem.loaded_specs.fetch(name)
   abort "#{name} loaded outside isolated GEM_HOME" unless spec.full_gem_path.start_with?("#{ENV.fetch('GEM_HOME')}/")

@@ -286,7 +286,7 @@ interfaces are shared with streaming and gRPC execution.
 
 Rails' private configuration hooks are also deliberate extension points. The
 inventory classifies the Web protocol/status/CORS hooks as `supported`, and the
-service/binding/handlers/limits/instrumentation hooks and request/context/method
+service/binding/handlers/limits/instrumentation/interceptors hooks and request/context/method
 readers as `spi`.
 
 Use each interface within its documented bounded reads, completion, reactor

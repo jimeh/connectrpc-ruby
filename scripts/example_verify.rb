@@ -113,8 +113,10 @@ class Child
 end
 
 # evidence is the method name and facts the server must log for the call
-# (around its request ID), or nil when no server line is checked.
-Case = Struct.new(:client, :args, :status, :expected, :evidence, keyword_init: true)
+# (around its request ID), or nil when no server line is checked. headers holds
+# the demo response headers the client must print besides the echoed request
+# ID, or nil when the headers: line is not checked.
+Case = Struct.new(:client, :args, :status, :expected, :evidence, :headers, keyword_init: true)
 
 def run_client(env, kase)
   child = nil
@@ -195,7 +197,7 @@ MTLS_REFUSED = {
 # Each server run: the server, the signal that stops it, and whether it runs with --mtls.
 RUNS = [["rack", "INT", false], ["rails", "TERM", false], ["async", "INT", false], ["falcon", "TERM", false],
         ["async", "INT", true], ["falcon", "TERM", true]].freeze
-MTLS_CLIENT = "demo-client=CN=demo-client"
+MTLS_CLIENT = { "demo-client" => "CN=demo-client" }.freeze
 METHODS = { "greet" => "Greet", "fail" => "Greet", "countdown" => "Countdown", "collect" => "Collect",
             "chat" => "Chat" }.freeze
 
@@ -214,20 +216,27 @@ def evidence(rpc, variant)
     "code=#{rpc == 'fail' ? 'invalid_argument' : 'OK'}"
 end
 
-# Under mTLS the handler also reports the client certificate the host verified.
+# What each RPC prints besides its banner and headers: line.
+PRINTED = {
+  "greet" => ["message: Hello, Ada!", "trailers: demo-greeted=Ada"],
+  "fail" => ["error: invalid_argument: name is required"],
+  "countdown" => ["message: 3\nmessage: 2\nmessage: 1\n", "trailers: demo-countdown=done"],
+  "collect" => ["message: Collected 2 names: Ada, Grace"],
+  "chat" => ["message: Hello, Ada!\nmessage: Hello, Grace!\n"]
+}.freeze
+
+# The demo response headers a successful call prints, besides the echoed request
+# ID. Under mTLS the handler also reports the client certificate the host verified.
+def served_headers(server, mtls) = { "demo-served-by" => server, **(mtls ? MTLS_CLIENT : {}) }
+
+# Returns the exit status, the printed text and the expected headers, nil for fail.
 def expected_output(server, rpc, variant, mtls)
   protocol, codec, encoding = requested(variant)
   banner = "at #{mtls ? 'https' : 'http'}://127.0.0.1:"
   options = "(#{protocol}, #{codec}, #{encoding}#{', GET' if variant.include?('--get')}#{', mTLS' if mtls})"
-  served = "headers: demo-served-by=#{server}#{" #{MTLS_CLIENT}" if mtls}"
-  expected = case rpc
-             when "greet" then [served, "message: Hello, Ada!", "trailers: demo-greeted=Ada"]
-             when "fail" then ["error: invalid_argument: name is required"]
-             when "countdown" then [served, "message: 3\nmessage: 2\nmessage: 1\n", "trailers: demo-countdown=done"]
-             when "collect" then [served, "message: Collected 2 names: Ada, Grace"]
-             when "chat" then ["message: Hello, Ada!\nmessage: Hello, Grace!\n", served]
-             end
-  [rpc == "fail" ? 1 : 0, [banner, options, *expected]]
+  return [1, [banner, options, *PRINTED.fetch(rpc)], nil] if rpc == "fail"
+
+  [0, [banner, options, *PRINTED.fetch(rpc)], served_headers(server, mtls)]
 end
 
 def cases_for(server, url, mtls)
@@ -236,17 +245,17 @@ def cases_for(server, url, mtls)
     rpcs.flat_map do |rpc, variants|
       variants.map do |variant|
         arguments = { "greet" => %w[Ada], "countdown" => %w[3], "collect" => %w[Ada Grace], "chat" => %w[Ada Grace] }
-        status, expected = expected_output(server, rpc, variant, mtls)
+        status, expected, headers = expected_output(server, rpc, variant, mtls)
         Case.new(client: client, args: [rpc, *arguments.fetch(rpc, []), *variant, *explicit],
-                 status: status, expected: expected, evidence: evidence(rpc, variant))
+                 status: status, expected: expected, evidence: evidence(rpc, variant), headers: headers)
       end
     end
   end
   # The first call finds the server through the state file alone; another passes only a matching --url.
   allowed.first.args -= explicit
   allowed << Case.new(client: allowed.first.client, args: ["greet", "Ada", "--url", url], status: 0,
-                      expected: ["headers: demo-served-by=#{server}", "message: Hello, Ada!"],
-                      evidence: evidence("greet", []))
+                      expected: ["message: Hello, Ada!"], evidence: evidence("greet", []),
+                      headers: served_headers(server, mtls))
   refused = (mtls ? MTLS_REFUSED : REFUSED).fetch(server).map do |client, args, reason|
     guide = reason.start_with?("gRPC", "--get") ? "supported options" : "supported pairings"
     Case.new(client: client, args: [*args, *explicit], status: 2,
@@ -378,8 +387,8 @@ end
 # client certificate, so only a completed call shows the renewed one is accepted.
 def call_after_renewal_problem(env, host, server, url)
   kase = Case.new(client: "async-h2", args: ["greet", "Ada", "--server", server, "--url", url], status: 0,
-                  expected: ["headers: demo-served-by=#{server} #{MTLS_CLIENT}", "message: Hello, Ada!"],
-                  evidence: evidence("greet", []))
+                  expected: ["message: Hello, Ada!"], evidence: evidence("greet", []),
+                  headers: served_headers(server, true))
   _label, problem, output = check(server, host, env, kase)
   "call after renewal: #{problem}\n#{output}" if problem
 end
@@ -441,11 +450,29 @@ def check(server, host, env, kase)
   status, output = run_client(env, kase)
   problem = if status.nil? then "timed out"
             elsif status.exitstatus != kase.status then "exit #{status.exitstatus.inspect}, expected #{kase.status}"
-            elsif (missing = kase.expected.reject { |text| output.include?(text) }).any?
-              "missing #{missing.map(&:inspect).join(', ')}"
-            elsif kase.evidence then evidence_problem(host, output, kase.evidence)
+            else output_problem(output, kase) || (evidence_problem(host, output, kase.evidence) if kase.evidence)
             end
   [label(server, kase), problem, output]
+end
+
+def output_problem(output, kase)
+  missing = kase.expected.reject { |text| output.include?(text) }
+  return "missing #{missing.map(&:inspect).join(', ')}" if missing.any?
+
+  headers_problem(output, kase.headers) if kase.headers
+end
+
+# The headers: line must hold exactly the expected demo headers plus the request
+# ID that the server's interceptor echoed, compared field by field with the
+# request: line. A substring match would also find the ID on the request: line.
+def headers_problem(output, expected)
+  line = output[/^headers: (.*)$/, 1]
+  return "printed no headers: line" unless line
+
+  id = output[/^request: demo-request-id=(\h+)$/, 1]
+  fields = line.split.to_h { |field| field.split("=", 2) }
+  wanted = { "demo-request-id" => id, **expected }
+  "printed headers #{fields.inspect}, expected #{wanted.inspect}" unless id && fields == wanted
 end
 
 # The server prints its line as the call finishes, possibly after the client exits.
