@@ -67,9 +67,14 @@ module ConnectRPC
       end
 
       # Comma-separated W3C list members, so joined values compare member by
-      # member. Non-String entries pass through for core's metadata validation.
+      # member. Entries that are not printable ASCII header strings pass through
+      # unchanged, so core's metadata validation still rejects the injection.
       def baggage_members(entries)
-        entries.flat_map { |entry| entry.is_a?(String) ? entry.split(",").map(&:strip).reject(&:empty?) : [entry] }
+        entries.flat_map do |entry|
+          next [entry] unless entry.is_a?(String) && entry.ascii_only? && /\A[\x20-\x7e]*\z/.match?(entry)
+
+          entry.split(",").map(&:strip).reject(&:empty?)
+        end
       end
 
       def attributes(call, name)

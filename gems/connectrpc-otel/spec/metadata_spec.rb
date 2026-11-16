@@ -164,6 +164,20 @@ RSpec.describe "Error types and propagated metadata" do
       end
     end
 
+    it "leaves invalid propagator baggage for core to reject the whole injection" do
+      propagator = Object.new
+      propagator.define_singleton_method(:extract) { |_carrier, context:, **| context }
+      propagator.define_singleton_method(:inject) do |carrier, context:| # rubocop:disable Lint/UnusedBlockArgument
+        carrier["x-custom"] = "1"
+        carrier["baggage"] = "custom=1\n"
+      end
+      bus, errors = otel_bus(stager, propagator: propagator)
+      headers = wire_headers(bus, metadata: { "baggage" => ["caller=1"] })
+      expect(headers["baggage"]).to eq(["caller=1"])
+      expect(headers).not_to have_key("x-custom")
+      expect(errors.size).to eq(1)
+    end
+
     it "keeps staged baggage when a custom propagator mutates a staged string in place" do
       mutable_stager = Object.new
       mutable_stager.define_singleton_method(:start) do |call|
