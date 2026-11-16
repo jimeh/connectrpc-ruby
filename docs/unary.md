@@ -479,10 +479,12 @@ one is broken:
 
 - Call the continuation at most once, on the fiber that called the interceptor,
   and only before the interceptor returns. A second call, a call from another
-  thread, fiber or `Async` task, and a captured block called later all raise.
-  After a misuse the continuation no longer dispatches, and a swallowed misuse
-  still fails the call when the interceptor returns. Instrumentation records the
-  misuse as the call's error even if the interceptor translates it.
+  thread, fiber or `Async` task, and a captured block called later all raise
+  and dispatch nothing. A second call or a call from another thread or fiber
+  also fails the call when the interceptor returns, even if the interceptor
+  swallows the error, and instrumentation records that misuse as the call's
+  error even if the interceptor translates it. A captured block called after
+  its interceptor returned only raises to its caller.
 - A continuation fails when its block raises or is left by a `throw` or other
   non-local exit. If a layer catches such a `throw` inside the chain and
   returns, the call fails with the exception the continuation raised, or with

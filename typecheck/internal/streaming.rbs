@@ -123,6 +123,7 @@ module ConnectRPC
       @innermost_ok: bool
       @innermost_failure: Exception?
       @interceptor_error: bool
+      @non_local_exit: bool?
       attr_accessor completed: bool
       attr_accessor abandoned: bool
       attr_accessor independent_error: Exception?

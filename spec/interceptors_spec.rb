@@ -740,7 +740,8 @@ RSpec.describe "Unary interceptors" do
     def envelope(bytes) = [0, bytes.bytesize].pack("CN") + bytes
 
     # Fields arrive in trailers after one response message, or trailers-only.
-    def grpc_client(interceptors, status: "0", message: "hello", trailers_only: false, before_open: nil)
+    def grpc_client(interceptors, status: "0", message: "hello", trailers_only: false, before_open: nil,
+                    instrumentation: bus)
       source = StringIO.new(trailers_only ? "" : envelope("wire:#{message}"))
       fields = { "grpc-status" => [status], "x-end" => ["tail"] }
       fields["grpc-message"] = ["Remote"] unless status == "0"
@@ -764,7 +765,7 @@ RSpec.describe "Unary interceptors" do
         work.call(exchange)
       end
       ConnectRPC::Client.new(base_url: "https://example.invalid", protocol: :grpc, binding: binding,
-                             status_codec: status_codec, transport: transport, instrumentation: bus,
+                             status_codec: status_codec, transport: transport, instrumentation: instrumentation,
                              interceptors: interceptors)
     end
 
@@ -974,6 +975,109 @@ RSpec.describe "Unary interceptors" do
           .to(raise_error { |error| expect(error).to equal(own) })
         expect(own.backtrace).to eq(only(traces))
         expect(only(outcomes)).to have_attributes(code: "aborted", error: own, normalized_error: own)
+        expect(only(completions).delivery).to eq(:completed)
+      end
+    end
+
+    describe "non-local exits" do
+      # An instrumentation whose processing_finished hands control to the test
+      # through the given suspension, so finalization can be killed mid-way.
+      def suspending_bus(suspend)
+        observer = Object.new
+        observer.define_singleton_method(:processing_finished) { |_outcome| suspend.call }
+        subscriber = Object.new
+        subscriber.define_singleton_method(:start) { |_call| observer }
+        ConnectRPC::Instrumentation.new(subscribers: [subscriber])
+      end
+
+      rejecting = ->(_call, &_continuation) { raise ConnectRPC::Error.new(:permission_denied, "No") }
+      falling_back = lambda do |_call, &continuation|
+        catch(:skip) { continuation.call }
+        ConnectRPC::Response.new(message: "fallback", metadata: ConnectRPC::Metadata.new,
+                                 trailers: ConnectRPC::Metadata.new)
+      end
+      {
+        "an interceptor rejection" => [rejecting, nil],
+        "a dispatch throw the guard rejects" => [falling_back, ->(_request) { throw :skip }]
+      }.each do |label, (body, before_open)|
+        it "lets a fiber killed while finalizing #{label} die without resuming application code" do
+          rescued = false
+          returned = false
+          instrumentation = suspending_bus(-> { Fiber.yield(:finalizing) })
+          client = grpc_client([layer(:client_unary, &body)], before_open: before_open,
+                                                              instrumentation: instrumentation)
+          fiber = Fiber.new do
+            client.call(rpc, "hi")
+            returned = true
+          rescue StandardError
+            rescued = true
+          end
+          expect(fiber.resume).to eq(:finalizing)
+          fiber.kill
+          expect(fiber.alive?).to be(false)
+          expect(rescued).to be(false)
+          expect(returned).to be(false)
+        end
+
+        it "lets a thread killed while finalizing #{label} die without resuming application code" do
+          finalizing = Queue.new
+          held = Queue.new
+          rescued = false
+          returned = false
+          instrumentation = suspending_bus(-> { (finalizing << true) && held.pop })
+          client = grpc_client([layer(:client_unary, &body)], before_open: before_open,
+                                                              instrumentation: instrumentation)
+          worker = Thread.new do
+            client.call(rpc, "hi")
+            returned = true
+          rescue StandardError
+            rescued = true
+          end
+          finalizing.pop
+          worker.kill
+          expect(worker.join(5)).to equal(worker)
+          expect(worker.status).to be(false)
+          expect(rescued).to be(false)
+          expect(returned).to be(false)
+        end
+      end
+
+      it "reports no outcome code and an :unobserved delivery for a throw before yield" do
+        throwing = layer(:client_unary) { |_call, &_continuation| throw :out, :thrown }
+        expect(catch(:out) { grpc_client([throwing]).call(rpc, "hi") }).to eq(:thrown)
+        expect(opened).to be_empty
+        expect(only(outcomes)).to have_attributes(code: nil, error: nil)
+        expect(only(completions).delivery).to eq(:unobserved)
+      end
+
+      it "reports no outcome code and a completed exchange for a throw after yield" do
+        throwing = layer(:client_unary) do |_call, &continuation|
+          continuation.call
+          throw :out, :thrown
+        end
+        expect(catch(:out) { grpc_client([throwing]).call(rpc, "hi") }).to eq(:thrown)
+        expect(opened.size).to eq(1)
+        expect(only(outcomes)).to have_attributes(code: nil, error: nil)
+        expect(only(completions).delivery).to eq(:completed)
+      end
+
+      it "reports no outcome code and a completed exchange for a thread killed after yield" do
+        resumed = false
+        killing = layer(:client_unary) do |_call, &continuation|
+          continuation.call
+          Thread.current.kill
+        end
+        client = grpc_client([killing])
+        worker = Thread.new do
+          client.call(rpc, "hi")
+          resumed = true
+        rescue StandardError
+          resumed = true
+        end
+        expect(worker.join(5)).to equal(worker)
+        expect(worker.status).to be(false)
+        expect(resumed).to be(false)
+        expect(only(outcomes)).to have_attributes(code: nil, error: nil)
         expect(only(completions).delivery).to eq(:completed)
       end
     end

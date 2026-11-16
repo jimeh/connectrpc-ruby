@@ -56,26 +56,41 @@ module ConnectRPC
       # outermost value is the scope result; a short-circuit completes the
       # scope without an exchange. An exception escaping the chain that is not
       # the exact failure of the dispatch adapter is independent.
-      def intercept(chain, call, &)
+      def intercept(chain, call, &) # rubocop:disable Metrics/MethodLength -- one place tracks every chain exit
         @intercepted = true
+        # @type var local_exit: bool
+        local_exit = false
         result = @result = chain.run(call, @lifecycle) { dispatch_unary(&) }
         @completed = true unless @dispatched
+        local_exit = true
         result
       rescue Exception => e # rubocop:disable Lint/RescueException -- provenance compares the exact escape
+        local_exit = true
         unless e.equal?(@innermost_failure)
           @interceptor_error = true
           @independent_error = e
         end
         raise
+      ensure
+        # A throw or kill out of the chain delivers no result to the caller.
+        @non_local_exit = true unless local_exit
       end
 
       private
 
+      # A throw or kill out of finalization keeps unwinding; only a return or
+      # raise from finish is replaced by the preserved independent error.
       def finish_preserving_user(error)
+        # @type var local_exit: bool
+        local_exit = false
         finish(@independent_error || error)
+        local_exit = true
+      rescue Exception # rubocop:disable Lint/RescueException -- the independent error replaces any finalization failure
+        local_exit = true
+        raise
       ensure
         original = @independent_error
-        raise original, cause: original.cause if original
+        raise original, cause: original.cause if original && local_exit
       end
 
       def dispatch_unary
@@ -102,7 +117,7 @@ module ConnectRPC
       def delivery(error)
         return :unobserved if @intercepted && !@dispatched
 
-        completed = @interceptor_error ? exchange_completed? : delivery_completed?(error)
+        completed = @interceptor_error || @non_local_exit ? exchange_completed? : delivery_completed?(error)
         completed ? :completed : :aborted
       end
 
@@ -122,7 +137,7 @@ module ConnectRPC
         !@independent_error && (@failure.nil? || @failure.is_a?(StreamNotConsumedError))
       end
 
-      def success?(error) = @completed && error.nil?
+      def success?(error) = @completed && error.nil? && !@non_local_exit
 
       def delivery_completed?(error)
         return true if success?(error)
