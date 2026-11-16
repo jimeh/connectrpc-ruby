@@ -248,7 +248,10 @@ module ConnectRPC
           @writer.write(goaway(MAX_STREAM_ID, ::Protocol::HTTP2::Error::NO_ERROR, reason))
           ping = ::Protocol::HTTP2::PingFrame.new
           ping.pack(DRAIN_PING)
-          @writer.write(ping)
+          # The ACK fallback counts from the PING reaching the wire, so the
+          # peer always sees the heads-up before the cutoff is frozen.
+          return unless @writer.write(ping).wait
+
           timer = ::Async::Task.new(::Async::Task.current, finished: false) do
             @clock.sleep(ACK_SECONDS)
             acknowledged.resolve(false)

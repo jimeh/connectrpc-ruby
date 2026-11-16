@@ -453,12 +453,41 @@ RSpec.shared_examples "HTTP/2 server keepalive" do
           wait_until(task, "heads-up GOAWAY waits for the frame guard") do
             fixture.resource.connection.guard_waiting?
           end
-          await_due(task, fixture.clock, 105)
+          await_due(task, fixture.clock, 120)
           fixture.clock.advance(19)
           expect(fixture.resource).not_to be_finished
           fixture.clock.advance(1)
           wait_until(task, "connection retired") { retired?(fixture.resource) }
           expect(fixture.client.wire.goaways).to eq([])
+        ensure
+          gate&.release&.enqueue(true)
+        end
+      end
+    end
+
+    it "starts the drain ACK fallback only once the drain PING is written" do
+      reactor do |task|
+        with_keepalive_host(task, keepalive: server_keepalive(time: nil, min_time: nil,
+                                                              max_connection_age: 100)) do |fixture|
+          client = fixture.client
+          client.wire.ack_pings = false
+          watch(fixture, "sibling", "one")
+          gate = hold_frames(fixture.resource, Protocol::HTTP2::DataFrame::TYPE)
+          fixture.log[:feeds]["sibling"].enqueue("two")
+          gate.started.dequeue
+          await_due(task, fixture.clock, 100)
+          fixture.clock.advance(100)
+          wait_until(task, "heads-up GOAWAY waits for the frame guard") do
+            fixture.resource.connection.guard_waiting?
+          end
+          # Longer than the ACK fallback, while the heads-up cannot be written.
+          fixture.clock.advance(6)
+          gate.release.enqueue(true)
+          wait_until(task, "drain PING") { client.wire.pings == [KeepaliveClient::DRAIN_PING] }
+          await_due(task, fixture.clock, 111)
+          expect(client.wire.goaways).to eq([[KeepaliveClient::MAX_STREAM_ID, KeepaliveClient::NO_ERROR, "max_age"]])
+          fixture.clock.advance(5)
+          wait_until(task, "cutoff GOAWAY") { client.wire.goaways.size == 2 }
         ensure
           gate&.release&.enqueue(true)
         end
