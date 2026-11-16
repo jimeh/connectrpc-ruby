@@ -412,6 +412,14 @@ RSpec.describe "connectrpc-async upstream contract" do
                          within: seconds + 0.5)
     end
 
+    it "names the probe step that crashed, not the teardown after it" do
+      output = require_async(<<~RUBY)
+        Async::Task.prepend(Module.new { def cancel(...) = raise(NoMethodError, "undefined method 'cancel'") })
+      RUBY
+      expect_async_error(output, "async #{Async::VERSION}: Task finalization probe raised NoMethodError while " \
+                                 "finalizing a task after cancellation: undefined method 'cancel'")
+    end
+
     it "fails require by name when Scheduler#push transfers a pushed object inline" do
       output = require_async(<<~RUBY)
         Async::Scheduler.prepend(Module.new do

@@ -133,7 +133,8 @@ module ConnectRPC
             probe.call
           rescue Exception => e # rubocop:disable Lint/RescueException -- report any probe crash as a broken contract
             [*probe.failures,
-             failure("async", "Task finalization probe raised #{e.class} while #{probe.step}: #{e.message}")]
+             failure("async", "Task finalization probe raised #{e.class} while #{probe.crashed_step || probe.step}: " \
+                              "#{e.message}")]
           end
           grace = [KILL_SECONDS, seconds / 10.0].min
           return thread.value if thread.join(seconds - grace)
@@ -192,7 +193,8 @@ module ConnectRPC
         class FinalizationProbe
           EXITS = { return: "normal return", raise: "a raised failure", cancel: "cancellation" }.freeze
 
-          attr_reader :step
+          # crashed_step keeps the step an exception left, before teardown relabels it.
+          attr_reader :step, :crashed_step
 
           def initialize
             @step = "starting its reactor"
@@ -212,6 +214,9 @@ module ConnectRPC
                 ancestor(exit)
               end
               deferred_push
+            rescue Exception # rubocop:disable Lint/RescueException -- recorded only; re-raised to the thread's report
+              @crashed_step = @step
+              raise
             ensure
               @step = "stopping leftover probe tasks"
               release
