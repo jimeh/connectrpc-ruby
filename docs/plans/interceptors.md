@@ -1,7 +1,7 @@
 # Typed client and server interceptors
 
 Status: design for review. No implementation is approved by this document.
-Base: `915af39` (audit tooling fixes, #79), after release 0.1.2.
+Base: `54d55fb` (lifecycle metadata, #81), after release 0.1.2.
 Issue: [#32](https://github.com/jimeh/connectrpc-ruby/issues/32). Related:
 [#26](https://github.com/jimeh/connectrpc-ruby/issues/26) groups L1/L3/L6 and
 L2/L5, the lifecycle metadata group L8/L9/L11, and
@@ -106,15 +106,15 @@ it. Handler execution has six call sites:
 
 | Shape and protocol | Call site | Reaches |
 | --- | --- | --- |
-| Connect unary POST | `lib/connectrpc/server.rb:272` | `@invoker` |
-| Connect unary GET | `lib/connectrpc/server.rb:206` | `@invoker` |
+| Connect unary POST | `lib/connectrpc/server.rb:271` | `@invoker` |
+| Connect unary GET | `lib/connectrpc/server.rb:205` | `@invoker` |
 | Native gRPC unary | `lib/connectrpc/grpc_server.rb:89` | `@invoker` |
 | gRPC-Web unary | `lib/connectrpc/grpc_web_server.rb:144` | `@invoker` |
 | Connect streams and native gRPC streams | `invoke_stream_handler`, `lib/connectrpc/streaming/server_execution.rb:60-79` | handler |
 | gRPC-Web server streaming | `lib/connectrpc/grpc_web_server.rb:146-148` | handler, called directly |
 
 The default invoker is `Server#invoke_handler`
-(`lib/connectrpc/server.rb:252-258`). The Rails gem supplies its own invoker,
+(`lib/connectrpc/server.rb:251-257`). The Rails gem supplies its own invoker,
 which runs Rails' `process_action` chain, and its `connect` action calls the
 handler itself (`gems/connectrpc-on-rails/lib/connectrpc/on_rails/controller.rb:9-16`).
 A server chain that wraps `@invoker` once, at construction, covers all four
@@ -550,7 +550,7 @@ An interceptor short-circuits by not yielding.
   error's code, message, details, metadata and trailers. The response also
   carries response metadata and trailers that interceptors set on the context
   before raising, merged as `error_response` does today
-  (`lib/connectrpc/server.rb:380-401`).
+  (`lib/connectrpc/server.rb:383-404`).
 - **Successful short-circuit.** Only on the client: return a `Response`, for
   example from a local cache. Core freezes it like any other result (see
   [Metadata](#metadata)). A server interceptor that returns without yielding
@@ -578,7 +578,7 @@ An interceptor short-circuits by not yielding.
   is for framework invokers, not interceptors: an interceptor that calls it
   and then succeeds puts an error on an `OK` outcome. The client keeps recording
   directly from the transport (`lib/connectrpc/transports/net_http.rb:138-143`),
-  the codec paths (`lib/connectrpc/client.rb:255-262`), `process_call` and
+  the codec paths (`lib/connectrpc/client.rb:259-266`), `process_call` and
   `ClientScope`, and the transport SPI does not change.
 - **Sentry.** Retaining the original does not change Sentry's capture rule.
   The subscriber captures only a non-`Error` original whose normalized code is
@@ -610,11 +610,11 @@ An interceptor short-circuits by not yielding.
 - **What interceptors see.** Interceptors see whatever the inner layer
   raised. Under the default server invoker and in server stream chains, that
   is the handler's own exception, which core normalizes to `internal` only
-  after the chain (`lib/connectrpc/server.rb:141-144`,
-  `lib/connectrpc/streaming/server.rb:113-120`). The Rails invoker hands them
+  after the chain (`lib/connectrpc/server.rb:142-145`,
+  `lib/connectrpc/streaming/server.rb:116-123`). The Rails invoker hands them
   a normalized `Error`. On the client, core failures arrive as `Error`s, for
   example a decode `CodecError` arrives as `Error(:internal)`
-  (`lib/connectrpc/client.rb:260-262`), and client stream application
+  (`lib/connectrpc/client.rb:264-266`), and client stream application
   exceptions arrive unchanged. When an interceptor sees a normalized `Error`,
   its `cause` is whatever L1 settles, and an interceptor must not rely on
   `cause` to reach the original; lifecycle observers receive it.
@@ -691,7 +691,7 @@ so cancellation never masks misuse.
   copied message per call when callers may mutate it. To change what the
   application sees, an interceptor returns a new `Response`. Native gRPC and
   streaming response metadata is mostly frozen already
-  (`lib/connectrpc/grpc.rb:81`, `lib/connectrpc/streaming/session_io.rb:84`),
+  (`lib/connectrpc/grpc.rb:81`, `lib/connectrpc/streaming/session_io.rb:85`),
   but Connect unary metadata, every `Response` struct and the client-streaming
   trailers fallback (`Metadata.new` in `client_execution.rb:84`) are mutable
   today. Freezing applies to every client response, with or without
@@ -713,7 +713,7 @@ so cancellation never masks misuse.
   after the chain returns, so writes before and after `yield` both work. On
   native gRPC and gRPC-Web unary, core freezes response metadata when it
   publishes the head, which happens after the chain returns
-  (`lib/connectrpc/grpc_server.rb:113-124`). For streams, see
+  (`lib/connectrpc/grpc_server.rb:111-122`). For streams, see
   [Headers and trailers on streams](#headers-and-trailers-on-streams).
 
 ## Streaming model
@@ -857,7 +857,7 @@ stream; a read-side wrapper must override both
     rules.
 - **Server.** Stream errors from interceptors follow the handler's path:
   `capture_stream_error` records them, maps them to a safe `Error` and renders
-  the terminal (`lib/connectrpc/streaming/server.rb:113-120`). A
+  the terminal (`lib/connectrpc/streaming/server.rb:116-123`). A
   `server_stream` interceptor may translate a handler exception by raising a
   different one, but it cannot produce an `OK` terminal after the handler or
   an inner layer raised (rule 6): if it returns normally, core renders the
@@ -901,7 +901,7 @@ stream; a read-side wrapper must override both
   can follow:
   - On the server, the terminal error is the accepted reason, whatever an
     interceptor raised or returned, as `terminal_error` does for handlers today
-    (`lib/connectrpc/server.rb:369-378`). Observers still receive the original
+    (`lib/connectrpc/server.rb:372-381`). Observers still receive the original
     exception.
   - On the client, a core-owned failure is replaced by the accepted reason, as
     today, and a successful return after an accepted reason becomes that
@@ -1038,8 +1038,8 @@ end
 | L6: nil server streaming response maps to `invalid_argument` | Settles server and client attribution for a nil response | Every session-backed send maps nil to `invalid_argument` today, including native gRPC and gRPC-Web unary, while Connect unary fails `internal` at encode. A server unary interceptor that returns nil takes these paths in PR A, and a client-streaming interceptor in PR B. | Before PR A |
 | L5: streaming completion can call `close_send` twice | Chooses an ownership guard or an idempotency contract | Completion calls the exchange's `close_send` after any explicit one. Wrappers make an explicit call more common, so PR B's evidence needs the guard. This design prefers a core-owned guard over a contract on callers. | Before PR B |
 | L8: early native failures replace request metadata with an empty snapshot | Preserves the original request carrier on server native early-failure paths | Interceptors never run on those paths, and the client recording in [Ordering](#client-1) is separate. | Independent |
-| L9: frozen native gRPC unary metadata | Settled in #81: request metadata stays mutable on every server `Context`; sessions keep their own frozen snapshot | Interceptors share the handler's mutable `Context`. Unary response metadata must stay mutable until the chain returns, which holds today on every protocol. | Before PR A (#81) |
-| #73: caller baggage lost on injection | Settled in #81: injected keys replace caller values, except `baggage`, which carries the caller's values followed by the injected ones | Injection happens after interceptors, so interceptor-added `baggage` is caller metadata under that rule and survives injection. | Before PR A (#81) |
+| L9: frozen native gRPC unary metadata | Settled in #81: request metadata stays mutable on every server `Context`; sessions keep their own frozen snapshot | Interceptors share the handler's mutable `Context`. Unary response metadata must stay mutable until the chain returns, which holds today on every protocol. | Done in #81 (`54d55fb`) |
+| #73: caller baggage lost on injection | Settled in #81: injected keys replace caller values, except `baggage`, which carries the caller's values followed by the injected ones | Injection happens after interceptors, so interceptor-added `baggage` is caller metadata under that rule and survives injection. | Done in #81 (`54d55fb`) |
 | L11: OTel classification casing | OTel attribute convention | None | Independent |
 
 The interceptor design also constrains these groups:
