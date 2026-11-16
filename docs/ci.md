@@ -1,9 +1,10 @@
 # CI
 
-The workflow runs on pull requests and pushes to `main`, on Ubuntu 24.04.
-It has nine core, three optional Rails, four optional HTTP/2, two optional Rack,
-two optional in-process testing, two optional RBS, four Falcon checks and one
-runnable-examples check, with no serial cache primer or aggregate job:
+The workflow runs on pull requests, pushes to `main`, manual dispatch and a
+daily schedule (04:37 UTC), on Ubuntu 24.04. It has nine core, three optional
+Rails, four optional HTTP/2, two optional Rack, two optional in-process testing,
+two optional RBS, four Falcon checks, seven lowest-allowed dependency checks and
+one runnable-examples check, with no serial cache primer or aggregate job:
 
 | Check | Ruby | Canonical commands |
 | --- | --- | --- |
@@ -12,8 +13,9 @@ runnable-examples check, with no serial cache primer or aggregate job:
 | Package | 3.4.12, 4.0.9 | `mise run generation:check`, then `mise run check:package` |
 | Go interoperability | 3.4.12, 4.0.9 | `mise run fixture:check`, then `mise run test:interop` |
 | Official conformance | 3.4.12, 4.0.9 | `mise run test:conformance` |
-| Rails 8.0.5.1 | 3.4.12 | `mise run test:rails`, `generation:check:rails`, `check:package:rails` with `RAILS_LANE=8.0` |
-| Rails 8.1.4 | 3.4.12, 4.0.9 | Same Rails commands with `RAILS_LANE=8.1` |
+| Rails 8.0 | 3.4.12 | `mise run test:rails`, `generation:check:rails`, `check:package:rails` with `RAILS_LANE=8.0` |
+| Rails 8.1 | 3.4.12, 4.0.9 | Same Rails commands with `RAILS_LANE=8.1` |
+| Lowest allowed async, falcon, rack, rails, otel, prometheus, yabeda | 3.4.12 | `mise run floors:<leaf>` |
 | Async specs/package | 3.4.12, 4.0.9 | `mise run async:test`, `mise run async:package`, `mise run async:conformance` |
 | Async Go interoperability | 3.4.12, 4.0.9 | `mise run async:interop`, `mise run async:interop:streaming` |
 | Rack specs/check/package | 3.4.12, 4.0.9 | `mise run rack:test`, `mise run rack:check`, `mise run rack:package` |
@@ -34,6 +36,31 @@ cases must pass with zero expected failures; cancellation uses actual source,
 request-write and socket cleanup evidence. Existing canonical commands
 cover both portions without new jobs or matrix axes. Product, generator and harness specs remain
 part of Specs; CI guard specs cover task and runtime boundaries.
+
+## Fresh dependency resolution
+
+Own-gem development locks are not committed, so every job resolves the newest
+versions its Gemfile and gemspecs allow, within the three-day Bundler cooldown
+(`cooldown: 3` in the Gemfiles and `BUNDLE_COOLDOWN=3` for Appraisal lanes and
+adapter jobs). No job sets `BUNDLE_FROZEN`; the runtime guard rejects
+`BUNDLE_FROZEN`, `BUNDLE_DEPLOYMENT` and `BUNDLE_LOCKFILE`. Generated locks are
+ignored, so the workspace-clean steps still pass. The daily schedule catches
+upstream releases that break either the newest or the lowest allowed versions.
+The concurrency group includes the event name, so a scheduled run and a push
+to `main` do not cancel each other. GitHub disables scheduled workflows in a
+public repository after 60 days without repository activity; if that happens,
+re-enable the workflow in the Actions tab.
+
+The lowest-allowed matrix runs `floors:async`, `floors:falcon`, `floors:rack`,
+`floors:rails` (Rails 8.0 lane), `floors:otel`, `floors:prometheus` and
+`floors:yabeda` on Ruby 3.4.12. Each task sets
+`CONNECTRPC_DEPENDENCY_FLOORS=1`, generates its ignored wrapper Gemfile,
+installs it, asserts every runtime dependency resolved exactly at its declared
+floor (the OTel leaf also constrains `json` to `< 3`; see development), then runs
+that package's specs and installed-package check. Because the
+wrapper does not exist before the task runs, these jobs disable the setup-ruby
+bundle cache and install from the registry each time. See
+[development](development.md#fresh-resolution-and-the-lowest-allowed-lane).
 
 ## Runtime boundary
 
@@ -73,11 +100,13 @@ Cache misses, eviction or denied saves leave installation and verification
 required. Shared-key save reservation collisions are safe: saves happen only
 after complete installs/builds, with no partial primer job.
 
-- Outside RBS, Ruby caches `vendor/bundle`. Absolute workflow `BUNDLE_PATH` points there
-  before the action runs, with frozen/ignore-config/shared-gem settings matching
+- Outside RBS and the lowest-allowed lanes, Ruby caches `vendor/bundle`. Absolute workflow `BUNDLE_PATH` points there
+  before the action runs, with ignore-config/shared-gem settings matching
   Mise. This matters because `BUNDLE_IGNORE_CONFIG` ignores the action's local
-  Bundler config. The native key includes full Ruby/engine, OS version,
-  architecture, working directory, dependency groups and lockfile hash. Explicit
+  Bundler config. Without a committed lock the action runs `bundle lock` first,
+  without deployment mode, and keys on that fresh lock. The native key includes
+  full Ruby/engine, OS version, architecture, working directory, dependency
+  groups and lockfile hash, so a new upstream release produces a new key. Explicit
   `cache-version: bundler-4.0.23-v1` also invalidates on an independently changed
   Bundler input or schema. `BUNDLED WITH` is already part of the lock hash.
   Same-Ruby jobs share complete bundles; native extensions cannot cross Ruby
@@ -138,12 +167,12 @@ publishing, releasing or deploying requires separate, explicit authorization.
 
 Rails uses the same official pinned Ruby/Bundler action and root ABI-specific
 `vendor/bundle` cache. The setup-ruby step selects its generated Appraisal
-Gemfile explicitly, so each lane key includes the selected checksummed lock.
+Gemfile explicitly, so each lane key includes the lane lock the action resolves.
 Mise then propagates `RAILS_LANE` deliberately through the launcher, asserts
 actual Rails in the specs, and preserves action-provided runtimes with the
 existing CI guard. Rails setup depends on `setup:bundler`, avoiding root
-development-bundle installation in those lanes. `BUNDLE_COOLDOWN=7` is effective
-in setup-ruby and every adapter task. CI installs frozen locks and executes
+development-bundle installation in those lanes. `BUNDLE_COOLDOWN=3` is effective
+in setup-ruby and every adapter task. CI resolves fresh lane locks and executes
 actual `appraisal <lane>` commands, never `appraisal install`. The nine core
 checks retain their commands and evidence scope; no aggregate verify job is
 added. Local Appraisal generation and package checks do not prove hosted cache
@@ -157,7 +186,7 @@ interop run on both exact Rubies. They reuse the pinned official Ruby/Bundler
 and Go actions, with lock-keyed native backend caches under
 `vendor/async/bundle` and the existing pinned module/build caches. Their selected
 Gemfile is `gems/connectrpc-async/Gemfile`; Bundler user state is separate under
-`vendor/async/bundler`, frozen installation and seven-day cooldown remain on.
+`vendor/async/bundler`, and the three-day cooldown applies.
 Core setup/spec jobs install no backend dependencies.
 
 `async:tools` has a complete CI override preserving its task environment and
@@ -176,7 +205,7 @@ product/Go/package passes do not prove hosted cache behavior or exact-head CI.
 The Rack matrix adds two independent checks while preserving the original 16.
 It selects `gems/connectrpc-rack/Gemfile`, `vendor/rack/bundle` and
 `vendor/rack/bundler` before setup-ruby, with the existing exact Ruby/Bundler,
-frozen settings and seven-day cooldown. No Go or compiler tool is needed.
+ignore-config settings and three-day cooldown. No Go or compiler tool is needed.
 `rack:tools` validates actual middleware Gemfile, bundle path, user home and
 working directory, then reuses the unchanged root runtime/PATH guard. Its CI
 replacement retains the whole local task context. Specs, lint and normal
@@ -188,7 +217,7 @@ assertions. Rack verification stays separate from root `verify`; local handoff a
 ## Optional in-process testing lanes
 
 The [testing package](../gems/connectrpc-testing/README.md) has a separate
-checksummed bundle and native cache under `vendor/testing/bundle`, with Bundler
+bundle and native cache under `vendor/testing/bundle`, with Bundler
 user state under `vendor/testing/bundler`. Both Ruby lanes run package syntax,
 lint, behavior specs, the generated example and isolated offline installation.
 The complete `testing:tools` CI override validates the action runtime and actual
@@ -216,10 +245,13 @@ bundle-specific setup-action environment overrides. The action release was
 published on 2026-06-26, satisfying the seven-day age policy.
 
 Its key includes OS, architecture, exact Ruby, Bundler 4.0.23, actual runner
-`ImageOS`/`ImageVersion`, every affected Gemfile/lock and gemspec, and a versioned
-cache schema. There are no fallback restore keys or cross-OS restores. Weekly
+`ImageOS`/`ImageVersion`, every affected Gemfile, committed tool lock and
+gemspec, and a versioned cache schema. Own-gem locks are not committed, so a
+restored bundle can predate newer upstream releases; it only seeds the install.
+There are no fallback restore keys or cross-OS restores. Weekly
 image changes invalidate native extensions too. Restored extracted gems are
-trusted cache contents; frozen checksummed installs still run unconditionally.
+trusted cache contents; bundle installs still run unconditionally and resolve
+fresh.
 Misses and eviction require normal setup, and a successful job saves a complete
 bundle union. Generated files, diagnostic results, Bundler configuration and the
 fresh external GEM_HOME are never cached.
@@ -243,8 +275,8 @@ and [successful-job post condition](https://github.com/actions/cache/blob/55cc83
 
 The two Ruby lanes run separate Falcon specs/package and Go checks. They
 select `gems/connectrpc-falcon/Gemfile`, `vendor/falcon/bundle` and
-`vendor/falcon/bundler` before setup-ruby. The pinned Ruby/Bundler actions,
-frozen installation and seven-day cooldown apply independently of core, Rack,
+`vendor/falcon/bundler` before setup-ruby. The pinned Ruby/Bundler actions
+and three-day cooldown apply independently of core, Rack,
 Rails and Async bundles. `falcon:tools` retains its complete task environment
 and directory in CI while validating the action runtime and actual bundle.
 
@@ -258,8 +290,10 @@ cleanliness. Local verification does not establish hosted exact-head success.
 
 Prometheus and Yabeda each run one `<name>:verify` leaf per pinned Ruby. Like
 OTel, each selects its own `gems/connectrpc-<name>/Gemfile`, `vendor/<name>/bundle`
-and `vendor/<name>/bundler` before setup-ruby, keeps frozen installation and the
-seven-day cooldown, and validates the action runtime through `<name>:tools`.
+and `vendor/<name>/bundler` before setup-ruby, resolves fresh within the gemspec
+constraints under the three-day cooldown, and validates the action runtime
+through `<name>:tools`. `floors:prometheus` and `floors:yabeda` cover their
+lowest allowed versions.
 The Prometheus lane includes real Rack, Async and Falcon hosts and a forked
 `DirectFileStore` check; the Yabeda lane records through `yabeda/testing`. Both
 install their archives offline into a fresh external GEM_HOME and check
@@ -274,8 +308,9 @@ nine packages. Generated positive, exact per-file negative and nominal/bridge
 checks remain.
 Installed checks use normal RBS discovery in a fresh external GEM_HOME, validate
 each optional dependency closure and both composition orders, and exercise API-only
-OTel without loading an SDK. Scoped frozen optional setups supply offline archives;
-no lock, tool pin, runtime dependency or job/matrix axis is added. The
+OTel without loading an SDK. Scoped optional setups supply offline archives,
+and RubyGems resolves the installed closure from the running Ruby ABI's caches;
+no tool pin, runtime dependency or job/matrix axis is added. The
 [workflow](../.github/workflows/ci.yml) defines the complete job matrix. Local
 `rbs:proof` verifies representative source and drift failures in an independent
 capture. A passing consumer alone does not establish strict source checking or
@@ -288,7 +323,7 @@ native official profiles on each pinned Ruby. Async owns the native client once
 and its server profiles; Falcon runs separate server profiles. Their Mise action
 always installs the already pinned runner/protoc pair and caches only tools under
 the existing platform/image/config/lock key scheme. Existing check names, matrix
-axes, frozen bundle setup and clean-workspace assertions remain unchanged.
+axes, bundle setup and clean-workspace assertions remain unchanged.
 
 Both Falcon specs/package lanes also run `falcon:conformance:http1` after the
 existing conformance tasks. The required H1 server identity/gzip profiles retain
@@ -334,7 +369,8 @@ server process has a bounded deadline with TERM then KILL escalation. The
 setup-ruby cache covers the root `vendor/bundle`; the selected Rails 8.1 lane
 installs its remaining gems into that path on each run. An explicit cache keyed
 by the Ruby ABI/platform/image (`rbs:cache-platform`) and the Rack, Async and
-Falcon locks restores `vendor/{rack,async,falcon}/bundle`. Existing example
+Falcon Gemfiles and gemspecs restores `vendor/{rack,async,falcon}/bundle`; the
+example setups still install fresh resolutions. Existing example
 tasks keep their current jobs.
 
 ## Release workflows
@@ -344,8 +380,7 @@ It opens or updates the release PR using an existing GitHub App from the
 `release-please` environment. After a release PR merges, it tags the commit and
 creates a draft GitHub release. The tag starts `release.yml`, which publishes
 from the `release` environment.
-The 35 CI checks above retain their mapping. `check:static` also runs the offline
-`release:check` invariant for all nine versions and all ten local path locks.
-Frozen Bundler installs in each owning CI lane prove the prepared locks are accepted
-by Bundler. See [release preparation](releasing.md) for the candidate procedure and
+The 42 CI checks above retain their mapping. `check:static` also runs the offline
+`release:check` invariant for all nine versions, release configuration and
+installation guides. See [release preparation](releasing.md) for the candidate procedure and
 remaining App/account setup.

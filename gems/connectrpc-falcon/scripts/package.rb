@@ -6,6 +6,7 @@ require "rubygems/package"
 require "rbconfig"
 require "tmpdir"
 require_relative "../../../scripts/release_train"
+require_relative "../../connectrpc-async/scripts/support/activation"
 
 root = File.expand_path("../../..", __dir__)
 version = ReleaseTrain.new(root).version
@@ -22,9 +23,8 @@ expected = %w[LICENSE README.md examples/falcon.rb lib/connectrpc/falcon.rb lib/
               lib/connectrpc/falcon/rack_guard.rb lib/connectrpc/falcon/server.rb].sort
 abort "Falcon manifest changed" unless packages.last.contents.sort == expected
 expected_dependencies = {
-  "connectrpc-async" => local_requirement, "falcon" => "~> 0.57.0", "protocol-rack" => "~> 0.23.0",
-  "async-service" => "~> 0.25.0", "async-container" => "~> 0.38.0", "async-utilization" => "~> 0.5.0",
-  "protocol-http1" => "~> 0.41.1"
+  "connectrpc-async" => local_requirement, "falcon" => ">= 0.57.0, < 1", "protocol-rack" => ">= 0.23.0, < 1",
+  "async-service" => ">= 0.25.0, < 1", "async-utilization" => ">= 0.5.0, < 1", "protocol-http1" => "~> 0.41.1"
 }
 actual = packages.last.spec.runtime_dependencies.to_h { |dependency| [dependency.name, dependency.requirement.to_s] }
 abort "Falcon runtime dependencies changed" unless actual == expected_dependencies
@@ -63,13 +63,12 @@ Bundler.with_unbundled_env do
     FileUtils.cp_r(File.join(root, "spec/fixtures/generation/echo"), File.join(working, "generated"))
     environment = { "GEM_HOME" => File.join(temporary, "home"), "GEM_PATH" => File.join(temporary, "home"),
                     "RUBYOPT" => nil, "RUBYLIB" => nil, "RUBYGEMS_GEMDEPS" => nil,
-                    "CONNECTRPC_FALCON_INSTALLED" => "1" }
+                    "CONNECTRPC_FALCON_INSTALLED" => "1", **Activation.environment(installed: true) }
     ENV.each_key { |name| environment[name] = nil if name.start_with?("BUNDLE_", "BUNDLER_") }
     commands = [
       [RbConfig.ruby, "-S", "gem", "install", "--norc", archives.first, "--local", "--no-document"],
       [RbConfig.ruby, "-e", 'require "connectrpc"; abort if defined?(ConnectRPC::Async) || defined?(Rack)'],
-      [RbConfig.ruby, "-S", "gem", "install", "--norc", File.join(working, "json-3.1.0.gem"), "--local",
-       "--no-document"],
+      *Activation.install_commands(working),
       [RbConfig.ruby, "-S", "gem", "install", "--norc", archives.last, "--local", "--no-document"],
       [RbConfig.ruby, "-S", "gem", "install", "--norc", "google-protobuf", "--version", "4.36.2", "--local",
        "--no-document"],

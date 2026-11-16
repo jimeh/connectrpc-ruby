@@ -22,10 +22,12 @@ check.call(under_cache.call(ruby) && under_cache.call(RbConfig.ruby), "Ruby is o
 check.call(File.realpath(ruby) == File.realpath(RbConfig.ruby), "PATH Ruby differs from running Ruby")
 check.call(Bundler::VERSION == "4.0.23", "unexpected Bundler #{Bundler::VERSION}")
 {
-  "BUNDLE_IGNORE_CONFIG" => "true", "BUNDLE_FROZEN" => "true",
-  "BUNDLE_DISABLE_SHARED_GEMS" => "true", "BUNDLE_VERSION" => "4.0.23",
+  "BUNDLE_IGNORE_CONFIG" => "true", "BUNDLE_DISABLE_SHARED_GEMS" => "true", "BUNDLE_VERSION" => "4.0.23",
   "BUNDLE_PATH" => File.join(root, "vendor/bundle")
 }.each { |key, value| check.call(ENV.fetch(key) == value, "unexpected #{key}") }
+# Development bundles resolve fresh within gemspec constraints; frozen or
+# deployment mode would require a committed lock.
+%w[BUNDLE_FROZEN BUNDLE_DEPLOYMENT BUNDLE_LOCKFILE].each { |key| check.call(!ENV.key?(key), "unexpected #{key}") }
 check.call(Bundler.settings[:path] == File.join(root, "vendor/bundle"), "Bundler path differs from cached path")
 puts "Ruby #{RUBY_VERSION}: #{File.realpath(ruby)}; Bundler #{Bundler::VERSION}"
 puts "Bundle path: #{Bundler.bundle_path} (cache root: #{Bundler.settings[:path]})"

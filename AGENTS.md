@@ -17,7 +17,7 @@ application, TLS manager and server session with real Falcon workers and a local
 HTTP/1 resource. It owns its independent `falcon:` tasks and bundle. Core
 setup/test remain independent. Use `RAILS_LANE=8.0` or
 `8.1` with `mise run test:rails` / `verify:rails`; every Rails bundle process
-uses `BUNDLE_COOLDOWN=7` and the root `vendor/bundle` cache.
+uses `BUNDLE_COOLDOWN=3` and the root `vendor/bundle` cache.
 Core specs live in `spec/`; `Rakefile` and `scripts/` implement tooling behind
 `mise.toml`.
 
@@ -49,7 +49,11 @@ library and keep all `lib/**/*.rb` in scope. For asynchronous work, synchronize
 on observable progress and bounded completion; do not use fixed sleeps to
 assume a race has started or an operation has finished.
 
-Keep runtime dependencies deliberate and package checks isolated. Original
+Keep runtime dependencies deliberate and package checks isolated. Own-gem
+development locks are ignored: bundles resolve the newest allowed versions, and
+`CONNECTRPC_DEPENDENCY_FLOORS=1` (`floors:*` tasks) proves gemspec floors. Follow
+the constraint policy in [development](docs/development.md) before changing a
+gemspec requirement; only tool Gemfile pins stay exact. Original
 project work is MIT licensed. Gems pin `allowed_push_host` to
 `https://rubygems.org` and require MFA; only the tag-triggered
 `.github/workflows/release.yml` publishes (see [releasing](docs/releasing.md)).
@@ -59,7 +63,7 @@ authorization. A successful build or verify command does not authorize
 publication. `release/` holds the release job's frozen Sigstore bundle.
 
 Optional HTTP/2 development uses `mise run async:setup`, then `async:test`,
-`async:check` and `async:verify`. It has a separate checksummed Gemfile/lock,
+`async:check` and `async:verify`. It has a separate Gemfile and ignored lock,
 `vendor/async` bundles/package outputs and `coverage/async` reports. Do not add
 backend dependencies to core or Rails bundles. Both Ruby lanes must run actual
 h2c/TLS/mTLS and independent Go checks. Cancellation tests must establish real

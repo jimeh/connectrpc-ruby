@@ -14,8 +14,9 @@ Related guides cover the other RPC shapes and protocols:
 ## Install the core gem and its integrations
 
 Core `require "connectrpc"` needs no Google or Rack gems. Load optional
-integrations explicitly. Development uses exact pins; the integration entry
-points support google-protobuf `>= 4.36.2, < 5` and Rack `>= 3.2.7, < 4`.
+integrations explicitly. Development pins google-protobuf 4.36.2 and tests Rack
+at its newest allowed release and its floor; the integration entry points
+support google-protobuf `>= 4.36.2, < 5` and Rack `>= 3.2.7, < 4`.
 Applications using Google must supply `google-protobuf`.
 
 Rack middleware ships in the separate `connectrpc-rack` gem, which installs

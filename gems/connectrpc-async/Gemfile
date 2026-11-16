@@ -1,10 +1,11 @@
 # frozen_string_literal: true
 
-source "https://rubygems.org", cooldown: 7
+source "https://rubygems.org", cooldown: 3
 
 gemspec
 gem "connectrpc", path: "../.."
 
+# Runtime dependencies float within gemspec constraints; only tools stay exact.
 group :development, :test do
   gem "google-protobuf", "4.36.2", require: false
   gem "rake", "13.4.2"

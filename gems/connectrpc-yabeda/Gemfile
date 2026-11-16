@@ -1,13 +1,13 @@
 # frozen_string_literal: true
 
-source "https://rubygems.org", cooldown: 7
+source "https://rubygems.org", cooldown: 3
 
 gemspec
 gem "connectrpc", path: "../.."
 gem "connectrpc-testing", path: "../connectrpc-testing"
 
-# yabeda-prometheus stays out: it pins prometheus-client < 5, which would split
-# the version map every package lock shares (typecheck/installed_api.rb).
+# yabeda-prometheus stays out: it pins prometheus-client < 5, below the range
+# connectrpc-prometheus supports, so naming is checked structurally instead.
 group :development, :test do
   gem "google-protobuf", "4.36.2", require: false
   gem "rake", "13.4.2", require: false

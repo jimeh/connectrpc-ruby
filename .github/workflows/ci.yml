@@ -4,19 +4,24 @@ on:
   pull_request:
   push:
     branches: [main]
+  # Development bundles resolve fresh within gemspec constraints, so a daily run
+  # catches upstream releases that break the newest or lowest allowed versions.
+  schedule:
+    - cron: "37 4 * * *"
+  workflow_dispatch:
 
 permissions:
   contents: read
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  # Keep scheduled main runs and main pushes from cancelling each other.
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}
   cancel-in-progress: true
 
 env:
   MISE_ENV: ci
   MISE_LOCKED: "1"
   BUNDLE_IGNORE_CONFIG: "true"
-  BUNDLE_FROZEN: "true"
   BUNDLE_PATH: ${{ github.workspace }}/vendor/bundle
   BUNDLE_DISABLE_SHARED_GEMS: "true"
   BUNDLE_VERSION: "4.0.23"
@@ -239,7 +244,7 @@ jobs:
     env:
       CI_EXPECTED_RUBY_VERSION: ${{ matrix.ruby }}
       RAILS_LANE: ${{ matrix.rails }}
-      BUNDLE_COOLDOWN: "7"
+      BUNDLE_COOLDOWN: "3"
       BUNDLE_USER_HOME: ${{ github.workspace }}/vendor/rails/bundler
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -275,6 +280,47 @@ jobs:
             exit 1
           fi
 
+  floors:
+    name: Lowest allowed ${{ matrix.leaf }} / Ruby 3.4.12
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        leaf: [async, falcon, rack, rails, otel, prometheus, yabeda]
+    env:
+      CI_EXPECTED_RUBY_VERSION: "3.4.12"
+      BUNDLE_COOLDOWN: "3"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # The floors task generates its wrapper Gemfile, so it installs the bundle itself.
+      - uses: ruby/setup-ruby@7f797815d8adceb1c412e7abefdd1ab4abc47a5f # v1.335.0
+        with:
+          ruby-version: "3.4.12"
+          bundler: "4.0.23"
+          bundler-cache: false
+          cache-version: bundler-4.0.23-v1
+      - uses: jdx/mise-action@82a612c5ab8bcda7cc5db6b7e81a8e7584c3dc6e # v5.2.3
+        with:
+          version: "2026.10.19"
+          add_shims_to_path: false
+          env: false
+          export_path: false
+          install: false
+          cache: false
+      - name: Run lowest-allowed specs and package checks
+        env:
+          FLOORS_LEAF: ${{ matrix.leaf }}
+        run: mise run "floors:$FLOORS_LEAF"
+      - name: Check workspace stayed clean
+        if: always()
+        run: |
+          if [ -n "$(git status --porcelain --untracked-files=all)" ]; then
+            git status --short --untracked-files=all
+            exit 1
+          fi
+
   async_specs:
     name: Async specs and package / Ruby ${{ matrix.ruby }}
     runs-on: ubuntu-24.04
@@ -287,7 +333,7 @@ jobs:
       BUNDLE_GEMFILE: ${{ github.workspace }}/gems/connectrpc-async/Gemfile
       BUNDLE_PATH: ${{ github.workspace }}/vendor/async/bundle
       BUNDLE_USER_HOME: ${{ github.workspace }}/vendor/async/bundler
-      BUNDLE_COOLDOWN: "7"
+      BUNDLE_COOLDOWN: "3"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -338,7 +384,7 @@ jobs:
       BUNDLE_GEMFILE: ${{ github.workspace }}/gems/connectrpc-async/Gemfile
       BUNDLE_PATH: ${{ github.workspace }}/vendor/async/bundle
       BUNDLE_USER_HOME: ${{ github.workspace }}/vendor/async/bundler
-      BUNDLE_COOLDOWN: "7"
+      BUNDLE_COOLDOWN: "3"
       GOTOOLCHAIN: local
       GOWORK: "off"
       GOFLAGS: -mod=readonly
@@ -396,7 +442,7 @@ jobs:
       BUNDLE_GEMFILE: ${{ github.workspace }}/gems/connectrpc-rack/Gemfile
       BUNDLE_PATH: ${{ github.workspace }}/vendor/rack/bundle
       BUNDLE_USER_HOME: ${{ github.workspace }}/vendor/rack/bundler
-      BUNDLE_COOLDOWN: "7"
+      BUNDLE_COOLDOWN: "3"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -441,7 +487,7 @@ jobs:
       BUNDLE_GEMFILE: ${{ github.workspace }}/gems/connectrpc-testing/Gemfile
       BUNDLE_PATH: ${{ github.workspace }}/vendor/testing/bundle
       BUNDLE_USER_HOME: ${{ github.workspace }}/vendor/testing/bundler
-      BUNDLE_COOLDOWN: "7"
+      BUNDLE_COOLDOWN: "3"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -540,7 +586,7 @@ jobs:
       BUNDLE_GEMFILE: ${{ github.workspace }}/gems/connectrpc-falcon/Gemfile
       BUNDLE_PATH: ${{ github.workspace }}/vendor/falcon/bundle
       BUNDLE_USER_HOME: ${{ github.workspace }}/vendor/falcon/bundler
-      BUNDLE_COOLDOWN: "7"
+      BUNDLE_COOLDOWN: "3"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -591,7 +637,7 @@ jobs:
       BUNDLE_GEMFILE: ${{ github.workspace }}/gems/connectrpc-falcon/Gemfile
       BUNDLE_PATH: ${{ github.workspace }}/vendor/falcon/bundle
       BUNDLE_USER_HOME: ${{ github.workspace }}/vendor/falcon/bundler
-      BUNDLE_COOLDOWN: "7"
+      BUNDLE_COOLDOWN: "3"
       GOTOOLCHAIN: local
       GOWORK: "off"
       GOFLAGS: -mod=readonly
@@ -647,7 +693,7 @@ jobs:
       BUNDLE_GEMFILE: ${{ github.workspace }}/gems/connectrpc-otel/Gemfile
       BUNDLE_PATH: ${{ github.workspace }}/vendor/otel/bundle
       BUNDLE_USER_HOME: ${{ github.workspace }}/vendor/otel/bundler
-      BUNDLE_COOLDOWN: "7"
+      BUNDLE_COOLDOWN: "3"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -688,7 +734,7 @@ jobs:
       BUNDLE_GEMFILE: ${{ github.workspace }}/gems/connectrpc-prometheus/Gemfile
       BUNDLE_PATH: ${{ github.workspace }}/vendor/prometheus/bundle
       BUNDLE_USER_HOME: ${{ github.workspace }}/vendor/prometheus/bundler
-      BUNDLE_COOLDOWN: "7"
+      BUNDLE_COOLDOWN: "3"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -729,7 +775,7 @@ jobs:
       BUNDLE_GEMFILE: ${{ github.workspace }}/gems/connectrpc-yabeda/Gemfile
       BUNDLE_PATH: ${{ github.workspace }}/vendor/yabeda/bundle
       BUNDLE_USER_HOME: ${{ github.workspace }}/vendor/yabeda/bundler
-      BUNDLE_COOLDOWN: "7"
+      BUNDLE_COOLDOWN: "3"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

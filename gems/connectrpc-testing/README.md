@@ -179,7 +179,7 @@ MISE_RUBY_VERSION=4.0.9 mise run testing:verify
 ```
 
 Pinned Ruby and Bundler must already be installed; these tasks never install
-Bundler globally. The independent checksummed bundle, caches and archives use
+Bundler globally. The independent bundle, caches and archives use
 `vendor/testing/`; SimpleCov starts before library requires, includes every
 package library file and writes `coverage/testing/<Ruby>/`. `testing:check`
 parses every maintained Ruby file and uses the repository RuboCop policy.

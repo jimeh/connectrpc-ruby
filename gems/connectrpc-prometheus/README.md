@@ -196,16 +196,17 @@ rejection, delivery and connection metrics are additions.
 
 From the repository root use `mise run prometheus:setup`, `prometheus:test`,
 `prometheus:check`, `prometheus:build`, `prometheus:package`,
-`prometheus:example`, and `prometheus:verify`. The independent checksummed
-development bundle includes the local Rack, Async, Falcon and testing packages
+`prometheus:example`, and `prometheus:verify`. The independent development
+bundle resolves the newest allowed versions and includes the local Rack, Async, Falcon and testing packages
 for real-host specs. Caches and archives are in `vendor/prometheus`, and coverage
 is in `coverage/prometheus/<Ruby>/`. Both pinned Ruby 3.4.12 and 4.0.9 CI leaves
 run `prometheus:verify`. `scripts/integration.rb` is also a runnable generated
 example that checks the text exposition.
 
-prometheus-client 5.0.0 was released 2026-08-29 and adopted under the seven-day
-cooldown; it changes only Ruby support versus 4.2.5, whose `DirectFileStore`
-calls `CGI.parse`, which Ruby 4.0 removed.
+`floors:prometheus` repeats specs and package checks with every runtime
+dependency at its gemspec floor, including prometheus-client 5.0.0. That floor
+changes only Ruby support versus 4.2.5, whose `DirectFileStore` calls
+`CGI.parse`, which Ruby 4.0 removed.
 
 ## Static signatures
 

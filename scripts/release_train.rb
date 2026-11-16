@@ -4,7 +4,7 @@ require "json"
 require "rubygems"
 
 # Source preparation only. This helper never loads ConnectRPC or contacts a registry.
-class ReleaseTrain # rubocop:disable Metrics/ClassLength
+class ReleaseTrain
   NAMES = %w[connectrpc connectrpc-rack connectrpc-async connectrpc-testing connectrpc-otel
              connectrpc-on-rails connectrpc-falcon connectrpc-prometheus connectrpc-yabeda].freeze
   VERSION_FILES = NAMES.to_h do |name|
@@ -15,27 +15,10 @@ class ReleaseTrain # rubocop:disable Metrics/ClassLength
            end
     [name, file]
   end.freeze
-  LOCKS = ["Gemfile.lock", *%w[rack async falcon testing otel prometheus yabeda].map do |name|
-    "gems/connectrpc-#{name}/Gemfile.lock"
-  end, *%w[8.0 8.1].map { |lane| "gems/connectrpc-on-rails/gemfiles/rails_#{lane}.gemfile.lock" }].freeze
   GUIDES = %w[README.md docs/design.md docs/unary.md gems/connectrpc-rack/README.md
               gems/connectrpc-on-rails/README.md gems/connectrpc-async/README.md gems/connectrpc-falcon/README.md
               gems/connectrpc-testing/README.md gems/connectrpc-otel/README.md
               gems/connectrpc-prometheus/README.md gems/connectrpc-yabeda/README.md].freeze
-  LOCK_PACKAGES = {
-    "Gemfile.lock" => %w[connectrpc connectrpc-rack],
-    "gems/connectrpc-rack/Gemfile.lock" => %w[connectrpc connectrpc-rack],
-    "gems/connectrpc-async/Gemfile.lock" => %w[connectrpc connectrpc-async],
-    "gems/connectrpc-falcon/Gemfile.lock" => %w[connectrpc connectrpc-async connectrpc-falcon],
-    "gems/connectrpc-testing/Gemfile.lock" => %w[connectrpc connectrpc-testing],
-    "gems/connectrpc-otel/Gemfile.lock" => %w[connectrpc connectrpc-rack connectrpc-async connectrpc-testing
-                                              connectrpc-otel connectrpc-on-rails connectrpc-falcon],
-    "gems/connectrpc-prometheus/Gemfile.lock" => %w[connectrpc connectrpc-rack connectrpc-async connectrpc-falcon
-                                                    connectrpc-testing connectrpc-prometheus],
-    "gems/connectrpc-yabeda/Gemfile.lock" => %w[connectrpc connectrpc-testing connectrpc-yabeda],
-    "gems/connectrpc-on-rails/gemfiles/rails_8.0.gemfile.lock" => %w[connectrpc connectrpc-rack connectrpc-on-rails],
-    "gems/connectrpc-on-rails/gemfiles/rails_8.1.gemfile.lock" => %w[connectrpc connectrpc-rack connectrpc-on-rails]
-  }.freeze
   attr_reader :root
 
   def initialize(root = File.expand_path("..", __dir__))
@@ -88,30 +71,12 @@ class ReleaseTrain # rubocop:disable Metrics/ClassLength
     end
   end
 
-  def prepared_lock(content) # rubocop:disable Metrics/MethodLength
-    names = Regexp.union(NAMES)
-    # Only PATH records and digest-free local CHECKSUMS may change. Keep the
-    # registry resolution, third-party checksums, platforms and tool pins intact.
-    content.split(/(?=^[A-Z][A-Z ]*\n)/).map do |section|
-      if section.start_with?("PATH\n")
-        section.gsub(/^( {4}#{names}) \([^\n)]+\)$/, "\\1 (#{version})")
-               .gsub(/^( {6}#{names}) \(~> [^\n)]+\)$/, "\\1 (#{requirement})")
-      elsif section.start_with?("CHECKSUMS\n")
-        section.gsub(/^( {2}#{names}) \([^\n)]+\)$/, "\\1 (#{version})")
-      else
-        section
-      end
-    end.join
-  end
-
+  # Installation guides name the internal `~> M.m.0` requirement, which changes
+  # only on a minor (breaking) release. Versions and changelog need nothing else.
   def prepared_files
-    files = LOCKS.to_h { |file| [file, prepared_lock(read(file))] }
-    GUIDES.each do |file|
-      files[file] = read(file).gsub(/(connectrpc(?:-[a-z]+)*["`, ]+)~> 0\.\d+\.\d+/, "\\1#{requirement}")
+    GUIDES.to_h do |file|
+      [file, read(file).gsub(/(connectrpc(?:-[a-z]+)*["`, ]+)~> 0\.\d+\.\d+/, "\\1#{requirement}")]
     end
-    files["docs/development.md"] = read("docs/development.md").gsub(%r{pkg/connectrpc-0\.\d+\.\d+\.gem},
-                                                                    "pkg/connectrpc-#{version}.gem")
-    files
   end
 
   def check_configuration! # rubocop:disable Metrics/AbcSize, Metrics/CyclomaticComplexity, Metrics/MethodLength, Metrics/PerceivedComplexity
@@ -142,17 +107,9 @@ class ReleaseTrain # rubocop:disable Metrics/ClassLength
     raise "Release manifest does not match candidate #{version}"
   end
 
-  def check! # rubocop:disable Metrics/AbcSize, Metrics/MethodLength
+  def check!
     check_versions!
     check_configuration!
-    LOCK_PACKAGES.each do |file, names|
-      content = read(file)
-      specifications = content.scan(/^ {4}(connectrpc(?:-[a-z]+)*) \([^\n)]+\)$/).flatten
-      checksums = content.scan(/^ {2}(connectrpc(?:-[a-z]+)*) \([^\n)]+\)$/).flatten
-      unless specifications.sort == names.sort && checksums.sort == names.sort
-        raise "Local path/checksum inventory changed: #{file}"
-      end
-    end
     prepared_files.each do |file, expected|
       raise "Stale release preparation: #{file}; run mise run release:prepare" unless read(file) == expected
     end

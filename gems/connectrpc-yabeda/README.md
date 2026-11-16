@@ -113,15 +113,15 @@ the application's Gemfile. The default in-memory store does not need it.
 From the repository root use `mise run yabeda:setup`, `yabeda:test`,
 `yabeda:check`, `yabeda:build`, `yabeda:package`, `yabeda:example`, and
 `yabeda:verify`. Specs record through the `yabeda/testing` adapter. The
-development bundle deliberately excludes yabeda-prometheus: its
-`prometheus-client < 5` would split the single version map every package lock
-shares. Name equality is structural through the shared definitions and checked
+development bundle resolves the newest allowed versions and deliberately
+excludes yabeda-prometheus: its `prometheus-client < 5` is below the range
+connectrpc-prometheus supports. Name equality is structural through the shared definitions and checked
 against yabeda-prometheus's `group_name_unit` rule. Caches and archives are in
 `vendor/yabeda`, and coverage is in `coverage/yabeda/<Ruby>/`. Both pinned Ruby
 3.4.12 and 4.0.9 CI leaves run `yabeda:verify`.
 
-yabeda 0.16.0 was released 2026-03-12 and its dependency closure was adopted
-under the seven-day cooldown.
+`floors:yabeda` repeats specs and package checks with every runtime dependency
+at its gemspec floor, including yabeda 0.16.0.
 
 ## Static signatures
 

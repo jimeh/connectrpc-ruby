@@ -23,20 +23,11 @@ raise "Push host missing" unless package.spec.metadata["allowed_push_host"] == "
 plugin_mode = File.stat(File.join(root, "exe/protoc-gen-connectrpc-ruby")).mode & 0o777
 puts "Source plugin mode: #{format('%04o', plugin_mode)} (unchanged)"
 artifacts = Bundler.load.specs.reject { |spec| spec.name == "bundler" }.map(&:cache_file)
-root_specs = Bundler::LockfileParser.new(File.read(File.join(root, "Gemfile.lock"))).specs
-root_cache = File.join(root, "vendor/bundle/ruby", RbConfig::CONFIG.fetch("ruby_version"), "cache")
-%w[rake bigdecimal google-protobuf].each do |name|
-  version = root_specs.find { |spec| spec.name == name }.version
-  candidates = Dir.glob(File.join(root_cache, "#{name}-#{version}*.gem"))
-  artifact = candidates.find do |file|
-    spec = Gem::Package.new(file).spec
-    spec.name == name && spec.version == version && Gem::Platform.match_spec?(spec)
-  end
-  raise "Missing cached root bundle artifact #{name}" unless artifact
-
-  artifacts << artifact
-end
 raise "Missing offline tool archives" unless artifacts.all? { |file| File.file?(file) }
+
+# Generated consumers need the exact google-protobuf development pin; RubyGems
+# resolves its dependencies from the same ABI-scoped caches as installed packages.
+protobuf = "google-protobuf:4.36.2"
 
 Bundler.with_unbundled_env do
   Dir.mktmpdir("connectrpc-rbs-package-", ENV.fetch("CONNECTRPC_RBS_PACKAGE_TMPDIR", nil)) do |temporary|
@@ -56,6 +47,7 @@ Bundler.with_unbundled_env do
     end
     FileUtils.cp_r(File.join(root, "spec/fixtures/rbs/proto"), working)
     FileUtils.cp(artifacts, working)
+    FileUtils.cp(InstalledAPI.cached_archives(root: root), working)
     environment = { "GEM_HOME" => home, "GEM_PATH" => home, "RUBYLIB" => nil, "RUBYOPT" => nil,
                     "RUBYGEMS_GEMDEPS" => nil }
     ENV.each_key { |name| environment[name] = nil if name.start_with?("BUNDLE_", "BUNDLER_") }
@@ -64,7 +56,7 @@ Bundler.with_unbundled_env do
     begin
       environment.each { |name, value| value ? ENV[name] = value : ENV.delete(name) }
       RBSHarness.capture!([RbConfig.ruby, "-S", "gem", "install", "--norc", "--local", "--no-document",
-                           archive, *artifacts], working: working)
+                           archive, *artifacts, protobuf], working: working)
       installed = RBSHarness.capture!([RbConfig.ruby, "-e", <<~CODE], working: working).strip
         require 'connectrpc'
         spec = Gem.loaded_specs.fetch('connectrpc')

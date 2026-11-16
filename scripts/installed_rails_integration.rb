@@ -12,7 +12,9 @@ require "connectrpc/bindings/google_protobuf"
 $LOAD_PATH.unshift(File.expand_path("generated", __dir__))
 require "echo_connect"
 
-abort "Wrong Rails version" unless Rails.version == ENV.fetch("CONNECTRPC_RAILS_VERSION")
+abort "Wrong Rails lane" unless Rails.version.start_with?("#{ENV.fetch('CONNECTRPC_RAILS_LANE')}.")
+# The installed graph must activate the Rails release the development lane bundle resolved.
+abort "Rails activation drift" unless Rails.version == ENV.fetch("CONNECTRPC_RAILS_VERSION")
 module InstalledIntegration
   class InstalledRailsApp < Rails::Application
     config.load_defaults Rails::VERSION::STRING.split(".").first(2).join(".")

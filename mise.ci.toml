@@ -5,7 +5,7 @@ disable_tools = ["ruby", "go"]
 exec_auto_install = false
 
 [tasks."setup:tools"]
-description = "Validate the action-provided Ruby and frozen bundle configuration"
+description = "Validate the action-provided Ruby and bundle configuration"
 run = "ruby {{config_root}}/scripts/ci_runtime.rb"
 
 # A command-bearing override replaces the WHOLE task, including tools/env/dir.
@@ -27,41 +27,41 @@ run = ["ruby {{config_root}}/scripts/ci_runtime.rb browser-reference", "go mod d
 [tasks."async:tools"]
 description = "Validate exact action Ruby/Bundler and the independent backend bundle"
 dir = "{{config_root}}/gems/connectrpc-async"
-env = { BUNDLE_GEMFILE = "{{config_root}}/gems/connectrpc-async/Gemfile", BUNDLE_PATH = "{{config_root}}/vendor/async/bundle", BUNDLE_USER_HOME = "{{config_root}}/vendor/async/bundler", BUNDLE_COOLDOWN = "7" }
+env = { BUNDLE_GEMFILE = "{{config_root}}/gems/connectrpc-async/Gemfile", BUNDLE_PATH = "{{config_root}}/vendor/async/bundle", BUNDLE_USER_HOME = "{{config_root}}/vendor/async/bundler", BUNDLE_COOLDOWN = "3" }
 run = "ruby scripts/ci_runtime.rb"
 
 [tasks."rack:tools"]
 description = "Validate exact action Ruby/Bundler and the independent middleware bundle"
 dir = "{{config_root}}/gems/connectrpc-rack"
-env = { BUNDLE_GEMFILE = "{{config_root}}/gems/connectrpc-rack/Gemfile", BUNDLE_PATH = "{{config_root}}/vendor/rack/bundle", BUNDLE_USER_HOME = "{{config_root}}/vendor/rack/bundler", BUNDLE_COOLDOWN = "7" }
+env = { BUNDLE_GEMFILE = "{{config_root}}/gems/connectrpc-rack/Gemfile", BUNDLE_PATH = "{{config_root}}/vendor/rack/bundle", BUNDLE_USER_HOME = "{{config_root}}/vendor/rack/bundler", BUNDLE_COOLDOWN = "3" }
 run = "ruby scripts/ci_runtime.rb"
 
 [tasks."testing:tools"]
 description = "Validate action Ruby/Bundler and independent testing bundle settings"
 dir = "{{config_root}}/gems/connectrpc-testing"
-env = { BUNDLE_GEMFILE = "{{config_root}}/gems/connectrpc-testing/Gemfile", BUNDLE_PATH = "{{config_root}}/vendor/testing/bundle", BUNDLE_USER_HOME = "{{config_root}}/vendor/testing/bundler", BUNDLE_COOLDOWN = "7" }
+env = { BUNDLE_GEMFILE = "{{config_root}}/gems/connectrpc-testing/Gemfile", BUNDLE_PATH = "{{config_root}}/vendor/testing/bundle", BUNDLE_USER_HOME = "{{config_root}}/vendor/testing/bundler", BUNDLE_COOLDOWN = "3" }
 run = "ruby scripts/ci_runtime.rb"
 
 [tasks."falcon:tools"]
 description = "Validate exact action Ruby/Bundler and the independent backend bundle"
 dir = "{{config_root}}/gems/connectrpc-falcon"
-env = { BUNDLE_GEMFILE = "{{config_root}}/gems/connectrpc-falcon/Gemfile", BUNDLE_PATH = "{{config_root}}/vendor/falcon/bundle", BUNDLE_USER_HOME = "{{config_root}}/vendor/falcon/bundler", BUNDLE_COOLDOWN = "7" }
+env = { BUNDLE_GEMFILE = "{{config_root}}/gems/connectrpc-falcon/Gemfile", BUNDLE_PATH = "{{config_root}}/vendor/falcon/bundle", BUNDLE_USER_HOME = "{{config_root}}/vendor/falcon/bundler", BUNDLE_COOLDOWN = "3" }
 run = "ruby scripts/ci_runtime.rb"
 
 [tasks."otel:tools"]
 description = "Validate action Ruby/Bundler and independent OpenTelemetry bundle settings"
 dir = "{{config_root}}/gems/connectrpc-otel"
-env = { BUNDLE_GEMFILE = "{{config_root}}/gems/connectrpc-otel/Gemfile", BUNDLE_PATH = "{{config_root}}/vendor/otel/bundle", BUNDLE_USER_HOME = "{{config_root}}/vendor/otel/bundler", BUNDLE_COOLDOWN = "7" }
+env = { BUNDLE_GEMFILE = "{{config_root}}/gems/connectrpc-otel/Gemfile", BUNDLE_PATH = "{{config_root}}/vendor/otel/bundle", BUNDLE_USER_HOME = "{{config_root}}/vendor/otel/bundler", BUNDLE_COOLDOWN = "3" }
 run = "ruby scripts/ci_runtime.rb"
 
 [tasks."prometheus:tools"]
 description = "Validate action Ruby/Bundler and independent Prometheus bundle settings"
 dir = "{{config_root}}/gems/connectrpc-prometheus"
-env = { BUNDLE_GEMFILE = "{{config_root}}/gems/connectrpc-prometheus/Gemfile", BUNDLE_PATH = "{{config_root}}/vendor/prometheus/bundle", BUNDLE_USER_HOME = "{{config_root}}/vendor/prometheus/bundler", BUNDLE_COOLDOWN = "7" }
+env = { BUNDLE_GEMFILE = "{{config_root}}/gems/connectrpc-prometheus/Gemfile", BUNDLE_PATH = "{{config_root}}/vendor/prometheus/bundle", BUNDLE_USER_HOME = "{{config_root}}/vendor/prometheus/bundler", BUNDLE_COOLDOWN = "3" }
 run = "ruby scripts/ci_runtime.rb"
 
 [tasks."yabeda:tools"]
 description = "Validate action Ruby/Bundler and independent Yabeda bundle settings"
 dir = "{{config_root}}/gems/connectrpc-yabeda"
-env = { BUNDLE_GEMFILE = "{{config_root}}/gems/connectrpc-yabeda/Gemfile", BUNDLE_PATH = "{{config_root}}/vendor/yabeda/bundle", BUNDLE_USER_HOME = "{{config_root}}/vendor/yabeda/bundler", BUNDLE_COOLDOWN = "7" }
+env = { BUNDLE_GEMFILE = "{{config_root}}/gems/connectrpc-yabeda/Gemfile", BUNDLE_PATH = "{{config_root}}/vendor/yabeda/bundle", BUNDLE_USER_HOME = "{{config_root}}/vendor/yabeda/bundler", BUNDLE_COOLDOWN = "3" }
 run = "ruby scripts/ci_runtime.rb"

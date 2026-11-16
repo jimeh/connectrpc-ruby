@@ -88,8 +88,11 @@ require "echo_connect"
 require_relative "helpers"
 include AsyncHelpers
 
-abort "OpenSSL activation drift" unless Gem.loaded_specs.fetch("openssl").version.to_s == "4.0.2"
-abort "JSON activation drift" unless Gem.loaded_specs.fetch("json").version.to_s == "3.1.0"
+# The package/example launcher derives these expected releases from the development bundle.
+%w[OpenSSL JSON].each do |label|
+  actual = Gem.loaded_specs.fetch(label.downcase).version.to_s
+  abort "#{label} activation drift: #{actual}" unless actual == ENV.fetch("CONNECTRPC_EXPECTED_#{label.upcase}")
+end
 Dir.mktmpdir("falcon-installed-tls-") do |directory|
   ca = credentials(1, "installed CA", authority: true)
   leaf = credentials(101, "localhost", issuer: ca, usage: "serverAuth")

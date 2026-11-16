@@ -47,9 +47,10 @@ are not durable homes for hand-edited migration notes.
 
 The train uses matching package versions. Internal gem dependencies keep the
 existing pessimistic minor-series range, `~> M.m.0`; a patch does not narrow
-that floor. External dependency constraints, resolved registry versions,
-checksums and tool pins are unchanged by release preparation. Matching versions
-do not add a runtime enforcement mechanism or adopt the support profile.
+that floor. External dependency constraints and tool pins are unchanged by
+release preparation. Development locks are not committed, so a release carries
+no lock changes. Matching versions do not add a runtime enforcement mechanism
+or adopt the support profile.
 
 ## Prepare a release PR
 
@@ -94,28 +95,24 @@ For each release PR:
 
 1. Inspect the generated release PR. For the first release, verify that the
    proposed version is exactly `0.1.0`; every release includes all nine gems.
-2. Check out that release branch. Run `mise run release:prepare` before frozen
-   Bundler setup. This updates all ten local path locks, including digest-free
-   local CHECKSUMS entries and internal dependency floors, and installation
-   guides. It does not resolve dependencies or download anything. Review the
-   diff and commit with the existing signing configuration.
+2. A patch release needs no preparation: the bot's version files, manifest and
+   changelog are the whole change, and `release:check` accepts them. A minor
+   (breaking) release changes the internal `~> M.m.0` requirement that the
+   installation guides quote, so `release:check` fails until you check out the
+   release branch, run `mise run release:prepare`, review the guide diff and
+   commit it with the existing signing configuration. Preparation does not
+   resolve dependencies or download anything.
 3. Run `mise run release:check`, focused tests and the candidate procedure below.
    Capture the exact head and CI/review evidence after the final bot update.
 4. Merge the PR once the release decision is made. The release workflow then
    waits for any `release` environment approval.
 
-Release Please's Ruby updater changes only the first matching core entry in the
-root lock. It leaves other path records and local CHECKSUMS stale. The release
-check rejects that partial state. `release:prepare` owns preparation of the root
-lock and all seven optional locks plus both Rails Appraisal locks. The typecheck
-tool lock has no local package records. Frozen installs in each owning CI lane
-are the evidence that Bundler accepts these prepared locks.
-
-**Re-run preparation after every bot regeneration.** Release Please rebuilds
-its branch from main when its generated body changes. It can discard signed
-preparation commits and hand edits in the release PR. Finish the bot update,
-then prepare and validate its final head; a quiet main during that window helps.
-Do not present earlier CI/review evidence as covering a later regenerated head.
+**Re-run preparation after every bot regeneration of a minor release.** Release
+Please rebuilds its branch from main when its generated body changes. It can
+discard signed preparation commits and hand edits in the release PR. Finish the
+bot update, then prepare and validate its final head; a quiet main during that
+window helps. Do not present earlier CI/review evidence as covering a later
+regenerated head.
 
 ## Validate a local candidate
 
@@ -123,8 +120,8 @@ Use `mise tasks` for the task index:
 
 | Task | Evidence and writes |
 | --- | --- |
-| `release:check` | Offline version, configuration, guard and prepared local-lock checks. No writes or setup dependencies. |
-| `release:prepare` | Deterministic local path-lock and installation-guide updates. No registry resolution. |
+| `release:check` | Offline version, configuration, guard and installation-guide checks. No writes or setup dependencies. |
+| `release:prepare` | Deterministic installation-guide requirement updates, needed only for a minor release. No registry resolution. |
 | `release:build` | Nine canonical archives, two-build hash comparison and `candidate.json`. No installation or publication. |
 | `release:candidate` | Existing installed-package/generation/RBS checks followed by the canonical archive build. Uses normal scoped setup prerequisites. |
 | `release:tools` | Installs the frozen Sigstore signing bundle (`release/Gemfile`) into `vendor/sigstore`. |
@@ -162,6 +159,7 @@ mise run yabeda:package
 mise run rbs:check
 mise run rbs:package
 mise run grpc:status:check
+mise run floors
 MISE_RUBY_VERSION=4.0.9 mise run testing:package
 MISE_RUBY_VERSION=4.0.9 mise run otel:package
 MISE_RUBY_VERSION=4.0.9 mise run prometheus:package

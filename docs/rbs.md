@@ -325,8 +325,8 @@ outside its automatically loaded `sig/`:
 
 | Package | Explicit signature directory | Tested upstream versions |
 | --- | --- | --- |
-| `connectrpc-on-rails` | `rbs/action_controller_8` | actionpack 8.0.5.1 and 8.1.4 |
-| `connectrpc-falcon` | `rbs/async_service_0_25` | Falcon 0.57.0, async-service 0.25.0 |
+| `connectrpc-on-rails` | `rbs/action_controller_8` | Newest allowed actionpack in the selected Rails lane (8.0 or 8.1) |
+| `connectrpc-falcon` | `rbs/async_service_0_25` | Newest allowed Falcon and async-service (gemspec floors 0.57.0 and 0.25.0) |
 
 Add only the selected bridge paths to an application's Steep target, using the
 same gem-relative `Pathname` pattern as the Google bridge above. Omit these
@@ -376,8 +376,8 @@ fail. Parsing uses the pinned formatter's raw record boundaries; escaped message
 newlines cannot introduce diagnostics. Controlled fixture paths cannot contain
 ambiguous annotation properties. Positives, strict implementation, RBS validation
 and Falcon-only checks remain separate.
-`rbs:package` uses the existing frozen optional bundle setups for offline runtime
-archives, builds every owned signature package and checks each library through
+`rbs:package` uses the existing optional bundle setups for offline runtime
+archives, resolved by RubyGems from the running Ruby ABI's caches, builds every owned signature package and checks each library through
 normal installed discovery. It checks composed environments in both load orders,
 real Rails subclass inclusion, Rack/Testing calls, native session/TLS operations,
 Falcon endpoint integration, API-only OTel without loading an SDK, and both
@@ -385,7 +385,7 @@ metrics sinks recording through one core metrics layer. The original
 package guards and generated installed callers remain. Complete negative batch
 logs are retained under `vendor/rbs/`, including nested installed API logs on
 failure. Core, optional and tool bundles stay independent; gem dependencies and
-pins remain unchanged. CI caches dependency installations, always reruns frozen
+pins remain unchanged. CI caches dependency installations, always reruns
 setup and every check, and never caches the fresh external consumer. See
 [CI cache ownership and invalidation](ci.md#optional-rbs-lanes).
 
