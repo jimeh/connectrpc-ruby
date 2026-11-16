@@ -11,9 +11,10 @@ module ConnectRPC
                    response_wire_limit: response_limit, accept_encoding: nil, use_get: false, get_url_limit: 8192,
                    protocol: :connect, mode: :unary, encoding: :identity, instrumentation: nil,
                    terminal_wire_limit: 65_536, terminal_limit: 65_536, status_codec: nil,
-                   grpc_status_wire_limit: 65_536, grpc_status_limit: 65_536)
+                   grpc_status_wire_limit: 65_536, grpc_status_limit: 65_536, interceptors: [])
       Protocol.profile!(protocol, mode, encoding)
       @protocol = protocol
+      @unary_interceptors = Interceptors.client(interceptors)
       @grpc_status_wire_limit = Protocol.limit!(grpc_status_wire_limit)
       @grpc_status_limit = Protocol.limit!(grpc_status_limit)
       @status_codec = GRPCProtocol.status_codec!(binding, status_codec) if protocol == :grpc
@@ -59,17 +60,41 @@ module ConnectRPC
     private
 
     # rubocop:disable Metrics/MethodLength, Metrics/AbcSize, Metrics/CyclomaticComplexity, Metrics/PerceivedComplexity
-    def process_call(method, request, metadata, timeout, cancellation, lifecycle: nil, injection: nil)
+    def process_call(method, request, metadata, timeout, cancellation, lifecycle: nil, injection: nil, &observe)
       # @type var state: CallCancellation?
       state = nil
+      # @type var independent: Exception?
+      independent = nil
       deadline = Deadline.new(timeout) unless timeout.nil?
       active = state = CallCancellation.new(deadline: deadline, cancellation: cancellation)
       active.check!
       metadata = Metadata.new(metadata)
-      if lifecycle
-        metadata = injected_metadata(metadata, injection)
-        lifecycle.request_metadata = Instrumentation.carrier(metadata)
+      chain = @unary_interceptors
+      if chain
+        result = intercept_call(chain, method, request, metadata, deadline, active, lifecycle, injection, &observe)
+        if result.is_a?(StandardError)
+          independent = result
+          raise independent, cause: independent.cause
+        end
+      else
+        if lifecycle
+          metadata = injected_metadata(metadata, injection)
+          lifecycle.request_metadata = Instrumentation.carrier(metadata)
+        end
+        result = exchange(method, request, metadata, deadline, active, lifecycle, &observe)
       end
+      active.commit!
+      result
+    rescue StandardError => e
+      lifecycle&.record_failure(e)
+      # Interceptor exceptions keep their identity over an accepted cancellation.
+      state&.commit! unless independent
+      raise
+    ensure
+      state&.close
+    end
+
+    def exchange(method, request, metadata, deadline, active, lifecycle) # rubocop:disable Metrics/ParameterLists
       outgoing = build_request(method, request, metadata, active, lifecycle)
       outgoing.deadline = deadline
       outgoing.cancellation = active.view
@@ -82,15 +107,40 @@ module ConnectRPC
       yield response if block_given?
       active.check!
       Protocol.check_size!(response.body, @response_wire_limit)
-      result = read_response(response, method, active, lifecycle)
-      active.commit!
-      result
+      read_response(response, method, active, lifecycle)
+    end
+
+    # Returns the outermost result, or the exception that escaped the chain
+    # without being the innermost dispatch failure (failure provenance).
+    def intercept_call(chain, method, request, metadata, deadline, active, lifecycle, injection, &) # rubocop:disable Metrics/ParameterLists
+      call = ClientUnaryCall.new(method: method, protocol: :connect, request: request, request_metadata: metadata,
+                                 deadline: deadline, cancellation: active.view)
+      lifecycle.request_metadata = Instrumentation.carrier(metadata) if lifecycle
+      # @type var innermost: Exception?
+      innermost = nil
+      chain.run(call, lifecycle) do
+        dispatched = dispatch_metadata(call, lifecycle, injection)
+        active.check!
+        exchange(method, call.request, dispatched, deadline, active, lifecycle, &)
+      rescue Exception => e # rubocop:disable Lint/RescueException -- provenance compares the exact escape
+        innermost = e
+        raise
+      end
     rescue StandardError => e
-      lifecycle&.record_failure(e)
-      state&.commit!
-      raise
-    ensure
-      state&.close
+      raise if e.equal?(innermost)
+
+      e
+    end
+
+    # Closes the call and returns the metadata actually sent.
+    def dispatch_metadata(call, lifecycle, injection)
+      call.__send__(:dispatch!)
+      metadata = call.request_metadata
+      return metadata unless lifecycle
+
+      metadata = injected_metadata(metadata, injection)
+      lifecycle.request_metadata = Instrumentation.carrier(metadata)
+      metadata
     end
 
     def instrumented_call(method, request, metadata, timeout, cancellation)
@@ -247,8 +297,8 @@ module ConnectRPC
       headers, body = accept_response(response, deadline, lifecycle)
       message = decode_response(body, method, deadline, lifecycle)
       lifecycle&.message_received(response.body.bytesize)
-      Response.new(message: message, metadata: Protocol.metadata(headers),
-                   trailers: Protocol.metadata(headers, trailers: true))
+      Response.new(message: message, metadata: Protocol.metadata(headers).freeze,
+                   trailers: Protocol.metadata(headers, trailers: true).freeze).freeze
     end
 
     def accept_response(response, deadline, lifecycle)

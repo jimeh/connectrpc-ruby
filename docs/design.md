@@ -311,9 +311,22 @@ Ruby clients reject that unadvertised response. There is no full-conformance cla
 
 Wire protocol, HTTP transport, and message binding remain separate choices.
 [Native gRPC](grpc.md) and [gRPC-Web](grpc-web.md) have distinct implemented
-profiles. Interceptors and Faraday remain future work; production readiness
-remains subject to the support contract's adoption gates. Unsupported
-modes/options are rejected rather than represented as buffered streaming.
+profiles. Typed unary [interceptors](unary.md#interceptors) wrap Client
+dispatch and the Server invoker on every unary protocol; streaming interceptors
+and Faraday remain future work. Production readiness remains subject to the
+support contract's adoption gates. Unsupported modes/options are rejected
+rather than represented as buffered streaming.
+
+Interceptors are application code inside core's call ownership. A client chain
+runs inside the lifecycle activation and the call's deadline and cancellation
+arbiter, before metadata injection and encoding; the arbiter commits once
+after the outermost interceptor. A server chain wraps the invoker after bounded
+decode, so host policy that an invoker carries, such as the Rails controller
+lifecycle, still runs for every successful call. Each layer gets a guarded,
+single-use continuation; no layer can return success after its continuation
+failed, and core records each escaping failure for observers. The
+[interceptor design](plans/interceptors.md) records the full rules and the
+remaining streaming and Rails work.
 
 The optional [connectrpc-on-rails gem](../gems/connectrpc-on-rails/README.md) uses the
 invoker boundary to run native controller callbacks, authentication,

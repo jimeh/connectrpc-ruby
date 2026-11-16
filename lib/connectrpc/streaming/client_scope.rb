@@ -2,7 +2,7 @@
 
 module ConnectRPC
   module Streaming
-    class ClientScope
+    class ClientScope # rubocop:disable Metrics/ClassLength
       attr_accessor :completed, :abandoned, :independent_error, :failure, :result, :delivered_error
 
       def initialize(lifecycle)
@@ -48,6 +48,23 @@ module ConnectRPC
         @lifecycle&.record_failure(error)
       end
 
+      # Runs a unary interceptor chain around the single-request scope. The
+      # outermost value is the scope result; a short-circuit completes the
+      # scope without an exchange. An exception escaping the chain that is not
+      # the exact failure of the dispatch adapter is independent.
+      def intercept(chain, call, &)
+        @intercepted = true
+        result = @result = chain.run(call, @lifecycle) { dispatch_unary(&) }
+        @completed = true unless @dispatched
+        result
+      rescue Exception => e # rubocop:disable Lint/RescueException -- provenance compares the exact escape
+        unless e.equal?(@innermost_failure)
+          @interceptor_error = true
+          @independent_error = e
+        end
+        raise
+      end
+
       private
 
       def finish_preserving_user(error)
@@ -57,6 +74,16 @@ module ConnectRPC
         raise original, cause: original.cause if original
       end
 
+      def dispatch_unary
+        @dispatched = true
+        result = yield
+        @innermost_ok = true
+        result
+      rescue Exception => e # rubocop:disable Lint/RescueException -- provenance compares the exact escape
+        @innermost_failure = e
+        raise
+      end
+
       def finish(error)
         @state&.close
         lifecycle = @lifecycle
@@ -64,7 +91,20 @@ module ConnectRPC
 
         lifecycle.record_failure(error) if error
         report_processing(lifecycle, error)
-        lifecycle.finish(delivery: delivery_completed?(error) ? :completed : :aborted)
+        lifecycle.finish(delivery: delivery(error))
+      end
+
+      # Interceptor delivery comes from exchange facts, not from who raised.
+      def delivery(error)
+        return :unobserved if @intercepted && !@dispatched
+
+        completed = @interceptor_error ? exchange_completed? : delivery_completed?(error)
+        completed ? :completed : :aborted
+      end
+
+      def exchange_completed?
+        delivered = @delivered_error
+        @innermost_ok || (!delivered.nil? && delivered.equal?(@innermost_failure))
       end
 
       def start(timeout, cancellation)

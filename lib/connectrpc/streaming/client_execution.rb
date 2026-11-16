@@ -35,7 +35,10 @@ module ConnectRPC
       prepare_server_stream(method, request, session)
       yield_stream_endpoint(session, scope) { yield stream_endpoint(method, session) }
       scope.abandoned = session.abandoned?
-      scope.result = finish_stream_scope(method, session)
+      result = finish_stream_scope(method, session)
+      # Unary results are frozen snapshots; client-streaming results are not yet.
+      result = Interceptors.response!(result) if result && method.is_a?(Method)
+      scope.result = result
       scope.completed = !scope.abandoned
     end
 

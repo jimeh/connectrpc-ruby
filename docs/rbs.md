@@ -428,6 +428,22 @@ unions. `_Cancellation` is the read-only transport/host extension SPI, with
 and own separate processing arbitration. Deadline remains an actual Deadline or
 nil. Runtime cancellation, reactor and blocking-I/O limits still apply.
 
+## Interceptor types
+
+`Client.new(interceptors:)` takes `Array[client_interceptor]` and
+`Server.new(interceptors:)` takes `Array[server_interceptor]`. In this release
+these aliases are `_ClientUnaryInterceptor` and `_ServerUnaryInterceptor`.
+Their methods take a `ClientUnaryCall` or `ServerUnaryCall` and a no-argument
+continuation block. A client interceptor returns `Response[untyped]`; message
+types are `untyped` because one interceptor serves many methods, like
+`_Invoker`. A registration check accepts any object that satisfies the
+interface, so declare `include ConnectRPC::_ClientUnaryInterceptor` (or the
+server interface) in an interceptor class's own signature to have Steep check
+its return type and continuation calls. Runtime checks cover unsigned
+interceptors. Exact negatives reject wrong-role registration, a non-`Response`
+client return, a continuation called with an argument and `wrap_stream` on a
+unary call.
+
 ## Streaming types
 
 The invariant streaming declarations are siblings of unary Method. Generated

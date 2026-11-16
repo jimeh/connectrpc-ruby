@@ -106,6 +106,16 @@ invoker, callbacks, authentication, sessions, cookies, CSRF and security headers
 remain active. Preflight does not bypass actual POST checks. A valid CSRF token
 does not override Rails' origin policy. No CSRF exemption is installed.
 
+## Interceptors
+
+Web unary calls run the Server's [unary interceptors](unary.md#interceptors)
+with `call.protocol == :grpc_web`, after the single request frame is read and
+decoded and around the invoker. Response metadata written before or after
+`yield` is published with the head after the chain returns; trailers and error
+metadata reach the terminal frame. Server-streaming Web calls do not run
+interceptors yet, and a Server rejects an interceptor that defines
+`server_stream`.
+
 ## Bounds and host SPI
 
 Message and independent message-wire limits default to 4 MiB. Framing adds five

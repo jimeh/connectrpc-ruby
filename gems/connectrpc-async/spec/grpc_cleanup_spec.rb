@@ -21,7 +21,7 @@ RSpec.describe "gRPC owned cleanup outcome" do
     end
   end
 
-  def with_cleanup_peer(kind, failure:, remote_error: false, source: nil, expire: false) # rubocop:disable Metrics/CyclomaticComplexity, Metrics/PerceivedComplexity
+  def with_cleanup_peer(kind, failure:, remote_error: false, source: nil, expire: false, interceptors: []) # rubocop:disable Metrics/CyclomaticComplexity, Metrics/PerceivedComplexity
     reactor do |_task|
       method = kind.new(service: "test.Cleanup", name: "Call", request_type: AsyncHelpers::MESSAGE,
                         response_type: AsyncHelpers::MESSAGE)
@@ -83,7 +83,8 @@ RSpec.describe "gRPC owned cleanup outcome" do
         raise original if failure == :release
       end
       core = ConnectRPC::Client.new(base_url: origin, transport: transport, protocol: :grpc,
-                                    binding: ConnectRPC::Bindings::GoogleProtobuf.new, instrumentation: bus)
+                                    binding: ConnectRPC::Bindings::GoogleProtobuf.new, instrumentation: bus,
+                                    interceptors: interceptors)
       yield core, method, original, outcomes, completions
       expect(close_calls).to eq(failure == :task ? 0 : 1)
       expect(release_calls).to eq(1)
@@ -138,6 +139,54 @@ RSpec.describe "gRPC owned cleanup outcome" do
         expect(outcomes.last.code).to eq("not_found")
         expect(completions.last.delivery).to eq(failure == :none ? :completed : :aborted)
         expect(completions.last.error).to be_a(IOError) unless failure == :none
+      end
+    end
+  end
+
+  describe "with a translating unary interceptor" do
+    let(:translation) { ConnectRPC::Error.new(:failed_precondition, "Translated") }
+    let(:translating) do
+      translation = self.translation
+      Object.new.tap do |interceptor|
+        interceptor.define_singleton_method(:client_unary) do |_call, &continuation|
+          continuation.call
+        rescue ConnectRPC::Error
+          raise translation
+        end
+      end
+    end
+
+    it "keeps an owned cleanup failure aborted" do
+      with_cleanup_peer(ConnectRPC::Method, failure: :close, interceptors: [translating]) do |core, method, original,
+                                                                                            outcomes, completions|
+        expect { cleanup_call(core, method, timeout: nil) }.to(raise_error do |error|
+          expect(error).to equal(translation)
+        end)
+        expect(outcomes.last).to have_attributes(code: "failed_precondition", error: original)
+        expect(completions.last.delivery).to eq(:aborted)
+      end
+    end
+
+    it "keeps a remote failure followed by a cleanup failure aborted" do
+      with_cleanup_peer(ConnectRPC::Method, failure: :close, remote_error: true,
+                                            interceptors: [translating]) do |core, method, _, outcomes, completions|
+        expect { cleanup_call(core, method, timeout: nil) }.to(raise_error do |error|
+          expect(error).to equal(translation)
+        end)
+        expect(outcomes.last.code).to eq("failed_precondition")
+        expect(outcomes.last.error.code).to eq("not_found")
+        expect(completions.last.delivery).to eq(:aborted)
+      end
+    end
+
+    it "reports a delivered remote failure as completed" do
+      with_cleanup_peer(ConnectRPC::Method, failure: :none, remote_error: true,
+                                            interceptors: [translating]) do |core, method, _, outcomes, completions|
+        expect { cleanup_call(core, method, timeout: nil) }.to(raise_error do |error|
+          expect(error).to equal(translation)
+        end)
+        expect(outcomes.last.error.code).to eq("not_found")
+        expect(completions.last.delivery).to eq(:completed)
       end
     end
   end

@@ -318,3 +318,35 @@ end
 class BadAPIRecorder
   def increment(key) = key.to_proc && nil
 end
+
+class APIClientInterceptor
+  def client_unary(call)
+    call.request_metadata["x-rpc"] = "#{call.protocol}:#{call.method.path}"
+    call.request = call.request.dup
+    call.cancellation.check!
+    call.deadline&.remaining
+    response = yield
+    response.trailers["x-tail"]&.size
+    response
+  end
+end
+
+class APICachingInterceptor
+  def client_unary(call)
+    return yield unless call.request_metadata["x-cache"]
+
+    ConnectRPC::Response.new(message: "cached", metadata: ConnectRPC::Metadata.new,
+                             trailers: ConnectRPC::Metadata.new)
+  end
+end
+
+class APIServerInterceptor
+  def server_unary(call)
+    context = call.context
+    context.request_metadata["x-principal"] = "#{call.protocol}:#{call.method.name}"
+    call.request = call.request.dup
+    response = yield
+    context.response_trailers.add("x-done", "yes")
+    response
+  end
+end

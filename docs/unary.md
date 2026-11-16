@@ -339,8 +339,10 @@ watchdog. Native TCP/TLS/read/write waits remain independently capped at
 `9_999_999.999` seconds; a native timeout returns `unavailable`. Sustained
 progress can outlast that per-operation cap.
 
-For finite values, one monotonic budget starts before encoding and covers
-network I/O and checks around codec work.
+For finite values, one monotonic budget starts before the
+[interceptor chain](#interceptors) and covers interceptor time, encoding, network
+I/O and checks around codec work. The wire timeout is computed at dispatch from
+the remaining budget.
 
 The default NetHTTP transport:
 
@@ -423,6 +425,146 @@ reset codes, connection loss and host shutdown do not manufacture explicit
 cancellation. Rack/Rails and Falcon HTTP/1 add no peer detection or token env
 injection. Synchronous adapters cannot interrupt blocked application code.
 See [design](design.md) for ownership and transport limits.
+
+## Interceptors
+
+Interceptors put one policy, such as authentication, validation, metadata
+injection or error translation, around every unary call of a Client or Server.
+An interceptor is any object with a `client_unary(call)` or `server_unary(call)`
+method. Its block is the continuation: `yield` runs the next interceptor, or
+dispatch for the innermost one.
+
+```ruby
+class BearerAuth
+  def initialize(tokens) = @tokens = tokens
+
+  def client_unary(call)
+    call.request_metadata["authorization"] = "Bearer #{@tokens.current}"
+    yield
+  end
+end
+
+class RequireTenant
+  def server_unary(call)
+    tenant = call.context.request_metadata["x-tenant"]
+    raise ConnectRPC::Error.new(:unauthenticated, "Missing tenant") unless tenant
+
+    yield
+  end
+end
+
+client = ConnectRPC::Client.new(base_url: url, binding: binding, interceptors: [BearerAuth.new(tokens)])
+server = ConnectRPC::Server.new(services: services, binding: binding, handlers: handlers,
+                                interceptors: [RequireTenant.new])
+```
+
+`interceptors:` defaults to an empty Array. Core discovers each element's method
+once at construction and raises `ArgumentError` for an element without the
+method for that role, so a server-only interceptor passed to a Client is
+rejected. Streaming interceptors are not implemented yet: an element that
+defines `client_stream` or `server_stream` also raises `ArgumentError`, rather
+than being accepted and skipped on streams. Interceptor objects are shared by
+concurrent calls; per-call state belongs in the call object. With no
+interceptors, dispatch takes the same path as before.
+
+The first interceptor listed is the outermost on both roles. It sees the call
+first and the response or error last. Interceptors work with generated clients,
+every unary transport, custom bindings and custom invokers, on Connect POST and
+GET, [native gRPC](grpc.md#interceptors) and [gRPC-Web](grpc-web.md#interceptors).
+
+### Continuation rules
+
+Core enforces these rules and raises `ConnectRPC::InterceptorStateError` when
+one is broken:
+
+- Call the continuation at most once, on the fiber that called the interceptor,
+  and only before the interceptor returns. A second call, a call from another
+  thread, fiber or `Async` task, and a captured block called later all raise.
+  A swallowed misuse still fails the call when the interceptor returns.
+- A client interceptor may return a `ConnectRPC::Response` without yielding,
+  for example from a local cache. Every other layer must yield; a server
+  interceptor that returns without yielding fails the call with `internal`.
+- A client interceptor's normal return must be a `Response` whose `metadata` and
+  `trailers` are `ConnectRPC::Metadata`.
+- No interceptor can turn a failed continuation into success. It may raise a
+  different exception to translate the failure. If it returns normally after
+  the continuation raised, core discards the return value and re-raises the
+  continuation's exception. On the server, a successful response therefore
+  always means the invoker returned successfully. To supply a client fallback,
+  rescue around `client.call`.
+
+On the client an `InterceptorStateError` reaches the caller. On the server it is
+recorded and becomes `internal`, like any unexpected handler exception.
+
+### Client calls
+
+`ClientUnaryCall` exposes `method`, `protocol` (`:connect` or `:grpc`),
+`request`, `request_metadata`, `deadline` and `cancellation`. Until the
+innermost continuation starts dispatch, `request=` replaces the message and
+`request_metadata` accepts validated writes. Afterwards `request=` raises
+`InterceptorStateError` and metadata writes raise `FrozenError`.
+
+- The deadline and the call's cancellation arbiter start before the outermost
+  interceptor, so interceptor time counts against `timeout:`. `cancellation` is
+  a read-only view with `cancelled?`, `reason`, `check!` and `on_cancel`.
+  Interceptors cannot change the deadline. Core cannot interrupt an interceptor;
+  one that blocks on I/O should observe `deadline` or `cancellation` itself.
+- Instrumentation injects its propagation headers after the chain, merging them
+  with interceptor-added metadata as caller metadata. The lifecycle records the
+  caller metadata before the chain and the metadata actually sent at dispatch.
+- Every client unary `Response` is frozen, with or without interceptors: the
+  struct, its `metadata` and its `trailers`. Core freezes a short-circuit or
+  replacement `Response` before the next outer layer receives it. The message is
+  not copied or frozen, so a cached `Response` shares its message between
+  callers; return a fresh `Response` with a copied message when callers may
+  mutate it.
+- A short-circuit records an outcome with no HTTP facts and `delivery:
+  :unobserved`. A rejection raised before `yield` never reaches the transport.
+
+Core commits the call's outcome once, after the outermost interceptor returns
+or raises. A cancellation or expiry accepted before then replaces a successful
+result, and replaces a failure that came from dispatch: transport, codec,
+metadata and status failures. An exception an interceptor raises, including a
+translation of a dispatch failure, reaches the caller with its identity, and
+the outcome reports its own code. Error-mapping interceptors should check
+`call.cancellation.cancelled?` before translating, so an accepted cancellation
+is not hidden.
+
+### Server calls
+
+Server interceptors run after the bounded read and decode, and around the
+invoker, so a custom invoker is the innermost layer. They do not run for 405,
+415, CORS preflight, undeclared methods or header, timeout, read and decode
+failures. A declared method without a handler reaches the chain and fails with
+the invoker's `unimplemented` error.
+
+`ServerUnaryCall` exposes `method`, `protocol` (`:connect`, `:grpc` or
+`:grpc_web`), `request`, `request=` (until dispatch) and `context`, the same
+`Context` the handler receives:
+
+- `context.request_metadata` is shared with the handler, so an interceptor can
+  add derived values such as a verified principal. Writes do not change the
+  request metadata that instrumentation recorded.
+- Response metadata and trailers are written after the chain returns, so
+  writes before and after `yield` both reach the response, including the
+  error response when the call fails.
+- A raised `ConnectRPC::Error` becomes the wire error with its details,
+  metadata and trailers. Any other exception becomes `internal`.
+- After a successful continuation, the return value is the response message.
+  A nil return follows the handler nil path.
+- The request deadline started when headers were parsed. The context's
+  `cancelled?`, `check!` and `on_cancel` work inside interceptors. Once the
+  context accepts cancellation or expiry, that reason is the wire error,
+  whatever the interceptor raises or returns.
+
+### Failures and observation
+
+Interceptors run inside the instrumentation activation, so observer spans are
+current while they run and processing durations include their time. Core
+records the exception escaping each continuation before the outer interceptor
+sees it, and recording keeps the first failure. Observers therefore receive a
+handler's or transport's original exception even after an interceptor
+translated it, while the caller or wire receives the translation.
 
 ## Instrumentation
 

@@ -63,20 +63,30 @@ module ConnectRPC
 
     def run_stream(method, request, metadata, timeout:, cancellation:, lifecycle:, injection:, &) # rubocop:disable Metrics/MethodLength
       scope = Streaming::ClientScope.new(lifecycle)
+      chain = @unary_interceptors if method.is_a?(Method)
       scope.run(timeout, cancellation) do |state, deadline|
-        outgoing = stream_request(method, stream_metadata(metadata, injection, lifecycle), deadline, state.view,
-                                  lifecycle)
-        transport = @transport #: _StreamingTransport
-        work = lambda do |exchange|
-          session = new_client_stream_session(method, state, exchange, lifecycle)
-          with_stream_session(session, scope) { perform_stream_scope(method, request, session, scope, &) }
-        end
-        if @protocol == :grpc
-          grpc = @transport #: _GRPCTransport
-          grpc.open_grpc_stream(outgoing, &work)
+        if chain
+          unary = method #: Method[untyped, untyped]
+          intercept_grpc_unary(chain, unary, request, metadata, scope, state, deadline, lifecycle, injection, &)
         else
-          transport.open_stream(outgoing, &work)
+          outgoing = stream_request(method, stream_metadata(metadata, injection, lifecycle), deadline, state.view,
+                                    lifecycle)
+          open_client_stream(method, request, outgoing, scope, state, lifecycle, &)
         end
+      end
+    end
+
+    def open_client_stream(method, request, outgoing, scope, state, lifecycle, &) # rubocop:disable Metrics/ParameterLists, Metrics/MethodLength
+      transport = @transport #: _StreamingTransport
+      work = lambda do |exchange|
+        session = new_client_stream_session(method, state, exchange, lifecycle)
+        with_stream_session(session, scope) { perform_stream_scope(method, request, session, scope, &) }
+      end
+      if @protocol == :grpc
+        grpc = @transport #: _GRPCTransport
+        grpc.open_grpc_stream(outgoing, &work)
+      else
+        transport.open_stream(outgoing, &work)
       end
     end
 

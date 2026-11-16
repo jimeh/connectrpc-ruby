@@ -10,7 +10,8 @@ module ConnectRPC
                    response_limit: Protocol::DEFAULT_LIMIT, request_wire_limit: request_limit,
                    response_wire_limit: response_limit, protocol: :connect, mode: :unary, encoding: :identity,
                    instrumentation: nil, get_query_limit: nil, terminal_wire_limit: 65_536, terminal_limit: 65_536,
-                   status_codec: nil, grpc_status_wire_limit: 65_536, grpc_status_limit: 65_536, cors: nil)
+                   status_codec: nil, grpc_status_wire_limit: 65_536, grpc_status_limit: 65_536, cors: nil,
+                   interceptors: [])
       Protocol.profile!(protocol, mode, encoding, server: true)
       @protocol = Protocol.server_protocols(protocol)
       unless cors.nil? || (cors.is_a?(GRPCWebCORS) && @protocol.include?(:grpc_web))
@@ -29,6 +30,7 @@ module ConnectRPC
 
       @handlers = handlers.dup.freeze
       @invoker = invoker || method(:invoke_handler)
+      @unary_interceptors = Interceptors.server(interceptors)
       @instrumentation = instrumentation
       @binding = binding
       @encoding = encoding
@@ -203,7 +205,7 @@ module ConnectRPC
       bytes = inflate_request(bytes, negotiated, context)
       request = decode_request(bytes, method, codec, context)
       lifecycle&.message_received(wire_bytes)
-      response = @invoker.call(method, request, context)
+      response = invoke_unary(method, request, context, :connect)
       encoding = Protocol.response_encoding(negotiated, Protocol.content_encoding(negotiated), @encoding)
       encode_response(response, method, codec, context, encoding, lifecycle)
     end
@@ -257,6 +259,19 @@ module ConnectRPC
       unary.call(request, context)
     end
 
+    # The interceptor chain wraps the invoker, the host's handler-execution
+    # boundary, so it covers every unary protocol and custom invokers.
+    def invoke_unary(method, request, context, protocol)
+      chain = @unary_interceptors
+      return @invoker.call(method, request, context) unless chain
+
+      call = ServerUnaryCall.new(method: method, protocol: protocol, request: request, context: context)
+      chain.run(call, context) do
+        call.__send__(:dispatch!)
+        @invoker.call(method, call.request, context)
+      end
+    end
+
     def dispatch(path, headers, input, codec, context, lifecycle: nil) # rubocop:disable Metrics/MethodLength, Metrics/AbcSize
       context.check!
       method = @methods[path]
@@ -269,7 +284,7 @@ module ConnectRPC
       bytes = inflate_request(bytes, headers, context)
       request = decode_request(bytes, method, codec, context)
       lifecycle&.message_received(wire_bytes)
-      response = @invoker.call(method, request, context)
+      response = invoke_unary(method, request, context, :connect)
       encoding = Protocol.response_encoding(headers, Protocol.content_encoding(headers), @encoding)
       encode_response(response, method, codec, context, encoding, lifecycle)
     end

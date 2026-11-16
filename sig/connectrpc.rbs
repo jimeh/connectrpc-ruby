@@ -182,19 +182,55 @@ module ConnectRPC
   end
 
   class Client
-    def initialize: (base_url: String, binding: _Binding, ?transport: (_Transport | _StreamingTransport | _GRPCTransport)?, ?codec: codec, ?request_limit: Integer, ?response_limit: Integer, ?request_wire_limit: Integer, ?response_wire_limit: Integer, ?accept_encoding: Array[:identity | :gzip]?, ?use_get: bool, ?get_url_limit: Integer, ?protocol: :connect | :grpc, ?mode: :unary, ?encoding: :identity | :gzip, ?instrumentation: Instrumentation?, ?terminal_wire_limit: Integer, ?terminal_limit: Integer, ?status_codec: _GRPCStatusCodec?, ?grpc_status_wire_limit: Integer, ?grpc_status_limit: Integer) -> void
+    def initialize: (base_url: String, binding: _Binding, ?transport: (_Transport | _StreamingTransport | _GRPCTransport)?, ?codec: codec, ?request_limit: Integer, ?response_limit: Integer, ?request_wire_limit: Integer, ?response_wire_limit: Integer, ?accept_encoding: Array[:identity | :gzip]?, ?use_get: bool, ?get_url_limit: Integer, ?protocol: :connect | :grpc, ?mode: :unary, ?encoding: :identity | :gzip, ?instrumentation: Instrumentation?, ?terminal_wire_limit: Integer, ?terminal_limit: Integer, ?status_codec: _GRPCStatusCodec?, ?grpc_status_wire_limit: Integer, ?grpc_status_limit: Integer, ?interceptors: Array[client_interceptor]) -> void
     def call: [Req, Resp] (Method[Req, Resp], Req request, ?metadata: metadata_input, ?timeout: Numeric?, ?cancellation: CancellationToken?) -> Response[Resp]
   end
 
   class Server
     # Generated .handlers checks each concrete callable before this heterogeneous
     # registration map erases its individual request/response associations.
-    def initialize: (services: Array[Service], binding: _Binding, ?handlers: Hash[String, registered_handler], ?invoker: (^(Method[untyped, untyped], untyped, Context) -> untyped | _Invoker)?, ?request_limit: Integer, ?response_limit: Integer, ?request_wire_limit: Integer, ?response_wire_limit: Integer, ?protocol: server_protocol_selection, ?mode: :unary, ?encoding: :identity | :gzip, ?instrumentation: Instrumentation?, ?get_query_limit: Integer?, ?terminal_wire_limit: Integer, ?terminal_limit: Integer, ?status_codec: _GRPCStatusCodec?, ?grpc_status_wire_limit: Integer, ?grpc_status_limit: Integer, ?cors: GRPCWebCORS?) -> void
+    def initialize: (services: Array[Service], binding: _Binding, ?handlers: Hash[String, registered_handler], ?invoker: (^(Method[untyped, untyped], untyped, Context) -> untyped | _Invoker)?, ?request_limit: Integer, ?response_limit: Integer, ?request_wire_limit: Integer, ?response_wire_limit: Integer, ?protocol: server_protocol_selection, ?mode: :unary, ?encoding: :identity | :gzip, ?instrumentation: Instrumentation?, ?get_query_limit: Integer?, ?terminal_wire_limit: Integer, ?terminal_limit: Integer, ?status_codec: _GRPCStatusCodec?, ?grpc_status_wire_limit: Integer, ?grpc_status_limit: Integer, ?cors: GRPCWebCORS?, ?interceptors: Array[server_interceptor]) -> void
     attr_reader services: Array[Service]
     def handles?: (String path) -> bool
     def start_call: (path: String, headers: headers, ?http_method: String) -> Instrumentation::Handle?
     def call: (path: String, http_method: String, headers: headers, input: _Input?, ?query: String, ?lifecycle: Instrumentation::Handle?, ?cancellation: _Cancellation?) -> TransportResponse
   end
+
+  # Interceptor misuse raised by core: a continuation called twice, late or off
+  # its owning fiber, a write to a dispatched call, or an invalid layer result.
+  class InterceptorStateError < StandardError
+  end
+
+  # Core builds one per client unary RPC. request= raises once dispatched.
+  class ClientUnaryCall
+    attr_reader method: Method[untyped, untyped]
+    attr_reader protocol: :connect | :grpc
+    attr_accessor request: untyped
+    attr_reader request_metadata: Metadata
+    attr_reader deadline: Deadline?
+    attr_reader cancellation: _Cancellation
+  end
+
+  # Core builds one per server unary RPC. request= raises once dispatched.
+  class ServerUnaryCall
+    attr_reader method: Method[untyped, untyped]
+    attr_reader protocol: server_protocol
+    attr_accessor request: untyped
+    attr_reader context: Context
+  end
+
+  # The block is the guarded continuation: call it once, on the calling fiber,
+  # before returning. Only a client layer may return without calling it.
+  interface _ClientUnaryInterceptor
+    def client_unary: (ClientUnaryCall call) { () -> Response[untyped] } -> Response[untyped]
+  end
+
+  interface _ServerUnaryInterceptor
+    def server_unary: (ServerUnaryCall call) { () -> untyped } -> untyped
+  end
+
+  type client_interceptor = _ClientUnaryInterceptor
+  type server_interceptor = _ServerUnaryInterceptor
 
   # Complete records retain precise readers; partial construction admits nil defaults.
   interface _PartialResponse[M]
