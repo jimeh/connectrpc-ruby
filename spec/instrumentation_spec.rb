@@ -477,9 +477,8 @@ RSpec.describe "RPC lifecycle instrumentation" do
         get.call(path: safe.path, http_method: "GET", headers: {}, input: nil,
                  query: "connect=v1&encoding=proto&base64=1&message=AB")
       end
-      # GET query parsing has no lifecycle, so the normalized error is the only recorded failure.
       [[decode, equal(codec_failure)], [decompress, be_a(ConnectRPC::Compression::Malformed)],
-       [base64, be_a(ConnectRPC::Error)]].each do |call, original|
+       [base64, be_a(ArgumentError)]].each do |call, original|
         events.clear
         expect(call.call.status).to eq(400)
         expect(processing_outcome.normalized_error).to have_attributes(code: "invalid_argument", cause: nil)

@@ -97,8 +97,8 @@ module ConnectRPC
     def self.parse: (String, limit: Integer, wire_limit: Integer, ?deadline: _Check?) -> Hash[String, String]
     def initialize: (Integer, _Check?) -> void
     def parse: (String) -> Hash[String, String]
-    def self.payload: (Hash[String, String], limit: Integer, ?deadline: _Check?) -> String
-    def self.decode_base64: (String, Integer) -> String
+    def self.payload: (Hash[String, String], limit: Integer, ?deadline: _Check?, ?on_error: (^(StandardError) -> void)?) -> String
+    def self.decode_base64: (String, Integer, ?(^(StandardError) -> void)?) -> String
     def self.build: (URI::Generic, String, codec: codec, encoding: encoding, limit: Integer, ?deadline: _Check?) -> URI::Generic
     def self.form_size: (String, _Check?) -> Integer
     def self.form_safe?: (Integer) -> bool

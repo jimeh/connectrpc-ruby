@@ -1356,11 +1356,11 @@
     "ConnectRPC::GetQuery#initialize": {"kind":"method","visibility":"public","parameters":"wire_limit, deadline","classification":"internal"},
     "ConnectRPC::GetQuery#parse": {"kind":"method","visibility":"public","parameters":"query","classification":"internal"},
     "ConnectRPC::GetQuery.build": {"kind":"method","visibility":"public","parameters":"url, bytes, codec:, encoding:, limit:, deadline: nil","classification":"internal"},
-    "ConnectRPC::GetQuery.decode_base64": {"kind":"method","visibility":"public","parameters":"message, limit","classification":"internal"},
+    "ConnectRPC::GetQuery.decode_base64": {"kind":"method","visibility":"public","parameters":"message, limit, on_error = nil","classification":"internal"},
     "ConnectRPC::GetQuery.form_safe?": {"kind":"method","visibility":"public","parameters":"byte","classification":"internal"},
     "ConnectRPC::GetQuery.form_size": {"kind":"method","visibility":"public","parameters":"bytes, deadline","classification":"internal"},
     "ConnectRPC::GetQuery.parse": {"kind":"method","visibility":"public","parameters":"query, limit:, wire_limit:, deadline: nil","classification":"internal"},
-    "ConnectRPC::GetQuery.payload": {"kind":"method","visibility":"public","parameters":"values, limit:, deadline: nil","classification":"internal"}
+    "ConnectRPC::GetQuery.payload": {"kind":"method","visibility":"public","parameters":"values, limit:, deadline: nil, on_error: nil","classification":"internal"}
   },
   "lib/connectrpc/grpc.rb": {
     "ConnectRPC::GRPCHead#end_stream": {"kind":"attribute","visibility":"public","classification":"supported"},

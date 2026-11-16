@@ -196,7 +196,8 @@ module ConnectRPC
       method = @methods[path]
       raise Error.new(:unimplemented, "Unknown method") unless method.is_a?(Method)
 
-      bytes = GetQuery.payload(values, limit: @request_wire_limit, deadline: context)
+      bytes = GetQuery.payload(values, limit: @request_wire_limit, deadline: context,
+                                       on_error: ->(error) { context.record_failure(error) })
       wire_bytes = bytes.bytesize
       lifecycle.request_bytes = wire_bytes if lifecycle
       bytes = inflate_request(bytes, negotiated, context)
