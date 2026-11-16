@@ -261,7 +261,9 @@ ownership and constraints.
 
 Supported APIs include method and service declarations, core and generated
 client operations, Server configuration, metadata, errors, contexts and their
-`on_cancel` listeners, cancellation sources/tokens, scoped readers/writers/duplex
+`on_cancel` listeners, cancellation sources/tokens, unary interceptor
+registration (`interceptors:`) with the `ClientUnaryCall` and `ServerUnaryCall`
+call objects and `InterceptorStateError`, scoped readers/writers/duplex
 endpoints, the health registry and its generated `grpc.health.v1` client, and the
 optional packages' documented constructors, lifecycle and configuration
 operations. Generated service factories, typed handlers and installed generated
@@ -271,8 +273,9 @@ message bridges remain explicit opt-ins with their documented finite coverage.
 The extension SPIs cover these boundaries. Binding, cancellation and lifecycle
 interfaces are shared with streaming and gRPC execution.
 
-- Shared interfaces and unary execution: `_Binding`, `_Transport`, `_Input`, invokers and
-  `_Cancellation`.
+- Shared interfaces and unary execution: `_Binding`, `_Transport`, `_Input`, invokers,
+  `_Cancellation`, and the `_ClientUnaryInterceptor` and `_ServerUnaryInterceptor`
+  interceptor interfaces.
 - Streaming and gRPC: `_StreamingTransport`, `_StreamExchange`, streaming I/O,
   `_GRPCTransport`, `_GRPCStreamExchange` and `_GRPCStatusCodec`.
 - Server hosting and observation: native publication/output interfaces,
@@ -287,10 +290,10 @@ readers as `spi`.
 Use each interface within its documented bounded reads, completion, reactor
 affinity and original-processor ownership rules. An SPI does not grant access
 to private objects its implementation happens to expose. Protocol, compression
-and parser helpers, cancellation arbitration, private lifecycle bookkeeping,
-native socket/lease/session helpers and generator implementation are internal
-unless explicitly classified otherwise. Their observable supported behavior
-still falls under patch compatibility.
+and parser helpers, cancellation arbitration, interceptor continuations and
+chains, private lifecycle bookkeeping, native socket/lease/session helpers and
+generator implementation are internal unless explicitly classified otherwise.
+Their observable supported behavior still falls under patch compatibility.
 
 The [strict source list](../typecheck/source.rb) is finite. Consumer coverage
 does not mean all optional implementation is checked.

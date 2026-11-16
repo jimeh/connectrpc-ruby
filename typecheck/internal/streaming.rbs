@@ -16,6 +16,8 @@ module ConnectRPC
       | [Q, R] (ClientStreamMethod[Q, R], nil, metadata_input, Numeric?, CancellationToken?) { (RequestWriter[Q]) -> void } -> Response[R]
       | [Q, R] (BidiStreamMethod[Q, R], nil, metadata_input, Numeric?, CancellationToken?) { (ClientDuplex[Q, R]) -> void } -> nil
     def run_stream: (declaration, untyped, metadata_input, timeout: Numeric?, cancellation: CancellationToken?, lifecycle: Instrumentation::Handle?, injection: metadata_input) { (stream_endpoint) -> void } -> Response[untyped]?
+    def open_client_stream: (declaration, untyped, StreamRequest, Streaming::ClientScope, CallCancellation, Instrumentation::Handle?) { (stream_endpoint) -> void } -> void
+    def intercept_grpc_unary: (Interceptors::Chain, Method[untyped, untyped], untyped, metadata_input, Streaming::ClientScope, CallCancellation, Deadline?, Instrumentation::Handle?, metadata_input) { (stream_endpoint) -> void } -> void
     def stream_metadata: (metadata_input, metadata_input, Instrumentation::Handle?) -> Metadata
     def stream_request: (declaration, Metadata, Deadline?, CallCancellation::View, Instrumentation::Handle?) -> StreamRequest
     def new_client_stream_session: (declaration, CallCancellation, (_StreamExchange | _GRPCStreamExchange), Instrumentation::Handle?) -> Streaming::Session
@@ -116,6 +118,12 @@ module ConnectRPC
     class ClientScope
       @state: CallCancellation?
       @lifecycle: Instrumentation::Handle?
+      @intercepted: bool
+      @dispatched: bool
+      @innermost_ok: bool
+      @innermost_failure: Exception?
+      @interceptor_error: bool
+      @non_local_exit: bool?
       attr_accessor completed: bool
       attr_accessor abandoned: bool
       attr_accessor independent_error: Exception?
@@ -126,7 +134,11 @@ module ConnectRPC
       def run: (Numeric?, CancellationToken?) { (CallCancellation, Deadline?) -> void } -> Response[untyped]?
       def cleanup: (Session) -> void
       def record_user_error: (Exception) -> void
+      def intercept: (Interceptors::Chain, ClientUnaryCall) { () -> Response[untyped]? } -> Response[untyped]
       private
+      def dispatch_unary: () { () -> Response[untyped]? } -> Response[untyped]?
+      def delivery: (Exception?) -> (:unobserved | :completed | :aborted)
+      def exchange_completed?: () -> bool
       def execute: (Numeric?, CancellationToken?) { (CallCancellation, Deadline?) -> void } -> Response[untyped]?
       def finish: (Exception?) -> void
       def finish_preserving_user: (Exception?) -> void

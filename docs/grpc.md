@@ -87,3 +87,26 @@ Native unary executes the configured invoker with a normal Context, including
 custom invokers that have no handler-map entry. As on every server Context,
 `context.request_metadata` is mutable per-call metadata; writes do not change
 what instrumentation recorded for the request.
+
+## Interceptors
+
+[Unary interceptors](unary.md#interceptors) cover native gRPC unary calls on
+both roles, with `call.protocol == :grpc`. Streaming interceptors are not
+implemented yet; a Client or Server rejects an interceptor that defines
+`client_stream` or `server_stream`.
+
+On the client, the chain runs inside the call's deadline and cancellation scope
+and before the stream opens. Request metadata is final when the innermost
+continuation opens the stream, and a cancellation accepted before then fails
+the call with `canceled` without opening a stream. The returned `Response`, its
+metadata and its trailers are frozen, with or without interceptors. Delivery
+comes from the exchange, not from the code that raised: a short-circuit or a
+rejection before `yield` reports `:unobserved`; an interceptor exception after a
+completed exchange, or after a remote error the peer delivered, reports
+`:completed`; an interceptor that translates a transport or cleanup failure
+leaves it `:aborted`.
+
+On the server, interceptors run after the single request message is read and
+decoded, around the configured invoker. The head is published after the chain
+returns, so response metadata written before or after `yield` reaches the
+client, and trailers stay writable until the terminal status.

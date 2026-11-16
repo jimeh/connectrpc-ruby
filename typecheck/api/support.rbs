@@ -249,3 +249,24 @@ class BadAPIRecorder
   def initialize: () -> void
   def increment: (Symbol) -> nil
 end
+class APIClientInterceptor
+  include ConnectRPC::_ClientUnaryInterceptor
+  def initialize: () -> void
+end
+class APICachingInterceptor
+  include ConnectRPC::_ClientUnaryInterceptor
+  def initialize: () -> void
+end
+class APIServerInterceptor
+  include ConnectRPC::_ServerUnaryInterceptor
+  def initialize: () -> void
+end
+class BadReturnInterceptor
+  include ConnectRPC::_ClientUnaryInterceptor
+end
+class BadYieldInterceptor
+  include ConnectRPC::_ClientUnaryInterceptor
+end
+class BadWrapInterceptor
+  include ConnectRPC::_ServerUnaryInterceptor
+end

@@ -86,7 +86,7 @@ module ConnectRPC
       if declaration.is_a?(Method)
         request = single_stream_request(session)
         context.check!
-        session.send_message(@invoker.call(declaration, request, context))
+        session.send_message(invoke_unary(declaration, request, context, :grpc))
       else
         streaming = context #: StreamingContext
         invoke_stream_handler(@handlers.fetch(path), declaration, session, streaming)

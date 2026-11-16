@@ -60,5 +60,10 @@
   "prometheus": "Ruby::ArgumentTypeMismatch",
   "yabeda": "Ruby::ArgumentTypeMismatch",
   "health": "Ruby::ArgumentTypeMismatch",
-  "sentry": "Ruby::ArgumentTypeMismatch"
+  "sentry": "Ruby::ArgumentTypeMismatch",
+  "interceptor_client_role": "Ruby::ArgumentTypeMismatch",
+  "interceptor_server_role": "Ruby::ArgumentTypeMismatch",
+  "interceptor_return": "Ruby::MethodBodyTypeMismatch",
+  "interceptor_yield": "Ruby::UnexpectedPositionalArgument",
+  "interceptor_wrap_stream": "Ruby::NoMethod"
 }

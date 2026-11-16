@@ -135,8 +135,12 @@ module ConnectRPC
     @request_wire_limit: Integer
     @response_wire_limit: Integer
     @instrumentation: Instrumentation?
+    @unary_interceptors: Interceptors::Chain?
     private
     def process_call: [Req, Resp] (Method[Req, Resp], Req, metadata_input, Numeric?, CancellationToken?, ?lifecycle: Instrumentation::Handle?, ?injection: metadata_input?) ?{ (TransportResponse) -> void } -> Response[Resp]
+    def exchange: [Req, Resp] (Method[Req, Resp], Req, Metadata, Deadline?, CallCancellation, Instrumentation::Handle?) ?{ (TransportResponse) -> void } -> Response[Resp]
+    def intercept_call: [Req, Resp] (Interceptors::Chain, Method[Req, Resp], Req, Metadata, Deadline?, CallCancellation, Instrumentation::Handle?, metadata_input?) ?{ (TransportResponse) -> void } -> (Response[Resp] | StandardError)
+    def dispatch_metadata: (ClientUnaryCall, Instrumentation::Handle?, metadata_input?) -> Metadata
     def instrumented_call: [Req, Resp] (Method[Req, Resp], Req, metadata_input, Numeric?, CancellationToken?) -> Response[Resp]
     def injected_metadata: (Metadata, metadata_input?) -> Metadata
     def parse_base_url: (String) -> URI::Generic
@@ -171,7 +175,9 @@ module ConnectRPC
     @response_wire_limit: Integer
     @get_query_limit: Integer
     @error_limit: Integer
+    @unary_interceptors: Interceptors::Chain?
     private
+    def invoke_unary: (Method[untyped, untyped], untyped, Context, server_protocol) -> untyped
     def process_call: (path: String, http_method: String, headers: headers, input: _Input?, query: String, ?lifecycle: Instrumentation::Handle?, ?cancellation: _Cancellation?) -> TransportResponse
     def process_get: (String, headers, _Input?, String, Instrumentation::Handle?, _Cancellation?) { (Context) -> void } -> TransportResponse
     def empty_get_body?: (headers, _Input?, _Check?) -> bool
@@ -368,6 +374,72 @@ module ConnectRPC
       def attempt_finished: (Symbol?, Numeric?) -> void
       def set_state: (Symbol, Integer) -> void
       def state_labels: (Symbol) -> labels
+    end
+  end
+end
+
+module ConnectRPC
+  interface _InterceptorProbe
+    def respond_to?: (Symbol) -> bool
+    def public_method: (Symbol) -> ::Method
+  end
+  interface _FailureRecorder
+    def record_failure: (Exception) -> nil
+  end
+  class ClientUnaryCall
+    @method: Method[untyped, untyped]
+    @protocol: :connect | :grpc
+    @request: untyped
+    @request_metadata: Metadata
+    @deadline: Deadline?
+    @cancellation: _Cancellation
+    @open: bool
+    def initialize: (method: Method[untyped, untyped], protocol: :connect | :grpc, request: untyped, request_metadata: Metadata, deadline: Deadline?, cancellation: _Cancellation) -> void
+    private
+    def dispatch!: () -> nil
+  end
+  class ServerUnaryCall
+    @method: Method[untyped, untyped]
+    @protocol: server_protocol
+    @request: untyped
+    @context: Context
+    @open: bool
+    def initialize: (method: Method[untyped, untyped], protocol: server_protocol, request: untyped, context: Context) -> void
+    private
+    def dispatch!: () -> nil
+  end
+  module Interceptors
+    def self.client: (Array[client_interceptor]) -> Chain?
+    def self.server: (Array[server_interceptor]) -> Chain?
+    def self.build: (Array[client_interceptor] | Array[server_interceptor], Symbol, Symbol, client: bool) -> Chain?
+    def self.response!: (untyped) -> Response[untyped]
+    class Chain
+      @layers: Array[::Method]
+      @client: bool
+      def initialize: (Array[::Method], bool) -> void
+      def run: (ClientUnaryCall | ServerUnaryCall, _FailureRecorder?) { () -> untyped } -> untyped
+      private
+      def step: (Integer, ClientUnaryCall | ServerUnaryCall, _FailureRecorder?, ^() -> untyped, Continuation?) -> untyped
+    end
+    class Continuation
+      @recorder: _FailureRecorder?
+      @fiber: Fiber
+      @mutex: Thread::Mutex
+      @state: :active | :claimed | :finished
+      @failure: Exception?
+      @misuse: InterceptorStateError?
+      @handed_up: Exception?
+      def initialize: (_FailureRecorder?) -> void
+      def call: [T] () { () -> T } -> T
+      def close: (Continuation?) -> bool
+      def finish: (untyped, bool, bool) -> untyped
+      def hand_up: (Exception?) -> nil
+      private
+      def claim: () -> InterceptorStateError?
+      def claim_owned: () -> InterceptorStateError?
+      def record_misuse: (InterceptorStateError) -> nil
+      def latch_foreign: () -> InterceptorStateError
+      def raise_latched: () -> nil
     end
   end
 end
