@@ -14,7 +14,9 @@ module InstalledAPI
       signatures = ["sig/connectrpc-#{name}.rbs", "sig/manifest.yaml"]
       raise "Missing owned signature manifest: #{name}" unless package.contents.grep(%r{\Asig/}).sort == signatures.sort
       raise "Push host changed: #{name}" unless package.spec.metadata["allowed_push_host"] == "https://rubygems.org"
-      raise "License metadata lost: #{name}" unless package.spec.licenses == ["MIT"]
+
+      licenses = SignatureArchive.licenses(package.spec.name)
+      raise "License metadata lost: #{name}" unless package.spec.licenses == licenses
 
       [archive, package.spec]
     end
@@ -55,8 +57,10 @@ module InstalledAPI
     end
     # The parent process still has the tooling bundle's RubyGems cache. Resolve
     # the fresh GEM_HOME in an unbundled child, as the actual consumer does.
-    discovery = APICheck::BRIDGES.map do |name, directory|
-      "puts File.join(Gem::Specification.find_by_name(#{"connectrpc-#{name}".dump}).full_gem_path, #{directory.dump})"
+    owners = APICheck::BRIDGES.transform_keys { |name| "connectrpc-#{name}" }
+                              .merge("connectrpc" => APICheck::PROTOBUF_BRIDGE)
+    discovery = owners.map do |name, directory|
+      "puts File.join(Gem::Specification.find_by_name(#{name.dump}).full_gem_path, #{directory.dump})"
     end.join("\n")
     bridges = RBSHarness.capture!([RbConfig.ruby, "-e", discovery], working: working).lines.map(&:chomp)
     [libraries, libraries.reverse].each do |order|
@@ -73,10 +77,10 @@ module InstalledAPI
       #{library_loading}
       env = RBS::Environment.from_loader(loader).resolve_type_names
       names = env.class_decls.keys.map(&:to_s)
-      abort 'Opt-in framework declarations loaded automatically' if names.any? do |name|
-        name.start_with?('::ActionController::', '::Async::Service::')
+      abort 'Opt-in bridge declarations loaded automatically' if names.any? do |name|
+        name.start_with?('::ActionController::', '::Async::Service::', '::Google::Protobuf::', '::Grpc::')
       end
-      puts 'Framework compatibility declarations remain opt-in'
+      puts 'Framework, protobuf and generated health message bridges remain opt-in'
     CODE
     puts RBSHarness.capture!([RbConfig.ruby, "-e", isolation], working: working)
     runner = <<~CODE
@@ -91,6 +95,6 @@ module InstalledAPI
     %w[forward reverse].each do |order|
       puts RBSHarness.capture!([RbConfig.ruby, "installed_runtime.rb", order], working: working)
     end
-    puts "Nine installed signature libraries discovered independently and in two orders; API-only OTel closure"
+    puts "Ten installed signature libraries discovered independently and in two orders; API-only OTel closure"
   end
 end

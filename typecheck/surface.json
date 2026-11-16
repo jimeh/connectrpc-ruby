@@ -832,6 +832,48 @@
   "gems/connectrpc-falcon/lib/connectrpc/falcon/version.rb": {
 
   },
+  "gems/connectrpc-health/lib/connectrpc/health.rb": {
+
+  },
+  "gems/connectrpc-health/lib/connectrpc/health/registry.rb": {
+    "ConnectRPC::Health::Registry#admit": {"kind":"method","visibility":"private","parameters":"service","classification":"internal"},
+    "ConnectRPC::Health::Registry#check": {"kind":"method","visibility":"private","parameters":"request, _context","classification":"internal"},
+    "ConnectRPC::Health::Registry#fail_with": {"kind":"method","visibility":"private","parameters":"context, code, message","classification":"internal"},
+    "ConnectRPC::Health::Registry#handlers": {"kind":"attribute","visibility":"public","classification":"supported"},
+    "ConnectRPC::Health::Registry#initialize": {"kind":"method","visibility":"public","parameters":"max_watchers: 100","classification":"supported"},
+    "ConnectRPC::Health::Registry#list": {"kind":"method","visibility":"private","parameters":"_request, _context","classification":"internal"},
+    "ConnectRPC::Health::Registry#response": {"kind":"method","visibility":"private","parameters":"status","classification":"internal"},
+    "ConnectRPC::Health::Registry#service_name": {"kind":"method","visibility":"private","parameters":"service","classification":"internal"},
+    "ConnectRPC::Health::Registry#set": {"kind":"method","visibility":"public","parameters":"service, status","classification":"supported"},
+    "ConnectRPC::Health::Registry#shutdown": {"kind":"method","visibility":"public","parameters":"","classification":"supported"},
+    "ConnectRPC::Health::Registry#shutdown?": {"kind":"method","visibility":"public","parameters":"","classification":"supported"},
+    "ConnectRPC::Health::Registry#status": {"kind":"method","visibility":"public","parameters":"service","classification":"supported"},
+    "ConnectRPC::Health::Registry#stream": {"kind":"method","visibility":"private","parameters":"watcher, writer, context","classification":"internal"},
+    "ConnectRPC::Health::Registry#watch": {"kind":"method","visibility":"private","parameters":"request, writer, context","classification":"internal"},
+    "ConnectRPC::Health::Registry#watcher_count": {"kind":"method","visibility":"public","parameters":"","classification":"supported"}
+  },
+  "gems/connectrpc-health/lib/connectrpc/health/version.rb": {
+
+  },
+  "gems/connectrpc-health/lib/connectrpc/health/watcher.rb": {
+    "ConnectRPC::Health::Watcher#cancel": {"kind":"method","visibility":"public","parameters":"","classification":"internal"},
+    "ConnectRPC::Health::Watcher#close": {"kind":"method","visibility":"public","parameters":"status","classification":"internal"},
+    "ConnectRPC::Health::Watcher#initialize": {"kind":"method","visibility":"public","parameters":"mutex, service, pending","classification":"internal"},
+    "ConnectRPC::Health::Watcher#next_status": {"kind":"method","visibility":"public","parameters":"last, deadline","classification":"internal"},
+    "ConnectRPC::Health::Watcher#service": {"kind":"attribute","visibility":"public","classification":"internal"},
+    "ConnectRPC::Health::Watcher#take_pending": {"kind":"method","visibility":"private","parameters":"","classification":"internal"},
+    "ConnectRPC::Health::Watcher#update": {"kind":"method","visibility":"public","parameters":"status","classification":"internal"}
+  },
+  "gems/connectrpc-health/lib/grpc/health/v1/health_connect.rb": {
+    "Grpc::Health::V1::Health.handlers": {"kind":"method","visibility":"public","parameters":"check:, list:, watch:","classification":"supported"},
+    "Grpc::Health::V1::Health::Client#check": {"kind":"method","visibility":"public","parameters":"request, **options","classification":"supported"},
+    "Grpc::Health::V1::Health::Client#initialize": {"kind":"method","visibility":"public","parameters":"client:","classification":"supported"},
+    "Grpc::Health::V1::Health::Client#list": {"kind":"method","visibility":"public","parameters":"request, **options","classification":"supported"},
+    "Grpc::Health::V1::Health::Client#watch": {"kind":"method","visibility":"public","parameters":"request, **options, &","classification":"supported"}
+  },
+  "gems/connectrpc-health/lib/grpc/health/v1/health_pb.rb": {
+
+  },
   "gems/connectrpc-on-rails/lib/connectrpc-on-rails.rb": {
 
   },
@@ -1038,6 +1080,7 @@
     "ConnectRPC::Context#commit!": {"kind":"method","visibility":"public","parameters":"","classification":"internal"},
     "ConnectRPC::Context#deadline": {"kind":"attribute","visibility":"public","classification":"supported"},
     "ConnectRPC::Context#initialize": {"kind":"method","visibility":"public","parameters":"request_metadata: {}, deadline: nil, lifecycle: nil, cancellation: nil","classification":"supported"},
+    "ConnectRPC::Context#on_cancel": {"kind":"method","visibility":"public","parameters":"&","classification":"supported"},
     "ConnectRPC::Context#record_failure": {"kind":"method","visibility":"public","parameters":"error","classification":"spi"},
     "ConnectRPC::Context#request_metadata": {"kind":"attribute","visibility":"public","classification":"supported"},
     "ConnectRPC::Context#response_metadata": {"kind":"attribute","visibility":"public","classification":"supported"},

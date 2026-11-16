@@ -343,7 +343,8 @@ mise run floors:rails   # Rails 8.0 lane, directly under the wrapper bundle
 mise run floors:otel
 mise run floors:prometheus
 mise run floors:yabeda
-mise run floors         # all seven
+mise run floors:health
+mise run floors         # all eight
 ```
 
 Floors do not apply to development tools or transitive-only dependencies. A
@@ -598,6 +599,22 @@ install normal dependencies offline into a fresh external GEM_HOME and run the
 copied generated example. See the
 [Prometheus](../gems/connectrpc-prometheus/README.md) and
 [Yabeda](../gems/connectrpc-yabeda/README.md) guides for metric semantics.
+
+## Optional health development
+
+`mise run health:setup` installs the health service bundle with the local Rack,
+Async, Falcon and testing packages under `vendor/health`. Its discoverable
+`test`, `check`, `build`, `package`, `interop` and `verify` leaves write
+coverage under `coverage/health/<Ruby>/`, and `floors:health` repeats specs and
+package checks at the gemspec floors. Use `health:test -- spec/registry_spec.rb`
+for Watch concurrency with a controllable writer and `spec/async_host_spec.rb`
+for cancellation, connection loss, retirement and drain on the real Async host.
+`health:interop` builds the existing `interop/grpc` peer, whose `health.go`
+drives grpc-go's standard health client, and runs it against the Async Host,
+real Falcon workers and grpc-go's reference server. Core's `Context#on_cancel`
+is covered by `mise run test -- spec/context_on_cancel_spec.rb`. The vendored
+schema and generated files belong to `generation:build`/`generation:check`.
+See the [health guide](../gems/connectrpc-health/README.md).
 
 ## Native streaming verification
 

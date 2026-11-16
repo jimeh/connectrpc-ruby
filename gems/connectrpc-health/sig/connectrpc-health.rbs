@@ -1,0 +1,19 @@
+module ConnectRPC
+  module Health
+    VERSION: String
+    SERVICE: ::ConnectRPC::Service
+
+    type status = :unknown | :serving | :not_serving
+
+    class Registry
+      def initialize: (?max_watchers: Integer) -> void
+      def set: (String service, status status) -> bool
+      def status: (String service) -> status?
+      def shutdown: () -> nil
+      def shutdown?: () -> bool
+      def watcher_count: () -> Integer
+      # Check, List and Watch keyed by path, for merging into Server handlers.
+      def handlers: () -> ::Hash[::String, ::ConnectRPC::registered_handler]
+    end
+  end
+end

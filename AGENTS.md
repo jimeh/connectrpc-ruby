@@ -93,6 +93,13 @@ thin sinks with independent `prometheus:` / `yabeda:` bundles under
 labels, buckets or message-callback byte semantics. Keep yabeda-prometheus out of
 every bundle (its prometheus-client pin splits the shared version map).
 
+Optional health: `gems/connectrpc-health/` owns `grpc.health.v1` (registry,
+Check/List/Watch) with its `health:` bundle under `vendor/health`. Its vendored
+grpc-proto schema, generated `lib/grpc` and opt-in `rbs/grpc_health_v1` signature
+bridge come only from `generation:build`; read [the plan](docs/plans/health.md)
+and its README before changing Watch concurrency, shutdown or the grpc-go
+`health:interop` script.
+
 Public API changes must update the owning gem's signatures, the supported/SPI
 inventory and focused caller evidence. Read [RBS guidance](docs/rbs.md) before
 changing those surfaces; run `rbs:check` for consumers, inventory and strict core

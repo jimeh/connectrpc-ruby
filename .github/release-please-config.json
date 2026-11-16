@@ -20,7 +20,8 @@
         "gems/connectrpc-testing/lib/connectrpc/testing/version.rb",
         "gems/connectrpc-otel/lib/connectrpc/otel/version.rb",
         "gems/connectrpc-prometheus/lib/connectrpc/prometheus/version.rb",
-        "gems/connectrpc-yabeda/lib/connectrpc/yabeda/version.rb"
+        "gems/connectrpc-yabeda/lib/connectrpc/yabeda/version.rb",
+        "gems/connectrpc-health/lib/connectrpc/health/version.rb"
       ]
     }
   }

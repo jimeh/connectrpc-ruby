@@ -6,7 +6,7 @@ train = ReleaseTrain.new
 case ARGV
 when ["check"]
   train.check!
-  puts "Release train #{train.version}: nine versions, instrumentation, guides and push hosts agree"
+  puts "Release train #{train.version}: ten versions, instrumentation, guides and push hosts agree"
 when ["prepare"]
   train.prepare!
   puts "Prepared installation guides for #{train.version}; review and sign the diff"

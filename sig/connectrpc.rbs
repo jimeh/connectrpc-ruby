@@ -461,6 +461,7 @@ module ConnectRPC
     def cancelled?: () -> bool
     def check!: () -> nil
     def cancellation_reason: () -> cancellation_reason?
+    def on_cancel: () { () -> void } -> CancellationRegistration
   end
 
   class CodecError < StandardError

@@ -6,6 +6,7 @@
 /gems/connectrpc-otel/.bundle/
 /gems/connectrpc-prometheus/.bundle/
 /gems/connectrpc-yabeda/.bundle/
+/gems/connectrpc-health/.bundle/
 
 /gems/connectrpc-falcon/.bundle/
 /vendor/

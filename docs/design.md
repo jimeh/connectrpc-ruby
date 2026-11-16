@@ -220,7 +220,7 @@ content encoding/length; transports carry opaque encoded bytes.
 Server timeout validation creates a per-call monotonic deadline. Checks run
 around input, decoding, handler execution and encoding. `cancelled?` combines explicit cancellation and expiry;
 `cancellation_reason` identifies `:canceled` or `:deadline_exceeded`, and handlers
-can call `check!` cooperatively. No header means no server
+can call `check!` cooperatively or register `on_cancel` listeners. No header means no server
 expiry. Synchronous Rack cannot interrupt blocked input, arbitrary handlers or
 codec work, or detect every disconnect. No hard server cancellation is claimed.
 

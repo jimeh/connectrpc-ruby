@@ -382,7 +382,7 @@ run = "ruby typecheck/run.rb check"
 
 [tasks."rbs:package"]
 description = "Check installed RBS discovery and consumers outside the checkout"
-depends = ["rbs:runtime", "rbs:setup", "setup:generation", "rack:setup", "testing:setup", "setup:rails", "async:setup", "falcon:setup", "otel:setup", "prometheus:setup", "yabeda:setup"]
+depends = ["rbs:runtime", "rbs:setup", "setup:generation", "rack:setup", "testing:setup", "setup:rails", "async:setup", "falcon:setup", "otel:setup", "prometheus:setup", "yabeda:setup", "health:setup"]
 tools."aqua:protocolbuffers/protobuf/protoc" = "36.2"
 tools."aqua:bufbuild/buf" = "1.75.0"
 run = "ruby typecheck/run.rb package"
@@ -563,6 +563,50 @@ run = "mise exec -- ruby gems/connectrpc-yabeda/scripts/run.rb example"
 [tasks."yabeda:verify"]
 description = "Verify Yabeda metrics specs, source and packages"
 depends = ["yabeda:test", "yabeda:check", "yabeda:package", "yabeda:example"]
+
+# Optional standard gRPC health service; independent development bundle.
+
+[tasks."health:tools"]
+description = "Require preinstalled pinned Ruby and Bundler for the health service"
+dir = "{{config_root}}/gems/connectrpc-health"
+env = { BUNDLE_GEMFILE = "{{config_root}}/gems/connectrpc-health/Gemfile", BUNDLE_PATH = "{{config_root}}/vendor/health/bundle", BUNDLE_USER_HOME = "{{config_root}}/vendor/health/bundler", BUNDLE_COOLDOWN = "3" }
+run = "mise exec -- ruby scripts/tools.rb"
+
+[tasks."health:setup"]
+description = "Install the independent health service development bundle"
+depends = ["health:tools"]
+run = "mise exec -- ruby gems/connectrpc-health/scripts/run.rb setup"
+
+[tasks."health:test"]
+description = "Run health registry, Check/List/Watch and real Rack, Async and Falcon host specs"
+depends = ["health:setup"]
+run = "mise exec -- ruby gems/connectrpc-health/scripts/run.rb test"
+
+[tasks."health:check"]
+description = "Parse and lint health package source"
+depends = ["health:setup"]
+run = "mise exec -- ruby gems/connectrpc-health/scripts/run.rb check"
+
+[tasks."health:build"]
+description = "Build isolated core, testing and health archives"
+depends = ["health:setup"]
+run = "mise exec -- ruby gems/connectrpc-health/scripts/run.rb build"
+
+[tasks."health:package"]
+description = "Install and exercise normal health service dependencies offline"
+depends = ["health:build"]
+run = "mise exec -- ruby gems/connectrpc-health/scripts/run.rb package"
+
+[tasks."health:interop"]
+description = "Run grpc-go's standard health client against Async and Falcon over h2c TLS and mTLS, plus its reference server"
+depends = ["health:setup", "grpc:setup"]
+tools.go = "1.27.3"
+env = { GOTOOLCHAIN = "local", GOWORK = "off", GOFLAGS = "-mod=readonly", GOMODCACHE = "{{config_root}}/vendor/grpc/mod", GOCACHE = "{{config_root}}/vendor/grpc/build" }
+run = "ruby gems/connectrpc-health/scripts/run.rb interop"
+
+[tasks."health:verify"]
+description = "Verify health specs, source, packages and grpc-go health client interoperability"
+depends = ["health:test", "health:check", "health:package", "health:interop"]
 
 [tasks."rbs:source"]
 description = "Strictly check all selected core implementation files and private state"
@@ -854,13 +898,26 @@ run = [
   "mise exec -- ruby gems/connectrpc-yabeda/scripts/run.rb package",
 ]
 
+[tasks."floors:health"]
+description = "Run health service specs and package checks with runtime dependencies at their declared floors"
+depends = ["health:tools"]
+env.CONNECTRPC_DEPENDENCY_FLOORS = "1"
+run = [
+  "rm -f gems/connectrpc-health/Gemfile.floors.lock",
+  "mise exec -- ruby gems/connectrpc-health/scripts/run.rb setup",
+  "mise exec -- ruby gems/connectrpc-health/scripts/run.rb floors",
+  "mise exec -- ruby gems/connectrpc-health/scripts/run.rb test",
+  "mise exec -- ruby gems/connectrpc-health/scripts/run.rb build",
+  "mise exec -- ruby gems/connectrpc-health/scripts/run.rb package",
+]
+
 [tasks.floors]
 description = "Run every lowest-allowed dependency lane (Ruby 3.4.12)"
-depends = ["floors:async", "floors:falcon", "floors:rack", "floors:rails", "floors:otel", "floors:prometheus", "floors:yabeda"]
+depends = ["floors:async", "floors:falcon", "floors:rack", "floors:rails", "floors:otel", "floors:prometheus", "floors:yabeda", "floors:health"]
 
 # Release preparation never tags, creates a GitHub release, or publishes gems.
 [tasks."release:check"]
-description = "Check nine synchronized versions, installation guides and release guards offline"
+description = "Check ten synchronized versions, installation guides and release guards offline"
 run = "mise exec -- ruby scripts/release.rb check"
 
 [tasks."release:prepare"]
@@ -868,7 +925,7 @@ description = "Refresh installation guide requirements after a minor (breaking) 
 run = "mise exec -- ruby scripts/release.rb prepare"
 
 [tasks."release:build"]
-description = "Build and compare nine canonical candidate archives from a clean Ruby 3.4.12 checkout"
+description = "Build and compare ten canonical candidate archives from a clean Ruby 3.4.12 checkout"
 run = "mise exec -- ruby scripts/release.rb build"
 
 [tasks."release:tools"]
@@ -881,5 +938,5 @@ run = "mise exec -- ruby scripts/release.rb publish"
 
 [tasks."release:candidate"]
 description = "Validate installed combinations, generated consumers and canonical candidate archives"
-depends = ["release:check", "generation:check", "grpc:status:check", "check:package", "rack:package", "check:package:rails", "async:package", "falcon:package", "testing:package", "otel:package", "prometheus:package", "yabeda:package", "rbs:package"]
+depends = ["release:check", "generation:check", "grpc:status:check", "check:package", "rack:package", "check:package:rails", "async:package", "falcon:package", "testing:package", "otel:package", "prometheus:package", "yabeda:package", "health:package", "rbs:package"]
 run = "mise run release:build"

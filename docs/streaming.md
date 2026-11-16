@@ -168,6 +168,9 @@ prepared bytes. Successful HTTP EOF waits for original processor completion;
 late cleanup failure aborts/reset. Admission and graceful drain include processing,
 wire tail and cleanup. Only actual peer RST_STREAM(CANCEL) signals explicit server
 Context cancellation. EOF, half-close, other reset codes and host shutdown do not.
+A long-lived handler that blocks on application state can register
+`context.on_cancel { ... }` to wake itself on that signal; the
+[health service](../gems/connectrpc-health/README.md) Watch uses it this way.
 
 ## Bounds and protocol
 
