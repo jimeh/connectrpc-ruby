@@ -63,8 +63,9 @@ health clients can query it (Check, List) or stream it (Watch).
 - D3: add a small public `ConnectRPC::Context#on_cancel { }` in core, returning
   a `CancellationRegistration`, delegating to `CallCancellation#on_cancel`.
 - D4: non-CANCEL resets and idle HTTP/1.1 disappearance are a documented
-  residual: such a watcher is released at the next status change for its
-  service, at connection retirement, or at shutdown. `max_watchers` bounds the
+  residual: such a watcher is released when its next send fails (changes that
+  coalesce back to the last sent status send nothing), at connection
+  retirement, or at shutdown. `max_watchers` bounds the
   cost. No Watch lifetime knob.
 - D5: `""` starts `:serving`; `max_watchers` defaults to 100; List included.
 - D6: grpc-go's health client is the independent standard client; no

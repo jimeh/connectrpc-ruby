@@ -63,10 +63,19 @@ module HealthInterop
       end
     end
     host = FalconProcessFixtures::FalconProcessCluster.new(configuration, reader, writer)
-    host.event(:running, count: 2)
-    pids = host.events.select { |event| event.fetch("kind") == "running" }.map { |event| event.fetch("pid") }
-    raise "Real Falcon workers missing" unless pids.uniq.size == 2 && !pids.include?(Process.pid)
-
+    begin
+      host.event(:running, count: 2)
+      pids = host.events.select { |event| event.fetch("kind") == "running" }.map { |event| event.fetch("pid") }
+      raise "Real Falcon workers missing" unless pids.uniq.size == 2 && !pids.include?(Process.pid)
+    rescue StandardError => e
+      # The caller never receives this host, so close it here; keep the startup error.
+      begin
+        host.close
+      rescue StandardError
+        nil
+      end
+      raise e
+    end
     [host, pids]
   end
 end

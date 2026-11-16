@@ -143,8 +143,10 @@ grace expiry, forced close or connection loss.
 Peer `RST_STREAM(CANCEL)`, HTTP/2 connection loss and host retirement release a
 watcher immediately. Other HTTP/2 reset codes and an HTTP/1.1 client that
 disappears while idle signal nothing to the handler. Such a watcher is released
-at the next status change for its service, at connection retirement or at
-`shutdown`. `max_watchers` bounds that cost; there is no separate Watch
+when its next send attempt fails, at connection retirement or at
+`shutdown`. Only a change that differs from the last status sent triggers a
+send; changes that coalesce back to it before the stream runs send nothing.
+`max_watchers` bounds that cost; there is no separate Watch
 lifetime limit.
 
 ## grpc gem load order

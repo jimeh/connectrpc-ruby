@@ -80,7 +80,7 @@ The [CI workflow](../.github/workflows/ci.yml) defines the executed combinations
 | OpenTelemetry | Newest allowed API, SDK, Rack and NetHTTP instrumentation, plus the API floor 1.11.1 | Tested coexistence includes native Rails 8.1. Other SDK/instrumentation combinations need their own evidence |
 | Prometheus metrics | prometheus-client newest allowed 5.x, plus the floor 5.0.0 | Default and `DirectFileStore` stores; real Rack, Async and Falcon hosts. Rails relies on the Rack path plus documentation |
 | Yabeda metrics | yabeda newest allowed 0.x, plus the floor 0.16.0 | Declaration and values through `yabeda/testing`; yabeda-prometheus naming is checked structurally, not installed |
-| Health service | google-protobuf newest allowed 4.x, plus the floor 4.36.2; grpc-go 1.85.0 health client and reference server | Check/List/Watch on real Rack, Async and Falcon hosts; grpc-go client over h2c, TLS and mTLS against Async and Falcon workers |
+| Health service | google-protobuf newest allowed 4.x, plus the floor 4.36.2; grpc-go 1.85.0 health client and reference server | Check and List on real Rack, Async and Falcon hosts, Watch on Async and Falcon; grpc-go client over h2c, TLS and mTLS against Async and Falcon workers |
 
 The official browser fixture runs against both MRI server versions. Its
 [artifact pins](../browser/artifacts.json) and [JS lock](../browser/bun.lock)
@@ -343,8 +343,9 @@ request metadata names. NetHTTP and rackup/WEBrick also coalesce some repeated
 fields. Native metadata acceptance is not narrowed to compensate.
 
 A health Watch stream whose peer sends another reset code or disappears from an
-idle HTTP/1.1 connection keeps its watcher until the next status change for its
-service, connection retirement or `shutdown`; `max_watchers` bounds that cost.
+idle HTTP/1.1 connection keeps its watcher until its next send attempt fails,
+connection retirement or `shutdown`. Changes that coalesce back to the status it
+last sent cause no send; `max_watchers` bounds that cost.
 See the [health guide](../gems/connectrpc-health/README.md#watch-streams-the-server-cannot-see-end).
 
 OTel's default unknown-method redaction omits the convention's

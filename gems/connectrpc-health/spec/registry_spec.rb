@@ -166,10 +166,14 @@ RSpec.describe ConnectRPC::Health::Registry do
     end
 
     it "fails deadline_exceeded when the deadline passes while waiting" do
-      context = ConnectRPC::Context.new(deadline: ConnectRPC::Deadline.new(0.05))
+      # The injected clock keeps the deadline open until the first status is
+      # sent; the waiter then observes expiry when its bounded wait returns.
+      now = 0.0
+      context = ConnectRPC::Context.new(deadline: ConnectRPC::Deadline.new(0.05, clock: -> { now }))
       writer = HealthHelpers::RecordingWriter.new
       call = watch_call(registry, "", writer, context)
       expect(writer.next_status).to eq(:SERVING)
+      now = 1.0
       expect(call.outcome).to be_a(ConnectRPC::Error).and(have_attributes(code: "deadline_exceeded"))
       expect(registry.watcher_count).to eq(0)
     end

@@ -411,8 +411,10 @@ Server contexts expose `deadline`, `cancelled?`, `cancellation_reason`
 application boundaries. `context.on_cancel { ... }` registers a listener with the
 same semantics as a token listener and returns its registration; unregister it
 when the work it guards ends. It runs when the call's cancellation is signaled,
-or when a check observes an expired deadline, so a blocked handler can wake
-itself without polling. Low-level `Server#call(cancellation:)` and the Testing
+or when a check observes an expired deadline. A blocked handler wakes on
+cancellation without polling; deadline expiry runs the listener only after a
+check, so a handler waiting past its deadline needs a wait bounded by
+`deadline.remaining` and a check after waking. Low-level `Server#call(cancellation:)` and the Testing
 transport accept explicit cancellation. Native HTTP/2 publishes peer
 `RST_STREAM(CANCEL)` before input teardown; normal END_STREAM/half-close, other
 reset codes, connection loss and host shutdown do not manufacture explicit
