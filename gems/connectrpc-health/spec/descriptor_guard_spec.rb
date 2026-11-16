@@ -1,7 +1,9 @@
 # frozen_string_literal: true
 
+require "fileutils"
 require "open3"
 require "rbconfig"
+require "tmpdir"
 
 RSpec.describe "Health descriptor load order" do
   # A pre-List grpc.health.v1 file, as older grpc gem releases register it.
@@ -36,6 +38,22 @@ RSpec.describe "Health descriptor load order" do
     RUBY
     expect(status).to eq(3), output
     expect(output).to include("without List").and include('require "connectrpc/health" before')
+  end
+
+  it "loads its own descriptor when an older file with the shared feature name comes first on the load path" do
+    Dir.mktmpdir("older-grpc-health-") do |directory|
+      feature = File.join(directory, "grpc/health/v1/health_pb.rb")
+      FileUtils.mkdir_p(File.dirname(feature))
+      File.write(feature, "$older_health_loaded = true\n#{older_descriptor}")
+      output, status = run_ruby(<<~RUBY)
+        $LOAD_PATH.unshift(#{directory.dump})
+        require "connectrpc/health"
+        abort "older file loaded" if $older_health_loaded
+        abort "feature reloaded" if require "grpc/health/v1/health_pb"
+        puts ConnectRPC::Health::SERVICE.methods.map(&:name).join(",")
+      RUBY
+      expect([output.strip, status]).to eq(["Check,List,Watch", 0])
+    end
   end
 
   it "loads normally when it is first and satisfies the shared feature name" do

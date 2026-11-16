@@ -104,8 +104,10 @@ gems/connectrpc-health/
   cover it.
 - The generated files use the canonical feature name `grpc/health/v1/health_pb`,
   which the `grpc` gem shares. Ours is a superset (has List), so loading
-  `connectrpc/health` first satisfies both. `connectrpc/health` checks the
-  generated pool first: a preloaded `grpc.health.v1.HealthCheckRequest` without
+  `connectrpc/health` first satisfies both. It loads its own `_pb` by path
+  before the generated glue, so the grpc gem's file earlier on the load path
+  cannot win the shared feature name (review finding). It checks the generated
+  pool: a preloaded `grpc.health.v1.HealthCheckRequest` without
   `grpc.health.v1.HealthListRequest` raises a clear `LoadError` telling the user
   to require `connectrpc/health` before the grpc gem's health files.
 

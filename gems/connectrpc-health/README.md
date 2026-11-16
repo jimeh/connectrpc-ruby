@@ -151,8 +151,9 @@ lifetime limit.
 
 The generated files use the canonical feature name
 `grpc/health/v1/health_pb`, which the `grpc` gem shares. This package's
-descriptor is a superset that adds List, so requiring `connectrpc/health` first
-satisfies both. When an older descriptor without List is already loaded,
+descriptor is a superset that adds List. `require "connectrpc/health"` loads
+its own file by path, even when the `grpc` gem comes first on the load path,
+and the `grpc` gem's later require of that feature name reuses it. When an older descriptor without List is already loaded,
 `require "connectrpc/health"` raises a `LoadError` that asks you to require it
 before the grpc gem's health files.
 
