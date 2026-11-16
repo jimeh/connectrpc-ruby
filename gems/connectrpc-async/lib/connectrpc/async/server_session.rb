@@ -336,14 +336,15 @@ module ConnectRPC
             result = lifecycle ? lifecycle.activate(&work) : work.call
             publication.publish(result) if publication && !publication.published?
             result
-          rescue StandardError => e
-            raise unless publication
+          rescue Exception => e # rubocop:disable Lint/RescueException -- cancellation also completes publication
+            failure = e
+            raise unless publication && e.is_a?(StandardError)
 
             lifecycle&.record_failure(e)
             publication.complete(e)
             nil
           ensure
-            complete_processor(publication, task, key, resource)
+            complete_processor(publication, task, key, resource, failure)
           end
           resource.track(handler)
           handler.run
@@ -382,11 +383,11 @@ module ConnectRPC
         end
       end
 
-      def complete_processor(publication, task, key, resource)
+      def complete_processor(publication, task, key, resource, error)
         @identities.delete(task)
         complete_admission(key, processor: true)
         resource.changed
-        publication&.complete($ERROR_INFO)
+        publication&.complete(error)
       end
 
       def complete_admission(key, processor: false, wire: false)

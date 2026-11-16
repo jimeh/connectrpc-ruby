@@ -307,3 +307,64 @@ RSpec.describe "Direct HTTP/2 cancellation and deadline composition" do
     end
   end
 end
+
+RSpec.describe "HTTP/2 unary upload cancellation" do
+  # The pinned async-http server grants stream credit only as its handler
+  # reads, so a handler that never reads stalls the upload at the window.
+  %i[token deadline stop].each do |reason|
+    it "resets a credit-blocked upload with CANCEL on #{reason}" do
+      reactor do |task|
+        bound = IO::Endpoint.tcp("127.0.0.1", 0).bound
+        listener = bound.sockets.first
+        held = Async::Queue.new
+        peer = ConnectionPeer::RecordingServer.new(task, listener) do |request|
+          held.enqueue(request)
+          Async::Promise.new.wait
+        end
+        received = Hash.new(0)
+        resets = {}
+        peer.define_singleton_method(:record) do |index, frame|
+          received[frame.stream_id] += frame.length if frame.is_a?(Protocol::HTTP2::DataFrame)
+          resets[frame.stream_id] = frame.unpack if frame.is_a?(Protocol::HTTP2::ResetStreamFrame)
+          super(index, frame)
+        end
+        origin = "http://127.0.0.1:#{listener.local_address.ip_port}"
+        transport = ConnectRPC::Async::Transport.new(origin: origin)
+        source = ConnectRPC::CancellationSource.new
+        call = task.async(finished: false) do
+          client(transport, origin).echo(AsyncHelpers::MESSAGE.new(name: "x" * 200_000),
+                                         timeout: reason == :deadline ? 1 : nil, cancellation: source.token)
+        end
+        id = held.dequeue.stream.id
+        operation = transport.instance_variable_get(:@calls).keys.first
+        stream = operation.fetch(:response).stream
+        wait_until(task, "upload blocked on peer credit") do
+          stream.remote_window.available <= 0 && received[id] == 65_535
+        end
+        expect(call).not_to be_finished
+        expect(operation.fetch(:request).deadline).not_to be_expired if reason == :deadline
+        expect(peer.data_frames).to all(satisfy { |_, _, flags| flags.nobits?(Protocol::HTTP2::END_STREAM) })
+        case reason
+        when :token then source.cancel
+        when :stop then call.stop
+        end
+        if reason == :stop
+          call.wait
+        else
+          expect { call.wait }.to raise_error(ConnectRPC::Error) do |error|
+            expect(error.code).to eq(reason == :token ? "canceled" : "deadline_exceeded")
+          end
+        end
+        wait_until(task, "peer received the upload reset") { resets.key?(id) }
+        expect(resets).to eq(id => Protocol::HTTP2::Error::CANCEL)
+        expect(peer.data_frames).to all(satisfy { |_, _, flags| flags.nobits?(Protocol::HTTP2::END_STREAM) })
+        expect(transport.instance_variable_get(:@calls)).to be_empty
+        expect(lease_usage(transport)).to eq(0)
+      ensure
+        transport&.close(grace: 0)
+        peer&.stop
+        bound&.close
+      end
+    end
+  end
+end

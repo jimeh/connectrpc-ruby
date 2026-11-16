@@ -137,12 +137,15 @@ module ConnectRPC
             return ::Protocol::HTTP::Response[response.status, Internal.fields(response.headers),
                                               response.body.empty? ? nil : [response.body]]
           end
+        rescue Exception => e # rubocop:disable Lint/RescueException -- failed processing must not drain input
+          failure = e
+          raise
         ensure
           stream&.detach_cancellation
           # HTTP/1 Finishable retains a reading request until explicit close,
           # even after EOF. The original processor owns this cleanup too.
           if web && !stream
-            h1_input ? h1_input.close : request.body&.close
+            h1_input ? h1_input.close(failure) : request.body&.close
           end
         end
         body.close_write

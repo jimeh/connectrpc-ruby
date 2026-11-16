@@ -998,7 +998,9 @@ registration lifetime rules.
 
 The Async transport accepts foreign-thread cancellation through a Promise;
 only the owner reactor stops private SDK tasks and performs stream cleanup.
-Healthy multiplexed siblings survive. A stuck frame retains the one 100 ms
+Cancellation, an expired deadline or a stopped caller task resets the call's
+stream with `RST_STREAM(CANCEL)`, including while its upload waits for
+flow-control credit. Healthy multiplexed siblings survive. A stuck frame retains the one 100 ms
 raw-first whole-connection cleanup fallback. Native HTTP/2 Context observes
 only an actual peer RST_STREAM(CANCEL), before input teardown. Other resets,
 normal half-close, connection loss and host shutdown do not fabricate explicit

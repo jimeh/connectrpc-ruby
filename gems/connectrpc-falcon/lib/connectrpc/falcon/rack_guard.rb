@@ -48,8 +48,11 @@ module ConnectRPC
         response
       rescue Unsupported
         rejected
+      rescue Exception => e # rubocop:disable Lint/RescueException -- the original body learns every escape
+        error = e
+        raise
       ensure
-        original&.close($ERROR_INFO) unless handed_off
+        original&.close(error) unless handed_off
       end
 
       private
@@ -96,8 +99,11 @@ module ConnectRPC
         begin
           body = yield
           converted = true
+        rescue Exception => e # rubocop:disable Lint/RescueException -- callbacks learn every conversion escape
+          error = e
+          raise
         ensure
-          complete($ERROR_INFO) unless converted
+          complete(error) unless converted
         end
         super(body || ::Protocol::HTTP::Body::Buffered.wrap([]))
       end
@@ -105,7 +111,10 @@ module ConnectRPC
       def rewindable? = false
       def rewind = false
 
-      # The Rack adapter closes a rejected tuple without passing its exception.
+      # The Rack adapter closes a rejected tuple from inside its own rescue
+      # clause without passing that exception, so only an argless close reads
+      # it. Other argless closes, such as no-content conversion, run outside a
+      # rescue clause on a host-owned fiber.
       def close(error = $ERROR_INFO)
         return if @closed
 
