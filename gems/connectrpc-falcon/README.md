@@ -102,7 +102,8 @@ Include `ConnectRPC::Falcon::Environment` in each service:
 - `connectrpc_server` (required) constructs a `ConnectRPC::Server` in the worker.
 - `rack_app` supplies the optional fallback.
 - `tls` or `tls_provider` supplies the TLS source; see [TLS lifecycle](#tls-lifecycle).
-- `server_options` supplies shared limits and host options such as `cache:`.
+- `server_options` supplies shared limits and host options such as `cache:`
+  and `keepalive:`.
 - `url` describes the listener.
 
 Application `prepare!` runs after fork, before static TLS compilation or the
@@ -337,6 +338,22 @@ Falcon's local HTTP/1 resource and the shared Async session use source-coupled
 private completion and lifetime-anchor operations. Use matched Async/Falcon
 package versions. These operations add no public API or SPI and change neither
 HTTP/1 response timing nor the input retirement limits below.
+
+## HTTP/2 keepalive and connection age
+
+`Server.new(keepalive:)` takes the Async package's `ServerKeepalive` (default
+`ServerKeepalive.new`, nil turns it off) and applies it to native HTTP/2
+connections exactly as the Async `Host` does: server PINGs, grpc-go PING
+enforcement with `too_many_pings`, and the graceful age drain. `idle_timeout`
+drains idle HTTP/2 connections gracefully. HTTP/1 connections have no keepalive
+and are still closed once idle. See
+[Server keepalive](../connectrpc-async/README.md#server-keepalive).
+
+```ruby
+server_options do
+  { keepalive: ConnectRPC::Async::ServerKeepalive.new(max_connection_age: 1800, max_connection_age_grace: 30) }
+end
+```
 
 ## Native streaming
 

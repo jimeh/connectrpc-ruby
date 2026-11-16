@@ -2,8 +2,17 @@
 
 server = ConnectRPC::Server.new(services: [], binding: APIBinding.new)
 provider = APIProvider.new
+server_keepalive = ConnectRPC::Async::ServerKeepalive.new(time: 300, timeout: 20, min_time: 10,
+                                                          permit_without_calls: false, max_connection_age: 1800,
+                                                          max_connection_age_grace: 30)
+(server_keepalive.timeout + (server_keepalive.max_connection_age || 0)).positive?
+server_keepalive.time&.positive?
+server_keepalive.min_time&.positive?
+server_keepalive.max_connection_age_grace&.positive?
+server_keepalive.permit_without_calls.to_s
+(server_keepalive == ConnectRPC::Async::ServerKeepalive.new).to_s
 host = ConnectRPC::Async::Host.new(server: server, tls_provider: provider, on_tls_error: APIReporter.new,
-                                   idle_timeout: nil, refresh_jitter: 0.1)
+                                   idle_timeout: nil, refresh_jitter: 0.1, keepalive: server_keepalive)
 host.start.port&.succ
 host.addresses.each(&:ip_port)
 host.refresh_tls&.succ
@@ -39,7 +48,7 @@ native_response = application.call(request)
 native_response&.body&.read
 session = ConnectRPC::Async::ServerSession.new(
   application: application, lifecycle_factory: ->(incoming) { application.start_call(incoming) },
-  stop_accepting: -> {}
+  stop_accepting: -> {}, keepalive: nil
 )
 session.start.schedule { application.call(request) }.wait
 session.tls_status[:generation]&.succ
@@ -68,7 +77,8 @@ endpoint.scheme.size
 rack_app = APIApp.new
 falcon = ConnectRPC::Falcon::Server.new(
   server: server, endpoint: endpoint, tls_provider: provider, rack_app: rack_app, cache: true,
-  on_tls_error: ->(event) { event[:status][:category]&.to_s }
+  on_tls_error: ->(event) { event[:status][:category]&.to_s },
+  keepalive: ConnectRPC::Async::ServerKeepalive.new(time: nil, max_connection_age: 3600)
 )
 falcon.run.wait
 falcon.call(request)&.status&.succ

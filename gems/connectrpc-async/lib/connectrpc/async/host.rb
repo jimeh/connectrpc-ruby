@@ -13,7 +13,8 @@ module ConnectRPC
 
       def initialize(server:, host: "127.0.0.1", port: 0, tls: nil, tls_provider: nil,
                      max_connections: 128, max_requests: 128, handshake_timeout: 10, idle_timeout: 60,
-                     refresh_interval: 60, refresh_jitter: 0.1, refresh_timeout: 10, on_tls_error: nil)
+                     refresh_interval: 60, refresh_jitter: 0.1, refresh_timeout: 10, on_tls_error: nil,
+                     keepalive: ServerKeepalive.new)
         @host = host
         @requested_port = port
         @addresses = [].freeze
@@ -27,7 +28,8 @@ module ConnectRPC
           max_connections: max_connections, max_requests: max_requests,
           handshake_timeout: handshake_timeout, idle_timeout: idle_timeout,
           refresh_interval: refresh_interval, refresh_jitter: refresh_jitter,
-          refresh_timeout: refresh_timeout, on_tls_error: on_tls_error, stop_accepting: method(:stop_accepting)
+          refresh_timeout: refresh_timeout, on_tls_error: on_tls_error, stop_accepting: method(:stop_accepting),
+          keepalive: keepalive
         )
       end
 

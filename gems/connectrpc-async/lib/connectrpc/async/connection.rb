@@ -472,14 +472,75 @@ module ConnectRPC
         end
       end
 
+      # A stream opened after a drain's cutoff GOAWAY. It decodes its header
+      # block to keep HPACK in sync and is reset, never dispatched.
+      class RefusedStream < ::Protocol::HTTP2::Stream; end
+
       class ServerConnection < ::Async::HTTP::Protocol::HTTP2::Server
         include Connection
 
         def accept_stream(stream_id)
+          refused = upkeep&.refuse?(stream_id)
           ::Protocol::HTTP2::Connection.instance_method(:accept_stream).bind_call(self, stream_id) do
-            RequestStream.create(self, stream_id)
+            (refused ? RefusedStream : RequestStream).create(self, stream_id)
+          end
+        ensure
+          @resource&.stream_opened
+        end
+
+        # Streams above a drain's cutoff are refused after normal bookkeeping.
+        # Later HEADERS for one, such as trailers, are decoded and dropped.
+        def receive_headers(frame)
+          upkeep = self.upkeep
+          stream_id = frame.stream_id
+          return super unless upkeep&.refuse?(stream_id) && !@streams.key?(stream_id)
+
+          if stream_id <= @remote_stream_id
+            decode_headers(frame.unpack)
+            return
+          end
+
+          super
+          stream = @streams[stream_id]
+          upkeep.refuse(stream) if stream.is_a?(RefusedStream)
+        end
+
+        # With server keepalive, the reader only decides; the control writer
+        # sends the ACK, so a held outbound frame cannot stall reading.
+        def receive_ping(frame)
+          upkeep = self.upkeep
+          return super unless upkeep&.answers_pings?
+          raise ::Protocol::HTTP2::ProtocolError, "Cannot receive ping in state #{@state}" if @state == :closed
+
+          if frame.acknowledgement?
+            @resource.ping_acknowledged(frame.unpack)
+          else
+            upkeep.ping(frame)
           end
         end
+
+        def write_frame(frame)
+          super
+          upkeep&.stream_written if frame.is_a?(::Protocol::HTTP2::DataFrame) ||
+                                    frame.is_a?(::Protocol::HTTP2::HeadersFrame)
+        end
+
+        # Only header blocks are written as frame groups.
+        def write_frames(&)
+          super
+          upkeep&.stream_written
+        end
+
+        # Never raises a drain's frozen cutoff to the highest stream seen.
+        def send_goaway(error_code = 0, message = "")
+          frame = ::Protocol::HTTP2::GoawayFrame.new
+          frame.pack(upkeep&.cutoff || @remote_stream_id, error_code, message)
+          write_frame(frame)
+        ensure
+          close!
+        end
+
+        def upkeep = @resource&.upkeep
 
         # No connection-wide barrier: reset and response failures are local to
         # this stream. Application work is a separately stoppable host task.
@@ -544,7 +605,7 @@ module ConnectRPC
       end
 
       class Resource
-        attr_accessor :raw, :socket, :connection, :task, :generation, :snapshot, :ready, :draining
+        attr_accessor :raw, :socket, :connection, :task, :generation, :snapshot, :ready, :draining, :upkeep
         attr_reader :tasks, :progress, :activity_at, :keepalive
         # Called when the connection stops accepting new streams, before any
         # retirement join, so its owner can update accounting promptly.
@@ -557,7 +618,9 @@ module ConnectRPC
           @snapshot = snapshot
           @tasks = []
           @maintenance = []
+          @controls = []
           @keepalive = nil
+          @upkeep = nil
           @close_reason = nil
           @activity_at = Internal.now
           @ready = false
@@ -579,10 +642,12 @@ module ConnectRPC
 
         # Long-lived connection upkeep. Unlike tracked tasks it never keeps the
         # resource from being empty, but retirement still captures, cancels and
-        # joins it, and its own abort is an owned abort.
-        def maintain(task)
-          @maintenance.reject!(&:finished?)
-          @maintenance << task
+        # joins it, and its own abort is an owned abort. Graceful drains stop
+        # ordinary upkeep first; control writers run until the half-close.
+        def maintain(task, control: false)
+          tasks = control ? @controls : @maintenance
+          tasks.reject!(&:finished?)
+          tasks << task
           task
         end
 
@@ -603,9 +668,17 @@ module ConnectRPC
             connection.outputs_pending?
         end
 
-        def stream_opened = @keepalive&.wake
+        def stream_opened
+          @keepalive&.wake
+          @upkeep&.stream_opened
+        end
+
         def frame_read = @keepalive&.read!
-        def ping_acknowledged(payload) = @keepalive&.acknowledged(payload)
+
+        def ping_acknowledged(payload)
+          @keepalive&.acknowledged(payload)
+          @upkeep&.acknowledged(payload)
+        end
 
         # The peer reported excessive PINGs (GOAWAY ENHANCE_YOUR_CALM).
         def calmed! = @calmed = true
@@ -674,16 +747,7 @@ module ConnectRPC
             @progress.wait until empty?
             next !@abort_during_drain if @aborted
 
-            @finishing = true
-            @connection.defer_close = true
-            @connection.send_goaway
-            @raw.shutdown(Socket::SHUT_WR)
-            reader = @connection.reader_task
-            cancel_root(reader)
-            Internal.join_complete(reader) if reader
-            # Discard unread inbound control bytes before closing TCP, so
-            # the peer receives the complete response/GOAWAY rather than RST.
-            loop { @raw.readpartial(16_384) }
+            finish_drain { @connection.send_goaway }
           rescue EOFError
             @drained = true
             true
@@ -699,7 +763,48 @@ module ConnectRPC
           false
         end
 
+        # Finishes a connection whose final GOAWAY is already written: stops
+        # upkeep, half-closes and discards input until EOF, bounded by `within`
+        # on `clock`. A later drain joins it under its own grace.
+        def quiesce(parent, clock:, within:)
+          return if @drain_task || @aborted
+
+          @drain_task = ::Async::Task.new(parent, finished: false) do |task|
+            timer = ::Async::Task.new(task, finished: false) do
+              clock.sleep(within)
+              abort
+            end
+            timer.run
+            stop_maintenance
+            finish_drain
+          rescue EOFError
+            @drained = true
+            true
+          rescue StandardError
+            false
+          ensure
+            Internal.cancel(timer)
+            abort
+          end
+          @drain_task.run
+          nil
+        end
+
         private
+
+        def finish_drain
+          @finishing = true
+          @connection.defer_close = true
+          yield if block_given?
+          stop_control
+          @raw.shutdown(Socket::SHUT_WR)
+          reader = @connection.reader_task
+          cancel_root(reader)
+          Internal.join_complete(reader) if reader
+          # Discard unread inbound control bytes before closing TCP, so
+          # the peer receives the complete response/GOAWAY rather than RST.
+          loop { @raw.readpartial(16_384) }
+        end
 
         def retirement_parent=(parent)
           @lifetime = parent
@@ -709,9 +814,14 @@ module ConnectRPC
 
         # Graceful close and drain stop upkeep before waiting for emptiness. A
         # keepalive writer still waiting for the guard stops at once.
-        def stop_maintenance
-          @maintenance.each { |task| Internal.cancel(task) }
-          @maintenance.reverse_each { |task| Internal.join(task) }
+        def stop_maintenance = stop_tasks(@maintenance)
+
+        # Control frames queued after the final GOAWAY are dropped.
+        def stop_control = stop_tasks(@controls)
+
+        def stop_tasks(tasks)
+          tasks.each { |task| Internal.cancel(task) }
+          tasks.reverse_each { |task| Internal.join(task) }
         end
 
         def retirement_completed? = !!@retirement_completed
@@ -730,7 +840,7 @@ module ConnectRPC
             [stream.respond_to?(:response_task) ? stream.response_task : nil,
              stream.respond_to?(:output_task) ? stream.output_task : nil]
           end
-          [*@connection&.writers&.keys, @connection&.reader_task, *@tasks, *@maintenance, @task,
+          [*@connection&.writers&.keys, @connection&.reader_task, *@tasks, *@maintenance, *@controls, @task,
            *outputs].compact.uniq
         end
 

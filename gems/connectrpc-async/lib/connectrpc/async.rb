@@ -26,11 +26,13 @@ end
 
 require_relative "async/internal"
 require_relative "async/connection_policy"
+require_relative "async/server_keepalive"
 require_relative "async/tls"
 require_relative "async/tls_configuration"
 require_relative "async/ingress"
 require_relative "async/connection"
 require_relative "async/keepalive_monitor"
+require_relative "async/server_upkeep"
 require_relative "async/connection_manager"
 require_relative "async/stream_exchange"
 require_relative "async/application"

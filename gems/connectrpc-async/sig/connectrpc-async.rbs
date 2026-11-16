@@ -76,8 +76,21 @@ module ConnectRPC
       def reload: (certificate_chain: Array[String], private_key: String, client_ca: Array[String]?) -> Integer
       def close: () -> self
     end
+    # Server HTTP/2 keepalive PINGs, PING enforcement and connection age.
+    class ServerKeepalive
+      def initialize: (?time: Numeric?, ?timeout: Numeric, ?min_time: Numeric?, ?permit_without_calls: bool, ?max_connection_age: Numeric?, ?max_connection_age_grace: Numeric?) -> void
+      attr_reader time: Numeric?
+      attr_reader timeout: Numeric
+      attr_reader min_time: Numeric?
+      attr_reader permit_without_calls: bool
+      attr_reader max_connection_age: Numeric?
+      attr_reader max_connection_age_grace: Numeric?
+      def ==: (untyped other) -> bool
+      def eql?: (untyped other) -> bool
+      def hash: () -> Integer
+    end
     class Host
-      def initialize: (server: Server, ?host: String, ?port: Integer, ?tls: tls?, ?tls_provider: (_TLSProvider | ^() -> tls_snapshot)?, ?max_connections: Integer, ?max_requests: Integer, ?handshake_timeout: Numeric, ?idle_timeout: Numeric?, ?refresh_interval: Numeric, ?refresh_jitter: Numeric, ?refresh_timeout: Numeric, ?on_tls_error: (_TLSErrorHandler | ^(tls_event) -> void)?) -> void
+      def initialize: (server: Server, ?host: String, ?port: Integer, ?tls: tls?, ?tls_provider: (_TLSProvider | ^() -> tls_snapshot)?, ?max_connections: Integer, ?max_requests: Integer, ?handshake_timeout: Numeric, ?idle_timeout: Numeric?, ?refresh_interval: Numeric, ?refresh_jitter: Numeric, ?refresh_timeout: Numeric, ?on_tls_error: (_TLSErrorHandler | ^(tls_event) -> void)?, ?keepalive: ServerKeepalive?) -> void
       attr_reader port: Integer?
       attr_reader addresses: Array[Addrinfo]
       def start: () -> self
@@ -177,7 +190,7 @@ module ConnectRPC
       interface _HTTP1Factory
         def call: (Object, progress: Object, generation: Integer?) -> Object
       end
-      def initialize: (application: _Application | ^(_Request, ?lifecycle: Instrumentation::Handle?) -> _Response?, ?tls: tls?, ?tls_provider: (_TLSProvider | ^() -> tls_snapshot)?, ?max_connections: Integer, ?max_requests: Integer, ?handshake_timeout: Numeric, ?idle_timeout: Numeric?, ?refresh_interval: Numeric, ?refresh_jitter: Numeric, ?refresh_timeout: Numeric, ?on_tls_error: (_TLSErrorHandler | ^(tls_event) -> void)?, ?alpn_protocols: Array[String], ?http1: _HTTP1Factory?, ?stop_accepting: (_Callback | ^() -> void)?, ?on_request_rejected: (_Callback | ^() -> void)?, ?lifecycle_factory: (_LifecycleFactory | ^(_Request) -> Instrumentation::Handle?)?) -> void
+      def initialize: (application: _Application | ^(_Request, ?lifecycle: Instrumentation::Handle?) -> _Response?, ?tls: tls?, ?tls_provider: (_TLSProvider | ^() -> tls_snapshot)?, ?max_connections: Integer, ?max_requests: Integer, ?handshake_timeout: Numeric, ?idle_timeout: Numeric?, ?refresh_interval: Numeric, ?refresh_jitter: Numeric, ?refresh_timeout: Numeric, ?on_tls_error: (_TLSErrorHandler | ^(tls_event) -> void)?, ?alpn_protocols: Array[String], ?http1: _HTTP1Factory?, ?stop_accepting: (_Callback | ^() -> void)?, ?on_request_rejected: (_Callback | ^() -> void)?, ?lifecycle_factory: (_LifecycleFactory | ^(_Request) -> Instrumentation::Handle?)?, ?keepalive: ServerKeepalive?) -> void
       def start: () -> self
       def close: (?grace: Numeric) -> bool?
       def abort: () -> self

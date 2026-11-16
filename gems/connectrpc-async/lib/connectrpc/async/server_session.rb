@@ -8,12 +8,15 @@ module ConnectRPC
       def initialize(application:, tls: nil, tls_provider: nil, max_connections: 128, max_requests: 128,
                      handshake_timeout: 10, idle_timeout: 60, refresh_interval: 60, refresh_jitter: 0.1,
                      refresh_timeout: 10, on_tls_error: nil, alpn_protocols: ["h2"], http1: nil, stop_accepting: nil,
-                     on_request_rejected: nil, lifecycle_factory: nil)
+                     on_request_rejected: nil, lifecycle_factory: nil, keepalive: ServerKeepalive.new)
         initialize_affinity
         raise ArgumentError, "application must be callable" unless application.respond_to?(:call)
         raise ArgumentError, "stop_accepting must be callable" if stop_accepting && !stop_accepting.respond_to?(:call)
         if on_request_rejected && !on_request_rejected.respond_to?(:call)
           raise ArgumentError, "on_request_rejected must be callable"
+        end
+        unless keepalive.nil? || keepalive.is_a?(ServerKeepalive)
+          raise ArgumentError, "keepalive must be a ServerKeepalive or nil"
         end
 
         @lifecycle_factory = lifecycle_factory
@@ -26,6 +29,10 @@ module ConnectRPC
         @max_requests = Internal.positive_integer(max_requests, "max_requests")
         @handshake_timeout = Internal.seconds(handshake_timeout, "handshake_timeout")
         @idle_timeout = Internal.seconds(idle_timeout, "idle_timeout") unless idle_timeout.nil?
+        @keepalive = keepalive
+        # One clock and random source for every connection's upkeep timers.
+        @clock = Internal::MonotonicClock
+        @random = ::Random
         @tls = TLSConfiguration.new(tls: tls, tls_provider: tls_provider, refresh_interval: refresh_interval,
                                     refresh_jitter: refresh_jitter, refresh_timeout: refresh_timeout,
                                     on_error: on_tls_error, alpn_protocols: alpn_protocols)
@@ -198,8 +205,12 @@ module ConnectRPC
 
         resource.ready = true
         resource.changed
+        if resource.connection.is_a?(Internal::ServerConnection)
+          keep_up(resource)
+        elsif @idle_timeout
+          idle = @lifetime.async(finished: false) { watch_idle(resource) }
+        end
         resource.connection.start_connection if resource.connection.respond_to?(:start_connection)
-        idle = @lifetime.async(finished: false) { watch_idle(resource) } if @idle_timeout
         resource.connection.each { |request| dispatch(resource, request) }
       rescue StandardError
         # Socket/setup/protocol failures terminate only this owned connection.
@@ -238,6 +249,18 @@ module ConnectRPC
         resource
       end
 
+      # HTTP/2 idle expiry drains gracefully; keepalive adds PINGs, PING
+      # enforcement and the age limit.
+      def keep_up(resource)
+        return unless @keepalive || @idle_timeout
+
+        upkeep = Internal::ServerUpkeep.new(resource, parent: @lifetime, clock: @clock, random: @random,
+                                                      keepalive: @keepalive, idle_timeout: @idle_timeout)
+        # Frames reach the upkeep only after its tasks run; the reader starts later.
+        resource.upkeep = upkeep.start
+      end
+
+      # HTTP/1 resources are aborted once idle.
       def watch_idle(resource)
         loop do
           if resource.empty?

@@ -55,6 +55,7 @@
   "threaded_stream": "Ruby::NoMethod",
   "drain_policy": "Ruby::ArgumentTypeMismatch",
   "keepalive_policy": "Ruby::ArgumentTypeMismatch",
+  "server_keepalive": "Ruby::ArgumentTypeMismatch",
   "metrics_recorder": "Ruby::ArgumentTypeMismatch",
   "prometheus": "Ruby::ArgumentTypeMismatch",
   "yabeda": "Ruby::ArgumentTypeMismatch",
