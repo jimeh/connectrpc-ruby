@@ -19,7 +19,7 @@ or aggregate job:
 | Rails 8.1 | 3.4.12, 4.0.9 | Same Rails commands with `RAILS_LANE=8.1` |
 | Lowest allowed async, falcon, rack, rails, otel, prometheus, yabeda, health, sentry | 3.4.12 | `mise run floors:<leaf>` |
 | Async specs/package | 3.4.12, 4.0.9 | `mise run async:test`, `mise run async:package`, `mise run async:conformance`, `async:conformance:grpc`, `async:conformance:http1`, `async:conformance:threaded` |
-| Async Go interoperability | 3.4.12, 4.0.9 | `mise run async:interop`, `mise run async:interop:streaming`, `async:interop:http1`, `async:interop:grpc` |
+| Async Go interoperability | 3.4.12, 4.0.9 | `mise run async:interop`, `mise run async:interop:streaming`, `async:interop:http1`, `async:interop:grpc`, `async:interop:keepalive` |
 | Rack specs/check/package | 3.4.12, 4.0.9 | `mise run rack:test`, `mise run rack:check`, `mise run rack:package` |
 | In-process testing | 3.4.12, 4.0.9 | `mise run testing:verify` |
 | RBS source/API/package | 3.4.12, 4.0.9 | `mise run rbs:check`, then `mise run rbs:package` |
@@ -196,8 +196,8 @@ and Go actions, with lock-keyed native backend caches under
 Gemfile is `gems/connectrpc-async/Gemfile`; Bundler user state is separate under
 `vendor/async/bundler`, and the three-day cooldown applies.
 Core setup/spec jobs install no backend dependencies. Backend jobs never reach
-root `setup`: `async:interop:grpc` and `falcon:interop:grpc` run the official
-gRPC peer generation check through their own backend bundle instead of root
+root `setup`: `async:interop:grpc`, `async:interop:keepalive` and
+`falcon:interop:grpc` run the official gRPC peer generation check through their own backend bundle instead of root
 `grpc:generation:check`, so the job's `BUNDLE_GEMFILE` is never installed into
 the root `vendor/bundle`.
 

@@ -401,15 +401,16 @@ decision. A merged fix closes its specific defect, not the audit as a whole.
   gRPC client stops reading a rejected-media response body at the first byte
   past 262,144 bytes, and a surplus unary request envelope fails before its
   payload is read or decoded, as the [gRPC guide](grpc.md) describes.
-- L13-L16 are resolved. L13: the generator reserves the stdlib top-level roots
-  the core runtime loads, such as `URI`, `Zlib`, `Net` and `OpenSSL`; optional
-  gem roots such as `Async` or `Sentry` stay unreserved, so generated modules
-  may still share those namespaces. L14: an unmatched native or Web conformance
-  selector fails before the runner starts. L15: the backend gRPC interop tasks
-  run the peer generation check through their own bundle and no longer reach
-  root `setup`. L16: gemspec manifests no longer depend on the working
-  directory, and a direct `gem build` from the wrong directory now fails instead
-  of packaging another package's files.
+- [#79](https://github.com/jimeh/connectrpc-ruby/pull/79) resolves L13-L16.
+  L13: the generator reserves the stdlib top-level roots the core runtime loads,
+  such as `URI`, `Zlib`, `Net` and `OpenSSL`. Roots outside that closure, such
+  as optional gem roots (`Async`, `Sentry`) or `Bundler`, stay unreserved, so
+  generated modules may still share or replace them. L14: an unmatched native
+  or Web conformance selector fails before the runner starts. L15: the backend
+  gRPC interop tasks run the peer generation check through their own bundle
+  and no longer reach root `setup`. L16: gemspec manifests no longer depend on
+  the working directory, and a direct `gem build` from the wrong directory now
+  fails instead of packaging another package's files.
 - L12 is disclosed above as a Rack adapter limitation. This guide corrects
   L18's current documentation drift without declaring the audit complete.
 

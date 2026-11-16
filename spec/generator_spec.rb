@@ -267,7 +267,7 @@ RSpec.describe "Service generation" do
   it "reserves every top-level constant the runtime library defines" do
     require "connectrpc/generator"
     root = File.expand_path("..", __dir__)
-    # A clean process sees only the bundle's google-protobuf plus default gems.
+    # A clean process without Bundler setup; the bundle path supplies google-protobuf.
     gem_path = [Gem.loaded_specs.fetch("google-protobuf").base_dir, *Gem.default_path].join(File::PATH_SEPARATOR)
     probe = <<~RUBY
       before = Object.constants

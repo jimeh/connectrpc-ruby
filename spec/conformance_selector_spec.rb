@@ -23,18 +23,18 @@ RSpec.describe "Conformance selectors" do
     File.exist?(log_path) ? File.readlines(log_path).map { |line| JSON.parse(line) } : []
   end
 
-  # Stands in for the external runner: it reports the pinned version and records
-  # every other invocation, then fails without producing telemetry.
+  # Stands in for the external runner: it records every invocation, reports the
+  # pinned version, and fails any run without producing telemetry.
   def install_fake_runner
     runner = File.join(@directory, "connectconformance")
     File.write(runner, <<~RUBY)
       #!#{RbConfig.ruby}
       require "json"
+      File.open(#{log_path.inspect}, "a") { |log| log.puts(JSON.generate(ARGV)) }
       if ARGV == ["--version"]
         puts "connectconformance v1.0.6"
         exit 0
       end
-      File.open(#{log_path.inspect}, "a") { |log| log.puts(JSON.generate(ARGV)) }
       exit 1
     RUBY
     File.chmod(0o755, runner)
@@ -65,9 +65,9 @@ RSpec.describe "Conformance selectors" do
       inventories = Conformance::NativeLedger::INVENTORIES
       name = (inventories.fetch("gzip").fetch("server") - inventories.fetch("identity").fetch("server")).first
       run_script("native_conformance.rb", "async", "server", name)
-      expect(invocations.size).to eq(1)
+      expect(invocations - [["--version"]]).to eq([invocations.last])
       profile = File.join(root, "conformance/profile-native-gzip.yaml")
-      expect(invocations.first.each_cons(2).to_a).to include(["--mode", "server"], ["--run", name], ["--conf", profile])
+      expect(invocations.last.each_cons(2).to_a).to include(["--mode", "server"], ["--run", name], ["--conf", profile])
     end
   end
 
@@ -82,8 +82,8 @@ RSpec.describe "Conformance selectors" do
     it "invokes the runner with an exact Web selector" do
       name = JSON.parse(File.read(File.join(root, "conformance/cases-web-async.json"))).fetch("server").first
       run_script("web_conformance.rb", "async", name)
-      expect(invocations.size).to eq(1)
-      expect(invocations.first.each_cons(2).to_a).to include(["--mode", "server"], ["--run", name])
+      expect(invocations - [["--version"]]).to eq([invocations.last])
+      expect(invocations.last.each_cons(2).to_a).to include(["--mode", "server"], ["--run", name])
     end
   end
 end
