@@ -430,10 +430,14 @@ module ConnectRPC
       @misuse: InterceptorStateError?
       def initialize: (_FailureRecorder?) -> void
       def call: [T] () { () -> T } -> T
-      def close: () -> InterceptorStateError?
-      def finish: (untyped, bool) -> untyped
+      def close: (:returned | :raised | :nonlocal) -> bool
+      def finish: (untyped, bool, bool) -> untyped
       private
       def claim: () -> InterceptorStateError?
+      def claim_owned: () -> InterceptorStateError?
+      def latch_foreign: () -> InterceptorStateError
+      def raise_latched: () -> nil
+      def escape!: () -> bot
     end
   end
 end

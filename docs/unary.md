@@ -480,7 +480,12 @@ one is broken:
 - Call the continuation at most once, on the fiber that called the interceptor,
   and only before the interceptor returns. A second call, a call from another
   thread, fiber or `Async` task, and a captured block called later all raise.
-  A swallowed misuse still fails the call when the interceptor returns.
+  After a misuse the continuation no longer dispatches, and a swallowed misuse
+  still fails the call when the interceptor returns. Instrumentation records the
+  misuse as the call's error even if the interceptor translates it.
+- An interceptor exits by returning or raising. A `throw` or other non-local
+  exit out of an interceptor fails the call with the continuation's exception,
+  or with `InterceptorStateError` if the continuation did not raise.
 - A client interceptor may return a `ConnectRPC::Response` without yielding,
   for example from a local cache. Every other layer must yield; a server
   interceptor that returns without yielding fails the call with `internal`.

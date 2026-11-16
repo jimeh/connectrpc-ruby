@@ -9,6 +9,10 @@ module ConnectRPC
         @lifecycle = lifecycle
         @completed = false
         @abandoned = false
+        @intercepted = false
+        @dispatched = false
+        @innermost_ok = false
+        @interceptor_error = false
       end
 
       def run(timeout, cancellation, &)

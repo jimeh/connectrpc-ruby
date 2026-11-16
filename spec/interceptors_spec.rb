@@ -105,6 +105,13 @@ RSpec.describe "Unary interceptors" do
                              trailers: ConnectRPC::Metadata.new)
   end
 
+  # Raises the error and keeps a copy of the backtrace it got at the raise site.
+  def raise_traced(error, traces)
+    raise error
+  ensure
+    traces << error.backtrace.dup
+  end
+
   def wait_until(seconds = 5)
     limit = Process.clock_gettime(Process::CLOCK_MONOTONIC) + seconds
     until yield
@@ -340,6 +347,23 @@ RSpec.describe "Unary interceptors" do
           .to(raise_error { |error| expect(error).to equal(translation) })
         expect(only(outcomes)).to have_attributes(error: original, code: "unavailable")
       end
+
+      it "re-raises an inner layer's non-StandardError after the outer layer rescues Exception and returns" do
+        fatal = Class.new(Exception) # rubocop:disable Lint/InheritException -- rule 6 covers every Exception
+        original = fatal.new("inner")
+        outer = layer(:client_unary) do |_call, &continuation|
+          continuation.call
+        rescue Exception # rubocop:disable Lint/RescueException -- tries to turn any failure into success
+          cached("fallback")
+        end
+        inner = layer(:client_unary) do |_call, &continuation|
+          continuation.call
+          raise original
+        end
+        expect { connect_client([outer, inner]).call(rpc, "hi") }
+          .to(raise_error { |error| expect(error).to equal(original) })
+        expect(dispatches.size).to eq(1)
+      end
     end
 
     describe "continuation misuse" do
@@ -378,7 +402,7 @@ RSpec.describe "Unary interceptors" do
         expect(only(outcomes).code).to eq("OK")
       end
 
-      it "rejects a continuation from another thread and fails the call even if the layer then yields" do
+      it "rejects a continuation from another thread and refuses the layer's later yield without dispatch" do
         foreign = nil
         threaded = layer(:client_unary) do |_call, &continuation|
           foreign = Thread.new do
@@ -391,7 +415,109 @@ RSpec.describe "Unary interceptors" do
         expect { connect_client([threaded]).call(rpc, "hi") }
           .to(raise_error { |error| expect(error).to equal(foreign) })
         expect(foreign.message).to match(/another fiber or thread/)
+        expect(dispatches).to be_empty
+        expect(only(outcomes).error).to equal(foreign)
+      end
+
+      it "records a second yield the layer translates, while the caller sees the translation" do
+        translation = ConnectRPC::Error.new(:aborted, "Translated")
+        translating = layer(:client_unary) do |_call, &continuation|
+          continuation.call
+          continuation.call
+        rescue ConnectRPC::InterceptorStateError
+          raise translation
+        end
+        expect { connect_client([translating]).call(rpc, "hi") }
+          .to(raise_error { |error| expect(error).to equal(translation) })
         expect(dispatches.size).to eq(1)
+        expect(only(outcomes).error).to be_a(ConnectRPC::InterceptorStateError)
+        expect(only(outcomes).error.message).to match(/more than once/)
+      end
+
+      it "records an outer continuation's second yield before an inner layer translates it" do
+        outer_continuation = nil
+        translation = ConnectRPC::Error.new(:aborted, "Translated")
+        outer = layer(:client_unary) do |_call, &continuation|
+          outer_continuation = continuation
+          continuation.call
+        end
+        inner = layer(:client_unary) do |_call, &_continuation|
+          outer_continuation.call
+        rescue ConnectRPC::InterceptorStateError
+          raise translation
+        end
+        expect { connect_client([outer, inner]).call(rpc, "hi") }
+          .to(raise_error { |error| expect(error).to equal(translation) })
+        expect(dispatches).to be_empty
+        expect(only(outcomes).error).to be_a(ConnectRPC::InterceptorStateError)
+        expect(only(outcomes).error.message).to match(/more than once/)
+      end
+
+      it "records a joined foreign misuse when the layer exits with a translation" do
+        foreign = nil
+        translation = ConnectRPC::Error.new(:aborted, "Translated")
+        translating = layer(:client_unary) do |_call, &continuation|
+          foreign = Thread.new do
+            continuation.call
+          rescue ConnectRPC::InterceptorStateError => e
+            e
+          end.value
+          raise translation
+        end
+        expect { connect_client([translating]).call(rpc, "hi") }
+          .to(raise_error { |error| expect(error).to equal(translation) })
+        expect(dispatches).to be_empty
+        expect(only(outcomes).error).to equal(foreign)
+      end
+
+      it "fails with the continuation's exception when an inner layer throws past it to an outer catch" do
+        failure = ConnectRPC::Error.new(:unavailable, "Transport failed")
+        outer = layer(:client_unary) do |_call, &continuation|
+          catch(:skip) { continuation.call }
+          cached("fallback")
+        rescue Exception # rubocop:disable Lint/RescueException -- tries to turn any exit into success
+          cached("fallback")
+        end
+        inner = layer(:client_unary) do |_call, &continuation|
+          continuation.call
+        rescue ConnectRPC::Error
+          throw :skip
+        end
+        transport = recording { |_request| raise failure }
+        expect { connect_client([outer, inner], transport: transport).call(rpc, "hi") }
+          .to(raise_error { |error| expect(error).to equal(failure) })
+        expect(only(outcomes)).to have_attributes(error: failure, code: "unavailable")
+      end
+
+      it "fails a layer that throws out of the RPC and rejects its captured continuation without dispatch" do
+        captured = nil
+        escaping = layer(:client_unary) do |_call, &continuation|
+          captured = continuation
+          throw :escape
+        end
+        client = connect_client([escaping])
+        expect { catch(:escape) { client.call(rpc, "hi") } }
+          .to raise_error(ConnectRPC::InterceptorStateError, /exited without returning/)
+        expect { captured.call }.to raise_error(ConnectRPC::InterceptorStateError, /after its interceptor returned/)
+        expect(dispatches).to be_empty
+        expect(only(outcomes).error).to be_a(ConnectRPC::InterceptorStateError)
+      end
+
+      it "lets a thread killed inside a layer finish dying instead of raising into it" do
+        resumed = false
+        killing = layer(:client_unary) do |_call, &_continuation|
+          Thread.current.kill
+        end
+        client = connect_client([killing])
+        worker = Thread.new do
+          client.call(rpc, "hi")
+        rescue StandardError
+          resumed = true
+        end
+        worker.join
+        expect(worker.status).to be(false)
+        expect(resumed).to be(false)
+        expect(dispatches).to be_empty
       end
     end
 
@@ -408,13 +534,15 @@ RSpec.describe "Unary interceptors" do
         expect(only(outcomes).code).to eq("canceled")
       end
 
+      # Elapsed time is the subject, so this uses a real clock. The budget only
+      # has to outlast dispatch; the layer then waits until it expires.
       it "fails deadline_exceeded when the deadline expires during post-processing" do
         waiting = layer(:client_unary) do |call, &continuation|
           response = continuation.call
           wait_until { call.deadline.expired? }
           response
         end
-        expect { connect_client([waiting]).call(rpc, "hi", timeout: 0.05) }
+        expect { connect_client([waiting]).call(rpc, "hi", timeout: 0.5) }
           .to raise_error(ConnectRPC::Error) { |error| expect(error.code).to eq("deadline_exceeded") }
         expect(dispatches.size).to eq(1)
         expect(only(outcomes).code).to eq("deadline_exceeded")
@@ -464,29 +592,32 @@ RSpec.describe "Unary interceptors" do
 
         it "keeps a translation by identity, with its own code and backtrace" do
           translation = ConnectRPC::Error.new(:resource_exhausted, "Translated")
+          traces = []
           translating = layer(:client_unary) do |_call, &continuation|
             continuation.call
           rescue ConnectRPC::Error
-            raise translation
+            raise_traced(translation, traces)
           end
           expect { run(translating) }.to(raise_error { |error| expect(error).to equal(translation) })
-          expect(translation.backtrace.first).to include(__FILE__)
+          expect(translation.backtrace).to eq(only(traces))
           expect(only(outcomes)).to have_attributes(code: "resource_exhausted", error: failure,
                                                     normalized_error: translation)
         end
 
         it "keeps an exception the interceptor raises after an accepted cancellation" do
           own = ConnectRPC::Error.new(:aborted, "Interceptor")
+          traces = []
           raising = layer(:client_unary) do |call, &continuation|
             response = continuation.call
             source.cancel
-            raise own if call.cancellation.cancelled?
+            raise_traced(own, traces) if call.cancellation.cancelled?
 
             response
           end
           expect do
             connect_client([raising]).call(rpc, "hi", cancellation: source.token)
           end.to(raise_error { |error| expect(error).to equal(own) })
+          expect(own.backtrace).to eq(only(traces))
           expect(dispatches.size).to eq(1)
           expect(only(outcomes)).to have_attributes(code: "aborted", error: own, normalized_error: own)
         end
@@ -669,6 +800,20 @@ RSpec.describe "Unary interceptors" do
       expect(opened).to be_empty
     end
 
+    # Elapsed time is the subject, so this uses a real clock. The budget only
+    # has to outlast the exchange; the layer then waits until it expires.
+    it "fails deadline_exceeded when the deadline expires during post-processing" do
+      waiting = layer(:client_unary) do |call, &continuation|
+        response = continuation.call
+        wait_until { call.deadline.expired? }
+        response
+      end
+      expect { grpc_client([waiting]).call(rpc, "hi", timeout: 0.5) }
+        .to raise_error(ConnectRPC::Error) { |error| expect(error.code).to eq("deadline_exceeded") }
+      expect(opened.size).to eq(1)
+      expect(only(outcomes).code).to eq("deadline_exceeded")
+    end
+
     it "raises the accepted reason for a short-circuit returned after cancellation was accepted" do
       source = ConnectRPC::CancellationSource.new
       short = layer(:client_unary) do |call, &_continuation|
@@ -727,15 +872,17 @@ RSpec.describe "Unary interceptors" do
 
       it "keeps an exception the interceptor raises after an accepted cancellation" do
         own = ConnectRPC::Error.new(:aborted, "Interceptor")
+        traces = []
         raising = layer(:client_unary) do |call, &continuation|
           response = continuation.call
           source.cancel
-          raise own if call.cancellation.cancelled?
+          raise_traced(own, traces) if call.cancellation.cancelled?
 
           response
         end
         expect { grpc_client([raising]).call(rpc, "hi", cancellation: source.token) }
           .to(raise_error { |error| expect(error).to equal(own) })
+        expect(own.backtrace).to eq(only(traces))
         expect(only(outcomes)).to have_attributes(code: "aborted", error: own, normalized_error: own)
         expect(only(completions).delivery).to eq(:completed)
       end
@@ -941,15 +1088,6 @@ RSpec.describe "Unary interceptors" do
             nil
           end
           response
-        },
-        "a continuation from another thread" => lambda { |_call, &continuation|
-          foreign = Thread.new do
-            continuation.call
-          rescue ConnectRPC::InterceptorStateError
-            nil
-          end
-          foreign.join
-          continuation.call
         }
       }.each do |label, body|
         it "fails internal with InterceptorStateError recorded for #{label}" do
@@ -958,6 +1096,86 @@ RSpec.describe "Unary interceptors" do
           expect(only(outcomes).error).to be_a(ConnectRPC::InterceptorStateError)
           expect(handled.size).to eq(1)
         end
+      end
+
+      def foreign_call(continuation)
+        Thread.new do
+          continuation.call
+        rescue ConnectRPC::InterceptorStateError => e
+          e
+        end.value
+      end
+
+      it "refuses the layer's yield after a foreign-thread call, without running the handler" do
+        foreign = nil
+        threaded = layer(:server_unary) do |_call, &continuation|
+          foreign = foreign_call(continuation)
+          continuation.call
+        end
+        response = post(server(interceptors: [threaded], handlers: { rpc.path => handler }))
+        expect(response.status).to eq(500)
+        expect(foreign.message).to match(/another fiber or thread/)
+        expect(handled).to be_empty
+        expect(only(outcomes).error).to equal(foreign)
+      end
+
+      it "records a joined foreign misuse when the layer exits with a translation" do
+        foreign = nil
+        translating = layer(:server_unary) do |_call, &continuation|
+          foreign = foreign_call(continuation)
+          raise ConnectRPC::Error.new(:invalid_argument, "Translated")
+        end
+        response = post(server(interceptors: [translating], handlers: { rpc.path => handler }))
+        expect(JSON.parse(response.body)).to include("code" => "invalid_argument", "message" => "Translated")
+        expect(handled).to be_empty
+        expect(only(outcomes).error).to equal(foreign)
+      end
+
+      it "records a second yield the layer translates, while the wire carries the translation" do
+        translating = layer(:server_unary) do |_call, &continuation|
+          continuation.call
+          continuation.call
+        rescue ConnectRPC::InterceptorStateError
+          raise ConnectRPC::Error.new(:invalid_argument, "Translated")
+        end
+        response = post(server(interceptors: [translating], handlers: { rpc.path => handler }))
+        expect(JSON.parse(response.body)).to include("code" => "invalid_argument", "message" => "Translated")
+        expect(handled.size).to eq(1)
+        expect(only(outcomes).error).to be_a(ConnectRPC::InterceptorStateError)
+        expect(only(outcomes).error.message).to match(/more than once/)
+      end
+
+      it "fails with the handler's error when an inner layer throws past it to an outer catch" do
+        failure = ConnectRPC::Error.new(:permission_denied, "Denied")
+        outer = layer(:server_unary) do |_call, &continuation|
+          catch(:skip) { continuation.call }
+          "fallback"
+        rescue Exception # rubocop:disable Lint/RescueException -- tries to turn any exit into success
+          "fallback"
+        end
+        inner = layer(:server_unary) do |_call, &continuation|
+          continuation.call
+        rescue ConnectRPC::Error
+          throw :skip
+        end
+        response = post(server(interceptors: [outer, inner], handlers: { rpc.path => ->(*) { raise failure } }))
+        expect(response.status).to eq(403)
+        expect(JSON.parse(response.body)).to include("code" => "permission_denied", "message" => "Denied")
+        expect(only(outcomes).error).to equal(failure)
+      end
+
+      it "fails internal for a layer that throws out of the RPC and rejects its captured continuation" do
+        captured = nil
+        escaping = layer(:server_unary) do |_call, &continuation|
+          captured = continuation
+          throw :escape
+        end
+        target = server(interceptors: [escaping], handlers: { rpc.path => handler })
+        expect(catch(:escape) { post(target) }).to have_attributes(status: 500)
+        expect { captured.call }.to raise_error(ConnectRPC::InterceptorStateError, /after its interceptor returned/)
+        expect(handled).to be_empty
+        expect(only(outcomes).error).to be_a(ConnectRPC::InterceptorStateError)
+        expect(only(outcomes).error.message).to match(/exited without returning/)
       end
 
       it "rejects a captured continuation after the interceptor returned" do

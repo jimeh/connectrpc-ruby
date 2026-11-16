@@ -7,6 +7,7 @@ RSpec.describe "Unary interceptors over real Rack and NetHTTP" do
   let(:log) { Queue.new }
   let(:handled) { Queue.new }
   let(:outcomes) { Queue.new }
+  let(:verbs) { Queue.new }
   let(:message) { EchoExample::Message.new(name: "intercepted", count: 7) }
 
   def tracing(role, name)
@@ -46,6 +47,7 @@ RSpec.describe "Unary interceptors over real Rack and NetHTTP" do
   around do |example|
     handled = self.handled
     outcomes = self.outcomes
+    verbs = self.verbs
     handler = lambda do |request, context|
       handled << [request.name, context.request_metadata["x-principal"], context.request_metadata["x-c3"]]
       request
@@ -60,7 +62,8 @@ RSpec.describe "Unary interceptors over real Rack and NetHTTP" do
       instrumentation: ConnectRPC::Instrumentation.new(subscribers: [subscriber]),
       interceptors: [rejecting, *%w[s1 s2 s3].map { |name| tracing(:server_unary, name) }]
     )
-    @host = EchoExample::Localhost.new(ConnectRPC::Rack.new(server: server))
+    app = ConnectRPC::Rack.new(server: server)
+    @host = EchoExample::Localhost.new(->(env) { (verbs << env["REQUEST_METHOD"]) && app.call(env) })
     example.run
   ensure
     @host&.close
@@ -75,6 +78,7 @@ RSpec.describe "Unary interceptors over real Rack and NetHTTP" do
     it "composes both chains in order over Connect #{verb} and carries metadata both ways" do
       response = client(use_get).call(EchoExample::ECHO, message, metadata: { "x-caller" => "zero" })
       expect(response.message).to eq(message)
+      expect(drain(verbs)).to eq([verb])
       expect(drain(log)).to eq(%w[c1> c2> c3> s1> s2> s3> <s3 <s2 <s1 <c3 <c2 <c1])
       expect(drain(handled)).to eq([["intercepted", ["connect:s1"], ["sent"]]])
       expect(response.metadata.to_h).to include("x-s1" => ["before"], "x-s3" => ["before"])

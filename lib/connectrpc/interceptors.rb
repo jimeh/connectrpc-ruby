@@ -112,23 +112,37 @@ module ConnectRPC
 
       private
 
-      def step(index, call, recorder, dispatch)
+      def step(index, call, recorder, dispatch) # rubocop:disable Metrics/MethodLength -- one place tracks every exit
         layer = @layers[index]
         return dispatch.call unless layer
 
         continuation = Continuation.new(recorder)
+        # @type var exit_kind: :returned | :raised | :nonlocal
+        exit_kind = :nonlocal
+        # @type var yielded: bool
+        # @type var result: untyped
         begin
           result = layer.call(call) { continuation.call { step(index + 1, call, recorder, dispatch) } }
-        rescue Exception # rubocop:disable Lint/RescueException -- close first so a captured continuation cannot run late
-          continuation.close
+          exit_kind = :returned
+        rescue Exception # rubocop:disable Lint/RescueException -- an exceptional exit keeps its own exception
+          exit_kind = :raised
           raise
+        ensure
+          # Every exit closes, so a captured continuation cannot run late.
+          yielded = continuation.close(exit_kind)
         end
-        continuation.finish(result, @client)
+        continuation.finish(result, yielded, @client)
       end
     end
 
     # One layer's continuation for one RPC: once, on the owning fiber, while the
-    # layer runs. Foreign callers only latch their misuse; the owner raises it.
+    # layer runs. Foreign callers only latch their misuse; the owner records and
+    # raises it, and a latched misuse never dispatches.
+    #
+    # States: :active (layer running, not yet yielded), :claimed (the owner
+    # yielded) and :finished (the layer exited). Only the owner's first claim
+    # while :active and nothing is latched moves to :claimed; every exit moves to
+    # :finished. A late claim raises without latching or recording.
     class Continuation
       def initialize(recorder)
         @recorder = recorder
@@ -152,20 +166,27 @@ module ConnectRPC
         end
       end
 
-      def close
-        @mutex.synchronize do
+      # Runs on the owner fiber for every exit and returns whether the layer
+      # yielded. A latched misuse is recorded here, before any outer layer can
+      # translate the exit. A killed thread keeps unwinding because raising
+      # would resurrect it.
+      def close(exit_kind)
+        yielded = @mutex.synchronize do
+          claimed = @state == :claimed
           @state = :finished
-          @misuse
+          claimed
         end
+        # A finished continuation latches nothing more, so this read is stable.
+        misuse = @misuse
+        @recorder&.record_failure(misuse) if misuse
+        escape! if exit_kind == :nonlocal && Thread.current.status != "aborting"
+        yielded
       end
 
-      # Unwind order: a continuation failure, a latched misuse, then the result.
-      def finish(result, client)
-        yielded = @state == :claimed
-        misuse = close
-        failure = @failure
-        raise failure, cause: failure.cause if failure
-        raise misuse if misuse
+      # Unwind order after a normal return: a continuation failure, a latched
+      # misuse, then the result.
+      def finish(result, yielded, client)
+        raise_latched
         return Interceptors.response!(result) if client
         raise InterceptorStateError, "Server interceptors must yield" unless yielded
 
@@ -174,23 +195,53 @@ module ConnectRPC
 
       private
 
-      # Keep each state decision and its latch in one critical section. The
-      # first misuse while the layer runs is the one its unwind re-raises.
-      def claim # rubocop:disable Metrics/MethodLength
-        @mutex.synchronize do
-          next InterceptorStateError.new("Continuation called after its interceptor returned") if @state == :finished
+      # Keep each state decision and its latch in one critical section. Only
+      # the owner records its misuse, and a late call leaves the finished RPC
+      # untouched.
+      def claim
+        owner = Fiber.current.equal?(@fiber)
+        late = false
+        # @type var misuse: InterceptorStateError?
+        misuse = @mutex.synchronize do
+          late = @state == :finished
+          next InterceptorStateError.new("Continuation called after its interceptor returned") if late
 
-          if !Fiber.current.equal?(@fiber)
-            error = InterceptorStateError.new("Continuation called from another fiber or thread")
-          elsif @state == :claimed
-            error = InterceptorStateError.new("Continuation called more than once")
-          else
-            @state = :claimed
-            next
-          end
-          @misuse ||= error
-          error
+          owner ? claim_owned : latch_foreign
         end
+        @recorder&.record_failure(misuse) if misuse && owner && !late
+        misuse
+      end
+
+      # The first misuse is latched; every later owner claim re-raises it.
+      def claim_owned
+        return @misuse if @misuse
+        return @misuse = InterceptorStateError.new("Continuation called more than once") if @state == :claimed
+
+        @state = :claimed
+        nil
+      end
+
+      def latch_foreign
+        error = InterceptorStateError.new("Continuation called from another fiber or thread")
+        @misuse ||= error
+        error
+      end
+
+      # Rule 6 first, then a latched misuse.
+      def raise_latched
+        failure = @failure
+        raise failure, cause: failure.cause if failure
+
+        misuse = @misuse
+        raise misuse if misuse
+      end
+
+      # A throw or other non-local exit cannot leave the layer as success.
+      def escape!
+        raise_latched
+        error = InterceptorStateError.new("Interceptor exited without returning or raising")
+        @recorder&.record_failure(error)
+        raise error
       end
     end
   end
