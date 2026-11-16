@@ -446,6 +446,11 @@ fixed go-grpc-prometheus compatible metric set through a small recorder SPI.
 The [connectrpc-prometheus](../gems/connectrpc-prometheus/README.md) and
 [connectrpc-yabeda](../gems/connectrpc-yabeda/README.md) packages are its sinks.
 
+The optional [connectrpc-sentry package](../gems/connectrpc-sentry/README.md)
+records the same lifecycle as native Sentry transactions and spans, propagates
+`sentry-trace`/`baggage` and reports unexpected server handler exceptions,
+using an application-owned Sentry SDK. Core has no Sentry dependency.
+
 ## Runtime baseline and evidence
 
 CRuby >= 3.4 is the baseline; project verification targets Ruby 3.4.12 and

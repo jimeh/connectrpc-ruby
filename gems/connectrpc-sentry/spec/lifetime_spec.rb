@@ -121,6 +121,58 @@ RSpec.describe "Span lifetime, promotion and finish scope" do
     expect(Sentry.get_current_scope.user).to be_empty
   end
 
+  it "releases an owned transaction's profiler registration when another fiber's hub finishes it" do
+    sentry(isolation: :fiber)
+    app = ConnectRPC::Rack.new(server: echo_server(instrumentation: bus))
+    env = Rack::MockRequest.env_for(ECHO::ECHO.path, method: "POST", "CONTENT_TYPE" => "application/proto",
+                                                     input: MESSAGE.new(name: "profiled").to_proto)
+    starting = Sentry.get_current_hub
+    _status, _headers, body = app.call(env)
+    expect(starting.profiler_running?).to be(true)
+    finishing = Fiber.new do
+      body.close
+      Sentry.get_current_hub
+    end.resume
+    expect(finishing).not_to equal(starting)
+    expect(starting.profiler_running?).to be(false)
+    expect(rpc_transactions("rpc.server").size).to eq(1)
+  end
+
+  # Starts a nested server child under a caller span on a child fiber's hub, so it activates elsewhere.
+  def nested_elsewhere(instrumentation)
+    caller = handle = nil
+    Fiber.new do
+      caller = start_caller("host")
+      handle = instrumentation.start(owner: self, role: :server, method: ECHO::ECHO, carrier: {})
+    end.resume
+    [caller, handle]
+  end
+
+  { "saves and restores the span on" => true, "pushes" => false }.each do |path, span|
+    it "captures and promotes with the handler's scope when a nested child #{path} another context's scope" do
+      sentry(isolation: :fiber)
+      caller, handle = nested_elsewhere(bus)
+      local = start_caller("local") if span
+      bug = RuntimeError.new("moved bug")
+      handle.activate do
+        handle.begin_processing(self)
+        Sentry.set_user(id: "handler-user")
+        Sentry.set_tags(handler: "kept")
+        caller.finish
+        handle.processing_finished(code: "internal", error: bug)
+      end
+      handle.finish(delivery: :completed)
+      local&.finish
+      expect(error_events.size).to eq(1)
+      promoted = rpc_transactions("rpc.server").first
+      events = { error: error_events.first, promoted: promoted }
+      expect(events.transform_values { |event| [event.user, event.tags[:handler]] })
+        .to eq(error: [{ id: "handler-user" }, "kept"], promoted: [{ id: "handler-user" }, "kept"])
+      expect(trace_of(error_events.first)[:span_id]).to eq(trace_of(promoted)[:span_id])
+      expect(trace_of(promoted)).to include(trace_id: caller.trace_id, parent_span_id: caller.span_id)
+    end
+  end
+
   it "pushes and pops its own scope when a child attaches in a context without a current span" do
     sentry(isolation: :fiber)
     instrumentation = bus

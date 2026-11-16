@@ -44,10 +44,11 @@ module ConnectRPC
         end
 
         incoming = incoming(call.carrier)
-        Owned.new(rpc, owned_transaction(rpc, incoming), incoming, @guard, capture: @capture_exceptions)
+        hub = ::Sentry.get_current_hub
+        Owned.new(rpc, owned_transaction(hub, rpc, incoming), hub, incoming, @guard, capture: @capture_exceptions)
       end
 
-      def owned_transaction(rpc, incoming)
+      def owned_transaction(hub, rpc, incoming)
         return unless ::Sentry.configuration.tracing_enabled?
 
         context = ::Sentry::PropagationContext.new(nil, incoming)
@@ -57,7 +58,7 @@ module ConnectRPC
           baggage: (context.baggage if context.incoming_trace), sample_rand: context.sample_rand
         )
         sampling = { connectrpc: { role: :server, protocol: rpc.protocol, method: rpc.method_name } }
-        ::Sentry.start_transaction(transaction: Support.annotate(transaction, rpc), custom_sampling_context: sampling)
+        hub.start_transaction(transaction: Support.annotate(transaction, rpc), custom_sampling_context: sampling)
       end
 
       def client(call, rpc)
@@ -135,9 +136,14 @@ module ConnectRPC
         end
 
         # Copies every scope attribute, including those update_from_scope omits.
+        # update_from_scope shares the source's containers, so it reads from a
+        # Scope#dup (deep copies) and changes to the copy never reach the source.
         def copy_scope(target, source)
           target.clear
-          target.update_from_scope(source)
+          target.update_from_scope(source.dup)
+          # Scope#dup also copies the span object; keep the source's own span.
+          span = source.get_span
+          target.set_span(span) if span
           target.set_rack_env(source.rack_env)
           target.set_level(source.level)
           source.event_processors.each { |processor| target.add_event_processor(&processor) }
@@ -304,8 +310,9 @@ module ConnectRPC
 
       # A server transaction continued from the carrier, finished with delivery facts.
       class Owned < Observer
-        def initialize(rpc, transaction, incoming, guard, capture:)
+        def initialize(rpc, transaction, hub, incoming, guard, capture:)
           super(rpc, transaction, capture: capture)
+          @hub = hub
           @incoming = incoming
           @guard = guard
         end
@@ -343,10 +350,18 @@ module ConnectRPC
         def finished(completion)
           record_completion(completion)
         ensure
-          Support.finish_transaction(@span, @scope) if @span
+          finish_transaction if @span
         end
 
         private
+
+        # Transaction#finish stops profiling only on the finishing context's hub,
+        # so first release the registration on the hub that started the transaction.
+        def finish_transaction
+          @hub.stop_profiler!(@span)
+        ensure
+          Support.finish_transaction(@span, @scope)
+        end
 
         # The first activation becomes the RPC scope; later ones in other contexts copy it.
         def activate(scope)
@@ -382,6 +397,7 @@ module ConnectRPC
         end
 
         # Saves and restores the current span; pushes only when there is none to restore.
+        # A server child remembers the scope its handler runs on, wherever it started.
         def attach # rubocop:disable Metrics/MethodLength
           return unless @guard.attachable?
 
@@ -389,13 +405,16 @@ module ConnectRPC
           previous = scope.get_span
           if previous
             scope.set_span(@span)
+            @handler_scope = scope if @nested
             return [:span, scope, previous]
           end
 
           hub = ::Sentry.get_current_hub
           hub.push_scope
-          hub.current_scope.set_span(@span)
-          [:scope, hub, hub.current_scope]
+          scope = hub.current_scope
+          scope.set_span(@span)
+          @handler_scope = scope if @nested
+          [:scope, hub, scope]
         end
 
         def detach(token)
@@ -436,7 +455,7 @@ module ConnectRPC
         end
 
         def prepare(scope)
-          Support.copy_scope(scope, @scope)
+          Support.copy_scope(scope, @handler_scope || @scope)
           scope.set_span(@span)
           scope
         end
@@ -463,7 +482,7 @@ module ConnectRPC
           span.data.each { |key, value| transaction.set_data(key, value) }
           span.tags.each { |key, value| transaction.set_tag(key, value) }
           transaction.set_status(span.status)
-          Support.finish_transaction(transaction, @scope, name: @rpc.name)
+          Support.finish_transaction(transaction, @handler_scope || @scope, name: @rpc.name)
         end
       end
       private_constant :Child

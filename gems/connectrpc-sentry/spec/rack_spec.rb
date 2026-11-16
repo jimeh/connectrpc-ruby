@@ -58,6 +58,20 @@ RSpec.describe "Rack hosting" do
     expect(transactions.first.spans.map { |span| span[:op] }).to eq(["rpc.server"])
   end
 
+  it "does not touch the caller's scope when it captures a nested handler bug" do
+    caller = start_caller
+    Sentry.get_current_scope.set_tags(request: "kept")
+    app = ConnectRPC::Rack.new(server: echo_server(instrumentation: bus, echo: ->(*) { raise "nested bug" }))
+    expect(rack_post(app, "nested").status).to eq(500)
+    expect(scope_span).to equal(caller)
+    expect(Sentry.get_current_scope.tags).to eq(request: "kept")
+    expect(error_events.size).to eq(1)
+    expect(error_events.first.tags).to eq(request: "kept", "rpc.system.name" => "connectrpc",
+                                          "rpc.method" => "example.v1.EchoService/Echo")
+    caller.finish
+    expect(transactions.first.tags).to eq(request: "kept")
+  end
+
   it "adds terminal facts to a nested span while its parent is still open" do
     caller = start_caller
     expect(rack_post(rpc_app, "nested").status).to eq(200)

@@ -138,10 +138,18 @@ incoming headers, so errors-only applications (no tracing) still continue the
 caller's trace. Nested and client spans save and restore the current span
 without pushing, so `Sentry.set_user` and tags set in a Rails request stay on
 the request. A child pushes its own scope only when it activates in a context
-that has no span to restore. Finishing an owned or promoted transaction runs in
+that has no span to restore. A nested server span's error event and promoted
+transaction use the scope its handler ran on, even when the RPC started in
+another fiber or thread. Finishing an owned or promoted transaction runs in
 `Sentry.with_scope` on a cleared copy of the RPC scope (tags, user, contexts,
 `rack_env`, level and event processors), never on whatever scope the finishing
-host fiber or thread holds. Starting an RPC never mutates a scope.
+host fiber or thread holds. Error events use a copy too. Copies are
+independent, so the RPC tags an error event adds never reach the request scope
+or later events. Starting an RPC never mutates a scope.
+
+An owned transaction often finishes on another fiber's or thread's hub than the
+one that started it. Finishing releases the transaction's profiler registration
+on the starting hub, so later RPCs started on that hub can still be profiled.
 
 ## Data and privacy
 

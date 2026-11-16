@@ -233,3 +233,19 @@ Minor choices made while implementing, within the decisions above:
   as `Sentry.set_user` reach the transaction and its error event.
 - A nested child that already ended at processing still receives terminal facts
   while its parent is open; a promoted child never does.
+- Scope copies (error events, owned activations in another context, finishing)
+  read from `Scope#dup`, because `update_from_scope` shares the source's tag,
+  context, extra, user, breadcrumb and attribute containers. Adding the RPC tags
+  to an error event therefore no longer reaches the request scope, or the owned
+  RPC scope and its transaction. The copy keeps the source's span object, which
+  `Scope#dup` would otherwise duplicate.
+- `Sentry.start_transaction` registers the profiler on the starting hub, and
+  `Transaction#finish` stops it only on the finishing hub. An owned transaction
+  keeps its starting hub and calls its `stop_profiler!` (an SDK `@api private`
+  method, present in 6.7.0 and 7.2.0) before finishing, so a transaction
+  finished on another fiber's hub releases the registration.
+- A nested server child records the scope it activates on (the current scope it
+  saves and restores the span on, or the scope it pushes) and uses it for error
+  capture and promotion, so handler `Sentry.set_user` and tags reach both when
+  the RPC started in another context. The `http.server` rename still uses the
+  start scope, and client children still promote with their start scope.
