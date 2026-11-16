@@ -1,7 +1,9 @@
 # Releasing
 
-The first release is **0.1.0 across all ten gems**, with alpha maturity.
-The version is numeric `0.1.0`, not a RubyGems prerelease such as `0.1.0.alpha`.
+The first release, **0.1.0**, shipped nine gems with alpha maturity;
+`connectrpc-health` joins the train in a later release. Every release now
+includes all ten gems at one version.
+Versions are numeric, such as `0.1.0`, not RubyGems prereleases such as `0.1.0.alpha`.
 It remains experimental and does not adopt the stronger
 [supported profile](support.md) or declare production readiness.
 
@@ -258,8 +260,8 @@ These settings live outside the repository. They are not verified by CI.
 | GitHub repository settings | Enable immutable releases. Optionally add a tag ruleset that lets only the release App create `v*` tags. It restricts tag creation only: anyone with write access can still dispatch the workflow on an existing tag, so the environment reviewer remains the approval checkpoint. |
 
 **Pending publishers expire 12 hours after creation**, and a pending publisher
-does not reserve a gem name. Create all ten shortly before merging the first
-release PR, or before approving its waiting release job. After the first
+does not reserve a gem name. Create each one shortly before merging the release
+PR that first ships its gem, or before approving its waiting release job. After the first
 publication each one becomes a normal trusted publisher on its gem. On
 2026-11-14 the original seven gem names returned 404 from the RubyGems.org API,
 on 2026-11-15 so did `connectrpc-prometheus` and `connectrpc-yabeda`, and on
