@@ -249,6 +249,7 @@ module ConnectRPC
       def encode_message: (untyped) -> nil
       def write_chunk: (String) -> void
       def record_send_failure: (StandardError) -> bot
+      def nil_message_error: () -> Error
       def recovery_read_timeout: (Integer) -> Float
       def count_recovery_bytes: (String?) -> void
       def response_metadata: () -> Metadata

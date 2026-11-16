@@ -112,7 +112,7 @@ module ConnectRPC
 
       def validate_send(message)
         raise StreamStateError, "Request sending is closed" if @send_closed
-        raise Error.new(:invalid_argument, "Nil is not a streaming message"), cause: nil if message.nil?
+        raise nil_message_error, cause: nil if message.nil?
         return unless !@server && @method.is_a?(ServerStreamMethod) && @sent.positive?
 
         raise StreamStateError, "Server streaming accepts one request"

@@ -45,6 +45,13 @@ module ConnectRPC
         raise error
       end
 
+      # A nil from a server handler is an implementation fault, not a peer argument.
+      def nil_message_error
+        return Error.new(:internal, "Nil response message") if @server
+
+        Error.new(:invalid_argument, "Nil is not a streaming message")
+      end
+
       def recovery_read_timeout(length)
         remaining = @recovery_remaining #: Integer
         raise Error.new(:resource_exhausted, "Streaming recovery byte limit"), cause: nil if length > remaining

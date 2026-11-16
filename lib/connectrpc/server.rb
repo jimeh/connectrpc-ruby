@@ -312,6 +312,8 @@ module ConnectRPC
 
     def serialize_response(message, method, codec, context)
       context.check!
+      raise Error.new(:internal, "Nil response message"), cause: nil if message.nil?
+
       body = @binding.encode(message, type: method.response_type, codec: codec)
       context.check!
       Protocol.check_size!(body, @response_limit)

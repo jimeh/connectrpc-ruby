@@ -96,6 +96,8 @@ Unsupported request encoding returns `unimplemented` listing supported codings. 
 version, timeout, or request decoding returns `invalid_argument`. Limits return
 `resource_exhausted`. Unexpected application exceptions return generic
 `internal`; deliberate `Error` messages are application-controlled safe text.
+A nil response message is `internal` on every server protocol, checked before the
+binding encodes it.
 Standard Connect-to-HTTP and fallback HTTP-to-Connect tables are used. Null, absent and unrecognized wire codes use the HTTP fallback while preserving
 valid message and details. Malformed bodies, code types or details use the
 HTTP fallback without decoding those error fields. Error details preserve a type name and binary bytes, with
