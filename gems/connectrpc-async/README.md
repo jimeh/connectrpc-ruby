@@ -945,16 +945,24 @@ its retirement joins rely on how Async finalizes tasks. `require
 "connectrpc/async"` checks both once per process, in about a millisecond:
 
 - Each hook's owner, visibility and parameter shape.
-- In a separate thread with its own reactor, bounded at 5 s: Async must call a
-  per-instance `#consume` after it clears a finished task's fiber (on normal
-  return, failure and cancellation). It must also call the parent's `#consume`
-  when the last child leaves, and `Fiber.scheduler.push` must run a pushed
-  object on a later iteration.
+- In a separate thread with its own reactor: Async must call a per-instance
+  `#consume` after it clears a finished task's fiber (on normal return, failure
+  and cancellation). It must also call the parent's `#consume` when the last
+  child leaves, and `Fiber.scheduler.push` must run a pushed object on a later
+  iteration.
 
 If any check fails, require raises one error that names each broken contract,
 the installed gem version and the versions the package was verified with.
 That replaces a hang or misbehavior at runtime. There is no switch to skip the
-check. `connectrpc/falcon` checks its async-http `Endpoint` hooks the same way.
+check. The finalization probe has a 5 s budget, including the time to stop it.
+If it runs out, the error lists the failures already found and the step that
+stalled. When the broken contract also stops Async from tearing down the
+probe's reactor, the probe thread stays asleep for the rest of the process.
+`connectrpc/falcon` checks its async-http `Endpoint` hooks the same way. The
+guards cover the patch-pinned async-http and protocol-http2 hooks and Async's
+finalization contract; Falcon's overrides of the `falcon` gem are not checked,
+because its `>= 0.57.0, < 1` range allows harmless changes a shape check would
+reject.
 Each gem's `spec/upstream_contract_spec.rb` pins the behaviors these checks
 depend on. Its "worked around" examples fail when upstream fixes a behavior
 this package works around, and each one names the workaround to delete. See

@@ -71,8 +71,8 @@ RSpec.describe "connectrpc-async upstream contract" do
 
   def require_async(perturbation) = require_perturbed("connectrpc/async", perturbation)
 
-  def expect_async_error(output, *lines)
-    expect_contract_error(output, "connectrpc-async", ConnectRPC::Async::VERSION, *lines)
+  def expect_async_error(output, *lines, **)
+    expect_contract_error(output, "connectrpc-async", ConnectRPC::Async::VERSION, *lines, **)
   end
 
   describe "relied on" do
@@ -104,14 +104,39 @@ RSpec.describe "connectrpc-async upstream contract" do
       expect(failures[2]).to end_with("found nothing")
     end
 
+    it "reports a hook for a gem without a known version constant as an unknown version" do
+      failures = contract.hook_failures([["unlisted-gem", "Async::HTTP::Protocol::HTTP2::Missing", :start, :public,
+                                          "()", "Object"]])
+      expect(failures).to eq(["unlisted-gem (unknown version): Async::HTTP::Protocol::HTTP2::Missing#start " \
+                              "expected public start() from Object, found nothing"])
+    end
+
     it "bounds a stuck finalization probe and names the step it was in" do
       probe = contract.const_get(:FinalizationProbe)
       allow_any_instance_of(probe).to receive(:call) { Thread::Queue.new.pop }
       started = now
       failures = contract.finalization_failures(0.2)
-      expect(now - started).to be < contract::PROBE_SECONDS
+      expect(now - started).to be < 0.45
       expect(failures).to eq(["async #{Async::VERSION}: Task finalization probe did not finish within 0.2 s " \
                               "while starting its reactor"])
+    end
+
+    # A kill grace added on top of the budget would take 0.7 s here.
+    it "keeps a probe thread that ignores kill within the budget and says it could not stop" do
+      probe = contract.const_get(:FinalizationProbe)
+      release = Thread::Queue.new
+      allow_any_instance_of(probe).to receive(:call) do
+        Thread::Queue.new.pop
+      ensure
+        release.pop
+      end
+      started = now
+      failures = contract.finalization_failures(0.2)
+      expect(now - started).to be < 0.45
+      expect(failures).to eq(["async #{Async::VERSION}: Task finalization probe did not finish within 0.2 s " \
+                              "while starting its reactor, and Async could not stop the probe thread"])
+    ensure
+      release&.push(nil)
     end
 
     it "reports a probe crash as a broken contract" do
@@ -374,6 +399,17 @@ RSpec.describe "connectrpc-async upstream contract" do
       RUBY
       expect_async_error(output, "async #{Async::VERSION}: Task finalization no longer calls a parent's " \
                                  "per-instance #consume when its last child finishes")
+    end
+
+    it "fails require within its budget, keeping recorded failures, when broken consumption hangs teardown" do
+      output = require_async("Async::Node.prepend(Module.new { def consume = nil })")
+      seconds = contract::PROBE_SECONDS
+      expect_async_error(output, "async #{Async::VERSION}: Task finalization no longer calls a parent's " \
+                                 "per-instance #consume when its last child finishes after the parent ended by " \
+                                 "normal return",
+                         "async #{Async::VERSION}: Task finalization probe did not finish within #{seconds} s " \
+                         "while closing its reactor, and Async could not stop the probe thread",
+                         within: seconds + 0.5)
     end
 
     it "fails require by name when Scheduler#push transfers a pushed object inline" do

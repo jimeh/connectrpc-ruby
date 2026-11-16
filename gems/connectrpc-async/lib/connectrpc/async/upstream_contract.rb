@@ -75,7 +75,8 @@ module ConnectRPC
         def self.failure(gem, text) = "#{gem} #{installed(gem)}: #{text}"
 
         def self.installed(gem)
-          Object.const_get(VERSIONS.fetch(gem))
+          name = VERSIONS[gem]
+          name ? Object.const_get(name) : "(unknown version)"
         rescue NameError
           "(unknown version)"
         end
@@ -122,25 +123,32 @@ module ConnectRPC
         end
         private_constant :Hook
 
-        # The probe owns a thread and reactor, so it never touches the
-        # caller's scheduler or task tree, and a hang cannot outlive require.
+        # The probe runs in its own thread and reactor, so it never touches
+        # the caller's scheduler or task tree. It returns within the budget,
+        # but a probe thread that Async cannot stop stays asleep.
         def self.finalization_failures(seconds = PROBE_SECONDS)
           probe = FinalizationProbe.new
           thread = Thread.new do
             Thread.current.report_on_exception = false
             probe.call
           rescue Exception => e # rubocop:disable Lint/RescueException -- report any probe crash as a broken contract
-            [failure("async", "Task finalization probe raised #{e.class} while #{probe.step}: #{e.message}")]
+            [*probe.failures,
+             failure("async", "Task finalization probe raised #{e.class} while #{probe.step}: #{e.message}")]
           end
-          return thread.value if thread.join(seconds)
+          grace = [KILL_SECONDS, seconds / 10.0].min
+          return thread.value if thread.join(seconds - grace)
 
+          step = probe.step
+          failures = probe.failures
           thread.kill
           begin
-            thread.join(KILL_SECONDS)
+            thread.join(grace)
           rescue Exception # rubocop:disable Lint/RescueException -- the timeout below is the reported failure
             nil
           end
-          [failure("async", "Task finalization probe did not finish within #{seconds} s while #{probe.step}")]
+          leaked = ", and Async could not stop the probe thread" if thread.alive?
+          [*failures,
+           failure("async", "Task finalization probe did not finish within #{seconds} s while #{step}#{leaked}")]
         end
 
         # Matches CompletionJoin's per-instance hook.
@@ -193,6 +201,9 @@ module ConnectRPC
             @gates = []
           end
 
+          # A snapshot the timeout path reports while the probe may still run.
+          def failures = @failures.dup
+
           def call
             Sync do |root|
               @root = root
@@ -204,8 +215,8 @@ module ConnectRPC
             ensure
               @step = "stopping leftover probe tasks"
               release
+              @step = "closing its reactor"
             end
-            @step = "closing its reactor"
             @failures
           end
 
