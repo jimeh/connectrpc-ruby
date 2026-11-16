@@ -431,8 +431,8 @@ core Client: decode, commit
 Core creates the deadline before encoding, so one budget covers encoding,
 admission, the inbox wait, acquisition, connection setup, wire I/O and decoding.
 
-- **Reactor side.** The command carries the core `CallCancellation`, composed
-  with a per-call interrupt signal. The existing transport enforces the
+- **Reactor side.** The command carries the request's read-only
+  `CallCancellation::View`, composed with a per-call interrupt signal. The existing transport enforces the
   deadline and cancellation through its cross-thread Promise path, which resets
   the stream and keeps siblings alive
   (`gems/connectrpc-async/lib/connectrpc/async/transport.rb:165-207`).
