@@ -357,8 +357,11 @@ or a threaded test sends, can then fail with `No route matches` for any valid
 route, including ConnectRPC routes. Rails 8.1.4 fixed this upstream ("Make
 lazy route loading thread-safe"). On earlier versions, set
 `config.eager_load = true` in the affected environment so routes are drawn at
-boot, or let one request complete before sending concurrent traffic. Other
-environments, including production, draw routes at boot and are not affected.
+boot. Otherwise, each server process must complete one request that reaches the
+Rails router before it receives concurrent traffic. A file that
+`ActionDispatch::Static` serves does not count, because it never reaches the
+router. Other environments, including production, draw routes at boot and are
+not affected.
 
 ## Development
 
