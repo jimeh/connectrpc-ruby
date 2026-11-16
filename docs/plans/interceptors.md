@@ -1,7 +1,7 @@
 # Typed client and server interceptors
 
 Status: design for review. No implementation is approved by this document.
-Base: `1756faa` (HTTP/2 keepalive, #76), after release 0.1.2.
+Base: `915af39` (audit tooling fixes, #79), after release 0.1.2.
 Issue: [#32](https://github.com/jimeh/connectrpc-ruby/issues/32). Related:
 [#26](https://github.com/jimeh/connectrpc-ruby/issues/26) groups L1/L3/L6 and
 L2/L5, the lifecycle metadata group L8/L9/L11, and
@@ -45,17 +45,17 @@ Jim accepted these choices on 2026-11-16:
 | Question | Decision |
 | --- | --- |
 | API shape | One interceptor object with up to four optional methods: `client_unary`, `client_stream`, `server_unary` and `server_stream`. Each stream method covers server, client and bidi streaming. Methods are discovered once at construction. Registration is `Client.new(interceptors: [...])` and `Server.new(interceptors: [...])`. |
-| Continuation | A no-argument `yield`, guarded by core: once only, on the owning fiber, and only while the interceptor runs. Misuse raises `ConnectRPC::InterceptorStateError`. Changes go through a per-RPC call object that is open until dispatch. Only client unary interceptors may return a result without a successful continuation (a cached short-circuit or a fallback). Every other layer must yield, and after a failed continuation it may translate the exception but not return success. |
+| Continuation | A no-argument `yield`, guarded by core: once only, on the owning fiber, and only while the interceptor runs. Misuse raises `ConnectRPC::InterceptorStateError`. Changes go through a per-RPC call object that is open until dispatch. Only client unary interceptors may return a result without yielding, as a cached short-circuit before dispatch. No layer on either role can turn a failed continuation into success; it may only translate the exception. |
 | Server placement | After the bounded read and decode, as in connect-go v1. Unary and server-streaming interceptors see the typed request. Rejection before decode stays with host middleware. |
 | Instrumentation | Interceptors run inside the instrumentation activation. Measured processing durations include interceptor time, and observer spans are active while interceptors run. Subscribers stay observers. |
 | Streaming model | The stream methods wrap the whole scope. `call.wrap_stream { \|stream\| ... }` decorates the stream endpoint. Core applies wrappers innermost first, so the application sees the outermost wrapper. Core cleanup always uses the raw session. |
-| Errors | A short-circuit is a raised `ConnectRPC::Error`. Failures are recorded as today, first one wins, so observers keep the original. In the client unary chain, the one place a call can recover, the lifecycle handle stages failures and records them only if the call fails, so a recovered call stays successful. Interceptor-raised exceptions are independent user exceptions and keep their identity on the client. |
+| Errors | A short-circuit is a raised `ConnectRPC::Error`. Core records the exception escaping each continuation boundary, first one wins, so observers keep the original. Because no layer can recover, a recorded failure always fails the call. Interceptor-raised exceptions are independent user exceptions and keep their identity on the client. |
 | Metadata | Client request metadata is mutable until dispatch, then frozen. Response metadata and trailers are frozen snapshots on the client. Server request metadata is read-only; server response metadata is mutable until headers are published and trailers until the terminal response. Interceptors cannot change the deadline. |
 | Hosts | No host-specific code except a private Rails `connect_interceptors` hook. Rails interceptors run outside the controller lifecycle. |
 | Delivery | Prerequisites from #26 land first. Then three PRs: core unary, core streaming, then the Rails hook with host evidence and documentation. |
 
-Design review on 2026-11-16 narrowed two of these choices without changing
-their direction:
+Design review on 2026-11-16 narrowed these choices without changing their
+direction, and Jim accepted both narrowings:
 
 - Jim's planning choice let any unary interceptor return a result without
   yielding. On the server, the invoker is the only path into host policy: on
@@ -65,16 +65,26 @@ their direction:
   server layer that returned success without yielding, or that rescued that
   error after yielding, would bypass host policy. The design therefore keeps
   one invariant: a successful server response requires a successful invoker
-  or stream handler. Only client unary interceptors may recover.
-  [Open question 6](#open-questions) records how server-side caching or
-  fallback could return later.
-- A recovered client call must not look failed. OTel reports an `OK` outcome
-  that carries a non-`Error` exception as `operation_failed`
-  (`gems/connectrpc-otel/lib/connectrpc/otel/subscriber.rb:140-147`), and the
-  client records failures directly from the transport, codec, `process_call`
-  and `ClientScope`. While the client unary chain runs, the lifecycle handle
-  therefore stages every `record_failure` call and commits it only if the call
-  fails.
+  or stream handler. [Deferred question 6](#deferred-questions) records how
+  server-side caching or fallback could return later.
+- An earlier revision also let a client unary interceptor return a fallback
+  `Response` after its continuation failed. Each attempt to make that
+  observable correctly failed review. The client records failures directly
+  from the transport, codec, `process_call` and `ClientScope`, so a fallback
+  carried those errors into an `OK` outcome, which OTel reports as
+  `operation_failed`
+  (`gems/connectrpc-otel/lib/connectrpc/otel/subscriber.rb:140-147`). Staging
+  those recordings fixed processing, but a native gRPC fallback after an
+  aborted exchange still ends as an ERROR span, because OTel and Sentry fail
+  any aborted delivery (`gems/connectrpc-otel/README.md:155`). A Connect
+  fallback would also report the failed exchange's HTTP status and metadata
+  next to `OK`. Client fallbacks are therefore out of scope. No layer on
+  either role can turn a failed continuation into success, which removes the
+  staging mechanism entirely. Applications can still rescue around
+  `client.call` and supply a fallback there, which also fits the settled
+  direction that resilience policy stays outside interceptors.
+  [Deferred question 8](#deferred-questions) records what client fallbacks
+  would need.
 
 Two directions were settled before this design:
 
@@ -194,6 +204,16 @@ Ruby differs in six places, each for a concrete reason:
    and bidi streaming still run the chain before any message is read. Early
    rejection of a server-streaming call therefore costs one bounded decode,
    as it does for unary.
+7. **No recovery and no server short-circuit.** connect-go and grpc-go
+   interceptors can return a response without calling `next`, or after
+   `next` failed, which is how server-side caching and client or server
+   fallback interceptors work there. Here only a client unary interceptor can
+   return without yielding, and no layer can turn a failed continuation into
+   success (continuation rules 5 and 6). On the server, the invoker can carry
+   host policy that a short-circuit or fallback would bypass. On the client,
+   a fallback cannot be observed consistently with the recorded failure and
+   the delivery facts. Deferred questions 6 and 8 record how each could
+   return.
 
 ## API
 
@@ -322,9 +342,9 @@ enforces these rules and raises `InterceptorStateError` for a violation:
    exact-task peer accessor. Client dispatch stays on the caller's fiber,
    matching the stream session's thread affinity
    (`lib/connectrpc/streaming/session.rb:113-118`).
-4. **Client unary may skip or recover.** A client unary interceptor may
-   return a `ConnectRPC::Response` without yielding, for example from a local
-   cache, or after its continuation raised, as a fallback. A value that is not
+4. **Client unary may skip it.** A client unary interceptor may return a
+   `ConnectRPC::Response` without yielding, for example from a local cache.
+   Nothing has been dispatched or recorded at that point. A value that is not
    a `Response` raises `InterceptorStateError`.
 5. **Everything else must use it.** A server interceptor, or a stream
    interceptor on either role, that returns without yielding and without
@@ -334,16 +354,18 @@ enforces these rules and raises `InterceptorStateError` for a violation:
    callbacks. A successful server short-circuit would bypass that policy,
    which #32 forbids. A stream short-circuit would report success for a
    handler or application block that never ran.
-6. **No recovery outside client unary.** When the continuation of a server
-   layer or of a stream layer raised, that layer may raise a different
-   exception, which translates the failure, but it cannot turn the failure
-   into success. If it returns normally, core discards the return value and
-   re-raises the continuation's exception, which keeps its identity. On the
-   server this is what preserves host policy: a Rails `before_action`,
+6. **No recovery.** When the continuation of any layer, on either role and
+   in any shape, raised, that layer may raise a different exception, which
+   translates the failure, but it cannot turn the failure into success. If it
+   returns normally, core discards the return value and re-raises the
+   continuation's exception, which keeps its identity. On the server this is
+   what preserves host policy: a Rails `before_action`,
    CSRF or `after_action` rejection arrives as a `ConnectRPC::Error` from the
    invoker, and no interceptor can replace it with a response. A successful
    server response therefore always means the invoker or stream handler
-   returned successfully.
+   returned successfully. On the client it means every recorded failure
+   belongs to a call that failed, so observers never see a successful outcome
+   that carries an error.
 
 `InterceptorStateError < StandardError` is a programming error. On the client
 it propagates to the caller with its identity, like any other
@@ -411,23 +433,18 @@ Client#call / #server_stream / #client_stream / #bidi_stream
   single-request scope and returns its `Response`. `ClientScope#start`
   already creates the deadline and arbiter before its block runs
   (`lib/connectrpc/streaming/client_scope.rb:70-75`), so they precede the
-  chain without change. `ClientScope` must, however, accept an interceptor's
-  returned `Response` as the scope result. Today `ClientScope#execute`
-  returns `@result` and commits only when `perform_stream_scope` set
-  `@completed` (`lib/connectrpc/streaming/client_scope.rb:25-29`), and it
-  reports `canceled` whenever cleanup marked the session abandoned
-  (`:98-99`), so a skipped continuation would return nil and a fallback would
-  be reported as an aborted or canceled failure. PR A separates the two facts
-  that `ClientScope` now ties together:
-  - **Processing.** A short-circuit or fallback `Response` completes the
-    scope, commits the arbiter and reports `OK` with no normalized error,
-    even if cleanup abandoned the exchange.
-  - **Delivery.** Delivery stays an independent observation, as
-    `docs/design.md` requires. A short-circuit before any exchange opened
-    reports `delivery: :unobserved`, as the Connect unary path does. A
-    fallback after an exchange opened keeps what `ClientScope` observed for
-    that exchange: `:completed` after a fully received remote error, and
-    `:aborted` after an abandoned or failed one.
+  chain without change. `ClientScope` must, however, accept a short-circuit
+  `Response`, returned without yielding, as the scope result. Today
+  `ClientScope#execute` returns `@result` and commits only when
+  `perform_stream_scope` set `@completed`
+  (`lib/connectrpc/streaming/client_scope.rb:25-29`), and delivery is
+  `:completed` only when the scope completed (`:81-89`), so a skipped
+  continuation would return nil and be reported as an aborted failure. In PR
+  A, a short-circuit completes the scope with the returned `Response`,
+  commits the arbiter, and reports `OK` with `delivery: :unobserved`, as the
+  Connect unary path does, because no exchange opened. Rule 6 means a failed
+  exchange always fails the call, so `ClientScope` keeps today's delivery and
+  abandonment rules for every exchange that did open.
 
 ### Server
 
@@ -529,30 +546,12 @@ An interceptor short-circuits by not yielding.
   `record_failure` keeps the first failure, so lifecycle observers receive the
   original exception even after an interceptor rescued it and raised a
   translated `Error`. An interceptor that raises its own exception with no
-  inner failure has that exception recorded. On the server and in every
-  stream chain this direct recording is correct, because rule 6 means a
-  failure there always fails the call.
-- **Client unary staging.** The client unary chain is the one place a call
-  can recover, so a recorded failure must not outlive the recovery. Today the
-  client records directly from many places inside what becomes the innermost
-  continuation: the NetHTTP transport records the raw socket error before
-  raising `unavailable` (`lib/connectrpc/transports/net_http.rb:138-143`),
-  the codec paths record `CodecError` (`lib/connectrpc/client.rb:255-262`),
-  and `process_call` and `ClientScope` record in their rescues. While the
-  client unary chain runs, the lifecycle handle therefore puts every
-  `record_failure` call, from core, transports or bindings, in a staging slot
-  instead of the outcome, keeping the first:
-  - when a continuation returns normally to its layer, the slot is cleared,
-    because everything below it recovered;
-  - when the outermost interceptor raises, core commits the slot to the
-    handle, then records the escaping exception, so the original wins;
-  - when the outermost interceptor returns a `Response`, core discards the
-    slot, and the outcome is `OK` with no error.
-
-  This keeps `docs/design.md`'s rule that `record_failure` retains the first
-  *escaping* failure, and the transport SPI does not change: transports still
-  call `request.lifecycle.record_failure`. Calls without client unary
-  interceptors record directly, as today.
+  inner failure has that exception recorded. Rule 6 means any failure that
+  reaches a boundary fails the call, so recording directly is always correct:
+  a successful outcome never carries an error. The client keeps recording
+  directly from the transport (`lib/connectrpc/transports/net_http.rb:138-143`),
+  the codec paths (`lib/connectrpc/client.rb:255-262`), `process_call` and
+  `ClientScope`, and the transport SPI does not change.
 - **Sentry.** Retaining the original does not change Sentry's capture rule.
   The subscriber captures only a non-`Error` original whose normalized code is
   `internal`, `unknown` or absent
@@ -567,12 +566,13 @@ An interceptor short-circuits by not yielding.
   arbitration errors raised by the innermost continuation) from
   interceptor-raised exceptions by identity, the same way a stream session
   distinguishes its own errors (`owned_error?`).
-- **Translation and fallback.** A client unary interceptor may rescue a core
-  error and raise a different exception, or return a fallback `Response`. A
-  server interceptor may rescue an invoker exception and raise a different
-  one, typically an `Error`, but it cannot return a response after a failed
-  continuation (rule 6). After a successful continuation it may replace the
-  response message. Arbitration still applies; see
+- **Translation.** Any interceptor may rescue the continuation's exception
+  and raise a different one, typically an `Error`, but no interceptor can
+  return a result after a failed continuation (rule 6). After a successful
+  continuation a client interceptor may return a replacement `Response`, and
+  a server interceptor may return a replacement response message. An
+  application that wants a fallback rescues around `client.call`.
+  Arbitration still applies; see
   [Cancellation and deadlines](#cancellation-and-deadlines).
 - **Nil responses.** A server unary interceptor that returns nil follows the
   handler-returned-nil path. On Connect unary the binding rejects it at encode
@@ -699,7 +699,7 @@ end
   (`ResponseReader[R]` and so on). Wrappers are therefore duck-typed against
   those classes, backed by the runtime check above. Structural endpoint
   interfaces that would let wrappers be checked statically are
-  [open question 7](#open-questions).
+  [deferred question 7](#deferred-questions).
 - **Wrapper failures.** A `wrap_stream` block or wrapper method that raises is
   an interceptor exception. It propagates through the chain like any other,
   and core cleanup still runs on the raw session.
@@ -759,9 +759,10 @@ end
   `server_stream` interceptor may translate a handler exception by raising a
   different one, but it cannot produce an `OK` terminal after the handler or
   an inner layer raised (rule 6): if it returns normally, core renders the
-  terminal from the original exception. Messages the handler already sent
-  stay sent. Because stream failures always fail the call, the direct
-  recording at each boundary keeps the original for observers.
+  terminal from the continuation's exception, which is an inner layer's
+  translation when there is one. Messages the handler already sent stay
+  sent. Because stream failures always fail the call, the direct recording at
+  each boundary keeps the original for observers.
 
 ### Headers and trailers on streams
 
@@ -805,8 +806,8 @@ end
     accepted terminal for observers. A successful return after an accepted
     reason becomes that reason's `Error`.
 - **No deadline changes.** Interceptors cannot extend or shorten the deadline;
-  it is fixed when the call starts. Shortening is an
-  [open question](#open-questions).
+  it is fixed when the call starts. Shortening is
+  [deferred question 1](#deferred-questions).
 - **Cooperative blocking.** Core cannot interrupt an interceptor. An
   interceptor that does I/O, such as fetching a token, should observe
   `call.deadline`, `call.cancellation` or `context.on_cancel` itself. The
@@ -849,7 +850,7 @@ end
 - **Host facts.** Server interceptors do not get Rack envs or peer addresses.
   Within the Async and Falcon hosts they run in the exact processing task, so
   the existing task-scoped client certificate accessor works there. A portable
-  peer field is an [open question](#open-questions).
+  peer field is [deferred question 2](#deferred-questions).
 
 ## Static typing
 
@@ -965,7 +966,7 @@ The interceptor design also constrains these groups:
 | A Rails interceptor runs before authentication | Unauthenticated requests reach interceptor code | Document the order; keep authentication in Rails callbacks or host middleware; spec that a rejection skips callbacks and that Rails policy still runs on success |
 | A server interceptor returns success without yielding, or rescues the invoker's failure and returns a response | Host policy in the invoker, such as Rails authentication, CSRF and `after_action` checks, is bypassed | Rules 5 and 6: no server success without a successful invoker; Rails specs for each attempt |
 | An interceptor translates an exception | Observers could lose the original | Record at every continuation boundary, first one wins; specs with real OTel and Sentry subscribers for capture-eligible and ineligible translations |
-| A client unary interceptor recovers from a failure | A successful call could be reported as failed by transport, codec or scope recordings | Stage every handle recording during the client unary chain; clear on inner recovery; OTel-backed specs for transport and codec fallbacks |
+| An application wants a client fallback after a failure | Rule 6 rejects it in an interceptor | Document rescuing around `client.call`; deferred question 8 records what an interceptor fallback would need |
 | A continuation escapes or runs twice | Late or duplicate dispatch, broken cleanup | Core-owned single-use guard with stack and fiber checks; misuse specs |
 | A wrapper holds a session after its scope | Late I/O on a closed stream | The session already raises `StreamStateError`; spec escaped wrapper use |
 | Interceptor state leaks between concurrent RPCs | Cross-talk between streams | Per-RPC call objects and wrappers; concurrent stream spec on one connection |
@@ -1002,13 +1003,12 @@ Scope:
 - Client chain for Connect POST, Connect GET and native gRPC unary, with the
   deadline and arbiter moved before the chain, injection and lifecycle
   metadata at dispatch, commit at the outer boundary, and frozen responses.
-  For native gRPC unary, `ClientScope` accepts an interceptor-returned
-  `Response` and reports processing and delivery independently.
+  For native gRPC unary, `ClientScope` accepts a short-circuit `Response`
+  as the scope result.
 - Server chain built once around `@invoker`, covering the four unary sites,
   with the negotiated protocol passed to the private chain entry.
-- Direct failure recording at continuation boundaries; lifecycle-handle
-  staging for the client unary chain, with clearing on inner recovery.
-- Rule 6 for server unary layers.
+- Direct failure recording at continuation boundaries.
+- Rule 6 for client and server unary layers.
 - RBS, inventory entries, consumer checks and static negatives.
 - Guides: [design](../design.md) replaces "Interceptors ... remain future
   work", plus the [unary](../unary.md), [gRPC](../grpc.md) and
@@ -1025,18 +1025,18 @@ Evidence:
 - Client successful short-circuit on Connect and on native gRPC unary: the
   caller receives the interceptor's `Response` frozen, including the struct,
   and the lifecycle reports `OK` with `delivery: :unobserved`.
-- Client fallback after a NetHTTP connection failure, after a response decode
-  `CodecError`, and on native gRPC after a fully received remote error and
-  after an aborted exchange: each outcome is `OK` with `Outcome#error` nil,
-  the OTel span is not failed, and the native gRPC delivery is `:completed`
-  or `:aborted` as observed.
-- Inner recovery, outer failure: an inner client interceptor returns a
-  fallback, an outer one then raises, and `Outcome#error` is the outer
-  exception, not the recovered one.
+- Rule 6 on the client: an interceptor that rescues a NetHTTP connection
+  failure, a response decode `CodecError` or a native gRPC remote error and
+  returns a `Response` still raises the continuation's exception, and the
+  outcome keeps the original failure.
 - A server interceptor that returns without yielding fails `internal` with
   `InterceptorStateError` recorded, and the handler never runs. A server
   interceptor that rescues a handler exception and returns a message still
-  fails with the original exception.
+  fails with the continuation's exception.
+- Two-layer translation: an inner interceptor translates a handler or
+  transport exception to `Error` A, the outer one rescues A and returns
+  normally, and the call fails with A, not with the handler's original, while
+  `Outcome#error` is the original.
 - Construction: an element with no method for the role raises
   `ArgumentError`.
 - Handler failure: the wire error is `internal`, and a real subscriber's
@@ -1052,9 +1052,10 @@ Evidence:
   interceptor before `yield` gives `canceled` with no transport call, expiry
   during post-processing gives `deadline_exceeded` after a successful
   transport response, and an interceptor-raised exception keeps its identity
-  under accepted cancellation. On the server, cancellation accepted while an
-  interceptor runs gives the accepted reason on the wire, with the original
-  exception still recorded.
+  under accepted cancellation. A client short-circuit returned after the
+  arbiter accepted a cancellation raises the accepted reason. On the server,
+  cancellation accepted while an interceptor runs gives the accepted reason
+  on the wire, with the original exception still recorded.
 - Misuse, on both roles: a second `yield`, a captured block called after
   return, and a block called from another thread and from an `Async` child
   task each raise `InterceptorStateError`.
@@ -1062,9 +1063,9 @@ Evidence:
   by the newly frozen Connect unary response metadata or the earlier deadline
   start named in the PR.
 - Targeted perturbations: reversing chain order fails the order spec;
-  disabling handle staging fails the NetHTTP fallback spec; skipping the
-  clear on inner recovery fails the inner-recovery spec; and allowing a
-  server return after a failed continuation fails the rule 6 spec, each at its
+  allowing a return after a failed continuation fails the client and server
+  rule 6 specs; and re-raising the handler's original instead of the
+  continuation's exception fails the two-layer translation spec, each at its
   assertion.
 
 ### PR B: core streaming interceptors
@@ -1119,7 +1120,8 @@ Evidence:
   caller as the translation; a swallowed application exception still fails
   the call with the original. On the server, a `server_stream` interceptor
   that rescues a handler exception and returns normally still renders the
-  original's terminal.
+  continuation's terminal, including an inner layer's translation in a
+  two-layer chain.
 - Observers: with the real OTel and Sentry bundles, a stream handler bug
   translated to `internal` keeps the original as `Outcome#error` and is
   captured; one translated to `invalid_argument` is not captured.
@@ -1168,8 +1170,8 @@ Proportionate to the risk in each PR:
 - **Static.** `rbs:check` covers consumer calls and the exact negative
   diagnostics listed in [Static typing](#static-typing).
 - **Perturbation.** One per behavior cluster where inspection cannot rule out
-  a false positive: chain order, client unary staging, rule 6, the single-use
-  guard and exactly-once stream cleanup.
+  a false positive: chain order, rule 6, the single-use guard and
+  exactly-once stream cleanup.
 - **Confirmation.** Each PR confirms from runner output that the new specs
   ran, by name or count.
 
@@ -1180,31 +1182,44 @@ This PR is documentation only. It is verified by link and command review.
 Only this file. The guides change with the implementing PRs, so they never
 describe interceptors before the code exists.
 
-## Open questions
+## Deferred questions
+
+Jim accepted the recommendation for each of these on 2026-11-16. None is part
+of the three implementation PRs; each needs its own proposal if demand
+appears.
 
 1. **Deadline shortening.** connect-go interceptors can derive a shorter
-   context deadline. Should a Ruby interceptor be able to shorten, but never
-   extend, the call deadline before dispatch? It needs a rule for the wire
-   timeout header and for which arbiter owns the shorter expiry.
-2. **Portable peer facts.** Should `ServerUnaryCall` and `ServerStreamCall`
+   context deadline. A Ruby interceptor could shorten, but never extend, the
+   call deadline before dispatch, which needs a rule for the wire timeout
+   header and for which arbiter owns the shorter expiry. Recommendation:
+   defer; the deadline stays fixed when the call starts.
+2. **Portable peer facts.** `ServerUnaryCall` and `ServerStreamCall` could
    expose peer facts such as a remote address, as connect-go v2's
-   `CallInfo.PeerAddr` does? Rack and Rails can supply less than the native
-   hosts.
+   `CallInfo.PeerAddr` does, but Rack and Rails can supply less than the
+   native hosts. Recommendation: defer; the Async task-scoped certificate
+   accessor covers native mTLS authorization today.
 3. **Per-call client interceptors.** gRPC Java attaches interceptors per call.
-   Is there demand beyond what per-client lists and per-call metadata already
-   cover?
-4. **Function shorthand.** connect-go v1 has `UnaryInterceptorFunc`. Is a
-   one-method object enough in Ruby, or is a lambda shorthand worth its RBS
-   cost?
-5. **Pre-decode server hook.** If applications ask for core-level rejection
-   before decode, a separate `server_admit(call)` hook that sees only metadata
-   could follow connect-go v2 without changing the typed unary model.
+   Recommendation: defer; per-client lists and per-call metadata cover the
+   known uses.
+4. **Function shorthand.** connect-go v1 has `UnaryInterceptorFunc`.
+   Recommendation: no lambda shorthand; a one-method object is short in Ruby
+   and keeps one RBS shape.
+5. **Pre-decode server hook.** A separate `server_admit(call)` hook that sees
+   only metadata could follow connect-go v2 without changing the typed unary
+   model. Recommendation: defer; host middleware covers pre-decode rejection.
 6. **Server-side short-circuits and fallbacks.** Server caching and fallback
    interceptors are ruled out by rules 5 and 6 because the invoker can carry
    host policy. They could return if an invoker declares that it carries
    none, for example the default `invoke_handler`, while the Rails invoker
-   keeps both rules. Is there demand?
+   keeps both rules. Recommendation: defer until there is demand.
 7. **Typed stream wrappers.** Structural RBS interfaces for the six endpoint
    classes would let `wrap_stream` and wrappers be checked statically instead
-   of by the wrap-time method check. Are they worth their signature and
-   inventory cost?
+   of by the wrap-time method check. Recommendation: defer; the runtime check
+   and nominal application types are enough for the first implementation.
+8. **Client fallbacks.** A client unary interceptor that returns a `Response`
+   after a failed continuation would need three things: staging every
+   lifecycle-handle recording during the chain and clearing it on inner
+   recovery, an explicit rule for the delivery and HTTP facts of the failed
+   exchange (OTel and Sentry fail any aborted delivery), and a rule for a
+   cancellation accepted after the fallback. Recommendation: defer;
+   applications rescue around `client.call`.
