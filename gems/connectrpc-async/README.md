@@ -1057,8 +1057,10 @@ Connect and native gRPC, plus unary and server-stream gRPC-Web. They run after
 core decodes a unary or server-streaming request, around the handler, with the
 first interceptor listed outermost. They run in the per-request processing
 task, so `host.peer_certificate` returns the authenticated client leaf inside an
-interceptor and its stream wrappers, the same as in the handler. A continuation
-called from a child task fails with `InterceptorStateError`.
+interceptor, the same as in the handler. Stream wrapper methods see it only when
+called from that task; a child task gets nil, so read the certificate in the
+interceptor before starting child work. A continuation called from a child task
+fails with `InterceptorStateError`.
 
 Client interceptors run on the calling task or thread for `Transport`,
 `HTTP1Transport` and `ThreadedTransport`, before core encodes the request.

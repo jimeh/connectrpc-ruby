@@ -134,7 +134,9 @@ Client and Server [interceptors](../../docs/unary.md#interceptors) both run in
 process on the calling thread. The client chain wraps the transport call. The
 server chain runs inside `Transport#call`, after core decodes the request and
 around the invoker. A call passes through the client interceptors, outermost
-first, then the server interceptors, outermost first, then the handler.
+first, then the server interceptors, outermost first, then the handler. A
+client interceptor that returns a `Response` without yielding skips the
+transport, so the server interceptors and handler do not run for that call.
 Streaming is not supported by this transport, so only `client_unary` and
 `server_unary` run.
 

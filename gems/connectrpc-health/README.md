@@ -124,6 +124,8 @@ class HealthAuth
 
   private
 
+  # authorized?(context) is the application's own check, for example of a
+  # credential in context.request_metadata.
   def authorize!(call)
     if call.method.service == ConnectRPC::Health::SERVICE.name && !authorized?(call.context)
       raise ConnectRPC::Error.new(:unauthenticated, "credentials required")
