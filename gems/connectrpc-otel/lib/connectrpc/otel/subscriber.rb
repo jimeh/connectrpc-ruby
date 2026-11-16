@@ -47,22 +47,29 @@ module ConnectRPC
 
       private
 
-      # Propagators may replace, edit in place or remove the shared carrier's
-      # baggage. Keep baggage that earlier subscribers staged exactly once, ahead
-      # of this propagator's new entries.
-      def inject(carrier, context)
+      # Propagators may replace, join, edit in place or remove the shared
+      # carrier's baggage. Keep baggage that earlier subscribers staged exactly
+      # once, ahead of the members this propagator added.
+      def inject(carrier, context) # rubocop:disable Metrics/AbcSize
         # Copy entries too: a propagator may mutate the staged strings in place.
         staged = Array(carrier["baggage"]).map(&:dup).freeze
         @propagator.inject(carrier, context: context)
         return if staged.empty?
 
-        # Drop each staged entry once from what the propagator left behind.
-        remaining = staged.dup
-        added = Array(carrier["baggage"]).reject do |entry|
-          index = remaining.index(entry)
+        # Drop each staged member once from what the propagator left behind.
+        remaining = baggage_members(staged)
+        added = baggage_members(Array(carrier["baggage"])).reject do |member|
+          index = remaining.index(member)
           remaining.delete_at(index) if index
         end
-        carrier["baggage"] = staged + added
+        joined, others = added.partition { |member| member.is_a?(String) }
+        carrier["baggage"] = [*staged, *([joined.join(",")] unless joined.empty?), *others]
+      end
+
+      # Comma-separated W3C list members, so joined values compare member by
+      # member. Non-String entries pass through for core's metadata validation.
+      def baggage_members(entries)
+        entries.flat_map { |entry| entry.is_a?(String) ? entry.split(",").map(&:strip).reject(&:empty?) : [entry] }
       end
 
       def attributes(call, name)

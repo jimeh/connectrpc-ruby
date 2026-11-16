@@ -131,9 +131,9 @@ before merging into copied metadata; invalid injection is discarded and
 reported without changing caller metadata or protocol headers. Injected keys
 replace caller values, except `baggage`: the wire carries the caller's
 `baggage` values first, then the injected ones. When an earlier subscriber has
-staged `baggage`, that baggage stays first, exactly once, followed by the
-entries the propagator added, whether the default or a custom propagator
-replaces, edits or removes the value. Core keeps duplicate
+staged `baggage`, that baggage stays first, each list member exactly once,
+followed by the members the propagator added, whether the default or a custom
+propagator replaces, joins, edits or removes the value. Core keeps duplicate
 members and does not validate W3C syntax; see
 [design](../../docs/design.md#rpc-lifecycle-observation) for receiver limits.
 

@@ -149,6 +149,8 @@ RSpec.describe "Error types and propagated metadata" do
                                  ["staged=1", "custom=1"]],
       "appends a copy of a staged entry" => [->(carrier) { carrier["baggage"] = [*carrier["baggage"], "staged=1"] },
                                              ["staged=1", "staged=1"]],
+      "joins a member onto it" => [->(carrier) { carrier["baggage"] = [*carrier["baggage"], "custom=1"].join(",") },
+                                   ["staged=1", "custom=1"]],
       "clears it" => [->(carrier) { carrier["baggage"].clear }, ["staged=1"]],
       "deletes it" => [->(carrier) { carrier.delete("baggage") }, ["staged=1"]]
     }.each do |label, (edit, expected)|

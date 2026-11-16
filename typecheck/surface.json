@@ -1007,6 +1007,7 @@
   },
   "gems/connectrpc-otel/lib/connectrpc/otel/subscriber.rb": {
     "ConnectRPC::OTel::Subscriber#allowlist": {"kind":"method","visibility":"private","parameters":"keys","classification":"internal"},
+    "ConnectRPC::OTel::Subscriber#baggage_members": {"kind":"method","visibility":"private","parameters":"entries","classification":"internal"},
     "ConnectRPC::OTel::Subscriber#attributes": {"kind":"method","visibility":"private","parameters":"call, name","classification":"internal"},
     "ConnectRPC::OTel::Subscriber#initialize": {"kind":"method","visibility":"public","parameters":"tracer_provider: OpenTelemetry.tracer_provider, propagator: nil, request_metadata: [], response_metadata: []","classification":"supported"},
     "ConnectRPC::OTel::Subscriber#inject": {"kind":"method","visibility":"private","parameters":"carrier, context","classification":"internal"},
