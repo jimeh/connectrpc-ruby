@@ -261,6 +261,11 @@ RSpec.describe CanaryDriver do
       )
       plain = described_class.classify("suite", outcome("Failed examples:\n\nrspec ./spec/host_spec.rb:12 # Host"))
       expect(plain.details).to eq(["./spec/host_spec.rb:12 Host"])
+      # RSpec reruns examples that share a location by id, quoted unless SHELL allows unquoted ids.
+      ids = "rspec './spec/upstream_contract_spec.rb[1:2:3]' # Client hook\n" \
+            "rspec ./spec/host_spec.rb[1:4] # Server hook"
+      expect(described_class.classify("contract", outcome(ids)).details)
+        .to eq(["./spec/upstream_contract_spec.rb[1:2:3] Client hook", "./spec/host_spec.rb[1:4] Server hook"])
     end
 
     it "keeps failed examples and reports errors raised outside examples, such as in after hooks" do
@@ -402,6 +407,13 @@ RSpec.describe CanaryDriver do
       true
     end
 
+    def expect_gone(pid, what)
+      # An orphan is reaped asynchronously after the group KILL.
+      deadline = described_class::Bounded.monotonic + 10
+      sleep 0.05 until gone?(pid) || described_class::Bounded.monotonic > deadline
+      expect(gone?(pid)).to be(true), "#{what} #{pid} survived the group kill"
+    end
+
     it "kills the whole process group of a command that outlives its deadline" do
       Dir.mktmpdir("connectrpc-canary-deadline-") do |directory|
         marker = File.join(directory, "child.pid")
@@ -421,11 +433,7 @@ RSpec.describe CanaryDriver do
         expect(outcome.output).to eq("ready\n"), "the command did not start its child before the deadline"
         expect(outcome.timed_out).to be(true)
         expect(described_class.classify("suite", outcome).result).to eq(:timeout)
-        child = Integer(File.read(marker))
-        # The orphaned child is reaped asynchronously after the group KILL.
-        deadline = described_class::Bounded.monotonic + 10
-        sleep 0.05 until gone?(child) || described_class::Bounded.monotonic > deadline
-        expect(gone?(child)).to be(true), "child #{child} survived the group kill"
+        expect_gone(Integer(File.read(marker)), "child")
       end
     end
 
@@ -440,10 +448,7 @@ RSpec.describe CanaryDriver do
       phase = described_class.classify("suite", outcome)
       expect(phase.result).to eq(:failed)
       expect(phase.details.last).to match(/leftover process kept the output open.*process group was killed/)
-      child = Integer(outcome.output.lines.first)
-      deadline = described_class::Bounded.monotonic + 10
-      sleep 0.05 until gone?(child) || described_class::Bounded.monotonic > deadline
-      expect(gone?(child)).to be(true), "leftover #{child} survived the group kill"
+      expect_gone(Integer(outcome.output.lines.first), "leftover")
     end
 
     it "reports a timeout when the deadline expires while a leftover descendant holds the output" do
@@ -452,6 +457,7 @@ RSpec.describe CanaryDriver do
       expect(outcome.output).to end_with("leader finished\n"), "the leader did not finish before the deadline"
       expect(outcome.exit_status).to eq(0), "the leader did not exit on its own before the deadline"
       expect(described_class.classify("suite", outcome).result).to eq(:timeout)
+      expect_gone(Integer(outcome.output.lines.first), "leftover")
     end
   end
 end

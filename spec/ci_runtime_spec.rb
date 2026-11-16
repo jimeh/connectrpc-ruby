@@ -432,7 +432,8 @@ RSpec.describe "Pins-lifted canary workflow" do
     cron = triggers.fetch("schedule").map { |entry| entry.fetch("cron") }
     expect(cron.size).to eq(1)
     expect(cron.first).to match(/\A\d+ \d+ \* \* \*\z/)
-    expect(cron.first.split.first).not_to eq(ci.fetch("on", ci[true]).fetch("schedule").first.fetch("cron").split.first)
+    ci_cron = ci.fetch("on", ci[true]).fetch("schedule").first.fetch("cron")
+    expect(cron.first.split.first(2)).not_to eq(ci_cron.split.first(2))
     expect(workflow.fetch("permissions")).to eq("contents" => "read")
     expect(workflow.fetch("env")).to eq(ci.fetch("env"))
     ci_commands = ci.fetch("jobs").values.flat_map { |entry| entry.fetch("steps").filter_map { |step| step["run"] } }

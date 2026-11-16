@@ -144,7 +144,8 @@ module CanaryDriver
 
   # Failed example ids, then any error RSpec raised outside examples, such as in an after hook.
   def example_failure(name, output, exit_status)
-    failed = output.scan(%r{^rspec (\./\S+) # (.+)$}).map { |location, description| "#{location} #{description.strip}" }
+    # A rerun argument is a location or, for examples sharing one, an id that RSpec may quote.
+    failed = output.scan(%r{^rspec '?(\./[^'\s]+)'? # (.+)$}).map { |rerun, text| "#{rerun} #{text.strip}" }
     failed << WORKED_AROUND if failed.any? { |line| line.include?("worked around") }
     outside = hook_errors(output)
     return Phase.new(name, :example_failures, failed + outside) unless failed.empty?
