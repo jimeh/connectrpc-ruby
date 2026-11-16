@@ -199,7 +199,9 @@ Raw native render/head halts and exceptions covered by Rails'
 Messages are generic. Ambiguous 400/409/500, redirects, unmapped statuses, and
 success without a typed result become `internal`. A non-200 native halt after
 the handler also prevents typed success. Raw Rails bodies and exception
-messages never become protocol error messages.
+messages never become protocol error messages. An error normalized from a
+rescued exception has no `cause`; lifecycle observers receive the original
+exception.
 
 Exceptions explicitly registered in Rails' `rescue_responses` remain expected
 outcomes and do not produce adapter error reports or exception logs. Unexpected

@@ -88,7 +88,7 @@ module ConnectRPC
       rescue StandardError => e
         connect_context.record_failure(e)
         connect_report(e)
-        raise connect_status_error(ActionDispatch::ExceptionWrapper.status_code_for_exception(e.class.name))
+        raise connect_status_error(ActionDispatch::ExceptionWrapper.status_code_for_exception(e.class.name)), cause: nil
       end
 
       def connect_report(error)
