@@ -169,6 +169,7 @@ RSpec.describe "gRPC public callers and status codec" do
   end
 
   it "compares rich unknown status against the raw leading-zero numeric code before mapping unknown" do
+    require "connectrpc/bindings/google_protobuf"
     descriptor = Google::Protobuf::FileDescriptorSet.decode(File.binread("lib/connectrpc/bindings/descriptors/status.bin"))
     pool = Google::Protobuf::DescriptorPool.new
     descriptor.file.each { |file| pool.add_serialized_file(Google::Protobuf::FileDescriptorProto.encode(file)) }
