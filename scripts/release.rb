@@ -10,6 +10,18 @@ when ["check"]
 when ["prepare"]
   train.prepare!
   puts "Prepared installation guides for #{train.version}; review and sign the diff"
+when ["prepare-pr"]
+  require_relative "release_preparation"
+  # The App-token commit only runs from the Release Please workflow on main.
+  workflow = "#{ENV.fetch('GITHUB_REPOSITORY', '')}/.github/workflows/release-please.yml@refs/heads/main"
+  unless ENV["GITHUB_ACTIONS"] == "true" && ENV["GITHUB_WORKFLOW_REF"] == workflow
+    abort "release:prepare:pr only runs in .github/workflows/release-please.yml on main"
+  end
+
+  ReleasePreparation.new(
+    train: ReleaseTrain.new(ENV.fetch("RELEASE_ROOT")), repository: ENV.fetch("GITHUB_REPOSITORY"),
+    head: ENV.fetch("RELEASE_HEAD"), github: ReleasePreparation::GitHub.new
+  ).commit!
 when ["build"]
   require_relative "release_candidate"
   puts "Candidate archives: #{ReleaseCandidate.new(train).build_from_git!}"
@@ -38,5 +50,5 @@ when ["publish"]
     ).publish!
   end
 else
-  abort "Usage: ruby scripts/release.rb check|prepare|build|tools|publish"
+  abort "Usage: ruby scripts/release.rb check|prepare|prepare-pr|build|tools|publish"
 end

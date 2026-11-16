@@ -1,7 +1,8 @@
 name: Release Please
 
 # Opens and updates the release PR. Merging it tags the commit and creates
-# a draft GitHub release; release.yml publishes from that tag.
+# a draft GitHub release; release.yml publishes from that tag. A minor release
+# PR then gets a signed App commit with its prepared installation guides.
 on:
   push:
     branches: [main]
@@ -12,6 +13,10 @@ permissions: {}
 concurrency:
   group: release-please-main
   cancel-in-progress: false
+
+env:
+  MISE_ENV: ci
+  MISE_LOCKED: "1"
 
 jobs:
   release-please:
@@ -43,3 +48,56 @@ jobs:
           token: ${{ steps.app-token.outputs.token }}
           config-file: .github/release-please-config.json
           manifest-file: .github/.release-please-manifest.json
+      # Looked up independently: Release Please reports no PR when its body is
+      # unchanged, and the owner-qualified head filter excludes forks. The SHA
+      # comes from the branch ref that createCommitOnBranch compares against;
+      # a PR's head.sha can lag a push that just rebuilt the branch.
+      - id: release-pr
+        name: Find the release PR
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          RELEASE_BRANCH: release-please--branches--main--components--connectrpc
+        run: |
+          number="$(gh api "repos/$GITHUB_REPOSITORY/pulls?state=open&base=main&head=$GITHUB_REPOSITORY_OWNER:$RELEASE_BRANCH" --jq '.[0].number // empty')"
+          sha=""
+          if [ -n "$number" ]; then
+            sha="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/$RELEASE_BRANCH" --jq '.object.sha')"
+          fi
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+      # Tooling comes from main. The release PR head is only read as data, so
+      # release-branch code never runs with the App token.
+      - name: Check out main tooling
+        if: steps.release-pr.outputs.sha != ''
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          token: ${{ steps.app-token.outputs.token }}
+          persist-credentials: false
+      - name: Check out the release PR head as data
+        if: steps.release-pr.outputs.sha != ''
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ steps.release-pr.outputs.sha }}
+          path: release-pr
+          token: ${{ steps.app-token.outputs.token }}
+          persist-credentials: false
+      - if: steps.release-pr.outputs.sha != ''
+        uses: ruby/setup-ruby@7f797815d8adceb1c412e7abefdd1ab4abc47a5f # v1.335.0
+        with:
+          ruby-version: "3.4.12"
+          bundler: "4.0.23"
+      - if: steps.release-pr.outputs.sha != ''
+        uses: jdx/mise-action@82a612c5ab8bcda7cc5db6b7e81a8e7584c3dc6e # v5.2.3
+        with:
+          version: "2026.10.19"
+          add_shims_to_path: false
+          env: false
+          export_path: false
+          install: false
+          cache: false
+      - name: Prepare and commit installation guides
+        if: steps.release-pr.outputs.sha != ''
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          RELEASE_HEAD: ${{ steps.release-pr.outputs.sha }}
+          RELEASE_ROOT: release-pr
+        run: mise run release:prepare:pr

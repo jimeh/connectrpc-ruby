@@ -76,9 +76,13 @@ class ReleaseTrain
   # Installation guides name the internal `~> M.m.0` requirement, which changes
   # only on a minor (breaking) release. Versions and changelog need nothing else.
   def prepared_files
-    GUIDES.to_h do |file|
-      [file, read(file).gsub(/(connectrpc(?:-[a-z]+)*["`, ]+)~> 0\.\d+\.\d+/, "\\1#{requirement}")]
-    end
+    GUIDES.to_h { |file| [file, prepared_guide(read(file))] }
+  end
+
+  # Pure text transformation, so callers can prepare guides read from a tree
+  # they must not execute.
+  def prepared_guide(content)
+    content.gsub(/(connectrpc(?:-[a-z]+)*["`, ]+)~> 0\.\d+\.\d+/, "\\1#{requirement}")
   end
 
   def check_configuration! # rubocop:disable Metrics/AbcSize, Metrics/CyclomaticComplexity, Metrics/MethodLength, Metrics/PerceivedComplexity
