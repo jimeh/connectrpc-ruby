@@ -42,3 +42,6 @@ require_relative "async/transport"
 require_relative "async/threaded_transport"
 require_relative "async/threaded_stream"
 require_relative "async/http1_transport"
+require_relative "async/upstream_contract"
+
+ConnectRPC::Async.const_get(:Internal)::UpstreamContract.verify!

@@ -938,6 +938,28 @@ the pinned backend's finish-input and NO_ERROR policy. Reset/error/owned teardow
 wakes readers and retires input references. Only peer CANCEL signals explicit
 RPC cancellation; credit accounting adds no lifecycle instrumentation.
 
+### Upstream contract guard
+
+This package replaces or calls a few async-http and protocol-http2 hooks, and
+its retirement joins rely on how Async finalizes tasks. `require
+"connectrpc/async"` checks both once per process, in about a millisecond:
+
+- Each hook's owner, visibility and parameter shape.
+- In a separate thread with its own reactor, bounded at 5 s: Async must call a
+  per-instance `#consume` after it clears a finished task's fiber (on normal
+  return, failure and cancellation). It must also call the parent's `#consume`
+  when the last child leaves, and `Fiber.scheduler.push` must run a pushed
+  object on a later iteration.
+
+If any check fails, require raises one error that names each broken contract,
+the installed gem version and the versions the package was verified with.
+That replaces a hang or misbehavior at runtime. There is no switch to skip the
+check. `connectrpc/falcon` checks its async-http `Endpoint` hooks the same way.
+Each gem's `spec/upstream_contract_spec.rb` pins the behaviors these checks
+depend on. Its "worked around" examples fail when upstream fixes a behavior
+this package works around, and each one names the workaround to delete. See
+[issue #68](https://github.com/jimeh/connectrpc-ruby/issues/68).
+
 ### Verification evidence
 
 Independent connect-go tests exercise both directions/codecs over h2c/TLS/mTLS,
