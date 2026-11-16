@@ -1,6 +1,10 @@
 # Typed client and server interceptors
 
-Status: design for review. No implementation is approved by this document.
+Status: implemented. PR A ([#89](https://github.com/jimeh/connectrpc-ruby/pull/89))
+delivered core unary interceptors, PR B
+([#94](https://github.com/jimeh/connectrpc-ruby/pull/94)) core streaming
+interceptors, and PR C the Rails `connect_interceptors` hook, host
+documentation and the runnable example. The design below is kept as approved.
 Base: `54d55fb` (lifecycle metadata, #81), after release 0.1.2.
 Issue: [#32](https://github.com/jimeh/connectrpc-ruby/issues/32). Related:
 [#26](https://github.com/jimeh/connectrpc-ruby/issues/26) groups L1/L3/L6 and

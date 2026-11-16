@@ -329,8 +329,10 @@ single-use continuation; no layer can return success after its continuation
 failed, and core records each escaping failure for observers. Stream chains
 wrap the whole stream scope; `wrap_stream` decorates the scoped endpoint while
 core cleanup stays on the raw session. The
-[interceptor design](plans/interceptors.md) records the full rules and the
-remaining Rails work.
+[interceptor design](plans/interceptors.md) records the full rules. Rails
+controllers return server interceptors from a private `connect_interceptors`
+hook, and they run around the whole controller chain
+([Rails interceptors](../gems/connectrpc-on-rails/README.md#interceptors)).
 
 The optional [connectrpc-on-rails gem](../gems/connectrpc-on-rails/README.md) uses the
 invoker boundary to run native controller callbacks, authentication,

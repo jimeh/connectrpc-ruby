@@ -223,7 +223,7 @@ explicit bridge described [below](#opt-in-framework-compatibility).
 | Core streaming and gRPC/Web SPI | `_StreamingTransport`, `_StreamExchange`, streaming input/output, `_GRPCTransport`, `_GRPCStreamExchange`, `_GRPCStatusCodec`, native server publication/output interfaces including `_GRPCWebOutput`; see the protocol-specific sections below |
 | Rack | Middleware constructor/call and shared `_App`, `_Body`, `_CallableBody`, `_Stream`, env and response contracts |
 | Testing | In-process Transport constructor/call, reusable as the core transport |
-| Rails | Controller inclusion and `connect`; documented private overrides for service, binding, handlers, limits, instrumentation and Web protocol/status/CORS; nullable request/context/method readers |
+| Rails | Controller inclusion and `connect`; documented private overrides for service, binding, handlers, limits, instrumentation, interceptors and Web protocol/status/CORS; nullable request/context/method readers |
 | Async | Application/native HTTP capabilities, Host, Transport, HTTP1Transport, ServerSession/accepted handles, TLSConfiguration, complete static/provider record shapes, status/error callbacks, rotation/drain/identity |
 | Falcon | Endpoint's supported operations, Environment overrides and Server/native application/TLS lifecycle |
 | OTel | Subscriber configuration and narrow tracer-provider/tracer/span/propagator capabilities; SDK and context implementation remain application owned |
@@ -441,7 +441,8 @@ are `untyped` because one interceptor serves many methods, like `_Invoker`.
 Only unary calls and the `ServerStreaming` stream subclasses define `request=`,
 so a stream interceptor narrows with `case`/`when` before replacing the
 request. `wrap_stream` takes an `(untyped) -> untyped` block; wrappers are
-checked at runtime, not statically.
+checked at runtime, not statically. The Rails private `connect_interceptors`
+hook returns the same `Array[server_interceptor]`.
 
 A union accepts any object that satisfies one member, so a registration check
 does not prove every method an object defines. Declare

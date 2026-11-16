@@ -132,6 +132,7 @@ There is no render helper or routing DSL.
 | `connect_handlers` | Yes | The handler map, usually from the generated `handlers(...)` |
 | `connect_limits` | No | Core limit and encoding keywords |
 | `connect_instrumentation` | No | A `ConnectRPC::Instrumentation`, default nil; see [RPC observation](#rpc-observation) |
+| `connect_interceptors` | No | Server interceptors, default `[]`; see [Interceptors](#interceptors) |
 | `connect_protocol`, `connect_status_codec`, `connect_cors` | No | Enable unary gRPC-Web; see [gRPC-Web](#grpc-web) |
 
 `connect_limits` accepts core `request_limit:`, `response_limit:`,
@@ -217,6 +218,61 @@ precede a core encode or response-limit failure. Deadlines remain cooperative;
 they cannot interrupt arbitrary application code or blocked synchronous reads.
 Warden/Devise throws and failure-app responses remain host-owned non-Connect
 responses unless the application explicitly adapts them.
+
+## Interceptors
+
+Override private `connect_interceptors` to run core
+[server interceptors](../../docs/unary.md#interceptors) around every Connect
+and gRPC-Web call of the controller. The hook defaults to `[]`. The controller
+reads it for each request, and concurrent requests share the interceptor
+objects, so return a frozen list built once and keep per-call state in the call
+object:
+
+```ruby
+class EchoController < ApplicationController
+  include ConnectRPC::OnRails::Controller
+
+  INTERCEPTORS = [RequireTenant.new].freeze
+
+  private
+
+  def connect_interceptors = INTERCEPTORS
+end
+```
+
+The Rails invoker is the innermost layer. Interceptors run after core decodes
+the request and around Rails' whole `process_action` chain, so they see the
+call before `before_action` and around-action callbacks, CSRF verification,
+`rescue_from` and the `process_action.action_controller` event, and see the
+result or error after `after_action` callbacks and around-action cleanup. The
+first interceptor listed is the outermost.
+
+- Rails policy still decides success. A server interceptor must yield; one that
+  returns without yielding fails the call `internal` before any callback or
+  handler runs. A successful response always means the full Rails chain
+  succeeded, including CSRF and authentication callbacks.
+- A Rails rejection, such as a `before_action` that renders 401, a CSRF failure
+  or an `after_action` that sets 403, reaches interceptors as the mapped
+  `ConnectRPC::Error` (see
+  [How Rails outcomes map to Connect codes](#how-rails-outcomes-map-to-connect-codes)).
+  An interceptor can translate it by raising another error. If it rescues the
+  error and returns a message, core discards the message and the client still
+  receives the rejection.
+- An interceptor that raises before `yield` skips the callbacks, the handler,
+  `rescue_from` and the Rails instrumentation event, like a core preflight
+  failure. Interceptor exceptions do not reach `rescue_from`, `Rails.error` or
+  the adapter's error log. A `ConnectRPC::Error` becomes the wire error, any
+  other exception becomes `internal`, and lifecycle observers receive the
+  original.
+- An unexpected controller exception is still logged and reported once through
+  `Rails.error`. Interceptors see the normalized `ConnectRPC::Error`
+  (`internal`, "Internal error", no `cause`); lifecycle observers receive the
+  original.
+- Interceptors get the call's `Context`, the same object as `connect_context`,
+  but no controller state such as `current_user`, the session or the Rails
+  request. Keep policy that needs Rails state in callbacks.
+
+The adapter serves unary calls only, so `server_stream` methods never run here.
 
 ## Request and security policy
 

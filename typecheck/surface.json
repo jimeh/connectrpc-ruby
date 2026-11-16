@@ -1013,6 +1013,7 @@
     "ConnectRPC::OnRails::Controller#connect_env": {"kind":"method","visibility":"private","parameters":"service","classification":"internal"},
     "ConnectRPC::OnRails::Controller#connect_handlers": {"kind":"method","visibility":"private","parameters":"","classification":"spi"},
     "ConnectRPC::OnRails::Controller#connect_instrumentation": {"kind":"method","visibility":"private","parameters":"","classification":"spi"},
+    "ConnectRPC::OnRails::Controller#connect_interceptors": {"kind":"method","visibility":"private","parameters":"","classification":"spi"},
     "ConnectRPC::OnRails::Controller#connect_limits": {"kind":"method","visibility":"private","parameters":"","classification":"spi"},
     "ConnectRPC::OnRails::Controller#connect_method": {"kind":"attribute","visibility":"private","classification":"spi"},
     "ConnectRPC::OnRails::Controller#connect_prepare_request": {"kind":"method","visibility":"private","parameters":"","classification":"internal"},

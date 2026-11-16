@@ -128,6 +128,18 @@ Testing forwards the read-only cancellation seam into a distinct server Context.
 Completing server processing cannot complete its client or shared source. Checks
 are cooperative; Testing does not interrupt a blocked handler.
 
+## Interceptors
+
+Client and Server [interceptors](../../docs/unary.md#interceptors) both run in
+process on the calling thread. The client chain wraps the transport call. The
+server chain runs inside `Transport#call`, after core decodes the request and
+around the invoker. A call passes through the client interceptors, outermost
+first, then the server interceptors, outermost first, then the handler. A
+client interceptor that returns a `Response` without yielding skips the
+transport, so the server interceptors and handler do not run for that call.
+Streaming is not supported by this transport, so only `client_unary` and
+`server_unary` run.
+
 ## What it does not cover
 
 Execution is synchronous and cooperative. This transport cannot interrupt a

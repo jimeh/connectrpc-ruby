@@ -110,19 +110,37 @@ worker-local. Set statuses inside each worker, for example while building
 
 ### Authentication
 
-`invoker:` covers unary calls only; Watch bypasses it. To expose health behind
-authentication, wrap the handlers so a denied call fails before it reaches the
-registry. A denied Watch then reveals no status and allocates no watcher:
+Server [interceptors](../../docs/unary.md#interceptors) on the application's
+`Server` cover Check and List through `server_unary` and Watch through
+`server_stream`. To expose health behind authentication, reject before `yield`
+so a denied call never reaches the registry. A denied Watch then reveals no
+status and allocates no watcher. `invoker:` is not enough: it covers unary
+calls only, and Watch bypasses it.
 
 ```ruby
-guarded = health.handlers.to_h do |path, handler|
-  [path, lambda do |*arguments, context|
-    raise ConnectRPC::Error.new(:unauthenticated, "credentials required") unless authorized?(context)
+class HealthAuth
+  def server_unary(call, &) = authorize!(call, &)
+  def server_stream(call, &) = authorize!(call, &)
 
-    handler.call(*arguments, context)
-  end]
+  private
+
+  # authorized?(context) is the application's own check, for example of a
+  # credential in context.request_metadata.
+  def authorize!(call)
+    if call.method.service == ConnectRPC::Health::SERVICE.name && !authorized?(call.context)
+      raise ConnectRPC::Error.new(:unauthenticated, "credentials required")
+    end
+
+    yield
+  end
 end
+
+server = ConnectRPC::Server.new(services: services, handlers: handlers, binding: binding,
+                                protocol: :auto, interceptors: [HealthAuth.new])
 ```
+
+An interceptor's `server_stream` frame, and anything it holds, lasts as long as
+the Watch stream. Avoid holding scarce resources across `yield`.
 
 ## Shutdown and drain
 

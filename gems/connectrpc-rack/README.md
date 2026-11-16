@@ -91,6 +91,17 @@ Configure core CORS or keep it nil when outer middleware owns the mount. See
 the [Web guide](../../docs/grpc-web.md) for protocol, CORS, bounds and
 completion rules.
 
+## Interceptors
+
+Server [interceptors](../../docs/unary.md#interceptors) configured on the core
+Server run inside the middleware call for every unary RPC on Connect POST and
+GET and on gRPC-Web. They run after core decodes the request, around the
+invoker, with the first interceptor listed outermost. Rack middleware outside
+this app runs before and after the whole RPC. Interceptors do not run for
+unrelated paths, CORS preflight or requests core rejects before decode, and
+they do not receive the Rack env. Streaming is rejected before input, so
+`server_stream` methods never run on this host.
+
 ## RPC observation
 
 Configure `instrumentation:` on the core Client/Server to enable the fixed

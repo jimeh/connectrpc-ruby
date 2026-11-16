@@ -92,6 +92,7 @@ class APIController < ActionController::API
   def connect_handlers = {}
   def connect_limits = { request_limit: 1024, response_wire_limit: 2048, encoding: :gzip }
   def connect_instrumentation = ConnectRPC::Instrumentation.new(subscribers: [])
+  def connect_interceptors = [APIServerInterceptor.new, APIServerStreamInterceptor.new]
 end
 
 class APIEnvironment
