@@ -432,9 +432,9 @@ Core creates the deadline before encoding, so one budget covers encoding,
 admission, the inbox wait, acquisition, connection setup, wire I/O and decoding.
 
 - **Reactor side.** The command carries the request's read-only
-  `CallCancellation::View`, composed with a per-call interrupt signal. The existing transport enforces the
-  deadline and cancellation through its cross-thread Promise path, which resets
-  the stream and keeps siblings alive
+  `CallCancellation::View`, composed with a per-call interrupt signal. The
+  existing transport enforces the deadline and cancellation through its
+  cross-thread Promise path, which resets the stream and keeps siblings alive
   (`gems/connectrpc-async/lib/connectrpc/async/transport.rb:165-207`).
 - **Caller side.** With a finite deadline, the caller waits for the reply for
   the remaining time plus the transport's 100 ms cleanup allowance. If no
