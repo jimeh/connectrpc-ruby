@@ -217,7 +217,9 @@ nonnegative or nil and requires `max_connection_age`.
   finish. Each control frame must be written within `timeout` seconds of being
   queued, including any wait behind another stream's stuck frame, and its own
   write within the 100 ms cleanup allowance; otherwise the connection is
-  aborted. Server PINGs, age grace and close also bound a stuck connection. The
+  aborted. At most 1024 control frames wait; a peer that outruns the writer,
+  such as a PING flood with `min_time: nil`, fails the connection. Server
+  PINGs, age grace and close also bound a stuck connection. The
   `too_many_pings` GOAWAY is stricter: it must be written within 100 ms of the
   third strike, or the connection is aborted. Without keepalive, the reader
   answers client PINGs itself, as before, and idle drain frames use the

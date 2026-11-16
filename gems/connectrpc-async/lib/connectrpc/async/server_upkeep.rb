@@ -9,8 +9,13 @@ module ConnectRPC
       # in order. Each must be written within `timeout` of being queued,
       # including any wait behind another writer's frame, and its own write,
       # once it holds the frame guard, within the cleanup allowance. Otherwise
-      # the connection fails raw-first.
+      # the connection fails raw-first. At most MAX_PENDING frames wait; a
+      # peer that outruns the writer, such as a PING flood with enforcement
+      # off, fails the connection rather than growing the queue or blocking
+      # the reader.
       class ControlWriter
+        MAX_PENDING = 1024
+
         def initialize(resource, clock:, timeout:)
           @resource = resource
           @clock = clock
@@ -26,10 +31,15 @@ module ConnectRPC
         end
 
         # The promise resolves true once the frame is written, or false if the
-        # writer stopped or failed first.
+        # writer stopped or failed first, or the queue was full.
         def write(frame)
           written = ::Async::Promise.new
-          @queue.enqueue([frame, @clock.now + @timeout, written])
+          if @queue.size >= MAX_PENDING
+            written.resolve(false)
+            @resource.abort(IOError.new("HTTP/2 control frames outran their writer"))
+          else
+            @queue.enqueue([frame, @clock.now + @timeout, written])
+          end
           written
         end
 

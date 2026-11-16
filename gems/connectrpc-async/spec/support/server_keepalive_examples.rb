@@ -221,6 +221,31 @@ RSpec.shared_examples "HTTP/2 server keepalive" do
       end
     end
 
+    it "fails the connection when queued control frames outrun a held writer with enforcement off" do
+      stub_const("ConnectRPC::Async::Internal::ControlWriter::MAX_PENDING", 8)
+      reactor do |task|
+        with_keepalive_host(task, keepalive: server_keepalive(time: nil, min_time: nil)) do |fixture|
+          client = fixture.client
+          watch(fixture, "sibling", "one")
+          gate = hold_frames(fixture.resource, Protocol::HTTP2::DataFrame::TYPE)
+          fixture.log[:feeds]["sibling"].enqueue("two")
+          gate.started.dequeue
+          # One write, so the reader applies every PING from a single refill.
+          client.connection.write_frames do |framer|
+            12.times do |index|
+              frame = Protocol::HTTP2::PingFrame.new
+              frame.pack(format("flood%03d", index))
+              framer.write_frame(frame)
+            end
+          end
+          wait_until(task, "connection retired") { retired?(fixture.resource) }
+          expect(client.wire.acks).to eq([])
+        ensure
+          gate&.release&.enqueue(true)
+        end
+      end
+    end
+
     it "aborts within the cleanup allowance when the too_many_pings GOAWAY is stuck behind a held frame" do
       reactor do |task|
         with_keepalive_host(task, keepalive: server_keepalive(time: nil)) do |fixture|
