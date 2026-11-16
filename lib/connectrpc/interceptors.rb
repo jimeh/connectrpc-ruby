@@ -107,29 +107,23 @@ module ConnectRPC
       # The recorder receives each failure escaping a continuation before the
       # outer layer sees it; recording keeps the first.
       def run(call, recorder, &dispatch)
-        step(0, call, recorder, dispatch)
+        step(0, call, recorder, dispatch, nil)
       end
 
       private
 
-      def step(index, call, recorder, dispatch) # rubocop:disable Metrics/MethodLength -- one place tracks every exit
+      def step(index, call, recorder, dispatch, parent)
         layer = @layers[index]
         return dispatch.call unless layer
 
         continuation = Continuation.new(recorder)
-        # @type var exit_kind: :returned | :raised | :nonlocal
-        exit_kind = :nonlocal
         # @type var yielded: bool
         # @type var result: untyped
         begin
-          result = layer.call(call) { continuation.call { step(index + 1, call, recorder, dispatch) } }
-          exit_kind = :returned
-        rescue Exception # rubocop:disable Lint/RescueException -- an exceptional exit keeps its own exception
-          exit_kind = :raised
-          raise
+          result = layer.call(call) { continuation.call { step(index + 1, call, recorder, dispatch, continuation) } }
         ensure
           # Every exit closes, so a captured continuation cannot run late.
-          yielded = continuation.close(exit_kind)
+          yielded = continuation.close(parent)
         end
         continuation.finish(result, yielded, @client)
       end
@@ -143,6 +137,11 @@ module ConnectRPC
     # yielded) and :finished (the layer exited). Only the owner's first claim
     # while :active and nothing is latched moves to :claimed; every exit moves to
     # :finished. A late claim raises without latching or recording.
+    #
+    # The continuation fails when its block raises or exits without returning or
+    # raising (a throw or a killed fiber). Once failed, no misuse is recorded
+    # over the failure, and a layer that returns re-raises it. Nothing here
+    # raises from an ensure, so a non-local exit keeps unwinding untouched.
     class Continuation
       def initialize(recorder)
         @recorder = recorder
@@ -151,26 +150,37 @@ module ConnectRPC
         @state = :active
         @failure = nil
         @misuse = nil
+        @handed_up = nil
       end
 
-      def call
+      def call # rubocop:disable Metrics/MethodLength -- one place tracks every block exit
         misuse = claim
         raise misuse if misuse
 
+        settled = false
         begin
-          yield
+          result = yield
+          settled = true
+          result
         rescue Exception => e # rubocop:disable Lint/RescueException -- rule 6 re-raises any escaped failure
+          settled = true
           @failure = e
           @recorder&.record_failure(e) if e.is_a?(StandardError)
           raise
+        ensure
+          # Neither returned nor raised. A new failure is recorded only when a
+          # layer re-raises it, so a killed fiber records nothing.
+          unless settled
+            @failure = @handed_up || InterceptorStateError.new("Continuation exited without returning or raising")
+          end
         end
       end
 
       # Runs on the owner fiber for every exit and returns whether the layer
       # yielded. A latched misuse is recorded here, before any outer layer can
-      # translate the exit. A killed thread keeps unwinding because raising
-      # would resurrect it.
-      def close(exit_kind)
+      # translate the exit. The enclosing continuation adopts what this layer
+      # carries only if the layer exited non-locally.
+      def close(parent)
         yielded = @mutex.synchronize do
           claimed = @state == :claimed
           @state = :finished
@@ -178,8 +188,8 @@ module ConnectRPC
         end
         # A finished continuation latches nothing more, so this read is stable.
         misuse = @misuse
-        @recorder&.record_failure(misuse) if misuse
-        escape! if exit_kind == :nonlocal && Thread.current.status != "aborting"
+        record_misuse(misuse) if misuse
+        parent&.hand_up(@failure || misuse)
         yielded
       end
 
@@ -191,6 +201,13 @@ module ConnectRPC
         raise InterceptorStateError, "Server interceptors must yield" unless yielded
 
         result
+      end
+
+      # What the inner layer's exit carried: its continuation failure or
+      # latched misuse.
+      def hand_up(failure)
+        @handed_up = failure
+        nil
       end
 
       private
@@ -208,8 +225,15 @@ module ConnectRPC
 
           owner ? claim_owned : latch_foreign
         end
-        @recorder&.record_failure(misuse) if misuse && owner && !late
+        record_misuse(misuse) if misuse && owner && !late
         misuse
+      end
+
+      # Runs on the owner fiber. Nothing is recorded over a continuation
+      # failure, including a non-StandardError that is recorded only after it
+      # leaves the chain.
+      def record_misuse(misuse)
+        @recorder&.record_failure(misuse) unless @failure
       end
 
       # The first misuse is latched; every later owner claim re-raises it.
@@ -234,14 +258,6 @@ module ConnectRPC
 
         misuse = @misuse
         raise misuse if misuse
-      end
-
-      # A throw or other non-local exit cannot leave the layer as success.
-      def escape!
-        raise_latched
-        error = InterceptorStateError.new("Interceptor exited without returning or raising")
-        @recorder&.record_failure(error)
-        raise error
       end
     end
   end

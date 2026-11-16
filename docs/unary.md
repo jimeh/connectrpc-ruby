@@ -483,9 +483,12 @@ one is broken:
   After a misuse the continuation no longer dispatches, and a swallowed misuse
   still fails the call when the interceptor returns. Instrumentation records the
   misuse as the call's error even if the interceptor translates it.
-- An interceptor exits by returning or raising. A `throw` or other non-local
-  exit out of an interceptor fails the call with the continuation's exception,
-  or with `InterceptorStateError` if the continuation did not raise.
+- A continuation fails when its block raises or is left by a `throw` or other
+  non-local exit. If a layer catches such a `throw` inside the chain and
+  returns, the call fails with the exception the continuation raised, or with
+  `InterceptorStateError` if it did not raise. A `throw` that leaves the
+  outermost interceptor propagates as it would without interceptors, and a
+  killed thread or fiber keeps dying.
 - A client interceptor may return a `ConnectRPC::Response` without yielding,
   for example from a local cache. Every other layer must yield; a server
   interceptor that returns without yielding fails the call with `internal`.

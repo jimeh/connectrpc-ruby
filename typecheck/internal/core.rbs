@@ -419,7 +419,7 @@ module ConnectRPC
       def initialize: (Array[::Method], bool) -> void
       def run: (ClientUnaryCall | ServerUnaryCall, _FailureRecorder?) { () -> untyped } -> untyped
       private
-      def step: (Integer, ClientUnaryCall | ServerUnaryCall, _FailureRecorder?, ^() -> untyped) -> untyped
+      def step: (Integer, ClientUnaryCall | ServerUnaryCall, _FailureRecorder?, ^() -> untyped, Continuation?) -> untyped
     end
     class Continuation
       @recorder: _FailureRecorder?
@@ -428,16 +428,18 @@ module ConnectRPC
       @state: :active | :claimed | :finished
       @failure: Exception?
       @misuse: InterceptorStateError?
+      @handed_up: Exception?
       def initialize: (_FailureRecorder?) -> void
       def call: [T] () { () -> T } -> T
-      def close: (:returned | :raised | :nonlocal) -> bool
+      def close: (Continuation?) -> bool
       def finish: (untyped, bool, bool) -> untyped
+      def hand_up: (Exception?) -> nil
       private
       def claim: () -> InterceptorStateError?
       def claim_owned: () -> InterceptorStateError?
+      def record_misuse: (InterceptorStateError) -> nil
       def latch_foreign: () -> InterceptorStateError
       def raise_latched: () -> nil
-      def escape!: () -> bot
     end
   end
 end
