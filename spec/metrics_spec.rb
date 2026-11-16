@@ -265,6 +265,14 @@ RSpec.describe "Backend-neutral metrics" do
       )
     end
 
+    it "records nothing for connection_closed events" do
+      observer = self.observer
+      %i[keepalive_timeout drain_timeout goaway closed].each do |reason|
+        observer.call(event(:connection_closed, state: :ready, outcome: reason))
+      end
+      expect(recorder.calls).to be_empty
+    end
+
     it "zeros its own last published state, not the event's previous state" do
       observer = self.observer
       observer.publish_state

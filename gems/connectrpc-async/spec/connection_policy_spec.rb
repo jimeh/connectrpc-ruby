@@ -6,11 +6,13 @@ RSpec.describe ConnectRPC::Async::ConnectionPolicy do
     expect(policy.backoff).to eq(ConnectRPC::Async::Backoff.new(base: 1.0, multiplier: 1.6, jitter: 0.2, max: 30.0))
     expect([policy.wait_for_ready, policy.max_pending_bytes]).to eq([false, 16 * 1024 * 1024])
     expect([policy.retry_refused, policy.max_draining, policy.drain_timeout]).to eq([true, 1, nil])
+    expect(policy.keepalive).to be_nil
     expect([policy, policy.backoff]).to all(be_frozen)
     expect(policy).to eq(described_class.new)
     expect(policy.hash).to eq(described_class.new.hash)
     expect(policy).not_to eq(described_class.new(max_pending_bytes: nil))
-    [{ retry_refused: false }, { max_draining: 2 }, { drain_timeout: 30 }].each do |options|
+    [{ retry_refused: false }, { max_draining: 2 }, { drain_timeout: 30 },
+     { keepalive: ConnectRPC::Async::Keepalive.new(time: 300) }].each do |options|
       expect(described_class.new(**options)).not_to eq(policy)
       expect(described_class.new(**options)).to eq(described_class.new(**options))
       expect(described_class.new(**options).hash).to eq(described_class.new(**options).hash)
@@ -36,7 +38,8 @@ RSpec.describe ConnectRPC::Async::ConnectionPolicy do
     [{ max_draining: 1.0 }, "max_draining must be a nonnegative integer"],
     [{ drain_timeout: 0 }, "drain_timeout must be finite positive seconds"],
     [{ drain_timeout: Float::INFINITY }, "drain_timeout must be finite positive seconds"],
-    [{ drain_timeout: false }, "drain_timeout must be finite positive seconds"]
+    [{ drain_timeout: false }, "drain_timeout must be finite positive seconds"],
+    [{ keepalive: 300 }, "keepalive must be a Keepalive or nil"]
   ].each do |options, message|
     it "rejects #{options.inspect}" do
       expect { described_class.new(**options) }.to raise_error(ArgumentError, message)
@@ -51,6 +54,30 @@ RSpec.describe ConnectRPC::Async::ConnectionPolicy do
   ].each do |options, message|
     it "rejects backoff #{options.inspect}" do
       expect { ConnectRPC::Async::Backoff.new(**options) }.to raise_error(ArgumentError, message)
+    end
+  end
+
+  it "builds a frozen comparable keepalive with grpc-go's timeout default" do
+    keepalive = ConnectRPC::Async::Keepalive.new(time: 300)
+    expect([keepalive.time, keepalive.timeout, keepalive.permit_without_calls]).to eq([300, 20, false])
+    expect(keepalive).to be_frozen
+    expect(keepalive).to eq(ConnectRPC::Async::Keepalive.new(time: 300, timeout: 20, permit_without_calls: false))
+    expect(keepalive.hash).to eq(ConnectRPC::Async::Keepalive.new(time: 300).hash)
+    expect(keepalive).not_to eq(ConnectRPC::Async::Keepalive.new(time: 300, permit_without_calls: true))
+    expect(keepalive).not_to eq(ConnectRPC::Async::Keepalive.new(time: 300, timeout: 1))
+    expect(keepalive).not_to eq(Object.new)
+    expect(ConnectRPC::Async::Keepalive.new(time: 0.5, timeout: 0.25).time).to eq(0.5)
+  end
+
+  [
+    [{}, ArgumentError, /time/], [{ time: 0 }, ArgumentError, /time must be finite positive seconds/],
+    [{ time: Float::INFINITY }, ArgumentError, /time/], [{ time: "1" }, ArgumentError, /time/],
+    [{ time: 1, timeout: 0 }, ArgumentError, /timeout must be finite positive seconds/],
+    [{ time: 1, timeout: Float::NAN }, ArgumentError, /timeout/],
+    [{ time: 1, permit_without_calls: nil }, ArgumentError, "permit_without_calls must be true or false"]
+  ].each do |options, error, message|
+    it "rejects keepalive #{options.inspect}" do
+      expect { ConnectRPC::Async::Keepalive.new(**options) }.to raise_error(error, message)
     end
   end
 

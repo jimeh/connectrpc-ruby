@@ -1,20 +1,24 @@
 # frozen_string_literal: true
 
 module ConnectionPeer
-  # Records every manager sleep and holds it until the example fires it.
-  # `fire` releases the oldest pending sleep, or the next one if none waits;
-  # `sleeper` addresses one pending sleep, so concurrent backoff and drain
-  # timers can be released individually.
+  # Records every manager sleep and holds it until the example releases it.
+  # `fire` releases the oldest pending sleep, or the next one if none waits,
+  # and that sleep alone adds its seconds to `now`; `sleeper` addresses one
+  # pending sleep, so concurrent backoff and drain timers can be released
+  # individually. `advance` instead moves `now` once and releases every sleep
+  # due by then, so concurrent keepalive timers share one timeline.
   class FakeClock
     class Sleeper
-      attr_reader :seconds
+      attr_reader :seconds, :due
 
-      def initialize(seconds)
+      def initialize(seconds, due)
         @seconds = seconds
+        @due = due
         @release = Async::Promise.new
       end
 
-      def fire = @release.resolve(true)
+      def fire = @release.resolve(:fired)
+      def advance = @release.resolve(:advanced)
       def fired? = @release.resolved?
       def wait = @release.wait
     end
@@ -30,7 +34,7 @@ module ConnectionPeer
     end
 
     def sleep(seconds)
-      sleeper = Sleeper.new(seconds)
+      sleeper = Sleeper.new(seconds, @now + seconds)
       @delays << seconds
       @pending << sleeper
       if @credits.positive?
@@ -38,10 +42,14 @@ module ConnectionPeer
         sleeper.fire
       end
       @requested.enqueue(seconds)
-      sleeper.wait
-      @now += seconds
+      @now += seconds if sleeper.wait == :fired
     ensure
       @pending.delete(sleeper)
+    end
+
+    def advance(seconds)
+      @now += seconds
+      sleepers.select { |sleeper| sleeper.due <= @now }.each(&:advance)
     end
 
     def next_delay = @requested.dequeue
@@ -90,9 +98,13 @@ module ConnectionPeer
   end
 
   # A recording HTTP/2 peer on raw sockets. Each accepted connection either
-  # closes immediately or serves requests through the given block.
+  # closes immediately or serves requests through the given block. It records
+  # every frame, PING payloads with their connection index and ACK flag, and
+  # GOAWAY cutoff, code and debug data. Clearing `ack_pings` black-holes every
+  # connection's PINGs; `black_holes` lists connection indexes to black-hole.
   class RecordingServer
-    attr_reader :accepted, :frames, :requests, :connections, :raws
+    attr_reader :accepted, :frames, :requests, :connections, :raws, :pings, :goaways, :black_holes
+    attr_accessor :ack_pings
 
     def initialize(task, listener, settings: {}, refuse: [], tls: nil, gate: nil, &handler)
       @listener = listener
@@ -106,6 +118,10 @@ module ConnectionPeer
       @requests = Async::Queue.new
       @connections = []
       @raws = []
+      @pings = []
+      @goaways = []
+      @ack_pings = true
+      @black_holes = []
       @task = task.async { accept_loop(task) }
     end
 
@@ -115,10 +131,40 @@ module ConnectionPeer
       @raws.each { |raw| AsyncHelpers::INTERNAL.raw_close(raw) }
     end
 
+    # PING payloads (not ACKs) the client sent, optionally on one connection.
+    def ping_payloads(connection = nil)
+      @pings.filter_map { |index, ack, payload| payload if !ack && (connection.nil? || index == connection) }
+    end
+
+    def acks?(index) = @ack_pings && !@black_holes.include?(index)
+
+    def record(index, frame)
+      case frame
+      when Protocol::HTTP2::PingFrame then @pings << [index, frame.acknowledgement?, frame.unpack]
+      when Protocol::HTTP2::GoawayFrame then @goaways << [index, *frame.unpack]
+      end
+    end
+
     def headers_frames = @frames.select { |type, *| type == Protocol::HTTP2::HeadersFrame::TYPE }
     def data_frames = @frames.select { |type, *| type == Protocol::HTTP2::DataFrame::TYPE }
 
     private
+
+    def instrument(server, index)
+      frames = @frames
+      peer = self
+      server.define_singleton_method(:read_frame) do |&block|
+        super() do |frame|
+          frames << [frame.type, frame.stream_id, frame.flags]
+          peer.record(index, frame)
+          block&.call(frame)
+        end
+      end
+      server.define_singleton_method(:receive_ping) do |frame|
+        super(frame) if frame.acknowledgement? || peer.acks?(index)
+      end
+      server
+    end
 
     def accept_loop(task)
       loop do
@@ -141,14 +187,7 @@ module ConnectionPeer
         socket = @tls.socket(raw)
         socket.accept
       end
-      frames = @frames
-      server = Async::HTTP::Protocol::HTTP2::Server.new(IO::Stream(socket))
-      server.define_singleton_method(:read_frame) do |&block|
-        super() do |frame|
-          frames << [frame.type, frame.stream_id, frame.flags]
-          block&.call(frame)
-        end
-      end
+      server = instrument(Async::HTTP::Protocol::HTTP2::Server.new(IO::Stream(socket)), @connections.size)
       @connections << server
       server.read_connection_preface(@settings)
       server.start_connection

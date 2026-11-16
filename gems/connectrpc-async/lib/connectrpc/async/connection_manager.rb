@@ -64,6 +64,8 @@ module ConnectRPC
           @dispatching = nil
           @clock = MonotonicClock
           @random = ::Random
+          # Raised for later connections when a peer reports too many PINGs.
+          @keepalive_time = policy.keepalive&.time
         end
 
         # Stream usage summed over every accounted connection.
@@ -145,9 +147,12 @@ module ConnectRPC
         def retire(connection)
           return unless @connections.key?(connection)
 
-          remove(connection)
-          reconcile
-          connection.close
+          begin
+            remove(connection)
+            reconcile
+          ensure
+            connection.close
+          end
           nil
         end
 
@@ -211,6 +216,7 @@ module ConnectRPC
         # Called on GOAWAY and on resource abort, which raw-closes first. A
         # removed connection's reservation ends once its socket is closed.
         def connection_unusable(resource)
+          calm(resource)
           connection = resource.connection
           return unless connection
 
@@ -223,11 +229,14 @@ module ConnectRPC
           return unless @connections.key?(connection)
 
           if @connections[connection].zero?
-            remove(connection)
-            reconcile
-            # Close actively rather than relying on the reader, so the
-            # reservation always ends.
-            connection.close unless resource.finished?
+            begin
+              remove(connection)
+              reconcile
+            ensure
+              # Close actively rather than relying on the reader, so the
+              # reservation always ends.
+              connection.close unless resource.finished?
+            end
             return
           end
           if graceful_draining?(connection)
@@ -246,12 +255,30 @@ module ConnectRPC
         end
 
         # Every removal from accounting ends draining membership and the drain
-        # timer, and reserves the slot until the raw socket is closed.
+        # timer, and reserves the slot until the raw socket is closed. Outside
+        # transport close, it is the one place a ready connection is reported
+        # closed, with the first reason its resource recorded.
         def remove(connection)
           @connections.delete(connection)
           @draining.delete(connection)
           Internal.cancel(@drain_timers.delete(connection))
           @reserved[connection] = true unless connection.resource.finished?
+          emit(:connection_closed, outcome: connection.resource.close_reason) unless @closing
+        end
+
+        # Like grpc-go, a too_many_pings GOAWAY at least doubles the PING
+        # interval of later connections relative to the offending one's.
+        def calm(resource)
+          time = resource.keepalive&.time
+          @keepalive_time = [@keepalive_time, 2 * time].max if time && resource.calmed?
+        end
+
+        def keep_alive(connection)
+          keepalive = @policy.keepalive
+          return unless keepalive
+
+          connection.resource.keep_alive(@lifetime, clock: @clock, time: @keepalive_time, timeout: keepalive.timeout,
+                                                    always: keepalive.permit_without_calls)
         end
 
         # A connection that kept its active slot because the draining set was
@@ -275,7 +302,10 @@ module ConnectRPC
             @clock.sleep(timeout)
             if @drain_timers[connection].equal?(timer)
               @drain_timers.delete(connection)
-              connection.resource.abort if @connections.key?(connection)
+              if @connections.key?(connection)
+                connection.resource.record_close(:drain_timeout)
+                connection.resource.abort
+              end
             end
           end
           @drain_timers[connection] = timer
@@ -342,6 +372,7 @@ module ConnectRPC
 
         def succeed(attempt, connection)
           @connections[connection] = 0
+          keep_alive(connection)
           @failures = 0
           attempt.outcome = :ready
           @attempt = nil

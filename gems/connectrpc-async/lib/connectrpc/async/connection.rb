@@ -18,8 +18,41 @@ module ConnectRPC
       # longer start streams. Nothing has been written for that writer.
       class UnusableConnection < IOError; end
 
+      # Keepalive's view of a connection: frame reads, PING ACKs and the work
+      # a dead peer would leave stuck. Shared by client and server connections.
+      module Liveness
+        # Tasks waiting to acquire the frame guard, including unsent dispatchers.
+        def guard_waiting? = !@write_frame_guard.waiting.empty?
+
+        # Stream output tasks, retained past their stream's removal: a reset
+        # stream's output can still be inside a deferred frame write.
+        def output_started(task)
+          outputs = @outputs ||= {}.compare_by_identity
+          outputs.delete_if { |output, _| output.finished? }
+          outputs[task] = true
+        end
+
+        def outputs_pending? = !!@outputs&.each_key&.any? { |output| !output.finished? }
+
+        # Timestamped before the frame is applied: a blocked synchronous reply,
+        # such as a PING ACK, cannot hide that the frame arrived.
+        def read_frame
+          super do |frame|
+            @resource&.frame_read
+            yield frame if block_given?
+          end
+        end
+
+        def receive_ping(frame)
+          @resource&.ping_acknowledged(frame.unpack) if frame.acknowledgement?
+          super
+        end
+      end
+
       # Version-coupled wrappers around the selected stack, not a frame codec.
       module Connection
+        include Liveness
+
         attr_accessor :resource, :defer_close
         attr_reader :writers, :reader_task
 
@@ -334,7 +367,10 @@ module ConnectRPC
           return body.close if closed?
 
           @output = Output.new(self, body, trailer)
-          @output.start(&)
+          @output.start do |task|
+            @connection.output_started(task)
+            yield task if block_given?
+          end
         end
       end
 
@@ -416,6 +452,8 @@ module ConnectRPC
 
         def create_response
           ResponseStream.create(self, next_stream_id).response
+        ensure
+          @resource&.stream_opened
         end
 
         # Peer SETTINGS can change stream capacity for waiting acquisitions.
@@ -426,6 +464,8 @@ module ConnectRPC
         end
 
         def receive_goaway(frame)
+          _, code, debug = frame.unpack
+          @resource&.calmed! if code == ::Protocol::HTTP2::Error::ENHANCE_YOUR_CALM && debug == "too_many_pings"
           super
         ensure
           @resource&.unusable
@@ -505,7 +545,7 @@ module ConnectRPC
 
       class Resource
         attr_accessor :raw, :socket, :connection, :task, :generation, :snapshot, :ready, :draining
-        attr_reader :tasks, :progress, :activity_at
+        attr_reader :tasks, :progress, :activity_at, :keepalive
         # Called when the connection stops accepting new streams, before any
         # retirement join, so its owner can update accounting promptly.
         attr_writer :on_unusable
@@ -516,6 +556,9 @@ module ConnectRPC
           @generation = generation
           @snapshot = snapshot
           @tasks = []
+          @maintenance = []
+          @keepalive = nil
+          @close_reason = nil
           @activity_at = Internal.now
           @ready = false
           @draining = false
@@ -531,7 +574,51 @@ module ConnectRPC
           @activity_at = Internal.now
           @progress.signal
           @shared_progress.signal
+          @keepalive&.wake
         end
+
+        # Long-lived connection upkeep. Unlike tracked tasks it never keeps the
+        # resource from being empty, but retirement still captures, cancels and
+        # joins it, and its own abort is an owned abort.
+        def maintain(task)
+          @maintenance.reject!(&:finished?)
+          @maintenance << task
+          task
+        end
+
+        def keep_alive(parent, clock:, time:, timeout:, always:)
+          return if @aborted || @keepalive
+
+          @keepalive = KeepaliveMonitor.new(self, clock: clock, time: time, timeout: timeout, always: always)
+          @keepalive.start(parent)
+        end
+
+        # Work that a dead peer would leave stuck: open streams, frame writers
+        # and guard waiters, or stream output still finishing a frame.
+        def busy?
+          connection = @connection
+          return false unless connection
+
+          !connection.streams.empty? || !connection.writers.empty? || connection.guard_waiting? ||
+            connection.outputs_pending?
+        end
+
+        def stream_opened = @keepalive&.wake
+        def frame_read = @keepalive&.read!
+        def ping_acknowledged(payload) = @keepalive&.acknowledged(payload)
+
+        # The peer reported excessive PINGs (GOAWAY ENHANCE_YOUR_CALM).
+        def calmed! = @calmed = true
+        def calmed? = !!@calmed
+
+        # Why the connection ended. The first recorded reason wins; abort
+        # records its own before any yield.
+        def record_close(reason)
+          @close_reason ||= reason
+          nil
+        end
+
+        def close_reason = @close_reason || default_close_reason
 
         def track(task)
           raise IOError, "Connection is retiring" if @aborted
@@ -552,6 +639,7 @@ module ConnectRPC
         def abort(error = IOError.new("HTTP/2 connection closed"))
           return if @cleanup&.current?
 
+          record_close(default_close_reason)
           capture_retirement
           owned = owns_task?(::Async::Task.current)
           launch = !@cleanup
@@ -582,6 +670,7 @@ module ConnectRPC
             return true
           end
           @drain_task = ::Async::Task.new(parent, finished: false) do
+            stop_maintenance
             @progress.wait until empty?
             next !@abort_during_drain if @aborted
 
@@ -616,6 +705,15 @@ module ConnectRPC
           @lifetime = parent
         end
 
+        def default_close_reason = @connection&.goaway_received? ? :goaway : :closed
+
+        # Graceful close and drain stop upkeep before waiting for emptiness. A
+        # keepalive writer still waiting for the guard stops at once.
+        def stop_maintenance
+          @maintenance.each { |task| Internal.cancel(task) }
+          @maintenance.reverse_each { |task| Internal.join(task) }
+        end
+
         def retirement_completed? = !!@retirement_completed
 
         # Retirement starts, closing raw TCP, before the owner notification
@@ -632,7 +730,8 @@ module ConnectRPC
             [stream.respond_to?(:response_task) ? stream.response_task : nil,
              stream.respond_to?(:output_task) ? stream.output_task : nil]
           end
-          [*@connection&.writers&.keys, @connection&.reader_task, *@tasks, @task, *outputs].compact.uniq
+          [*@connection&.writers&.keys, @connection&.reader_task, *@tasks, *@maintenance, @task,
+           *outputs].compact.uniq
         end
 
         def capture_retirement
