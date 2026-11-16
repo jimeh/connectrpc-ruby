@@ -339,7 +339,9 @@ mise run floors:falcon
 mise run floors:rack
 mise run floors:rails   # Rails 8.0 lane, directly under the wrapper bundle
 mise run floors:otel
-mise run floors         # all five
+mise run floors:prometheus
+mise run floors:yabeda
+mise run floors         # all seven
 ```
 
 Floors do not apply to development tools or transitive-only dependencies. A
@@ -578,7 +580,9 @@ baseline and unknown-method default-redaction limitation.
 
 Core's backend-neutral `connectrpc/metrics` layer is covered by the root suite
 (`mise run test -- spec/metrics_spec.rb spec/message_events_spec.rb`). The sinks
-have independent checksummed bundles: `mise run prometheus:setup` installs
+have independent bundles that resolve the newest allowed versions, and
+`floors:prometheus` / `floors:yabeda` repeat specs and package checks at the
+gemspec floors. `mise run prometheus:setup` installs
 prometheus-client with the local Rack, Async, Falcon and testing packages under
 `vendor/prometheus`, and `mise run yabeda:setup` installs Yabeda with the testing
 package under `vendor/yabeda`. Each has discoverable `test`, `check`, `build`,
@@ -587,7 +591,7 @@ package under `vendor/yabeda`. Each has discoverable `test`, `check`, `build`,
 `prometheus:test -- spec/hosts_spec.rb` for real Rack, Async and Falcon host
 completion and `spec/direct_file_store_spec.rb` for forked workers. The Yabeda
 bundle deliberately excludes yabeda-prometheus, whose `prometheus-client < 5`
-would split the version map shared by every package lock. Package checks
+is below the range connectrpc-prometheus supports. Package checks
 install normal dependencies offline into a fresh external GEM_HOME and run the
 copied generated example. See the
 [Prometheus](../gems/connectrpc-prometheus/README.md) and

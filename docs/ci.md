@@ -15,7 +15,7 @@ one runnable-examples check, with no serial cache primer or aggregate job:
 | Official conformance | 3.4.12, 4.0.9 | `mise run test:conformance` |
 | Rails 8.0 | 3.4.12 | `mise run test:rails`, `generation:check:rails`, `check:package:rails` with `RAILS_LANE=8.0` |
 | Rails 8.1 | 3.4.12, 4.0.9 | Same Rails commands with `RAILS_LANE=8.1` |
-| Lowest allowed async, falcon, rack, rails, otel | 3.4.12 | `mise run floors:<leaf>` |
+| Lowest allowed async, falcon, rack, rails, otel, prometheus, yabeda | 3.4.12 | `mise run floors:<leaf>` |
 | Async specs/package | 3.4.12, 4.0.9 | `mise run async:test`, `mise run async:package`, `mise run async:conformance` |
 | Async Go interoperability | 3.4.12, 4.0.9 | `mise run async:interop`, `mise run async:interop:streaming` |
 | Rack specs/check/package | 3.4.12, 4.0.9 | `mise run rack:test`, `mise run rack:check`, `mise run rack:package` |
@@ -52,7 +52,8 @@ public repository after 60 days without repository activity; if that happens,
 re-enable the workflow in the Actions tab.
 
 The lowest-allowed matrix runs `floors:async`, `floors:falcon`, `floors:rack`,
-`floors:rails` (Rails 8.0 lane) and `floors:otel` on Ruby 3.4.12. Each task sets
+`floors:rails` (Rails 8.0 lane), `floors:otel`, `floors:prometheus` and
+`floors:yabeda` on Ruby 3.4.12. Each task sets
 `CONNECTRPC_DEPENDENCY_FLOORS=1`, generates its ignored wrapper Gemfile,
 installs it, asserts every runtime dependency resolved exactly at its declared
 floor (the OTel leaf also constrains `json` to `< 3`; see development), then runs
@@ -377,7 +378,7 @@ It opens or updates the release PR using an existing GitHub App from the
 `release-please` environment. After a release PR merges, it tags the commit and
 creates a draft GitHub release. The tag starts `release.yml`, which publishes
 from the `release` environment.
-The 40 CI checks above retain their mapping. `check:static` also runs the offline
+The 42 CI checks above retain their mapping. `check:static` also runs the offline
 `release:check` invariant for all nine versions, release configuration and
 installation guides. See [release preparation](releasing.md) for the candidate procedure and
 remaining App/account setup.

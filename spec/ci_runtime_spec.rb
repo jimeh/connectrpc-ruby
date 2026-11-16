@@ -159,8 +159,8 @@ RSpec.describe "CI check mapping" do
     expect(count.call(["otel"])).to eq(2)
     expect(count.call(["browser_grpc_web"])).to eq(2)
     expect(count.call(metrics)).to eq(4)
-    expect(count.call(["floors"])).to eq(5)
-    expect(count.call(jobs.keys - ["examples"])).to eq(39)
+    expect(count.call(["floors"])).to eq(7)
+    expect(count.call(jobs.keys - ["examples"])).to eq(41)
     jobs.each_value { |job| expect(job).not_to have_key("needs") }
     jobs.except("static", "rails", "examples", "floors").each_value do |job|
       expect(job.dig("strategy", "fail-fast")).to be(false)
@@ -195,7 +195,7 @@ RSpec.describe "CI check mapping" do
   it "runs each lowest-allowed leaf on Ruby 3.4.12 through its Mise floors task" do
     floors = jobs.fetch("floors")
     expect(floors.dig("strategy", "fail-fast")).to be(false)
-    expect(floors.dig("strategy", "matrix", "leaf")).to eq(%w[async falcon rack rails otel])
+    expect(floors.dig("strategy", "matrix", "leaf")).to eq(%w[async falcon rack rails otel prometheus yabeda])
     expect(floors.fetch("env")).to include("CI_EXPECTED_RUBY_VERSION" => "3.4.12", "BUNDLE_COOLDOWN" => "3")
     ruby = floors.fetch("steps").find { |step| step.fetch("uses", "").start_with?("ruby/setup-ruby@") }
     expect(ruby.fetch("with")).to include("ruby-version" => "3.4.12", "bundler-cache" => false)

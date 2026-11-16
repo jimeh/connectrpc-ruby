@@ -487,11 +487,11 @@ depends = ["otel:test", "otel:check", "otel:package", "otel:example"]
 [tasks."prometheus:tools"]
 description = "Require preinstalled pinned Ruby and Bundler for Prometheus"
 dir = "{{config_root}}/gems/connectrpc-prometheus"
-env = { BUNDLE_GEMFILE = "{{config_root}}/gems/connectrpc-prometheus/Gemfile", BUNDLE_PATH = "{{config_root}}/vendor/prometheus/bundle", BUNDLE_USER_HOME = "{{config_root}}/vendor/prometheus/bundler", BUNDLE_COOLDOWN = "7" }
+env = { BUNDLE_GEMFILE = "{{config_root}}/gems/connectrpc-prometheus/Gemfile", BUNDLE_PATH = "{{config_root}}/vendor/prometheus/bundle", BUNDLE_USER_HOME = "{{config_root}}/vendor/prometheus/bundler", BUNDLE_COOLDOWN = "3" }
 run = "mise exec -- ruby scripts/tools.rb"
 
 [tasks."prometheus:setup"]
-description = "Install the independent frozen Prometheus development bundle"
+description = "Install the independent Prometheus development bundle"
 depends = ["prometheus:tools"]
 run = "mise exec -- ruby gems/connectrpc-prometheus/scripts/run.rb setup"
 
@@ -527,11 +527,11 @@ depends = ["prometheus:test", "prometheus:check", "prometheus:package", "prometh
 [tasks."yabeda:tools"]
 description = "Require preinstalled pinned Ruby and Bundler for Yabeda"
 dir = "{{config_root}}/gems/connectrpc-yabeda"
-env = { BUNDLE_GEMFILE = "{{config_root}}/gems/connectrpc-yabeda/Gemfile", BUNDLE_PATH = "{{config_root}}/vendor/yabeda/bundle", BUNDLE_USER_HOME = "{{config_root}}/vendor/yabeda/bundler", BUNDLE_COOLDOWN = "7" }
+env = { BUNDLE_GEMFILE = "{{config_root}}/gems/connectrpc-yabeda/Gemfile", BUNDLE_PATH = "{{config_root}}/vendor/yabeda/bundle", BUNDLE_USER_HOME = "{{config_root}}/vendor/yabeda/bundler", BUNDLE_COOLDOWN = "3" }
 run = "mise exec -- ruby scripts/tools.rb"
 
 [tasks."yabeda:setup"]
-description = "Install the independent frozen Yabeda development bundle"
+description = "Install the independent Yabeda development bundle"
 depends = ["yabeda:tools"]
 run = "mise exec -- ruby gems/connectrpc-yabeda/scripts/run.rb setup"
 
@@ -818,9 +818,35 @@ run = [
   "mise exec -- ruby gems/connectrpc-otel/scripts/run.rb package",
 ]
 
+[tasks."floors:prometheus"]
+description = "Run Prometheus metrics specs and package checks with runtime dependencies at their declared floors"
+depends = ["prometheus:tools"]
+env.CONNECTRPC_DEPENDENCY_FLOORS = "1"
+run = [
+  "rm -f gems/connectrpc-prometheus/Gemfile.floors.lock",
+  "mise exec -- ruby gems/connectrpc-prometheus/scripts/run.rb setup",
+  "mise exec -- ruby gems/connectrpc-prometheus/scripts/run.rb floors",
+  "mise exec -- ruby gems/connectrpc-prometheus/scripts/run.rb test",
+  "mise exec -- ruby gems/connectrpc-prometheus/scripts/run.rb build",
+  "mise exec -- ruby gems/connectrpc-prometheus/scripts/run.rb package",
+]
+
+[tasks."floors:yabeda"]
+description = "Run Yabeda metrics specs and package checks with runtime dependencies at their declared floors"
+depends = ["yabeda:tools"]
+env.CONNECTRPC_DEPENDENCY_FLOORS = "1"
+run = [
+  "rm -f gems/connectrpc-yabeda/Gemfile.floors.lock",
+  "mise exec -- ruby gems/connectrpc-yabeda/scripts/run.rb setup",
+  "mise exec -- ruby gems/connectrpc-yabeda/scripts/run.rb floors",
+  "mise exec -- ruby gems/connectrpc-yabeda/scripts/run.rb test",
+  "mise exec -- ruby gems/connectrpc-yabeda/scripts/run.rb build",
+  "mise exec -- ruby gems/connectrpc-yabeda/scripts/run.rb package",
+]
+
 [tasks.floors]
 description = "Run every lowest-allowed dependency lane (Ruby 3.4.12)"
-depends = ["floors:async", "floors:falcon", "floors:rack", "floors:rails", "floors:otel"]
+depends = ["floors:async", "floors:falcon", "floors:rack", "floors:rails", "floors:otel", "floors:prometheus", "floors:yabeda"]
 
 # Release preparation never tags, creates a GitHub release, or publishes gems.
 [tasks."release:check"]

@@ -1,13 +1,15 @@
 # frozen_string_literal: true
 
 require "rbconfig"
+require_relative "../../../scripts/dependency_floors"
 
 root = File.expand_path("../../..", __dir__)
 package = File.join(root, "gems/connectrpc-yabeda")
 environment = {
   "RUBOCOP_CACHE_ROOT" => File.join(root, "vendor/yabeda/rubocop"),
-  "BUNDLE_GEMFILE" => File.join(package, "Gemfile"), "BUNDLE_IGNORE_CONFIG" => "true",
-  "BUNDLE_FROZEN" => "true", "BUNDLE_COOLDOWN" => "7", "BUNDLE_VERSION" => "4.0.23",
+  "BUNDLE_GEMFILE" => DependencyFloors.gemfile(File.join(package, "Gemfile")),
+  "BUNDLE_LOCKFILE" => nil, "BUNDLE_IGNORE_CONFIG" => "true",
+  "BUNDLE_COOLDOWN" => "3", "BUNDLE_VERSION" => "4.0.23",
   "BUNDLE_PATH" => File.join(root, "vendor/yabeda/bundle"), "BUNDLE_DISABLE_SHARED_GEMS" => "true",
   "BUNDLE_USER_HOME" => File.join(root, "vendor/yabeda/bundler")
 }
@@ -15,10 +17,11 @@ abort "Preinstall Bundler 4.0.23" if Gem::Specification.find_all_by_name("bundle
 command = ARGV.shift
 arguments = case command
             when "setup" then ["install"]
+            when "floors" then ["exec", "ruby", File.join(root, "scripts/dependency_floors.rb")]
             when "test" then ["exec", "rspec", *ARGV]
             when "check" then ["exec", "ruby", "scripts/check.rb"]
             when "build", "package", "example" then ["exec", "ruby", "scripts/#{command}.rb", *ARGV]
-            else abort "Usage: run.rb setup|test|check|build|package|example"
+            else abort "Usage: run.rb setup|floors|test|check|build|package|example"
             end
 puts "Yabeda package; Ruby #{RUBY_VERSION}; Bundler 4.0.23; Gemfile #{environment.fetch('BUNDLE_GEMFILE')}"
 $stdout.flush

@@ -286,7 +286,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        leaf: [async, falcon, rack, rails, otel]
+        leaf: [async, falcon, rack, rails, otel, prometheus, yabeda]
     env:
       CI_EXPECTED_RUBY_VERSION: "3.4.12"
       BUNDLE_COOLDOWN: "3"
@@ -734,7 +734,7 @@ jobs:
       BUNDLE_GEMFILE: ${{ github.workspace }}/gems/connectrpc-prometheus/Gemfile
       BUNDLE_PATH: ${{ github.workspace }}/vendor/prometheus/bundle
       BUNDLE_USER_HOME: ${{ github.workspace }}/vendor/prometheus/bundler
-      BUNDLE_COOLDOWN: "7"
+      BUNDLE_COOLDOWN: "3"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -775,7 +775,7 @@ jobs:
       BUNDLE_GEMFILE: ${{ github.workspace }}/gems/connectrpc-yabeda/Gemfile
       BUNDLE_PATH: ${{ github.workspace }}/vendor/yabeda/bundle
       BUNDLE_USER_HOME: ${{ github.workspace }}/vendor/yabeda/bundler
-      BUNDLE_COOLDOWN: "7"
+      BUNDLE_COOLDOWN: "3"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
