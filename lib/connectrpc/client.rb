@@ -165,7 +165,7 @@ module ConnectRPC
       body
     rescue CodecError => e
       lifecycle&.record_failure(e)
-      raise Error.new(:invalid_argument, "Cannot encode request")
+      raise Error.new(:invalid_argument, "Cannot encode request"), cause: nil
     end
 
     def build_request(method, request, metadata, deadline, lifecycle = nil) # rubocop:disable Metrics/MethodLength, Metrics/AbcSize, Metrics/CyclomaticComplexity, Metrics/PerceivedComplexity
@@ -199,7 +199,7 @@ module ConnectRPC
                                on_error: ->(error) { lifecycle&.record_failure(error) })
     rescue Zlib::Error => e
       lifecycle&.record_failure(e)
-      raise Error.new(:internal, "Cannot compress request")
+      raise Error.new(:internal, "Cannot compress request"), cause: nil
     end
 
     def response_body(response, headers, deadline, lifecycle = nil)
@@ -217,13 +217,13 @@ module ConnectRPC
                                on_error: ->(error) { lifecycle&.record_failure(error) })
     rescue Compression::Malformed => e
       lifecycle&.record_failure(e)
-      raise Error.new(:internal, "Cannot decompress response") if status == 200
+      raise Error.new(:internal, "Cannot decompress response"), cause: nil if status == 200
 
       # Malformed error Bare-Messages use HTTP fallback, preserving metadata.
       ""
     rescue Zlib::Error => e
       lifecycle&.record_failure(e)
-      raise Error.new(:internal, "Cannot decompress response")
+      raise Error.new(:internal, "Cannot decompress response"), cause: nil
     end
 
     def response_encoding!(headers)
@@ -259,7 +259,7 @@ module ConnectRPC
     rescue ArgumentError => e
       # Header names and values with invalid encodings fail String case and pattern checks.
       lifecycle&.record_failure(e)
-      raise Error.new(:internal, "Malformed response metadata")
+      raise Error.new(:internal, "Malformed response metadata"), cause: nil
     end
 
     def decode_response(bytes, method, deadline, lifecycle = nil)
@@ -269,7 +269,7 @@ module ConnectRPC
       message
     rescue CodecError => e
       lifecycle&.record_failure(e)
-      raise Error.new(:internal, "Cannot decode response")
+      raise Error.new(:internal, "Cannot decode response"), cause: nil
     end
   end
 end

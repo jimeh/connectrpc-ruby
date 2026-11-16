@@ -243,9 +243,9 @@ transition requests cancellation; its timestamp does not determine the call's
 serialized winner. Completion directly rechecks source state, including after
 decoding or exceptional codec/transport paths. HTTP response receipt alone
 cannot complete the client. Instrumentation and callbacks run outside state
-locks, and only the executing fibers complete instrumentation. Original failures
-remain available to lifecycle observers; normalized canceled/deadline/transport
-errors have fixed safe messages and no sensitive rescued cause.
+locks, and only the executing fibers complete instrumentation. Every error core
+normalizes from a rescued exception has a fixed safe message and no `cause`;
+lifecycle observers receive the original failure.
 
 `TransportRequest.deadline` remains the actual Deadline or nil.
 `TransportRequest.cancellation` implements `_Cancellation`: `cancelled?`,

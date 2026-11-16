@@ -72,7 +72,7 @@ module ConnectRPC
 
       bytes
     rescue ArgumentError
-      raise Error.new(:invalid_argument, "Invalid GET base64")
+      raise Error.new(:invalid_argument, "Invalid GET base64"), cause: nil
     end
 
     def self.build(url, bytes, codec:, encoding:, limit:, deadline: nil)

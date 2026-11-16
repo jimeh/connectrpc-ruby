@@ -422,6 +422,72 @@ RSpec.describe "RPC lifecycle instrumentation" do
     end
   end
 
+  describe "normalized unary failures" do
+    let(:codec_failure) { ConnectRPC::CodecError.new("private codec data") }
+
+    def failing_binding(stage, failure)
+      Object.new.tap do |broken|
+        broken.define_singleton_method(:encode) { |value, **| stage == :encode ? raise(failure) : value }
+        broken.define_singleton_method(:decode) { |value, **| stage == :decode ? raise(failure) : value }
+      end
+    end
+
+    def reply(headers = {}, body: "reply")
+      headers = { "content-type" => ["application/proto"] }.merge(headers)
+      ->(_) { ConnectRPC::TransportResponse.new(status: 200, headers: headers, body: body) }
+    end
+
+    def processing_outcome = events.find { |event| event.first == :processing }.last
+
+    {
+      "encode" => -> { [{ binding: failing_binding(:encode, codec_failure) }, equal(codec_failure)] },
+      "decode" => -> { [{ binding: failing_binding(:decode, codec_failure) }, equal(codec_failure)] },
+      "decompress" => lambda {
+        [{ transport: reply({ "content-encoding" => ["gzip"] }, body: "bad"), accept_encoding: [:gzip] },
+         be_a(ConnectRPC::Compression::Malformed)]
+      },
+      "response header" => lambda {
+        [{ transport: reply({ "x-#{"\xff".dup.force_encoding(Encoding::UTF_8)}" => ["value"] }) }, be_a(ArgumentError)]
+      }
+    }.each do |stage, setup|
+      it "raises the client #{stage} error without a cause and observes the original" do
+        options, original = instance_exec(&setup)
+        configured = { binding: binding, transport: reply, instrumentation: bus }.merge(options)
+        caller = ConnectRPC::Client.new(base_url: "https://example.test", **configured)
+        expect { caller.call(rpc, "request", timeout: nil) }.to raise_error(ConnectRPC::Error) do |error|
+          expect(error.cause).to be_nil
+          expect(processing_outcome.normalized_error).to equal(error)
+          expect(processing_outcome.error).to original
+        end
+      end
+    end
+
+    it "renders server decode, decompress and GET base64 errors without a cause", :aggregate_failures do
+      gzip = { "content-type" => ["application/proto"], "content-encoding" => ["gzip"] }
+      safe = ConnectRPC::Method.new(service: rpc.service, name: "Safe", request_type: String, response_type: String,
+                                    idempotency: :no_side_effects)
+      get = ConnectRPC::Server.new(services: [ConnectRPC::Service.new(name: rpc.service, methods: [safe])],
+                                   binding: binding, handlers: { safe.path => ->(message, _) { message } },
+                                   instrumentation: bus)
+      decode = -> { dispatch(server(binding: failing_binding(:decode, codec_failure))) }
+      decompress = lambda do
+        server(encoding: :gzip).call(path: rpc.path, http_method: "POST", headers: gzip, input: StringIO.new("bad"))
+      end
+      base64 = lambda do
+        get.call(path: safe.path, http_method: "GET", headers: {}, input: nil,
+                 query: "connect=v1&encoding=proto&base64=1&message=AB")
+      end
+      # GET query parsing has no lifecycle, so the normalized error is the only recorded failure.
+      [[decode, equal(codec_failure)], [decompress, be_a(ConnectRPC::Compression::Malformed)],
+       [base64, be_a(ConnectRPC::Error)]].each do |call, original|
+        events.clear
+        expect(call.call.status).to eq(400)
+        expect(processing_outcome.normalized_error).to have_attributes(code: "invalid_argument", cause: nil)
+        expect(processing_outcome.error).to original
+      end
+    end
+  end
+
   it "keeps disabled calls free of instrumentation objects and instrumentation clock reads" do
     target = server(instrumentation: nil)
     transport = lambda do |request|
