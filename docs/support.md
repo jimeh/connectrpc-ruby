@@ -431,7 +431,7 @@ decision. A merged fix closes its specific defect, not the audit as a whole.
   server response is `internal` on every protocol (L6). The
   [design](design.md) and [streaming guide](streaming.md#custom-transport-spi)
   own these contracts.
-- [#PRNUM](https://github.com/jimeh/connectrpc-ruby/pull/PRNUM) resolves L10
+- [#96](https://github.com/jimeh/connectrpc-ruby/pull/96) resolves L10
   and the host part of M1. L10: when an Async HTTP/2 unary call is cancelled,
   reaches its deadline or has its task stopped while its upload waits for
   flow-control credit, the client now resets the stream with
