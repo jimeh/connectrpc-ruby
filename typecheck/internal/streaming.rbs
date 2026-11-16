@@ -248,6 +248,7 @@ module ConnectRPC
       def validate_send: (untyped) -> void
       def encode_message: (untyped) -> nil
       def write_chunk: (String) -> void
+      def close_exchange_send: () -> void
       def record_send_failure: (StandardError) -> bot
       def nil_message_error: () -> Error
       def recovery_read_timeout: (Integer) -> Float

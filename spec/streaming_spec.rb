@@ -331,6 +331,30 @@ RSpec.describe "Connect streaming framing and scope" do
     end
   end
 
+  {
+    "server stream" => [ConnectRPC::ServerStreamMethod, ->(reader) { reader.each { nil } }],
+    "client stream" => [ConnectRPC::ClientStreamMethod, ->(writer) { writer.send_message("q") }],
+    "client stream with explicit close_send" => [ConnectRPC::ClientStreamMethod, lambda { |writer|
+      writer.send_message("q")
+      writer.close_send
+    }],
+    "bidi with explicit close_send" => [ConnectRPC::BidiStreamMethod, lambda { |duplex|
+      duplex.send_message("q")
+      duplex.close_send
+      duplex.each { nil }
+    }]
+  }.each do |label, (type, work)|
+    it "calls the exchange close_send once for a #{label}" do
+      custom, exchange, = transport(frame("reply") + frame("{}", 2))
+      calls = 0
+      exchange.define_singleton_method(:close_send) { calls += 1 }
+      rpc = declaration(type)
+      arguments = type == ConnectRPC::ServerStreamMethod ? [rpc, "q"] : [rpc]
+      client(custom).public_send(rpc.cardinality, *arguments, &work)
+      expect(calls).to eq(1)
+    end
+  end
+
   it "rejects wrong declaration, missing block, unsupported capability and unary misuse before binding/I/O" do
     custom = Object.new
     codec = Object.new

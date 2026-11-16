@@ -217,9 +217,11 @@ remain compatible. Streaming requires explicit `streaming_capabilities` and
 request-head dispatch **before** waiting for response headers. It provides
 `response_head(timeout: nil)`, bounded `read(n, timeout: nil)`, `write(bytes)`,
 `close_send`, `finish(timeout: nil)` and `abort`. Timeouts cap each requested wait;
-the core retains the absolute budget across calls. `finish` attests owned transport
-completion and cleanup, never peer receipt. See [RBS](rbs.md) for the typed SPI,
-records, normal package discovery and explicit framework compatibility bridges.
+the core retains the absolute budget across calls. Core calls an exchange's
+`close_send` at most once, so transports need not make it idempotent. `finish`
+attests owned transport completion and cleanup, never peer receipt. See
+[RBS](rbs.md) for the typed SPI, records, normal package discovery and explicit
+framework compatibility bridges.
 
 Explicit gRPC-Web server streaming uses the same declarations/session ownership
 on native Async H2 and Falcon H1/H2, with a staged body terminal. Browser

@@ -147,6 +147,14 @@ RSpec.describe "gRPC public callers and status codec" do
     end
   end
 
+  it "calls the native exchange close_send once for a server stream" do
+    core, method, exchange = client(body: envelope("reply"), kind: ConnectRPC::ServerStreamMethod)
+    calls = 0
+    exchange.define_singleton_method(:close_send) { calls += 1 }
+    core.server_stream(method, "q") { |reader| reader.each { nil } }
+    expect(calls).to eq(1)
+  end
+
   it "preserves rich message and opaque Any bytes without global Status registration" do
     error = ConnectRPC::Error.new(:not_found, "rich % café", details: [
                                     ConnectRPC::ErrorDetail.new(type: "unknown.Opaque", value: "\x00\xFFunknown".b)

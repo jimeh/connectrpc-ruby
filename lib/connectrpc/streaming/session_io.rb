@@ -34,6 +34,16 @@ module ConnectRPC
         end
       end
 
+      # Core calls an exchange's close_send at most once. Claim before calling,
+      # so a fiber yield inside the exchange cannot let another path close it again.
+      def close_exchange_send
+        return if @send_closed
+
+        @send_closed = true
+        output = @output #: _StreamExchange
+        output.close_send
+      end
+
       def record_send_failure(error)
         @lifecycle&.record_failure(error)
         @state.check!

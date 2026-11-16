@@ -38,11 +38,7 @@ module ConnectRPC
 
       def close_send
         operation(:writing) do
-          return nil if @send_closed
-
-          @send_closed = true
-          output = @output #: _StreamExchange
-          output.close_send
+          close_exchange_send
           nil
         end
       end
