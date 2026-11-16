@@ -13,7 +13,7 @@ class ::APIFalconConfiguration
       rack_app { APIApp.new }
       tls { nil }
       tls_provider { APIProvider.new }
-      server_options { { idle_timeout: nil, max_connections: 8, cache: true } }
+      server_options { { idle_timeout: nil, max_connections: 8, cache: true, keepalive: nil } }
     end
   end
 end

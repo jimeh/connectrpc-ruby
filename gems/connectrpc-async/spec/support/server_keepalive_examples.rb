@@ -489,6 +489,29 @@ RSpec.shared_examples "HTTP/2 server keepalive" do
       end
     end
 
+    it "ends a too_many_pings connection within the EOF bound while drain_tls waits on a held call" do
+      reactor do |task|
+        with_keepalive_host(task, keepalive: server_keepalive(time: nil), tls: true) do |fixture|
+          client = fixture.client
+          response = watch(fixture, "sibling", "one")
+          fixture.host.reload_tls(**host_tls)
+          draining = task.async { fixture.host.drain_tls(grace: 60) }
+          wait_until(task, "TLS retirement started") { fixture.resource.draining }
+          4.times { |index| send_ping(client, format("strike%02d", index)) }
+          wait_until(task, "too_many_pings GOAWAY") do
+            client.wire.goaways.any? { |goaway| goaway.last == "too_many_pings" }
+          end
+          await_due(task, fixture.clock, 1)
+          expect(retired?(fixture.resource)).to be(false)
+          fixture.clock.advance(1)
+          wait_until(task, "connection retired") { retired?(fixture.resource) }
+          expect(fixture.clock.now).to be < 60
+          expect(draining.wait).to be(false)
+          response.body&.close
+        end
+      end
+    end
+
     it "drains an idle connection without keepalive, the reader answering PINGs and the drain ACK" do
       reactor do |task|
         with_keepalive_host(task, keepalive: nil, idle_timeout: 30) do |fixture|

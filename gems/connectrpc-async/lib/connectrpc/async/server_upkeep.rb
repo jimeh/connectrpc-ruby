@@ -280,7 +280,12 @@ module ConnectRPC
             next unless written.wait
 
             Internal.cancel(timer)
-            @resource.quiesce(@parent, clock: @clock, within: EOF_SECONDS)
+            next if @resource.quiesce(@parent, clock: @clock, within: EOF_SECONDS)
+
+            # An existing drain owns the connection under its own grace; the
+            # violation still ends it within the EOF bound.
+            @clock.sleep(EOF_SECONDS)
+            @resource.abort(IOError.new("HTTP/2 connection ended after too_many_pings"))
           ensure
             Internal.cancel(timer)
           end

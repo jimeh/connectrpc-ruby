@@ -768,7 +768,9 @@ module ConnectRPC
 
         # Finishes a connection whose final GOAWAY is already written: stops
         # upkeep, half-closes and discards input until EOF, bounded by `within`
-        # on `clock`. A later drain joins it under its own grace.
+        # on `clock`. A later drain joins it under its own grace. Returns the
+        # new drain task, or nil when an existing drain or abort already owns
+        # the connection.
         def quiesce(parent, clock:, within:)
           return if @drain_task || @aborted
 
@@ -790,7 +792,7 @@ module ConnectRPC
             abort
           end
           @drain_task.run
-          nil
+          @drain_task
         end
 
         private

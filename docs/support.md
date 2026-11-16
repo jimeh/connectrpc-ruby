@@ -340,8 +340,11 @@ or a third-party server that owns the connection. Configure keepalive, PING
 enforcement and connection age limits there, for example Envoy's
 `max_connection_duration` or nginx's `keepalive_timeout`.
 
-`async:interop:keepalive` and `falcon:interop:grpc` check client keepalive, PING
-enforcement, BDP PINGs and the age drain against the pinned grpc-go peer.
+`async:interop:keepalive` checks client keepalive, PING enforcement, BDP PINGs
+and the age drain between the pinned grpc-go peer and the Async `Transport` and
+`Host`. `falcon:interop:grpc` checks only the age drain through real Falcon
+workers over TLS; Falcon's PING enforcement and server PINGs are covered by its
+specs.
 
 ### Delivery, cancellation and metadata
 

@@ -597,7 +597,8 @@ module KeepaliveInterop
 end
 
 helpers = Object.new.extend(AsyncHelpers)
-binary = File.join(root, "vendor/grpc/peer")
+# A separate binary: async:verify may build the shared peer concurrently.
+binary = File.join(root, "vendor/grpc/peer-keepalive")
 system("go", "mod", "verify", chdir: File.join(root, "interop/grpc"), exception: true)
 system("go", "build", "-mod=readonly", "-o", binary, ".", chdir: File.join(root, "interop/grpc"), exception: true)
 Protocol::HTTP2::Framer.prepend(KeepaliveInterop::FramerRecording)
