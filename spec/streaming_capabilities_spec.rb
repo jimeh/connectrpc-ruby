@@ -89,7 +89,7 @@ RSpec.describe "Native streaming shape capabilities" do
                                    input: input, output: output, publish: ->(_) {}, http2: true)
         terminal = JSON.parse(bytes.byteslice(5..))
         expect(terminal.fetch("error").fetch("code")).to eq(invalid_timeout ? "invalid_argument" : "unimplemented")
-        expect(outcomes.first.request_metadata).to eq("x-leading" => ["retained"]) unless invalid_timeout
+        expect(outcomes.first.request_metadata).to eq("x-leading" => ["retained"])
       end
     end
   end

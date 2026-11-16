@@ -195,9 +195,8 @@ never match. With a client span, the headers carry that span and its sampling
 decision; without one, they carry the scope's propagation context. W3C
 `traceparent` is not injected.
 
-Sentry baggage is prepended to `baggage` staged by earlier subscribers. Caller
-`baggage` metadata passed to the RPC is still replaced by injected values; see
-issue #73.
+Sentry baggage is prepended to `baggage` staged by earlier subscribers. Core
+keeps caller `baggage` metadata passed to the RPC ahead of the injected values.
 
 ## OpenTelemetry and OTLP
 
@@ -208,15 +207,14 @@ OTLP. Never feed both into Sentry. When `config.instrumenter == :otel`, or when
 subscriber records and propagates nothing and only reports unexpected handler
 exceptions on the current scope.
 
-When both packages feed different backends, list `connectrpc-otel` first:
+When both packages feed different backends, register them in either order:
 
 ```ruby
 ConnectRPC::Instrumentation.new(subscribers: [otel_subscriber, sentry_subscriber])
 ```
 
-The OpenTelemetry subscriber writes `baggage` as one value and replaces what an
-earlier subscriber staged, so Sentry's baggage survives only when Sentry runs
-second. The two subscribers use different trace ids.
+Outgoing `baggage` carries caller values, then Sentry's, then OpenTelemetry's.
+The two subscribers use different trace ids.
 
 ## Exception capture
 

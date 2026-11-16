@@ -185,6 +185,7 @@ module ConnectRPC
     def encode_response: (untyped, Method[untyped, untyped], codec, Context, encoding?, ?Instrumentation::Handle?) -> TransportResponse
     def serialize_response: (untyped, Method[untyped, untyped], codec, Context) -> String
     def bare: (Integer, headers, ?context: Context?, ?cancellation: _Cancellation?) -> TransportResponse
+    def record_request_metadata: (Instrumentation::Handle, headers) -> void
     def request_context: (headers, ?Instrumentation::Handle?, ?_Cancellation?) -> Context
     def validate_headers!: (headers) -> nil
     def request_deadline: (headers) -> Deadline?

@@ -37,7 +37,7 @@ module ConnectRPC
         span = @tracer.start_span(name, kind: call.role, with_parent: parent, attributes: attributes(call, name))
         context = OpenTelemetry::Trace.context_with_span(span, parent_context: parent)
         begin
-          @propagator.inject(call.carrier, context: context) if call.role == :client
+          inject(call.carrier, context) if call.role == :client
           Observer.new(span, context, call.role, @request_metadata, @response_metadata, call.protocol)
         rescue Exception # rubocop:disable Lint/RescueException -- release span and preserve fatal exceptions
           span.finish
@@ -46,6 +46,36 @@ module ConnectRPC
       end
 
       private
+
+      # Propagators may replace, join, edit in place or remove the shared
+      # carrier's baggage. Keep baggage that earlier subscribers staged exactly
+      # once, ahead of the members this propagator added.
+      def inject(carrier, context) # rubocop:disable Metrics/AbcSize
+        # Copy entries too: a propagator may mutate the staged strings in place.
+        staged = Array(carrier["baggage"]).map(&:dup).freeze
+        @propagator.inject(carrier, context: context)
+        return if staged.empty?
+
+        # Drop each staged member once from what the propagator left behind.
+        remaining = baggage_members(staged)
+        added = baggage_members(Array(carrier["baggage"])).reject do |member|
+          index = remaining.index(member)
+          remaining.delete_at(index) if index
+        end
+        joined, others = added.partition { |member| member.is_a?(String) }
+        carrier["baggage"] = [*staged, *([joined.join(",")] unless joined.empty?), *others]
+      end
+
+      # Comma-separated W3C list members, so joined values compare member by
+      # member. Entries that are not printable ASCII header strings pass through
+      # unchanged, so core's metadata validation still rejects the injection.
+      def baggage_members(entries)
+        entries.flat_map do |entry|
+          next [entry] unless entry.is_a?(String) && entry.ascii_only? && /\A[\x20-\x7e]*\z/.match?(entry)
+
+          entry.split(",").map(&:strip).reject(&:empty?)
+        end
+      end
 
       def attributes(call, name)
         result = { "rpc.system.name" => %i[grpc grpc_web].include?(call.protocol) ? "grpc" : "connectrpc",
@@ -109,7 +139,7 @@ module ConnectRPC
           capture("request", outcome.request_metadata, @request_keys)
           capture("response", outcome.response_metadata, @response_keys)
           error = processing_error(outcome)
-          fail_span(status_code(error)) if error
+          fail_span(error) if error
         end
 
         def finished(completion) # rubocop:disable Metrics/MethodLength, Metrics/AbcSize, Metrics/CyclomaticComplexity, Metrics/PerceivedComplexity
@@ -136,10 +166,11 @@ module ConnectRPC
         private
 
         # Keep role-specific wire codes and independent operation failures in one table.
+        # Only status codes take the protocol's casing; local classifications stay lowercase.
         # rubocop:disable Metrics/AbcSize, Metrics/CyclomaticComplexity, Metrics/PerceivedComplexity
         def processing_error(outcome)
           if outcome.code && outcome.code != "OK"
-            return outcome.code if @role == :client || SERVER_ERRORS.include?(outcome.code)
+            return status_code(outcome.code) if @role == :client || SERVER_ERRORS.include?(outcome.code)
 
             return nil
           end

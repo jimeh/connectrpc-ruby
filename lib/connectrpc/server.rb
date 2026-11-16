@@ -78,6 +78,7 @@ module ConnectRPC
       # @type var error: Exception?
       error = nil
       begin
+        record_request_metadata(active, Protocol.headers(headers))
         active.activate do
           process_call(path: path, http_method: http_method, headers: headers, input: input, query: query,
                        lifecycle: active, cancellation: cancellation)
@@ -190,9 +191,7 @@ module ConnectRPC
       raise Error.new(:invalid_argument, "Missing GET message") unless values.key?("message")
       raise timeout_error if timeout_error
 
-      metadata = Protocol.metadata(headers)
-      lifecycle.request_metadata = Instrumentation.carrier(metadata) if lifecycle
-      metadata.each { |key, values| context.request_metadata[key] = values }
+      Protocol.metadata(headers).each { |key, values| context.request_metadata[key] = values }
       context.check!
       method = @methods[path]
       raise Error.new(:unimplemented, "Unknown method") unless method.is_a?(Method)
@@ -324,12 +323,16 @@ module ConnectRPC
       TransportResponse.new(status: status, headers: headers, body: "")
     end
 
+    # Record once from normalized headers, before validation, so terminal
+    # fallbacks without a request Context keep the application metadata.
+    def record_request_metadata(lifecycle, headers)
+      lifecycle.request_metadata = Instrumentation.carrier(Protocol.metadata(headers))
+    end
+
     def request_context(headers, lifecycle = nil, cancellation = nil)
       validate_headers!(headers)
-      metadata = Protocol.metadata(headers)
-      lifecycle.request_metadata = Instrumentation.carrier(metadata) if lifecycle
-      Context.new(request_metadata: metadata, deadline: request_deadline(headers), lifecycle: lifecycle,
-                  cancellation: cancellation)
+      Context.new(request_metadata: Protocol.metadata(headers), deadline: request_deadline(headers),
+                  lifecycle: lifecycle, cancellation: cancellation)
     rescue ArgumentError => e
       lifecycle&.record_failure(e)
       raise Error.new(:invalid_argument, "Malformed request metadata")

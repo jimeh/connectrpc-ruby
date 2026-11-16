@@ -385,6 +385,7 @@ RSpec.describe "RPC lifecycle instrumentation" do
     injector = Object.new
     injector.define_singleton_method(:start) do |call|
       call.carrier["x-original"] = "replacement"
+      call.carrier["baggage"] = "injected=1"
       call.carrier["content-type"] = "forbidden"
       nil
     end
@@ -397,10 +398,11 @@ RSpec.describe "RPC lifecycle instrumentation" do
     end
     caller = ConnectRPC::Client.new(base_url: "https://example.test", binding: binding, transport: transport,
                                     instrumentation: configured)
-    metadata = { "x-original" => ["kept"] }.freeze
+    metadata = { "x-original" => ["kept"], "baggage" => ["caller=1"] }.freeze
     expect(caller.call(rpc, "request", metadata: metadata).message).to eq("ok")
     expect(headers["x-original"]).to eq(["kept"])
-    expect(metadata).to eq("x-original" => ["kept"])
+    expect(headers["baggage"]).to eq(["caller=1"])
+    expect(metadata).to eq("x-original" => ["kept"], "baggage" => ["caller=1"])
     expect(reports.size).to eq(1)
   end
 

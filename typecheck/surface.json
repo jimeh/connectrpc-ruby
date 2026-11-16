@@ -1007,8 +1007,10 @@
   },
   "gems/connectrpc-otel/lib/connectrpc/otel/subscriber.rb": {
     "ConnectRPC::OTel::Subscriber#allowlist": {"kind":"method","visibility":"private","parameters":"keys","classification":"internal"},
+    "ConnectRPC::OTel::Subscriber#baggage_members": {"kind":"method","visibility":"private","parameters":"entries","classification":"internal"},
     "ConnectRPC::OTel::Subscriber#attributes": {"kind":"method","visibility":"private","parameters":"call, name","classification":"internal"},
     "ConnectRPC::OTel::Subscriber#initialize": {"kind":"method","visibility":"public","parameters":"tracer_provider: OpenTelemetry.tracer_provider, propagator: nil, request_metadata: [], response_metadata: []","classification":"supported"},
+    "ConnectRPC::OTel::Subscriber#inject": {"kind":"method","visibility":"private","parameters":"carrier, context","classification":"internal"},
     "ConnectRPC::OTel::Subscriber#start": {"kind":"method","visibility":"public","parameters":"call","classification":"supported"},
     "ConnectRPC::OTel::Subscriber::Getter#get": {"kind":"method","visibility":"public","parameters":"carrier, key","classification":"internal"},
     "ConnectRPC::OTel::Subscriber::Getter#keys": {"kind":"method","visibility":"public","parameters":"carrier","classification":"internal"},
@@ -1632,6 +1634,7 @@
     "ConnectRPC::Server#invoke_handler": {"kind":"method","visibility":"private","parameters":"method, request, context","classification":"internal"},
     "ConnectRPC::Server#process_call": {"kind":"method","visibility":"private","parameters":"path:, http_method:, headers:, input:, query:, lifecycle: nil, cancellation: nil","classification":"internal"},
     "ConnectRPC::Server#process_get": {"kind":"method","visibility":"private","parameters":"path, headers, input, query, lifecycle, state","classification":"internal"},
+    "ConnectRPC::Server#record_request_metadata": {"kind":"method","visibility":"private","parameters":"lifecycle, headers","classification":"internal"},
     "ConnectRPC::Server#request_context": {"kind":"method","visibility":"private","parameters":"headers, lifecycle = nil, cancellation = nil","classification":"internal"},
     "ConnectRPC::Server#request_deadline": {"kind":"method","visibility":"private","parameters":"headers","classification":"internal"},
     "ConnectRPC::Server#request_protocol": {"kind":"method","visibility":"private","parameters":"headers, http_method","classification":"internal"},
