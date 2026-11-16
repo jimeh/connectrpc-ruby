@@ -244,14 +244,20 @@ module ConnectRPC
     end
 
     def read_response(response, method, deadline, lifecycle = nil)
-      headers = Protocol.headers(response.headers)
-      body = response_body(response, headers, deadline, lifecycle)
-      validate_response!(response.status, headers, body)
+      headers, body = accept_response(response, deadline, lifecycle)
       message = decode_response(body, method, deadline, lifecycle)
       lifecycle&.message_received(response.body.bytesize)
       Response.new(message: message, metadata: Protocol.metadata(headers),
                    trailers: Protocol.metadata(headers, trailers: true))
+    end
+
+    def accept_response(response, deadline, lifecycle)
+      headers = Protocol.headers(response.headers)
+      body = response_body(response, headers, deadline, lifecycle)
+      validate_response!(response.status, headers, body)
+      [headers, body]
     rescue ArgumentError => e
+      # Header names and values with invalid encodings fail String case and pattern checks.
       lifecycle&.record_failure(e)
       raise Error.new(:internal, "Malformed response metadata")
     end

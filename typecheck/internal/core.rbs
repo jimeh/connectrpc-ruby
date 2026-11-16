@@ -149,6 +149,7 @@ module ConnectRPC
     def inflate_response: (String, Integer, _Check?, ?Instrumentation::Handle?) -> String
     def response_encoding!: (headers) -> encoding
     def validate_response!: (Integer, headers, String) -> nil
+    def accept_response: (TransportResponse, _Check?, Instrumentation::Handle?) -> [headers, String]
     def read_response: [Req, Resp] (TransportResponse, Method[Req, Resp], _Check?, ?Instrumentation::Handle?) -> Response[Resp]
     def decode_response: [Req, Resp] (String, Method[Req, Resp], _Check?, ?Instrumentation::Handle?) -> Resp
   end

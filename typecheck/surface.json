@@ -1208,6 +1208,7 @@
     "ConnectRPC::CancellationToken#reason": {"kind":"method","visibility":"public","parameters":"","classification":"supported"}
   },
   "lib/connectrpc/client.rb": {
+    "ConnectRPC::Client#accept_response": {"kind":"method","visibility":"private","parameters":"response, deadline, lifecycle","classification":"internal"},
     "ConnectRPC::Client#build_request": {"kind":"method","visibility":"private","parameters":"method, request, metadata, deadline, lifecycle = nil","classification":"internal"},
     "ConnectRPC::Client#call": {"kind":"method","visibility":"public","parameters":"method, request, metadata: {}, timeout: 30, cancellation: nil","classification":"supported"},
     "ConnectRPC::Client#compress_request": {"kind":"method","visibility":"private","parameters":"body, deadline, lifecycle = nil","classification":"internal"},
