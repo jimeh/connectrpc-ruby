@@ -19,11 +19,11 @@ Gem::Specification.new do |spec|
                                                                                 "README.md", "LICENSE"].sort
   spec.require_paths = ["lib"]
   local_requirement = "~> #{spec.version.to_s.split('.').first(2).join('.')}.0"
-  # protocol-rack and protocol-http1 stay patch-only (~> x.y.z) because the Rack bridge and HTTP/1
-  # listener couple to their private internals. The rest use only public APIs, so they follow the
-  # floor policy: the tested release as floor, capped below 1.
+  # protocol-http1 stays patch-only (~> x.y.z) because the HTTP/1 listener couples to its private
+  # internals (see issue #68). The rest use only public APIs, so they follow the floor policy: the
+  # tested release as floor, capped below 1.
   {
-    "connectrpc-async" => local_requirement, "falcon" => [">= 0.57.0", "< 1"], "protocol-rack" => "~> 0.23.0",
+    "connectrpc-async" => local_requirement, "falcon" => [">= 0.57.0", "< 1"], "protocol-rack" => [">= 0.23.0", "< 1"],
     "async-service" => [">= 0.25.0", "< 1"], "async-utilization" => [">= 0.5.0", "< 1"],
     "protocol-http1" => "~> 0.41.1"
   }.each { |name, requirement| spec.add_dependency(name, *requirement) }

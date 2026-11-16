@@ -57,7 +57,7 @@ expected = %w[LICENSE README.md lib/connectrpc/async.rb lib/connectrpc/async/ver
               lib/connectrpc/async/http1_connection.rb lib/connectrpc/async/http1_stream.rb].sort
 abort "Backend manifest changed" unless backend.contents.sort == expected
 expected_dependencies = {
-  "connectrpc" => local_requirement, "async-http" => "~> 0.105.0", "async" => ">= 2.46.0, < 3",
+  "connectrpc" => local_requirement, "async-http" => "~> 0.105.0", "async" => "~> 2.46.0",
   "protocol-http2" => "~> 0.29.2", "protocol-http1" => "~> 0.41.1", "protocol-http" => ">= 0.72.1, < 1",
   "io-endpoint" => ">= 0.19.0, < 1", "io-stream" => "~> 0.14.0", "openssl" => ">= 3.3"
 }

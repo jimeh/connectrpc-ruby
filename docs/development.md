@@ -291,11 +291,13 @@ gemspecs are the dependency contract:
 - The floor of each third-party runtime requirement is the release the project
   currently tests, for example `rack >= 3.2.7` or `falcon >= 0.57.0`.
 - Pre-1.0 dependencies whose public API is all we use are capped below 1 (or
-  below the next major for 1.x+ gems, such as `async < 3`).
+  below the next major for 1.x+ gems).
 - Dependencies coupled to private internals keep patch-only `~> x.y.z`
-  requirements: async-http, protocol-http2, protocol-http1 and io-stream in
-  connectrpc-async, and protocol-rack and protocol-http1 in connectrpc-falcon.
-  Each gemspec names these in a comment.
+  requirements: async, async-http, protocol-http2, protocol-http1 and io-stream
+  in connectrpc-async, and protocol-http1 in connectrpc-falcon. Each gemspec
+  names these in a comment, and
+  [issue #68](https://github.com/jimeh/connectrpc-ruby/issues/68) tracks
+  reducing that coupling.
 - Internal gems keep the train's `~> M.m.0` requirement.
 
 Raise a floor only when code needs a newer release, and prove it in the
