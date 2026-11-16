@@ -50,7 +50,9 @@ module ConnectRPC
         end
 
         # Earlier frames meet earlier deadlines, so time spent queued behind
-        # them is already within this frame's bound.
+        # them is already within this frame's bound. Both watchdogs stop
+        # before the guard is released, because release hands control to the
+        # next waiter before this task resumes.
         def deliver(frame, deadline)
           connection = @resource.connection
           queued = watchdog(deadline - @clock.now, "HTTP/2 control frame was not written in time")
@@ -60,6 +62,7 @@ module ConnectRPC
               connection.write_frame(frame)
             ensure
               Internal.cancel(stalled)
+              Internal.cancel(queued)
             end
           end
         ensure
