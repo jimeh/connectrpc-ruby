@@ -51,7 +51,8 @@ module ConnectRPC
       # baggage. Keep baggage that earlier subscribers staged exactly once, ahead
       # of this propagator's new entries.
       def inject(carrier, context)
-        staged = Array(carrier["baggage"]).dup.freeze
+        # Copy entries too: a propagator may mutate the staged strings in place.
+        staged = Array(carrier["baggage"]).map(&:dup).freeze
         @propagator.inject(carrier, context: context)
         return if staged.empty?
 

@@ -147,6 +147,8 @@ RSpec.describe "Error types and propagated metadata" do
                            ["staged=1", "custom=1"]],
       "replaces it in place" => [->(carrier) { carrier["baggage"].replace(["custom=1"]) },
                                  ["staged=1", "custom=1"]],
+      "appends a copy of a staged entry" => [->(carrier) { carrier["baggage"] = [*carrier["baggage"], "staged=1"] },
+                                             ["staged=1", "staged=1"]],
       "clears it" => [->(carrier) { carrier["baggage"].clear }, ["staged=1"]],
       "deletes it" => [->(carrier) { carrier.delete("baggage") }, ["staged=1"]]
     }.each do |label, (edit, expected)|
@@ -158,6 +160,20 @@ RSpec.describe "Error types and propagated metadata" do
         expect(wire_headers(bus)["baggage"]).to eq(expected)
         expect(errors).to be_empty
       end
+    end
+
+    it "keeps staged baggage when a custom propagator mutates a staged string in place" do
+      mutable_stager = Object.new
+      mutable_stager.define_singleton_method(:start) do |call|
+        call.carrier["baggage"] = [String.new("staged=1")]
+        nil
+      end
+      propagator = Object.new
+      propagator.define_singleton_method(:extract) { |_carrier, context:, **| context }
+      propagator.define_singleton_method(:inject) { |carrier, context:| carrier["baggage"].first.replace("custom=1") } # rubocop:disable Lint/UnusedBlockArgument
+      bus, errors = otel_bus(mutable_stager, propagator: propagator)
+      expect(wire_headers(bus)["baggage"]).to eq(["staged=1", "custom=1"])
+      expect(errors).to be_empty
     end
   end
 end
