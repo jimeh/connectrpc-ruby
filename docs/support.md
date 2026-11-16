@@ -53,7 +53,8 @@ Only the packages actually used need to be installed.
 
 Existing gemspec ranges such as `~> 0.1.0` allow patch versions to differ.
 An installable combination is not necessarily supported. This policy adds no
-runtime version guard and does not change dependency ranges. Native packages
+runtime version guard and does not itself change gemspec dependency ranges;
+[development](development.md#gem-dependency-constraints) owns that policy. Native packages
 also use private core implementation, so their compatibility cannot be inferred
 from the public SPI alone.
 
@@ -88,8 +89,8 @@ listed [below](#grpc-web).
 
 The Ruby `>= 3.4` gemspec floor and broader dependency ranges allow installation;
 testing the newest and lowest allowed releases does not qualify every matching
-version between them. Likewise, lockfile entries for other platforms do not
-prove runtime compatibility. macOS, Windows, ARM, JRuby,
+version between them. Likewise, platform entries in `mise.lock` and the committed
+tool locks do not prove runtime compatibility. macOS, Windows, ARM, JRuby,
 TruffleRuby, Puma, every Rack server, and every combination of allowed framework
 and dependency versions are outside this initial supported environment. This
 does not assert they fail. The Rails 8.0 lane does not extend upstream maintenance.
