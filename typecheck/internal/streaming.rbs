@@ -17,7 +17,7 @@ module ConnectRPC
       | [Q, R] (BidiStreamMethod[Q, R], nil, metadata_input, Numeric?, CancellationToken?) { (ClientDuplex[Q, R]) -> void } -> nil
     def run_stream: (declaration, untyped, metadata_input, timeout: Numeric?, cancellation: CancellationToken?, lifecycle: Instrumentation::Handle?, injection: metadata_input) { (stream_endpoint) -> void } -> Response[untyped]?
     def stream_metadata: (metadata_input, metadata_input, Instrumentation::Handle?) -> Metadata
-    def stream_request: (declaration, Metadata, Deadline?, CallCancellation, Instrumentation::Handle?) -> StreamRequest
+    def stream_request: (declaration, Metadata, Deadline?, CallCancellation::View, Instrumentation::Handle?) -> StreamRequest
     def new_client_stream_session: (declaration, CallCancellation, (_StreamExchange | _GRPCStreamExchange), Instrumentation::Handle?) -> Streaming::Session
     def with_stream_session: [T] (Streaming::Session, Streaming::ClientScope) { () -> T } -> T
     def perform_stream_scope: (declaration, untyped, Streaming::Session, Streaming::ClientScope) { (stream_endpoint) -> void } -> void

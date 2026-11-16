@@ -1189,7 +1189,13 @@
     "ConnectRPC::CallCancellation#on_cancel": {"kind":"method","visibility":"public","parameters":"&","classification":"internal"},
     "ConnectRPC::CallCancellation#raise_reason": {"kind":"method","visibility":"private","parameters":"reason","classification":"internal"},
     "ConnectRPC::CallCancellation#reason": {"kind":"method","visibility":"public","parameters":"","classification":"internal"},
+    "ConnectRPC::CallCancellation#view": {"kind":"attribute","visibility":"public","classification":"internal"},
     "ConnectRPC::CallCancellation.with_request": {"kind":"method","visibility":"public","parameters":"request","classification":"internal"},
+    "ConnectRPC::CallCancellation::View#cancelled?": {"kind":"method","visibility":"public","parameters":"","classification":"internal"},
+    "ConnectRPC::CallCancellation::View#check!": {"kind":"method","visibility":"public","parameters":"","classification":"internal"},
+    "ConnectRPC::CallCancellation::View#initialize": {"kind":"method","visibility":"public","parameters":"state","classification":"internal"},
+    "ConnectRPC::CallCancellation::View#on_cancel": {"kind":"method","visibility":"public","parameters":"&","classification":"internal"},
+    "ConnectRPC::CallCancellation::View#reason": {"kind":"method","visibility":"public","parameters":"","classification":"internal"},
     "ConnectRPC::CancellationRegistration#initialize": {"kind":"method","visibility":"public","parameters":"owner, &callback","classification":"internal"},
     "ConnectRPC::CancellationRegistration#invoke": {"kind":"method","visibility":"public","parameters":"","classification":"internal"},
     "ConnectRPC::CancellationRegistration#unregister": {"kind":"method","visibility":"public","parameters":"","classification":"supported"},
@@ -1383,7 +1389,7 @@
   },
   "lib/connectrpc/grpc_client.rb": {
     "ConnectRPC::Client#client_stream_strategy": {"kind":"method","visibility":"private","parameters":"lifecycle = nil","classification":"internal"},
-    "ConnectRPC::Client#grpc_stream_request": {"kind":"method","visibility":"private","parameters":"url, metadata, deadline, state, lifecycle","classification":"internal"}
+    "ConnectRPC::Client#grpc_stream_request": {"kind":"method","visibility":"private","parameters":"url, metadata, deadline, cancellation, lifecycle","classification":"internal"}
   },
   "lib/connectrpc/grpc_server.rb": {
     "ConnectRPC::GRPCProtocol::ServerState#cancellation": {"kind":"attribute","visibility":"public","classification":"internal"},
@@ -1668,7 +1674,7 @@
     "ConnectRPC::Client#stream_call": {"kind":"method","visibility":"private","parameters":"method, request, metadata, timeout, cancellation, &","classification":"internal"},
     "ConnectRPC::Client#stream_capability?": {"kind":"method","visibility":"private","parameters":"method","classification":"internal"},
     "ConnectRPC::Client#stream_metadata": {"kind":"method","visibility":"private","parameters":"metadata, injection, lifecycle","classification":"internal"},
-    "ConnectRPC::Client#stream_request": {"kind":"method","visibility":"private","parameters":"method, metadata, deadline, state, lifecycle","classification":"internal"},
+    "ConnectRPC::Client#stream_request": {"kind":"method","visibility":"private","parameters":"method, metadata, deadline, cancellation, lifecycle","classification":"internal"},
     "ConnectRPC::Client#streaming_transport?": {"kind":"method","visibility":"private","parameters":"","classification":"internal"},
     "ConnectRPC::Client#validate_stream_call!": {"kind":"method","visibility":"private","parameters":"method, type, cancellation, block","classification":"internal"}
   },

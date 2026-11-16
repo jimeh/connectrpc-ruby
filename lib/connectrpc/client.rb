@@ -72,7 +72,7 @@ module ConnectRPC
       end
       outgoing = build_request(method, request, metadata, active, lifecycle)
       outgoing.deadline = deadline
-      outgoing.cancellation = state
+      outgoing.cancellation = active.view
       outgoing.headers["connect-timeout-ms"] = [deadline.timeout_ms] if deadline
       outgoing.lifecycle = lifecycle if lifecycle
       active.check!

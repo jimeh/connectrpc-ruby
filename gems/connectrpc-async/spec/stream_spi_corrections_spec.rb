@@ -18,7 +18,7 @@ RSpec.describe "Direct streaming SPI cancellation composition" do
         deadline = ConnectRPC::Deadline.new(1, clock: -> { clock })
         cancellation = source.token unless variant == :deadline
         if variant == :prelatched
-          cancellation = ConnectRPC::CallCancellation.new(deadline: deadline, cancellation: source.token)
+          cancellation = ConnectRPC::CallCancellation.new(deadline: deadline, cancellation: source.token).view
           source.cancel
           expect(cancellation.reason).to eq(:canceled)
         end
@@ -94,8 +94,9 @@ RSpec.describe "Direct streaming SPI cancellation composition" do
         source = ConnectRPC::CancellationSource.new
         clock = 0.0
         deadline = ConnectRPC::Deadline.new(1, clock: -> { clock }) unless owner == :token
+        state = ConnectRPC::CallCancellation.new(cancellation: source.token) if owner == :core
         cancellation = case owner
-                       when :core then ConnectRPC::CallCancellation.new(cancellation: source.token)
+                       when :core then state.view
                        when :deadline_only then nil
                        else source.token
                        end
@@ -113,7 +114,7 @@ RSpec.describe "Direct streaming SPI cancellation composition" do
         end
         if owner == :core
           work.call
-          expect { cancellation.commit! }.to raise_error(ConnectRPC::Error) { |e| expect(e.code).to eq("canceled") }
+          expect { state.commit! }.to raise_error(ConnectRPC::Error) { |e| expect(e.code).to eq("canceled") }
         else
           expect(&work).to raise_error(ConnectRPC::Error) { |error|
             expect(error.code).to eq(%i[deadline deadline_only].include?(owner) ? "deadline_exceeded" : "canceled")

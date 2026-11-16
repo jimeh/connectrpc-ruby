@@ -287,7 +287,17 @@ module ConnectRPC
     def initialize: (CancellationSignal) -> void
   end
   class CallCancellation
+    class View
+      @state: CallCancellation
+      def initialize: (CallCancellation) -> void
+      def cancelled?: () -> bool
+      def reason: () -> cancellation_reason?
+      def check!: () -> nil
+      def on_cancel: () { () -> void } -> CancellationRegistration
+    end
     def self.with_request: [T] (TransportRequest) { (TransportRequest) -> T } -> T
+    attr_reader view: View
+    @view: View
     @deadline: Deadline?
     @source: _Cancellation?
     @mutex: Mutex

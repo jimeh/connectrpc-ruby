@@ -122,14 +122,30 @@ module ConnectRPC
   # One owner arbitrates a call's terminal outcome. Source cancellation requests
   # acceptance; it never completes another call that shares the source.
   class CallCancellation
+    # The read-only `_Cancellation` that core hands to transports. It has no
+    # completion methods, so only the call that owns the arbiter can finish it.
+    class View
+      def initialize(state)
+        @state = state
+      end
+
+      def cancelled? = @state.cancelled?
+      def reason = @state.reason
+      def check! = @state.check!
+      def on_cancel(&) = @state.on_cancel(&)
+    end
+
+    attr_reader :view
+
     # Direct transports accept a token and deadline separately. Core clients
-    # already supply their arbiter, which must stay open through message decode.
+    # already supply a view of their arbiter, which must stay open through
+    # message decode.
     def self.with_request(request) # rubocop:disable Metrics/MethodLength
       cancellation = request.cancellation
       return yield request unless cancellation || request.deadline
 
       case cancellation
-      when CallCancellation then return yield request
+      when View then return yield request
       end
 
       state = new(deadline: request.deadline, cancellation: cancellation)
@@ -154,6 +170,7 @@ module ConnectRPC
       @terminal = nil
       @signal = CancellationSignal.new
       @registration = cancellation&.on_cancel { reason }
+      @view = View.new(self).freeze
     end
 
     def reason
