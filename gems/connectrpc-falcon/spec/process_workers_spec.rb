@@ -4,9 +4,11 @@ require "digest"
 require_relative "support/process_cluster"
 require_relative "support/http1_helpers"
 require_relative "../../connectrpc-async/spec/support/ingress_peer"
+require_relative "../../connectrpc-async/spec/support/keepalive_client"
 
 RSpec.describe "Real Falcon process-worker lifecycle" do
   include IngressPeer
+  include KeepaliveClient
 
   %i[http1 h2].each do |protocol|
     it "drains a real #{protocol} Web worker after first wire data and keeps Context cancellation honest" do
@@ -470,6 +472,48 @@ RSpec.describe "Real Falcon process-worker lifecycle" do
       ensure
         cluster&.close
       end
+    end
+  end
+
+  # The forked worker cannot share a fake clock, so its real timers run with
+  # short values; each check waits for the observed frames or EOF. The silent
+  # client's PING timeout (about 0.4 s) must beat its age drain (at least
+  # 1.35 s with jitter), so it sees no GOAWAY.
+  it "applies server keepalive in a real worker: enforcement, PING timeout and age drain" do
+    reactor do |task|
+      reader, writer = IO.pipe
+      writer = FalconProcessFixtures::FalconEventWriter.new(writer)
+      writer.sync = true
+      make_core = lambda do
+        ConnectRPC::Server.new(services: [AsyncHelpers::ECHO::SERVICE],
+                               binding: ConnectRPC::Bindings::GoogleProtobuf.new,
+                               handlers: AsyncHelpers::ECHO.handlers(echo: ->(message, _) { message },
+                                                                     fail: ->(message, _) { message }))
+      end
+      keepalive = ConnectRPC::Async::ServerKeepalive.new(time: 0.2, timeout: 0.2, max_connection_age: 1.5)
+      config = configuration(writer, make_core: make_core, count: 1, keepalive: keepalive)
+      cluster = FalconProcessFixtures::FalconProcessCluster.new(config, reader, writer)
+      cluster.event(:running)
+      port = cluster.service.port
+      flooding = keepalive_client(task, port)
+      silent = keepalive_client(task, port)
+      silent.wire.ack_pings = false
+      aging = keepalive_client(task, port)
+      4.times { |index| send_ping(flooding, format("flood%03d", index)) }
+      wait_until(task, "too_many_pings GOAWAY and EOF") { flooding.eof? }
+      expect(flooding.wire.goaways).to eq([[0, KeepaliveClient::ENHANCE_YOUR_CALM, "too_many_pings"]])
+      wait_until(task, "unanswered server PING closes the connection") { silent.eof? }
+      expect(silent.wire.pings).not_to be_empty
+      expect(silent.wire.goaways).to eq([])
+      wait_until(task, "age drain GOAWAY pair and EOF", within: 5) { aging.eof? }
+      expect(aging.wire.goaways).to eq([[KeepaliveClient::MAX_STREAM_ID, 0, "max_age"], [0, 0, "max_age"]])
+      cluster.stop
+      cluster.event(:closing)
+      expect(cluster.event(:closed).values_at("requests", "connections")).to eq([0, 0])
+      expect(cluster.events.map { |event| event["kind"] }).not_to include("unhandled")
+    ensure
+      [flooding, silent, aging].each { |client| close_keepalive_client(client) }
+      cluster&.close
     end
   end
 end

@@ -76,8 +76,21 @@ module ConnectRPC
       def reload: (certificate_chain: Array[String], private_key: String, client_ca: Array[String]?) -> Integer
       def close: () -> self
     end
+    # Server HTTP/2 keepalive PINGs, PING enforcement and connection age.
+    class ServerKeepalive
+      def initialize: (?time: Numeric?, ?timeout: Numeric, ?min_time: Numeric?, ?permit_without_calls: bool, ?max_connection_age: Numeric?, ?max_connection_age_grace: Numeric?) -> void
+      attr_reader time: Numeric?
+      attr_reader timeout: Numeric
+      attr_reader min_time: Numeric?
+      attr_reader permit_without_calls: bool
+      attr_reader max_connection_age: Numeric?
+      attr_reader max_connection_age_grace: Numeric?
+      def ==: (untyped other) -> bool
+      def eql?: (untyped other) -> bool
+      def hash: () -> Integer
+    end
     class Host
-      def initialize: (server: Server, ?host: String, ?port: Integer, ?tls: tls?, ?tls_provider: (_TLSProvider | ^() -> tls_snapshot)?, ?max_connections: Integer, ?max_requests: Integer, ?handshake_timeout: Numeric, ?idle_timeout: Numeric?, ?refresh_interval: Numeric, ?refresh_jitter: Numeric, ?refresh_timeout: Numeric, ?on_tls_error: (_TLSErrorHandler | ^(tls_event) -> void)?) -> void
+      def initialize: (server: Server, ?host: String, ?port: Integer, ?tls: tls?, ?tls_provider: (_TLSProvider | ^() -> tls_snapshot)?, ?max_connections: Integer, ?max_requests: Integer, ?handshake_timeout: Numeric, ?idle_timeout: Numeric?, ?refresh_interval: Numeric, ?refresh_jitter: Numeric, ?refresh_timeout: Numeric, ?on_tls_error: (_TLSErrorHandler | ^(tls_event) -> void)?, ?keepalive: ServerKeepalive?) -> void
       attr_reader port: Integer?
       attr_reader addresses: Array[Addrinfo]
       def start: () -> self
@@ -91,7 +104,9 @@ module ConnectRPC
       def peer_certificate: () -> OpenSSL::X509::Certificate?
     end
     type connection_state = :idle | :connecting | :ready | :transient_failure | :closing | :closed
-    type connection_outcome = :ready | :refused | :timeout | :tls | :protocol | :closed | :other
+    # Attempt outcomes, then connection_closed reasons (:closed is shared).
+    type connection_outcome = :ready | :refused | :timeout | :tls | :protocol | :closed | :other | :keepalive_timeout | :drain_timeout | :goaway
+    type connection_event_type = :state_changed | :attempt_finished | :admission_rejected | :connection_closed
     class Backoff
       def initialize: (?base: Numeric, ?multiplier: Numeric, ?jitter: Numeric, ?max: Numeric) -> void
       attr_reader base: Numeric
@@ -102,21 +117,31 @@ module ConnectRPC
       def eql?: (untyped other) -> bool
       def hash: () -> Integer
     end
+    class Keepalive
+      def initialize: (time: Numeric, ?timeout: Numeric, ?permit_without_calls: bool) -> void
+      attr_reader time: Numeric
+      attr_reader timeout: Numeric
+      attr_reader permit_without_calls: bool
+      def ==: (untyped other) -> bool
+      def eql?: (untyped other) -> bool
+      def hash: () -> Integer
+    end
     class ConnectionPolicy
-      def initialize: (?backoff: Backoff?, ?wait_for_ready: bool, ?max_pending_bytes: Integer?, ?retry_refused: bool, ?max_draining: Integer, ?drain_timeout: Numeric?) -> void
+      def initialize: (?backoff: Backoff?, ?wait_for_ready: bool, ?max_pending_bytes: Integer?, ?retry_refused: bool, ?max_draining: Integer, ?drain_timeout: Numeric?, ?keepalive: Keepalive?) -> void
       attr_reader backoff: Backoff?
       attr_reader wait_for_ready: bool
       attr_reader max_pending_bytes: Integer?
       attr_reader retry_refused: bool
       attr_reader max_draining: Integer
       attr_reader drain_timeout: Numeric?
+      attr_reader keepalive: Keepalive?
       def ==: (untyped other) -> bool
       def eql?: (untyped other) -> bool
       def hash: () -> Integer
     end
     # Frozen observation values, delivered on the owner reactor.
     class ConnectionEvent
-      attr_reader type: :state_changed | :attempt_finished | :admission_rejected
+      attr_reader type: connection_event_type
       attr_reader state: connection_state
       attr_reader previous_state: connection_state?
       attr_reader outcome: connection_outcome?
@@ -165,7 +190,7 @@ module ConnectRPC
       interface _HTTP1Factory
         def call: (Object, progress: Object, generation: Integer?) -> Object
       end
-      def initialize: (application: _Application | ^(_Request, ?lifecycle: Instrumentation::Handle?) -> _Response?, ?tls: tls?, ?tls_provider: (_TLSProvider | ^() -> tls_snapshot)?, ?max_connections: Integer, ?max_requests: Integer, ?handshake_timeout: Numeric, ?idle_timeout: Numeric?, ?refresh_interval: Numeric, ?refresh_jitter: Numeric, ?refresh_timeout: Numeric, ?on_tls_error: (_TLSErrorHandler | ^(tls_event) -> void)?, ?alpn_protocols: Array[String], ?http1: _HTTP1Factory?, ?stop_accepting: (_Callback | ^() -> void)?, ?on_request_rejected: (_Callback | ^() -> void)?, ?lifecycle_factory: (_LifecycleFactory | ^(_Request) -> Instrumentation::Handle?)?) -> void
+      def initialize: (application: _Application | ^(_Request, ?lifecycle: Instrumentation::Handle?) -> _Response?, ?tls: tls?, ?tls_provider: (_TLSProvider | ^() -> tls_snapshot)?, ?max_connections: Integer, ?max_requests: Integer, ?handshake_timeout: Numeric, ?idle_timeout: Numeric?, ?refresh_interval: Numeric, ?refresh_jitter: Numeric, ?refresh_timeout: Numeric, ?on_tls_error: (_TLSErrorHandler | ^(tls_event) -> void)?, ?alpn_protocols: Array[String], ?http1: _HTTP1Factory?, ?stop_accepting: (_Callback | ^() -> void)?, ?on_request_rejected: (_Callback | ^() -> void)?, ?lifecycle_factory: (_LifecycleFactory | ^(_Request) -> Instrumentation::Handle?)?, ?keepalive: ServerKeepalive?) -> void
       def start: () -> self
       def close: (?grace: Numeric) -> bool?
       def abort: () -> self

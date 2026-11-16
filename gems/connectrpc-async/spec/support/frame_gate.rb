@@ -6,8 +6,11 @@ class FrameGate < SimpleDelegator
   attr_accessor :armed
   attr_reader :started, :release, :writer
 
-  def initialize(socket, frame_type: nil, stream_id: nil)
+  # With `whole`, the held write first reaches the socket in full, so the
+  # peer can answer the frame while its writer is still inside the write.
+  def initialize(socket, frame_type: nil, stream_id: nil, whole: false)
     super(socket)
+    @whole = whole
     @started = Async::Queue.new
     @release = Async::Queue.new
     @armed = false
@@ -21,10 +24,10 @@ class FrameGate < SimpleDelegator
     @armed = false
     @writer = Async::Task.current
     bytes = buffer.to_s
-    __getobj__.write(bytes.byteslice(0, 5))
+    __getobj__.write(@whole ? bytes : bytes.byteslice(0, 5))
     @started.enqueue(true)
     @release.dequeue
-    __getobj__.write(bytes.byteslice(5..))
+    __getobj__.write(bytes.byteslice(5..)) unless @whole
     @written = true
     bytes.bytesize
   end

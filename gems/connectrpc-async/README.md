@@ -86,7 +86,8 @@ reactor, authorization and lifecycle.
 ## Host
 
 `Host.new(server:, host: "127.0.0.1", port: 0, tls: nil, max_connections: 128,
-max_requests: 128, handshake_timeout: 10, idle_timeout: 60)` returns a host.
+max_requests: 128, handshake_timeout: 10, idle_timeout: 60,
+keepalive: ServerKeepalive.new)` returns a host.
 
 - `start` binds/listens before returning self; `port` and `addresses` expose the
   actual binding.
@@ -94,7 +95,9 @@ max_requests: 128, handshake_timeout: 10, idle_timeout: 60)` returns a host.
 - Connection admission happens before TLS/preface. Request admission fails with
   bare 503.
 - Setup has one combined cooperative timeout.
-- Idle expiry runs only without streams or handlers and can be disabled with nil.
+- `idle_timeout` counts from when a connection's last stream and handler
+  finished, or from its start, and then drains the connection gracefully; see
+  [Server keepalive](#server-keepalive). PINGs do not extend it. Nil disables it.
 
 The Host serves HTTP/2 only. There is no HTTP/1 fallback or automatic replay.
 For TLS options, see [TLS and client authentication](#tls-and-client-authentication).
@@ -169,6 +172,86 @@ returns nil. The Host cannot restart after close or failure.
 Partial failure inside upstream multi-address binding is outside this recovery
 policy.
 
+### Server keepalive
+
+`keepalive:` takes a `ServerKeepalive` and follows grpc-go's server keepalive.
+The default is `ServerKeepalive.new`; nil turns off server PINGs, PING
+enforcement and the age limit:
+
+```ruby
+keepalive = ConnectRPC::Async::ServerKeepalive.new(
+  time: 7200, timeout: 20, min_time: 5, permit_without_calls: true,
+  max_connection_age: 1800, max_connection_age_grace: 30
+)
+host = ConnectRPC::Async::Host.new(server: server, keepalive: keepalive)
+```
+
+All values are finite seconds. `time`, `min_time` and `max_connection_age` are
+positive or nil, `timeout` is positive, and `max_connection_age_grace` is
+nonnegative or nil and requires `max_connection_age`.
+
+- **Server PINGs.** After `time` seconds without reading a frame, the server
+  sends a PING. Without the matching ACK within `timeout`, the connection is
+  aborted raw socket first and its handlers are cancelled. `time: nil` turns
+  them off.
+- **PING enforcement.** A client PING less than `min_time` after the previous
+  one is a strike. Without open streams and unless `permit_without_calls`, any
+  PING within 2 hours of the previous one is. A server HEADERS or DATA write
+  forgives the next PING and clears the strikes, and the first PING never
+  strikes. The third strike gets GOAWAY `ENHANCE_YOUR_CALM` with debug data
+  `too_many_pings`, naming the highest stream already received. The connection
+  then half-closes, waits up to 1 second for EOF and closes; streams in progress
+  are not waited for. `min_time: nil` turns enforcement off. The defaults accept
+  every grpc-go client configuration and still stop floods. grpc-go clients ping
+  at most every 10 seconds, and the 5-second `min_time` leaves room for network
+  jitter, which an idle connection would otherwise accumulate as strikes. This
+  matches the server in grpc-go's keepalive example. grpc-go's own server
+  default, 5 minutes and no PINGs without calls, is stricter.
+- **Connection age.** After `max_connection_age` seconds, +/-10% jitter, the
+  connection drains gracefully. `max_connection_age_grace` seconds after age
+  expiry, whatever the drain's progress, it is aborted; nil waits indefinitely.
+- **Control frames.** With keepalive, PING ACKs, GOAWAYs, drain PINGs and
+  refusals are written by a per-connection control writer, so the reader never
+  blocks writing its own replies. The reader can still stall at its next buffer
+  refill, which flushes pending output, behind an outbound write that does not
+  finish. Each control frame must be written within `timeout` seconds of being
+  queued, including any wait behind another stream's stuck frame, and its own
+  write within the 100 ms cleanup allowance; otherwise the connection is
+  aborted. At most 1024 control frames wait; a peer that outruns the writer,
+  such as a PING flood with `min_time: nil`, fails the connection. Server
+  PINGs, age grace and close also bound a stuck connection. The
+  `too_many_pings` GOAWAY is stricter: it must be written within 100 ms of the
+  third strike, or the connection is aborted. Without keepalive, the reader
+  answers client PINGs itself, as before, and idle drain frames use the
+  20-second default `timeout`.
+
+Idle and age expiry drain a connection in three steps, as grpc-go does:
+
+1. A GOAWAY with last stream 2^31-1 and debug data `max_idle` or `max_age`,
+   followed by a PING. Requests keep dispatching normally.
+2. When that PING's ACK arrives, or after 5 seconds, the highest stream received
+   becomes the cutoff and a second GOAWAY names it. A stream the client opens
+   after the cutoff is still decoded, including HPACK, CONTINUATION and
+   connection flow control, but is reset with `REFUSED_STREAM` and never
+   dispatched. Its siblings see no connection error.
+3. When the accepted streams and their handlers finish, the server half-closes
+   and discards input until EOF, for up to 1 second, then closes.
+
+Session `close` and `drain_tls` take over a drain in progress. They keep its
+cutoff, never raising it, and their own grace bounds the rest. Every write in
+these steps follows the control frame rules above.
+
+Rails and Rack hosts cannot offer any of this; see
+[support](../../docs/support.md#http2-keepalive-and-connection-age).
+
+`async:interop:keepalive` checks keepalive in both directions against the
+pinned grpc-go peer over h2c, TLS and mTLS. The Ruby client is checked against
+grpc-go PING enforcement, both compliant and over-eager with `too_many_pings`.
+grpc-go's documented client keepalive and its BDP PINGs are checked against
+the default `ServerKeepalive`, along with a raw PING flood and an age drain
+with a bidi stream in flight. It belongs to `async:verify`. grpc-go clients
+PING at most every 10 seconds, so the run takes about 45 seconds.
+
 ## Transport
 
 `Transport.new(origin:, ca_file: nil, certificate_chain: nil, private_key: nil,
@@ -212,7 +295,8 @@ policy = ConnectRPC::Async::ConnectionPolicy.new(
   max_pending_bytes: 16 * 1024 * 1024,
   retry_refused: true,
   max_draining: 1,
-  drain_timeout: nil
+  drain_timeout: nil,
+  keepalive: nil
 )
 transport = ConnectRPC::Async::Transport.new(origin: origin, connection_policy: policy,
                                              connection_observer: ->(event) { record(event) })
@@ -221,9 +305,10 @@ transport.connection_state # => :idle, :connecting, :ready, :transient_failure, 
 
 Invalid values raise `ArgumentError` at construction. `wait_for_ready: true`
 requires a backoff, `max_draining` is a nonnegative integer, `drain_timeout` is
-nil or finite positive seconds, and `connection_policy: nil` is rejected. Each
-feature can be turned off: `backoff: nil`, `max_pending_bytes: nil`,
-`retry_refused: false`, `max_draining: 0` and `drain_timeout: nil`.
+nil or finite positive seconds, `keepalive` is nil or a `Keepalive`, and
+`connection_policy: nil` is rejected. Each feature can be turned off:
+`backoff: nil`, `max_pending_bytes: nil`, `retry_refused: false`,
+`max_draining: 0`, `drain_timeout: nil` and `keepalive: nil` (the default).
 
 ### Connection attempts
 
@@ -310,13 +395,55 @@ feature can be turned off: `backoff: nil`, `max_pending_bytes: nil`,
   request HEADERS start, a failed call is never resent; only a separate later
   call reconnects.
 
+### Keepalive
+
+Keepalive is off by default. Turn it on to detect half-open connections, for
+example behind a NAT or L4 load balancer that silently drops idle flows:
+
+```ruby
+keepalive = ConnectRPC::Async::Keepalive.new(time: 300, timeout: 20, permit_without_calls: false)
+policy = ConnectRPC::Async::ConnectionPolicy.new(keepalive: keepalive)
+```
+
+`time` and `timeout` are finite positive seconds; `timeout` defaults to 20 and
+`permit_without_calls` to false. `time: 300` respects grpc-go's default server
+enforcement (PINGs at least 5 minutes apart, none without calls), so grpc-go
+servers do not answer it with `too_many_pings`.
+
+- After `time` seconds without reading any frame, the connection sends a PING.
+  Only the ACK carrying that PING's payload proves the peer alive; other frames
+  only postpone the next PING, so a peer that writes but never reads cannot
+  pass. Without the matching ACK within `timeout`, counted from before the PING
+  competes for the connection's write lock, the connection retires raw socket
+  first, exactly like a dead connection. Its calls and streams fail with
+  `unavailable` and are never resent; the next call reconnects.
+- A connection is monitored while it has open streams, frames being written or
+  waiting to be written, or stream output still finishing a frame. Otherwise it
+  stays quiet until a stream opens, unless `permit_without_calls: true`, which
+  also pings idle connections. A connection draining after GOAWAY keeps being
+  monitored while work remains.
+- A peer GOAWAY with `ENHANCE_YOUR_CALM` and debug data `too_many_pings` sets
+  the interval for later connections to at least twice that connection's
+  `time`, as grpc-go does. The existing connection is not changed.
+- Keepalive runs on the owner reactor, also for `ThreadedTransport`, so it keeps
+  running after the calling thread's call returns. `close` stops it before
+  waiting for calls; it never delays a graceful drain.
+
 ### Observing connections
 
 - `connection_observer` receives frozen `ConnectionEvent` values with `type`
-  (`:state_changed`, `:attempt_finished` or `:admission_rejected`), `state`,
-  `previous_state`, `outcome` (`:ready`, `:refused`, `:timeout`, `:tls`,
-  `:protocol`, `:closed` or `:other`), `duration` in monotonic seconds, and the
-  counts `active`, `draining`, `pending_calls` and `pending_bytes`. Events carry
+  (`:state_changed`, `:attempt_finished`, `:admission_rejected` or
+  `:connection_closed`), `state`, `previous_state`, `outcome`, `duration` in
+  monotonic seconds, and the counts `active`, `draining`, `pending_calls` and
+  `pending_bytes`. An `:attempt_finished` outcome is `:ready`, `:refused`,
+  `:timeout`, `:tls`, `:protocol`, `:closed` or `:other`.
+- `:connection_closed` is emitted exactly once when a ready connection leaves
+  the manager, which for a connection with calls in progress is when its last
+  call ends. Its `outcome` is the first recorded reason: `:keepalive_timeout`,
+  `:drain_timeout`, `:goaway` (the peer's GOAWAY ended it, gracefully or with an
+  error) or `:closed` (EOF, a protocol or I/O error, or a local abort). Its
+  `duration` is nil. Transport `close` emits none for the connections it
+  closes. Metrics observers ignore it. Events carry
   no addresses, certificates, payloads, URLs or exception text. The observer
   runs synchronously on the owner reactor after the manager's bookkeeping and
   must return quickly. Its `StandardError`s are ignored. Calling `call`,
@@ -558,6 +685,11 @@ half-close and await EOF. External callers receive true when drained, false
 after forced teardown. Grace is finite and nonnegative; zero aborts.
 Repeated/concurrent calls share the first outcome.
 
+Server connections also end on their own: graceful idle and age drains,
+unanswered server PINGs and `too_many_pings`, as described in
+[Server keepalive](#server-keepalive). A session close during a drain keeps the
+drain's cutoff.
+
 Finite deadlines begin in core before encoding and cover acquisition, headers
 and body. A shared connection attempt is bounded by `connect_timeout` instead.
 Timers use at most 86400-second waits without shortening logical deadlines.
@@ -571,7 +703,10 @@ reset a Connect or gRPC stream (anything except Connect unary `call`), cleanup
 returns the lease without waiting for a request frame that is still being
 written. That frame always finishes before the connection writes anything
 else, so later calls on the connection wait behind it until it finishes or
-their own deadline or cancellation ends them. Forced teardown closes raw TCP
+their own deadline or cancellation ends them. With `keepalive` set, a frame
+that never finishes also blocks the keepalive PING, so the connection retires
+within `time + timeout` and the waiting calls, which sent nothing, move to a
+new connection. Forced teardown closes raw TCP
 before cancelling and joining writers/readers, then performs buffered/TLS
 cleanup.
 These are cooperative bounds, not arbitrary native/application interruption
@@ -734,7 +869,10 @@ client's private connection manager removes a retiring connection's slot and
 wakes waiting calls before joining its connection close.
 
 The session forwards TLS lifecycle/identity operations, bounded `close` and
-raw-first `abort` for listener/setup failure. The optional `stop_accepting:`
+raw-first `abort` for listener/setup failure. Its `keepalive:` (default
+`ServerKeepalive.new`) and graceful `idle_timeout` apply to HTTP/2 resources
+only; Falcon's HTTP/1 resource keeps closing idle connections and has no
+keepalive. The optional `stop_accepting:`
 callback runs after affinity/grace validation, before refresh stops and
 connection drain begins. Its one HTTP/1 construction hook is for the optional
 Falcon-local resource; HTTP/2 resources do not pretend to implement HTTP/1. The

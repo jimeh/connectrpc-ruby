@@ -4,7 +4,9 @@ require_relative "support/ingress_host_examples"
 
 RSpec.describe "Standalone native request ingress" do
   def with_ingress_host(app, tls: nil)
-    host = ConnectRPC::Async::Host.new(server: server, tls: tls).start
+    # Barrier PINGs outpace grpc-go's enforcement without server writes between them.
+    host = ConnectRPC::Async::Host.new(server: server, tls: tls,
+                                       keepalive: ConnectRPC::Async::ServerKeepalive.new(min_time: nil)).start
     application = host_session(host).instance_variable_get(:@application)
     application.instance_variable_set(:@fallback, lambda { |request|
       status, headers, body = app.call(request.body, -> { request.body.read }, request.path)

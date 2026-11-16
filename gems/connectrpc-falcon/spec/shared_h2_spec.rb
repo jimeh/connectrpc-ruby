@@ -6,6 +6,7 @@ require_relative "../../connectrpc-async/spec/support/frame_gate"
 require_relative "../../connectrpc-async/spec/support/gzip_examples"
 require_relative "../../connectrpc-async/spec/support/deadline_examples"
 require_relative "../../connectrpc-async/spec/support/reset_examples"
+require_relative "../../connectrpc-async/spec/support/server_keepalive_examples"
 
 # Test-only caller facade. All protocol/lifecycle behavior comes from the real
 # Falcon Server and shared session; observations do not substitute verification.
@@ -54,10 +55,13 @@ RSpec.describe "Falcon shared reviewed HTTP/2 TLS and wire lifecycle" do
   def deadline_host(**) = FalconTLSFixture.new(**).start
   def cleanup_host(**) = FalconTLSFixture.new(**).start
   def cleanup_session(host) = host.instance_variable_get(:@session)
+  def keepalive_host(**) = FalconTLSFixture.new(**).start
+  def keepalive_session(host) = host.instance_variable_get(:@session)
 
   include_examples "HTTP/2 TLS retirement and session isolation"
   include_examples "HTTP/2 wire drain ownership"
   include_examples "HTTP/2 gzip core integration"
   include_examples "HTTP/2 deadlines and stream isolation"
   include_examples "HTTP/2 peer reset during headers"
+  include_examples "HTTP/2 server keepalive"
 end

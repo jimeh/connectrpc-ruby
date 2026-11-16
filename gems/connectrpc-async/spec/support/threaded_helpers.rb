@@ -51,6 +51,35 @@ module ThreadedHelpers
     def fire = @release << true
   end
 
+  # A keepalive clock shared across threads: one `advance` from the test
+  # thread moves `now` once and resumes every owner sleep due by then.
+  class AdvanceClock
+    def initialize
+      @now = 0.0
+      @lock = Mutex.new
+      @sleepers = []
+    end
+
+    def now = @lock.synchronize { @now }
+    def dues = @lock.synchronize { @sleepers.map(&:first) }
+
+    def sleep(seconds)
+      gate = Thread::Queue.new
+      entry = @lock.synchronize { [@now + seconds, gate].tap { |pending| @sleepers << pending } }
+      gate.pop
+    ensure
+      @lock.synchronize { @sleepers.delete(entry) }
+    end
+
+    def advance(seconds)
+      @lock.synchronize do
+        @now += seconds
+        due, @sleepers = @sleepers.partition { |time, _| time <= @now }
+        due.each { |entry| entry.last << true }
+      end
+    end
+  end
+
   # Holds +thread+ on the line after +text+ in +method+ until opened. The
   # trace fires once, on that thread only.
   class LinePause
@@ -172,8 +201,7 @@ module ThreadedHelpers
     pop_within(result, "the owner to run the block")
   end
 
-  def install_thread_clock(transport)
-    clock = ThreadClock.new
+  def install_thread_clock(transport, clock = ThreadClock.new)
     on_owner(transport) do
       manager = engine_of(transport).inner.instance_variable_get(:@manager)
       manager.instance_variable_set(:@clock, clock)

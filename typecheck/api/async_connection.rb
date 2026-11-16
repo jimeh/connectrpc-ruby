@@ -10,10 +10,19 @@ draining = ConnectRPC::Async::ConnectionPolicy.new(retry_refused: false, max_dra
 draining.retry_refused.to_s
 draining.max_draining.succ
 draining.drain_timeout&.positive?
+keepalive = ConnectRPC::Async::Keepalive.new(time: 300, timeout: 20, permit_without_calls: false)
+(keepalive.time + keepalive.timeout).positive?
+keepalive.permit_without_calls.to_s
+kept = ConnectRPC::Async::ConnectionPolicy.new(keepalive: keepalive)
+kept.keepalive&.time&.positive?
+(ConnectRPC::Async::ConnectionPolicy.new.keepalive == keepalive).to_s
 transport = ConnectRPC::Async::Transport.new(
   origin: "https://example.invalid", connection_policy: policy,
   connection_observer: lambda do |event|
     event.type.to_s
+    # @type var outcome: ConnectRPC::Async::connection_outcome?
+    outcome = event.outcome
+    outcome == :keepalive_timeout if event.type == :connection_closed
     event.previous_state&.to_s
     event.duration&.round
     (event.active + event.draining + event.pending_calls + event.pending_bytes).succ

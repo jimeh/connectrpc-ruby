@@ -6,7 +6,8 @@ module ConnectRPC
       def initialize(server:, endpoint:, rack_app: nil, cache: false, tls: nil, tls_provider: nil,
                      utilization_registry: nil, max_connections: 128, max_requests: 128,
                      handshake_timeout: 10, idle_timeout: 60, refresh_interval: 60,
-                     refresh_jitter: 0.1, refresh_timeout: 10, on_tls_error: nil)
+                     refresh_jitter: 0.1, refresh_timeout: 10, on_tls_error: nil,
+                     keepalive: ::ConnectRPC::Async::ServerKeepalive.new)
         raise ArgumentError, "cache must be true or false" unless [true, false].include?(cache)
 
         configured = if endpoint.is_a?(::IO::Endpoint::BoundEndpoint)
@@ -35,7 +36,8 @@ module ConnectRPC
           refresh_interval: refresh_interval, refresh_jitter: refresh_jitter,
           refresh_timeout: refresh_timeout, on_tls_error: on_tls_error,
           alpn_protocols: %w[h2 http/1.1], http1: HTTP1Resource.method(:new),
-          stop_accepting: method(:stop_accepting), on_request_rejected: -> { @request_total.increment }
+          stop_accepting: method(:stop_accepting), on_request_rejected: -> { @request_total.increment },
+          keepalive: keepalive
         )
         # Preserve parent-bound descriptors while installing a worker-local
         # accept wrapper through IO::Endpoint's supported wrapper option.

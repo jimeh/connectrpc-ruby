@@ -330,6 +330,22 @@ application work. [Falcon Web cleanup](grpc-web.md#bounds-and-host-spi) is
 separate: original input cleanup gates its staged terminal and incomplete-upload
 rejection head. Web does not inherit Connect's response-first grace.
 
+### HTTP/2 keepalive and connection age
+
+The Async `Host` and the Falcon native HTTP/2 listener own their HTTP/2
+connections and offer server keepalive PINGs, grpc-go PING enforcement and
+graceful idle and age drains (`ServerKeepalive`). Rails and Rack hosts cannot:
+Puma serves HTTP/1.1, and HTTP/2 to those applications is terminated by a proxy
+or a third-party server that owns the connection. Configure keepalive, PING
+enforcement and connection age limits there, for example Envoy's
+`max_connection_duration` or nginx's `keepalive_timeout`.
+
+`async:interop:keepalive` checks client keepalive, PING enforcement, BDP PINGs
+and the age drain between the pinned grpc-go peer and the Async `Transport` and
+`Host`. `falcon:interop:grpc` checks only the age drain through real Falcon
+workers over TLS; Falcon's PING enforcement and server PINGs are covered by its
+specs.
+
 ### Delivery, cancellation and metadata
 
 Processing, delivery, cleanup and admission are independent facts. Full native

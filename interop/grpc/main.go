@@ -188,6 +188,7 @@ func runNegative(origin, mode, dir, scenario string) {
 }
 func main() {
 	check(len(os.Args) >= 2, "serve|client|control")
+	runKeepalive(os.Args[1:])
 	command := os.Args[1]
 	if command == "negative" {
 		check(len(os.Args) == 6, "negative origin mode fixtures scenario")

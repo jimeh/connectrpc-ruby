@@ -253,7 +253,7 @@ run = "ruby gems/connectrpc-async/scripts/run.rb interop"
 
 [tasks."async:verify"]
 description = "Verify optional HTTP/2 specs, source, packages and Go interoperability"
-depends = ["async:test", "async:check", "async:package", "async:interop", "async:interop:streaming", "async:conformance", "async:conformance:grpc", "async:interop:grpc", "async:conformance:http1", "async:conformance:threaded", "async:interop:http1"]
+depends = ["async:test", "async:check", "async:package", "async:interop", "async:interop:streaming", "async:conformance", "async:conformance:grpc", "async:interop:grpc", "async:interop:keepalive", "async:conformance:http1", "async:conformance:threaded", "async:interop:http1"]
 
 [tasks."async:tools"]
 description = "Prepare exact Ruby/Bundler for the independent backend bundle"
@@ -756,12 +756,19 @@ tools.go = "1.27.3"
 env = { GOTOOLCHAIN = "local", GOWORK = "off", GOFLAGS = "-mod=readonly", GOMODCACHE = "{{config_root}}/vendor/grpc/mod", GOCACHE = "{{config_root}}/vendor/grpc/build" }
 run = "ruby gems/connectrpc-async/scripts/run.rb grpc_interop async"
 
+[tasks."async:interop:keepalive"]
+description = "Run grpc-go keepalive, PING enforcement and age drain interop against async over h2c TLS and mTLS"
+depends = ["async:setup", "grpc:generation:check"]
+tools.go = "1.27.3"
+env = { GOTOOLCHAIN = "local", GOWORK = "off", GOFLAGS = "-mod=readonly", GOMODCACHE = "{{config_root}}/vendor/grpc/mod", GOCACHE = "{{config_root}}/vendor/grpc/build" }
+run = "ruby gems/connectrpc-async/scripts/run.rb grpc_keepalive_interop async"
+
 [tasks."falcon:interop:grpc"]
-description = "Run generated official grpc-go peers against falcon over h2c TLS and mTLS"
+description = "Run generated official grpc-go peers and a keepalive age drain against falcon over h2c TLS and mTLS"
 depends = ["falcon:setup", "grpc:generation:check"]
 tools.go = "1.27.3"
 env = { GOTOOLCHAIN = "local", GOWORK = "off", GOFLAGS = "-mod=readonly", GOMODCACHE = "{{config_root}}/vendor/grpc/mod", GOCACHE = "{{config_root}}/vendor/grpc/build" }
-run = "ruby gems/connectrpc-falcon/scripts/run.rb grpc_interop falcon"
+run = ["ruby gems/connectrpc-falcon/scripts/run.rb grpc_interop falcon", "ruby gems/connectrpc-falcon/scripts/run.rb grpc_keepalive_interop falcon"]
 
 # Optional official browser clients. No global browser or OS provisioning.
 [tasks."browser:setup"]
