@@ -401,6 +401,16 @@ decision. A merged fix closes its specific defect, not the audit as a whole.
   gRPC client stops reading a rejected-media response body at the first byte
   past 262,144 bytes, and a surplus unary request envelope fails before its
   payload is read or decoded, as the [gRPC guide](grpc.md) describes.
+- [#79](https://github.com/jimeh/connectrpc-ruby/pull/79) resolves L13-L16.
+  L13: the generator reserves the stdlib top-level roots the core runtime loads,
+  such as `URI`, `Zlib`, `Net` and `OpenSSL`. Roots outside that closure, such
+  as optional gem roots (`Async`, `Sentry`) or `Bundler`, stay unreserved, so
+  generated modules may still share or replace them. L14: an unmatched native
+  or Web conformance selector fails before the runner starts. L15: the backend
+  gRPC interop tasks run the peer generation check through their own bundle
+  and no longer reach root `setup`. L16: gemspec manifests no longer depend on
+  the working directory, and a direct `gem build` from the wrong directory now
+  fails instead of packaging another package's files.
 - L12 is disclosed above as a Rack adapter limitation. This guide corrects
   L18's current documentation drift without declaring the audit complete.
 
@@ -417,10 +427,6 @@ decision. A merged fix closes its specific defect, not the audit as a whole.
   Reconcile early metadata loss, frozen gRPC unary request metadata, local OTel
   classification casing and any reachable ambient-exception path with current
   evidence and explicit contracts.
-- **Generator, tooling and packaging (L13-L16).** Resolve or explicitly
-  disposition generator name collisions, unmatched native selectors, bundle-task
-  isolation and direct gemspec-caller behavior. Canonical builds and existing
-  green CI do not prove those other paths.
 
 ### Before a release adopts the profile
 

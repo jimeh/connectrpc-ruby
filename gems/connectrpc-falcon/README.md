@@ -416,8 +416,10 @@ retention limits. Connect's one-second terminal tail policy remains Connect-only
 
 Use `falcon:conformance:grpc` for exact official inventories and
 `falcon:interop:grpc` for generated official grpc-go peer checks. Both belong
-to the owning verify task. `grpc:generation:check` reproduces official Go and
-Ruby peer outputs; `grpc:status:check` reproduces private Any/Status descriptors.
+to the owning verify task. `falcon:interop:grpc` first reproduces the official Go
+and Ruby peer outputs through the Falcon bundle, the same check root
+`grpc:generation:check` runs through the core bundle. `grpc:status:check`
+reproduces private Any/Status descriptors.
 
 ## gRPC-Web
 

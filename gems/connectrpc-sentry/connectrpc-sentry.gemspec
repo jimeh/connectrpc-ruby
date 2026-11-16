@@ -18,7 +18,7 @@ Gem::Specification.new do |spec|
   spec.metadata["source_code_uri"] = spec.homepage
   spec.files = %w[LICENSE README.md lib/connectrpc/sentry.rb lib/connectrpc/sentry/subscriber.rb
                   lib/connectrpc/sentry/version.rb] +
-               Dir.glob("sig/**/*.{rbs,yaml}")
+               Dir.glob("sig/**/*.{rbs,yaml}", base: __dir__)
   spec.require_paths = ["lib"]
   local_requirement = "~> #{spec.version.to_s.split('.').first(2).join('.')}.0"
   spec.add_dependency "connectrpc", local_requirement

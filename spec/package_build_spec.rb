@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "fileutils"
+require "json"
 require "open3"
 require "rbconfig"
 require "rubygems/package"
@@ -32,8 +33,27 @@ RSpec.describe "Canonical package builds" do
     files
   end
 
+  # Gem::Specification.load caches by filename, so each load needs a fresh process.
+  def manifest(gemspec, chdir)
+    script = 'specification = Gem::Specification.load(ARGV.fetch(0)) or abort "load failed"; ' \
+             "puts JSON.generate(specification.files)"
+    output, error, status = Bundler.with_unbundled_env do
+      Open3.capture3(RbConfig.ruby, "-rjson", "-e", script, gemspec, chdir: chdir)
+    end
+    expect(status.success?).to be(true), "#{chdir}: #{error}"
+    JSON.parse(output)
+  end
+
   directories.each do |directory|
     name = directory == root ? "connectrpc" : File.basename(directory)
+    it "loads the #{name} manifest independently of the working directory" do
+      gemspec = Dir.glob("#{directory}/*.gemspec").fetch(0)
+      canonical = manifest(gemspec, directory)
+      foreign = Dir.mktmpdir("connectrpc-gemspec-cwd-") { |temporary| manifest(gemspec, temporary) }
+      expect(canonical).not_to be_empty
+      expect(foreign).to eq(canonical)
+    end
+
     %w[002 022].each do |mask|
       it "preserves #{name} bytes and metadata with canonical archive modes under umask #{mask}" do
         specification = Dir.chdir(directory) { Gem::Specification.load(Dir.glob("*.gemspec").fetch(0)) }

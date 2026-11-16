@@ -15,8 +15,8 @@ Gem::Specification.new do |spec|
   spec.required_ruby_version = ">= 3.4"
   spec.metadata["allowed_push_host"] = "https://rubygems.org"
   spec.metadata["rubygems_mfa_required"] = "true"
-  spec.files = Dir.glob("sig/**/*.{rbs,yaml}") + Dir.glob("rbs/**/*.rbs") + Dir["lib/**/*.rb", "examples/*.rb",
-                                                                                "README.md", "LICENSE"].sort
+  spec.files = Dir.glob("sig/**/*.{rbs,yaml}", base: __dir__) + Dir.glob("rbs/**/*.rbs", base: __dir__) +
+               Dir.glob(["lib/**/*.rb", "examples/*.rb", "README.md", "LICENSE"], base: __dir__).sort
   spec.require_paths = ["lib"]
   local_requirement = "~> #{spec.version.to_s.split('.').first(2).join('.')}.0"
   # protocol-http1 stays patch-only (~> x.y.z) because the HTTP/1 listener couples to its private

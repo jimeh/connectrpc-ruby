@@ -1,6 +1,8 @@
 # frozen_string_literal: true
 
 require "spec_helper"
+require "open3"
+require "rbconfig"
 require "google/protobuf/plugin_pb"
 
 RSpec.describe "Service generation" do
@@ -244,6 +246,41 @@ RSpec.describe "Service generation" do
         expect(response.file).to be_empty
       end
     end
+  end
+
+  %w[Zlib URI Net OpenSSL Socket Timeout].each do |name|
+    it "rejects runtime stdlib root #{name} as a top-level service" do
+      response = generate(request_for(rpcs: [], service: name, package: ""))
+      expect(response.error).to include("Reserved top-level Ruby constant #{name}")
+      expect(response.file).to be_empty
+    end
+
+    it "rejects runtime stdlib root #{name} as a top-level message" do
+      request = request_for(rpcs: [], package: "")
+      request.proto_file.first.message_type << Google::Protobuf::DescriptorProto.new(name: name)
+      response = generate(request)
+      expect(response.error).to include("Reserved top-level Ruby constant #{name}")
+      expect(response.file).to be_empty
+    end
+  end
+
+  it "reserves every top-level constant the runtime library defines" do
+    require "connectrpc/generator"
+    root = File.expand_path("..", __dir__)
+    # A clean process without Bundler setup; the bundle path supplies google-protobuf.
+    gem_path = [Gem.loaded_specs.fetch("google-protobuf").base_dir, *Gem.default_path].join(File::PATH_SEPARATOR)
+    probe = <<~RUBY
+      before = Object.constants
+      Dir[File.join(ARGV.fetch(0), "lib/**/*.rb")].sort.each { |file| require file }
+      puts(Object.constants - before)
+    RUBY
+    output, error, status = Bundler.with_unbundled_env do
+      Open3.capture3({ "GEM_PATH" => gem_path, "GEM_HOME" => nil, "RUBYOPT" => nil, "RUBYLIB" => nil },
+                     RbConfig.ruby, "-I#{File.join(root, 'lib')}", "-e", probe, root)
+    end
+    expect(status.success?).to be(true), error
+    missing = output.split.sort - ConnectRPC::Generator::Names::TOP_LEVEL_RESERVED
+    expect(missing).to be_empty, "Unreserved runtime constants: #{missing.join(' ')}"
   end
 
   %w[file ConnectRPC].each do |package|

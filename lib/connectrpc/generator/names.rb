@@ -24,18 +24,21 @@ module ConnectRPC
         singleton_class singleton_method singleton_methods tap then to_enum to_s yield_self __id__ __send__
       ].freeze
       TOP_LEVEL_RESERVED = %w[
-        ARGF ARGV ArgumentError Array BasicObject Binding CROSS_COMPILING Class ClosedQueueError Comparable Complex
-        ConditionVariable ConnectRPC Data DidYouMean Dir ENV EOFError Encoding EncodingError Enumerable Enumerator
-        Errno ErrorHighlight Exception FalseClass Fiber FiberError File FileTest Float FloatDomainError FrozenError
-        GC Gem Google Hash IO IOError IndexError Integer Interrupt JSON Kernel KeyError LoadError LocalJumpError
-        Marshal MatchData Math Method Module Monitor MonitorMixin Mutex NameError NilClass NoMatchingPatternError
-        NoMatchingPatternKeyError NoMemoryError NoMethodError NotImplementedError Numeric Object ObjectSpace Pathname
-        Proc Process Queue RUBYGEMS_ACTIVATION_MONITOR RUBY_COPYRIGHT RUBY_DESCRIPTION RUBY_ENGINE RUBY_ENGINE_VERSION
-        RUBY_PATCHLEVEL RUBY_PLATFORM RUBY_RELEASE_DATE RUBY_REVISION RUBY_VERSION Rack Ractor Random Range RangeError
-        Rational RbConfig Refinement Regexp RegexpError Ruby RubyVM RuntimeError STDERR STDIN STDOUT ScriptError
-        SecurityError Set Signal SignalException SizedQueue StandardError StopIteration String Struct Symbol SyntaxError
-        SyntaxSuggest SystemCallError SystemExit SystemStackError TOPLEVEL_BINDING Thread ThreadError ThreadGroup Time
-        TracePoint TrueClass TypeError UnboundMethod UncaughtThrowError UnicodeNormalize Warning ZeroDivisionError
+        ARGF ARGV Addrinfo ArgumentError Array BasicObject BasicSocket Binding CROSS_COMPILING Class ClosedQueueError
+        Comparable Complex ConditionVariable ConnectRPC Data DidYouMean Digest Dir ENV EOFError Encoding EncodingError
+        Enumerable Enumerator Errno ErrorHighlight Exception FalseClass Fiber FiberError File FileTest Float
+        FloatDomainError Forwardable FrozenError GC Gem Google Hash IO IOError IPAddr IPSocket IndexError Integer
+        Interrupt JSON Kernel KeyError LoadError LocalJumpError Marshal MatchData Math Method Module Monitor
+        MonitorMixin Mutex NameError Net NilClass NoMatchingPatternError NoMatchingPatternKeyError NoMemoryError
+        NoMethodError NotImplementedError Numeric Object ObjectSpace OpenSSL Pathname Proc Process Queue
+        RUBYGEMS_ACTIVATION_MONITOR RUBY_COPYRIGHT RUBY_DESCRIPTION RUBY_ENGINE RUBY_ENGINE_VERSION RUBY_PATCHLEVEL
+        RUBY_PLATFORM RUBY_RELEASE_DATE RUBY_REVISION RUBY_VERSION Rack Ractor Random Range RangeError Rational RbConfig
+        Refinement Regexp RegexpError Resolv Ruby RubyVM RuntimeError STDERR STDIN STDOUT ScriptError SecureRandom
+        SecurityError Set Signal SignalException SingleForwardable SizedQueue Socket SocketError StandardError
+        StopIteration String Struct Symbol SyntaxError SyntaxSuggest SystemCallError SystemExit SystemStackError
+        TCPServer TCPSocket TOPLEVEL_BINDING Thread ThreadError ThreadGroup Time Timeout TracePoint TrueClass TypeError
+        UDPSocket UNIXServer UNIXSocket URI UnboundMethod UncaughtThrowError UnicodeNormalize Warning ZeroDivisionError
+        Zlib
       ].freeze
 
       def self.identifier!(name, description)

@@ -39,6 +39,22 @@ if host == "falcon" && directions.include?("client")
   raise "Native client profile must run once through its actual Async transport"
 end
 
+ledger_type = if threaded
+                Conformance::NativeThreadedLedger
+              elsif http1_client
+                Conformance::NativeHTTP1Ledger
+              elsif http1
+                Conformance::HTTP1Ledger
+              else
+                (grpc ? Conformance::GRPCLedger : Conformance::NativeLedger)
+              end
+profiles = %w[identity gzip]
+profiles = profiles.map { |profile| "#{grpc ? 'grpc' : 'connect'}-#{profile}" } if threaded
+runs = profiles.product(directions).select do |profile, direction|
+  !selector || ledger_type::INVENTORIES.fetch(profile).fetch(direction).include?(selector)
+end
+raise "Selector must be an exact configured test name: #{selector}" if runs.empty?
+
 version, status = Open3.capture2("connectconformance", "--version")
 raise "Wrong conformance runner" unless status.success? && version.strip == "connectconformance v1.0.6"
 
@@ -74,21 +90,7 @@ def native_environment(telemetry, host, artifacts)
 end
 
 success = true
-profiles = %w[identity gzip]
-profiles = profiles.map { |profile| "#{grpc ? 'grpc' : 'connect'}-#{profile}" } if threaded
-profiles.product(directions).each do |profile, direction| # rubocop:disable Metrics/BlockLength
-  ledger_type = if threaded
-                  Conformance::NativeThreadedLedger
-                elsif http1_client
-                  Conformance::NativeHTTP1Ledger
-                elsif http1
-                  Conformance::HTTP1Ledger
-                else
-                  (grpc ? Conformance::GRPCLedger : Conformance::NativeLedger)
-                end
-  inventory = ledger_type::INVENTORIES.fetch(profile).fetch(direction)
-  next if selector && !inventory.include?(selector)
-
+runs.each do |profile, direction|
   ledger = ledger_type.new(profile: profile, direction: direction,
                            selected: selector)
   stamp = "#{Time.now.utc.strftime('%Y%m%dT%H%M%S')}-#{Process.pid}-#{RUBY_VERSION}-" \
