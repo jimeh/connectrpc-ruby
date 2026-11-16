@@ -40,19 +40,8 @@ module GRPCInterop
                            ))
   end
 
-  def self.probe(client) # rubocop:disable Metrics/AbcSize, Metrics/CyclomaticComplexity, Metrics/MethodLength, Metrics/PerceivedComplexity
-    reply = client.unary(MESSAGE.new(value: "unary", payload: "\0\xFF".b))
-    raise "Unary message/metadata" unless reply.message.value == "unary" && reply.message.payload == "\0\xFF".b &&
-                                          reply.metadata["x-head"] == ["ready"] && reply.trailers["x-tail"] == ["done"]
-
-    values = []
-    client.server_stream(MESSAGE.new(value: "first")) do |reader|
-      raise "Early headers" unless reader.headers["x-head"] == ["ready"]
-
-      reader.each { |message| values << message.value }
-    end
-    raise "SS messages" unless values == ["first", "second", ""]
-
+  def self.probe(client) # rubocop:disable Metrics/AbcSize, Metrics/MethodLength
+    probe_unary_stream(client)
     reply = client.client_stream do |writer|
       %w[a b].each { |value| writer.send_message(MESSAGE.new(value: value)) }
     end
@@ -65,6 +54,36 @@ module GRPCInterop
       duplex.close_send
       raise "Bidi EOF" unless duplex.receive.nil?
     end
+  end
+
+  # The unary and server-stream shapes, which ThreadedTransport also carries.
+  def self.probe_unary_stream(client) # rubocop:disable Metrics/AbcSize, Metrics/CyclomaticComplexity
+    reply = client.unary(MESSAGE.new(value: "unary", payload: "\0\xFF".b))
+    raise "Unary message/metadata" unless reply.message.value == "unary" && reply.message.payload == "\0\xFF".b &&
+                                          reply.metadata["x-head"] == ["ready"] && reply.trailers["x-tail"] == ["done"]
+
+    values = []
+    client.server_stream(MESSAGE.new(value: "first")) do |reader|
+      raise "Early headers" unless reader.headers["x-head"] == ["ready"]
+
+      reader.each { |message| values << message.value }
+    end
+    raise "SS messages" unless values == ["first", "second", ""]
+  end
+
+  # Both codings on their own plain threads through one ThreadedTransport.
+  def self.threaded_probe(origin, options) # rubocop:disable Metrics/MethodLength
+    threaded = ConnectRPC::Async::ThreadedTransport.new(origin: origin, **options)
+    %i[identity gzip].map do |coding|
+      Thread.new do
+        core = ConnectRPC::Client.new(base_url: origin, binding: BINDING, transport: threaded, protocol: :grpc,
+                                      encoding: coding)
+        probe_unary_stream(PEER::Client.new(client: core))
+      end
+    end.each(&:join)
+    raise "Threaded gRPC close" unless threaded.close
+  ensure
+    threaded&.close(grace: 0)
   end
 end
 
@@ -87,7 +106,7 @@ Dir.mktmpdir("grpc-interop-", File.join(root, "vendor/grpc")) do |fixtures| # ru
   %w[h2c tls mtls].each do |mode| # rubocop:disable Metrics/BlockLength
     if host_kind == "async"
       system(binary, "control", mode, fixtures, exception: true)
-      Open3.popen2(binary, "serve", mode, fixtures) do |input, output, process|
+      Open3.popen2(binary, "serve", mode, fixtures) do |input, output, process| # rubocop:disable Metrics/BlockLength
         raise "grpc-go readiness timeout" unless output.wait_readable(10)
 
         origin = output.gets.strip
@@ -104,6 +123,10 @@ Dir.mktmpdir("grpc-interop-", File.join(root, "vendor/grpc")) do |fixtures| # ru
         ensure
           transport&.close(grace: 0)
         end
+        options = mode == "h2c" ? {} : { ca_file: File.join(fixtures, "ca.pem") }
+        options.merge!(helpers.host_tls(identities.fetch("client")).except(:client_ca)) if mode == "mtls"
+        GRPCInterop.threaded_probe(origin, options)
+        puts "PASS Ruby->grpc-go #{mode}/identity+gzip unary/server-stream through ThreadedTransport from plain threads"
       ensure
         input.close
         unless process.join(5)

@@ -630,6 +630,9 @@ without controlled wire evidence. Original unary profiles and their 5 ms before-
 200 ms response-delay and nil-deadline semantics remain independent and unchanged.
 Both native conformance and streaming Go leaves belong to each backend's verify
 aggregate and the existing two-Ruby CI jobs. No test results are cached.
+`async:conformance:threaded` adds separate Connect and gRPC unary/server-stream
+client profiles through `ThreadedTransport` from plain threads; see
+[conformance](../conformance/README.md#threadedtransport-client-profiles).
 The Falcon-only `falcon:conformance:http1` leaf adds separate SS/CS server
 profiles requiring 174 identity and 160 gzip passes. Root `verify` includes this
 complete H1 gate, so use that pass for full-profile confirmation. Fresh exact

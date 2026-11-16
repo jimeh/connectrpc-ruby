@@ -103,12 +103,14 @@ module Conformance
       if @endpoint.is_a?(ConnectRPC::ResponseReader) && @endpoint.trailers
         result.response_trailers.replace(Conformance.headers(@endpoint.trailers))
       end
-      transport.close(grace: 0)
+      close_native(transport)
       @observation.complete(**transport.closed_facts, source_canceled: source.token.cancelled?)
       Telemetry.record("native_call_finished", name: request.test_name, code: result.error&.code,
                                                source_canceled: source.token.cancelled?,
                                                transport_state: transport.inspect)
     end
+
+    def close_native(transport) = transport.close(grace: 0)
   end
 end
 

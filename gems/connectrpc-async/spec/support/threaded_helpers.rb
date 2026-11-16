@@ -51,23 +51,21 @@ module ThreadedHelpers
     def fire = @release << true
   end
 
-  # Holds the owner thread on the line after +text+ in the Engine method +name+
-  # until opened. The trace fires once, on the owner thread only.
-  class OwnerPause
+  # Holds +thread+ on the line after +text+ in +method+ until opened. The
+  # trace fires once, on that thread only.
+  class LinePause
     attr_reader :held
 
-    def initialize(engine, name, text)
-      method = THREADED.const_get(:Engine).instance_method(name)
+    def initialize(method, thread, text)
       source, first = method.source_location
       offset = File.readlines(source).drop(first).index { |line| line.strip == text }
-      raise "#{text.inspect} not found in Engine##{name}" unless offset
+      raise "#{text.inspect} not found in #{method.owner}##{method.name}" unless offset
 
       @held = Thread::Queue.new
       @gate = Thread::Queue.new
       armed = [true]
-      owner = engine.thread
       @trace = TracePoint.new(:line) do
-        next unless Thread.current.equal?(owner) && armed.shift
+        next unless Thread.current.equal?(thread) && armed.shift
 
         @held << true
         Fiber.blocking { @gate.pop }
@@ -78,6 +76,13 @@ module ThreadedHelpers
     def open
       @trace.disable
       @gate << true
+    end
+  end
+
+  # Holds the owner thread on the line after +text+ in the Engine method +name+.
+  class OwnerPause < LinePause
+    def initialize(engine, name, text)
+      super(THREADED.const_get(:Engine).instance_method(name), engine.thread, text)
     end
   end
 

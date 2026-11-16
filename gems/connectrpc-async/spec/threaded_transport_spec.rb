@@ -180,23 +180,25 @@ RSpec.describe "ThreadedTransport construction and Connect unary from plain thre
     peer&.stop
   end
 
-  it "has no streaming or gRPC capability, so core rejects those shapes before any I/O" do
+  it "advertises Connect server streaming and gRPC unary/server streaming only, so core rejects the rest before I/O" do
     peer = threaded_host(server: server)
     origin = "http://127.0.0.1:#{peer.peer.port}"
     transport = threaded(origin: origin)
-    %i[streaming_capabilities open_stream grpc_capabilities open_grpc_stream].each do |name|
-      expect(transport).not_to respond_to(name)
-    end
+    expect([transport.streaming_capabilities, transport.grpc_capabilities]).to eq([%i[server_stream],
+                                                                                   %i[unary server_stream]])
+    expect([transport.streaming_capabilities, transport.grpc_capabilities]).to all(be_frozen)
     binding = ConnectRPC::Bindings::GoogleProtobuf.new
-    core = ConnectRPC::Client.new(base_url: origin, binding: binding, transport: transport)
-    method = ConnectRPC::ServerStreamMethod.new(service: "test.Streams", name: "ServerStream",
-                                                request_type: AsyncHelpers::MESSAGE,
-                                                response_type: AsyncHelpers::MESSAGE)
-    expect { core.server_stream(method, AsyncHelpers::MESSAGE.new) { nil } }
-      .to raise_error(ArgumentError, "Transport does not support server_stream")
-    grpc = ConnectRPC::Client.new(base_url: origin, binding: binding, transport: transport, protocol: :grpc)
-    expect { grpc.call(AsyncHelpers::ECHO::ECHO, AsyncHelpers::MESSAGE.new) }
-      .to raise_error(ArgumentError, "Transport does not support unary gRPC")
+    methods = [ConnectRPC::ClientStreamMethod, ConnectRPC::BidiStreamMethod].map do |kind|
+      kind.new(service: "test.Streams", name: kind.name.split("::").last, request_type: AsyncHelpers::MESSAGE,
+               response_type: AsyncHelpers::MESSAGE)
+    end
+    %i[connect grpc].each do |protocol|
+      core = ConnectRPC::Client.new(base_url: origin, binding: binding, transport: transport, protocol: protocol)
+      expect { core.client_stream(methods.first) { nil } }
+        .to raise_error(ArgumentError, "Transport does not support client_stream")
+      expect { core.bidi_stream(methods.last) { nil } }
+        .to raise_error(ArgumentError, "Transport does not support bidi_stream")
+    end
     expect([peer.peer.accepts.size, engine_of(transport)]).to eq([0, nil])
   ensure
     transport&.close(grace: 0)

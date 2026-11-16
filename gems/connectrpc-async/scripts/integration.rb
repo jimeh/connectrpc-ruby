@@ -10,8 +10,31 @@ require "rbconfig"
 require "stringio"
 $LOAD_PATH.unshift(File.expand_path("generated", __dir__))
 require "echo_connect"
+require "generation/streaming_connect"
 require_relative "helpers"
 include AsyncHelpers
+
+MIXED = GenerationFixture::Streaming::Mixed
+ITEM = GenerationFixture::Streaming::Item
+
+# Echo and the generated Mixed service, for Connect and native gRPC callers.
+def threaded_server
+  echo = ->(request, _) { request }
+  watch = ->(request, writer, _) { 2.times { writer.send_message(request) } }
+  handlers = AsyncHelpers::ECHO.handlers(echo: echo, fail: ->(_, _) { raise ConnectRPC::Error, :internal })
+                               .merge(MIXED.handlers(lookup: echo, watch: watch, collect: ->(_, _) { ITEM.new },
+                                                     chat: ->(duplex, _) { duplex.each { nil } }))
+  ConnectRPC::Server.new(services: [AsyncHelpers::ECHO::SERVICE, MIXED::SERVICE], handlers: handlers,
+                         binding: ConnectRPC::Bindings::GoogleProtobuf.new, protocol: :auto)
+end
+
+def threaded_watch(transport, origin, **)
+  names = []
+  core = ConnectRPC::Client.new(base_url: origin, transport: transport,
+                                binding: ConnectRPC::Bindings::GoogleProtobuf.new, **)
+  MIXED::Client.new(client: core).watch(ITEM.new(name: "watch")) { |reader| reader.each { |item| names << item.name } }
+  names
+end
 
 # The package check derives these expected releases from the development bundle.
 expected_openssl = ENV.fetch("CONNECTRPC_EXPECTED_OPENSSL")
@@ -95,7 +118,8 @@ Dir.mktmpdir("integration-", Dir.pwd) do |directory|
     stop = Thread::Queue.new
     hosting = Thread.new do
       Sync do
-        host = ConnectRPC::Async::Host.new(server: server, tls: tls ? host_tls(leaf, anchors: [ca]) : nil).start
+        tls_options = tls ? host_tls(leaf, anchors: [ca]) : nil
+        host = ConnectRPC::Async::Host.new(server: threaded_server, tls: tls_options).start
         ready << host.port
         stop.pop
         host.close
@@ -109,9 +133,19 @@ Dir.mktmpdir("integration-", Dir.pwd) do |directory|
       Thread.new { client(transport, origin, codec: codec, use_get: get).echo(message).message }
     end.map(&:value)
     raise "Installed threaded generated caller" unless results.all?(message)
+
+    streams = [{ codec: :proto }, { codec: :json }, { protocol: :grpc }].map do |options|
+      Thread.new { threaded_watch(transport, origin, **options) }
+    end.map(&:value)
+    raise "Installed threaded generated server streams" unless streams == [%w[watch watch]] * 3
+
+    grpc = Thread.new { client(transport, origin, protocol: :grpc).echo(message).message }.value
+    raise "Installed threaded generated gRPC unary" unless grpc == message
     raise "Installed threaded close" unless transport.close
 
     puts "PASS installed generated ThreadedTransport #{tls ? 'mTLS h2' : 'h2c'} POST/GET proto/json from plain threads"
+    puts "PASS installed generated ThreadedTransport #{tls ? 'mTLS h2' : 'h2c'} Connect SS proto/json and " \
+         "gRPC unary/SS from plain threads"
   ensure
     transport&.close
     stop&.<<(true)

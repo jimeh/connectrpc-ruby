@@ -17,6 +17,7 @@ module DemoExample
   }.freeze
   ALL = SHAPES.keys.freeze
   H1_STREAMING = %i[unary server_stream client_stream].freeze
+  THREADED = %i[unary server_stream].freeze
   PROTOCOLS = { connect: "Connect", grpc: "gRPC" }.freeze
 
   RPCS = {
@@ -36,7 +37,7 @@ module DemoExample
     "nethttp" => { http: "HTTP/1.1", protocols: { connect: [:unary] } },
     "async-h2" => { http: "HTTP/2", protocols: { connect: ALL, grpc: ALL } },
     "async-http1" => { http: "HTTP/1.1", protocols: { connect: H1_STREAMING } },
-    "async-threaded" => { http: "HTTP/2", protocols: { connect: [:unary] } }
+    "async-threaded" => { http: "HTTP/2", protocols: { connect: THREADED, grpc: THREADED } }
   }.freeze
 
   # Which servers can require client certificates (--mtls) and which clients

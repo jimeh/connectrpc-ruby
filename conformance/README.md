@@ -237,3 +237,26 @@ checks. Generated Ruby clients also exercise the merged Falcon H1 server in its
 own bundle. These checks do not change the server's response-first total grace
 or discard policy. Historical failed qualification artifacts remain evidence,
 not successful new-head results.
+
+## ThreadedTransport client profiles
+
+`mise run async:conformance:threaded` runs the official native client cases
+through `ConnectRPC::Async::ThreadedTransport` from the adapter's plain thread,
+with no reactor in the caller. Four separate profiles against the pinned 1.0.6
+reference servers cover HTTP/2 Connect unary (including safe GET) and server
+streaming in protobuf and ProtoJSON, and native gRPC unary and server streaming
+in protobuf, each over h2c, TLS and client certificates with receive limits.
+`cases-threaded-connect-*.json` and `cases-threaded-grpc-*.json` hold the exact
+inventories: 336 Connect identity, 310 Connect gzip, 236 gRPC identity and 198
+gRPC gzip names. There are no exclusions, expected failures or skips. The
+after-close cancellation timer runs on its own thread.
+
+`native_threaded_ledger.rb` applies the native client accounting and closed
+lifetimes to the actual inner H2 `Transport` (calls, acquisitions, tasks,
+streams, resources and lifetime children) and adds front facts: a graceful
+`close` (5 s grace, after every call finished) that returned true, closed state,
+zero admission and mailboxes, and an exited owner thread. A forced zero-grace
+close always returns false, so the adapter drains instead. Library and transport
+scopes must run on the caller thread, and dispatch, operation and cleanup
+scopes on the owner thread. Both Ruby CI lanes run this gate after the other
+Async conformance tasks.

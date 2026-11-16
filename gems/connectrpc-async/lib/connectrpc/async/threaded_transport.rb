@@ -4,7 +4,8 @@ require "uri"
 
 module ConnectRPC
   module Async
-    # Connect unary over the HTTP/2 Transport for ordinary threads. One owner
+    # Connect unary and server streaming, and native gRPC unary and server
+    # streaming, over the HTTP/2 Transport for ordinary threads. One owner
     # thread per process runs an Async reactor and the inner Transport; callers
     # hand each call to it through a queue and wait on a per-call mailbox.
     class ThreadedTransport
@@ -169,7 +170,8 @@ module ConnectRPC
             release(call)
           else
             call.result ||= outcome
-            call.signal.signal
+            # A stream can have an operation waiter beside its scope's waiter.
+            call.signal.broadcast
           end
         end
 
@@ -187,7 +189,7 @@ module ConnectRPC
             @calls.each_key.filter_map do |call|
               unless call.caller_done || call.result
                 call.result = [:error, Error.new(:unavailable, STOPPED)]
-                call.signal.signal
+                call.signal.broadcast
               end
               call.source unless call.reactor_done
             end
@@ -233,6 +235,7 @@ module ConnectRPC
           loop do
             command = @inbox.pop
             case command
+            when Stream then task.async(finished: false) { serve_stream(command) }
             when Call then task.async(finished: false) { serve(command) }
             when :rejected then emit_rejections
             when Proc then command.call
@@ -332,6 +335,24 @@ module ConnectRPC
       def call(request)
         check_owner!
         CallCancellation.with_request(request) { |outgoing| perform(outgoing) }
+      end
+
+      def streaming_capabilities = %i[server_stream].freeze
+
+      def open_stream(request, &)
+        raise ArgumentError, "A streaming block is required" unless block_given?
+
+        check_owner!
+        CallCancellation.with_request(request) { |outgoing| perform_stream(outgoing, grpc: false, &) }
+      end
+
+      def grpc_capabilities = %i[unary server_stream].freeze
+
+      def open_grpc_stream(request, &)
+        raise ArgumentError, "A gRPC block is required" unless block_given?
+
+        check_owner!
+        CallCancellation.with_request(request) { |outgoing| perform_stream(outgoing, grpc: true, &) }
       end
 
       def close(grace: 5)
@@ -482,7 +503,7 @@ module ConnectRPC
         call.source.cancel
         call.engine.admission.lock.synchronize do
           call.cancel_expires ||= Internal.now + Internal::CLEANUP_SECONDS
-          call.signal.signal
+          call.signal.broadcast
         end
       end
 
