@@ -3,7 +3,7 @@
 The workflow runs on pull requests, pushes to `main`, manual dispatch and a
 daily schedule (04:37 UTC), on Ubuntu 24.04. It has nine core, three optional
 Rails, four optional HTTP/2, two optional Rack, two optional in-process testing,
-two optional RBS, four Falcon checks, five lowest-allowed dependency checks and
+two optional RBS, four Falcon checks, seven lowest-allowed dependency checks and
 one runnable-examples check, with no serial cache primer or aggregate job:
 
 | Check | Ruby | Canonical commands |
@@ -290,8 +290,10 @@ cleanliness. Local verification does not establish hosted exact-head success.
 
 Prometheus and Yabeda each run one `<name>:verify` leaf per pinned Ruby. Like
 OTel, each selects its own `gems/connectrpc-<name>/Gemfile`, `vendor/<name>/bundle`
-and `vendor/<name>/bundler` before setup-ruby, keeps frozen installation and the
-seven-day cooldown, and validates the action runtime through `<name>:tools`.
+and `vendor/<name>/bundler` before setup-ruby, resolves fresh within the gemspec
+constraints under the three-day cooldown, and validates the action runtime
+through `<name>:tools`. `floors:prometheus` and `floors:yabeda` cover their
+lowest allowed versions.
 The Prometheus lane includes real Rack, Async and Falcon hosts and a forked
 `DirectFileStore` check; the Yabeda lane records through `yabeda/testing`. Both
 install their archives offline into a fresh external GEM_HOME and check
