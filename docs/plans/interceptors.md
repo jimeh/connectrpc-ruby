@@ -679,9 +679,12 @@ so cancellation never masks misuse.
   `Metadata` objects it holds (`Metadata#freeze` is separate,
   `lib/connectrpc/metadata.rb:65-68`). Core freezes the `Response`
   itself, so `response.metadata = ...` raises, and freezes its metadata and
-  trailers. It does this when the innermost continuation returns and again at
-  the outermost boundary, so a replacement or cached `Response` built by an
-  interceptor reaches the caller frozen too. The message object is neither
+  trailers. It does this whenever a layer returns a `Response`, before the
+  next outer layer receives it: when the innermost continuation returns, when
+  a client unary interceptor short-circuits, and when any layer returns a
+  replacement. A replacement or cached `Response` built by an inner
+  interceptor therefore reaches outer interceptors and the caller frozen, and
+  no outer layer can alter an object an inner layer shares across calls. The message object is neither
   copied nor frozen, as today; core cannot deep-freeze binding-owned messages.
   An interceptor that serves one cached `Response` to many callers therefore
   shares its message between them, and should build a fresh `Response` with a
@@ -759,6 +762,11 @@ class ValidatingStream < SimpleDelegator
 end
 ```
 
+This example validates the server-streaming request and outgoing messages
+sent through `send_message`. It does not validate incoming messages on
+client-streaming or bidi endpoints; a read-side wrapper must override both
+`receive` and `each`, as **Delegation** below explains.
+
 - **Order.** Core applies wrappers innermost first. The application block or
   handler receives `outer(inner(raw))`, and a `send_message` from the
   application passes through the outer wrapper first. This matches
@@ -778,7 +786,12 @@ end
   that the returned object responds to every public method of the endpoint it
   replaces, and raises `InterceptorStateError` otherwise, so a wrapper that
   drops `abandon` or `each` fails at wrap time instead of inside application
-  code.
+  code. Delegating does not route through the wrapper: `ResponseReader#each`
+  calls `receive` on the reader itself
+  (`lib/connectrpc/streaming/streams.rb:67-77`), so a wrapper that overrides
+  only `receive` and delegates `each` is bypassed by every read made through
+  `each`. A read-side wrapper must override both `receive` and `each`, for
+  example by implementing `each` as a loop over its own `receive`.
 - **Typing.** `wrap_stream` takes a block typed `(untyped) -> untyped`, and
   application blocks and handlers keep their nominal endpoint types
   (`ResponseReader[R]` and so on). Wrappers are therefore duck-typed against
@@ -1139,7 +1152,9 @@ Evidence:
   raised before `yield` also reports `:unobserved` on both protocols.
 - Replacement results: after a successful continuation, a client interceptor's
   replacement `Response` reaches the caller on Connect and on native gRPC, and
-  a server interceptor's replacement message reaches the wire. A unary
+  a server interceptor's replacement message reaches the wire. An outer
+  client interceptor receives an inner interceptor's short-circuit or
+  replacement `Response` already frozen. A unary
   interceptor that raises after a successful continuation fails the call with
   that exception on both roles.
 - Frozen responses from real calls, with and without interceptors: the
@@ -1222,6 +1237,10 @@ Evidence:
   Connect and native gRPC, Falcon HTTP/1 for Connect server and client
   streaming, Async gRPC-Web server streaming, and `ThreadedTransport` server
   streaming.
+- Read-side wrappers: a validating wrapper that overrides `receive` and
+  `each` rejects an invalid message whether the handler or application reads
+  with `receive` or with `each`, on client-streaming and bidi endpoints for
+  both roles.
 - Escaped wrapper use raises `StreamStateError`; a wrapper `close_send`
   followed by core completion reaches a strict exchange's `close_send` once
   (needs L5). A wrapper missing an endpoint method fails at wrap time.
