@@ -1,0 +1,68 @@
+name: Pins-lifted canary
+
+# Non-gating: never runs on pull requests or pushes. Resolves the remaining
+# third-party patch pins at their newest releases and runs the Async and Falcon
+# upstream contract specs and suites, so an upstream release that breaks a
+# contract shows up here before anyone bumps a pin. See docs/ci.md.
+on:
+  schedule:
+    - cron: "17 5 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  MISE_ENV: ci
+  MISE_LOCKED: "1"
+  BUNDLE_IGNORE_CONFIG: "true"
+  BUNDLE_PATH: ${{ github.workspace }}/vendor/bundle
+  BUNDLE_DISABLE_SHARED_GEMS: "true"
+  BUNDLE_VERSION: "4.0.23"
+
+jobs:
+  canary:
+    name: Pins lifted ${{ matrix.leaf }} / Ruby 3.4.12
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        leaf: [async, falcon]
+    env:
+      CI_EXPECTED_RUBY_VERSION: "3.4.12"
+      BUNDLE_COOLDOWN: "3"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # The canary task generates its wrapper Gemfile, so it installs the bundle itself.
+      - uses: ruby/setup-ruby@7f797815d8adceb1c412e7abefdd1ab4abc47a5f # v1.335.0
+        with:
+          ruby-version: "3.4.12"
+          bundler: "4.0.23"
+          bundler-cache: false
+          cache-version: bundler-4.0.23-v1
+      - uses: jdx/mise-action@82a612c5ab8bcda7cc5db6b7e81a8e7584c3dc6e # v5.2.3
+        with:
+          version: "2026.10.19"
+          add_shims_to_path: false
+          env: false
+          export_path: false
+          install: false
+          cache: false
+      - name: Run pins-lifted contract specs and suite
+        env:
+          CANARY_LEAF: ${{ matrix.leaf }}
+        run: mise run "canary:$CANARY_LEAF"
+      - name: Check workspace stayed clean
+        if: always()
+        run: |
+          if [ -n "$(git status --porcelain --untracked-files=all)" ]; then
+            git status --short --untracked-files=all
+            exit 1
+          fi

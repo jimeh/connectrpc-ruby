@@ -19,12 +19,12 @@ Gem::Specification.new do |spec|
                Dir.glob(["lib/**/*.rb", "examples/*.rb", "README.md", "LICENSE"], base: __dir__).sort
   spec.require_paths = ["lib"]
   local_requirement = "~> #{spec.version.to_s.split('.').first(2).join('.')}.0"
-  # protocol-http1 stays patch-only (~> x.y.z) because the HTTP/1 listener couples to its private
-  # internals (see issue #68). The rest use only public APIs, so they follow the floor policy: the
-  # tested release as floor, capped below 1.
+  # Every dependency follows the floor policy: the tested release as floor, capped below 1. The
+  # async-http coupling (HTTP1Connection subclasses its HTTP1::Server; Endpoint hooks are checked
+  # by Falcon's UpstreamContract at require) is held by connectrpc-async's async-http patch pin.
   {
     "connectrpc-async" => local_requirement, "falcon" => [">= 0.57.0", "< 1"], "protocol-rack" => [">= 0.23.0", "< 1"],
     "async-service" => [">= 0.25.0", "< 1"], "async-utilization" => [">= 0.5.0", "< 1"],
-    "protocol-http1" => "~> 0.41.1"
+    "protocol-http1" => [">= 0.41.1", "< 1"]
   }.each { |name, requirement| spec.add_dependency(name, *requirement) }
 end

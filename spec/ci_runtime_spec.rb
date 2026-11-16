@@ -415,6 +415,60 @@ RSpec.describe "Optional Rails task context" do
   end
 end
 
+RSpec.describe "Pins-lifted canary workflow" do
+  let(:workflows) { File.expand_path("../.github/workflows", __dir__) }
+  let(:workflow) { YAML.load_file(File.join(workflows, "canary.yml")) }
+  let(:ci) { YAML.load_file(File.join(workflows, "ci.yml")) }
+  let(:job) { workflow.fetch("jobs").fetch("canary") }
+  let(:tasks) do
+    output, error, status = Open3.capture3("mise", "tasks", "--json")
+    expect(status.success?).to be(true), error
+    JSON.parse(output).to_h { |task| [task.fetch("name"), task] }
+  end
+
+  it "never gates pull requests or main and runs daily apart from CI" do
+    triggers = workflow.fetch("on", workflow[true])
+    expect(triggers.keys).to contain_exactly("schedule", "workflow_dispatch")
+    cron = triggers.fetch("schedule").map { |entry| entry.fetch("cron") }
+    expect(cron.size).to eq(1)
+    expect(cron.first).to match(/\A\d+ \d+ \* \* \*\z/)
+    ci_cron = ci.fetch("on", ci[true]).fetch("schedule").first.fetch("cron")
+    expect(cron.first.split.first(2)).not_to eq(ci_cron.split.first(2))
+    expect(workflow.fetch("permissions")).to eq("contents" => "read")
+    expect(workflow.fetch("env")).to eq(ci.fetch("env"))
+    ci_commands = ci.fetch("jobs").values.flat_map { |entry| entry.fetch("steps").filter_map { |step| step["run"] } }
+    expect(ci_commands.join("\n")).not_to include("canary")
+  end
+
+  it "runs each leaf on Ruby 3.4.12 through its Mise canary task with the floors job's pinned actions" do
+    expect(workflow.fetch("jobs").keys).to eq(["canary"])
+    expect(job.fetch("timeout-minutes")).to be_between(1, 90)
+    expect(job.dig("strategy", "fail-fast")).to be(false)
+    expect(job.dig("strategy", "matrix", "leaf")).to eq(%w[async falcon])
+    expect(job.fetch("env")).to eq("CI_EXPECTED_RUBY_VERSION" => "3.4.12", "BUNDLE_COOLDOWN" => "3")
+    actions = ->(steps) { steps.filter_map { |step| step.slice("uses", "with") if step["uses"] } }
+    expect(actions.call(job.fetch("steps"))).to eq(actions.call(ci.dig("jobs", "floors", "steps")))
+    step = job.fetch("steps").find { |entry| entry["run"]&.include?("canary:") }
+    expect(step).to include("run" => 'mise run "canary:$CANARY_LEAF"',
+                            "env" => { "CANARY_LEAF" => "${{ matrix.leaf }}" })
+    expect(job.fetch("steps").last).to include("if" => "always()")
+    expect(job.fetch("steps").last.fetch("run")).to include("git status --porcelain --untracked-files=all")
+  end
+
+  it "maps each leaf to a fresh canary-mode task that never builds packages, and aggregates both" do
+    job.dig("strategy", "matrix", "leaf").each do |leaf|
+      task = tasks.fetch("canary:#{leaf}")
+      expect(task.fetch("description")).to start_with("Non-gating pins-lifted canary")
+      expect(task.fetch("depends")).to eq(["#{leaf}:tools"])
+      expect(task.fetch("env")).to include("CONNECTRPC_DEPENDENCY_CANARY=1")
+      launcher = "mise exec -- ruby gems/connectrpc-#{leaf}/scripts/run.rb"
+      expect(task.fetch("run")).to eq(["rm -f gems/connectrpc-#{leaf}/Gemfile.canary.lock", "#{launcher} setup",
+                                       "#{launcher} canary"])
+    end
+    expect(tasks.fetch("canary").fetch("depends")).to contain_exactly("canary:async", "canary:falcon")
+  end
+end
+
 RSpec.describe "Package bundle isolation in CI" do
   it "keeps jobs with a package Gemfile from reaching root setup through task dependencies" do
     jobs = YAML.load_file(File.expand_path("../.github/workflows/ci.yml", __dir__)).fetch("jobs")

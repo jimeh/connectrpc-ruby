@@ -960,9 +960,15 @@ stalled. When the broken contract also stops Async from tearing down the
 probe's reactor, the probe thread stays asleep for the rest of the process.
 `connectrpc/falcon` checks its async-http `Endpoint` hooks the same way. The
 guards cover the patch-pinned async-http and protocol-http2 hooks and Async's
-finalization contract; Falcon's overrides of the `falcon` gem are not checked,
-because its `>= 0.57.0, < 1` range allows harmless changes a shape check would
-reject.
+finalization contract. Async itself is no longer patch-pinned: the finalization
+probe is what lets the gemspec allow `async >= 2.46.0, < 3` (the guarded-coupling
+tier in the [dependency policy](../../docs/development.md#gem-dependency-constraints)).
+async-http and protocol-http2 stay patch-pinned because the semantics their
+replaced hooks depend on cannot be proven at boot; the daily
+[pins-lifted canary](../../docs/development.md#pins-lifted-canary) runs these
+contracts against their newest releases. Falcon's overrides of the `falcon` gem
+are not checked, because its `>= 0.57.0, < 1` range allows harmless changes a
+shape check would reject.
 Each gem's `spec/upstream_contract_spec.rb` pins the behaviors these checks
 depend on. Its "worked around" examples fail when upstream fixes a behavior
 this package works around, and each one names the workaround to delete. See
@@ -1067,7 +1073,10 @@ Discover `async:setup`, `async:test`, `async:check`, `async:build`,
 `async:package`, `async:example`, `async:interop`, and `async:verify` with
 `mise tasks`. The separate bundle resolves the newest allowed dependencies into
 `vendor/async`, and coverage uses `coverage/async`. `floors:async` repeats specs
-and package checks with every runtime dependency at its gemspec floor. `async:verify` checks the independent bundle, installed
+and package checks with every runtime dependency at its gemspec floor.
+`canary:async` is the non-gating pins-lifted lane: it runs the upstream contract
+spec and the suite with the async-http and protocol-http2 patch pins lifted to
+their newest releases. `async:verify` checks the independent bundle, installed
 packages and connect-go interoperability. Core require and core/Rails
 dependencies stay independent. The [backend evidence](#verification-evidence)
 above describes what these checks exercise.

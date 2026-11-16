@@ -435,9 +435,10 @@ Rejected native Web HTTP/1 input now has an explicit resource-policy allowance:
 one absolute monotonic 100 ms budget to finish the original fixed/chunked body
 framing. Progress never resets it. The valid grpc-timeout captured at original
 application entry can shorten this allowance; cancellation, host drain and
-owner abort retain control. Reads use the pinned HTTP/1 body's at-most-64 KiB
-chunks, without aggregating the upload or consuming the next request. An existing
-input-adapter remainder can coexist with one discard read, each at most 64 KiB;
+owner abort retain control. Reads use protocol-http1's framed body, which
+returns at most 64 KiB per read, without aggregating the upload or consuming the
+next request. An existing input-adapter remainder can coexist with one discard
+read, each at most 64 KiB;
 this is not a total allocation or RSS bound. Successful calls already consume
 their input and do not enter this tail policy.
 
@@ -499,7 +500,9 @@ application-owned declarations.
 The independent bundle resolves the newest allowed dependencies into
 `vendor/falcon` and reports full optional library coverage under
 `coverage/falcon/<Ruby version>`. `floors:falcon` repeats specs and package
-checks with every runtime dependency at its gemspec floor:
+checks with every runtime dependency at its gemspec floor. `canary:falcon` is the
+non-gating pins-lifted lane: it runs the upstream contract spec and the suite with
+connectrpc-async's async-http and protocol-http2 patch pins lifted:
 
 ```sh
 mise run falcon:setup

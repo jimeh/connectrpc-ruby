@@ -27,7 +27,7 @@ module ConnectRPC
             validate_framing!(leading)
             raise IOError, "HTTP upgrade is unsupported" if status == 101
 
-            # The pinned native parser compares the transfer token literally.
+            # protocol-http1's parser compares the transfer token literally.
             # Our validation already permits exactly one case-insensitive token.
             headers["transfer-encoding"] = "chunked" if leading.key?("transfer-encoding")
             self.persistent &&= persistent?(@response_version, method, headers)

@@ -19,13 +19,19 @@ Gem::Specification.new do |spec|
                Dir.glob(["lib/**/*.rb", "LICENSE", "README.md"], base: __dir__).sort
   spec.require_paths = ["lib"]
   local_requirement = "~> #{spec.version.to_s.split('.').first(2).join('.')}.0"
-  # async, async-http, protocol-http2, protocol-http1 and io-stream stay patch-only (~> x.y.z) because
-  # the transports and completion joins couple to their private internals (see issue #68). The rest use
-  # only public APIs, so they follow the floor policy: the tested release as floor, capped below 1.
+  # Patch pins (~> x.y.z), see docs/development.md#gem-dependency-constraints and issue #68:
+  # - async-http: Output#start, read_in_background and Server#each copies and Stream ivar roles
+  #   replace eager-start and ownership semantics that the boot check cannot prove.
+  # - protocol-http2: receive-window enforcement and credit-before-WINDOW_UPDATE ordering replace
+  #   its flow-control accounting.
+  # Guarded coupling: async's task finalization is probed at require by
+  # ConnectRPC::Async::Internal::UpstreamContract, so async takes the range below its next major.
+  # The rest use only public APIs, so they follow the floor policy: the tested release as floor,
+  # capped below 1.
   {
-    "connectrpc" => local_requirement, "async-http" => "~> 0.105.0", "async" => "~> 2.46.0",
-    "protocol-http2" => "~> 0.29.2", "protocol-http1" => "~> 0.41.1",
+    "connectrpc" => local_requirement, "async-http" => "~> 0.105.0", "async" => [">= 2.46.0", "< 3"],
+    "protocol-http2" => "~> 0.29.2", "protocol-http1" => [">= 0.41.1", "< 1"],
     "protocol-http" => [">= 0.72.1", "< 1"], "io-endpoint" => [">= 0.19.0", "< 1"],
-    "io-stream" => "~> 0.14.0", "openssl" => ">= 3.3"
+    "io-stream" => [">= 0.14.0", "< 1"], "openssl" => ">= 3.3"
   }.each { |name, requirement| spec.add_dependency(name, *requirement) }
 end

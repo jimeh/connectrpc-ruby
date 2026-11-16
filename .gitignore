@@ -26,3 +26,6 @@ Gemfile.floors
 *.floors.gemfile
 *.floors.lock
 *.floors.gemfile.lock
+# Generated pins-lifted canary (CONNECTRPC_DEPENDENCY_CANARY=1) wrappers and locks.
+Gemfile.canary
+Gemfile.canary.lock

@@ -70,6 +70,27 @@ wrapper does not exist before the task runs, these jobs disable the setup-ruby
 bundle cache and install from the registry each time. See
 [development](development.md#fresh-resolution-and-the-lowest-allowed-lane).
 
+## Pins-lifted canary
+
+A separate workflow, [`canary.yml`](../.github/workflows/canary.yml), runs
+daily at 05:17 UTC and on manual dispatch only, so it never gates a pull
+request or `main`. Its two-leaf matrix runs `mise run canary:async` and
+`mise run canary:falcon` on Ruby 3.4.12, with `fail-fast: false` and a 60-minute
+job timeout. It uses the same pinned actions and environment as the
+lowest-allowed jobs and disables the setup-ruby bundle cache, because each task
+generates its ignored `Gemfile.canary` and installs into `vendor/<pkg>/canary/`.
+
+Each leaf lifts the remaining third-party patch pins (async-http and
+protocol-http2 today) to their newest releases below the next major, prints
+which dependencies resolved beyond their pin, then runs the upstream contract
+spec and the rest of the suite under separate wall-clock deadlines. The job
+summary names the result of each phase: passed, timeout (hang), contract guard
+failure with each broken contract, boot failure, or the failing examples. A red
+canary run is a signal to investigate before bumping a pin, not a CI failure to
+fix on `main`. See [development](development.md#pins-lifted-canary). Like the CI
+schedule, GitHub disables this scheduled workflow after 60 days without
+repository activity.
+
 ## Runtime boundary
 
 CI pins `ruby/setup-ruby` v1.335.0 and `actions/setup-go` v7.0.0 by full commit,
