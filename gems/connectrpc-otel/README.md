@@ -26,10 +26,10 @@ and adoption gates.
 ## Installation
 
 ```ruby
-gem "connectrpc-otel", "~> 0.1.0"
+gem "connectrpc-otel", "~> 0.2.0"
 ```
 
-The only runtime dependencies are `connectrpc ~> 0.1.0` and
+The only runtime dependencies are `connectrpc ~> 0.2.0` and
 `opentelemetry-api >= 1.11.1, < 2`. Core and the HTTP/framework packages do not
 depend on OpenTelemetry. Install and configure the OpenTelemetry SDK and
 exporters yourself.

@@ -27,11 +27,11 @@ and adoption gates.
 
 ## Installation
 
-Requires Ruby >= 3.4, `connectrpc ~> 0.1.0` and `rack >= 3.2.7, < 4`. Add the
+Requires Ruby >= 3.4, `connectrpc ~> 0.2.0` and `rack >= 3.2.7, < 4`. Add the
 gem to your Gemfile; it installs compatible core and Rack dependencies:
 
 ```ruby
-gem "connectrpc-rack", "~> 0.1.0"
+gem "connectrpc-rack", "~> 0.2.0"
 ```
 
 Core installed alone has no runtime dependencies, loads no Rack, and has no

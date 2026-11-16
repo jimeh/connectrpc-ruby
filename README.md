@@ -56,8 +56,8 @@ verifies with protoc 36.2.
    Rack server to your Gemfile, then run `bundle install`:
 
    ```ruby
-   gem "connectrpc", "~> 0.1.0"
-   gem "connectrpc-rack", "~> 0.1.0"
+   gem "connectrpc", "~> 0.2.0"
+   gem "connectrpc-rack", "~> 0.2.0"
    gem "google-protobuf", ">= 4.36.2", "< 5"
    gem "rackup"
    gem "webrick"

@@ -52,7 +52,7 @@ an optional downstream app and routes `PATH_INFO`; unrelated service paths
 fall through, while unknown methods within registered services fail explicitly.
 Neither core nor handlers need Rack envs. The optional `connectrpc-rack` package
 owns `connectrpc/rack` exclusively and loads core through `require "connectrpc"`.
-Applications add `gem "connectrpc-rack", "~> 0.1.0"` while keeping the require
+Applications add `gem "connectrpc-rack", "~> 0.2.0"` while keeping the require
 and `ConnectRPC::Rack` API unchanged. Core has no middleware file or runtime
 dependencies; requiring middleware without its package raises an ordinary
 `LoadError`. Google loads only through `connectrpc/bindings/google_protobuf`;

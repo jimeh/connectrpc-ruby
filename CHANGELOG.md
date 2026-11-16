@@ -1,5 +1,28 @@
 # Changelog
 
+## [0.2.0](https://github.com/jimeh/connectrpc-ruby/compare/v0.1.2...v0.2.0) (2026-11-16)
+
+
+### ⚠ BREAKING CHANGES
+
+* TransportRequest#cancellation and StreamRequest#cancellation are now a read-only view instead of ConnectRPC::CallCancellation. The typed SPI (_Cancellation) is unchanged, but custom transports that called commit! or close on request.cancellation must stop; core completes the call.
+
+### Features
+
+* add Rails interceptor hook and document interceptor host coverage ([#95](https://github.com/jimeh/connectrpc-ruby/issues/95)) ([d41f5fb](https://github.com/jimeh/connectrpc-ruby/commit/d41f5fb0edbe67121c5531b8a8dfff614291e287))
+* add typed streaming client and server interceptors ([#94](https://github.com/jimeh/connectrpc-ruby/issues/94)) ([31d5fa9](https://github.com/jimeh/connectrpc-ruby/commit/31d5fa957818b231c1a304931ee8343c68a99c79)), closes [#32](https://github.com/jimeh/connectrpc-ruby/issues/32)
+* add typed unary client and server interceptors ([#89](https://github.com/jimeh/connectrpc-ruby/issues/89)) ([ca03d6e](https://github.com/jimeh/connectrpc-ruby/commit/ca03d6ecbc6c47903449860e1e83bab2b461ab8b))
+* **async:** add HTTP/2 keepalive, ping enforcement and connection age limits ([#76](https://github.com/jimeh/connectrpc-ruby/issues/76)) ([1756faa](https://github.com/jimeh/connectrpc-ruby/commit/1756faa84f367cdbc2aba64e2a314094bae08eb6))
+* **async:** fail require when upstream Async contracts change ([#88](https://github.com/jimeh/connectrpc-ruby/issues/88)) ([83b817e](https://github.com/jimeh/connectrpc-ruby/commit/83b817ee451b64746d23d9604a764ce304c39438))
+
+
+### Bug Fixes
+
+* preserve lifecycle request metadata and caller baggage ([#81](https://github.com/jimeh/connectrpc-ruby/issues/81)) ([54d55fb](https://github.com/jimeh/connectrpc-ruby/commit/54d55fb10f40766b063dbe5cb0ebefc98dccaa7c))
+* **rails:** drop the rescued cause from normalized controller errors ([#87](https://github.com/jimeh/connectrpc-ruby/issues/87)) ([66a03a3](https://github.com/jimeh/connectrpc-ruby/commit/66a03a38722fb0ad883bad3d7972220f9c9df4eb))
+* resolve audit generator, tooling and packaging findings L13-L16 ([#79](https://github.com/jimeh/connectrpc-ruby/issues/79)) ([915af39](https://github.com/jimeh/connectrpc-ruby/commit/915af39ea54cdc9788676ab351d903f8512446cb))
+* resolve audit normalization and transport SPI findings L1-L3, L5 and L6 ([#84](https://github.com/jimeh/connectrpc-ruby/issues/84)) ([712aace](https://github.com/jimeh/connectrpc-ruby/commit/712aace9557bce5c8d1f3a32dbcc8d9c3182bec4))
+
 ## [0.1.2](https://github.com/jimeh/connectrpc-ruby/compare/v0.1.1...v0.1.2) (2026-11-16)
 
 

@@ -29,10 +29,10 @@ and adoption gates.
 ## Installation
 
 ```ruby
-gem "connectrpc-prometheus", "~> 0.1.0"
+gem "connectrpc-prometheus", "~> 0.2.0"
 ```
 
-The only runtime dependencies are `connectrpc ~> 0.1.0` and
+The only runtime dependencies are `connectrpc ~> 0.2.0` and
 `prometheus-client >= 5.0, < 6`. The shared, backend-neutral layer lives in core
 as the optional `require "connectrpc/metrics"`. Core and the HTTP/framework
 packages do not depend on Prometheus.

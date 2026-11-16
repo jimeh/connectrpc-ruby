@@ -27,10 +27,10 @@ and adoption gates.
 ## Installation
 
 ```ruby
-gem "connectrpc-sentry", "~> 0.1.0"
+gem "connectrpc-sentry", "~> 0.2.0"
 ```
 
-The only runtime dependencies are `connectrpc ~> 0.1.0` and
+The only runtime dependencies are `connectrpc ~> 0.2.0` and
 `sentry-ruby >= 6.7.0, < 8`. Core and the HTTP/framework packages do not depend
 on Sentry. `sentry-rails` is optional; Rails RPCs work through the active-span
 rule below.
