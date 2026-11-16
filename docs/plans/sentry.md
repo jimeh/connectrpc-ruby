@@ -247,5 +247,7 @@ Minor choices made while implementing, within the decisions above:
 - A nested server child records the scope it activates on (the current scope it
   saves and restores the span on, or the scope it pushes) and uses it for error
   capture and promotion, so handler `Sentry.set_user` and tags reach both when
-  the RPC started in another context. The `http.server` rename still uses the
+  the RPC started in another context. A scope it pushes is first seeded from
+  the start scope, so request data survives; an unrelated context that already
+  holds a span keeps its own scope. The `http.server` rename still uses the
   start scope, and client children still promote with their start scope.

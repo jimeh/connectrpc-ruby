@@ -412,6 +412,8 @@ module ConnectRPC
           hub = ::Sentry.get_current_hub
           hub.push_scope
           scope = hub.current_scope
+          # A server child's pushed scope starts from the RPC's start scope, so request data survives.
+          Support.copy_scope(scope, @scope) if @nested
           scope.set_span(@span)
           @handler_scope = scope if @nested
           [:scope, hub, scope]

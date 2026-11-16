@@ -143,6 +143,7 @@ RSpec.describe "Span lifetime, promotion and finish scope" do
     caller = handle = nil
     Fiber.new do
       caller = start_caller("host")
+      Sentry.set_tags(request: "start")
       handle = instrumentation.start(owner: self, role: :server, method: ECHO::ECHO, carrier: {})
     end.resume
     [caller, handle]
@@ -168,6 +169,9 @@ RSpec.describe "Span lifetime, promotion and finish scope" do
       events = { error: error_events.first, promoted: promoted }
       expect(events.transform_values { |event| [event.user, event.tags[:handler]] })
         .to eq(error: [{ id: "handler-user" }, "kept"], promoted: [{ id: "handler-user" }, "kept"])
+      # A pushed scope is seeded from the start scope; an unrelated context's own scope is never mutated.
+      expect(events.transform_values { |event| event.tags[:request] })
+        .to eq(error: span ? nil : "start", promoted: span ? nil : "start")
       expect(trace_of(error_events.first)[:span_id]).to eq(trace_of(promoted)[:span_id])
       expect(trace_of(promoted)).to include(trace_id: caller.trace_id, parent_span_id: caller.span_id)
     end
