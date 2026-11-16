@@ -184,7 +184,9 @@ RSpec.describe "ThreadedTransport stream completion outcome" do
       origin = "http://127.0.0.1:#{peer.peer.port}"
       transport = threaded(origin: origin)
       mixed_client(transport, origin).lookup(item("warm"))
-      failure = { finished_error: ConnectRPC::Error, finished_timeout: Timeout::Error }.fetch(kind) do
+      # unfinished_error raises a remote-style error before finish, which must not wait either.
+      failure = { finished_error: ConnectRPC::Error, unfinished_error: ConnectRPC::Error,
+                  finished_timeout: Timeout::Error }.fetch(kind) do
         Class.new(kind == :finished_exception ? Exception : StandardError)
       end
       gates = Thread::Queue.new
