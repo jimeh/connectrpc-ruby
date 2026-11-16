@@ -280,6 +280,55 @@ RSpec.describe "connectrpc-async upstream contract" do
     end
   end
 
+  describe "relied on by the owned HTTP/1 client stream" do
+    # HTTP1Stream implements only the stream calls protocol-http1 makes.
+    stream_calls = %i[gets read readpartial write flush close close_read close_write]
+
+    let(:recorder) do
+      Class.new(BasicObject) do
+        def initialize(target, calls)
+          @target = target
+          @calls = calls
+        end
+
+        def method_missing(name, ...)
+          @calls << name
+          @target.__send__(name, ...)
+        end
+
+        def respond_to_missing?(name, include_private = false)
+          @calls << :"respond_to?(#{name})"
+          @target.respond_to?(name, include_private)
+        end
+      end
+    end
+
+    it "defines every stream call protocol-http1 makes" do
+      stream_class = AsyncHelpers::INTERNAL.const_get(:HTTP1Stream)
+      expect(stream_calls.reject { |name| stream_class.public_method_defined?(name) }).to eq([])
+    end
+
+    it "protocol-http1 drives chunked and fixed exchanges and close with only those stream calls" do
+      left, right = Socket.pair(:UNIX, :STREAM, 0)
+      left.timeout = 5
+      right.write("HTTP/1.1 200 OK\r\ntransfer-encoding: chunked\r\n\r\n3\r\nabc\r\n0\r\n\r\n" \
+                  "HTTP/1.1 200 OK\r\ncontent-length: 2\r\n\r\nhi")
+      calls = []
+      stream = AsyncHelpers::INTERNAL.const_get(:HTTP1Stream).new(left)
+      connection = Protocol::HTTP1::Connection.new(recorder.new(stream, calls))
+      bodies = Array.new(2) do
+        connection.write_request("localhost", "POST", "/contract", "HTTP/1.1", {})
+        connection.write_body("HTTP/1.1", Protocol::HTTP::Body::Buffered.wrap(["x"]))
+        connection.read_response("POST")[4].join
+      end
+      connection.close
+      expect(bodies).to eq(%w[abc hi])
+      expect(calls.uniq - stream_calls).to eq([])
+    ensure
+      [left, right].each { |socket| AsyncHelpers::INTERNAL.raw_close(socket) }
+    end
+  end
+
   describe "perturbed at require" do
     finish = <<~RUBY
       Async::Task.prepend(Module.new do
