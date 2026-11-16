@@ -1019,6 +1019,10 @@ run = "mise exec -- ruby scripts/release.rb check"
 description = "Refresh installation guide requirements after a minor (breaking) release version update"
 run = "mise exec -- ruby scripts/release.rb prepare"
 
+[tasks."release:prepare:pr"]
+description = "CI only (release-please.yml on main): commit prepared installation guides to the release PR branch as the release App"
+run = "mise exec -- ruby scripts/release.rb prepare-pr"
+
 [tasks."release:build"]
 description = "Build and compare eleven canonical candidate archives from a clean Ruby 3.4.12 checkout"
 run = "mise exec -- ruby scripts/release.rb build"

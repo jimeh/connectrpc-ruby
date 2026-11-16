@@ -10,7 +10,8 @@ It remains experimental and does not adopt the stronger
 The pipeline has three stages:
 
 1. Every push to main runs Release Please, which opens or updates one release
-   PR for the whole train.
+   PR for the whole train. For a minor release, the same run then commits the
+   prepared installation guides to that PR.
 2. Merging that PR makes Release Please push a `vX.Y.Z` tag and create a draft
    GitHub release with the changelog.
 3. The tag starts the [release workflow](../.github/workflows/release.yml). It
@@ -65,6 +66,26 @@ draft release until it is published, and without the tag Release Please cannot
 find the previous release.
 This workflow has no publishing job or OIDC permission.
 
+After Release Please, the same job prepares the open release PR:
+
+1. It looks up the open PR from the
+   `release-please--branches--main--components--connectrpc` branch of this
+   repository into main. Release Please reports no PR when the body is
+   unchanged, so the lookup does not depend on its output. Forks are excluded.
+2. It checks out main for tooling, then the PR head SHA into `release-pr` as
+   data. Nothing from the release branch runs: `mise run release:prepare:pr`
+   reads only the release tree's core version file and installation guides as
+   text, and applies the same transformation as `release:prepare`.
+3. If any guide changes, it commits exactly those guides to the release branch
+   through the GraphQL `createCommitOnBranch` mutation with the App token, so
+   GitHub signs the commit as the App. `expectedHeadOid` is the checked-out
+   SHA, so a branch that moved since the lookup fails the run instead of being
+   overwritten.
+
+Patch releases and runs without an open release PR change nothing. A failed
+preparation is retried by the next push to main, or by manually dispatching the
+workflow from main. The App-token push starts the PR's normal CI.
+
 The job runs in the `release-please` environment, whose deployment branch
 policy allows only `main`. The existing release GitHub App needs these
 references, as in the pinned
@@ -77,10 +98,11 @@ references, as in the pinned
 | App installation | Installation access to `jimeh/connectrpc-ruby`, with contents, issues and pull requests write permissions. |
 
 The workflow requests an installation token scoped to the current repository
-and those three permissions. Its `GITHUB_TOKEN` has no permissions. App-created
-PRs can trigger normal downstream CI. Missing references fail the run with an
-actionable error; there is no fallback token. Do not print, copy into the
-checkout, or ask for private-key values in chat.
+and those three permissions. Contents write also covers the guide preparation
+commit, so it needs no new permission. Its `GITHUB_TOKEN` has no permissions.
+App-created PRs can trigger normal downstream CI. Missing references fail the
+run with an actionable error; there is no fallback token. Do not print, copy
+into the checkout, or ask for private-key values in chat.
 
 Both reference names were listed in the `release-please` environment on
 2026-11-14. App installation and token permissions are verified only by the
@@ -100,21 +122,23 @@ For each release PR:
 2. A patch release needs no preparation: the bot's version files, manifest and
    changelog are the whole change, and `release:check` accepts them. A minor
    (breaking) release changes the internal `~> M.m.0` requirement that the
-   installation guides quote, so `release:check` fails until you check out the
-   release branch, run `mise run release:prepare`, review the guide diff and
-   commit it with the existing signing configuration. Preparation does not
-   resolve dependencies or download anything.
+   installation guides quote. The workflow commits that guide update
+   automatically; review its diff. If the workflow cannot, dispatch it again or
+   use the local fallback: check out the release branch, run
+   `mise run release:prepare`, review the guide diff and commit it with the
+   existing signing configuration. Preparation does not resolve dependencies or
+   download anything.
 3. Run `mise run release:check`, focused tests and the candidate procedure below.
    Capture the exact head and CI/review evidence after the final bot update.
 4. Merge the PR once the release decision is made. The release workflow then
    waits for any `release` environment approval.
 
-**Re-run preparation after every bot regeneration of a minor release.** Release
-Please rebuilds its branch from main when its generated body changes. It can
-discard signed preparation commits and hand edits in the release PR. Finish the
-bot update, then prepare and validate its final head; a quiet main during that
-window helps. Do not present earlier CI/review evidence as covering a later
-regenerated head.
+**Validate the final head after every bot regeneration of a minor release.**
+Release Please rebuilds its branch from main when its generated body changes,
+which drops the preparation commit; the same workflow run then commits it
+again. Hand edits in the release PR are still discarded. Wait for the run to
+finish, then validate the final head; a quiet main during that window helps. Do
+not present earlier CI/review evidence as covering a later regenerated head.
 
 ## Validate a local candidate
 
@@ -123,7 +147,8 @@ Use `mise tasks` for the task index:
 | Task | Evidence and writes |
 | --- | --- |
 | `release:check` | Offline version, configuration, guard and installation-guide checks. No writes or setup dependencies. |
-| `release:prepare` | Deterministic installation-guide requirement updates, needed only for a minor release. No registry resolution. |
+| `release:prepare` | Deterministic installation-guide requirement updates, needed only for a minor release. No registry resolution. Local fallback for the workflow. |
+| `release:prepare:pr` | CI only. Refuses to run outside `release-please.yml` on main. Commits the prepared guides of the checked-out release PR as the App. |
 | `release:build` | Eleven canonical archives, two-build hash comparison and `candidate.json`. No installation or publication. |
 | `release:candidate` | Existing installed-package/generation/RBS checks followed by the canonical archive build. Uses normal scoped setup prerequisites. |
 | `release:tools` | Installs the frozen Sigstore signing bundle (`release/Gemfile`) into `vendor/sigstore`. |
@@ -133,7 +158,7 @@ Run the focused release specs and workflow checks first:
 
 ```sh
 mise run release:check
-mise run test -- spec/release_train_spec.rb spec/release_publisher_spec.rb spec/package_build_spec.rb spec/ci_runtime_spec.rb
+mise run test -- spec/release_train_spec.rb spec/release_preparation_spec.rb spec/release_publisher_spec.rb spec/package_build_spec.rb spec/ci_runtime_spec.rb
 mise run lint:workflows
 ```
 
@@ -301,8 +326,11 @@ published, the retained bytes are the only valid candidate. An interrupted uploa
 safe to delete. When repair requires a new version, release a new whole-train
 version and document the partial train and migration implications.
 
-Release Please creates its commits and tags through the GitHub API as the App,
-not with a local GPG key. Normal source commits stay signed.
+Release Please creates its commits and tags, and the workflow creates the
+guide preparation commit, through the GitHub API as the App, not with a local
+GPG key. GitHub signs App commits made without a custom author or committer.
+Normal source commits, including a local `release:prepare` fallback, stay
+signed.
 
 ## Primary references
 
@@ -315,3 +343,6 @@ not with a local GPG key. Normal source commits stay signed.
 - [RubyGems owner assertion for new gems](https://github.com/rubygems/rubygems.org/blob/master/app/models/pusher.rb) (`notify_missing_pending_owner`).
 - [Sigstore Ruby CLI](https://github.com/sigstore/sigstore-ruby/tree/v0.2.3).
 - [GitHub immutable releases](https://docs.github.com/en/code-security/supply-chain-security/understanding-your-software-supply-chain/immutable-releases).
+- [GraphQL `createCommitOnBranch`](https://docs.github.com/en/graphql/reference/mutations#createcommitonbranch).
+- [Signature verification for bots](https://docs.github.com/en/authentication/managing-commit-signature-verification/about-commit-signature-verification#signature-verification-for-bots).
+- [Triggering a workflow from a workflow](https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/trigger-a-workflow#triggering-a-workflow-from-a-workflow).

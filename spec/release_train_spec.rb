@@ -8,6 +8,7 @@ require "tmpdir"
 require "yaml"
 require_relative "../scripts/release_train"
 require_relative "../scripts/release_candidate"
+require_relative "../scripts/release_preparation"
 
 RSpec.describe ReleaseTrain do
   def captured_train
@@ -190,6 +191,45 @@ RSpec.describe "Release workflow boundaries" do
                                            "private-key" => "${{ secrets.RELEASE_BOT_PRIVATE_KEY }}")
     expect(token.fetch("with").keys.grep(/^permission-/)).to match_array(%w[permission-contents permission-issues
                                                                             permission-pull-requests])
+  end
+
+  # The App token and the release PR head meet only as data: tooling comes from
+  # main and nothing runs from the release-pr checkout.
+  it "prepares the open release PR from main tooling after Release Please" do
+    workflow, = load_workflow("release-please.yml")
+    expect(workflow.fetch("env")).to eq("MISE_ENV" => "ci", "MISE_LOCKED" => "1")
+    steps = workflow.fetch("jobs").fetch("release-please").fetch("steps")
+    release = steps.index { |step| step.fetch("uses", "").start_with?("googleapis/release-please-action@") }
+    find, main, data, ruby, mise, prepare = steps.drop(release + 1)
+    expect(steps.size).to eq(release + 7)
+
+    token = "${{ steps.app-token.outputs.token }}"
+    head = "${{ steps.release-pr.outputs.sha }}"
+    expect(find).to include("id" => "release-pr")
+    expect(find).not_to have_key("if")
+    expect(find.fetch("env")).to eq("GH_TOKEN" => token, "RELEASE_BRANCH" => ReleasePreparation::BRANCH)
+    expect(find.fetch("run")).to include("pulls?state=open&base=main&head=$GITHUB_REPOSITORY_OWNER:$RELEASE_BRANCH")
+      .and include('"sha=$sha" >> "$GITHUB_OUTPUT"')
+    expect([main, data, ruby, mise, prepare].map { |step| step["if"] }).to all(eq("steps.release-pr.outputs.sha != ''"))
+
+    checkout = steps.find { |step| step.fetch("uses", "").start_with?("actions/checkout@") }.fetch("uses")
+    expect([main, data].map { |step| step.fetch("uses") }).to eq([checkout, checkout])
+    expect(main.fetch("with")).to eq("token" => token, "persist-credentials" => false)
+    expect(data.fetch("with")).to eq("ref" => head, "path" => "release-pr", "token" => token,
+                                     "persist-credentials" => false)
+
+    # Runtime setup matches the release workflow exactly, with no caches.
+    published = load_workflow("release.yml").first.fetch("jobs").fetch("publish").fetch("steps")
+    [ruby, mise].each do |step|
+      expect(published).to include(step.except("if"))
+    end
+    expect(prepare.fetch("run")).to eq("mise run release:prepare:pr")
+    expect(prepare.fetch("env")).to eq("GH_TOKEN" => token, "RELEASE_HEAD" => head, "RELEASE_ROOT" => "release-pr")
+
+    expect(steps.filter_map { |step| step["run"] && step.fetch("name") })
+      .to eq(["Check App references", find.fetch("name"), prepare.fetch("name")])
+    expect(steps.select { |step| step.key?("working-directory") }).to be_empty
+    expect(steps.select { |step| step.fetch("env", {}).value?(token) }).to eq([find, prepare])
   end
 
   # RubyGems.org trusted publishers match this exact filename and environment.
