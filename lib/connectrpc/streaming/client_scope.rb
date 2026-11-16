@@ -18,12 +18,15 @@ module ConnectRPC
       def run(timeout, cancellation, &)
         # @type var error: Exception?
         error = nil
-        execute(timeout, cancellation, &)
+        # @type var local_exit: bool
+        local_exit = false
+        execute(timeout, cancellation, &).tap { local_exit = true }
       rescue Exception => e # rubocop:disable Lint/RescueException -- Finalization needs the actual escape, including fatal exceptions.
         error = e
+        local_exit = true
         raise
       ensure
-        finish_preserving_user(error)
+        finish_preserving_user(error, local_exit)
       end
 
       def execute(timeout, cancellation)
@@ -52,15 +55,26 @@ module ConnectRPC
         @lifecycle&.record_failure(error)
       end
 
-      # Runs a unary interceptor chain around the single-request scope. The
-      # outermost value is the scope result; a short-circuit completes the
-      # scope without an exchange. An exception escaping the chain that is not
-      # the exact failure of the dispatch adapter is independent.
+      # Applies a stream call's wrappers. The factory runs outside the
+      # application block, so its exceptions, and those of the wrap-time check,
+      # are interceptor exceptions rather than application or core-owned ones.
+      def wrap(call, endpoint)
+        call.__send__(:wrap, endpoint)
+      rescue Exception => e # rubocop:disable Lint/RescueException -- classify every factory escape
+        record_user_error(e)
+        @interceptor_error = true
+        raise
+      end
+
+      # Runs an interceptor chain around the scope. The outermost value is the
+      # scope result; a unary short-circuit completes the scope without an
+      # exchange. An exception escaping the chain that is not the exact failure
+      # of the dispatch adapter is independent.
       def intercept(chain, call, &) # rubocop:disable Metrics/MethodLength -- one place tracks every chain exit
         @intercepted = true
         # @type var local_exit: bool
         local_exit = false
-        result = @result = chain.run(call, @lifecycle) { dispatch_unary(&) }
+        result = @result = chain.run(call, @lifecycle) { dispatch(&) }
         @completed = true unless @dispatched
         local_exit = true
         result
@@ -78,9 +92,10 @@ module ConnectRPC
 
       private
 
-      # A throw or kill out of finalization keeps unwinding; only a return or
-      # raise from finish is replaced by the preserved independent error.
-      def finish_preserving_user(error)
+      # A throw or kill out of execution or finalization keeps unwinding; only
+      # a return or raise from both is replaced by the preserved independent
+      # error.
+      def finish_preserving_user(error, executed)
         # @type var local_exit: bool
         local_exit = false
         finish(@independent_error || error)
@@ -90,16 +105,21 @@ module ConnectRPC
         raise
       ensure
         original = @independent_error
-        raise original, cause: original.cause if original && local_exit
+        raise original, cause: original.cause if original && local_exit && executed
       end
 
-      def dispatch_unary
+      def dispatch
         @dispatched = true
         result = yield
         @innermost_ok = true
         result
       rescue Exception => e # rubocop:disable Lint/RescueException -- provenance compares the exact escape
-        @innermost_failure = e
+        # Interceptors see an independent exception, not transport or cleanup
+        # noise that replaced it on the way out of the stream.
+        independent = @independent_error
+        failure = @innermost_failure = independent || e
+        raise failure, cause: failure.cause unless failure.equal?(e)
+
         raise
       end
 
@@ -121,9 +141,11 @@ module ConnectRPC
         completed ? :completed : :aborted
       end
 
+      # An abandoned scope returns normally from the innermost continuation
+      # without completing its exchange.
       def exchange_completed?
         delivered = @delivered_error
-        @innermost_ok || (!delivered.nil? && delivered.equal?(@innermost_failure))
+        (@innermost_ok && @completed) || (!delivered.nil? && delivered.equal?(@innermost_failure))
       end
 
       def start(timeout, cancellation)
@@ -154,8 +176,10 @@ module ConnectRPC
                                       error: error, normalized_error: normalized)
       end
 
+      # An independent exception escaping the outermost interceptor sets the
+      # outcome over abandonment.
       def normalized_error(error)
-        return Error.new(:canceled, "Stream abandoned") if @abandoned
+        return Error.new(:canceled, "Stream abandoned") if @abandoned && !@interceptor_error
 
         error if error.is_a?(Error)
       end

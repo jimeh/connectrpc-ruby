@@ -62,35 +62,143 @@ module ConnectRPC
     end
   end
 
+  # One client stream RPC as its interceptors see it. Wrappers registered with
+  # wrap_stream decorate the endpoint the application block receives.
+  class ClientStreamCall
+    attr_reader :method, :protocol, :request_metadata, :deadline, :cancellation
+
+    def initialize(method:, protocol:, request_metadata:, deadline:, cancellation:)
+      @method = method
+      @protocol = protocol
+      @request_metadata = request_metadata
+      @deadline = deadline
+      @cancellation = cancellation
+      @wrappers = []
+      @open = true
+    end
+
+    def wrap_stream(&factory)
+      raise ArgumentError, "wrap_stream requires a block" unless factory
+      raise InterceptorStateError, "The call has already been dispatched" unless @open
+
+      @wrappers << factory
+      nil
+    end
+
+    private
+
+    def dispatch!
+      @open = false
+      @request_metadata.freeze
+      nil
+    end
+
+    def wrap(endpoint) = Interceptors.wrap(@wrappers, endpoint)
+  end
+
+  class ClientStreamCall
+    # Server streaming: the single request is replaceable until dispatch.
+    class ServerStreaming < ClientStreamCall
+      attr_reader :request
+
+      def initialize(method:, protocol:, request:, request_metadata:, deadline:, cancellation:)
+        super(method: method, protocol: protocol, request_metadata: request_metadata, deadline: deadline,
+              cancellation: cancellation)
+        @request = request
+      end
+
+      def request=(message)
+        raise InterceptorStateError, "The call has already been dispatched" unless @open
+
+        @request = message
+      end
+    end
+  end
+
+  # One server stream RPC as its interceptors see it. The context is the
+  # handler's StreamingContext.
+  class ServerStreamCall
+    attr_reader :method, :protocol, :context
+
+    def initialize(method:, protocol:, context:)
+      @method = method
+      @protocol = protocol
+      @context = context
+      @wrappers = []
+      @open = true
+    end
+
+    def wrap_stream(&factory)
+      raise ArgumentError, "wrap_stream requires a block" unless factory
+      raise InterceptorStateError, "The call has already been dispatched" unless @open
+
+      @wrappers << factory
+      nil
+    end
+
+    private
+
+    def dispatch!
+      @open = false
+      nil
+    end
+
+    def wrap(endpoint) = Interceptors.wrap(@wrappers, endpoint)
+  end
+
+  class ServerStreamCall
+    # Server streaming: core reads the single request before the chain; it is
+    # replaceable until dispatch.
+    class ServerStreaming < ServerStreamCall
+      attr_reader :request
+
+      def initialize(method:, protocol:, request:, context:)
+        super(method: method, protocol: protocol, context: context)
+        @request = request
+      end
+
+      def request=(message)
+        raise InterceptorStateError, "The call has already been dispatched" unless @open
+
+        @request = message
+      end
+    end
+  end
+
   # Construction-time discovery and the per-RPC guarded continuation chain.
   module Interceptors
-    def self.client(interceptors)
-      build(interceptors, :client_unary, :client_stream, client: true)
-    end
+    # Returns the unary and stream chains for the role; a kind without layers
+    # is nil, so its RPCs take the direct path.
+    def self.client(interceptors) = build(interceptors, :client_unary, :client_stream)
+    def self.server(interceptors) = build(interceptors, :server_unary, :server_stream)
 
-    def self.server(interceptors)
-      build(interceptors, :server_unary, :server_stream, client: false)
-    end
-
-    def self.build(interceptors, unary, stream, client:)
+    def self.build(interceptors, unary, stream)
       raise ArgumentError, "interceptors must be an Array" unless interceptors.is_a?(Array)
 
-      layers = interceptors.map do |interceptor|
+      interceptors.each do |interceptor|
         probe = interceptor #: (client_interceptor | server_interceptor) & _InterceptorProbe
-        # Fail closed: an accepted stream method that never ran could skip policy.
-        raise ArgumentError, "Stream interceptors (#{stream}) are not supported yet" if probe.respond_to?(stream)
-        raise ArgumentError, "Interceptor does not implement #{unary}" unless probe.respond_to?(unary)
+        next if probe.respond_to?(unary) || probe.respond_to?(stream)
 
-        probe.public_method(unary)
+        raise ArgumentError, "Interceptor implements neither #{unary} nor #{stream}"
       end
-      Chain.new(layers.freeze, client) unless layers.empty?
+      [chain(interceptors, unary), chain(interceptors, stream)]
     end
     private_class_method :build
 
-    # Client unary results reach every outer layer and the caller frozen.
+    def self.chain(interceptors, kind)
+      layers = interceptors.filter_map do |interceptor|
+        probe = interceptor #: (client_interceptor | server_interceptor) & _InterceptorProbe
+        probe.public_method(kind) if probe.respond_to?(kind)
+      end
+      Chain.new(layers.freeze, kind) unless layers.empty?
+    end
+    private_class_method :chain
+
+    # Client unary and client-streaming results reach every outer layer and
+    # the caller frozen.
     def self.response!(value)
       unless value.is_a?(Response) && value.metadata.is_a?(Metadata) && value.trailers.is_a?(Metadata)
-        raise InterceptorStateError, "Client unary interceptors must return a ConnectRPC::Response"
+        raise InterceptorStateError, "Client unary and client-streaming interceptors must return a ConnectRPC::Response"
       end
 
       value.metadata.freeze
@@ -98,34 +206,69 @@ module ConnectRPC
       value.freeze
     end
 
+    # Applies stream wrappers innermost first, so the application receives
+    # outer(inner(raw)). Each wrapper must answer the raw endpoint's API.
+    def self.wrap(wrappers, raw)
+      return raw if wrappers.empty?
+
+      api = (raw.class.public_instance_methods - Object.public_instance_methods).sort
+      wrappers.reverse_each.reduce(raw) do |inner, factory|
+        wrapped = factory.call(inner)
+        missing = api.reject { |name| wrapped.respond_to?(name) }
+        raise InterceptorStateError, "Stream wrapper does not respond to #{missing.join(', ')}" unless missing.empty?
+
+        wrapped
+      end
+    end
+
     class Chain
-      def initialize(layers, client)
+      def initialize(layers, kind)
         @layers = layers
-        @client = client
+        @kind = kind
       end
 
       # The recorder receives each failure escaping a continuation before the
       # outer layer sees it; recording keeps the first.
       def run(call, recorder, &dispatch)
-        step(0, call, recorder, dispatch, nil)
+        step(0, call, recorder, dispatch, nil, mode(call))
       end
 
       private
 
-      def step(index, call, recorder, dispatch, parent)
+      # :response may skip its continuation; every other mode must yield.
+      # Server streaming and bidi results are ignored, so every yield is nil.
+      def mode(call)
+        case @kind
+        when :client_unary then :response
+        when :server_unary then :value
+        else
+          return :ignored unless call.method.is_a?(ClientStreamMethod)
+
+          @kind == :client_stream ? :stream_response : :value
+        end
+      end
+
+      def step(index, call, recorder, dispatch, parent, mode) # rubocop:disable Metrics/ParameterLists, Metrics/MethodLength
         layer = @layers[index]
-        return dispatch.call unless layer
+        return innermost(dispatch, mode) unless layer
 
         continuation = Continuation.new(recorder)
         # @type var yielded: bool
         # @type var result: untyped
         begin
-          result = layer.call(call) { continuation.call { step(index + 1, call, recorder, dispatch, continuation) } }
+          result = layer.call(call) do
+            continuation.call { step(index + 1, call, recorder, dispatch, continuation, mode) }
+          end
         ensure
           # Every exit closes, so a captured continuation cannot run late.
           yielded = continuation.close(parent)
         end
-        continuation.finish(result, yielded, @client)
+        continuation.finish(result, yielded, mode)
+      end
+
+      def innermost(dispatch, mode)
+        value = dispatch.call
+        value unless mode == :ignored
       end
     end
 
@@ -195,12 +338,15 @@ module ConnectRPC
 
       # Unwind order after a normal return: a continuation failure, a latched
       # misuse, then the result.
-      def finish(result, yielded, client)
+      def finish(result, yielded, mode)
         raise_latched
-        return Interceptors.response!(result) if client
-        raise InterceptorStateError, "Server interceptors must yield" unless yielded
+        return Interceptors.response!(result) if mode == :response
+        raise InterceptorStateError, "Server and stream interceptors must yield" unless yielded
 
-        result
+        case mode
+        when :stream_response then Interceptors.response!(result)
+        when :value then result
+        end
       end
 
       # What the inner layer's exit carried: its continuation failure or

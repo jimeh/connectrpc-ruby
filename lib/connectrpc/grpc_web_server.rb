@@ -143,9 +143,9 @@ module ConnectRPC
       if declaration.is_a?(Method)
         session.send_message(invoke_unary(declaration, message, context, :grpc_web))
       else
-        handler = @handlers.fetch(state.path) #: _ServerStreamHandler[untyped, untyped]
         streaming = context #: StreamingContext
-        handler.call(message, ResponseWriter.new(session, streaming), streaming)
+        stream = declaration #: ServerStreamMethod[untyped, untyped]
+        serve_stream(@handlers.fetch(state.path), stream, session, streaming, message, :grpc_web)
       end
       context.check!
     end

@@ -91,9 +91,9 @@ what instrumentation recorded for the request.
 ## Interceptors
 
 [Unary interceptors](unary.md#interceptors) cover native gRPC unary calls on
-both roles, with `call.protocol == :grpc`. Streaming interceptors are not
-implemented yet; a Client or Server rejects an interceptor that defines
-`client_stream` or `server_stream`.
+both roles, with `call.protocol == :grpc`.
+[Stream interceptors](streaming.md#interceptors) cover native gRPC server,
+client and bidi streaming the same way.
 
 On the client, the chain runs inside the call's deadline and cancellation scope
 and before the stream opens. Request metadata is final when the innermost

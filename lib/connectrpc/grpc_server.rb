@@ -89,7 +89,7 @@ module ConnectRPC
         session.send_message(invoke_unary(declaration, request, context, :grpc))
       else
         streaming = context #: StreamingContext
-        invoke_stream_handler(@handlers.fetch(path), declaration, session, streaming)
+        invoke_stream_handler(@handlers.fetch(path), declaration, session, streaming, :grpc)
       end
       context.check!
     end

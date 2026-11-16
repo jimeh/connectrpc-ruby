@@ -261,9 +261,10 @@ ownership and constraints.
 
 Supported APIs include method and service declarations, core and generated
 client operations, Server configuration, metadata, errors, contexts and their
-`on_cancel` listeners, cancellation sources/tokens, unary interceptor
-registration (`interceptors:`) with the `ClientUnaryCall` and `ServerUnaryCall`
-call objects and `InterceptorStateError`, scoped readers/writers/duplex
+`on_cancel` listeners, cancellation sources/tokens, interceptor registration
+(`interceptors:`) with the `ClientUnaryCall`, `ServerUnaryCall`,
+`ClientStreamCall` and `ServerStreamCall` call objects (including the
+`ServerStreaming` subclasses) and `InterceptorStateError`, scoped readers/writers/duplex
 endpoints, the health registry and its generated `grpc.health.v1` client, and the
 optional packages' documented constructors, lifecycle and configuration
 operations. Generated service factories, typed handlers and installed generated
@@ -274,8 +275,9 @@ The extension SPIs cover these boundaries. Binding, cancellation and lifecycle
 interfaces are shared with streaming and gRPC execution.
 
 - Shared interfaces and unary execution: `_Binding`, `_Transport`, `_Input`, invokers,
-  `_Cancellation`, and the `_ClientUnaryInterceptor` and `_ServerUnaryInterceptor`
-  interceptor interfaces.
+  `_Cancellation`, and the `_ClientUnaryInterceptor`, `_ClientStreamInterceptor`,
+  `_ServerUnaryInterceptor` and `_ServerStreamInterceptor` interceptor
+  interfaces.
 - Streaming and gRPC: `_StreamingTransport`, `_StreamExchange`, streaming I/O,
   `_GRPCTransport`, `_GRPCStreamExchange` and `_GRPCStatusCodec`.
 - Server hosting and observation: native publication/output interfaces,

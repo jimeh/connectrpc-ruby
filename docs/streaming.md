@@ -179,6 +179,156 @@ A long-lived handler that blocks on application state can register
 `context.on_cancel { ... }` to wake itself on that signal; the
 [health service](../gems/connectrpc-health/README.md) Watch uses it this way.
 
+## Interceptors
+
+Client and Server [interceptors](unary.md#interceptors) also cover streams. An
+interceptor's `client_stream(call)` or `server_stream(call)` method wraps the
+whole stream scope for server, client and bidi streaming on Connect and native
+gRPC, and for gRPC-Web server streaming. One object may define unary and stream
+methods; core runs only the method for each call's role and kind. The unary
+continuation rules apply, except that every stream layer must yield on both
+roles: one that returns without yielding raises `InterceptorStateError`.
+
+```ruby
+class ValidateMessages
+  def initialize(validator) = @validator = validator
+
+  def server_stream(call)
+    case call
+    when ConnectRPC::ServerStreamCall::ServerStreaming then @validator.check!(call.request)
+    end
+    call.wrap_stream { |stream| ValidatingStream.new(stream, @validator) }
+    yield
+  end
+end
+
+class ValidatingStream < SimpleDelegator
+  def initialize(stream, validator)
+    super(stream)
+    @validator = validator
+  end
+
+  def send_message(message)
+    @validator.check!(message)
+    __getobj__.send_message(message)
+  end
+end
+```
+
+This example validates the server-streaming request and every message the
+handler sends. It does not validate incoming messages; see the delegation rule
+below.
+
+`ClientStreamCall` exposes `method`, `protocol` (`:connect` or `:grpc`),
+`request_metadata`, `deadline`, `cancellation` and `wrap_stream`.
+`ServerStreamCall` exposes `method`, `protocol` (`:connect`, `:grpc` or
+`:grpc_web`), `context`, the handler's `StreamingContext`, and `wrap_stream`.
+Server streaming calls are the `ClientStreamCall::ServerStreaming` and
+`ServerStreamCall::ServerStreaming` subclasses, which add `request` and
+`request=`; narrow with `case`/`when` before replacing the request.
+`method.cardinality` names the shape. `request=`, `wrap_stream` and client
+request metadata writes work until the innermost continuation starts dispatch.
+Afterwards `request=` and `wrap_stream` raise `InterceptorStateError` and
+metadata writes raise `FrozenError`. `wrap_stream` without a block raises
+`ArgumentError`.
+
+### Order and wrappers
+
+The first interceptor listed is the outermost on both roles. On the client the
+chain runs inside the call's deadline and cancellation scope, before the stream
+opens. The innermost continuation opens the stream, applies the wrappers, sends
+the server-streaming request, runs the application block and completes the
+scope, so code after `yield` sees the scope's result or exception. On the
+server the chain runs after the stream session exists; for server streaming,
+core first reads and checks the single request, as it does without
+interceptors. The innermost continuation calls the handler.
+
+`call.wrap_stream { |stream| ... }` registers a wrapper. The block receives the
+inner endpoint and returns the object that outer layers, and finally the
+application block or handler, receive instead:
+
+| Shape | Client endpoint | Server endpoint |
+| --- | --- | --- |
+| Server streaming | `ResponseReader` | `ResponseWriter` |
+| Client streaming | `RequestWriter` | `RequestReader` |
+| Bidi | `ClientDuplex` | `ServerDuplex` |
+
+- Core applies wrappers innermost first. The application receives
+  `outer(inner(raw))`, and its `send_message` passes through the outermost
+  wrapper first. Each block runs once per call, so wrapper state stays per
+  stream.
+- After each block returns, core checks that its result responds to every
+  public method of the endpoint it replaces, inherited ones included. A
+  wrapper that drops a method, such as `each` on a duplex, raises
+  `InterceptorStateError` naming it before the application block runs.
+- A wrapper should delegate every method it does not change. Delegation does
+  not route reads through the wrapper: an endpoint's `each` calls its own
+  `receive`, so a wrapper that overrides only `receive` is bypassed by every
+  read made through `each`. A read-side wrapper must override both, for example
+  by implementing `each` as a loop over its own `receive`.
+- Wrappers are duck-typed; application blocks and handlers keep their nominal
+  endpoint types.
+
+### Cleanup and results
+
+Core runs abandonment, `close_send`, session close, terminal rendering and
+lifecycle completion once, on the raw session and context, whichever
+interceptor, wrapper or application block raised. A wrapper's explicit
+`close_send` followed by stream completion reaches the exchange once. A wrapper
+retained after its scope delegates to a closed session and raises
+`StreamStateError`.
+
+`yield` returns the scope result. For client streaming that is the frozen
+`Response` on the client and the handler's response message on the server;
+for server streaming and bidi it is nil, and core ignores interceptor return
+values. The value the outermost client-streaming interceptor returns is the
+result: the client returns it, and it must be a `Response` whose `metadata`
+and `trailers` are `Metadata`; the server sends it as the single response,
+and nil fails the call with `internal`. Every client-streaming `Response` is
+frozen, with or without interceptors: the struct, its metadata and its
+trailers.
+
+No layer can turn a failed scope into success. A server layer that rescues a
+handler exception and returns renders the continuation's exception, which is
+an inner layer's translation when there is one; messages already sent stay
+sent. On the client, an exception from the application block, a wrapper
+method or a `wrap_stream` block reaches the caller with its identity unless an
+interceptor translates it, and then the translation reaches the caller.
+Interceptors see the application's exception even when transport cleanup
+fails afterward. An abandoned scope, explicit or from an unconsumed stream,
+reports `canceled` unless an interceptor exception escaped the outermost
+interceptor; that exception then sets the outcome code. Delivery is
+`:unobserved` when the chain failed before the innermost continuation ran,
+`:completed` only when the exchange completed, and `:aborted` otherwise,
+including a failure after dispatch started but before the stream opened.
+
+### Metadata, diagnostics and cancellation
+
+- Server response metadata is writable until headers are published by
+  `send_headers`, the first message or the terminal. Later writes raise
+  `FrozenError`, so add headers before `yield` or from a wrapper before the
+  first `send_message`. Trailers stay writable until the terminal, so trailers
+  written after `yield`, including after a handler error, reach it.
+- Client server-streaming and bidi interceptors read response `headers` and
+  `trailers` through the endpoint. A client-streaming interceptor reads them
+  from the `Response` that `yield` returns.
+- A session operation failure that the application or a wrapper catches, such
+  as a rejected `send_message`, is recorded when it happens and can sit on an
+  `OK` outcome, as it does without interceptors. Only a failure that escapes a
+  continuation is guaranteed to fail the call.
+- Interceptors run inside the instrumentation activation, and core records the
+  exception escaping each continuation, so observers keep a handler's or
+  application's original exception after an interceptor translates it.
+- Cancellation follows the unary rules. The client commits once after the
+  outermost interceptor; an accepted reason replaces a core-owned failure,
+  while an exception an interceptor raises, including a translation, keeps its
+  identity and reports its own code. Error-mapping interceptors should check
+  `call.cancellation.cancelled?` before translating. On the server,
+  `context.cancelled?`, `check!` and `on_cancel` work inside interceptors, and
+  an accepted reason is the terminal error. Core cannot interrupt an
+  interceptor; one that blocks should observe cancellation itself, and its
+  frame lasts as long as a long-lived stream such as a health Watch.
+
 ## Bounds and protocol
 
 Each direction retains at most one queued 16,384-byte output fragment and one

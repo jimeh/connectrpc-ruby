@@ -14,7 +14,7 @@ module ConnectRPC
                    grpc_status_wire_limit: 65_536, grpc_status_limit: 65_536, interceptors: [])
       Protocol.profile!(protocol, mode, encoding)
       @protocol = protocol
-      @unary_interceptors = Interceptors.client(interceptors)
+      @unary_interceptors, @stream_interceptors = Interceptors.client(interceptors)
       @grpc_status_wire_limit = Protocol.limit!(grpc_status_wire_limit)
       @grpc_status_limit = Protocol.limit!(grpc_status_limit)
       @status_codec = GRPCProtocol.status_codec!(binding, status_codec) if protocol == :grpc

@@ -136,11 +136,12 @@ module ConnectRPC
     @response_wire_limit: Integer
     @instrumentation: Instrumentation?
     @unary_interceptors: Interceptors::Chain?
+    @stream_interceptors: Interceptors::Chain?
     private
     def process_call: [Req, Resp] (Method[Req, Resp], Req, metadata_input, Numeric?, CancellationToken?, ?lifecycle: Instrumentation::Handle?, ?injection: metadata_input?) ?{ (TransportResponse) -> void } -> Response[Resp]
     def exchange: [Req, Resp] (Method[Req, Resp], Req, Metadata, Deadline?, CallCancellation, Instrumentation::Handle?) ?{ (TransportResponse) -> void } -> Response[Resp]
     def intercept_call: [Req, Resp] (Interceptors::Chain, Method[Req, Resp], Req, Metadata, Deadline?, CallCancellation, Instrumentation::Handle?, metadata_input?) ?{ (TransportResponse) -> void } -> (Response[Resp] | StandardError)
-    def dispatch_metadata: (ClientUnaryCall, Instrumentation::Handle?, metadata_input?) -> Metadata
+    def dispatch_metadata: (ClientUnaryCall | ClientStreamCall, Instrumentation::Handle?, metadata_input?) -> Metadata
     def instrumented_call: [Req, Resp] (Method[Req, Resp], Req, metadata_input, Numeric?, CancellationToken?) -> Response[Resp]
     def injected_metadata: (Metadata, metadata_input?) -> Metadata
     def parse_base_url: (String) -> URI::Generic
@@ -176,6 +177,7 @@ module ConnectRPC
     @get_query_limit: Integer
     @error_limit: Integer
     @unary_interceptors: Interceptors::Chain?
+    @stream_interceptors: Interceptors::Chain?
     private
     def invoke_unary: (Method[untyped, untyped], untyped, Context, server_protocol) -> untyped
     def process_call: (path: String, http_method: String, headers: headers, input: _Input?, query: String, ?lifecycle: Instrumentation::Handle?, ?cancellation: _Cancellation?) -> TransportResponse
@@ -408,18 +410,56 @@ module ConnectRPC
     private
     def dispatch!: () -> nil
   end
+  class ClientStreamCall
+    @method: stream_declaration
+    @protocol: :connect | :grpc
+    @request_metadata: Metadata
+    @deadline: Deadline?
+    @cancellation: _Cancellation
+    @wrappers: Array[Proc]
+    @open: bool
+    def initialize: (method: stream_declaration, protocol: :connect | :grpc, request_metadata: Metadata, deadline: Deadline?, cancellation: _Cancellation) -> void
+    private
+    def dispatch!: () -> nil
+    def wrap: (untyped) -> untyped
+  end
+  class ClientStreamCall::ServerStreaming
+    @request: untyped
+    def initialize: (method: stream_declaration, protocol: :connect | :grpc, request: untyped, request_metadata: Metadata, deadline: Deadline?, cancellation: _Cancellation) -> void
+  end
+  class ServerStreamCall
+    @method: stream_declaration
+    @protocol: server_protocol
+    @context: StreamingContext
+    @wrappers: Array[Proc]
+    @open: bool
+    def initialize: (method: stream_declaration, protocol: server_protocol, context: StreamingContext) -> void
+    private
+    def dispatch!: () -> nil
+    def wrap: (untyped) -> untyped
+  end
+  class ServerStreamCall::ServerStreaming
+    @request: untyped
+    def initialize: (method: stream_declaration, protocol: server_protocol, request: untyped, context: StreamingContext) -> void
+  end
+  type interceptor_call = ClientUnaryCall | ServerUnaryCall | ClientStreamCall | ServerStreamCall
   module Interceptors
-    def self.client: (Array[client_interceptor]) -> Chain?
-    def self.server: (Array[server_interceptor]) -> Chain?
-    def self.build: (Array[client_interceptor] | Array[server_interceptor], Symbol, Symbol, client: bool) -> Chain?
+    def self.client: (Array[client_interceptor]) -> [Chain?, Chain?]
+    def self.server: (Array[server_interceptor]) -> [Chain?, Chain?]
+    def self.build: (Array[client_interceptor] | Array[server_interceptor], Symbol, Symbol) -> [Chain?, Chain?]
+    def self.chain: (Array[client_interceptor] | Array[server_interceptor], Symbol) -> Chain?
     def self.response!: (untyped) -> Response[untyped]
+    def self.wrap: (Array[Proc], untyped) -> untyped
     class Chain
+      type mode = :response | :stream_response | :value | :ignored
       @layers: Array[::Method]
-      @client: bool
-      def initialize: (Array[::Method], bool) -> void
-      def run: (ClientUnaryCall | ServerUnaryCall, _FailureRecorder?) { () -> untyped } -> untyped
+      @kind: Symbol
+      def initialize: (Array[::Method], Symbol) -> void
+      def run: (interceptor_call, _FailureRecorder?) { () -> untyped } -> untyped
       private
-      def step: (Integer, ClientUnaryCall | ServerUnaryCall, _FailureRecorder?, ^() -> untyped, Continuation?) -> untyped
+      def mode: (interceptor_call) -> mode
+      def step: (Integer, interceptor_call, _FailureRecorder?, ^() -> untyped, Continuation?, mode) -> untyped
+      def innermost: (^() -> untyped, mode) -> untyped
     end
     class Continuation
       @recorder: _FailureRecorder?
@@ -432,7 +472,7 @@ module ConnectRPC
       def initialize: (_FailureRecorder?) -> void
       def call: [T] () { () -> T } -> T
       def close: (Continuation?) -> bool
-      def finish: (untyped, bool, bool) -> untyped
+      def finish: (untyped, bool, Chain::mode) -> untyped
       def hand_up: (Exception?) -> nil
       private
       def claim: () -> InterceptorStateError?

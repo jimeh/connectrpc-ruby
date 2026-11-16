@@ -229,8 +229,52 @@ module ConnectRPC
     def server_unary: (ServerUnaryCall call) { () -> untyped } -> untyped
   end
 
-  type client_interceptor = _ClientUnaryInterceptor
-  type server_interceptor = _ServerUnaryInterceptor
+  # Core builds one per client stream RPC. wrap_stream raises once dispatched.
+  class ClientStreamCall
+    attr_reader method: ServerStreamMethod[untyped, untyped] | ClientStreamMethod[untyped, untyped] | BidiStreamMethod[untyped, untyped]
+    attr_reader protocol: :connect | :grpc
+    attr_reader request_metadata: Metadata
+    attr_reader deadline: Deadline?
+    attr_reader cancellation: _Cancellation
+    # The block receives the inner endpoint and returns its replacement. The
+    # application block receives outer(inner(raw)).
+    def wrap_stream: () { (untyped stream) -> untyped } -> nil
+  end
+
+  # Server streaming calls add the request. request= raises once dispatched.
+  class ClientStreamCall::ServerStreaming < ClientStreamCall
+    attr_accessor request: untyped
+  end
+
+  # Core builds one per server stream RPC. wrap_stream raises once dispatched.
+  class ServerStreamCall
+    attr_reader method: ServerStreamMethod[untyped, untyped] | ClientStreamMethod[untyped, untyped] | BidiStreamMethod[untyped, untyped]
+    attr_reader protocol: server_protocol
+    attr_reader context: StreamingContext
+    # The block receives the inner endpoint and returns its replacement. The
+    # handler receives outer(inner(raw)).
+    def wrap_stream: () { (untyped stream) -> untyped } -> nil
+  end
+
+  # Server streaming calls add the request read before the chain.
+  class ServerStreamCall::ServerStreaming < ServerStreamCall
+    attr_accessor request: untyped
+  end
+
+  # The block is the guarded continuation and returns the scope result: the
+  # Response for client streaming, nil for server streaming and bidi.
+  interface _ClientStreamInterceptor
+    def client_stream: (ClientStreamCall call) { () -> untyped } -> untyped
+  end
+
+  # The block returns the handler's response message for client streaming
+  # and nil for server streaming and bidi.
+  interface _ServerStreamInterceptor
+    def server_stream: (ServerStreamCall call) { () -> untyped } -> untyped
+  end
+
+  type client_interceptor = _ClientUnaryInterceptor | _ClientStreamInterceptor
+  type server_interceptor = _ServerUnaryInterceptor | _ServerStreamInterceptor
 
   # Complete records retain precise readers; partial construction admits nil defaults.
   interface _PartialResponse[M]

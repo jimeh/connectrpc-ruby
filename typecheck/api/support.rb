@@ -340,6 +340,30 @@ class APICachingInterceptor
   end
 end
 
+class APIClientStreamInterceptor
+  def client_stream(call)
+    call.request_metadata["x-shape"] = call.method.cardinality.to_s
+    case call
+    when ConnectRPC::ClientStreamCall::ServerStreaming then call.request = call.request.dup
+    end
+    call.wrap_stream { |stream| stream }
+    call.cancellation.check!
+    call.deadline&.remaining
+    yield
+  end
+end
+
+class APIServerStreamInterceptor
+  def server_stream(call)
+    case call
+    when ConnectRPC::ServerStreamCall::ServerStreaming then call.request = call.request.dup
+    end
+    call.context.response_trailers.add("x-shape", "#{call.protocol}:#{call.method.cardinality}")
+    call.wrap_stream { |stream| stream }
+    yield
+  end
+end
+
 class APIServerInterceptor
   def server_unary(call)
     context = call.context

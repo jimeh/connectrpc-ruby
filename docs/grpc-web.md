@@ -112,9 +112,11 @@ Web unary calls run the Server's [unary interceptors](unary.md#interceptors)
 with `call.protocol == :grpc_web`, after the single request frame is read and
 decoded and around the invoker. Response metadata written before or after
 `yield` is published with the head after the chain returns; trailers and error
-metadata reach the terminal frame. Server-streaming Web calls do not run
-interceptors yet, and a Server rejects an interceptor that defines
-`server_stream`.
+metadata reach the terminal frame. Server-streaming Web calls run the Server's
+[stream interceptors](streaming.md#interceptors) with
+`call.protocol == :grpc_web`, after the single request frame is read and
+decoded; the call is a `ServerStreamCall::ServerStreaming` carrying that
+request.
 
 ## Bounds and host SPI
 
