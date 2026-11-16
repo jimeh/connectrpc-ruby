@@ -11,7 +11,7 @@ require_relative "release_train"
 
 # Publishes one canonical candidate from its release tag. Every step can be
 # re-run: draft assets and registry versions that already exist must match the
-# candidate bytes, and the GitHub release is published only after all ten gems.
+# candidate bytes, and the GitHub release is published only after all eleven gems.
 class ReleasePublisher # rubocop:disable Metrics/ClassLength
   Artifact = Struct.new(:name, :file, :path, :sha256, keyword_init: true)
   # assets maps each asset name to an adapter-specific handle.
@@ -36,7 +36,7 @@ class ReleasePublisher # rubocop:disable Metrics/ClassLength
       stage!(release, [*gems, record])
       push!(gems, published)
       @github.publish(release)
-      @log.puts "Published #{@tag}: ten gems on RubyGems.org and the GitHub release"
+      @log.puts "Published #{@tag}: eleven gems on RubyGems.org and the GitHub release"
     else
       verify_published!(release, gems, record)
       @log.puts "#{@tag} is already published with matching assets and gems"

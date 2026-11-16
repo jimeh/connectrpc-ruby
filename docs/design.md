@@ -521,6 +521,16 @@ RPC exists remains outside this scope. See the
 [OTel guide](../gems/connectrpc-otel/README.md) for trace semantics, privacy,
 HTTP instrumentation nesting and synchronous processor costs.
 
+The optional Sentry package uses the same callbacks without core changes. Its
+server observation nests under an open host span and ends at
+`processing_finished`, because Rack and Rails hosts send their request
+transaction before delivery completes; without a host span it owns a
+transaction finished at the terminal callback. Client unary processing and
+terminal callbacks run after activation unwinds, native hosts hold processing
+through cleanup, and admission rejection finishes without attach, so each of
+its callbacks is independent of the executing context. See the
+[Sentry guide](../gems/connectrpc-sentry/README.md).
+
 ## Explicit HTTP/1.1 client ownership
 
 The Async package's independent `HTTP1Transport` uses exclusive reactor-owned

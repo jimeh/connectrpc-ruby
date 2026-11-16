@@ -71,3 +71,9 @@ description = "Validate action Ruby/Bundler and independent health bundle settin
 dir = "{{config_root}}/gems/connectrpc-health"
 env = { BUNDLE_GEMFILE = "{{config_root}}/gems/connectrpc-health/Gemfile", BUNDLE_PATH = "{{config_root}}/vendor/health/bundle", BUNDLE_USER_HOME = "{{config_root}}/vendor/health/bundler", BUNDLE_COOLDOWN = "3" }
 run = "ruby scripts/ci_runtime.rb"
+
+[tasks."sentry:tools"]
+description = "Validate action Ruby/Bundler and independent Sentry bundle settings"
+dir = "{{config_root}}/gems/connectrpc-sentry"
+env = { BUNDLE_GEMFILE = "{{config_root}}/gems/connectrpc-sentry/Gemfile", BUNDLE_PATH = "{{config_root}}/vendor/sentry/bundle", BUNDLE_USER_HOME = "{{config_root}}/vendor/sentry/bundler", BUNDLE_COOLDOWN = "3" }
+run = "ruby scripts/ci_runtime.rb"

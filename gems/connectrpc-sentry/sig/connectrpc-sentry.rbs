@@ -1,0 +1,10 @@
+module ConnectRPC
+  module Sentry
+    VERSION: String
+    class Subscriber
+      def initialize: (?capture_exceptions: bool) -> void
+      # The adapter's observers are private and discovered by the neutral lifecycle.
+      def start: (Instrumentation::Call) -> Object?
+    end
+  end
+end

@@ -100,6 +100,15 @@ bridge come only from `generation:build`; read [the plan](docs/plans/health.md)
 and its README before changing Watch concurrency, shutdown or the grpc-go
 `health:interop` script.
 
+Optional native Sentry tracing lives in `gems/connectrpc-sentry/`; read its README
+and [the plan](docs/plans/sentry.md) before changing the nest-or-own lifetime,
+promotion, scope handling, propagation or exception capture. Inside
+`ConnectRPC::Sentry` always write `::Sentry`. The separate `sentry:` bundle uses
+`vendor/sentry` and `coverage/sentry`; specs run a real SDK with
+`Sentry::DummyTransport` and a `.invalid` DSN, never a real DSN or network sends.
+Fiber hosts require `hub_isolation_level = :fiber`; keep the fail-closed check at
+start and every attach.
+
 Public API changes must update the owning gem's signatures, the supported/SPI
 inventory and focused caller evidence. Read [RBS guidance](docs/rbs.md) before
 changing those surfaces; run `rbs:check` for consumers, inventory and strict core

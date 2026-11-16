@@ -1,7 +1,7 @@
 # Sentry: connectrpc-sentry
 
 Status: approved by Jim (D1-D5 as recommended); one cross-engine plan review
-(Codex) applied.
+(Codex) applied. Implemented on `feat/sentry`; see implementation notes.
 Base `8c2dd4b`. Branch `feat/sentry`, PR title
 `feat: add connectrpc-sentry native Sentry tracing package`. Closes #45.
 
@@ -203,3 +203,33 @@ assertion.
 ## Open questions
 
 None. D4 targets match `host` and `host:port`; the caller-baggage limit is #73.
+
+## Implementation notes
+
+Minor choices made while implementing, within the decisions above:
+
+- Unknown methods do not rename Sentry's `http.server` transaction, so
+  unmatched paths keep the host's name instead of collapsing into `connectrpc`.
+- Captured error events also carry the bounded `rpc.system.name` and
+  `rpc.method` tags, the same tags the fail-closed temporary scope carries.
+- A child that activates where the current scope has no span pushes its own
+  scope and pops it only if it is still current; otherwise children save and
+  restore the span without pushing.
+- On Ruby 3.4, `require "connectrpc/sentry"` also loads `cgi/util` when nothing
+  else has. sentry-ruby parses incoming baggage with `CGI.unescape` after
+  requiring only `cgi/escape`, which raises `NameError` there without it. Ruby
+  4.0 needs nothing.
+- Status for a bare HTTP rejection uses Sentry's `set_http_status`, which leaves
+  statuses outside its map (415, for example) unset.
+- `sentry-opentelemetry` is a development dependency for the OTLP-inert spec. It
+  follows sentry-ruby's version; 6.7.0 and 7.2.0 both provide `config.otlp`, so
+  the example runs on both lanes (it skips only if a release lacks it).
+- A raising `traces_sampler` falls back to `traces_sample_rate` on sentry-ruby
+  7, but raises through `start` on 6.7.0, where the lifecycle reports it and the
+  RPC is served untraced. The propagation spec asserts both.
+- Hosts activate an RPC more than once in the same context (native hosts wrap
+  `Server#call`, which activates again). An owned transaction's inner activation
+  reuses the active RPC scope instead of pushing a copy, so handler changes such
+  as `Sentry.set_user` reach the transaction and its error event.
+- A nested child that already ended at processing still receives terminal facts
+  while its parent is open; a promoted child never does.

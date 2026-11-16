@@ -95,6 +95,6 @@ module InstalledAPI
     %w[forward reverse].each do |order|
       puts RBSHarness.capture!([RbConfig.ruby, "installed_runtime.rb", order], working: working)
     end
-    puts "Ten installed signature libraries discovered independently and in two orders; API-only OTel closure"
+    puts "Eleven installed signature libraries discovered independently and in two orders; API-only OTel closure"
   end
 end

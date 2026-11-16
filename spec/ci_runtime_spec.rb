@@ -135,13 +135,13 @@ RSpec.describe "CI check mapping" do
   let(:workflow) { YAML.load_file(File.expand_path("../.github/workflows/ci.yml", __dir__)) }
   let(:jobs) { workflow.fetch("jobs") }
 
-  it "preserves all 28 existing checks and adds browser, metrics, health and lowest-allowed leaves" do
+  it "preserves all 28 existing checks and adds browser, metrics, health, Sentry and lowest-allowed leaves" do
     core = %w[static specs package interop conformance]
     backend = %w[async_specs async_interop]
     falcon = %w[falcon_specs falcon_interop]
     metrics = %w[prometheus yabeda]
     expect(jobs.keys).to match_array([*core, "rails", "floors", *backend, "rack", "testing", "rbs", *falcon, "otel",
-                                      *metrics, "health", "browser_grpc_web", "examples"])
+                                      *metrics, "health", "sentry", "browser_grpc_web", "examples"])
     count = lambda do |names|
       jobs.slice(*names).values.sum do |job|
         matrix = job.dig("strategy", "matrix") || {}
@@ -155,13 +155,14 @@ RSpec.describe "CI check mapping" do
     expect(count.call(["rack"])).to eq(2)
     expect(count.call(["testing"])).to eq(2)
     expect(count.call(["rbs"])).to eq(2)
-    expect(count.call(jobs.keys - [*metrics, "health", "browser_grpc_web", "examples", "floors"])).to eq(28)
+    expect(count.call(jobs.keys - [*metrics, "health", "sentry", "browser_grpc_web", "examples", "floors"])).to eq(28)
     expect(count.call(["otel"])).to eq(2)
     expect(count.call(["browser_grpc_web"])).to eq(2)
     expect(count.call(metrics)).to eq(4)
     expect(count.call(["health"])).to eq(2)
-    expect(count.call(["floors"])).to eq(8)
-    expect(count.call(jobs.keys - ["examples"])).to eq(44)
+    expect(count.call(["sentry"])).to eq(2)
+    expect(count.call(["floors"])).to eq(9)
+    expect(count.call(jobs.keys - ["examples"])).to eq(47)
     jobs.each_value { |job| expect(job).not_to have_key("needs") }
     jobs.except("static", "rails", "examples", "floors").each_value do |job|
       expect(job.dig("strategy", "fail-fast")).to be(false)
@@ -176,6 +177,7 @@ RSpec.describe "CI check mapping" do
     expect(commands.fetch("otel").first).to eq("mise run otel:verify")
     metrics.each { |name| expect(commands.fetch(name).first).to eq("mise run #{name}:verify") }
     expect(commands.fetch("health").first).to eq("mise run health:verify")
+    expect(commands.fetch("sentry").first).to eq("mise run sentry:verify")
     expect(commands.fetch("browser_grpc_web").first).to eq("mise run browser:verify")
     expect(commands.fetch("browser_grpc_web")[1]).to include("mise run async:conformance:web",
                                                              "mise run falcon:conformance:web",
@@ -197,7 +199,8 @@ RSpec.describe "CI check mapping" do
   it "runs each lowest-allowed leaf on Ruby 3.4.12 through its Mise floors task" do
     floors = jobs.fetch("floors")
     expect(floors.dig("strategy", "fail-fast")).to be(false)
-    expect(floors.dig("strategy", "matrix", "leaf")).to eq(%w[async falcon rack rails otel prometheus yabeda health])
+    expect(floors.dig("strategy", "matrix", "leaf"))
+      .to eq(%w[async falcon rack rails otel prometheus yabeda health sentry])
     expect(floors.fetch("env")).to include("CI_EXPECTED_RUBY_VERSION" => "3.4.12", "BUNDLE_COOLDOWN" => "3")
     ruby = floors.fetch("steps").find { |step| step.fetch("uses", "").start_with?("ruby/setup-ruby@") }
     expect(ruby.fetch("with")).to include("ruby-version" => "3.4.12", "bundler-cache" => false)
@@ -320,7 +323,7 @@ RSpec.describe "CI check mapping" do
     expect(settings.fetch("path").lines.map(&:strip)).to eq(
       %w[vendor/bundle vendor/rbs/bundle vendor/rack/bundle vendor/testing/bundle
          vendor/async/bundle vendor/falcon/bundle vendor/otel/bundle vendor/prometheus/bundle
-         vendor/yabeda/bundle vendor/health/bundle]
+         vendor/yabeda/bundle vendor/health/bundle vendor/sentry/bundle]
     )
     expect(settings).not_to have_key("restore-keys")
     expect(settings.fetch("key")).to include("rbs-bundles-v1", "runner.os", "runner.arch",
@@ -571,8 +574,8 @@ RSpec.describe "Optional Rack CI boundary" do
   end
 end
 
-RSpec.describe "Optional OpenTelemetry, metrics and health CI boundaries" do
-  %w[otel prometheus yabeda health].each do |name|
+RSpec.describe "Optional OpenTelemetry, metrics, health and Sentry CI boundaries" do
+  %w[otel prometheus yabeda health sentry].each do |name|
     it "keeps the independent #{name} context and CI override aligned" do
       root = File.expand_path("..", __dir__)
       local, ci = [nil, "ci"].map do |mode|

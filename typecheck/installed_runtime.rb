@@ -2,7 +2,7 @@
 
 libraries = %w[
   connectrpc/rack connectrpc/testing connectrpc/on_rails connectrpc/async connectrpc/falcon connectrpc/otel
-  connectrpc/prometheus connectrpc/yabeda connectrpc/health
+  connectrpc/prometheus connectrpc/yabeda connectrpc/health connectrpc/sentry
 ]
 libraries.reverse! if ARGV == ["reverse"]
 libraries.each { |name| require name }
@@ -17,7 +17,8 @@ versions = {
   "connectrpc-on-rails" => ConnectRPC::OnRails::VERSION, "connectrpc-async" => ConnectRPC::Async::VERSION,
   "connectrpc-falcon" => ConnectRPC::Falcon::VERSION, "connectrpc-testing" => ConnectRPC::Testing::VERSION,
   "connectrpc-otel" => ConnectRPC::OTel::VERSION, "connectrpc-prometheus" => ConnectRPC::Prometheus::VERSION,
-  "connectrpc-yabeda" => ConnectRPC::Yabeda::VERSION, "connectrpc-health" => ConnectRPC::Health::VERSION
+  "connectrpc-yabeda" => ConnectRPC::Yabeda::VERSION, "connectrpc-health" => ConnectRPC::Health::VERSION,
+  "connectrpc-sentry" => ConnectRPC::Sentry::VERSION
 }
 versions.each do |name, version|
   raise "Installed runtime version differs: #{name}" unless version == Gem.loaded_specs.fetch(name).version.to_s
@@ -249,9 +250,14 @@ health_client = Grpc::Health::V1::Health::Client.new(
 health_request = Grpc::Health::V1::HealthCheckRequest.new(service: "installed.v1.Service")
 raise "Installed health Check failed" unless health_client.check(health_request).message.status == :NOT_SERVING
 
+# Sentry stays inert until the application initializes the SDK; requiring it configures nothing.
+raise "Sentry initialized on require" if Sentry.initialized?
+raise "Uninitialized Sentry observed an RPC" unless ConnectRPC::Sentry::Subscriber.new.start(call).nil?
+raise "sentry-rails or sentry-opentelemetry auto-required" if defined?(Sentry::Rails) || defined?(Sentry::OpenTelemetry)
+
 puts "Installed optional runtime composition #{ARGV.first}: Rails subclass, Rack/Testing round trip, " \
      "native headers/session/TLS, callable stream, Struct pairs, Falcon inline DSL, " \
-     "Rails callbacks, API-only OTel/default propagation, Prometheus and Yabeda metrics, health Check"
+     "Rails callbacks, API-only OTel/default propagation, Prometheus and Yabeda metrics, health Check, inert Sentry"
 
 require_relative "installed_streaming"
 

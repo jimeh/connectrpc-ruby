@@ -201,6 +201,7 @@ target :app do
   library "connectrpc-prometheus"
   library "connectrpc-yabeda"
   library "connectrpc-health"
+  library "connectrpc-sentry"
   check "app"
   configure_code_diagnostics(Steep::Diagnostic::Ruby.strict)
 end
@@ -229,6 +230,7 @@ explicit bridge described [below](#opt-in-framework-compatibility).
 | Prometheus | Metrics configuration, readers and `connection_observer`; narrow structural registry/metric capabilities for prometheus-client |
 | Yabeda | Metrics configuration, readers and `connection_observer`; Yabeda itself remains untyped and application configured |
 | Health | Registry constructor, status operations and handlers; `SERVICE`, plus the generated `grpc.health.v1` messages, client and handler factory through its opt-in bridge |
+| Sentry | `Subscriber.new(capture_exceptions: bool)` and `Subscriber#start`; observers are private and the Sentry SDK remains untyped and application configured |
 
 `Async::Host#close`, `Async::ServerSession#close` and `Falcon::Server#close`
 return `bool?`. Nil means a nonjoining owned request or coordinator reentry is
@@ -441,7 +443,7 @@ includes bounded response-head/read/finish waits. Existing unary `_Transport`
 consumers need no new method. New core streaming files participate in the strict
 implementation target, with private declarations outside gem archives. Installed
 checks generate real mixed services and run native Async/Falcon streaming over
-localhost with all nine normally installed packages, both composition orders,
+localhost with all eleven normally installed packages, both composition orders,
 codecs and codings. These remain separate from independent Go/official evidence.
 Custom server hosts may pass `capabilities: Array[:server_stream | :client_stream |
 :bidi_stream]?` to `Server#call_stream`. Nil preserves the legacy `http2:` behavior;
@@ -492,6 +494,17 @@ types its registry through narrow structural capabilities rather than
 prometheus-client signatures. API callers cover a custom recorder, the
 connection observer, both sinks and the message observer capabilities, with
 exact negatives for a malformed recorder and wrong namespace/group types.
+
+## Sentry types
+
+The Sentry package declares only its subscriber: `initialize(?capture_exceptions:
+bool)` and `start(Instrumentation::Call) -> Object?`. Its private observers and
+helpers are classified internal in the source inventory, and no `::Sentry`
+declarations ship. API callers construct both forms and start a gRPC-Web server
+call; the exact negative rejects a non-boolean `capture_exceptions`. The
+installed runtime check requires the package in both composition orders and
+proves an uninitialized SDK observes nothing and loads neither sentry-rails nor
+sentry-opentelemetry.
 
 ## HTTP/1 client types
 

@@ -48,7 +48,8 @@ Ruby methods into extension points.
 Support requires the **same version** of `connectrpc` and every optional
 ConnectRPC gem used by the application: `connectrpc-rack`, `connectrpc-on-rails`,
 `connectrpc-async`, `connectrpc-falcon`, `connectrpc-testing`, `connectrpc-otel`,
-`connectrpc-prometheus`, `connectrpc-yabeda` and `connectrpc-health`.
+`connectrpc-prometheus`, `connectrpc-yabeda`, `connectrpc-health` and
+`connectrpc-sentry`.
 Only the packages actually used need to be installed.
 
 Existing gemspec ranges such as `~> 0.1.0` allow patch versions to differ.
@@ -81,6 +82,7 @@ The [CI workflow](../.github/workflows/ci.yml) defines the executed combinations
 | Prometheus metrics | prometheus-client newest allowed 5.x, plus the floor 5.0.0 | Default and `DirectFileStore` stores; real Rack, Async and Falcon hosts. Rails relies on the Rack path plus documentation |
 | Yabeda metrics | yabeda newest allowed 0.x, plus the floor 0.16.0 | Declaration and values through `yabeda/testing`; yabeda-prometheus naming is checked structurally, not installed |
 | Health service | google-protobuf newest allowed 4.x, plus the floor 4.36.2; grpc-go 1.85.0 health client and reference server | Check and List on real Rack, Async and Falcon hosts, Watch on Async and Falcon; grpc-go client over h2c, TLS and mTLS against Async and Falcon workers |
+| Sentry | sentry-ruby, sentry-rails and sentry-opentelemetry newest allowed 7.x, plus the floor 6.7.0 | Real SDK with an in-memory transport; sentry-rails with native Rails 8.1 and ActiveRecord, Rack, native Async/Falcon and ThreadedTransport. Fiber hosts require `hub_isolation_level = :fiber` |
 
 The official browser fixture runs against both MRI server versions. Its
 [artifact pins](../browser/artifacts.json) and [JS lock](../browser/bun.lock)

@@ -7,6 +7,7 @@
 /gems/connectrpc-prometheus/.bundle/
 /gems/connectrpc-yabeda/.bundle/
 /gems/connectrpc-health/.bundle/
+/gems/connectrpc-sentry/.bundle/
 
 /gems/connectrpc-falcon/.bundle/
 /vendor/

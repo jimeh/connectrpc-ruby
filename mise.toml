@@ -382,7 +382,7 @@ run = "ruby typecheck/run.rb check"
 
 [tasks."rbs:package"]
 description = "Check installed RBS discovery and consumers outside the checkout"
-depends = ["rbs:runtime", "rbs:setup", "setup:generation", "rack:setup", "testing:setup", "setup:rails", "async:setup", "falcon:setup", "otel:setup", "prometheus:setup", "yabeda:setup", "health:setup"]
+depends = ["rbs:runtime", "rbs:setup", "setup:generation", "rack:setup", "testing:setup", "setup:rails", "async:setup", "falcon:setup", "otel:setup", "prometheus:setup", "yabeda:setup", "health:setup", "sentry:setup"]
 tools."aqua:protocolbuffers/protobuf/protoc" = "36.2"
 tools."aqua:bufbuild/buf" = "1.75.0"
 run = "ruby typecheck/run.rb package"
@@ -607,6 +607,48 @@ run = "ruby gems/connectrpc-health/scripts/run.rb interop"
 [tasks."health:verify"]
 description = "Verify health specs, source, packages and grpc-go health client interoperability"
 depends = ["health:test", "health:check", "health:package", "health:interop"]
+
+# Optional native Sentry tracing and handler exception capture; SDK-backed cross-package development bundle.
+
+[tasks."sentry:tools"]
+description = "Require preinstalled pinned Ruby and Bundler for Sentry"
+dir = "{{config_root}}/gems/connectrpc-sentry"
+env = { BUNDLE_GEMFILE = "{{config_root}}/gems/connectrpc-sentry/Gemfile", BUNDLE_PATH = "{{config_root}}/vendor/sentry/bundle", BUNDLE_USER_HOME = "{{config_root}}/vendor/sentry/bundler", BUNDLE_COOLDOWN = "3" }
+run = "mise exec -- ruby scripts/tools.rb"
+
+[tasks."sentry:setup"]
+description = "Install the independent Sentry development bundle"
+depends = ["sentry:tools"]
+run = "mise exec -- ruby gems/connectrpc-sentry/scripts/run.rb setup"
+
+[tasks."sentry:test"]
+description = "Run Sentry specs against the real SDK, including Rails, Rack, Async and Falcon hosts"
+depends = ["sentry:setup"]
+run = "mise exec -- ruby gems/connectrpc-sentry/scripts/run.rb test"
+
+[tasks."sentry:check"]
+description = "Parse and lint Sentry package source"
+depends = ["sentry:setup"]
+run = "mise exec -- ruby gems/connectrpc-sentry/scripts/run.rb check"
+
+[tasks."sentry:build"]
+description = "Build isolated core, testing and Sentry archives"
+depends = ["sentry:setup"]
+run = "mise exec -- ruby gems/connectrpc-sentry/scripts/run.rb build"
+
+[tasks."sentry:package"]
+description = "Install and exercise normal Sentry package dependencies offline"
+depends = ["sentry:build"]
+run = "mise exec -- ruby gems/connectrpc-sentry/scripts/run.rb package"
+
+[tasks."sentry:example"]
+description = "Run generated in-process RPCs against the real SDK with an in-memory transport"
+depends = ["sentry:setup"]
+run = "mise exec -- ruby gems/connectrpc-sentry/scripts/run.rb example"
+
+[tasks."sentry:verify"]
+description = "Verify Sentry specs, source and packages"
+depends = ["sentry:test", "sentry:check", "sentry:package", "sentry:example"]
 
 [tasks."rbs:source"]
 description = "Strictly check all selected core implementation files and private state"
@@ -911,13 +953,26 @@ run = [
   "mise exec -- ruby gems/connectrpc-health/scripts/run.rb package",
 ]
 
+[tasks."floors:sentry"]
+description = "Run Sentry specs and package checks with runtime dependencies at their declared floors"
+depends = ["sentry:tools"]
+env.CONNECTRPC_DEPENDENCY_FLOORS = "1"
+run = [
+  "rm -f gems/connectrpc-sentry/Gemfile.floors.lock",
+  "mise exec -- ruby gems/connectrpc-sentry/scripts/run.rb setup",
+  "mise exec -- ruby gems/connectrpc-sentry/scripts/run.rb floors",
+  "mise exec -- ruby gems/connectrpc-sentry/scripts/run.rb test",
+  "mise exec -- ruby gems/connectrpc-sentry/scripts/run.rb build",
+  "mise exec -- ruby gems/connectrpc-sentry/scripts/run.rb package",
+]
+
 [tasks.floors]
 description = "Run every lowest-allowed dependency lane (Ruby 3.4.12)"
-depends = ["floors:async", "floors:falcon", "floors:rack", "floors:rails", "floors:otel", "floors:prometheus", "floors:yabeda", "floors:health"]
+depends = ["floors:async", "floors:falcon", "floors:rack", "floors:rails", "floors:otel", "floors:prometheus", "floors:yabeda", "floors:health", "floors:sentry"]
 
 # Release preparation never tags, creates a GitHub release, or publishes gems.
 [tasks."release:check"]
-description = "Check ten synchronized versions, installation guides and release guards offline"
+description = "Check eleven synchronized versions, installation guides and release guards offline"
 run = "mise exec -- ruby scripts/release.rb check"
 
 [tasks."release:prepare"]
@@ -925,7 +980,7 @@ description = "Refresh installation guide requirements after a minor (breaking) 
 run = "mise exec -- ruby scripts/release.rb prepare"
 
 [tasks."release:build"]
-description = "Build and compare ten canonical candidate archives from a clean Ruby 3.4.12 checkout"
+description = "Build and compare eleven canonical candidate archives from a clean Ruby 3.4.12 checkout"
 run = "mise exec -- ruby scripts/release.rb build"
 
 [tasks."release:tools"]
@@ -938,5 +993,5 @@ run = "mise exec -- ruby scripts/release.rb publish"
 
 [tasks."release:candidate"]
 description = "Validate installed combinations, generated consumers and canonical candidate archives"
-depends = ["release:check", "generation:check", "grpc:status:check", "check:package", "rack:package", "check:package:rails", "async:package", "falcon:package", "testing:package", "otel:package", "prometheus:package", "yabeda:package", "health:package", "rbs:package"]
+depends = ["release:check", "generation:check", "grpc:status:check", "check:package", "rack:package", "check:package:rails", "async:package", "falcon:package", "testing:package", "otel:package", "prometheus:package", "yabeda:package", "health:package", "sentry:package", "rbs:package"]
 run = "mise run release:build"
