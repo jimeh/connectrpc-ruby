@@ -339,6 +339,13 @@ reserves for never-processed streams (`REFUSED_STREAM` or above a GOAWAY's last
 stream id) and no response HEADERS arrived. Nothing else that may have reached
 the server is resent. The package guide describes the policy, states and
 observer events.
+Opt-in client keepalive PINGs each ready connection and retires it raw-first,
+like any failed connection, when the matching ACK misses its deadline; that
+deadline starts before the PING waits for the write guard. Async server hosts
+mirror grpc-go: server PINGs, PING enforcement with GOAWAY `too_many_pings`, and
+GOAWAY-first age and idle drains that let accepted streams finish. Rails and
+Rack hosts leave all of this to the server or proxy that owns the connection
+([plan](plans/keepalive.md)).
 `ThreadedTransport` is the one hidden-reactor exception, and it is explicit: one
 owner thread per process runs a reactor and an H2 `Transport` for callers on any
 thread. Core still encodes and decodes on the caller thread; only frozen bytes and

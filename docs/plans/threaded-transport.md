@@ -671,7 +671,7 @@ that spec to expect exactly one more transmission and one server invocation.
 | Late lifecycle mutation after the caller left | Detachable lifecycle proxy. |
 | Fork while calls are in flight or while the engine starts | Child ignores inherited state; tests fork in each of these states. |
 | Server down at boot or during a deploy | Fail-fast callers get `unavailable` quickly; demand-driven attempts with backoff recover; wait-for-ready callers wait until their deadline. |
-| Half-open connection with no FIN | First call after the failure gets `unavailable` and is not resent, because the write may have reached the server. Later calls reconnect. Keepalive PINGs remain a non-goal. |
+| Half-open connection with no FIN | First call after the failure gets `unavailable` and is not resent, because the write may have reached the server. Later calls reconnect. Keepalive PINGs remain a non-goal here; [#69](keepalive.md) adds them later. |
 | Long-lived stream on a connection that received GOAWAY | Draining slot plus optional `drain_timeout`; never more than `connection_limit + max_draining` sockets. |
 | GVL starvation under CPU-heavy threads | Encoding stays on callers; implementation minimizes reactor wakeups per call; documentation explains `RUBY_THREAD_TIMESLICE`. |
 | Owner thread crash | Pending callers get `unavailable`; next call restarts the engine. |
