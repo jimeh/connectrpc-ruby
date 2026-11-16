@@ -323,6 +323,12 @@ module ConnectRPC
       TransportResponse.new(status: status, headers: headers, body: "")
     end
 
+    # Record once from normalized headers, before validation, so terminal
+    # fallbacks without a request Context keep the application metadata.
+    def record_request_metadata(lifecycle, headers)
+      lifecycle.request_metadata = Instrumentation.carrier(Protocol.metadata(headers))
+    end
+
     def request_context(headers, lifecycle = nil, cancellation = nil)
       validate_headers!(headers)
       Context.new(request_metadata: Protocol.metadata(headers), deadline: request_deadline(headers),

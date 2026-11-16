@@ -85,12 +85,6 @@ module ConnectRPC
       [lifecycle, owned]
     end
 
-    # Record once from normalized headers, before validation, so terminal
-    # fallbacks without a request Context keep the application metadata.
-    def record_request_metadata(lifecycle, headers)
-      lifecycle.request_metadata = Instrumentation.carrier(Protocol.metadata(headers))
-    end
-
     def finish_native_processing(lifecycle, owned, error)
       return unless lifecycle
 

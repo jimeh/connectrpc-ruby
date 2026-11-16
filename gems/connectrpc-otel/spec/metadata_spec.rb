@@ -140,14 +140,24 @@ RSpec.describe "Error types and propagated metadata" do
       expect(errors).to be_empty
     end
 
-    it "does not repeat staged baggage that a propagator already appended to" do
-      propagator = Object.new
-      propagator.define_singleton_method(:extract) { |_carrier, context:, **| context }
-      propagator.define_singleton_method(:inject) do |carrier, context:| # rubocop:disable Lint/UnusedBlockArgument
-        carrier["baggage"] = [*carrier["baggage"], "custom=1"]
+    {
+      "appends to it" => [->(carrier) { carrier["baggage"] = [*carrier["baggage"], "custom=1"] },
+                          ["staged=1", "custom=1"]],
+      "prepends to it" => [->(carrier) { carrier["baggage"] = ["custom=1", *carrier["baggage"]] },
+                           ["staged=1", "custom=1"]],
+      "replaces it in place" => [->(carrier) { carrier["baggage"].replace(["custom=1"]) },
+                                 ["staged=1", "custom=1"]],
+      "clears it" => [->(carrier) { carrier["baggage"].clear }, ["staged=1"]],
+      "deletes it" => [->(carrier) { carrier.delete("baggage") }, ["staged=1"]]
+    }.each do |label, (edit, expected)|
+      it "keeps staged baggage exactly once when a custom propagator #{label}" do
+        propagator = Object.new
+        propagator.define_singleton_method(:extract) { |_carrier, context:, **| context }
+        propagator.define_singleton_method(:inject) { |carrier, context:| edit.call(carrier) } # rubocop:disable Lint/UnusedBlockArgument
+        bus, errors = otel_bus(stager, propagator: propagator)
+        expect(wire_headers(bus)["baggage"]).to eq(expected)
+        expect(errors).to be_empty
       end
-      bus, = otel_bus(stager, propagator: propagator)
-      expect(wire_headers(bus)["baggage"]).to eq(["staged=1", "custom=1"])
     end
   end
 end

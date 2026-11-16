@@ -47,16 +47,21 @@ module ConnectRPC
 
       private
 
-      # Propagators may overwrite the shared carrier's baggage. Keep baggage that
-      # earlier subscribers staged ahead of this propagator's entries.
+      # Propagators may replace, edit in place or remove the shared carrier's
+      # baggage. Keep baggage that earlier subscribers staged exactly once, ahead
+      # of this propagator's new entries.
       def inject(carrier, context)
-        staged = Array(carrier["baggage"])
+        staged = Array(carrier["baggage"]).dup.freeze
         @propagator.inject(carrier, context: context)
-        written = Array(carrier["baggage"])
-        return if staged.empty? || written.empty? || written == staged
+        return if staged.empty?
 
-        written = written.drop(staged.size) if written.first(staged.size) == staged
-        carrier["baggage"] = staged + written
+        # Drop each staged entry once from what the propagator left behind.
+        remaining = staged.dup
+        added = Array(carrier["baggage"]).reject do |entry|
+          index = remaining.index(entry)
+          remaining.delete_at(index) if index
+        end
+        carrier["baggage"] = staged + added
       end
 
       def attributes(call, name)
