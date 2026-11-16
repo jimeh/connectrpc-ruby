@@ -64,16 +64,16 @@ RSpec.describe ReleaseTrain do
       abort "Loaded optional dependency" if defined?(::Rack) || defined?(::Rails) || defined?(::Async) ||
                                             defined?(::Falcon) || defined?(::OpenTelemetry) ||
                                             defined?(::Prometheus) || defined?(::Yabeda) ||
-                                            defined?(::Google::Protobuf)
+                                            defined?(::Google::Protobuf) || defined?(::Sentry)
       puts JSON.generate([ConnectRPC::VERSION, ConnectRPC::Rack::VERSION, ConnectRPC::OnRails::VERSION,
                           ConnectRPC::Async::VERSION, ConnectRPC::Falcon::VERSION,
                           ConnectRPC::Testing::VERSION, ConnectRPC::OTel::VERSION,
                           ConnectRPC::Prometheus::VERSION, ConnectRPC::Yabeda::VERSION,
-                          ConnectRPC::Health::VERSION])
+                          ConnectRPC::Health::VERSION, ConnectRPC::Sentry::VERSION])
     RUBY
     stdout, stderr, status = Open3.capture3(RbConfig.ruby, "-e", command, *files)
     expect(status.success?).to be(true), stderr
-    expect(JSON.parse(stdout)).to eq(Array.new(10, train.version))
+    expect(JSON.parse(stdout)).to eq(Array.new(11, train.version))
   end
 
   def internal_requirements(train)
@@ -126,7 +126,8 @@ RSpec.describe ReleaseTrain do
   {
     "gems/connectrpc-falcon/lib/connectrpc/falcon/version.rb" => /Version mismatch: connectrpc-falcon/,
     "gems/connectrpc-otel/lib/connectrpc/otel/version.rb" => /Version mismatch: connectrpc-otel/,
-    "gems/connectrpc-yabeda/lib/connectrpc/yabeda/version.rb" => /Version mismatch: connectrpc-yabeda/
+    "gems/connectrpc-yabeda/lib/connectrpc/yabeda/version.rb" => /Version mismatch: connectrpc-yabeda/,
+    "gems/connectrpc-sentry/lib/connectrpc/sentry/version.rb" => /Version mismatch: connectrpc-sentry/
   }.each do |file, failure|
     it "rejects a mismatched #{file} before building artifacts" do
       captured_train do |train|

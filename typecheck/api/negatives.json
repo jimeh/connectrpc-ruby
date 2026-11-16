@@ -57,5 +57,6 @@
   "metrics_recorder": "Ruby::ArgumentTypeMismatch",
   "prometheus": "Ruby::ArgumentTypeMismatch",
   "yabeda": "Ruby::ArgumentTypeMismatch",
-  "health": "Ruby::ArgumentTypeMismatch"
+  "health": "Ruby::ArgumentTypeMismatch",
+  "sentry": "Ruby::ArgumentTypeMismatch"
 }

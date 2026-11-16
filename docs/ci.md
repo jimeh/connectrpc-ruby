@@ -3,7 +3,7 @@
 The workflow runs on pull requests, pushes to `main`, manual dispatch and a
 daily schedule (04:37 UTC), on Ubuntu 24.04. It has nine core, three optional
 Rails, four optional HTTP/2, two optional Rack, two optional in-process testing,
-two optional RBS, four Falcon checks, seven lowest-allowed dependency checks and
+two optional RBS, four Falcon checks, nine lowest-allowed dependency checks and
 one runnable-examples check, with no serial cache primer or aggregate job:
 
 | Check | Ruby | Canonical commands |
@@ -15,7 +15,7 @@ one runnable-examples check, with no serial cache primer or aggregate job:
 | Official conformance | 3.4.12, 4.0.9 | `mise run test:conformance` |
 | Rails 8.0 | 3.4.12 | `mise run test:rails`, `generation:check:rails`, `check:package:rails` with `RAILS_LANE=8.0` |
 | Rails 8.1 | 3.4.12, 4.0.9 | Same Rails commands with `RAILS_LANE=8.1` |
-| Lowest allowed async, falcon, rack, rails, otel, prometheus, yabeda, health | 3.4.12 | `mise run floors:<leaf>` |
+| Lowest allowed async, falcon, rack, rails, otel, prometheus, yabeda, health, sentry | 3.4.12 | `mise run floors:<leaf>` |
 | Async specs/package | 3.4.12, 4.0.9 | `mise run async:test`, `mise run async:package`, `mise run async:conformance` |
 | Async Go interoperability | 3.4.12, 4.0.9 | `mise run async:interop`, `mise run async:interop:streaming` |
 | Rack specs/check/package | 3.4.12, 4.0.9 | `mise run rack:test`, `mise run rack:check`, `mise run rack:package` |
@@ -24,6 +24,7 @@ one runnable-examples check, with no serial cache primer or aggregate job:
 | Falcon specs/package | 3.4.12, 4.0.9 | `mise run falcon:test`, `mise run falcon:package`, `mise run falcon:conformance` |
 | Falcon Go interoperability | 3.4.12, 4.0.9 | `mise run falcon:interop`, `mise run falcon:interop:streaming` |
 | Health service | 3.4.12, 4.0.9 | `mise run health:verify` |
+| Sentry tracing | 3.4.12, 4.0.9 | `mise run sentry:verify` |
 | Runnable examples | 4.0.9 | `mise run example:verify` |
 
 Each matrix has `fail-fast: false`. Every check runs its commands on cache
@@ -54,10 +55,10 @@ re-enable the workflow in the Actions tab.
 
 The lowest-allowed matrix runs `floors:async`, `floors:falcon`, `floors:rack`,
 `floors:rails` (Rails 8.0 lane), `floors:otel`, `floors:prometheus`,
-`floors:yabeda` and `floors:health` on Ruby 3.4.12. Each task sets
+`floors:yabeda`, `floors:health` and `floors:sentry` on Ruby 3.4.12. Each task sets
 `CONNECTRPC_DEPENDENCY_FLOORS=1`, generates its ignored wrapper Gemfile,
 installs it, asserts every runtime dependency resolved exactly at its declared
-floor (the OTel leaf also constrains `json` to `< 3`; see development), then runs
+floor (the OTel and Sentry leaves also constrain `json` to `< 3`; see development), then runs
 that package's specs and installed-package check. Because the
 wrapper does not exist before the task runs, these jobs disable the setup-ruby
 bundle cache and install from the registry each time. See
@@ -240,7 +241,7 @@ dependency enters core, Rails or Async bundles.
 The pinned Ruby/Bundler action prepares the runtime with its bundle cache disabled
 only in this lane. One explicit `actions/cache` v6.1.0 step, pinned to
 `55cc8345863c7cc4c66a329aec7e433d2d1c52a9`, owns `vendor/bundle` and the independent
-`vendor/{rbs,rack,testing,async,falcon,otel,prometheus,yabeda,health}/bundle` directories. Rails Appraisal
+`vendor/{rbs,rack,testing,async,falcon,otel,prometheus,yabeda,health,sentry}/bundle` directories. Rails Appraisal
 needs the root bundle directory. There are no overlapping bundle-cache owners or
 bundle-specific setup-action environment overrides. The action release was
 published on 2026-06-26, satisfying the seven-day age policy.
@@ -300,12 +301,22 @@ The Prometheus lane includes real Rack, Async and Falcon hosts and a forked
 install their archives offline into a fresh external GEM_HOME and check
 workspace cleanliness.
 
+## Optional Sentry lane
+
+The `sentry` job runs `sentry:verify` once per pinned Ruby with its own
+`gems/connectrpc-sentry/Gemfile`, `vendor/sentry/bundle` and
+`vendor/sentry/bundler`, validated through `sentry:tools` like the OTel and
+metrics lanes. It runs the real SDK with an in-memory transport against
+sentry-rails, Rack, native Async/Falcon h2c and ThreadedTransport, installs the
+archive offline into a fresh external GEM_HOME and checks workspace
+cleanliness. `floors:sentry` covers sentry-ruby 6.7.0.
+
 ## Public API typing gates
 
 The two RBS jobs run strict implementation checks for the core files and private
 state listed in `typecheck/source.rb`. They validate that source list, enforce
 the reviewed source/signature inventory, and check application callers for all
-nine packages. Generated positive, exact per-file negative and nominal/bridge
+eleven packages. Generated positive, exact per-file negative and nominal/bridge
 checks remain.
 Installed checks use normal RBS discovery in a fresh external GEM_HOME, validate
 each optional dependency closure and both composition orders, and exercise API-only
@@ -381,8 +392,8 @@ It opens or updates the release PR using an existing GitHub App from the
 `release-please` environment. After a release PR merges, it tags the commit and
 creates a draft GitHub release. The tag starts `release.yml`, which publishes
 from the `release` environment.
-The 42 CI checks above retain their mapping. `check:static` also runs the offline
-`release:check` invariant for all nine versions, release configuration and
+The 48 CI checks above retain their mapping. `check:static` also runs the offline
+`release:check` invariant for all eleven versions, release configuration and
 installation guides. See [release preparation](releasing.md) for the candidate procedure and
 remaining App/account setup.
 

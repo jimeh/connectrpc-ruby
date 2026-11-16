@@ -3,7 +3,7 @@
 require_relative "harness"
 
 module APICheck
-  PACKAGES = %w[rack testing on-rails async falcon otel prometheus yabeda health].freeze
+  PACKAGES = %w[rack testing on-rails async falcon otel prometheus yabeda health sentry].freeze
   # Opt-in signature directories outside each package's discovered sig/.
   BRIDGES = { "on-rails" => "rbs/action_controller_8", "falcon" => "rbs/async_service_0_25",
               "health" => "rbs/grpc_health_v1" }.freeze

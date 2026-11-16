@@ -86,7 +86,7 @@ for final handoff; moved middleware specs have their own canonical gate.
 [CI](https://github.com/jimeh/connectrpc-ruby/blob/main/docs/ci.md) splits the same
 canonical component tasks into nine core, three Rails, four optional HTTP/2,
 two optional Rack, two optional testing, two optional RBS and four optional Falcon
-checks, with syntax, specs, package isolation,
+checks, plus the optional OTel, metrics, health and Sentry leaves, with syntax, specs, package isolation,
 interop and official conformance on both Rubies. Hosted clean-environment and
 matrix results remain CI evidence; a local pass cannot establish them.
 
@@ -344,14 +344,15 @@ mise run floors:otel
 mise run floors:prometheus
 mise run floors:yabeda
 mise run floors:health
-mise run floors         # all eight
+mise run floors:sentry
+mise run floors         # all nine
 ```
 
 Floors do not apply to development tools or transitive-only dependencies. A
 launcher can add a floors-only constraint on a transitive gem through
 `DependencyFloors.gemfile(..., constraints: { ... })`; the wrapper declares it,
-and real Gemfiles never do. The OTel launcher constrains `json` to `< 3`
-because its tools otherwise resolve json 3.x, which rejects the JSON
+and real Gemfiles never do. The OTel and Sentry launchers constrain `json` to
+`< 3` because their tools otherwise resolve json 3.x, which rejects the JSON
 `quirks_mode` option that the Action Pack floor's ActiveSupport (Rails 8.0)
 passes. The installed package checks expect the release RubyGems activates, which can be a
 newer Ruby default gem (for example Ruby 3.4's openssl 3.3.x) than the floor.
@@ -615,6 +616,29 @@ real Falcon workers and grpc-go's reference server. Core's `Context#on_cancel`
 is covered by `mise run test -- spec/context_on_cancel_spec.rb`. The vendored
 schema and generated files belong to `generation:build`/`generation:check`.
 See the [health guide](../gems/connectrpc-health/README.md).
+
+## Optional Sentry development
+
+`mise run sentry:setup` installs the independent Sentry bundle under
+`vendor/sentry`: sentry-ruby, sentry-rails with Rails and in-memory SQLite
+ActiveRecord, sentry-opentelemetry, the OpenTelemetry SDK and the local Rack,
+Rails, Async, Falcon, testing and OTel packages. They float like runtime
+dependencies; only tools are pinned. Every example initializes a real SDK with
+`Sentry::DummyTransport`, no background worker threads and a `.invalid` DSN, and
+closes it afterwards, so specs never send events. Use
+`sentry:test -- spec/rails_spec.rb` for sentry-rails nesting and exception
+reporting, `spec/native_spec.rb spec/threaded_spec.rb` for real Async, Falcon and
+ThreadedTransport boundaries, and `spec/lifetime_spec.rb` for promotion and the
+finish scope. `sentry:check`, `sentry:build`, `sentry:package`, `sentry:example`
+and `sentry:verify` are discoverable leaves; repeat
+`MISE_RUBY_VERSION=4.0.9 mise run sentry:verify` for the second pinned runtime.
+Coverage lives under `coverage/sentry/<Ruby>/`. `floors:sentry` runs the same
+specs and package checks with sentry-ruby 6.7.0 (sentry-rails and
+sentry-opentelemetry follow it) and constrains `json` to `< 3` like the OTel
+lane. Package checks install the archive offline into a fresh external
+GEM_HOME, require it without Rails and run the copied generated example. See
+the [package guide](../gems/connectrpc-sentry/README.md) for the lifetime model
+and its limits.
 
 ## Native streaming verification
 

@@ -39,6 +39,8 @@ Metrics/BlockLength:
     - gems/connectrpc-yabeda/scripts/**/*.rb
     - gems/connectrpc-health/spec/**/*.rb
     - gems/connectrpc-health/scripts/**/*.rb
+    - gems/connectrpc-sentry/spec/**/*.rb
+    - gems/connectrpc-sentry/scripts/**/*.rb
     - gems/connectrpc-testing/spec/**/*.rb
     - gems/connectrpc-testing/scripts/**/*.rb
     - gems/connectrpc-falcon/spec/**/*.rb
@@ -84,6 +86,8 @@ Metrics/MethodLength:
     - gems/connectrpc-yabeda/scripts/**/*.rb
     - gems/connectrpc-health/spec/**/*.rb
     - gems/connectrpc-health/scripts/**/*.rb
+    - gems/connectrpc-sentry/spec/**/*.rb
+    - gems/connectrpc-sentry/scripts/**/*.rb
     - gems/connectrpc-testing/spec/**/*.rb
     - gems/connectrpc-testing/scripts/**/*.rb
     - gems/connectrpc-falcon/spec/**/*.rb
@@ -123,6 +127,8 @@ Metrics/AbcSize:
     - gems/connectrpc-yabeda/scripts/**/*.rb
     - gems/connectrpc-health/spec/**/*.rb
     - gems/connectrpc-health/scripts/**/*.rb
+    - gems/connectrpc-sentry/spec/**/*.rb
+    - gems/connectrpc-sentry/scripts/**/*.rb
     - gems/connectrpc-testing/spec/**/*.rb
     - gems/connectrpc-testing/scripts/**/*.rb
     - gems/connectrpc-falcon/spec/**/*.rb
