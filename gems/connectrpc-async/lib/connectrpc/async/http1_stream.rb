@@ -1,56 +1,148 @@
 # frozen_string_literal: true
 
-require "io/stream/buffered"
+require "io/stream"
+require "openssl"
 
 module ConnectRPC
   module Async
     module Internal
-      # Unlike IO::Stream's coupled read path, an H1 response must remain
-      # readable while the request writer holds its output mutex.
-      class HTTP1Stream < ::IO::Stream::Buffered
+      # A buffered HTTP/1 stream over a socket's public IO API. Unlike
+      # IO::Stream's coupled read path, reads never flush or take the writer's
+      # mutex, so a response stays readable while a request writer is blocked
+      # mid-upload.
+      class HTTP1Stream
+        READ_SIZE = 16_384
+
         def initialize(io)
-          super(io, minimum_read_size: 16_384, maximum_read_size: 16_384)
+          @io = io
+          @finished = false
+          @read_buffer = String.new(encoding: Encoding::BINARY)
+          # Scratch destination for reads appended to a non-empty read buffer.
+          @input_buffer = String.new(encoding: Encoding::BINARY)
+          @write_buffer = String.new(encoding: Encoding::BINARY)
+          @writing = Thread::Mutex.new
         end
 
-        def readpartial(length, buffer = nil)
-          super([length, 16_384].min, buffer)
+        def closed? = @io.closed?
+
+        # Like IO::Stream 0.14, the limit is compared with the separator's
+        # start, so a returned line may exceed it by the separator.
+        def gets(separator, limit = nil)
+          offset = 0
+          until (index = @read_buffer.index(separator, offset))
+            # Resume just before the tail so a separator split across reads matches.
+            offset = [@read_buffer.bytesize - separator.bytesize + 1, 0].max
+            return consume(limit) if limit && offset >= limit
+            return consume unless fill_read_buffer
+          end
+          return consume(limit) if limit && index >= limit
+
+          consume(index + separator.bytesize)
+        end
+
+        def read(size)
+          return String.new(encoding: Encoding::BINARY) if size.zero?
+
+          fill_read_buffer until @finished || @read_buffer.bytesize >= size
+          consume(size)
+        end
+
+        def readpartial(length)
+          return String.new(encoding: Encoding::BINARY) if length.zero?
+
+          fill_read_buffer if !@finished && @read_buffer.empty?
+          consume([length, READ_SIZE].min) or raise EOFError, "Stream finished before reading enough data!"
+        end
+
+        def write(string, flush: false)
+          @writing.synchronize do
+            @write_buffer << (string.encoding == Encoding::BINARY ? string : string.b)
+            drain if flush || @write_buffer.bytesize >= ::IO::Stream::MINIMUM_WRITE_SIZE
+          end
+          string.bytesize
+        end
+
+        def flush
+          return if @write_buffer.empty?
+
+          @writing.synchronize { drain }
+        end
+
+        # Best effort flush; interruptions still propagate after the close.
+        def close
+          return if closed?
+
+          begin
+            flush
+          rescue StandardError
+            nil
+          ensure
+            @io.close
+          end
+        end
+
+        def close_write
+          flush
+        ensure
+          @io.close_write
         end
 
         def close_read
           # Destructive retirement closes raw IO before unfinished body cleanup.
-          super unless closed?
+          @io.close_read unless closed?
         end
 
         def viable?
           return false if closed? || @finished || !@read_buffer.empty?
 
-          result = sysread_nonblock(1, @input_buffer)
-          result == :wait_readable
+          @io.read_nonblock(1, @input_buffer, exception: false) == :wait_readable
         rescue IOError, SystemCallError, OpenSSL::SSL::SSLError
           false
         end
 
         private
 
-        # Keep pinned buffer/EOF behavior without acquiring the writer's mutex.
-        def fill_read_buffer(size = @minimum_read_size) # rubocop:disable Naming/PredicateMethod -- Pinned upstream override.
-          size = [size, @maximum_read_size].min
+        # Returns the bytes read, or nil once the peer has finished.
+        def fill_read_buffer
           if @read_buffer.empty?
-            return true if sysread(size, @read_buffer)
-          elsif (chunk = sysread(size, @input_buffer))
+            chunk = sysread(@read_buffer)
+          elsif (chunk = sysread(@input_buffer))
             @read_buffer << chunk
-            return true
           end
-          @finished = true
-          false
+          @finished = true unless chunk
+          chunk
         end
 
-        # Buffered#sysread in io-stream 0.14 swallows SSL errors other than
-        # unexpected EOF. Preserve those native failures rather than returning
-        # a clean close-delimited HTTP EOF.
-        def sysread(size, buffer)
+        # Returns at most size buffered bytes, or nil once finished and empty.
+        def consume(size = nil)
+          return if @finished && @read_buffer.empty?
+
+          if size.nil? || size >= @read_buffer.bytesize
+            result = @read_buffer
+            @read_buffer = String.new(encoding: Encoding::BINARY)
+          else
+            # Freezing first lets byteslice share instead of copying.
+            @read_buffer.freeze
+            result = @read_buffer.byteslice(0, size)
+            @read_buffer = @read_buffer.byteslice(size, @read_buffer.bytesize)
+          end
+          result
+        end
+
+        def drain
+          @io.write(@write_buffer)
+        ensure
+          # A failed write loses the buffered bytes, as in IO::Stream.
+          @write_buffer.clear
+        end
+
+        # Raise every native read failure except a TLS peer's unexpected EOF,
+        # which maps to a connection reset like ECONNRESET. IO::Stream 0.14
+        # swallows other SSL errors, which would read as a clean EOF and
+        # truncate a close-delimited body.
+        def sysread(buffer)
           loop do
-            result = @io.read_nonblock(size, buffer, exception: false)
+            result = @io.read_nonblock(READ_SIZE, buffer, exception: false)
             case result
             when :wait_readable
               @io.wait_readable(@io.timeout) or raise ::IO::TimeoutError, "read timeout"

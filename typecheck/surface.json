@@ -313,12 +313,21 @@
     "ConnectRPC::Async::Internal::HTTP1Exchange#write": {"kind":"method","visibility":"public","parameters":"bytes","classification":"internal"}
   },
   "gems/connectrpc-async/lib/connectrpc/async/http1_stream.rb": {
+    "ConnectRPC::Async::Internal::HTTP1Stream#close": {"kind":"method","visibility":"public","parameters":"","classification":"internal"},
     "ConnectRPC::Async::Internal::HTTP1Stream#close_read": {"kind":"method","visibility":"public","parameters":"","classification":"internal"},
-    "ConnectRPC::Async::Internal::HTTP1Stream#fill_read_buffer": {"kind":"method","visibility":"private","parameters":"size = @minimum_read_size","classification":"internal"},
+    "ConnectRPC::Async::Internal::HTTP1Stream#close_write": {"kind":"method","visibility":"public","parameters":"","classification":"internal"},
+    "ConnectRPC::Async::Internal::HTTP1Stream#closed?": {"kind":"method","visibility":"public","parameters":"","classification":"internal"},
+    "ConnectRPC::Async::Internal::HTTP1Stream#consume": {"kind":"method","visibility":"private","parameters":"size = nil","classification":"internal"},
+    "ConnectRPC::Async::Internal::HTTP1Stream#drain": {"kind":"method","visibility":"private","parameters":"","classification":"internal"},
+    "ConnectRPC::Async::Internal::HTTP1Stream#fill_read_buffer": {"kind":"method","visibility":"private","parameters":"","classification":"internal"},
+    "ConnectRPC::Async::Internal::HTTP1Stream#flush": {"kind":"method","visibility":"public","parameters":"","classification":"internal"},
+    "ConnectRPC::Async::Internal::HTTP1Stream#gets": {"kind":"method","visibility":"public","parameters":"separator, limit = nil","classification":"internal"},
     "ConnectRPC::Async::Internal::HTTP1Stream#initialize": {"kind":"method","visibility":"public","parameters":"io","classification":"internal"},
-    "ConnectRPC::Async::Internal::HTTP1Stream#readpartial": {"kind":"method","visibility":"public","parameters":"length, buffer = nil","classification":"internal"},
-    "ConnectRPC::Async::Internal::HTTP1Stream#sysread": {"kind":"method","visibility":"private","parameters":"size, buffer","classification":"internal"},
-    "ConnectRPC::Async::Internal::HTTP1Stream#viable?": {"kind":"method","visibility":"public","parameters":"","classification":"internal"}
+    "ConnectRPC::Async::Internal::HTTP1Stream#read": {"kind":"method","visibility":"public","parameters":"size","classification":"internal"},
+    "ConnectRPC::Async::Internal::HTTP1Stream#readpartial": {"kind":"method","visibility":"public","parameters":"length","classification":"internal"},
+    "ConnectRPC::Async::Internal::HTTP1Stream#sysread": {"kind":"method","visibility":"private","parameters":"buffer","classification":"internal"},
+    "ConnectRPC::Async::Internal::HTTP1Stream#viable?": {"kind":"method","visibility":"public","parameters":"","classification":"internal"},
+    "ConnectRPC::Async::Internal::HTTP1Stream#write": {"kind":"method","visibility":"public","parameters":"string, flush: false","classification":"internal"}
   },
   "gems/connectrpc-async/lib/connectrpc/async/http1_transport.rb": {
     "ConnectRPC::Async::HTTP1Transport#abort": {"kind":"method","visibility":"private","parameters":"operation","classification":"internal"},
