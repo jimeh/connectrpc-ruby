@@ -270,8 +270,10 @@ module ConnectRPC
           send_reset_stream(::Protocol::HTTP2::Error::INTERNAL_ERROR)
         end
 
+        # Credit cannot help a retiring connection, whose guard or closed
+        # socket would fail a consumer that is only reading buffered input.
         def reclaim_input(amount)
-          return if closed? || @state == :half_closed_remote || @connection.closed?
+          return if closed? || @state == :half_closed_remote || @connection.retiring?
 
           @reclaimed_input = (@reclaimed_input || 0) + amount
           request_window_update
@@ -281,7 +283,7 @@ module ConnectRPC
           return unless @reclaimed_input&.positive? && @local_window.limited?
 
           @connection.synchronize do
-            next if closed? || @state == :half_closed_remote || @connection.closed?
+            next if closed? || @state == :half_closed_remote || @connection.retiring?
             next unless @reclaimed_input.positive? && @local_window.limited?
 
             ::Async::Task.current.defer_cancel do
