@@ -1,6 +1,5 @@
 # frozen_string_literal: true
 
-require "English"
 require_relative "completion_join"
 
 require "async/http/protocol/http1/server"
@@ -78,10 +77,13 @@ module ConnectRPC
 
       def each(...)
         super
+      rescue Exception => e # rubocop:disable Lint/RescueException -- cancellation also ends the exchange
+        error = e
+        raise
       ensure
         # Header failures and cancellation can bypass write_body entirely.
         begin
-          @resource.exchange&.finish(false, $ERROR_INFO)
+          @resource.exchange&.finish(false, error)
         ensure
           @resource.exchange = nil
           begin
@@ -106,13 +108,16 @@ module ConnectRPC
         # write_empty_body flushes a nil body but has no body to close.
         retirement&.final_flushed unless body
         written = true
-      rescue StandardError
-        @resource.failed!
+      rescue Exception => e # rubocop:disable Lint/RescueException -- cancellation also ends the exchange
+        error = e
+        @resource.failed! if e.is_a?(StandardError)
         raise
       ensure
         # Upstream returns after final fixed/chunked bytes AND body callbacks.
+        # async-http's fail_request writes from its own rescue clause, so the
+        # ambient exception is not this response's.
         begin
-          @resource.exchange&.finish(!!written, $ERROR_INFO)
+          @resource.exchange&.finish(!!written, error)
         ensure
           begin
             @resource.input_retirement&.close(!!written)
@@ -260,7 +265,7 @@ module ConnectRPC
         @deadline = nil
       end
 
-      def close(error = $ERROR_INFO)
+      def close(error = nil)
         return if @closed
 
         @closed = true

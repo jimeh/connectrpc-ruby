@@ -431,17 +431,24 @@ decision. A merged fix closes its specific defect, not the audit as a whole.
   server response is `internal` on every protocol (L6). The
   [design](design.md) and [streaming guide](streaming.md#custom-transport-spi)
   own these contracts.
+- [#PRNUM](https://github.com/jimeh/connectrpc-ruby/pull/PRNUM) resolves L10
+  and the host part of M1. L10: when an Async HTTP/2 unary call is cancelled,
+  reaches its deadline or has its task stopped while its upload waits for
+  flow-control credit, the client now resets the stream with
+  `RST_STREAM(CANCEL)` instead of the pinned async-http's `INTERNAL_ERROR`, so
+  a native server's Context observes explicit cancellation. Servers send no
+  cancellation reset: handler cancellation is an ordinary `canceled` response,
+  and a client reset or lost connection closes the stream without another
+  frame. M1: the Async and Falcon hosts pass each exchange, publication,
+  rejected Web input and Rack completion the exception from its own unwind
+  instead of reading `$ERROR_INFO`. Before the change, only async-http's
+  HTTP/1 malformed-request response reached a host site with an unrelated
+  exception, and no RPC exchange was live there. The Falcon Rack completion
+  body still reads `$ERROR_INFO` on an argless close, because protocol-rack
+  closes a rejected Rack response from its own rescue clause without passing
+  the exception.
 - L12 is disclosed above as a Rack adapter limitation. This guide corrects
   L18's current documentation drift without declaring the audit complete.
-
-### Still open
-
-- **H2 unary upload cancellation (L10).** Verify the current H2 unary
-  cancellation reset on wire; unchanged source and historical probes do not
-  establish its current result.
-- **Host lifecycle exceptions (host remnants of M1).** Reconcile any reachable
-  ambient-exception path in native hosts with current evidence and an explicit
-  contract.
 
 ### Before a release adopts the profile
 

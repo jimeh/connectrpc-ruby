@@ -245,9 +245,7 @@ controllers report handler errors through
 either way the bug produces one event.
 
 Limits: an internal error whose rendered body exceeds a very small error limit
-becomes `resource_exhausted` and is not reported. The residual host
-`$ERROR_INFO` attribution sites tracked in #26 can attach an unrelated exception
-as the RPC's original error.
+becomes `resource_exhausted` and is not reported.
 
 ## Host notes
 

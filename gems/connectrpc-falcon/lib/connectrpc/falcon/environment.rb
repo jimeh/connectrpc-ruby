@@ -1,7 +1,5 @@
 # frozen_string_literal: true
 
-require "English"
-
 module ConnectRPC
   module Falcon
     class Service < ::Falcon::Service::Server
@@ -16,11 +14,17 @@ module ConnectRPC
           announced = true
           task.children&.to_a&.each(&:wait)
         rescue StandardError => e
-          raise if announced
+          if announced
+            failure = e
+            raise
+          end
 
           ready.enqueue([nil, e])
+        rescue Exception => e # rubocop:disable Lint/RescueException -- only a managed stop closes gracefully
+          failure = e
+          raise
         ensure
-          if $ERROR_INFO && !managed_stop?($ERROR_INFO)
+          if failure && !managed_stop?(failure)
             server&.abort
           else
             server&.close

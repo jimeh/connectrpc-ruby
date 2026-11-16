@@ -1,7 +1,5 @@
 # frozen_string_literal: true
 
-require "English"
-
 module ConnectRPC
   module Async
     module Internal
@@ -431,10 +429,17 @@ module ConnectRPC
         attr_reader :output_task
 
         # Output unwinding on a retiring connection must not attempt another
-        # write or reset on its closed socket.
+        # write or reset on its closed socket. A cancelled upload means the
+        # call no longer needs the stream, which RFC 9113 section 8.7 signals
+        # with CANCEL; upstream resets every output error with INTERNAL_ERROR.
         def finish_output(error = nil)
           return if connection.retiring?
 
+          if error.is_a?(::Async::Cancel) && !closed?
+            @output = nil
+            send_reset_stream(::Protocol::HTTP2::Error::CANCEL)
+            return
+          end
           super
         end
 
@@ -576,18 +581,13 @@ module ConnectRPC
                   incoming.stream.response_task&.wait
                   written = incoming.stream.response_written?
                 end
-              rescue StandardError => e
+              rescue Exception => e # rubocop:disable Lint/RescueException -- cancellation also ends the exchange
                 error = e
+                raise unless e.is_a?(StandardError)
+
                 reset(incoming.stream, e)
               ensure
-                error ||= $ERROR_INFO
-                begin
-                  cleaned = close_request(response, incoming) { |failure| error ||= failure }
-                ensure
-                  incoming.stream.exchange&.finish(written && cleaned && incoming.stream.response_written? &&
-                    !@resource.finished?, error || $ERROR_INFO)
-                  @resource.changed
-                end
+                finish_request(response, incoming, written, error)
               end
             end
             @resource.track(worker)
@@ -596,6 +596,17 @@ module ConnectRPC
         end
 
         private
+
+        def finish_request(response, incoming, written, error)
+          cleaned = close_request(response, incoming) { |failure| error ||= failure }
+        rescue Exception => e # rubocop:disable Lint/RescueException -- cleanup escapes also end the exchange
+          error ||= e
+          raise
+        ensure
+          incoming.stream.exchange&.finish(written && cleaned && incoming.stream.response_written? &&
+            !@resource.finished?, error)
+          @resource.changed
+        end
 
         def close_requests = requests&.close
 
