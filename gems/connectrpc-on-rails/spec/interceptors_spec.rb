@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "json"
+require "stringio"
 
 RSpec.describe "Rails server interceptors" do
   let(:app) { RailsIntegration::APP }
@@ -88,6 +89,9 @@ RSpec.describe "Rails server interceptors" do
     allow_any_instance_of(InterceptedEchoController).to receive(:connect_instrumentation).and_return(
       ConnectRPC::Instrumentation.new(subscribers: [subscriber])
     )
+    log = StringIO.new
+    original_logger = InterceptedEchoController.logger
+    InterceptedEchoController.logger = Logger.new(log)
     rails_reports do |reports|
       controller_events do |events|
         response = rpc(interceptors: [rejecting])
@@ -103,9 +107,12 @@ RSpec.describe "Rails server interceptors" do
         expect(trace.map(&:first)).to eq(%i[interceptor_in])
         expect(events).to be_empty
       end
-      expect(reports.select { |_error, options| options[:source] == "connectrpc.rails" }).to be_empty
+      expect(reports).to be_empty
     end
+    expect(log.string).not_to include("[connectrpc.rails]")
     expect(outcomes.last.error).to be_a(ArgumentError).and(have_attributes(message: "interceptor bug"))
+  ensure
+    InterceptedEchoController.logger = original_logger
   end
 
   it "still requires CSRF and authentication callbacks for success" do
@@ -183,9 +190,10 @@ RSpec.describe "Rails server interceptors" do
       response = rpc(interceptors: [observing], "HTTP_X_CASE" => "bug")
       expect(JSON.parse(response.body)).to include("code" => "internal", "message" => "Internal error")
       expect(response.body).not_to include("secret bug")
-      rails = reports.select { |_error, options| options[:source] == "connectrpc.rails" }
-      expect(rails.size).to eq(1)
-      expect(rails.first.first).to be_a(RuntimeError).and(have_attributes(message: "secret bug"))
+      expect(reports.size).to eq(1)
+      error, options = reports.first
+      expect(error).to be_a(RuntimeError).and(have_attributes(message: "secret bug"))
+      expect(options).to include(source: "connectrpc.rails", handled: false)
     end
     expect(trace.map(&:first)).to eq(%i[interceptor_in before around_before handler around_ensure])
     expect(seen.size).to eq(1)
