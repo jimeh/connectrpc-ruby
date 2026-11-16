@@ -1841,7 +1841,7 @@
     "ConnectRPC::Streaming::Session#count_recovery_bytes": {"kind":"method","visibility":"private","parameters":"bytes","classification":"internal"},
     "ConnectRPC::Streaming::Session#leading": {"kind":"method","visibility":"private","parameters":"","classification":"internal"},
     "ConnectRPC::Streaming::Session#nil_message_error": {"kind":"method","visibility":"private","parameters":"","classification":"internal"},
-    "ConnectRPC::Streaming::Session#read":{"kind":"method","visibility":"public","parameters":"length, timeout: nil","classification":"internal"},
+    "ConnectRPC::Streaming::Session#read": {"kind":"method","visibility":"public","parameters":"length, timeout: nil","classification":"internal"},
     "ConnectRPC::Streaming::Session#record_send_failure": {"kind":"method","visibility":"private","parameters":"error","classification":"internal"},
     "ConnectRPC::Streaming::Session#recovery_read_timeout": {"kind":"method","visibility":"private","parameters":"length","classification":"internal"},
     "ConnectRPC::Streaming::Session#response_metadata": {"kind":"method","visibility":"private","parameters":"","classification":"internal"},

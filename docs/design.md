@@ -255,7 +255,7 @@ lifecycle observers receive the original failure.
 a read-only view of the call's arbiter without completion methods, so
 transports only observe this call-owned SPI and cannot complete the client.
 `CallCancellation.with_request` passes that view through unchanged and gives
-any other token its own arbiter. Server accepts the same read-only seam and
+any other token its own arbiter, yielding only that arbiter's view. Server accepts the same read-only seam and
 creates its own processing arbitration. Testing forwards it without completing
 the client's state. Context exposes its combined reason, with no token reader.
 

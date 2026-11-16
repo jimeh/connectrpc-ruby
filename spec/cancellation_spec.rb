@@ -530,12 +530,17 @@ RSpec.describe "Read-only transport cancellation view" do
     { "a plain token" => -> { source.token },
       "a raw call cancellation" => -> { ConnectRPC::CallCancellation.new(cancellation: source.token) } }
       .each do |label, cancellation|
-      it "wraps #{label} in its own arbiter" do
+      it "wraps #{label} in its own arbiter and yields only its read-only view" do
         original = request(instance_exec(&cancellation))
-        yielded = ConnectRPC::CallCancellation.with_request(original) { |outgoing| outgoing }
+        nested = nil
+        yielded = ConnectRPC::CallCancellation.with_request(original) do |outgoing|
+          nested = ConnectRPC::CallCancellation.with_request(outgoing) { |inner| inner }
+          outgoing
+        end
         expect(yielded).not_to equal(original)
-        expect(yielded.cancellation).to be_a(ConnectRPC::CallCancellation)
-        expect(yielded.cancellation).not_to equal(original.cancellation)
+        expect(yielded.cancellation).to be_a(ConnectRPC::CallCancellation::View)
+        expect(yielded.cancellation).not_to respond_to(:commit!)
+        expect(nested).to equal(yielded)
       end
     end
   end

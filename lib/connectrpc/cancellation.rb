@@ -150,7 +150,7 @@ module ConnectRPC
 
       state = new(deadline: request.deadline, cancellation: cancellation)
       outgoing = request.dup
-      outgoing.cancellation = state
+      outgoing.cancellation = state.view
       begin
         result = yield outgoing
         state.commit!
