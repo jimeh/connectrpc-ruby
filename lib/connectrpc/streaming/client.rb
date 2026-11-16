@@ -63,11 +63,13 @@ module ConnectRPC
 
     def run_stream(method, request, metadata, timeout:, cancellation:, lifecycle:, injection:, &) # rubocop:disable Metrics/MethodLength
       scope = Streaming::ClientScope.new(lifecycle)
-      chain = @unary_interceptors if method.is_a?(Method)
+      chain = method.is_a?(Method) ? @unary_interceptors : @stream_interceptors
       scope.run(timeout, cancellation) do |state, deadline|
-        if chain
-          unary = method #: Method[untyped, untyped]
-          intercept_grpc_unary(chain, unary, request, metadata, scope, state, deadline, lifecycle, injection, &)
+        if chain && method.is_a?(Method)
+          intercept_grpc_unary(chain, method, request, metadata, scope, state, deadline, lifecycle, injection, &)
+        elsif chain
+          stream = method #: stream_declaration
+          intercept_stream(chain, stream, request, metadata, scope, state, deadline, lifecycle, injection, &)
         else
           outgoing = stream_request(method, stream_metadata(metadata, injection, lifecycle), deadline, state.view,
                                     lifecycle)
@@ -76,11 +78,11 @@ module ConnectRPC
       end
     end
 
-    def open_client_stream(method, request, outgoing, scope, state, lifecycle, &) # rubocop:disable Metrics/ParameterLists, Metrics/MethodLength
+    def open_client_stream(method, request, outgoing, scope, state, lifecycle, call = nil, &) # rubocop:disable Metrics/ParameterLists, Metrics/MethodLength
       transport = @transport #: _StreamingTransport
       work = lambda do |exchange|
         session = new_client_stream_session(method, state, exchange, lifecycle)
-        with_stream_session(session, scope) { perform_stream_scope(method, request, session, scope, &) }
+        with_stream_session(session, scope) { perform_stream_scope(method, request, session, scope, call, &) }
       end
       if @protocol == :grpc
         grpc = @transport #: _GRPCTransport

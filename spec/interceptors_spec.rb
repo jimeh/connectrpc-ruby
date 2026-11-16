@@ -140,14 +140,17 @@ RSpec.describe "Unary interceptors" do
         .to raise_error(ArgumentError, /server_unary/)
     end
 
-    it "rejects stream-only and mixed unary and stream interceptors until stream chains exist" do
-      pass = ->(_call, &continuation) { continuation.call }
-      client_mixed = layer(:client_unary, &pass).tap { |object| object.define_singleton_method(:client_stream, &pass) }
-      server_mixed = layer(:server_unary, &pass).tap { |object| object.define_singleton_method(:server_stream, &pass) }
-      expect { connect_client([layer(:client_stream, &pass)]) }.to raise_error(ArgumentError, /not supported yet/)
-      expect { connect_client([client_mixed]) }.to raise_error(ArgumentError, /not supported yet/)
-      expect { server(interceptors: [layer(:server_stream, &pass)]) }.to raise_error(ArgumentError, /not supported yet/)
-      expect { server(interceptors: [server_mixed]) }.to raise_error(ArgumentError, /not supported yet/)
+    it "accepts stream-only interceptors and runs only unary methods on unary calls" do
+      log = []
+      stream_only = lambda do |role|
+        layer(role) { |_call, &_continuation| log << role }
+      end
+      target = server(interceptors: [stream_only.call(:server_stream)])
+      client = connect_client([stream_only.call(:client_stream)], transport: in_process(target), instrumentation: nil)
+      expect(client.call(rpc, "hi").message).to eq("re:hi")
+      expect(log).to be_empty
+      expect { connect_client([Object.new]) }.to raise_error(ArgumentError, /client_stream/)
+      expect { server(interceptors: [Object.new]) }.to raise_error(ArgumentError, /server_stream/)
     end
 
     it "requires an Array" do

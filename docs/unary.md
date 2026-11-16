@@ -458,14 +458,15 @@ server = ConnectRPC::Server.new(services: services, binding: binding, handlers: 
                                 interceptors: [RequireTenant.new])
 ```
 
-`interceptors:` defaults to an empty Array. Core discovers each element's method
-once at construction and raises `ArgumentError` for an element without the
-method for that role, so a server-only interceptor passed to a Client is
-rejected. Streaming interceptors are not implemented yet: an element that
-defines `client_stream` or `server_stream` also raises `ArgumentError`, rather
-than being accepted and skipped on streams. Interceptor objects are shared by
-concurrent calls; per-call state belongs in the call object. With no
-interceptors, dispatch takes the same path as before.
+`interceptors:` defaults to an empty Array. Core discovers each element's
+methods once at construction and raises `ArgumentError` for an element with
+neither the unary nor the stream method for that role, so a server-only
+interceptor passed to a Client is rejected. An element may also define
+`client_stream` or `server_stream`, which cover the
+[streaming shapes](streaming.md#interceptors); unary calls run only the unary
+methods. Interceptor objects are shared by concurrent calls; per-call state
+belongs in the call object. With no interceptors for a kind, dispatch takes the
+same path as before.
 
 The first interceptor listed is the outermost on both roles. It sees the call
 first and the response or error last. Interceptors work with generated clients,

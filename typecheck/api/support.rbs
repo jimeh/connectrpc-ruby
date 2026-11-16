@@ -257,12 +257,24 @@ class APICachingInterceptor
   include ConnectRPC::_ClientUnaryInterceptor
   def initialize: () -> void
 end
+class APIClientStreamInterceptor
+  include ConnectRPC::_ClientStreamInterceptor
+  def initialize: () -> void
+end
+class APIServerStreamInterceptor
+  include ConnectRPC::_ServerStreamInterceptor
+  def initialize: () -> void
+end
 class APIServerInterceptor
   include ConnectRPC::_ServerUnaryInterceptor
   def initialize: () -> void
 end
 class BadReturnInterceptor
   include ConnectRPC::_ClientUnaryInterceptor
+  include ConnectRPC::_ClientStreamInterceptor
+end
+class BadStreamRequestInterceptor
+  include ConnectRPC::_ClientStreamInterceptor
 end
 class BadYieldInterceptor
   include ConnectRPC::_ClientUnaryInterceptor

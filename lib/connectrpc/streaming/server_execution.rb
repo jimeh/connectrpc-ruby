@@ -26,7 +26,7 @@ module ConnectRPC
       context = state.context = streaming_context(state)
       declaration = streaming_declaration(path)
       session = state.session = new_stream_session(state, declaration, input, output)
-      invoke_stream_handler(@handlers.fetch(path), declaration, session, context)
+      invoke_stream_handler(@handlers.fetch(path), declaration, session, context, :connect)
       context.check!
     end
 
@@ -57,25 +57,64 @@ module ConnectRPC
                              lifecycle: state.lifecycle)
     end
 
-    def invoke_stream_handler(handler, declaration, session, context) # rubocop:disable Metrics/MethodLength
+    def invoke_stream_handler(handler, declaration, session, context, protocol)
       context.check!
-      case declaration
-      when ServerStreamMethod
-        ss = handler #: _ServerStreamHandler[untyped, untyped]
+      # Server streaming reads and checks its single request before the chain.
+      if declaration.is_a?(ServerStreamMethod)
         request = single_stream_request(session)
         context.check!
-        ss.call(request, ResponseWriter.new(session, context), context)
-      when ClientStreamMethod
-        cs = handler #: _ClientStreamHandler[untyped, untyped]
-        session.send_message(cs.call(RequestReader.new(session), context))
-      when BidiStreamMethod
-        invoke_bidi_stream(handler, session, context)
+      end
+      serve_stream(handler, declaration, session, context, request, protocol)
+    end
+
+    # Every stream handler call site runs the stream chain here. Core sends a
+    # client-streaming result after the outermost interceptor returns it.
+    def serve_stream(handler, declaration, session, context, request, protocol) # rubocop:disable Metrics/ParameterLists
+      chain = @stream_interceptors
+      result = if chain
+                 intercept_stream_handler(chain, handler, declaration, session, context, request, protocol)
+               else
+                 endpoint = server_stream_endpoint(declaration, session, context)
+                 call_stream_handler(handler, declaration, endpoint, context, request)
+               end
+      session.send_message(result) if declaration.is_a?(ClientStreamMethod)
+    end
+
+    def intercept_stream_handler(chain, handler, declaration, session, context, request, protocol) # rubocop:disable Metrics/ParameterLists, Metrics/MethodLength
+      call = if declaration.is_a?(ServerStreamMethod)
+               ServerStreamCall::ServerStreaming.new(method: declaration, protocol: protocol, request: request,
+                                                     context: context)
+             else
+               ServerStreamCall.new(method: declaration, protocol: protocol, context: context)
+             end
+      chain.run(call, context) do
+        call.__send__(:dispatch!)
+        endpoint = call.__send__(:wrap, server_stream_endpoint(declaration, session, context))
+        request = call.request if call.is_a?(ServerStreamCall::ServerStreaming)
+        call_stream_handler(handler, declaration, endpoint, context, request)
       end
     end
 
-    def invoke_bidi_stream(handler, session, context)
-      bidi = handler #: _BidiStreamHandler[untyped, untyped]
-      bidi.call(ServerDuplex.new(session, context), context)
+    def server_stream_endpoint(declaration, session, context)
+      case declaration
+      when ServerStreamMethod then ResponseWriter.new(session, context)
+      when ClientStreamMethod then RequestReader.new(session)
+      else ServerDuplex.new(session, context)
+      end
+    end
+
+    def call_stream_handler(handler, declaration, endpoint, context, request) # rubocop:disable Metrics/MethodLength
+      case declaration
+      when ServerStreamMethod
+        ss = handler #: _ServerStreamHandler[untyped, untyped]
+        ss.call(request, endpoint, context)
+      when ClientStreamMethod
+        cs = handler #: _ClientStreamHandler[untyped, untyped]
+        cs.call(endpoint, context)
+      else
+        bidi = handler #: _BidiStreamHandler[untyped, untyped]
+        bidi.call(endpoint, context)
+      end
     end
 
     def single_stream_request(session)

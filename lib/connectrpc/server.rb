@@ -30,7 +30,7 @@ module ConnectRPC
 
       @handlers = handlers.dup.freeze
       @invoker = invoker || method(:invoke_handler)
-      @unary_interceptors = Interceptors.server(interceptors)
+      @unary_interceptors, @stream_interceptors = Interceptors.server(interceptors)
       @instrumentation = instrumentation
       @binding = binding
       @encoding = encoding

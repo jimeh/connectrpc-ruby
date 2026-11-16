@@ -5,4 +5,9 @@ class BadReturnInterceptor
     yield
     "response"
   end
+
+  # A valid stream method does not make the invalid unary one acceptable.
+  def client_stream(_call)
+    yield
+  end
 end

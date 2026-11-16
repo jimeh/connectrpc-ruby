@@ -65,5 +65,6 @@
   "interceptor_server_role": "Ruby::ArgumentTypeMismatch",
   "interceptor_return": "Ruby::MethodBodyTypeMismatch",
   "interceptor_yield": "Ruby::UnexpectedPositionalArgument",
-  "interceptor_wrap_stream": "Ruby::NoMethod"
+  "interceptor_wrap_stream": "Ruby::NoMethod",
+  "interceptor_stream_request": "Ruby::NoMethod"
 }

@@ -430,19 +430,28 @@ nil. Runtime cancellation, reactor and blocking-I/O limits still apply.
 
 ## Interceptor types
 
-`Client.new(interceptors:)` takes `Array[client_interceptor]` and
-`Server.new(interceptors:)` takes `Array[server_interceptor]`. In this release
-these aliases are `_ClientUnaryInterceptor` and `_ServerUnaryInterceptor`.
-Their methods take a `ClientUnaryCall` or `ServerUnaryCall` and a no-argument
-continuation block. A client interceptor returns `Response[untyped]`; message
-types are `untyped` because one interceptor serves many methods, like
-`_Invoker`. A registration check accepts any object that satisfies the
-interface, so declare `include ConnectRPC::_ClientUnaryInterceptor` (or the
-server interface) in an interceptor class's own signature to have Steep check
-its return type and continuation calls. Runtime checks cover unsigned
+`Client.new(interceptors:)` takes `Array[client_interceptor]`, the union of
+`_ClientUnaryInterceptor` and `_ClientStreamInterceptor`, and
+`Server.new(interceptors:)` takes `Array[server_interceptor]`, the union of
+`_ServerUnaryInterceptor` and `_ServerStreamInterceptor`. Their methods take a
+`ClientUnaryCall`, `ClientStreamCall`, `ServerUnaryCall` or `ServerStreamCall`
+and a no-argument continuation block. A client unary interceptor returns
+`Response[untyped]`; stream interceptors return `untyped`, and message types
+are `untyped` because one interceptor serves many methods, like `_Invoker`.
+Only unary calls and the `ServerStreaming` stream subclasses define `request=`,
+so a stream interceptor narrows with `case`/`when` before replacing the
+request. `wrap_stream` takes an `(untyped) -> untyped` block; wrappers are
+checked at runtime, not statically.
+
+A union accepts any object that satisfies one member, so a registration check
+does not prove every method an object defines. Declare
+`include ConnectRPC::_ClientUnaryInterceptor` (or another interceptor
+interface) in an interceptor class's own signature to have Steep check that
+method's return type and continuation calls. Runtime checks cover unsigned
 interceptors. Exact negatives reject wrong-role registration, a non-`Response`
-client return, a continuation called with an argument and `wrap_stream` on a
-unary call.
+client unary return (also from a class with a valid `client_stream`), a
+continuation called with an argument, `wrap_stream` on a unary call and
+`request=` on an un-narrowed `ClientStreamCall`.
 
 ## Streaming types
 
