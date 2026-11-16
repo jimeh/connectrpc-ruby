@@ -3,7 +3,8 @@
 RSpec.describe "Connect H1 final flush ownership" do
   # Exercise the pinned writer itself with a controlled output boundary and clock.
   # Body callbacks run after the final flush and must spend, not restart, grace.
-  def writer_fixture(length: nil, head: false, version: "HTTP/1.1", absent: false, callback_delay: 0.7)
+  def writer_fixture(length: nil, head: false, version: "HTTP/1.1", absent: false, empty: false,
+                     callback_delay: 0.7)
     clock = [10.0]
     events = []
     stream = Object.new
@@ -27,7 +28,7 @@ RSpec.describe "Connect H1 final flush ownership" do
     chunks = length&.zero? ? [] : ["0\r\n\r\n", "later"]
     body = Object.new
     body.define_singleton_method(:length) { length }
-    body.define_singleton_method(:empty?) { length&.zero? }
+    body.define_singleton_method(:empty?) { empty || length&.zero? }
     body.define_singleton_method(:ready?) { false }
     body.define_singleton_method(:read) do
       # At the next read the terminal-looking application payload has flushed.
@@ -44,7 +45,7 @@ RSpec.describe "Connect H1 final flush ownership" do
 
   [
     { length: nil }, { length: 10 }, { length: 0 }, { absent: true },
-    { length: 10, head: true }, { head: true }, { version: "HTTP/1.0" }
+    { length: 10, head: true }, { head: true }, { version: "HTTP/1.0" }, { empty: true }
   ].each do |options|
     it "anchors the pinned writer's final flush before callbacks for #{options}" do
       reactor do
@@ -84,6 +85,25 @@ RSpec.describe "Connect H1 final flush ownership" do
       end
       expect { connection.write_body("HTTP/1.1", body) }.to raise_error(IOError, "failed flush")
       expect(owner.instance_variable_get(:@close_expires)).to be_nil
+      expect(events).not_to include([:shutdown, Socket::SHUT_WR])
+      expect(events).to include(:raw_close)
+    end
+  end
+
+  it "stays undelivered when cancellation interrupts the final flush" do
+    reactor do
+      connection, _owner, body, events, = writer_fixture
+      eof = false
+      allow(body).to receive(:read).and_wrap_original do |read|
+        read.call.tap { |bytes| eof = bytes.nil? }
+      end
+      allow(connection.stream).to receive(:flush).and_wrap_original do |flush|
+        # Not a StandardError, so the writer still closes the body with nil.
+        raise Async::Stop if eof
+
+        flush.call
+      end
+      expect { connection.write_body("HTTP/1.1", body) }.to raise_error(Async::Stop)
       expect(events).not_to include([:shutdown, Socket::SHUT_WR])
       expect(events).to include(:raw_close)
     end

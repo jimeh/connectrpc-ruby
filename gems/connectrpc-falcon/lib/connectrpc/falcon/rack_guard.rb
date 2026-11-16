@@ -91,15 +91,15 @@ module ConnectRPC
 
     class CompletionBody < ::Protocol::HTTP::Body::Wrapper
       def initialize(callback, original)
-        super(::Protocol::HTTP::Body::Buffered.wrap([]))
         @callback = callback
         @original = original
         begin
-          @body = yield || @body
+          body = yield
           converted = true
         ensure
-          close($ERROR_INFO) unless converted
+          complete($ERROR_INFO) unless converted
         end
+        super(body || ::Protocol::HTTP::Body::Buffered.wrap([]))
       end
 
       def rewindable? = false
@@ -110,14 +110,19 @@ module ConnectRPC
         return if @closed
 
         @closed = true
+        complete(error) { super }
+      end
+
+      private
+
+      # Release order: completion callback, wrapped body (when built), original.
+      def complete(error)
+        @callback.call(error)
+      ensure
         begin
-          @callback.call(error)
+          yield if block_given?
         ensure
-          begin
-            super
-          ensure
-            @original&.close(error)
-          end
+          @original&.close(error)
         end
       end
     end
