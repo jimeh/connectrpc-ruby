@@ -8,6 +8,9 @@ module Conformance
   # this plain adapter thread; only the transport's owner thread runs a reactor.
   class NativeThreadedClientAdapter < NativeClientAdapter
     SHAPES = %i[STREAM_TYPE_UNARY STREAM_TYPE_SERVER_STREAM].freeze
+    # Every call has finished before close, so a clean drain returns true at
+    # once. Zero grace would force teardown, which always returns false.
+    CLOSE_GRACE = 5
 
     # Runs the original after-close cancellation on a plain timer thread.
     class CancelTimer
@@ -54,6 +57,8 @@ module Conformance
                                encoding: request.compression == :COMPRESSION_GZIP ? :gzip : :identity,
                                response_limit: Conformance.limit(request.message_receive_limit))
     end
+
+    def close_native(transport) = transport.close(grace: CLOSE_GRACE)
 
     def schedule_after_close(request, source)
       instruction = request.cancel

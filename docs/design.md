@@ -352,8 +352,10 @@ that posts one command at a time to a per-stream mailbox, and the owner runs the
 real exchange. Interrupting a caller fires the stream's cancellation before the
 owner is asked to stop, so a blocked read or write resets only that stream. A
 normal block exit waits for the engine's actual outcome, including a late gRPC
-cleanup failure. Client and bidi streaming need two caller threads on one
-session and stay unsupported.
+cleanup failure. A remote error that core raises after the stream finished also
+waits for that outcome, for at most the cleanup allowance, so its admission is
+released before the error returns. Client and bidi streaming need two caller
+threads on one session and stay unsupported.
 
 Connect streaming carries end-stream metadata in its body; native gRPC requires
 actual final HTTP/2 HEADERS, as described in the [gRPC guide](grpc.md).

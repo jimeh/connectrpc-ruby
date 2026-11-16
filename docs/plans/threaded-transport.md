@@ -567,6 +567,13 @@ Each proxy method posts one command and waits for its result.
   retiring the stream. The 100 ms cleanup allowance triggers destructive
   cleanup and does not mean retirement is complete, so the caller never treats
   it as a completion signal.
+- **Error after a finished stream.** Core raises remote errors from inside the
+  block after the exchange's `finish` returned. A `StandardError` that leaves
+  the block after a successful `finish` therefore posts the normal exit and
+  waits for the engine's outcome, bounded by the cleanup allowance and by the
+  deadline or an accepted cancellation plus the allowance, then re-raises the
+  original exception unchanged. Admission is released before the error
+  returns. If the wait expires, the exceptional path above applies.
 - **Capabilities.** PR D advertises Connect `[:server_stream]` and gRPC
   `[:unary, :server_stream]`. Native gRPC unary uses the gRPC stream exchange,
   so gRPC clients can use `ThreadedTransport` only from PR D on. Core already

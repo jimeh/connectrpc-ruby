@@ -411,8 +411,8 @@ each `response_head`, `read`, `write`, `close_send`, `finish` and, for gRPC,
   both the owner has retired it and the caller has left.
 - One operation runs at a time per stream; a concurrent one raises
   `StreamStateError`. `read(n)` returns at most `n` bytes and trailers stay
-  behind response EOF. Header maps and chunks reach the caller as their own
-  frozen copies.
+  behind response EOF. Header maps reach the caller as their own frozen copies,
+  and each chunk is a new string the caller owns.
 - An operation's wait is bounded by the deadline and by its own timeout, each
   plus the 100 ms allowance. If the owner is stalled past that, the operation
   fails with `deadline_exceeded`, or with `unavailable` for its own timeout, and
@@ -429,22 +429,35 @@ each `response_head`, `read`, `write`, `close_send`, `finish` and, for gRPC,
   caller without waiting for cleanup, and admission is released once the owner
   retires the stream. If application code rescues such an interrupt and the
   block then returns, the stream fails with `canceled`.
+- Core raises a remote error, such as `not_found`, from inside the block after
+  the exchange's `finish` returned. So when a `StandardError` leaves the block
+  after a successful `finish`, the owner finishes the stream normally and the
+  caller waits for its outcome, for at most the 100 ms allowance and never past
+  the deadline or an accepted cancellation plus the allowance. Admission is
+  released before the error returns, and a late gRPC cleanup failure is
+  reported to instrumentation as an aborted delivery, as with `Transport`. The
+  original exception reaches the caller unchanged, even when cleanup failed.
+  If the owner is stalled past the allowance, the caller fires the stream's
+  cancellation and returns the error without the owner's outcome; admission is
+  then released once the owner retires the stream, and its late delivery facts
+  are not reported. An interrupt during the wait propagates as above. Other
+  exceptions, `throw`, `break` and errors before `finish` never wait.
 - `abort`, which core calls when a reader abandons the stream, only queues the
   request and never waits, so unwinding cannot block on a stalled owner. An
   explicit abandon followed by a normal return keeps its normal outcome.
 - A retained exchange used after its block finished raises
-  `unavailable` (`HTTP/2 exchange is retired`), as does one inherited by a
-  forked child.
+  `unavailable` (`HTTP/2 exchange is retired`), including a cached
+  `response_head`. An operation still waiting on another thread when the block
+  finishes wakes with the stream's outcome or the same error.
+- A forked child's inherited exchange raises the same error. A child that
+  leaves an inherited block gets that error for a normal return, or its own
+  exception, at once; it never waits on the parent's owner or touches the
+  parent's stream or admission.
 - The block runs with interrupts enabled even inside an enclosing
   `Thread.handle_interrupt(... => :never)` region, extending the same rule for
   waits above to application code in the block. This is deliberate: the
   transport's own bookkeeping stays masked, so an interrupt can never skip the
   stream's cancellation or leak its admission.
-- Known difference from `Transport`: when a delivered remote gRPC error escapes
-  the block and the owner's later cleanup also fails, the caller still gets the
-  remote error unchanged, but the instrumentation completion reports delivery
-  as completed rather than aborted, because the exceptional exit does not wait
-  for cleanup.
 
 ### Closing
 

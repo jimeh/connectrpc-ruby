@@ -130,6 +130,10 @@ RSpec.describe "ThreadedTransport streams from plain threads" do
     error = value_within(Thread.new { capture_error { exchange.read(1) } }, "the retained proxy to refuse", timeout: 2)
     expect(error).to be_a(ConnectRPC::Error)
     expect([error.code, error.message]).to eq(["unavailable", "HTTP/2 exchange is retired"])
+    # The head was cached by the block's reads; the cache must not outlive the scope.
+    head_error = capture_error { exchange.response_head }
+    expect([head_error.class, head_error.code, head_error.message])
+      .to eq([ConnectRPC::Error, "unavailable", "HTTP/2 exchange is retired"])
     expect(exchange.abort).to be_nil
   ensure
     release&.<<(true)
@@ -174,9 +178,10 @@ RSpec.describe "ThreadedTransport streams from plain threads" do
         exchange.close_send
         head = exchange.response_head
         child = fork do
-          error = capture_error { exchange.read(1) }
-          refused = error.is_a?(ConnectRPC::Error) && error.code == "unavailable" &&
-                    error.message == "HTTP/2 exchange is retired"
+          errors = [capture_error { exchange.read(1) }, capture_error { exchange.response_head }]
+          refused = errors.all? do |error|
+            [error.class, error.code, error.message] == [ConnectRPC::Error, "unavailable", "HTTP/2 exchange is retired"]
+          end
           exit!(refused && exchange.abort.nil? ? 0 : 1)
         end
         _, status = Process.wait2(child)
@@ -192,6 +197,73 @@ RSpec.describe "ThreadedTransport streams from plain threads" do
   ensure
     transport&.close(grace: 0)
     peer&.stop
+  end
+
+  # The child leaves the inherited block itself, so the transport's exit path
+  # and ensure run in the child; it reports over a pipe once open_stream ends.
+  %i[return raise throw].each do |kind|
+    it "ends a forked child's #{kind} from an inherited stream block without touching the parent's stream" do
+      skip "Process.fork is unavailable" unless Process.respond_to?(:fork)
+      peer = threaded_host(server: mixed_server)
+      origin = "http://127.0.0.1:#{peer.peer.port}"
+      transport = threaded(origin: origin)
+      failure = Class.new(StandardError)
+      parent = Process.pid
+      reader, writer = IO.pipe
+      result = Thread.new do
+        started = value = nil
+        outcome = capture_error do
+          value = catch(:out) do
+            transport.open_stream(stream_request(origin, watch_method)) do |exchange|
+              exchange.write(envelope(item("forked")))
+              exchange.close_send
+              exchange.response_head
+              child = fork
+              if child.nil?
+                started = monotonic
+                throw :out if kind == :throw
+                raise failure, "child" if kind == :raise
+
+                next :child
+              end
+              status = Process.detach(child).join(10)&.value
+              Process.kill("KILL", child) unless status
+              bytes = +"".b
+              while (chunk = exchange.read(1024))
+                bytes << chunk
+              end
+              exchange.finish
+              [status&.success?, bytes.start_with?(envelope(item("forked")))]
+            end
+          end
+        end
+        if Process.pid != parent
+          inherited = stream_mailboxes(transport).map do |stream|
+            [stream.broken, stream.caller_done, stream.commands.size]
+          end
+          error = [outcome.class, outcome.respond_to?(:code) ? outcome.code : nil, outcome&.message]
+          error = [:own] if outcome.is_a?(failure) && outcome.message == "child"
+          writer.write(Marshal.dump([error, monotonic - started, inherited, admitted(transport)]))
+          writer.close
+          exit!(0)
+        end
+        outcome || value
+      end
+      expect(value_within(result, "the parent's stream")).to eq([true, true])
+      writer.close
+      error, elapsed, inherited, held = Marshal.load(reader.read) # rubocop:disable Security/MarshalLoad -- this test's own child
+      expected = { return: [ConnectRPC::Error, "unavailable", "HTTP/2 exchange is retired"], raise: [:own],
+                   throw: [NilClass, nil, nil] }.fetch(kind)
+      expect([error, inherited, held]).to eq([expected, [[false, false, 0]], 1])
+      expect(elapsed).to be < 1
+      expect(admitted(transport)).to eq(0)
+      expect(mixed_client(transport, origin).lookup(item("after")).message.name).to eq("after")
+    ensure
+      reader&.close
+      writer&.close unless writer&.closed?
+      transport&.close(grace: 0)
+      peer&.stop
+    end
   end
 
   it "resets the stream when the block leaves with break or throw and returns that value" do

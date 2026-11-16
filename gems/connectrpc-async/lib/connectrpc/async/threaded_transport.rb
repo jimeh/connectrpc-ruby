@@ -170,7 +170,8 @@ module ConnectRPC
             release(call)
           else
             call.result ||= outcome
-            call.signal.signal
+            # A stream can have an operation waiter beside its scope's waiter.
+            call.signal.broadcast
           end
         end
 
@@ -188,7 +189,7 @@ module ConnectRPC
             @calls.each_key.filter_map do |call|
               unless call.caller_done || call.result
                 call.result = [:error, Error.new(:unavailable, STOPPED)]
-                call.signal.signal
+                call.signal.broadcast
               end
               call.source unless call.reactor_done
             end
@@ -502,7 +503,7 @@ module ConnectRPC
         call.source.cancel
         call.engine.admission.lock.synchronize do
           call.cancel_expires ||= Internal.now + Internal::CLEANUP_SECONDS
-          call.signal.signal
+          call.signal.broadcast
         end
       end
 

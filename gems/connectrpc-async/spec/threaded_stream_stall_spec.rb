@@ -194,6 +194,60 @@ RSpec.describe "ThreadedTransport streams with stalled consumers, owners and clo
     peer&.stop
   end
 
+  # A stream can have two waiters: an operation on another thread and the
+  # block's thread in the terminal wait. Each settlement must wake both.
+  { owner_failure: "unavailable", stalled_close: "unavailable", stalled_cancel: "canceled" }.each do |trigger, code|
+    it "wakes another thread's operation and the scope's terminal wait on #{trigger}" do
+      entered = Thread::Queue.new
+      release = Thread::Queue.new
+      peer = gated_host(entered, release)
+      origin = "http://127.0.0.1:#{peer.peer.port}"
+      transport = threaded(origin: origin)
+      source = ConnectRPC::CancellationSource.new
+      exchanges = Thread::Queue.new
+      proceed = Thread::Queue.new
+      scope = Thread.new do
+        capture_error do
+          transport.open_stream(stream_request(origin, watch_method, cancellation: source.token)) do |exchange|
+            exchange.write(envelope(item("shared")))
+            exchange.close_send
+            exchanges << exchange
+            proceed.pop
+          end
+        end
+      end
+      exchange = pop_within(exchanges, "the shared exchange")
+      operation = Thread.new { capture_error { exchange.read(1024) } }
+      pop_within(entered, "the stream in the handler")
+      eventually("the other thread's operation waiting on the owner") do
+        busy_streams(transport) == 1 && blocked?(operation)
+      end
+      proceed << true
+      eventually("the scope waiting for the terminal outcome") do
+        stream_mailboxes(transport).any?(&:exited) && blocked?(scope)
+      end
+      case trigger
+      when :owner_failure then engine_of(transport).run_on_owner(-> { raise "injected owner failure" })
+      when :stalled_close
+        gate = hold_owner(transport)
+        expect(transport.close(grace: 0.2)).to be(false)
+      else
+        gate = hold_owner(transport)
+        value_within(Thread.new { source.cancel }, "the cancelling thread")
+      end
+      errors = [operation, scope].map { |thread| value_within(thread, "both waiters to wake", timeout: 3) }
+      expect(errors.map { |error| [error.class, error.code] }).to eq([[ConnectRPC::Error, code]] * 2)
+      gate&.<<(true)
+      eventually("admission released") { admitted(transport).zero? }
+    ensure
+      gate&.<<(true)
+      proceed&.<<(true)
+      release&.<<(true)
+      transport&.close(grace: 0)
+      peer&.stop
+    end
+  end
+
   it "drains an open stream during graceful close and refuses new streams" do
     entered = Thread::Queue.new
     release = Thread::Queue.new

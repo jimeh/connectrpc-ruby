@@ -16,13 +16,15 @@ RSpec.describe "ThreadedTransport stream completion outcome" do
     ConnectRPC::Instrumentation.new(subscribers: [subscriber])
   end
 
-  # Makes the next owned connection release fail after it succeeds, on the owner.
-  def fail_release(transport)
+  # Makes every later owned connection release fail after it succeeds, on the
+  # owner, and reports each injected failure to +fired+.
+  def fail_release(transport, fired = nil)
     on_owner(transport) do
       manager = engine_of(transport).inner.instance_variable_get(:@manager)
       release = manager.method(:release)
       manager.define_singleton_method(:release) do |connection|
         release.call(connection)
+        fired&.<<(true)
         raise IOError, "private owned cleanup failure"
       end
     end
@@ -114,26 +116,109 @@ RSpec.describe "ThreadedTransport stream completion outcome" do
     end
   end
 
-  # Exceptional exits never wait, so the engine's late delivery abort is not
-  # reported; the remote error itself reaches the caller unchanged.
-  it "keeps a delivered remote gRPC error when the owner's later cleanup fails" do
+  # The remote error escapes the block after the stream finished, so the caller
+  # waits for the engine and its delivery abort is reported as on Transport.
+  it "keeps a delivered remote gRPC error and reports the owner's later cleanup failure as a delivery abort" do
     peer = threaded_host(server: mixed_server(watch: lambda { |message, writer, _|
       writer.send_message(message)
       raise ConnectRPC::Error.new(:not_found, "remote", trailers: { "x-end" => %w[c d] })
     }))
     origin = "http://127.0.0.1:#{peer.peer.port}"
     transport = threaded(origin: origin)
-    typed = mixed_client(transport, origin, protocol: :grpc)
+    outcomes = []
+    completions = []
+    typed = mixed_client(transport, origin, protocol: :grpc, instrumentation: recording_bus(outcomes, completions))
     typed.lookup(item("warm"))
-    fail_release(transport)
+    fired = Thread::Queue.new
+    fail_release(transport, fired)
     names = []
     error = capture_error { typed.watch(item("remote")) { |reader| reader.each { |reply| names << reply.name } } }
     expect([error.class, error.code, error.message, error.cause]).to eq([ConnectRPC::Error, "not_found", "remote", nil])
     expect([names, error.trailers["x-end"]]).to eq([%w[remote], %w[c d]])
-    eventually("admission released") { admitted(transport).zero? }
+    expect(pop_within(fired, "the injected cleanup failure", timeout: 0)).to be(true)
+    expect(outcomes.last.code).to eq("not_found")
+    expect([completions.last.delivery, completions.last.error.class, completions.last.error&.message])
+      .to eq([:aborted, IOError, "private owned cleanup failure"])
+    expect(admitted(transport)).to eq(0)
   ensure
     transport&.close(grace: 0)
     peer&.stop
+  end
+
+  # Core raises remote errors from inside the transport block after the
+  # exchange finished. Each must release admission before it returns.
+  {
+    "gRPC unary" => %i[grpc lookup], "gRPC server-stream" => %i[grpc watch],
+    "Connect server-stream" => %i[connect watch]
+  }.each do |label, (protocol, name)|
+    it "releases admission before each back-to-back #{label} remote error returns under max_requests: 1" do
+      remote = ->(*) { raise ConnectRPC::Error.new(:not_found, "remote") }
+      peer = threaded_host(server: mixed_server(lookup: remote, watch: remote))
+      origin = "http://127.0.0.1:#{peer.peer.port}"
+      transport = threaded(origin: origin, max_requests: 1)
+      typed = mixed_client(transport, origin, protocol: protocol)
+      calls = Thread.new do
+        Array.new(20) do
+          error = capture_error do
+            name == :lookup ? typed.lookup(item("x")) : typed.watch(item("x")) { |reader| reader.each { nil } }
+          end
+          [error.class, error.code, error.message, admitted(transport)]
+        end
+      end
+      expect(value_within(calls, "the back-to-back calls")).to eq([[ConnectRPC::Error, "not_found", "remote", 0]] * 20)
+    ensure
+      transport&.close(grace: 0)
+      peer&.stop
+    end
+  end
+
+  # Only a StandardError after a successful finish waits, and only for the
+  # cleanup allowance; every other exit returns without waiting.
+  {
+    finished_error: true, finished_exception: false, finished_throw: false, unfinished_error: false
+  }.each do |kind, waits|
+    it "#{waits ? 'waits only the allowance' : 'does not wait'} for a stalled owner on a #{kind} exit" do
+      peer = threaded_host(server: mixed_server)
+      origin = "http://127.0.0.1:#{peer.peer.port}"
+      transport = threaded(origin: origin)
+      mixed_client(transport, origin).lookup(item("warm"))
+      failure = Class.new(kind == :finished_exception ? Exception : StandardError)
+      gates = Thread::Queue.new
+      caller = Thread.new do
+        started = nil
+        outcome = capture_error do
+          catch(:out) do
+            transport.open_stream(stream_request(origin, watch_method)) do |exchange|
+              exchange.write(envelope(item("stalled")))
+              exchange.close_send
+              exchange.read(1024) while exchange.read(1024)
+              exchange.finish unless kind == :unfinished_error
+              gates << hold_owner(transport)
+              started = monotonic
+              throw :out, :thrown if kind == :finished_throw
+              raise failure, "application"
+            end
+          end
+        end
+        [outcome, monotonic - started]
+      end
+      gate = pop_within(gates, "the owner held inside the block")
+      outcome, waited = value_within(caller, "the block's exit")
+      expect([outcome.class, outcome.message]).to eq([failure, "application"]) unless kind == :finished_throw
+      expect(outcome).to be_nil if kind == :finished_throw
+      if waits
+        expect(waited).to be_between(0.1, 0.1 + 0.5)
+      else
+        expect(waited).to be < 0.1
+      end
+      expect(admitted(transport)).to eq(1)
+      gate << true
+      eventually("admission released after the owner resumes") { admitted(transport).zero? }
+    ensure
+      gate&.<<(true)
+      transport&.close(grace: 0)
+      peer&.stop
+    end
   end
 
   it "enqueues an explicit abandon without waiting and keeps the normal outcome" do

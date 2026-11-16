@@ -117,6 +117,11 @@ module Conformance
       @observation.observe(:transport) { super }
     end
 
+    # Records the actual result the adapter's close returned.
+    def close(**)
+      @observed_close = super
+    end
+
     # Front facts and the inner Transport's, read after the owner exits. A
     # transport whose owner never started has no inner Transport.
     def closed_facts
@@ -126,8 +131,8 @@ module Conformance
       exited = !engine.thread.join(5).nil?
       inner = engine.inner
       facts = inner ? inner.closed_facts : unstarted_facts
-      facts.merge(front_state: front_state, admitted: @admission.count, mailboxes: engine.calls.size,
-                  owner_started: true, owner_exited: exited, socket_interruption: nil)
+      facts.merge(front_state: front_state, close_outcome: @observed_close, admitted: @admission.count,
+                  mailboxes: engine.calls.size, owner_started: true, owner_exited: exited, socket_interruption: nil)
     end
 
     private
@@ -136,7 +141,8 @@ module Conformance
     def unstarted_facts
       { state: front_state, calls: 0, acquiring: 0, tasks_finished: true, streams_closed: true,
         resources_finished: true, raw_closed: nil, lifetime_children_finished: true, front_state: front_state,
-        admitted: 0, mailboxes: 0, owner_started: false, owner_exited: true, socket_interruption: nil }
+        close_outcome: @observed_close, admitted: 0, mailboxes: 0, owner_started: false, owner_exited: true,
+        socket_interruption: nil }
     end
   end
 end

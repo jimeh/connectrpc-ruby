@@ -15,7 +15,7 @@ module ConnectRPC
       # command queue, reply slot and flags change only under the admission lock.
       class Stream < Call
         attr_reader :grpc, :commands
-        attr_accessor :seq, :reply, :busy, :broken, :exited, :aborted
+        attr_accessor :seq, :reply, :busy, :broken, :exited, :aborted, :finished
 
         def initialize(request, source, proxy, grpc)
           super(request, 0, source, proxy)
@@ -24,7 +24,7 @@ module ConnectRPC
           # Sequence 0 is the reactor's open reply.
           @seq = 0
           @reply = nil
-          @busy = @broken = @exited = @aborted = false
+          @busy = @broken = @exited = @aborted = @finished = false
         end
       end
       private_constant :Stream
@@ -73,13 +73,16 @@ module ConnectRPC
           @request = request
         end
 
+        # A cached head is returned only while the exchange is still usable.
         def response_head(timeout: nil)
-          @response_head ||= operate(:response_head, timeout: timeout)
+          @front.send(:check_usable, @stream) if @response_head
+          head(timeout)
         end
 
         # The head and the read each get their own timeout, as on the engine.
+        # The read operation itself checks usability.
         def read(length, timeout: nil)
-          response_head(timeout: timeout)
+          head(timeout)
           operate(:read, length, timeout: timeout)
         end
 
@@ -101,6 +104,12 @@ module ConnectRPC
         def abort = @front.send(:abort_stream, @stream)
 
         private
+
+        def head(timeout)
+          return @response_head if @response_head
+
+          @response_head = operate(:response_head, timeout: timeout)
+        end
 
         def operate(name, *arguments, timeout: nil)
           @front.send(:stream_operation, @stream, @request, [name, arguments, timeout])
@@ -199,24 +208,43 @@ module ConnectRPC
           admit(stream)
           registration = nil
           begin
-            registration = request.cancellation&.on_cancel { cancel_requested(stream) }
+            registration = request.cancellation&.on_cancel { cancel_requested(stream) if owned?(stream) }
             await_open(stream, request)
             exchange = (grpc ? GRPCStreamProxy : StreamProxy).new(self, stream, request)
-            # The block runs interruptible even inside a caller's never-interrupt
-            # region; this method's bookkeeping stays masked.
-            value = Thread.handle_interrupt(Object => :immediate) { yield exchange }
+            begin
+              # The block runs interruptible even inside a caller's never-interrupt
+              # region; this method's bookkeeping stays masked.
+              value = Thread.handle_interrupt(Object => :immediate) { yield exchange }
+            rescue StandardError
+              exit_after_error(stream, request) if owned?(stream)
+              raise
+            end
+            raise Error.new(:unavailable, RETIRED), cause: nil unless owned?(stream)
+
             exit_stream(stream, request)
             value
           ensure
             registration&.unregister
-            # Only this caller takes or abandons, so caller_done is stable here.
-            unless stream.caller_done
-              break_stream(stream)
-              abandon(stream)
-            end
+            leave_stream(stream)
           end
         end
       end
+
+      # A forked child never touches the parent's stream. Only this caller
+      # takes or abandons, so caller_done is stable here. Operations waiting on
+      # other threads then wake and observe the retirement.
+      def leave_stream(stream)
+        return unless owned?(stream)
+
+        unless stream.caller_done
+          break_stream(stream)
+          abandon(stream)
+        end
+        stream.engine.admission.lock.synchronize { stream.signal.broadcast }
+      end
+
+      # Inherited engine state belongs to the parent process.
+      def owned?(stream) = stream.engine.pid == Process.pid
 
       def prepare_stream(request, grpc)
         headers = GRPCProtocol.snapshot(request.headers)
@@ -242,11 +270,7 @@ module ConnectRPC
       # late cleanup reporting, then takes the engine's actual outcome. A broken
       # stream already has :cancel queued and never reports success.
       def exit_stream(stream, request)
-        stream.proxy&.resume
-        stream.engine.admission.lock.synchronize do
-          stream.exited = true
-          stream.commands.push(:exit) unless stream.broken
-        end
+        post_exit(stream)
         status = await_stream(stream, request)
         expired!(request, status) unless status == :result
         broken = stream.broken
@@ -256,8 +280,34 @@ module ConnectRPC
         raise Error.new(:canceled, ABANDONED), cause: nil if broken
       end
 
+      def post_exit(stream)
+        stream.proxy&.resume
+        stream.engine.admission.lock.synchronize do
+          stream.exited = true
+          stream.commands.push(:exit) unless stream.broken
+        end
+      end
+
+      # Core raises a remote error after the stream finished, so the block
+      # exits with it. The caller waits for the engine's outcome, bounded by the
+      # cleanup allowance, so admission and late delivery facts are settled
+      # before the original error returns. On expiry the ensure breaks and
+      # abandons the stream; the engine's outcome itself is never raised.
+      def exit_after_error(stream, request)
+        return unless stream.engine.admission.lock.synchronize { stream.finished && !stream.broken }
+
+        post_exit(stream)
+        take(stream) if await_stream(stream, request, timeout: 0) == :result
+      end
+
+      def check_usable(stream)
+        retired = !owned?(stream) ||
+                  stream.engine.admission.lock.synchronize { stream.broken || stream.exited || stream.caller_done }
+        raise Error.new(:unavailable, RETIRED), cause: nil if retired
+      end
+
       def stream_operation(stream, request, command)
-        raise Error.new(:unavailable, RETIRED), cause: nil unless stream.engine.pid == Process.pid
+        raise Error.new(:unavailable, RETIRED), cause: nil unless owned?(stream)
 
         check_owner!
         Thread.handle_interrupt(Object => :never) do
@@ -265,12 +315,20 @@ module ConnectRPC
           answered = false
           begin
             status = await_stream(stream, request, seq: seq, timeout: command.last)
-            answered = %i[reply result].include?(status)
+            answered = %i[reply result retired].include?(status)
             expired!(request, status) unless answered
             raise_outcome(settled(stream), request) if status == :result
+            if status == :retired
+              check_request!(request)
+              raise Error.new(:unavailable, RETIRED), cause: nil
+            end
 
             tag, value = take_reply(stream)
-            raise value if tag == :error
+            if tag == :error
+              check_request!(request)
+              raise value
+            end
+            stream.engine.admission.lock.synchronize { stream.finished = true } if command.first == :finish
 
             value
           ensure
@@ -307,7 +365,7 @@ module ConnectRPC
 
       # Enqueue-only and idempotent; never waits for a stalled owner.
       def abort_stream(stream)
-        return unless stream.engine.pid == Process.pid
+        return unless owned?(stream)
 
         stream.engine.admission.lock.synchronize do
           unless stream.aborted || stream.broken || stream.exited || stream.caller_done || stream.result
@@ -347,7 +405,8 @@ module ConnectRPC
 
       # Waits for the reply tagged +seq+ or the terminal outcome. Expiry is the
       # deadline or the operation timeout plus the cleanup allowance, or the
-      # cancellation allowance; nil bounds wait until a signal or interrupt.
+      # cancellation allowance; nil bounds wait until a signal or interrupt. An
+      # operation also ends once the scope took or abandoned the stream.
       def await_stream(stream, request, seq: nil, timeout: nil)
         now = Internal.now
         deadline = now + request.deadline.remaining + Internal::CLEANUP_SECONDS if request.deadline
@@ -357,6 +416,7 @@ module ConnectRPC
           loop do
             return :reply if seq && stream.reply&.first == seq
             return :result if stream.result
+            return :retired if seq && stream.caller_done
 
             now = Internal.now
             return :canceled if stream.cancel_expires && stream.cancel_expires <= now
