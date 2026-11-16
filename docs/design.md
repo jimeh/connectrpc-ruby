@@ -384,10 +384,11 @@ HTTP/2 resource cleanup. The strict standalone Host composes that session.
 The optional [Falcon package](../gems/connectrpc-falcon/README.md) composes it with
 Falcon's process workers, raw endpoints and HTTP server/run lifecycle. Its local
 HTTP/1 resource uses upstream parse/write hooks and preserves wire completion
-and callback boundaries during retirement. A private response-body wrapper
-establishes one absolute 500 ms final-close expiry when the writer closes the
-body without an error, which protocol-http1 does only after the final flush and
-before callbacks. Successfully delivered
+and callback boundaries during retirement. On a successful write,
+protocol-http1 closes the body only after the final flush. A private
+response-body wrapper establishes one absolute 500 ms final-close expiry at
+that error-free close after EOF or HEAD, before the body's close callbacks. A
+response without a body anchors when the writer returns. Successfully delivered
 retiring Connect responses half-close raw TCP writes, retain the original
 100 ms / 256 KiB bounded discard, then wait only the remaining total budget
 without further reads. Admission/socket ownership joins original processing and
