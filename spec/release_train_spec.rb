@@ -63,15 +63,17 @@ RSpec.describe ReleaseTrain do
       ARGV.each { |file| require file }
       abort "Loaded optional dependency" if defined?(::Rack) || defined?(::Rails) || defined?(::Async) ||
                                             defined?(::Falcon) || defined?(::OpenTelemetry) ||
-                                            defined?(::Prometheus) || defined?(::Yabeda)
+                                            defined?(::Prometheus) || defined?(::Yabeda) ||
+                                            defined?(::Google::Protobuf)
       puts JSON.generate([ConnectRPC::VERSION, ConnectRPC::Rack::VERSION, ConnectRPC::OnRails::VERSION,
                           ConnectRPC::Async::VERSION, ConnectRPC::Falcon::VERSION,
                           ConnectRPC::Testing::VERSION, ConnectRPC::OTel::VERSION,
-                          ConnectRPC::Prometheus::VERSION, ConnectRPC::Yabeda::VERSION])
+                          ConnectRPC::Prometheus::VERSION, ConnectRPC::Yabeda::VERSION,
+                          ConnectRPC::Health::VERSION])
     RUBY
     stdout, stderr, status = Open3.capture3(RbConfig.ruby, "-e", command, *files)
     expect(status.success?).to be(true), stderr
-    expect(JSON.parse(stdout)).to eq(Array.new(9, train.version))
+    expect(JSON.parse(stdout)).to eq(Array.new(10, train.version))
   end
 
   def internal_requirements(train)

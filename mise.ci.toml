@@ -65,3 +65,9 @@ description = "Validate action Ruby/Bundler and independent Yabeda bundle settin
 dir = "{{config_root}}/gems/connectrpc-yabeda"
 env = { BUNDLE_GEMFILE = "{{config_root}}/gems/connectrpc-yabeda/Gemfile", BUNDLE_PATH = "{{config_root}}/vendor/yabeda/bundle", BUNDLE_USER_HOME = "{{config_root}}/vendor/yabeda/bundler", BUNDLE_COOLDOWN = "3" }
 run = "ruby scripts/ci_runtime.rb"
+
+[tasks."health:tools"]
+description = "Validate action Ruby/Bundler and independent health bundle settings"
+dir = "{{config_root}}/gems/connectrpc-health"
+env = { BUNDLE_GEMFILE = "{{config_root}}/gems/connectrpc-health/Gemfile", BUNDLE_PATH = "{{config_root}}/vendor/health/bundle", BUNDLE_USER_HOME = "{{config_root}}/vendor/health/bundler", BUNDLE_COOLDOWN = "3" }
+run = "ruby scripts/ci_runtime.rb"

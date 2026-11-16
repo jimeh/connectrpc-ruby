@@ -5,16 +5,23 @@ require_relative "archive"
 require_relative "../scripts/package_build"
 
 module InstalledAPI
+  # Generated message and service signatures shipped beside a package's own.
+  GENERATED_SIGNATURES = {
+    "health" => %w[sig/grpc/health/v1/health_connect.rbs sig/grpc/health/v1/health_pb.rbs]
+  }.freeze
+
   def self.archives(root:, output:)
     APICheck::PACKAGES.map do |name|
       directory = File.join(root, "gems/connectrpc-#{name}")
       archive = PackageBuild.build(directory: directory, output: output)
       SignatureArchive.check(archive, root: root)
       package = Gem::Package.new(archive)
-      signatures = ["sig/connectrpc-#{name}.rbs", "sig/manifest.yaml"]
+      signatures = ["sig/connectrpc-#{name}.rbs", "sig/manifest.yaml", *GENERATED_SIGNATURES.fetch(name, [])]
       raise "Missing owned signature manifest: #{name}" unless package.contents.grep(%r{\Asig/}).sort == signatures.sort
       raise "Push host changed: #{name}" unless package.spec.metadata["allowed_push_host"] == "https://rubygems.org"
-      raise "License metadata lost: #{name}" unless package.spec.licenses == ["MIT"]
+
+      licenses = SignatureArchive.licenses(package.spec.name)
+      raise "License metadata lost: #{name}" unless package.spec.licenses == licenses
 
       [archive, package.spec]
     end
@@ -48,19 +55,23 @@ module InstalledAPI
     %w[api falcon api_check.rb installed_runtime.rb installed_streaming.rb installed_web.rb].each do |name|
       FileUtils.cp_r(File.join(root, "typecheck", name), working)
     end
-    # Each library must resolve independently through its installed manifest.
-    libraries = ["connectrpc", *APICheck::PACKAGES.map { |name| "connectrpc-#{name}" }]
-    libraries.each do |name|
-      RBSHarness.capture!([RbConfig.ruby, "-S", "rbs", "-r", name, "validate"], working: working)
-    end
     # The parent process still has the tooling bundle's RubyGems cache. Resolve
     # the fresh GEM_HOME in an unbundled child, as the actual consumer does.
-    discovery = APICheck::BRIDGES.map do |name, directory|
-      "puts File.join(Gem::Specification.find_by_name(#{"connectrpc-#{name}".dump}).full_gem_path, #{directory.dump})"
+    owners = APICheck::BRIDGES.transform_keys { |name| "connectrpc-#{name}" }
+                              .merge("connectrpc" => APICheck::PROTOBUF_BRIDGE)
+    discovery = owners.map do |name, directory|
+      "puts File.join(Gem::Specification.find_by_name(#{name.dump}).full_gem_path, #{directory.dump})"
     end.join("\n")
-    bridges = RBSHarness.capture!([RbConfig.ruby, "-e", discovery], working: working).lines.map(&:chomp)
+    *bridges, protobuf = RBSHarness.capture!([RbConfig.ruby, "-e", discovery], working: working).lines.map(&:chomp)
+    # Each library must resolve independently through its installed manifest.
+    # Generated health messages also need the explicit protobuf bridge.
+    libraries = ["connectrpc", *APICheck::PACKAGES.map { |name| "connectrpc-#{name}" }]
+    libraries.each do |name|
+      bridge = name == "connectrpc-health" ? ["-I", protobuf] : []
+      RBSHarness.capture!([RbConfig.ruby, "-S", "rbs", "-r", name, *bridge, "validate"], working: working)
+    end
     [libraries, libraries.reverse].each do |order|
-      command = [RbConfig.ruby, "-S", "rbs", *order.flat_map { |name| ["-r", name] }]
+      command = [RbConfig.ruby, "-S", "rbs", *order.flat_map { |name| ["-r", name] }, "-I", protobuf]
       RBSHarness.capture!([*command, "validate"], working: working)
       bridge_order = order == libraries ? bridges : bridges.reverse
       RBSHarness.capture!([*command, *bridge_order.flat_map { |directory| ["-I", directory] }, "validate"],
@@ -91,6 +102,6 @@ module InstalledAPI
     %w[forward reverse].each do |order|
       puts RBSHarness.capture!([RbConfig.ruby, "installed_runtime.rb", order], working: working)
     end
-    puts "Nine installed signature libraries discovered independently and in two orders; API-only OTel closure"
+    puts "Ten installed signature libraries discovered independently and in two orders; API-only OTel closure"
   end
 end

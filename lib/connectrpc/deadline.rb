@@ -75,6 +75,12 @@ module ConnectRPC
 
     def cancellation_reason = @cancellation.reason
 
+    # Runs once when the call is cancelled or its deadline is observed expired:
+    # synchronously in the cancelling thread, or immediately when already
+    # cancelled. Listeners must be short and nonblocking; StandardError is
+    # isolated. Unregister the returned registration when no longer needed.
+    def on_cancel(&) = @cancellation.on_cancel(&)
+
     def commit! = @cancellation.commit!
     def close = @cancellation.close
   end

@@ -127,8 +127,9 @@ RSpec.describe ReleasePublisher do
     expect(events.select { |event| event.first == :upload }.map(&:last)).to match_array([*files, "candidate.json"])
     pushes = events.select { |event| event.first == :push }
     expect(pushes.map { |event| event[1] }).to eq(files)
-    # Metrics sinks depend only on core and publish after the original seven packages.
-    expect(files.last(2)).to eq(%W[connectrpc-prometheus-#{version}.gem connectrpc-yabeda-#{version}.gem])
+    # Metrics sinks and the health service depend only on core and publish after the original seven packages.
+    expect(files.last(3)).to eq(%W[connectrpc-prometheus-#{version}.gem connectrpc-yabeda-#{version}.gem
+                                   connectrpc-health-#{version}.gem])
     expect(pushes.map(&:last)).to eq(files.map { |file| "#{file}.sigstore.json" })
     expect(events.index([:sign, files.first])).to be > events.rindex { |event| event.first == :upload }
     expect(events.last).to eq([:publish, 1])

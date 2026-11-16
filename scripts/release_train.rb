@@ -6,7 +6,8 @@ require "rubygems"
 # Source preparation only. This helper never loads ConnectRPC or contacts a registry.
 class ReleaseTrain
   NAMES = %w[connectrpc connectrpc-rack connectrpc-async connectrpc-testing connectrpc-otel
-             connectrpc-on-rails connectrpc-falcon connectrpc-prometheus connectrpc-yabeda].freeze
+             connectrpc-on-rails connectrpc-falcon connectrpc-prometheus connectrpc-yabeda
+             connectrpc-health].freeze
   VERSION_FILES = NAMES.to_h do |name|
     file = if name == "connectrpc"
              "lib/connectrpc/version.rb"
@@ -18,7 +19,8 @@ class ReleaseTrain
   GUIDES = %w[README.md docs/design.md docs/unary.md gems/connectrpc-rack/README.md
               gems/connectrpc-on-rails/README.md gems/connectrpc-async/README.md gems/connectrpc-falcon/README.md
               gems/connectrpc-testing/README.md gems/connectrpc-otel/README.md
-              gems/connectrpc-prometheus/README.md gems/connectrpc-yabeda/README.md].freeze
+              gems/connectrpc-prometheus/README.md gems/connectrpc-yabeda/README.md
+              gems/connectrpc-health/README.md].freeze
   attr_reader :root
 
   def initialize(root = File.expand_path("..", __dir__))

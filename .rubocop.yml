@@ -10,6 +10,7 @@ AllCops:
     - spec/fixtures/generation/**/*_pb.rb
     - examples/gen/**/*_pb.rb
     - interop/grpc/ruby/**/*.rb
+    - gems/connectrpc-health/lib/grpc/**/*_pb.rb
     # Appraisal output is byte-checked with its actual generator.
     - gems/connectrpc-on-rails/gemfiles/**/*
 
@@ -36,6 +37,8 @@ Metrics/BlockLength:
     - gems/connectrpc-prometheus/scripts/**/*.rb
     - gems/connectrpc-yabeda/spec/**/*.rb
     - gems/connectrpc-yabeda/scripts/**/*.rb
+    - gems/connectrpc-health/spec/**/*.rb
+    - gems/connectrpc-health/scripts/**/*.rb
     - gems/connectrpc-testing/spec/**/*.rb
     - gems/connectrpc-testing/scripts/**/*.rb
     - gems/connectrpc-falcon/spec/**/*.rb
@@ -79,6 +82,8 @@ Metrics/MethodLength:
     - gems/connectrpc-prometheus/scripts/**/*.rb
     - gems/connectrpc-yabeda/spec/**/*.rb
     - gems/connectrpc-yabeda/scripts/**/*.rb
+    - gems/connectrpc-health/spec/**/*.rb
+    - gems/connectrpc-health/scripts/**/*.rb
     - gems/connectrpc-testing/spec/**/*.rb
     - gems/connectrpc-testing/scripts/**/*.rb
     - gems/connectrpc-falcon/spec/**/*.rb
@@ -116,6 +121,8 @@ Metrics/AbcSize:
     - gems/connectrpc-prometheus/scripts/**/*.rb
     - gems/connectrpc-yabeda/spec/**/*.rb
     - gems/connectrpc-yabeda/scripts/**/*.rb
+    - gems/connectrpc-health/spec/**/*.rb
+    - gems/connectrpc-health/scripts/**/*.rb
     - gems/connectrpc-testing/spec/**/*.rb
     - gems/connectrpc-testing/scripts/**/*.rb
     - gems/connectrpc-falcon/spec/**/*.rb
@@ -200,6 +207,7 @@ Style/ArgumentsForwarding:
   Exclude:
     - spec/fixtures/generation/**/*_connect.rb
     - examples/gen/**/*_connect.rb
+    - gems/connectrpc-health/lib/grpc/**/*_connect.rb
 
 # These scripts execute a bounded, standalone fixture scenario in one process.
 Style/MixinUsage:

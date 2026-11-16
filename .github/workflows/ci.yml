@@ -286,7 +286,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        leaf: [async, falcon, rack, rails, otel, prometheus, yabeda]
+        leaf: [async, falcon, rack, rails, otel, prometheus, yabeda, health]
     env:
       CI_EXPECTED_RUBY_VERSION: "3.4.12"
       BUNDLE_COOLDOWN: "3"
@@ -563,6 +563,7 @@ jobs:
             vendor/otel/bundle
             vendor/prometheus/bundle
             vendor/yabeda/bundle
+            vendor/health/bundle
           key: rbs-bundles-v1-${{ runner.os }}-${{ runner.arch }}-${{ steps.rbs-platform.outputs.platform }}-bundler-4.0.23-${{ hashFiles('Gemfile*', 'connectrpc.gemspec', 'typecheck/Gemfile*', 'gems/**/Gemfile*', 'gems/**/*.gemfile*', 'gems/**/*.gemspec') }}
       - name: Run rbs:check
         run: mise run rbs:check
@@ -798,6 +799,54 @@ jobs:
           cache: false
       - name: Run yabeda:verify
         run: mise run yabeda:verify
+      - name: Check workspace stayed clean
+        if: always()
+        run: |
+          if [ -n "$(git status --porcelain --untracked-files=all)" ]; then
+            git status --short --untracked-files=all
+            exit 1
+          fi
+
+  health:
+    name: Health service specs, package and grpc-go interop / Ruby ${{ matrix.ruby }}
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        ruby: ["3.4.12", "4.0.9"]
+    env:
+      CI_EXPECTED_RUBY_VERSION: ${{ matrix.ruby }}
+      BUNDLE_GEMFILE: ${{ github.workspace }}/gems/connectrpc-health/Gemfile
+      BUNDLE_PATH: ${{ github.workspace }}/vendor/health/bundle
+      BUNDLE_USER_HOME: ${{ github.workspace }}/vendor/health/bundler
+      BUNDLE_COOLDOWN: "3"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ruby/setup-ruby@7f797815d8adceb1c412e7abefdd1ab4abc47a5f # v1.335.0
+        with:
+          ruby-version: ${{ matrix.ruby }}
+          bundler: "4.0.23"
+          bundler-cache: true
+          cache-version: bundler-4.0.23-v1
+      # health:interop builds the grpc-go peer; its task owns GOMODCACHE/GOCACHE under vendor/grpc.
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: "1.27.3"
+          check-latest: false
+          cache: true
+          cache-dependency-path: interop/grpc/go.sum
+      - uses: jdx/mise-action@82a612c5ab8bcda7cc5db6b7e81a8e7584c3dc6e # v5.2.3
+        with:
+          version: "2026.10.19"
+          add_shims_to_path: false
+          env: false
+          export_path: false
+          install: false
+          cache: false
+      - name: Run health:verify
+        run: mise run health:verify
       - name: Check workspace stayed clean
         if: always()
         run: |

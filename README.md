@@ -178,6 +178,7 @@ integrations you use:
 | [`connectrpc-otel`](gems/connectrpc-otel/README.md) | You want OpenTelemetry CLIENT and SERVER spans for each RPC | `connectrpc/otel` |
 | [`connectrpc-prometheus`](gems/connectrpc-prometheus/README.md) | You want go-grpc-prometheus compatible server, client and Async connection metrics in a prometheus-client registry | `connectrpc/prometheus` |
 | [`connectrpc-yabeda`](gems/connectrpc-yabeda/README.md) | You want the same metrics through Yabeda and any of its adapters | `connectrpc/yabeda` |
+| [`connectrpc-health`](gems/connectrpc-health/README.md) | You want the standard `grpc.health.v1` service (Check, List and Watch) for Kubernetes probes, `grpc_health_probe` and load balancers | `connectrpc/health` |
 
 Use the same version of `connectrpc` and every ConnectRPC gem in an
 application. Their `~>` dependency ranges allow patch versions to differ, but the

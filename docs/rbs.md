@@ -209,7 +209,12 @@ Each optional manifest resolves only its dependency closure. Core declares no
 Google runtime or optional hosting/tracing namespace and has no runtime tool
 dependencies. Its GoogleProtobuf binding class signature is available without
 the explicit message-runtime bridge; the binding itself still requires the
-optional runtime require.
+optional runtime require. `connectrpc-health` is the exception: it ships the
+generated `grpc.health.v1` message and service signatures, which subclass
+Google protobuf runtime classes. Steep 2.1.0 resolves `library` superclasses
+before project signatures, so `library "connectrpc-health"` fails even with the
+bridge. Add core's `rbs/google_protobuf_4_36` bridge and the installed gem's
+`sig/` directory as `signature` paths instead.
 
 | Owner | Supported API and extension SPI |
 | --- | --- |
@@ -225,6 +230,7 @@ optional runtime require.
 | OTel | Subscriber configuration and narrow tracer-provider/tracer/span/propagator capabilities; SDK and context implementation remain application owned |
 | Prometheus | Metrics configuration, readers and `connection_observer`; narrow structural registry/metric capabilities for prometheus-client |
 | Yabeda | Metrics configuration, readers and `connection_observer`; Yabeda itself remains untyped and application configured |
+| Health | Registry constructor, status operations and handlers; `SERVICE`, plus the generated `grpc.health.v1` messages, client and handler factory |
 
 `Async::Host#close`, `Async::ServerSession#close` and `Falcon::Server#close`
 return `bool?`. Nil means a nonjoining owned request or coordinator reentry is
@@ -399,7 +405,9 @@ remain unchanged. Logs and capture bindings live under ignored `vendor/rbs/`.
 
 Client and generated unary methods accept `cancellation: CancellationToken?`.
 Pass `CancellationSource.new.token`; the source itself is rejected. Tokens expose
-only observation and listener registration. `CancellationRegistration#unregister`
+only observation and listener registration. Server handlers register listeners
+with `Context#on_cancel { }`, which returns a `CancellationRegistration`.
+`CancellationRegistration#unregister`
 returns bool. Token reasons are `:canceled | nil`; Context's combined
 `cancellation_reason` also admits `:deadline_exceeded`.
 

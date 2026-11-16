@@ -2,7 +2,7 @@
 
 libraries = %w[
   connectrpc/rack connectrpc/testing connectrpc/on_rails connectrpc/async connectrpc/falcon connectrpc/otel
-  connectrpc/prometheus connectrpc/yabeda
+  connectrpc/prometheus connectrpc/yabeda connectrpc/health
 ]
 libraries.reverse! if ARGV == ["reverse"]
 libraries.each { |name| require name }
@@ -17,7 +17,7 @@ versions = {
   "connectrpc-on-rails" => ConnectRPC::OnRails::VERSION, "connectrpc-async" => ConnectRPC::Async::VERSION,
   "connectrpc-falcon" => ConnectRPC::Falcon::VERSION, "connectrpc-testing" => ConnectRPC::Testing::VERSION,
   "connectrpc-otel" => ConnectRPC::OTel::VERSION, "connectrpc-prometheus" => ConnectRPC::Prometheus::VERSION,
-  "connectrpc-yabeda" => ConnectRPC::Yabeda::VERSION
+  "connectrpc-yabeda" => ConnectRPC::Yabeda::VERSION, "connectrpc-health" => ConnectRPC::Health::VERSION
 }
 versions.each do |name, version|
   raise "Installed runtime version differs: #{name}" unless version == Gem.loaded_specs.fetch(name).version.to_s
@@ -235,9 +235,23 @@ unless registry.get(:grpc_server_rejected_total).get(labels: other.merge(reason:
   raise "Installed metrics sinks did not record"
 end
 
+# The health service answers the generated client through the installed Testing transport.
+require "connectrpc/bindings/google_protobuf"
+health = ConnectRPC::Health::Registry.new
+health.set("installed.v1.Service", :not_serving)
+health_server = ConnectRPC::Server.new(services: [ConnectRPC::Health::SERVICE], handlers: health.handlers,
+                                       binding: ConnectRPC::Bindings::GoogleProtobuf.new)
+health_client = Grpc::Health::V1::Health::Client.new(
+  client: ConnectRPC::Client.new(base_url: "https://example.invalid",
+                                 binding: ConnectRPC::Bindings::GoogleProtobuf.new,
+                                 transport: ConnectRPC::Testing::Transport.new(server: health_server))
+)
+health_request = Grpc::Health::V1::HealthCheckRequest.new(service: "installed.v1.Service")
+raise "Installed health Check failed" unless health_client.check(health_request).message.status == :NOT_SERVING
+
 puts "Installed optional runtime composition #{ARGV.first}: Rails subclass, Rack/Testing round trip, " \
      "native headers/session/TLS, callable stream, Struct pairs, Falcon inline DSL, " \
-     "Rails callbacks, API-only OTel/default propagation, Prometheus and Yabeda metrics"
+     "Rails callbacks, API-only OTel/default propagation, Prometheus and Yabeda metrics, health Check"
 
 require_relative "installed_streaming"
 

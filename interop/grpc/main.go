@@ -194,6 +194,9 @@ func main() {
 		runNegative(os.Args[2], os.Args[3], os.Args[4], os.Args[5])
 		return
 	}
+	if runHealthCommand(command, os.Args[2:]) {
+		return
+	}
 	if command == "client" {
 		check(len(os.Args) == 5, "client origin mode fixtures")
 		runClient(os.Args[2], os.Args[3], os.Args[4])

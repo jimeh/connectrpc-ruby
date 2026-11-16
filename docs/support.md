@@ -48,7 +48,7 @@ Ruby methods into extension points.
 Support requires the **same version** of `connectrpc` and every optional
 ConnectRPC gem used by the application: `connectrpc-rack`, `connectrpc-on-rails`,
 `connectrpc-async`, `connectrpc-falcon`, `connectrpc-testing`, `connectrpc-otel`,
-`connectrpc-prometheus` and `connectrpc-yabeda`.
+`connectrpc-prometheus`, `connectrpc-yabeda` and `connectrpc-health`.
 Only the packages actually used need to be installed.
 
 Existing gemspec ranges such as `~> 0.1.0` allow patch versions to differ.
@@ -80,6 +80,7 @@ The [CI workflow](../.github/workflows/ci.yml) defines the executed combinations
 | OpenTelemetry | Newest allowed API, SDK, Rack and NetHTTP instrumentation, plus the API floor 1.11.1 | Tested coexistence includes native Rails 8.1. Other SDK/instrumentation combinations need their own evidence |
 | Prometheus metrics | prometheus-client newest allowed 5.x, plus the floor 5.0.0 | Default and `DirectFileStore` stores; real Rack, Async and Falcon hosts. Rails relies on the Rack path plus documentation |
 | Yabeda metrics | yabeda newest allowed 0.x, plus the floor 0.16.0 | Declaration and values through `yabeda/testing`; yabeda-prometheus naming is checked structurally, not installed |
+| Health service | google-protobuf newest allowed 4.x, plus the floor 4.36.2; grpc-go 1.85.0 health client and reference server | Check/List/Watch on real Rack, Async and Falcon hosts; grpc-go client over h2c, TLS and mTLS against Async and Falcon workers |
 
 The official browser fixture runs against both MRI server versions. Its
 [artifact pins](../browser/artifacts.json) and [JS lock](../browser/bun.lock)
@@ -256,8 +257,9 @@ RBS describes callable shapes; the protocol and package guides describe runtime
 ownership and constraints.
 
 Supported APIs include method and service declarations, core and generated
-client operations, Server configuration, metadata, errors, contexts,
-cancellation sources/tokens, scoped readers/writers/duplex endpoints, and the
+client operations, Server configuration, metadata, errors, contexts and their
+`on_cancel` listeners, cancellation sources/tokens, scoped readers/writers/duplex
+endpoints, the health registry and its generated `grpc.health.v1` client, and the
 optional packages' documented constructors, lifecycle and configuration
 operations. Generated service factories, typed handlers and installed generated
 client contracts are included. Optional protobuf and framework bridges remain
@@ -330,13 +332,19 @@ rejection head. Web does not inherit Connect's response-first grace.
 Processing, delivery, cleanup and admission are independent facts. Full native
 write and cleanup do not prove peer receipt or TLS close_notify. Only actual H2
 CANCEL signals peer cancellation to Context. H1 EOF/disconnect, other resets and
-shutdown do not. A stuck H2 frame may fail its connection and siblings during
-bounded cleanup. Retention and byte limits do not bound total RSS, parser/HPACK
+shutdown do not. `Context#on_cancel` listeners therefore observe only those
+signals and an observed deadline. A stuck H2 frame may fail its connection and
+siblings during bounded cleanup. Retention and byte limits do not bound total RSS, parser/HPACK
 allocation, codec work or application CPU.
 
 Rack env normalization loses the distinction between underscore and hyphen
 request metadata names. NetHTTP and rackup/WEBrick also coalesce some repeated
 fields. Native metadata acceptance is not narrowed to compensate.
+
+A health Watch stream whose peer sends another reset code or disappears from an
+idle HTTP/1.1 connection keeps its watcher until the next status change for its
+service, connection retirement or `shutdown`; `max_watchers` bounds that cost.
+See the [health guide](../gems/connectrpc-health/README.md#watch-streams-the-server-cannot-see-end).
 
 OTel's default unknown-method redaction omits the convention's
 `rpc.method_original` attribute. This is a documented privacy choice, not full

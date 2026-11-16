@@ -408,7 +408,11 @@ connection-wide cleanup fallback. Neither backend retries or replays a cancelled
 
 Server contexts expose `deadline`, `cancelled?`, `cancellation_reason`
 (`:canceled`, `:deadline_exceeded`, or nil), and `check!`. Handlers cooperate at
-application boundaries. Low-level `Server#call(cancellation:)` and the Testing
+application boundaries. `context.on_cancel { ... }` registers a listener with the
+same semantics as a token listener and returns its registration; unregister it
+when the work it guards ends. It runs when the call's cancellation is signaled,
+or when a check observes an expired deadline, so a blocked handler can wake
+itself without polling. Low-level `Server#call(cancellation:)` and the Testing
 transport accept explicit cancellation. Native HTTP/2 publishes peer
 `RST_STREAM(CANCEL)` before input teardown; normal END_STREAM/half-close, other
 reset codes, connection loss and host shutdown do not manufacture explicit

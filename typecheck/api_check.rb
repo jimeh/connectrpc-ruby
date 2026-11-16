@@ -3,15 +3,22 @@
 require_relative "harness"
 
 module APICheck
-  PACKAGES = %w[rack testing on-rails async falcon otel prometheus yabeda].freeze
+  PACKAGES = %w[rack testing on-rails async falcon otel prometheus yabeda health].freeze
   BRIDGES = { "on-rails" => "rbs/action_controller_8", "falcon" => "rbs/async_service_0_25" }.freeze
+  # The health package's generated message signatures need protobuf runtime
+  # declarations; typed consumers add core's explicit bridge for them.
+  PROTOBUF_BRIDGE = "rbs/google_protobuf_4_36"
 
   def self.bridge_paths(root:, installed:)
     BRIDGES.map do |name, relative|
       package = File.join(root, "gems/connectrpc-#{name}")
       package = Gem::Specification.find_by_name("connectrpc-#{name}").full_gem_path if installed
       File.join(package, relative)
-    end
+    end << protobuf_bridge(root: root, installed: installed)
+  end
+
+  def self.protobuf_bridge(root:, installed:)
+    File.join(installed ? Gem::Specification.find_by_name("connectrpc").full_gem_path : root, PROTOBUF_BRIDGE)
   end
 
   def self.check(root:, working:, installed: false, tools: [RbConfig.ruby, "-S"])

@@ -56,5 +56,6 @@
   "drain_policy": "Ruby::ArgumentTypeMismatch",
   "metrics_recorder": "Ruby::ArgumentTypeMismatch",
   "prometheus": "Ruby::ArgumentTypeMismatch",
-  "yabeda": "Ruby::ArgumentTypeMismatch"
+  "yabeda": "Ruby::ArgumentTypeMismatch",
+  "health": "Ruby::ArgumentTypeMismatch"
 }
