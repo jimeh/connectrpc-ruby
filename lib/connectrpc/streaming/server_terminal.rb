@@ -53,10 +53,9 @@ module ConnectRPC
     end
 
     def streaming_context(state, headers: state.headers)
-      metadata = Protocol.metadata(headers)
-      state.lifecycle.request_metadata = Instrumentation.carrier(metadata) if state.lifecycle
       leading = ->(snapshot) { state.publish.call(stream_head(snapshot, state.codec, state.encoding)) }
-      StreamingContext.new(publish: leading, request_metadata: metadata, deadline: request_deadline(headers),
+      StreamingContext.new(publish: leading, request_metadata: Protocol.metadata(headers),
+                           deadline: request_deadline(headers),
                            cancellation: state.cancellation, lifecycle: state.lifecycle)
     end
 

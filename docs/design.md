@@ -494,11 +494,22 @@ Prometheus and Yabeda packages.
 Call facts contain role, Connect protocol, recognized immutable Method or nil,
 client endpoint host/port and a propagation carrier, never message objects.
 The client starts before timeout/metadata validation and applies validated staged
-injection transactionally to copied metadata. Server extraction uses defensive
-read-only headers without moving validation ahead of 405. Outcomes distinguish
-original exceptions, normalized/replacement exceptions, emitted Connect code,
-HTTP status, monotonic processing duration and measured encoded byte counts.
-Unknown byte counts are nil. Metadata snapshots retain repeated arrays.
+injection transactionally to copied metadata. An injected key replaces the
+caller's values, except `baggage`, which becomes the caller's values followed by
+the injected values, so subscriber registration order does not decide whether
+caller or subscriber baggage survives. Core does not parse, deduplicate or bound
+baggage. Repeated member keys stay on the wire, and receivers that parse
+last-wins, such as OpenTelemetry Ruby and Sentry, see the injected value. Core
+checks only that caller values are printable header strings, not W3C syntax: a
+malformed caller member can make a receiver drop the whole header, injected
+members included, and a receiver may truncate large baggage. Server extraction
+uses defensive read-only headers without moving validation ahead of 405.
+Servers record application request metadata once, from the normalized headers,
+when processing begins, so an outcome keeps it when a request fails before a
+Context exists. Outcomes distinguish original exceptions,
+normalized/replacement exceptions, emitted Connect code, HTTP status, monotonic
+processing duration and measured encoded byte counts. Unknown byte counts are
+nil. Metadata snapshots retain repeated arrays.
 
 `Server#start_call(path:, headers:, http_method: "POST")` is the explicit host
 SPI. Hosts pass the actual method so Connect GET selection precedes subscriber

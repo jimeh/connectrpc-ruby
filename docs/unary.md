@@ -164,8 +164,10 @@ app = ConnectRPC::Rack.new(server: server) # Supply this to your Rack host.
 `ConnectRPC::Rack.new(downstream_app, server: server)` falls through for
 unrelated services. An unknown method within a registered service returns
 `unimplemented`. Rack routes `PATH_INFO`, so mounting under a prefix works.
-Handlers receive a typed request and a fresh `Context` for each call. A custom
-`invoker: ->(method, request, context) { ... }` can own execution instead.
+Handlers receive a typed request and a fresh `Context` for each call. Its
+`request_metadata` is a mutable per-call copy of the request metadata on every
+protocol. A custom `invoker: ->(method, request, context) { ... }` can own
+execution instead.
 Reusable handlers must synchronize any application state they share.
 
 With that app hosted at a base URL, a client call is:

@@ -97,8 +97,14 @@ which are Development.
   `unavailable`, and `data_loss` as errors. Delivered `invalid_argument`, for
   example, leaves SERVER status UNSET.
 - Independent operation failures and host aborts are errors.
-- `error.type` contains bounded codes or local classifications; success remains
-  UNSET.
+- `error.type` contains a bounded code or a local classification; success
+  remains UNSET. Codes are the RPC codes above. Local classifications are
+  `operation_failed` (an original non-Connect failure, or a failure without an
+  emitted code), `preflight_rejected` (a bare HTTP rejection with no RPC code),
+  `delivery_aborted` (an aborted delivery, unless a gRPC or gRPC-Web call has a
+  non-OK code, which is reported instead) and the
+  `admission_rejected` and `host_rejected` decisions. Local classifications are
+  lower-case on every protocol.
 
 There are no automatic exception events, descriptions, stacks, payloads, raw
 URLs/queries, certificate data or arbitrary metadata.
@@ -122,7 +128,13 @@ entries of 256 bytes each, under `connectrpc.request.metadata.<name>` and
 sensitive names is the application's responsibility. Baggage propagates but
 is not captured as span attributes. Request injection is staged and validated
 before merging into copied metadata; invalid injection is discarded and
-reported without changing caller metadata or protocol headers.
+reported without changing caller metadata or protocol headers. Injected keys
+replace caller values, except `baggage`: the wire carries the caller's
+`baggage` values first, then the injected ones. When an earlier subscriber has
+staged `baggage`, the propagator's written baggage follows it instead of
+replacing it, for the default and custom propagators. Core keeps duplicate
+members and does not validate W3C syntax; see
+[design](../../docs/design.md#rpc-lifecycle-observation) for receiver limits.
 
 ## Processing and delivery
 
@@ -200,8 +212,10 @@ RPC deadline and can reject otherwise valid late EOF or slow intermediaries.
 The actual protocol is fixed before subscriber start. gRPC uses the 1.44.0
 release-candidate conventions: `rpc.system.name=grpc`, uppercase
 `rpc.response.status_code` and code-based `error.type`, including `CANCELLED`.
-Client and Server retain the role-specific error policy above. Allowlisted gRPC
-metadata uses `rpc.request.metadata.<key>` and `rpc.response.metadata.<key>`.
+Only status codes are uppercased; local `error.type` classifications stay
+lower-case. Client and Server retain the role-specific error policy above.
+Allowlisted gRPC metadata uses `rpc.request.metadata.<key>` and
+`rpc.response.metadata.<key>`.
 Connect keeps its existing names and lower-case codes. Unknown gRPC methods use
 span name `grpc` and `rpc.method=_OTHER`, with the same explicit privacy limit.
 Processing and delivery remain independent; successful handler processing cannot

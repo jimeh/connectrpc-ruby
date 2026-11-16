@@ -61,9 +61,10 @@ module ConnectRPC
         snapshot = @headers
         return snapshot if snapshot
 
+        # The server snapshot is independent; handlers keep a mutable Context.
         @headers = if @server
-                     @context #: StreamingContext
-                       .request_metadata.freeze
+                     context = @context #: StreamingContext
+                     Metadata.new(context.request_metadata.to_h).freeze
                    else
                      response_metadata
                    end

@@ -15,7 +15,7 @@ RSpec.describe "Trace propagation" do
   end
 
   # Records the request metadata the server received.
-  def outgoing(instrumentation, base_url: "https://example.invalid")
+  def outgoing(instrumentation, base_url: "https://example.invalid", metadata: {})
     seen = {}
     echo = lambda do |message, context|
       %w[sentry-trace baggage].each { |key| seen[key] = context.request_metadata[key] }
@@ -23,7 +23,7 @@ RSpec.describe "Trace propagation" do
     end
     typed = in_process(echo_server(instrumentation: nil, echo: echo), instrumentation: instrumentation,
                                                                       base_url: base_url)
-    typed.echo(MESSAGE.new(name: "outgoing"))
+    typed.echo(MESSAGE.new(name: "outgoing"), metadata: metadata)
     seen
   end
 
@@ -176,20 +176,22 @@ RSpec.describe "Trace propagation" do
         OpenTelemetry::Baggage.set_value("tenant", "acme")
       end
 
-      it "prepends Sentry baggage to baggage staged by an earlier subscriber" do
-        instrumentation = bus(ConnectRPC::OTel::Subscriber.new, ConnectRPC::Sentry::Subscriber.new)
-        seen = OpenTelemetry::Context.with_current(otel_baggage) { outgoing(instrumentation) }
-        expect(seen.fetch("baggage").size).to eq(2)
-        expect(seen.fetch("baggage").first).to start_with("sentry-")
-        expect(seen.fetch("baggage").last).to eq("tenant=acme")
-        expect(seen.fetch("sentry-trace").size).to eq(1)
-      end
-
-      it "loses Sentry baggage when OpenTelemetry runs second, as documented" do
-        instrumentation = bus(ConnectRPC::Sentry::Subscriber.new, ConnectRPC::OTel::Subscriber.new)
-        seen = OpenTelemetry::Context.with_current(otel_baggage) { outgoing(instrumentation) }
-        expect(seen.fetch("baggage")).to eq(["tenant=acme"])
-        expect(seen.fetch("sentry-trace").size).to eq(1)
+      {
+        "OpenTelemetry first" => [ConnectRPC::OTel::Subscriber, ConnectRPC::Sentry::Subscriber],
+        "Sentry first" => [ConnectRPC::Sentry::Subscriber, ConnectRPC::OTel::Subscriber]
+      }.each do |order, classes|
+        it "carries caller, Sentry and OpenTelemetry baggage with #{order}" do
+          instrumentation = bus(*classes.map(&:new))
+          seen = OpenTelemetry::Context.with_current(otel_baggage) do
+            outgoing(instrumentation, metadata: { "baggage" => ["caller=1"] })
+          end
+          expect(seen.fetch("baggage").size).to eq(3)
+          expect(seen.fetch("baggage").first).to eq("caller=1")
+          expect(seen.fetch("baggage")[1]).to start_with("sentry-")
+          expect(seen.fetch("baggage").last).to eq("tenant=acme")
+          expect(seen.fetch("sentry-trace").size).to eq(1)
+          expect(lifecycle_errors).to be_empty
+        end
       end
     end
   end

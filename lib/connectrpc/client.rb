@@ -134,7 +134,11 @@ module ConnectRPC
       carrier = injection #: metadata_input
       instrumentation.safely do
         validated = Metadata.new(carrier)
-        return Metadata.new(metadata.to_h.merge(validated.to_h))
+        # Baggage is a list header; caller members stay ahead of injected ones.
+        merged = metadata.to_h.merge(validated.to_h) do |key, own, injected|
+          key == "baggage" ? own + injected : injected
+        end
+        return Metadata.new(merged)
       end
       metadata
     end

@@ -84,4 +84,6 @@ map to internal. The FLOW_CONTROL_ERROR choice differs from the older protocol
 document's mapping. NO_ERROR can preserve queued data and a valid final status;
 it cannot establish success without that status and owned transport completion.
 Native unary executes the configured invoker with a normal Context, including
-custom invokers that have no handler-map entry.
+custom invokers that have no handler-map entry. As on every server Context,
+`context.request_metadata` is mutable per-call metadata; writes do not change
+what instrumentation recorded for the request.

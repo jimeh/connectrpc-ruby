@@ -153,7 +153,9 @@ Handlers receive `(Q, ResponseWriter[R], StreamingContext)` for SS,
 `(ServerDuplex[Q,R], StreamingContext)` for bidi. SS/bidi return values are ignored;
 only `send_message` emits a response. SS validates exactly one input and request
 EOF before invocation. CS success requires exactly one response. Cardinality
-violations are `unimplemented`.
+violations are `unimplemented`. `context.request_metadata` stays mutable; reader
+and duplex `headers` return a frozen snapshot taken at the first read, which
+later Context writes do not change.
 
 `context.send_headers(metadata: {})`, also delegated by response writers and
 server duplexes, publishes once. It can precede a handler delay or CS input.

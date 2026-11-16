@@ -78,8 +78,17 @@ module ConnectRPC
     def begin_native_processing(path, headers, lifecycle, http_method)
       owned = lifecycle.nil?
       lifecycle ||= start_call(path: path, headers: headers, http_method: http_method)
-      lifecycle&.begin_processing(self, path)
+      if lifecycle
+        lifecycle.begin_processing(self, path)
+        record_request_metadata(lifecycle, headers)
+      end
       [lifecycle, owned]
+    end
+
+    # Record once from normalized headers, before validation, so terminal
+    # fallbacks without a request Context keep the application metadata.
+    def record_request_metadata(lifecycle, headers)
+      lifecycle.request_metadata = Instrumentation.carrier(Protocol.metadata(headers))
     end
 
     def finish_native_processing(lifecycle, owned, error)

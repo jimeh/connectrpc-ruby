@@ -411,6 +411,11 @@ decision. A merged fix closes its specific defect, not the audit as a whole.
   and no longer reach root `setup`. L16: gemspec manifests no longer depend on
   the working directory, and a direct `gem build` from the wrong directory now
   fails instead of packaging another package's files.
+- This PR resolves L8, L9 and L11. Server outcomes record request metadata when
+  processing begins, every server Context keeps mutable request metadata, and
+  OTel uppercases only gRPC and gRPC-Web status codes in `error.type`, as
+  [design](design.md#rpc-lifecycle-observation) and the
+  [OTel guide](../gems/connectrpc-otel/README.md) describe.
 - L12 is disclosed above as a Rack adapter limitation. This guide corrects
   L18's current documentation drift without declaring the audit complete.
 
@@ -423,10 +428,9 @@ decision. A merged fix closes its specific defect, not the audit as a whole.
 - **H2 unary upload cancellation (L10).** Verify the current H2 unary
   cancellation reset on wire; unchanged source and historical probes do not
   establish its current result.
-- **Native lifecycle metadata and OTel (L8/L9/L11, host remnants of M1).**
-  Reconcile early metadata loss, frozen gRPC unary request metadata, local OTel
-  classification casing and any reachable ambient-exception path with current
-  evidence and explicit contracts.
+- **Host lifecycle exceptions (host remnants of M1).** Reconcile any reachable
+  ambient-exception path in native hosts with current evidence and an explicit
+  contract.
 
 ### Before a release adopts the profile
 

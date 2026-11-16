@@ -37,7 +37,7 @@ module ConnectRPC
         span = @tracer.start_span(name, kind: call.role, with_parent: parent, attributes: attributes(call, name))
         context = OpenTelemetry::Trace.context_with_span(span, parent_context: parent)
         begin
-          @propagator.inject(call.carrier, context: context) if call.role == :client
+          inject(call.carrier, context) if call.role == :client
           Observer.new(span, context, call.role, @request_metadata, @response_metadata, call.protocol)
         rescue Exception # rubocop:disable Lint/RescueException -- release span and preserve fatal exceptions
           span.finish
@@ -46,6 +46,18 @@ module ConnectRPC
       end
 
       private
+
+      # Propagators may overwrite the shared carrier's baggage. Keep baggage that
+      # earlier subscribers staged ahead of this propagator's entries.
+      def inject(carrier, context)
+        staged = Array(carrier["baggage"])
+        @propagator.inject(carrier, context: context)
+        written = Array(carrier["baggage"])
+        return if staged.empty? || written.empty? || written == staged
+
+        written = written.drop(staged.size) if written.first(staged.size) == staged
+        carrier["baggage"] = staged + written
+      end
 
       def attributes(call, name)
         result = { "rpc.system.name" => %i[grpc grpc_web].include?(call.protocol) ? "grpc" : "connectrpc",
@@ -109,7 +121,7 @@ module ConnectRPC
           capture("request", outcome.request_metadata, @request_keys)
           capture("response", outcome.response_metadata, @response_keys)
           error = processing_error(outcome)
-          fail_span(status_code(error)) if error
+          fail_span(error) if error
         end
 
         def finished(completion) # rubocop:disable Metrics/MethodLength, Metrics/AbcSize, Metrics/CyclomaticComplexity, Metrics/PerceivedComplexity
@@ -136,10 +148,11 @@ module ConnectRPC
         private
 
         # Keep role-specific wire codes and independent operation failures in one table.
+        # Only status codes take the protocol's casing; local classifications stay lowercase.
         # rubocop:disable Metrics/AbcSize, Metrics/CyclomaticComplexity, Metrics/PerceivedComplexity
         def processing_error(outcome)
           if outcome.code && outcome.code != "OK"
-            return outcome.code if @role == :client || SERVER_ERRORS.include?(outcome.code)
+            return status_code(outcome.code) if @role == :client || SERVER_ERRORS.include?(outcome.code)
 
             return nil
           end

@@ -95,9 +95,7 @@ module ConnectRPC
     end
 
     def grpc_context(state, declaration = nil, headers: state.headers)
-      metadata = Protocol.metadata(headers)
-      state.lifecycle.request_metadata = Instrumentation.carrier(metadata) if state.lifecycle
-      options = { request_metadata: metadata, deadline: GRPCProtocol.request_deadline(headers),
+      options = { request_metadata: Protocol.metadata(headers), deadline: GRPCProtocol.request_deadline(headers),
                   cancellation: state.cancellation, lifecycle: state.lifecycle }
       return Context.new(**options) if declaration.nil? || declaration.is_a?(Method)
 
