@@ -264,3 +264,57 @@ end
 class APIStreamPublisher
   def call(_head) = nil
 end
+
+# Structural metrics recorder and prometheus-client registry capabilities.
+class APIRecorder
+  attr_reader :calls
+
+  def initialize = @calls = []
+  def increment(key, labels, by) = @calls << [key, labels, by]
+  def observe(key, labels, value) = @calls << [key, labels, value]
+  def set(key, labels, value) = @calls << [key, labels, value]
+end
+
+class APIMetric
+  def increment(by:, labels:) = [by, labels].freeze && nil
+  def observe(value, labels:) = [value, labels].freeze && nil
+  def set(value, labels:) = [value, labels].freeze && nil
+end
+
+# Records the registration shape and returns one structural metric.
+class APIRegistry
+  def counter(name, docstring:, labels:) = register(name, docstring, labels)
+  def histogram(name, docstring:, labels:, buckets:) = register(name, docstring, labels, buckets)
+  def gauge(name, docstring:, labels:, store_settings:) = register(name, docstring, labels, store_settings)
+
+  private
+
+  def register(*shape)
+    shape.freeze
+    APIMetric.new
+  end
+end
+
+class APIConnectionEvent
+  def type = :state_changed
+  def state = :ready
+  def previous_state = :connecting
+  def outcome = nil
+  def duration = nil
+end
+
+class APIMessageObserver
+  def message_received(bytes)
+    bytes.inspect
+    nil
+  end
+
+  def message_sent(bytes)
+    bytes.inspect
+    nil
+  end
+end
+
+class BadAPIRecorder
+  def increment(key) = key.to_proc && nil
+end

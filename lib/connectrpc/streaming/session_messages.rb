@@ -67,9 +67,11 @@ module ConnectRPC
         leading
         frame = @reader.read_frame
         return receive_eof unless frame
-        return accept_terminal(frame.last) if frame.first.anybits?(2)
 
-        decode_message(frame.last)
+        flags, bytes, length = frame
+        return accept_terminal(bytes) if flags.anybits?(2)
+
+        decode_message(bytes, length)
       end
 
       def completed_receive
@@ -88,13 +90,14 @@ module ConnectRPC
         nil
       end
 
-      def decode_message(bytes)
+      def decode_message(bytes, length)
         @received += 1
         validate_response_count unless @strategy.grpc?
         message = @binding.decode(bytes, type: @read_type, codec: @codec)
         @state.check!
         raise Error.new(:internal, "Binding decoded a nil streaming message"), cause: nil if message.nil?
 
+        @lifecycle&.message_received(length)
         message
       rescue CodecError => e
         @lifecycle&.record_failure(e)
@@ -121,8 +124,9 @@ module ConnectRPC
         Protocol.check_size!(bytes, @write_limit)
         publisher = @publish
         publisher ? publisher.call : @context&.send(:publish_headers)
-        @writer.emit(bytes)
+        written = @writer.emit(bytes)
         @sent += 1
+        @lifecycle&.message_sent(written)
         nil
       rescue CodecError => e
         @lifecycle&.record_failure(e)

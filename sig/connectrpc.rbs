@@ -76,7 +76,8 @@ module ConnectRPC
   end
 
   interface _Subscriber
-    # Observers may implement any of attach, detach, processing_finished, finished.
+    # Observers may implement any of attach, detach, processing_finished, finished,
+    # message_received and message_sent.
     # Ruby's optional structural methods are deliberately not required here.
     def start: (Instrumentation::Call) -> Object?
   end
@@ -155,6 +156,12 @@ module ConnectRPC
   end
   interface _ObserverFinished
     def finished: (Instrumentation::Completion) -> void
+  end
+  interface _ObserverMessageReceived
+    def message_received: (Integer) -> void
+  end
+  interface _ObserverMessageSent
+    def message_sent: (Integer) -> void
   end
 
   module Bindings
@@ -768,5 +775,67 @@ module ConnectRPC
   class Server
     def call_grpc_web: (path: String, http_method: String, headers: headers, input: _StreamingInput, output: _GRPCWebOutput, publish: _PublishStreamHead | ^(StreamHead) -> void, ?capabilities: Array[grpc_web_cardinality], ?lifecycle: Instrumentation::Handle?, ?cancellation: _Cancellation?) -> TransportResponse?
     def cors_response: (path: String, http_method: String, headers: headers, ?response: TransportResponse?) -> TransportResponse?
+  end
+end
+
+# Optional backend-neutral metrics: require "connectrpc/metrics".
+module ConnectRPC
+  module Metrics
+    type labels = Hash[Symbol, String]
+    type kind = :counter | :histogram | :gauge
+    BASE_LABELS: Array[Symbol]
+    CONNECTION_STATES: Array[Symbol]
+
+    # Sinks implement this recorder SPI. Calls may arrive from separate threads and fibers.
+    interface _Recorder
+      def increment: (Symbol key, labels labels, Integer by) -> void
+      def observe: (Symbol key, labels labels, Numeric value) -> void
+      def set: (Symbol key, labels labels, Numeric value) -> void
+    end
+
+    # The structural connection event shape published by client transports such as Async's.
+    interface _ConnectionEvent
+      def type: () -> Symbol
+      def state: () -> Symbol
+      def previous_state: () -> Symbol?
+      def outcome: () -> Symbol?
+      def duration: () -> Numeric?
+    end
+
+    class Instrument
+      def initialize: (key: Symbol, kind: kind, name: String, unit: Symbol?, labels: Array[Symbol], buckets: Array[Numeric]?, help: String) -> void
+        | (Symbol, kind, String, Symbol?, Array[Symbol], Array[Numeric]?, String) -> void
+      attr_reader key: Symbol
+      attr_reader kind: kind
+      attr_reader name: String
+      attr_reader unit: Symbol?
+      attr_reader labels: Array[Symbol]
+      attr_reader buckets: Array[Numeric]?
+      attr_reader help: String
+    end
+
+    class Definitions
+      NAMESPACE: Regexp
+      DURATION_BUCKETS: Array[Numeric]
+      SIZE_BUCKETS: Array[Numeric]
+      def initialize: (?namespace: String | Symbol, ?duration_buckets: Array[Numeric], ?size_buckets: Array[Numeric]) -> void
+      attr_reader namespace: String
+      attr_reader instruments: Hash[Symbol, Instrument]
+      def fetch: (Symbol) -> Instrument
+      def full_name: (Instrument) -> String
+    end
+
+    class Subscriber
+      def initialize: (recorder: _Recorder, definitions: Definitions) -> void
+      def start: (Instrumentation::Call) -> Object
+    end
+
+    class ConnectionObserver
+      TRANSPORT: Regexp
+      def initialize: (recorder: _Recorder, definitions: Definitions, transport: String) -> void
+      attr_reader transport: String
+      def publish_state: () -> nil
+      def call: (_ConnectionEvent) -> nil
+    end
   end
 end

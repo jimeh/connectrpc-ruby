@@ -37,6 +37,8 @@ expected_core = %w[
   lib/connectrpc/deadline.rb lib/connectrpc/compression.rb lib/connectrpc/message_io.rb
   lib/connectrpc/get_query.rb
   lib/connectrpc/protocol.rb lib/connectrpc/client.rb lib/connectrpc/server.rb lib/connectrpc/instrumentation.rb
+  lib/connectrpc/metrics.rb lib/connectrpc/metrics/connection_observer.rb
+  lib/connectrpc/metrics/definitions.rb lib/connectrpc/metrics/subscriber.rb
   lib/connectrpc/bindings/google_protobuf.rb lib/connectrpc/transports/net_http.rb
   lib/connectrpc/generator.rb lib/connectrpc/generator/names.rb lib/connectrpc/generator/schema.rb
   lib/connectrpc/generator/renderer.rb lib/connectrpc/generator/runtime_names.rb
@@ -87,7 +89,10 @@ Bundler.with_unbundled_env do
     working = File.join(temporary, "cwd")
     gem_home = File.join(temporary, "gems")
     FileUtils.mkdir_p(working)
-    local_archives = ReleaseTrain::NAMES.map { |name| File.join(output, "#{name}-#{version}.gem") }
+    # The archives scripts/build.rb produces; metrics sinks are outside the OTel graph.
+    local_names = %w[connectrpc connectrpc-rack connectrpc-on-rails connectrpc-async connectrpc-falcon
+                     connectrpc-testing connectrpc-otel]
+    local_archives = local_names.map { |name| File.join(output, "#{name}-#{version}.gem") }
     FileUtils.cp([*local_archives, *artifacts], working)
     FileUtils.cp(File.join(__dir__, "integration.rb"), working)
     FileUtils.cp(Dir.glob(File.join(root, "spec/fixtures/generation/echo/*.rb")), working)

@@ -31,7 +31,7 @@ module ConnectRPC
 
             return
           end
-          return recovered_error(frame.last) if frame.first.anybits?(2)
+          return recovered_error(frame[1]) if frame[0].anybits?(2)
 
           @received += 1
           return if !@strategy.grpc? && @method.is_a?(ClientStreamMethod) && @received > 1

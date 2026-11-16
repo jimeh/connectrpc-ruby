@@ -47,7 +47,8 @@ Ruby methods into extension points.
 
 Support requires the **same version** of `connectrpc` and every optional
 ConnectRPC gem used by the application: `connectrpc-rack`, `connectrpc-on-rails`,
-`connectrpc-async`, `connectrpc-falcon`, `connectrpc-testing` and `connectrpc-otel`.
+`connectrpc-async`, `connectrpc-falcon`, `connectrpc-testing`, `connectrpc-otel`,
+`connectrpc-prometheus` and `connectrpc-yabeda`.
 Only the packages actually used need to be installed.
 
 Existing gemspec ranges such as `~> 0.1.0` allow patch versions to differ.
@@ -72,6 +73,8 @@ MRI versions apply to the rows below unless a row says otherwise. The
 | Rails supported profile | [Rails 8.1 lock](../gems/connectrpc-on-rails/gemfiles/rails_8.1.gemfile.lock): Rails/Action Pack 8.1.4 | Native unary controller execution on both MRI versions |
 | Rails compatibility evidence | [Rails 8.0 lock](../gems/connectrpc-on-rails/gemfiles/rails_8.0.gemfile.lock): Rails/Action Pack 8.0.5.1 | MRI 3.4.12 only; retained CI lane outside the supported Rails profile |
 | OpenTelemetry | [OTel lock](../gems/connectrpc-otel/Gemfile.lock): API 1.11.1, SDK 1.13.1, Rack instrumentation 0.31.2, NetHTTP instrumentation 0.29.2 | Tested coexistence includes native Rails 8.1.4. Other SDK/instrumentation combinations need their own evidence |
+| Prometheus metrics | [Prometheus lock](../gems/connectrpc-prometheus/Gemfile.lock): prometheus-client 5.0.0 | Default and `DirectFileStore` stores; real Rack, Async and Falcon hosts. Rails relies on the Rack path plus documentation |
+| Yabeda metrics | [Yabeda lock](../gems/connectrpc-yabeda/Gemfile.lock): yabeda 0.16.0 | Declaration and values through `yabeda/testing`; yabeda-prometheus naming is checked structurally, not installed |
 
 The official browser fixture runs against both MRI server versions. Its
 [artifact pins](../browser/artifacts.json) and [JS lock](../browser/bun.lock)

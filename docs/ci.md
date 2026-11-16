@@ -210,7 +210,7 @@ dependency enters core, Rails or Async bundles.
 The pinned Ruby/Bundler action prepares the runtime with its bundle cache disabled
 only in this lane. One explicit `actions/cache` v6.1.0 step, pinned to
 `55cc8345863c7cc4c66a329aec7e433d2d1c52a9`, owns `vendor/bundle` and the independent
-`vendor/{rbs,rack,testing,async,falcon,otel}/bundle` directories. Rails Appraisal
+`vendor/{rbs,rack,testing,async,falcon,otel,prometheus,yabeda}/bundle` directories. Rails Appraisal
 needs the root bundle directory. There are no overlapping bundle-cache owners or
 bundle-specific setup-action environment overrides. The action release was
 published on 2026-06-26, satisfying the seven-day age policy.
@@ -254,12 +254,23 @@ Separate Go jobs use the existing pinned toolchain/module caches and run the
 independent peer against actual Falcon workers. Every lane checks workspace
 cleanliness. Local verification does not establish hosted exact-head success.
 
+## Optional metrics lanes
+
+Prometheus and Yabeda each run one `<name>:verify` leaf per pinned Ruby. Like
+OTel, each selects its own `gems/connectrpc-<name>/Gemfile`, `vendor/<name>/bundle`
+and `vendor/<name>/bundler` before setup-ruby, keeps frozen installation and the
+seven-day cooldown, and validates the action runtime through `<name>:tools`.
+The Prometheus lane includes real Rack, Async and Falcon hosts and a forked
+`DirectFileStore` check; the Yabeda lane records through `yabeda/testing`. Both
+install their archives offline into a fresh external GEM_HOME and check
+workspace cleanliness.
+
 ## Public API typing gates
 
 The two RBS jobs run strict implementation checks for the core files and private
 state listed in `typecheck/source.rb`. They validate that source list, enforce
 the reviewed source/signature inventory, and check application callers for all
-seven packages. Generated positive, exact per-file negative and nominal/bridge
+nine packages. Generated positive, exact per-file negative and nominal/bridge
 checks remain.
 Installed checks use normal RBS discovery in a fresh external GEM_HOME, validate
 each optional dependency closure and both composition orders, and exercise API-only
@@ -333,8 +344,8 @@ It opens or updates the release PR using an existing GitHub App from the
 `release-please` environment. After a release PR merges, it tags the commit and
 creates a draft GitHub release. The tag starts `release.yml`, which publishes
 from the `release` environment.
-The 31 CI checks above retain their mapping. `check:static` also runs the offline
-`release:check` invariant for all seven versions and all eight local path locks.
+The 35 CI checks above retain their mapping. `check:static` also runs the offline
+`release:check` invariant for all nine versions and all ten local path locks.
 Frozen Bundler installs in each owning CI lane prove the prepared locks are accepted
 by Bundler. See [release preparation](releasing.md) for the candidate procedure and
 remaining App/account setup.

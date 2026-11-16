@@ -157,9 +157,9 @@ module ConnectRPC
       attr_reader terminal: bool
       attr_writer encoding: encoding
       def initialize: (input: _StreamingInput?, ?output: _StreamingWriter?, request: bool, wire_limit: Integer, limit: Integer, ?encoding: encoding, ?terminal_wire_limit: Integer, ?terminal_limit: Integer, ?state: _Check?, ?on_error: (^(StandardError) -> void)?) -> void
-      def read_frame: (?timeout: Numeric?, ?skip_data: bool) -> [Integer, String]?
+      def read_frame: (?timeout: Numeric?, ?skip_data: bool) -> [Integer, String, Integer]?
       def next_envelope?: (?timeout: Numeric?) -> bool
-      def emit: (String, ?terminal: bool) -> nil
+      def emit: (String, ?terminal: bool) -> Integer
       private
       def initialize_state: (_Check?) -> void
       def validate_envelope: (Integer, Integer) -> void
@@ -243,7 +243,7 @@ module ConnectRPC
       def receive_message: () -> untyped
       def completed_receive: () -> nil
       def receive_eof: () -> nil
-      def decode_message: (String) -> untyped
+      def decode_message: (String, Integer) -> untyped
       def validate_response_count: () -> void
       def validate_send: (untyped) -> void
       def encode_message: (untyped) -> nil

@@ -456,6 +456,23 @@ guarantee that a failing detach restores its own state. This cleanup does not
 guarantee completion under arbitrary repeated asynchronous interruption.
 Retained observers hold no globally active core context.
 
+`message_received(bytes)` and `message_sent(bytes)` are optional per-message
+callbacks, discovered once like the others and isolated per observer. `bytes`
+is the encoded payload size as framed: after compression, excluding the 5-byte
+envelope prefix, end-stream/trailer frames, gRPC-Web text base64 and GET
+percent/base64 expansion (matching GET `request_bytes`). Receive fires after a
+successful decode and the following cancellation check; send fires after
+successful frame emission and means local acceptance, not peer receipt.
+Recovery/discard reads, decode failures and failed emits fire nothing. Connect
+unary fires on the server after request decode and after response compression
+and limit validation, and on the client after compression/GET construction and
+after response decode. Streams, gRPC and gRPC-Web fire from the shared session.
+Callbacks run on the session's owning thread or reactor, possibly from separate
+read and write fibers. Nothing fires after the lifecycle's terminal finish. The
+optional `connectrpc/metrics` layer, not loaded by `require "connectrpc"`, turns
+the lifecycle and these callbacks into backend-neutral metrics for the
+Prometheus and Yabeda packages.
+
 Call facts contain role, Connect protocol, recognized immutable Method or nil,
 client endpoint host/port and a propagation carrier, never message objects.
 The client starts before timeout/metadata validation and applies validated staged

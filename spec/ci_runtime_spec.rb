@@ -133,12 +133,13 @@ RSpec.describe "CI check mapping" do
   let(:workflow) { YAML.load_file(File.expand_path("../.github/workflows/ci.yml", __dir__)) }
   let(:jobs) { workflow.fetch("jobs") }
 
-  it "preserves all 28 existing checks and adds two independent browser leaves" do
+  it "preserves all 28 existing checks and adds browser and metrics leaves" do
     core = %w[static specs package interop conformance]
     backend = %w[async_specs async_interop]
     falcon = %w[falcon_specs falcon_interop]
+    metrics = %w[prometheus yabeda]
     expect(jobs.keys).to match_array([*core, "rails", *backend, "rack", "testing", "rbs", *falcon, "otel",
-                                      "browser_grpc_web", "examples"])
+                                      *metrics, "browser_grpc_web", "examples"])
     count = lambda do |names|
       jobs.slice(*names).values.sum do |job|
         job.dig("strategy", "matrix", "ruby")&.size || job.dig("strategy", "matrix", "include")&.size || 1
@@ -151,10 +152,11 @@ RSpec.describe "CI check mapping" do
     expect(count.call(["rack"])).to eq(2)
     expect(count.call(["testing"])).to eq(2)
     expect(count.call(["rbs"])).to eq(2)
-    expect(count.call(jobs.keys - %w[browser_grpc_web examples])).to eq(28)
+    expect(count.call(jobs.keys - [*metrics, "browser_grpc_web", "examples"])).to eq(28)
     expect(count.call(["otel"])).to eq(2)
     expect(count.call(["browser_grpc_web"])).to eq(2)
-    expect(count.call(jobs.keys - ["examples"])).to eq(30)
+    expect(count.call(metrics)).to eq(4)
+    expect(count.call(jobs.keys - ["examples"])).to eq(34)
     jobs.each_value { |job| expect(job).not_to have_key("needs") }
     jobs.except("static", "rails", "examples").each_value do |job|
       expect(job.dig("strategy", "fail-fast")).to be(false)
@@ -167,6 +169,7 @@ RSpec.describe "CI check mapping" do
     expect(commands.fetch("interop").first(2)).to eq(["mise run fixture:check", "mise run test:interop"])
     expect(commands.fetch("conformance")).to include("mise run test:conformance")
     expect(commands.fetch("otel").first).to eq("mise run otel:verify")
+    metrics.each { |name| expect(commands.fetch(name).first).to eq("mise run #{name}:verify") }
     expect(commands.fetch("browser_grpc_web").first).to eq("mise run browser:verify")
     expect(commands.fetch("browser_grpc_web")[1]).to include("mise run async:conformance:web",
                                                              "mise run falcon:conformance:web",
@@ -261,7 +264,8 @@ RSpec.describe "CI check mapping" do
     settings = cache.fetch("with")
     expect(settings.fetch("path").lines.map(&:strip)).to eq(
       %w[vendor/bundle vendor/rbs/bundle vendor/rack/bundle vendor/testing/bundle
-         vendor/async/bundle vendor/falcon/bundle vendor/otel/bundle]
+         vendor/async/bundle vendor/falcon/bundle vendor/otel/bundle vendor/prometheus/bundle
+         vendor/yabeda/bundle]
     )
     expect(settings).not_to have_key("restore-keys")
     expect(settings.fetch("key")).to include("rbs-bundles-v1", "runner.os", "runner.arch",
@@ -512,17 +516,21 @@ RSpec.describe "Optional Rack CI boundary" do
   end
 end
 
-RSpec.describe "Optional OpenTelemetry CI boundary" do
-  it "keeps the independent context and CI override aligned" do
-    root = File.expand_path("..", __dir__)
-    local, ci = [nil, "ci"].map do |mode|
-      output, error, status = Open3.capture3({ "MISE_ENV" => mode }, "mise", "tasks", "info", "otel:tools", "--json")
-      expect(status.success?).to be(true), error
-      JSON.parse(output)
+RSpec.describe "Optional OpenTelemetry and metrics CI boundaries" do
+  %w[otel prometheus yabeda].each do |name|
+    it "keeps the independent #{name} context and CI override aligned" do
+      root = File.expand_path("..", __dir__)
+      local, ci = [nil, "ci"].map do |mode|
+        output, error, status = Open3.capture3({ "MISE_ENV" => mode }, "mise", "tasks", "info", "#{name}:tools",
+                                               "--json")
+        expect(status.success?).to be(true), error
+        JSON.parse(output)
+      end
+      %w[tools env dir depends depends_post].each { |key| expect(ci.fetch(key)).to eq(local.fetch(key)) }
+      expect(ci.fetch("run")).to eq(["ruby scripts/ci_runtime.rb"])
+      expect(local.fetch("run")).to eq(["mise exec -- ruby scripts/tools.rb"])
+      guard = File.read(File.join(root, "gems/connectrpc-#{name}/scripts/ci_runtime.rb"))
+      expect(guard).to include("scripts/ci_runtime.rb", "vendor/#{name}/bundle")
     end
-    %w[tools env dir depends depends_post].each { |key| expect(ci.fetch(key)).to eq(local.fetch(key)) }
-    expect(ci.fetch("run")).to eq(["ruby scripts/ci_runtime.rb"])
-    expect(local.fetch("run")).to eq(["mise exec -- ruby scripts/tools.rb"])
-    expect(File.read(File.join(root, "gems/connectrpc-otel/scripts/ci_runtime.rb"))).to include("scripts/ci_runtime.rb")
   end
 end

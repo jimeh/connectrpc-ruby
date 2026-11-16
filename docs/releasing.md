@@ -1,6 +1,6 @@
 # Releasing
 
-The first release is **0.1.0 across all seven gems**, with alpha maturity.
+The first release is **0.1.0 across all nine gems**, with alpha maturity.
 The version is numeric `0.1.0`, not a RubyGems prerelease such as `0.1.0.alpha`.
 It remains experimental and does not adopt the stronger
 [supported profile](support.md) or declare production readiness.
@@ -12,7 +12,7 @@ The pipeline has three stages:
 2. Merging that PR makes Release Please push a `vX.Y.Z` tag and create a draft
    GitHub release with the changelog.
 3. The tag starts the [release workflow](../.github/workflows/release.yml). It
-   builds the canonical candidate, uploads the seven `.gem` files and
+   builds the canonical candidate, uploads the nine `.gem` files and
    `candidate.json` to the draft, pushes each gem to RubyGems.org with a
    Sigstore attestation using trusted publishing, and publishes the GitHub
    release last.
@@ -27,10 +27,10 @@ or verify command grants no release authority.
 
 One root Release Please Ruby component covers the whole repository, including
 changes confined to one optional gem. It updates the core version and uses
-explicit annotated extra files for the six optional `version.rb` files. Each
+explicit annotated extra files for the eight optional `version.rb` files. Each
 gemspec reads its owning static version without requiring runtime code. OTel uses
 its same owning constant for instrumentation. The root `CHANGELOG.md` describes the entire train.
-The tag convention is one `v0.x.y` tag, not seven component tags.
+The tag convention is one `v0.x.y` tag, not nine component tags.
 
 The initial manifest is empty and `initial-version` is `0.1.0`. A manifest entry
 of `0.1.0` would claim a previous version and is not the bootstrap mechanism.
@@ -93,9 +93,9 @@ release-please 17.6.0. Review new pins and their embedded behavior before update
 For each release PR:
 
 1. Inspect the generated release PR. For the first release, verify that the
-   proposed version is exactly `0.1.0`; every release includes all seven gems.
+   proposed version is exactly `0.1.0`; every release includes all nine gems.
 2. Check out that release branch. Run `mise run release:prepare` before frozen
-   Bundler setup. This updates all eight local path locks, including digest-free
+   Bundler setup. This updates all ten local path locks, including digest-free
    local CHECKSUMS entries and internal dependency floors, and installation
    guides. It does not resolve dependencies or download anything. Review the
    diff and commit with the existing signing configuration.
@@ -107,7 +107,7 @@ For each release PR:
 Release Please's Ruby updater changes only the first matching core entry in the
 root lock. It leaves other path records and local CHECKSUMS stale. The release
 check rejects that partial state. `release:prepare` owns preparation of the root
-lock and all five optional locks plus both Rails Appraisal locks. The typecheck
+lock and all seven optional locks plus both Rails Appraisal locks. The typecheck
 tool lock has no local package records. Frozen installs in each owning CI lane
 are the evidence that Bundler accepts these prepared locks.
 
@@ -125,7 +125,7 @@ Use `mise tasks` for the task index:
 | --- | --- |
 | `release:check` | Offline version, configuration, guard and prepared local-lock checks. No writes or setup dependencies. |
 | `release:prepare` | Deterministic local path-lock and installation-guide updates. No registry resolution. |
-| `release:build` | Seven canonical archives, two-build hash comparison and `candidate.json`. No installation or publication. |
+| `release:build` | Nine canonical archives, two-build hash comparison and `candidate.json`. No installation or publication. |
 | `release:candidate` | Existing installed-package/generation/RBS checks followed by the canonical archive build. Uses normal scoped setup prerequisites. |
 | `release:tools` | Installs the frozen Sigstore signing bundle (`release/Gemfile`) into `vendor/sigstore`. |
 | `release:publish` | CI only. Refuses to run outside `release.yml` on a `v*` tag. |
@@ -157,11 +157,15 @@ RAILS_LANE=8.0 mise run generation:check:rails
 RAILS_LANE=8.0 mise run check:package:rails
 mise run testing:package
 mise run otel:package
+mise run prometheus:package
+mise run yabeda:package
 mise run rbs:check
 mise run rbs:package
 mise run grpc:status:check
 MISE_RUBY_VERSION=4.0.9 mise run testing:package
 MISE_RUBY_VERSION=4.0.9 mise run otel:package
+MISE_RUBY_VERSION=4.0.9 mise run prometheus:package
+MISE_RUBY_VERSION=4.0.9 mise run yabeda:package
 MISE_RUBY_VERSION=4.0.9 mise run rbs:check
 MISE_RUBY_VERSION=4.0.9 mise run rbs:package
 MISE_RUBY_VERSION=4.0.9 mise run grpc:status:check
@@ -178,8 +182,9 @@ The existing package checks validate independently reviewed exact manifests,
 MIT notices, third-party notices and descriptor bytes, signatures and push hosts.
 They install archives offline into fresh `GEM_HOME`/`GEM_PATH` outside the
 checkout. Their generated consumers cover core alone, Rack, Rails with Rack,
-Async, Falcon with Async, testing and API-only OTel. Installed RBS checks cover
-all seven gem-discovered signature libraries, composed framework opt-ins and
+Async, Falcon with Async, testing, API-only OTel, Prometheus and Yabeda.
+Installed RBS checks cover all nine gem-discovered signature libraries,
+composed framework opt-ins and
 real generated runtime consumers. Here "signatures" means RBS, not cryptographic
 gem signing; published gems carry Sigstore attestations instead. Generator checks reproduce fixtures; never hand-edit generated
 Ruby or RBS files.
@@ -189,10 +194,10 @@ The canonical build requires a clean Git checkout and Ruby 3.4.12. It derives
 versions, and uses the existing private staging builder. Executables have mode
 0755 and ordinary files 0644; checkout modes remain untouched. Every archive's
 manifest, bytes, notices and modes are checked against its owning source, and
-a second temporary build must produce all seven identical SHA256 hashes.
+a second temporary build must produce all nine identical SHA256 hashes.
 This proves repeatability in the recorded lane, not cross-Ruby bit identity.
 
-Output is `vendor/release/<version>/<commit>/`: exactly seven `.gem` files and
+Output is `vendor/release/<version>/<commit>/`: exactly nine `.gem` files and
 `candidate.json`, which records source revision, epoch, tool versions, member
 inventories and hashes. The directory must be missing or empty. Preserve an
 existing candidate; use a new reviewed commit for a changed candidate instead
@@ -211,7 +216,7 @@ renaming either breaks publication. `release:publish` runs these steps:
    gem's internal dependencies precede it in publication order.
 2. It finds the GitHub release for the tag, polling for up to five minutes
    because Release Please creates the draft just after the tag.
-3. It checks all seven gems on RubyGems.org before uploading or pushing
+3. It checks all nine gems on RubyGems.org before uploading or pushing
    anything. A gem name that already exists must be owned by `jimeh`, even
    when its bytes match, and a version that already exists must have the
    candidate's SHA256. Pending publishers do not reserve names.
@@ -223,6 +228,7 @@ renaming either breaks publication. `release:publish` runs these steps:
    2. `connectrpc-rack`, `connectrpc-async`, `connectrpc-testing` and
       `connectrpc-otel`.
    3. `connectrpc-on-rails` after Rack, and `connectrpc-falcon` after Async.
+   4. `connectrpc-prometheus` and `connectrpc-yabeda`, which depend only on core.
 
    For each gem missing from RubyGems.org, it signs the archive with
    `sigstore-cli` using the job's GitHub OIDC identity and pushes it with
@@ -250,10 +256,13 @@ These settings live outside the repository. They are not verified by CI.
 | GitHub repository settings | Enable immutable releases. Optionally add a tag ruleset that lets only the release App create `v*` tags. It restricts tag creation only: anyone with write access can still dispatch the workflow on an existing tag, so the environment reviewer remains the approval checkpoint. |
 
 **Pending publishers expire 12 hours after creation**, and a pending publisher
-does not reserve a gem name. Create all seven shortly before merging the first
+does not reserve a gem name. Create all nine shortly before merging the first
 release PR, or before approving its waiting release job. After the first
 publication each one becomes a normal trusted publisher on its gem. On
-2026-11-14 all seven gem names returned 404 from the RubyGems.org API.
+2026-11-14 the original seven gem names returned 404 from the RubyGems.org API,
+and on 2026-11-15 so did `connectrpc-prometheus` and `connectrpc-yabeda`. A
+release that first ships a gem needs its pending publisher created within 12
+hours before that release.
 
 Without a required reviewer, merging a release PR publishes without a further
 checkpoint. On 2026-11-14 the `release` environment allowed only `v*` tags and
@@ -276,7 +285,7 @@ or incomplete draft asset, and a rebuild that no longer matches retained bytes.
 It requires a maintainer decision. Do not automatically yank, retag or replace
 versions.
 
-The draft's assets may be deleted only while none of the seven gems exists on
+The draft's assets may be deleted only while none of the nine gems exists on
 RubyGems.org at the tagged version, for example when a later runner image
 rebuilds different bytes before any push. A draft release is not public, so
 that version has not been released yet. Once any gem at that version is

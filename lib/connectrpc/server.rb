@@ -198,12 +198,14 @@ module ConnectRPC
       raise Error.new(:unimplemented, "Unknown method") unless method.is_a?(Method)
 
       bytes = GetQuery.payload(values, limit: @request_wire_limit, deadline: context)
-      lifecycle.request_bytes = bytes.bytesize if lifecycle
+      wire_bytes = bytes.bytesize
+      lifecycle.request_bytes = wire_bytes if lifecycle
       bytes = inflate_request(bytes, negotiated, context)
       request = decode_request(bytes, method, codec, context)
+      lifecycle&.message_received(wire_bytes)
       response = @invoker.call(method, request, context)
       encoding = Protocol.response_encoding(negotiated, Protocol.content_encoding(negotiated), @encoding)
-      encode_response(response, method, codec, context, encoding)
+      encode_response(response, method, codec, context, encoding, lifecycle)
     end
 
     # rubocop:enable Metrics/MethodLength, Metrics/AbcSize, Metrics/CyclomaticComplexity, Metrics/PerceivedComplexity
@@ -262,12 +264,14 @@ module ConnectRPC
 
       length = Protocol.content_length!(headers["content-length"], invalid_code: :invalid_argument)
       bytes = MessageIO.new(input, @request_wire_limit, context).read(length)
-      lifecycle.request_bytes = bytes.bytesize if lifecycle
+      wire_bytes = bytes.bytesize
+      lifecycle.request_bytes = wire_bytes if lifecycle
       bytes = inflate_request(bytes, headers, context)
       request = decode_request(bytes, method, codec, context)
+      lifecycle&.message_received(wire_bytes)
       response = @invoker.call(method, request, context)
       encoding = Protocol.response_encoding(headers, Protocol.content_encoding(headers), @encoding)
-      encode_response(response, method, codec, context, encoding)
+      encode_response(response, method, codec, context, encoding, lifecycle)
     end
 
     def inflate_request(bytes, headers, context)
@@ -292,7 +296,7 @@ module ConnectRPC
       raise Error.new(:invalid_argument, "Cannot decode request")
     end
 
-    def encode_response(message, method, codec, context, encoding) # rubocop:disable Metrics/MethodLength
+    def encode_response(message, method, codec, context, encoding, lifecycle = nil) # rubocop:disable Metrics/MethodLength, Metrics/ParameterLists
       body = serialize_response(message, method, codec, context)
       headers = response_headers(context, Protocol::CONTENT_TYPES.fetch(codec))
       if encoding == :gzip
@@ -303,6 +307,7 @@ module ConnectRPC
       Protocol.check_size!(body, @response_wire_limit)
       context.check!
       context.commit!
+      lifecycle&.message_sent(body.bytesize)
       TransportResponse.new(status: 200, headers: headers, body: body)
     end
 

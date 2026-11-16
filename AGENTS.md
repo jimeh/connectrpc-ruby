@@ -80,6 +80,15 @@ SDK-backed cross-package specs and packages, using `vendor/otel` and
 `coverage/otel`. Preserve independent admission, processing and delivery facts;
 never infer HTTP/2 completion from `send_response` return or Rack body close.
 
+Optional metrics: core's `lib/connectrpc/metrics/` (loaded only by
+`require "connectrpc/metrics"`) owns the metric set, labels and completion
+classification; `gems/connectrpc-prometheus/` and `gems/connectrpc-yabeda/` are
+thin sinks with independent `prometheus:` / `yabeda:` bundles under
+`vendor/<name>` and `coverage/<name>`. Read
+[the plan](docs/plans/metrics.md) and the Prometheus README before changing names,
+labels, buckets or message-callback byte semantics. Keep yabeda-prometheus out of
+every bundle (its prometheus-client pin splits the shared version map).
+
 Public API changes must update the owning gem's signatures, the supported/SPI
 inventory and focused caller evidence. Read [RBS guidance](docs/rbs.md) before
 changing those surfaces; run `rbs:check` for consumers, inventory and strict core

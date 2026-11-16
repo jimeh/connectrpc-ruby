@@ -164,7 +164,7 @@ module ConnectRPC
       raise Error.new(:invalid_argument, "Cannot encode request")
     end
 
-    def build_request(method, request, metadata, deadline, lifecycle = nil) # rubocop:disable Metrics/MethodLength, Metrics/AbcSize, Metrics/CyclomaticComplexity
+    def build_request(method, request, metadata, deadline, lifecycle = nil) # rubocop:disable Metrics/MethodLength, Metrics/AbcSize, Metrics/CyclomaticComplexity, Metrics/PerceivedComplexity
       body = encode_request(method, request, deadline, lifecycle)
       body = compress_request(body, deadline, lifecycle) if @encoding == :gzip
       Protocol.check_size!(body, @request_wire_limit)
@@ -174,6 +174,7 @@ module ConnectRPC
       get = @use_get && method.idempotency == :no_side_effects
       lifecycle.request_bytes = body.bytesize if lifecycle && get
       GetQuery.build(url, body, codec: @codec, encoding: @encoding, limit: @get_url_limit, deadline: deadline) if get
+      lifecycle&.message_sent(body.bytesize)
       TransportRequest.new(url: url, http_method: get ? "GET" : "POST",
                            headers: request_headers(metadata, nil, get: get), body: get ? "" : body,
                            response_limit: @response_wire_limit, deadline: nil)
@@ -242,7 +243,8 @@ module ConnectRPC
       headers = Protocol.headers(response.headers)
       body = response_body(response, headers, deadline, lifecycle)
       validate_response!(response.status, headers, body)
-      message = decode_response(body, method, lifecycle)
+      message = decode_response(body, method, deadline, lifecycle)
+      lifecycle&.message_received(response.body.bytesize)
       Response.new(message: message, metadata: Protocol.metadata(headers),
                    trailers: Protocol.metadata(headers, trailers: true))
     rescue ArgumentError => e
@@ -250,8 +252,11 @@ module ConnectRPC
       raise Error.new(:internal, "Malformed response metadata")
     end
 
-    def decode_response(bytes, method, lifecycle = nil)
-      @binding.decode(bytes, type: method.response_type, codec: @codec)
+    def decode_response(bytes, method, deadline, lifecycle = nil)
+      message = @binding.decode(bytes, type: method.response_type, codec: @codec)
+      # A call cancelled or past its deadline during decode was not received.
+      deadline&.check!
+      message
     rescue CodecError => e
       lifecycle&.record_failure(e)
       raise Error.new(:internal, "Cannot decode response")

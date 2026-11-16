@@ -9,14 +9,16 @@ module ConnectRPC
                           :request_bytes, :response_bytes, :request_metadata, :response_metadata)
     Completion = Data.define(:outcome, :processing_state, :decision, :delivery, :error, :http_status, :duration)
 
-    Callbacks = Data.define(:attach, :detach, :processing_finished, :finished)
+    Callbacks = Data.define(:attach, :detach, :processing_finished, :finished, :message_received, :message_sent)
     private_constant :Callbacks
 
     class Callbacks
       def self.discover(observer, bus)
         new(attach: callback(observer, :attach, bus), detach: callback(observer, :detach, bus),
             processing_finished: callback(observer, :processing_finished, bus),
-            finished: callback(observer, :finished, bus))
+            finished: callback(observer, :finished, bus),
+            message_received: callback(observer, :message_received, bus),
+            message_sent: callback(observer, :message_sent, bus))
       end
 
       # Reflection ends here; only typed callback records reach lifecycle work.
@@ -121,6 +123,16 @@ module ConnectRPC
         @host_rejected = true
       end
 
+      # Encoded payload bytes of one accepted message, excluding envelope prefixes.
+      def message_received(bytes)
+        notify_message(:message_received, bytes)
+      end
+
+      # Local acceptance of one emitted message; not evidence of peer receipt.
+      def message_sent(bytes)
+        notify_message(:message_sent, bytes)
+      end
+
       def host_rejected? = !!@host_rejected
 
       def record_failure(error)
@@ -197,6 +209,16 @@ module ConnectRPC
       ensure
         @notifying_processing = false
         complete if @pending
+      end
+
+      def notify_message(name, bytes)
+        return if @terminal
+
+        @observers.each do |callbacks|
+          callback = name == :message_received ? callbacks.message_received : callbacks.message_sent
+          @bus.safely { callback&.call(bytes) }
+        end
+        nil
       end
 
       def notify_finished(completion)

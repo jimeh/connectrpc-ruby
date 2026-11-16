@@ -91,9 +91,9 @@ RSpec.describe "Connect streaming framing and scope" do
 
   it "reads fragmented prefixes and payloads, adjacent envelopes, and a default empty message" do
     reader = framing(frame("") + frame("next") + frame("{}", 2))
-    expect(reader.read_frame).to eq([0, ""])
-    expect(reader.read_frame).to eq([0, "next"])
-    expect(reader.read_frame).to eq([2, "{}"])
+    expect(reader.read_frame).to eq([0, "", 0])
+    expect(reader.read_frame).to eq([0, "next", 4])
+    expect(reader.read_frame).to eq([2, "{}", 2])
     expect(reader.read_frame).to be_nil
   end
 
@@ -103,7 +103,7 @@ RSpec.describe "Connect streaming framing and scope" do
         bytes = flags.odd? ? ConnectRPC::Compression.encode("{}", limit: 1024) : "{}"
         reader = framing(frame(bytes, flags), request: request, encoding: :gzip)
         if flags < 4 && (!request || flags < 2)
-          expect(reader.read_frame).to eq([flags, "{}"])
+          expect(reader.read_frame).to eq([flags, "{}", bytes.bytesize])
         else
           expect_code(request ? :invalid_argument : :internal) { reader.read_frame }
         end

@@ -1,0 +1,28 @@
+module ConnectRPC
+  module Prometheus
+    VERSION: String
+    # The prometheus-client registry and metric capabilities this adapter uses.
+    interface _Counter
+      def increment: (by: Integer, labels: ::ConnectRPC::Metrics::labels) -> untyped
+    end
+    interface _Histogram
+      def observe: (Numeric, labels: ::ConnectRPC::Metrics::labels) -> untyped
+    end
+    interface _Gauge
+      def set: (Numeric, labels: ::ConnectRPC::Metrics::labels) -> untyped
+    end
+    interface _Registry
+      def counter: (Symbol, docstring: String, labels: Array[Symbol]) -> _Counter
+      def histogram: (Symbol, docstring: String, labels: Array[Symbol], buckets: Array[Numeric]) -> _Histogram
+      def gauge: (Symbol, docstring: String, labels: Array[Symbol], store_settings: Hash[Symbol, Symbol]) -> _Gauge
+    end
+    class Metrics
+      def initialize: (?registry: _Registry, ?namespace: String | Symbol, ?duration_buckets: Array[Numeric], ?size_buckets: Array[Numeric]) -> void
+      attr_reader definitions: ::ConnectRPC::Metrics::Definitions
+      attr_reader registry: _Registry
+      attr_reader subscriber: ::ConnectRPC::Metrics::Subscriber
+      # Raises ArgumentError when this Metrics already has an observer for the transport name.
+      def connection_observer: (transport: String) -> ::ConnectRPC::Metrics::ConnectionObserver
+    end
+  end
+end

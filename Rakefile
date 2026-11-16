@@ -40,6 +40,10 @@ task :syntax do
                    "gems/connectrpc-falcon/*.gemspec", "gems/connectrpc-falcon/Gemfile",
                    "gems/connectrpc-otel/{lib,spec,scripts}/**/*.rb",
                    "gems/connectrpc-otel/*.gemspec", "gems/connectrpc-otel/Gemfile",
+                   "gems/connectrpc-prometheus/{lib,spec,scripts}/**/*.rb",
+                   "gems/connectrpc-prometheus/*.gemspec", "gems/connectrpc-prometheus/Gemfile",
+                   "gems/connectrpc-yabeda/{lib,spec,scripts}/**/*.rb",
+                   "gems/connectrpc-yabeda/*.gemspec", "gems/connectrpc-yabeda/Gemfile",
                    "exe/*", "*.gemspec", "Gemfile",
                    "Rakefile"]
   files.each { |file| ruby "-c", file }

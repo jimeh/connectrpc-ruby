@@ -54,7 +54,8 @@ module ConnectRPC
         bytes = payload(flags, length, timeout: timeout, skip_data: skip_data)
         @terminal = true if flags.anybits?(2)
         @messages += 1 unless @terminal
-        [flags, bytes]
+        # The envelope length is the encoded (possibly compressed) payload size.
+        [flags, bytes, length]
       end
 
       # Validates the next envelope header without reading its payload.
@@ -68,13 +69,14 @@ module ConnectRPC
         true
       end
 
+      # Returns the written envelope payload length, excluding the 5-byte prefix.
       def emit(bytes, terminal: false)
         flags, bytes = prepare_payload(bytes, terminal)
         @state&.check!
         output = @output #: _StreamingWriter
         output.write([flags, bytes.bytesize].pack("CN"))
         emit_fragments(bytes, output)
-        nil
+        bytes.bytesize
       end
 
       private
