@@ -431,11 +431,14 @@ core Client: decode, commit
 Core creates the deadline before encoding, so one budget covers encoding,
 admission, the inbox wait, acquisition, connection setup, wire I/O and decoding.
 
-- **Reactor side.** The command carries the core `CallCancellation`, composed
-  with a per-call interrupt signal. The existing transport enforces the
-  deadline and cancellation through its cross-thread Promise path, which resets
-  the stream and keeps siblings alive
-  (`gems/connectrpc-async/lib/connectrpc/async/transport.rb:165-207`).
+- **Reactor side.** The command carries the request's read-only
+  `CallCancellation::View`, composed with a per-call interrupt signal. The
+  existing transport enforces the deadline and cancellation through its
+  cross-thread Promise path, which resets the stream and keeps healthy siblings
+  alive (`gems/connectrpc-async/lib/connectrpc/async/transport.rb:165-207`). If
+  cleanup does not finish within the 100 ms allowance, for example because a
+  stuck frame keeps the stream's output from retiring, the transport aborts the
+  whole connection, which also fails its siblings.
 - **Caller side.** With a finite deadline, the caller waits for the reply for
   the remaining time plus the transport's 100 ms cleanup allowance. If no
   reply arrives by then, the reactor is stalled, for example by blocking native
@@ -546,7 +549,7 @@ Each proxy method posts one command and waits for its result.
   reactor. On caller interruption or a proxy operation's stalled-reactor expiry,
   the caller therefore fires the stream's interrupt signal first. Through the
   existing cancellation Promise, that wakes the blocked operation, resets the
-  stream and keeps siblings alive
+  stream and keeps healthy siblings alive, with the same cleanup-timeout exception
   (`gems/connectrpc-async/lib/connectrpc/async/transport.rb:95-110`). Only after
   firing the signal does the caller post `abort`, which coordinates the
   reactor's exit from the stream block. `StreamExchange#abort` alone only closes

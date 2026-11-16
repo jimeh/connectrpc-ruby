@@ -63,4 +63,19 @@ RSpec.describe "Rails error reporting" do
     expect(output.string.scan("[connectrpc.rails]").size).to eq(1)
     expect(response.body).not_to include("secret bug")
   end
+
+  it "normalizes an unexpected exception without a cause and observes the original" do
+    outcomes = []
+    observer = Object.new
+    observer.define_singleton_method(:processing_finished) { |outcome| outcomes << outcome }
+    subscriber = Object.new
+    subscriber.define_singleton_method(:start) { |_| observer }
+    allow_any_instance_of(EchoController).to receive(:connect_instrumentation).and_return(
+      ConnectRPC::Instrumentation.new(subscribers: [subscriber])
+    )
+    expect(rpc("/example.v1.EchoService/Echo", "HTTP_X_CASE" => "bug").status).to eq(500)
+    expect(outcomes.size).to eq(1)
+    expect(outcomes.first.normalized_error).to have_attributes(code: "internal", message: "Internal error", cause: nil)
+    expect(outcomes.first.error).to be_a(RuntimeError).and(have_attributes(message: "secret bug"))
+  end
 end
