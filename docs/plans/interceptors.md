@@ -638,6 +638,7 @@ outermost boundary. Rule 6 re-raises the continuation's exception unchanged,
 so a normal return after a failure keeps the inner classification.
 `InterceptorStateError` raised by core for interceptor misuse is independent,
 so cancellation never masks misuse.
+
 ### Metadata
 
 | Metadata | Client | Server |
