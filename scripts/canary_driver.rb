@@ -25,8 +25,9 @@ module CanaryDriver
   WORKED_AROUND = "a failed \"worked around\" example can mean upstream fixed that behavior; delete its workaround"
   TIMED_OUT = "did not finish within its deadline; a hang"
   HELD_OPEN = "a leftover process kept the output open after the command exited; its process group was killed"
-  # RSpec's report of an error raised in a hook outside any example.
-  HOOK_ERROR = /^An error occurred in (an? `[^`]+` hook)\.\n.*?^([A-Z][\w:]*):\n +([^\n]+)/m
+  # RSpec's report of an error raised in a hook outside any example. Each block
+  # ends at its unindented backtrace; example failure backtraces are indented.
+  HOOK_ERROR = /^An error occurred in (an? `[^`]+` hook)\.\n(.*?)(?=^# |^An error occurred |^Failures:|\z)/m
 
   Phase = Struct.new(:name, :result, :details)
 
@@ -153,7 +154,15 @@ module CanaryDriver
   end
 
   def hook_errors(output)
-    output.scan(HOOK_ERROR).map { |hook, error, message| "error in #{hook}: #{error}: #{message}" }.uniq
+    output.scan(HOOK_ERROR).map { |hook, block| "error in #{hook}: #{hook_error(block)}" }.uniq
+  end
+
+  # `Class: message`, or the first line of a failed expectation, which has no class header.
+  def hook_error(block)
+    error, message = block.match(/^([A-Z][\w:]*):\n +([^\n]+)/)&.captures
+    return "#{error}: #{message}" if error
+
+    block.sub(%r{\AFailure/Error:[^\n]*\n}, "").lines.map(&:strip).find { |line| !line.empty? } || "see the log"
   end
 
   # A phase cannot pass while a leftover process held its output after it exited.

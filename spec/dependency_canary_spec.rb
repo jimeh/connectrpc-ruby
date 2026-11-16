@@ -303,6 +303,52 @@ RSpec.describe CanaryDriver do
       expect(described_class.classify("suite", outcome(hook_only)).result).to eq(:failed)
     end
 
+    it "attributes each hook error to its own hook, including an expectation failure without an error class" do
+      # RSpec 3.13 prints no `Class:` header for a failed expectation in a hook.
+      output = <<~TEXT
+        An error occurred in an `after(:context)` hook.
+        Failure/Error: after(:context) { expect(1).to eq(2) }
+
+          expected: 2
+               got: 1
+
+          (compared using ==)
+        # ./spec/mix_spec.rb:3:in 'block (2 levels) in <top (required)>'
+
+        An error occurred in an `after(:suite)` hook.
+        Failure/Error: RSpec.configure { |c| c.after(:suite) { raise ArgumentError, "reactor already stopped" } }
+
+        ArgumentError:
+          reactor already stopped
+        # ./spec/mix_spec.rb:1:in 'block (2 levels) in <top (required)>'
+
+        Failures:
+
+          1) g fails
+             Failure/Error: it("fails") { raise RuntimeError, "boom" }
+
+             RuntimeError:
+               boom
+             # ./spec/mix_spec.rb:4:in 'block (2 levels) in <top (required)>'
+
+        Finished in 0.00908 seconds (files took 0.17305 seconds to load)
+        3 examples, 1 failure, 2 errors occurred outside of examples
+
+        Failed examples:
+
+        rspec ./spec/mix_spec.rb:4 # g fails
+      TEXT
+      expect(described_class.classify("suite", outcome(output)).details).to eq(
+        ["./spec/mix_spec.rb:4 g fails", "error in an `after(:context)` hook: expected: 2",
+         "error in an `after(:suite)` hook: ArgumentError: reactor already stopped"]
+      )
+      hook_only = output.sub(/^Failures:.*/m, "3 examples, 0 failures, 2 errors occurred outside of examples\n")
+      expect(described_class.classify("suite", outcome(hook_only)).to_a).to eq(
+        ["suite", :failed, ["error in an `after(:context)` hook: expected: 2",
+                            "error in an `after(:suite)` hook: ArgumentError: reactor already stopped"]]
+      )
+    end
+
     it "keeps an unrecognized failure distinct from the named classes" do
       phase = described_class.classify("suite", outcome("Segmentation fault", exit_status: 139))
       expect(phase.to_a).to eq(["suite", :failed, ["exit status 139 without a recognized rspec failure"]])
