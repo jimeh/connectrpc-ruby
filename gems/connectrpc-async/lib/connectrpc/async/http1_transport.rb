@@ -263,6 +263,8 @@ module ConnectRPC
             connection.write_request(@origin.authority, streaming ? "POST" : request.http_method,
                                      request.url.request_uri, "HTTP/1.1", Internal.fields(headers))
             if !streaming && request.http_method == "GET"
+              # The native write_body(nil) adds content-length: 0, which a
+              # bodyless GET should not send (RFC 9110 section 8.6).
               connection.stream.write("\r\n")
               connection.stream.flush
               connection.send_end_stream!

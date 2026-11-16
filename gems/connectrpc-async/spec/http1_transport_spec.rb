@@ -14,13 +14,26 @@ RSpec.describe ConnectRPC::Async::HTTP1Transport do
     end
   end
 
-  it "sends GET with no body or synthetic content headers" do
-    with_http1_peer(response: http1_wire) do |transport, origin, _accepted, requests|
-      expect(transport.call(request("#{origin}/safe?message=x", method: "GET")).body).to eq("ok")
-      incoming = requests.fetch(0)
-      expect(incoming[1..3]).to eq(["GET", "/safe?message=x", "HTTP/1.1"])
-      expect(incoming[4].header.map(&:first)).not_to include("content-length", "transfer-encoding", "content-type")
-      expect(incoming.last).to be_nil
+  # Reads raw head lines: the native request parser deletes content-length.
+  it "sends GET heads with no body or synthetic content headers on the wire" do
+    heads = []
+    peer = lambda do |native, socket, *_|
+      loop do
+        head = []
+        head << native.read_line until head.last == ""
+        heads << head
+        socket.write(http1_wire)
+      end
+    end
+    with_raw_http1(peer: peer) do |transport, origin, accepted|
+      2.times { expect(transport.call(request("#{origin}/safe?message=x", method: "GET")).body).to eq("ok") }
+      expect(accepted.size).to eq(1)
+    end
+    expect(heads.size).to eq(2)
+    heads.each do |head|
+      expect(head.first).to eq("GET /safe?message=x HTTP/1.1")
+      names = head[1..-2].map { |line| line.split(":", 2).first.downcase }
+      expect(names).not_to include("content-length", "transfer-encoding", "content-type")
     end
   end
 
@@ -38,11 +51,12 @@ RSpec.describe ConnectRPC::Async::HTTP1Transport do
     end
   end
 
-  it "accepts exactly sixteen interim responses and counts only the final response" do
+  it "accepts exactly sixteen interim responses and reuses the connection after the final response" do
     wire = ("HTTP/1.1 100 Continue\r\n\r\n" * 16) + http1_wire
-    with_http1_peer(response: wire) do |transport, origin|
-      expect(transport.call(request(origin)).body).to eq("ok")
-      expect(transport.instance_variable_get(:@idle).first.connection.count).to eq(1)
+    with_http1_peer(response: wire) do |transport, origin, accepted, requests|
+      2.times { expect(transport.call(request(origin)).body).to eq("ok") }
+      expect(accepted.size).to eq(1)
+      expect(requests.size).to eq(2)
     end
   end
 
