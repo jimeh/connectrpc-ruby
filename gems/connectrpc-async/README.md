@@ -566,8 +566,14 @@ Timers use at most 86400-second waits without shortening logical deadlines.
 
 Client cleanup uses one total internal 100ms allowance. Ordinary cancellation
 resets its stream. A frame that cannot finish within cleanup deliberately fails
-the whole connection and siblings. Forced teardown closes raw TCP before
-cancelling and joining writers/readers, then performs buffered/TLS cleanup.
+the whole connection and siblings. One exception: when the peer has already
+reset a Connect or gRPC stream (anything except Connect unary `call`), cleanup
+returns the lease without waiting for a request frame that is still being
+written. That frame always finishes before the connection writes anything
+else, so later calls on the connection wait behind it until it finishes or
+their own deadline or cancellation ends them. Forced teardown closes raw TCP
+before cancelling and joining writers/readers, then performs buffered/TLS
+cleanup.
 These are cooperative bounds, not arbitrary native/application interruption
 guarantees.
 

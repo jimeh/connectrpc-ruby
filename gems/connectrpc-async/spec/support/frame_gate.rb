@@ -25,8 +25,12 @@ class FrameGate < SimpleDelegator
     @started.enqueue(true)
     @release.dequeue
     __getobj__.write(bytes.byteslice(5..))
+    @written = true
     bytes.bytesize
   end
+
+  # Whether the held write reached the socket in full rather than being cut.
+  def written? = !!@written
 
   private
 
