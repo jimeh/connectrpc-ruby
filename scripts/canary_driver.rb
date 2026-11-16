@@ -157,12 +157,13 @@ module CanaryDriver
     output.scan(HOOK_ERROR).map { |hook, block| "error in #{hook}: #{hook_error(block)}" }.uniq
   end
 
-  # `Class: message`, or the first line of a failed expectation, which has no class header.
+  # `Class: message`, or for a failed expectation, which has no class header, the
+  # first diagnostic line after the source snippet that ends at the first blank line.
   def hook_error(block)
     error, message = block.match(/^([A-Z][\w:]*):\n +([^\n]+)/)&.captures
     return "#{error}: #{message}" if error
 
-    block.sub(%r{\AFailure/Error:[^\n]*\n}, "").lines.map(&:strip).find { |line| !line.empty? } || "see the log"
+    block.split(/^\s*\n/, 2)[1].to_s[/^\s*(\S.*)$/, 1] || "see the log"
   end
 
   # A phase cannot pass while a leftover process held its output after it exited.

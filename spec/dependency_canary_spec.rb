@@ -347,6 +347,11 @@ RSpec.describe CanaryDriver do
         ["suite", :failed, ["error in an `after(:context)` hook: expected: 2",
                             "error in an `after(:suite)` hook: ArgumentError: reactor already stopped"]]
       )
+      # RSpec prints a multiline source snippet up to the first blank line, then the diagnostic.
+      multiline = output.sub("Failure/Error: after(:context) { expect(1).to eq(2) }\n",
+                             "Failure/Error:\n  expect(\n    1\n  ).to eq(2)\n")
+      expect(described_class.classify("suite", outcome(multiline)).details)
+        .to include("error in an `after(:context)` hook: expected: 2")
     end
 
     it "keeps an unrecognized failure distinct from the named classes" do
