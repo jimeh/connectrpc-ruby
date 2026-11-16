@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.1.1](https://github.com/jimeh/connectrpc-ruby/compare/v0.1.0...v0.1.1) (2026-11-16)
+
+
+### Features
+
+* add Prometheus and Yabeda metrics packages ([#66](https://github.com/jimeh/connectrpc-ruby/issues/66)) ([6928ef9](https://github.com/jimeh/connectrpc-ruby/commit/6928ef9edc113855b2e1e175c8fd195b4d396a24))
+* **async:** add Connect server streaming and native gRPC to ThreadedTransport ([#67](https://github.com/jimeh/connectrpc-ruby/issues/67)) ([9b1d643](https://github.com/jimeh/connectrpc-ruby/commit/9b1d6433e945f9d620f6d328890b0c97f2e1ea1c))
+* **async:** add ThreadedTransport for Connect unary from any thread ([#56](https://github.com/jimeh/connectrpc-ruby/issues/56)) ([1372528](https://github.com/jimeh/connectrpc-ruby/commit/1372528bed02077ef575df3dce60af298e67f213))
+* **async:** replace draining GOAWAY connections and retry refused unary calls ([#63](https://github.com/jimeh/connectrpc-ruby/issues/63)) ([38ccfaf](https://github.com/jimeh/connectrpc-ruby/commit/38ccfaf5110d799421d21598d7fa64a04d66f876))
+
+
+### Bug Fixes
+
+* **async:** finish H2 stream output locally once retirement starts ([#60](https://github.com/jimeh/connectrpc-ruby/issues/60)) ([fc80614](https://github.com/jimeh/connectrpc-ruby/commit/fc806145483f1441c7f33d8d72bcb5807a6a9667))
+* **async:** skip stream window updates during retirement and pin reset-stream frame completion ([#72](https://github.com/jimeh/connectrpc-ruby/issues/72)) ([8c2dd4b](https://github.com/jimeh/connectrpc-ruby/commit/8c2dd4b0a0990bf44203ddaf51303613b0b675a8))
+* **grpc:** bound rejected-media drains and surplus unary requests ([#61](https://github.com/jimeh/connectrpc-ruby/issues/61)) ([544d320](https://github.com/jimeh/connectrpc-ruby/commit/544d32079c60d42db0161c5c04d3c8f8ff35300c))
+
 ## 0.1.0 (2026-11-15)
 
 
