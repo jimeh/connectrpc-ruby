@@ -7,6 +7,10 @@ require "rbs"
 # Source syntax, rather than loaded constants, keeps optional integrations absent.
 # The reviewed inventory classifies every definition; additions require a decision.
 module APISurface
+  # Discovered package signatures, plus the opt-in bridge that holds the
+  # generated grpc.health.v1 client and handler factory signatures.
+  SIGNATURES = "{sig,gems/*/sig,gems/connectrpc-health/rbs/grpc_health_v1}/**/*.rbs"
+
   class Reader
     attr_reader :entries
 
@@ -116,7 +120,7 @@ module APISurface
         end
       end
     end
-    Dir.glob("{sig,gems/*/sig}/**/*.rbs", base: root).each do |file|
+    Dir.glob(SIGNATURES, base: root).each do |file|
       _, _, nodes = RBS::Parser.parse_signature(File.read(File.join(root, file)))
       visit.call(nodes, "")
     end

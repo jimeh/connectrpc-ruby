@@ -5,18 +5,13 @@ require_relative "archive"
 require_relative "../scripts/package_build"
 
 module InstalledAPI
-  # Generated message and service signatures shipped beside a package's own.
-  GENERATED_SIGNATURES = {
-    "health" => %w[sig/grpc/health/v1/health_connect.rbs sig/grpc/health/v1/health_pb.rbs]
-  }.freeze
-
   def self.archives(root:, output:)
     APICheck::PACKAGES.map do |name|
       directory = File.join(root, "gems/connectrpc-#{name}")
       archive = PackageBuild.build(directory: directory, output: output)
       SignatureArchive.check(archive, root: root)
       package = Gem::Package.new(archive)
-      signatures = ["sig/connectrpc-#{name}.rbs", "sig/manifest.yaml", *GENERATED_SIGNATURES.fetch(name, [])]
+      signatures = ["sig/connectrpc-#{name}.rbs", "sig/manifest.yaml"]
       raise "Missing owned signature manifest: #{name}" unless package.contents.grep(%r{\Asig/}).sort == signatures.sort
       raise "Push host changed: #{name}" unless package.spec.metadata["allowed_push_host"] == "https://rubygems.org"
 
@@ -55,6 +50,11 @@ module InstalledAPI
     %w[api falcon api_check.rb installed_runtime.rb installed_streaming.rb installed_web.rb].each do |name|
       FileUtils.cp_r(File.join(root, "typecheck", name), working)
     end
+    # Each library must resolve independently through its installed manifest.
+    libraries = ["connectrpc", *APICheck::PACKAGES.map { |name| "connectrpc-#{name}" }]
+    libraries.each do |name|
+      RBSHarness.capture!([RbConfig.ruby, "-S", "rbs", "-r", name, "validate"], working: working)
+    end
     # The parent process still has the tooling bundle's RubyGems cache. Resolve
     # the fresh GEM_HOME in an unbundled child, as the actual consumer does.
     owners = APICheck::BRIDGES.transform_keys { |name| "connectrpc-#{name}" }
@@ -62,16 +62,9 @@ module InstalledAPI
     discovery = owners.map do |name, directory|
       "puts File.join(Gem::Specification.find_by_name(#{name.dump}).full_gem_path, #{directory.dump})"
     end.join("\n")
-    *bridges, protobuf = RBSHarness.capture!([RbConfig.ruby, "-e", discovery], working: working).lines.map(&:chomp)
-    # Each library must resolve independently through its installed manifest.
-    # Generated health messages also need the explicit protobuf bridge.
-    libraries = ["connectrpc", *APICheck::PACKAGES.map { |name| "connectrpc-#{name}" }]
-    libraries.each do |name|
-      bridge = name == "connectrpc-health" ? ["-I", protobuf] : []
-      RBSHarness.capture!([RbConfig.ruby, "-S", "rbs", "-r", name, *bridge, "validate"], working: working)
-    end
+    bridges = RBSHarness.capture!([RbConfig.ruby, "-e", discovery], working: working).lines.map(&:chomp)
     [libraries, libraries.reverse].each do |order|
-      command = [RbConfig.ruby, "-S", "rbs", *order.flat_map { |name| ["-r", name] }, "-I", protobuf]
+      command = [RbConfig.ruby, "-S", "rbs", *order.flat_map { |name| ["-r", name] }]
       RBSHarness.capture!([*command, "validate"], working: working)
       bridge_order = order == libraries ? bridges : bridges.reverse
       RBSHarness.capture!([*command, *bridge_order.flat_map { |directory| ["-I", directory] }, "validate"],
@@ -84,10 +77,10 @@ module InstalledAPI
       #{library_loading}
       env = RBS::Environment.from_loader(loader).resolve_type_names
       names = env.class_decls.keys.map(&:to_s)
-      abort 'Opt-in framework declarations loaded automatically' if names.any? do |name|
-        name.start_with?('::ActionController::', '::Async::Service::')
+      abort 'Opt-in bridge declarations loaded automatically' if names.any? do |name|
+        name.start_with?('::ActionController::', '::Async::Service::', '::Google::Protobuf::', '::Grpc::')
       end
-      puts 'Framework compatibility declarations remain opt-in'
+      puts 'Framework, protobuf and generated health message bridges remain opt-in'
     CODE
     puts RBSHarness.capture!([RbConfig.ruby, "-e", isolation], working: working)
     runner = <<~CODE

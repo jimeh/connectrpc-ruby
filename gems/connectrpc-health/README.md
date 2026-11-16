@@ -161,8 +161,8 @@ before the grpc gem's health files.
 `proto/grpc/health/v1/health.proto` is the unchanged canonical schema from
 grpc/grpc-proto at a pinned commit; [`proto/README.md`](proto/README.md) records
 the commit, SHA256 and license. `mise run generation:build` regenerates
-`lib/grpc/health/v1/` and `sig/grpc/health/v1/`, and `mise run generation:check`
-checks them. Never edit the generated files by hand.
+`lib/grpc/health/v1/` and `rbs/grpc_health_v1/grpc/health/v1/`, and
+`mise run generation:check` checks them. Never edit the generated files by hand.
 
 ## Development
 
@@ -184,15 +184,37 @@ runtime dependency at its gemspec floor.
 
 ## Static signatures
 
-This package owns `sig/` and its discovery manifest, including the generated
-message and service signatures. The generated messages subclass
-`Google::Protobuf::AbstractMessage`, so a target also needs core's
-`rbs/google_protobuf_4_36` bridge (or your own protobuf runtime signatures).
-`rbs -r connectrpc-health -I <bridge> validate` accepts that combination.
-Steep 2.1.0 builds `library` signatures before project `signature` paths, so
-`library "connectrpc-health"` currently fails with `NoSuperclassFoundError`
-even with the bridge; list the bridge and this gem's `sig/` directory as
-`signature` paths instead. See the [RBS guide](../../docs/rbs.md).
+This package owns `sig/` and its discovery manifest. Add
+`library "connectrpc-health"` to a strict Steep target with this gem installed
+to type the registry and `ConnectRPC::Health::SERVICE`.
+
+The generated `grpc.health.v1` message, client and handler factory signatures
+are an explicit opt-in in `rbs/grpc_health_v1`, outside normal gem discovery.
+The generated messages subclass `Google::Protobuf::AbstractMessage`, which only
+core's opt-in `rbs/google_protobuf_4_36` bridge (or your own protobuf runtime
+signatures) declares. Steep 2.1.0 builds `library` signatures before project
+`signature` paths, so shipping them in `sig/` would break the library itself.
+To type calls on the generated client or messages, add both directories as
+Steepfile-relative `signature` paths:
+
+```ruby
+require "pathname"
+bridges = { "connectrpc-health" => "rbs/grpc_health_v1", "connectrpc" => "rbs/google_protobuf_4_36" }
+  .map do |name, directory|
+    Pathname(Gem::Specification.find_by_name(name).full_gem_path).join(directory)
+      .relative_path_from(Pathname(__dir__)).to_s
+  end
+
+target :app do
+  library "connectrpc"
+  library "connectrpc-health"
+  signature "sig", *bridges
+  check "app"
+  configure_code_diagnostics(Steep::Diagnostic::Ruby.strict)
+end
+```
+
+See the [RBS guide](../../docs/rbs.md#opt-in-framework-compatibility).
 
 ## License
 

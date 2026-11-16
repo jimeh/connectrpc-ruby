@@ -85,14 +85,23 @@ gems/connectrpc-health/
   lib/grpc/health/v1/health_pb.rb        # generated, protoc 36.2 builtin ruby
   lib/grpc/health/v1/health_connect.rb   # generated, protoc-gen-connectrpc-ruby
   sig/connectrpc-health.rbs sig/manifest.yaml
-  sig/grpc/health/v1/health_pb.rbs sig/grpc/health/v1/health_connect.rbs  # generated
+  rbs/grpc_health_v1/grpc/health/v1/health_pb.rbs       # generated, opt-in bridge
+  rbs/grpc_health_v1/grpc/health/v1/health_connect.rbs  # generated, opt-in bridge
 ```
 
+- Deviation: the generated `.rbs` files were first planned under `sig/grpc/`.
+  Their messages subclass `Google::Protobuf::AbstractMessage`, declared only in
+  core's opt-in `rbs/google_protobuf_4_36`, and Steep 2.1.0 builds `library`
+  signatures before `signature` paths, so `library "connectrpc-health"` failed
+  with `NoSuperclassFoundError`. They ship as the opt-in `rbs/grpc_health_v1`
+  bridge instead; typed callers add it and the protobuf bridge as `signature`
+  paths.
 - `scripts/build_generation.rb` runs protoc for this proto into temporary
-  roots, copies `.rb` under the gem's `lib/` and `.rbs` under its `sig/`
-  (schema-relative paths, no doubled `grpc/`), checks exact file sets for both
-  scoped to the generated subtrees, and checks the vendored proto's pinned
-  SHA256. `generation:build` and `generation:check` cover it.
+  roots, copies `.rb` under the gem's `lib/` and `.rbs` under
+  `rbs/grpc_health_v1/` (schema-relative paths, no doubled `grpc/`), checks
+  exact file sets for both scoped to the generated subtrees, and checks the
+  vendored proto's pinned SHA256. `generation:build` and `generation:check`
+  cover it.
 - The generated files use the canonical feature name `grpc/health/v1/health_pb`,
   which the `grpc` gem shares. Ours is a superset (has List), so loading
   `connectrpc/health` first satisfies both. `connectrpc/health` checks the
@@ -199,7 +208,7 @@ dependencies; `spec/package_build_spec.rb` inventory; Rakefile syntax coverage;
 `.rubocop.yml` generated-code exclusion; `typecheck/installed_runtime.rb`;
 `typecheck/installed_api.rb` and `typecheck/archive.rb` package-specific
 expectations (generated signatures, MIT + Apache-2.0) without loosening other
-packages; protobuf runtime RBS loading for health typed consumers; installed
+packages; the opt-in generated health and protobuf bridges for typed consumers; installed
 Steep caller `typecheck/api/health.rb` plus a negative; `docs/support.md`
 inventory; root README package list; AGENTS.md map line; gem README.
 

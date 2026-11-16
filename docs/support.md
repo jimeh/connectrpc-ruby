@@ -242,7 +242,8 @@ for an executed profile, a ledger's complete accounting or a missing test axis.
 
 ## Application APIs, extension SPIs and internals
 
-The owning gem's shipped `sig/` and manifest, the [RBS guide](rbs.md), and
+The owning gem's shipped `sig/` and manifest, the health gem's generated
+`rbs/grpc_health_v1` bridge, the [RBS guide](rbs.md), and
 [`typecheck/surface.json`](../typecheck/surface.json) define the compatibility
 boundary. The inventory uses three classifications:
 
@@ -262,8 +263,8 @@ client operations, Server configuration, metadata, errors, contexts and their
 endpoints, the health registry and its generated `grpc.health.v1` client, and the
 optional packages' documented constructors, lifecycle and configuration
 operations. Generated service factories, typed handlers and installed generated
-client contracts are included. Optional protobuf and framework bridges remain
-explicit opt-ins with their documented finite coverage.
+client contracts are included. Optional protobuf, framework and generated health
+message bridges remain explicit opt-ins with their documented finite coverage.
 
 The extension SPIs cover these boundaries. Binding, cancellation and lifecycle
 interfaces are shared with streaming and gRPC execution.

@@ -20,7 +20,7 @@ Gem::Specification.new do |spec|
                   lib/grpc/health/v1/health_connect.rb
                   lib/grpc/health/v1/health_pb.rb proto/LICENSE proto/README.md
                   proto/grpc/health/v1/health.proto] +
-               Dir.glob("sig/**/*.{rbs,yaml}")
+               Dir.glob("sig/**/*.{rbs,yaml}") + Dir.glob("rbs/**/*.rbs")
   spec.require_paths = ["lib"]
   local_requirement = "~> #{spec.version.to_s.split('.').first(2).join('.')}.0"
   spec.add_dependency "connectrpc", local_requirement

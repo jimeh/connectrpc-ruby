@@ -4,9 +4,11 @@ require_relative "harness"
 
 module APICheck
   PACKAGES = %w[rack testing on-rails async falcon otel prometheus yabeda health].freeze
-  BRIDGES = { "on-rails" => "rbs/action_controller_8", "falcon" => "rbs/async_service_0_25" }.freeze
-  # The health package's generated message signatures need protobuf runtime
-  # declarations; typed consumers add core's explicit bridge for them.
+  # Opt-in signature directories outside each package's discovered sig/.
+  BRIDGES = { "on-rails" => "rbs/action_controller_8", "falcon" => "rbs/async_service_0_25",
+              "health" => "rbs/grpc_health_v1" }.freeze
+  # The health bridge's generated messages subclass protobuf runtime classes;
+  # typed consumers add core's explicit bridge beside it.
   PROTOBUF_BRIDGE = "rbs/google_protobuf_4_36"
 
   def self.bridge_paths(root:, installed:)

@@ -85,9 +85,9 @@ Dir.mktmpdir("generation-") do |temporary|
       puts "#{name} SHA256 #{Digest::SHA256.hexdigest(bytes)}"
     end
   end
-  # Ruby lands under the gem's lib/ and signatures under its sig/, both at
-  # schema-relative paths. Each generated subtree must match exactly.
-  { "rb" => "lib", "rbs" => "sig" }.each do |extension, directory|
+  # Ruby lands under the gem's lib/ and signatures under its opt-in bridge,
+  # both at schema-relative paths. Each generated subtree must match exactly.
+  { "rb" => "lib", "rbs" => "rbs/grpc_health_v1" }.each do |extension, directory|
     generated = Dir.glob("**/*.#{extension}", base: health_output).sort
     target_root = File.join(health, directory)
     if ARGV == ["--check"]

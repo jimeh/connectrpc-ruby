@@ -21,8 +21,8 @@ abort "Core gained health code" if core.contents.any? { |file| file.include?("he
 expected = %w[LICENSE README.md lib/connectrpc/health.rb lib/connectrpc/health/registry.rb
               lib/connectrpc/health/version.rb lib/connectrpc/health/watcher.rb
               lib/grpc/health/v1/health_connect.rb lib/grpc/health/v1/health_pb.rb proto/LICENSE proto/README.md
-              proto/grpc/health/v1/health.proto sig/connectrpc-health.rbs sig/grpc/health/v1/health_connect.rbs
-              sig/grpc/health/v1/health_pb.rbs sig/manifest.yaml].sort
+              proto/grpc/health/v1/health.proto rbs/grpc_health_v1/grpc/health/v1/health_connect.rbs
+              rbs/grpc_health_v1/grpc/health/v1/health_pb.rbs sig/connectrpc-health.rbs sig/manifest.yaml].sort
 abort "Health manifest changed" unless health.contents.sort == expected
 expected_dependencies = { "connectrpc" => train.requirement, "google-protobuf" => ">= 4.36.2, < 5" }
 actual = health.spec.runtime_dependencies.to_h { |dep| [dep.name, dep.requirement.to_s] }
@@ -37,8 +37,9 @@ abort "MIT and Apache-2.0 metadata missing" unless health.spec.licenses == %w[MI
 end
 Dir.mktmpdir("connectrpc-health-archive-") do |extracted|
   health.extract_files(extracted)
-  %w[lib/grpc/health/v1/health_pb.rb lib/grpc/health/v1/health_connect.rb sig/grpc/health/v1/health_pb.rbs
-     sig/grpc/health/v1/health_connect.rbs proto/grpc/health/v1/health.proto proto/LICENSE].each do |file|
+  %w[lib/grpc/health/v1/health_pb.rb lib/grpc/health/v1/health_connect.rb
+     rbs/grpc_health_v1/grpc/health/v1/health_pb.rbs rbs/grpc_health_v1/grpc/health/v1/health_connect.rbs
+     proto/grpc/health/v1/health.proto proto/LICENSE].each do |file|
     abort "Archived #{file} differs from source" unless
       File.binread(File.join(extracted, file)) == File.binread(File.join(package, file))
   end
