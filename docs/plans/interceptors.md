@@ -50,7 +50,7 @@ Jim accepted these choices on 2026-11-16:
 | Instrumentation | Interceptors run inside the instrumentation activation. Measured processing durations include interceptor time, and observer spans are active while interceptors run. Subscribers stay observers. |
 | Streaming model | The stream methods wrap the whole scope. `call.wrap_stream { \|stream\| ... }` decorates the stream endpoint. Core applies wrappers innermost first, so the application sees the outermost wrapper. Core cleanup always uses the raw session. |
 | Errors | A short-circuit is a raised `ConnectRPC::Error`. Core records the exception escaping each continuation boundary, first one wins, so observers keep the original. Because no layer can recover, a failure that escapes a continuation always fails the call. Interceptor-raised exceptions are independent user exceptions and keep their identity on the client. |
-| Metadata | Client request metadata is mutable until dispatch, then frozen. Response metadata and trailers are frozen snapshots on the client. Server request metadata is read-only; server response metadata is mutable until headers are published and trailers until the terminal response. Interceptors cannot change the deadline. |
+| Metadata | Client request metadata is mutable until dispatch, then frozen. Response metadata and trailers are frozen snapshots on the client. Server request metadata is the handler's mutable `Context#request_metadata`, following Jim's L9 choice in #81; server response metadata is mutable until headers are published and trailers until the terminal response. Interceptors cannot change the deadline. |
 | Hosts | No host-specific code except a private Rails `connect_interceptors` hook. Rails interceptors run outside the controller lifecycle. |
 | Delivery | Prerequisites from #26 land first. Then three PRs: core unary, core streaming, then the Rails hook with host evidence and documentation. |
 
@@ -665,7 +665,7 @@ so cancellation never masks misuse.
 
 | Metadata | Client | Server |
 | --- | --- | --- |
-| Request | Mutable `Metadata` on the call while it is open; validated on write; frozen at dispatch | Read-only `context.request_metadata`, a snapshot taken before the chain |
+| Request | Mutable `Metadata` on the call while it is open; validated on write; frozen at dispatch | Mutable `context.request_metadata`, shared with the handler; stream reader `headers` stay frozen snapshots |
 | Response leading | Frozen snapshot in `Response#metadata` | Mutable `context.response_metadata` until headers are published |
 | Response trailing | Frozen snapshot in `Response#trailers` | Mutable `context.response_trailers` until the terminal response |
 | Error | `Error#metadata` and `#trailers` | Merged into the response, as today |
@@ -694,12 +694,18 @@ so cancellation never masks misuse.
   today. Freezing applies to every client response, with or without
   interceptors: PR A freezes unary responses on Connect and native gRPC, and
   PR B freezes the client-streaming `Response`.
-- **Server request.** An authentication interceptor's check must not be undone
-  by an inner layer that rewrites request metadata. Request metadata is
-  therefore a read-only snapshot for interceptors and handlers on every
-  protocol. Today it is mutable on Connect; L9 owns the request metadata
-  freezing contract, and this design depends on it settling on a frozen
-  snapshot taken before application code runs.
+- **Server request.** L9 settled in
+  [#81](https://github.com/jimeh/connectrpc-ruby/pull/81), by Jim's choice:
+  every server `Context` keeps mutable request metadata on every protocol,
+  and the stream session keeps its own frozen snapshot for reader and duplex
+  `headers`. Interceptors receive that same `Context`, so they can read
+  request metadata and also add derived values for inner layers and the
+  handler, such as a verified principal. Interceptors and handlers run in
+  one process with no trust boundary between them, so a check reads the
+  value at check time; an inner layer that rewrites request metadata after
+  an outer check is application code changing its own input. The lifecycle
+  records the request carrier once, when processing begins (#81's L8 fix),
+  so interceptor writes do not change `Outcome#request_metadata`.
 - **Server response.** For unary calls on every protocol, headers are built
   after the chain returns, so writes before and after `yield` both work. On
   native gRPC and gRPC-Web unary, core freezes response metadata when it
@@ -1018,8 +1024,8 @@ end
 | L6: nil server streaming response maps to `invalid_argument` | Settles server and client attribution for a nil response | Every session-backed send maps nil to `invalid_argument` today, including native gRPC and gRPC-Web unary, while Connect unary fails `internal` at encode. A server unary interceptor that returns nil takes these paths in PR A, and a client-streaming interceptor in PR B. | Before PR A |
 | L5: streaming completion can call `close_send` twice | Chooses an ownership guard or an idempotency contract | Completion calls the exchange's `close_send` after any explicit one. Wrappers make an explicit call more common, so PR B's evidence needs the guard. This design prefers a core-owned guard over a contract on callers. | Before PR B |
 | L8: early native failures replace request metadata with an empty snapshot | Preserves the original request carrier on server native early-failure paths | Interceptors never run on those paths, and the client recording in [Ordering](#client-1) is separate. | Independent |
-| L9: frozen native gRPC unary metadata | Reconciles the `Context` metadata freezing contract | Server interceptors need request metadata to be a frozen snapshot on every protocol. Unary response metadata must stay mutable until the chain returns, which holds today on every protocol. | Before PR A |
-| #73: caller baggage lost on injection | Sets the merge rule for injected propagation headers | Injection happens after interceptors, so interceptor-added `baggage` is caller metadata under that rule. | Before PR A, or PR A adopts whatever rule has merged |
+| L9: frozen native gRPC unary metadata | Settled in #81: request metadata stays mutable on every server `Context`; sessions keep their own frozen snapshot | Interceptors share the handler's mutable `Context`. Unary response metadata must stay mutable until the chain returns, which holds today on every protocol. | Before PR A (#81) |
+| #73: caller baggage lost on injection | Settled in #81: injected keys replace caller values, except `baggage`, which carries the caller's values followed by the injected ones | Injection happens after interceptors, so interceptor-added `baggage` is caller metadata under that rule and survives injection. | Before PR A (#81) |
 | L11: OTel classification casing | OTel attribute convention | None | Independent |
 
 The interceptor design also constrains these groups:
@@ -1043,9 +1049,10 @@ The interceptor design also constrains these groups:
 - L6 should give nil server responses one attribution across Connect unary,
   session-backed unary and client streaming, so interceptor returns need no
   protocol-specific rule.
-- L9 should settle on a frozen server request metadata snapshot taken before
-  application code runs. If L9 chooses mutable request metadata instead, this
-  design's read-only rule needs revisiting before PR A.
+- L9's outcome in #81 (mutable request metadata on every server `Context`)
+  is what this design assumes; a later change to freeze it would need to
+  decide whether interceptors may still add request metadata for inner
+  layers.
 
 ## Non-goals
 
@@ -1158,8 +1165,10 @@ Evidence:
   translated it.
 - Sentry: a handler bug translated to `internal` is captured; one translated
   to `invalid_argument` is not.
-- Metadata: writes to client request metadata after dispatch raise; server
-  request metadata cannot be mutated by an interceptor; server response
+- Metadata: writes to client request metadata after dispatch raise; a server
+  interceptor's request metadata write is visible to the handler on Connect,
+  native gRPC and gRPC-Web, and `Outcome#request_metadata` is unchanged by it;
+  server response
   metadata and trailers written after `yield` reach the wire; a client unary
   interceptor returning a non-`Response` raises `InterceptorStateError`.
 - Cancellation, named per role and path: on the client, a source cancelled
