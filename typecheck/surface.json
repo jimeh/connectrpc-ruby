@@ -412,7 +412,7 @@
     "ConnectRPC::Async::ServerKeepalive#==": {"kind":"method","visibility":"public","parameters":"other","classification":"supported"},
     "ConnectRPC::Async::ServerKeepalive#eql?": {"kind":"method","visibility":"public","parameters":"other","classification":"supported"},
     "ConnectRPC::Async::ServerKeepalive#hash": {"kind":"method","visibility":"public","parameters":"","classification":"supported"},
-    "ConnectRPC::Async::ServerKeepalive#initialize": {"kind":"method","visibility":"public","parameters":"time: 7200, timeout: 20, min_time: 10, permit_without_calls: true, max_connection_age: nil, max_connection_age_grace: nil","classification":"supported"},
+    "ConnectRPC::Async::ServerKeepalive#initialize": {"kind":"method","visibility":"public","parameters":"time: 7200, timeout: 20, min_time: 5, permit_without_calls: true, max_connection_age: nil, max_connection_age_grace: nil","classification":"supported"},
     "ConnectRPC::Async::ServerKeepalive#max_connection_age": {"kind":"attribute","visibility":"public","classification":"supported"},
     "ConnectRPC::Async::ServerKeepalive#max_connection_age_grace": {"kind":"attribute","visibility":"public","classification":"supported"},
     "ConnectRPC::Async::ServerKeepalive#min_time": {"kind":"attribute","visibility":"public","classification":"supported"},
