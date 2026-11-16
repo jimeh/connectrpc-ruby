@@ -6,7 +6,7 @@ RSpec.describe ConnectRPC::Async::ServerKeepalive do
   it "defaults to grpc-go's tolerant server policy without an age limit" do
     keepalive = described_class.new
     expect([keepalive.time, keepalive.timeout, keepalive.min_time, keepalive.permit_without_calls,
-            keepalive.max_connection_age, keepalive.max_connection_age_grace]).to eq([7200, 20, 10, true, nil, nil])
+            keepalive.max_connection_age, keepalive.max_connection_age_grace]).to eq([7200, 20, 5, true, nil, nil])
     expect(keepalive).to be_frozen
     expect(keepalive).to eq(described_class.new(time: 7200))
     expect(keepalive.hash).to eq(described_class.new.hash)

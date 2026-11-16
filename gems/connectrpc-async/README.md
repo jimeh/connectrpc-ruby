@@ -180,7 +180,7 @@ enforcement and the age limit:
 
 ```ruby
 keepalive = ConnectRPC::Async::ServerKeepalive.new(
-  time: 7200, timeout: 20, min_time: 10, permit_without_calls: true,
+  time: 7200, timeout: 20, min_time: 5, permit_without_calls: true,
   max_connection_age: 1800, max_connection_age_grace: 30
 )
 host = ConnectRPC::Async::Host.new(server: server, keepalive: keepalive)
@@ -202,9 +202,11 @@ nonnegative or nil and requires `max_connection_age`.
   `too_many_pings`, naming the highest stream already received. The connection
   then half-closes, waits up to 1 second for EOF and closes; streams in progress
   are not waited for. `min_time: nil` turns enforcement off. The defaults accept
-  every grpc-go client configuration (grpc-go clients ping at most every 10
-  seconds) and still stop floods. grpc-go's own server default, 5 minutes and no
-  PINGs without calls, is stricter.
+  every grpc-go client configuration and still stop floods. grpc-go clients ping
+  at most every 10 seconds, and the 5-second `min_time` leaves room for network
+  jitter, which an idle connection would otherwise accumulate as strikes. This
+  matches the server in grpc-go's keepalive example. grpc-go's own server
+  default, 5 minutes and no PINGs without calls, is stricter.
 - **Connection age.** After `max_connection_age` seconds, +/-10% jitter, the
   connection drains gracefully. `max_connection_age_grace` seconds after age
   expiry, whatever the drain's progress, it is aborted; nil waits indefinitely.

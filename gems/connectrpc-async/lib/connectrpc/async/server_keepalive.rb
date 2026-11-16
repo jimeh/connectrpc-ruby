@@ -15,7 +15,7 @@ module ConnectRPC
     class ServerKeepalive
       attr_reader :time, :timeout, :min_time, :permit_without_calls, :max_connection_age, :max_connection_age_grace
 
-      def initialize(time: 7200, timeout: 20, min_time: 10, permit_without_calls: true, max_connection_age: nil,
+      def initialize(time: 7200, timeout: 20, min_time: 5, permit_without_calls: true, max_connection_age: nil,
                      max_connection_age_grace: nil)
         @time = time.nil? ? nil : Internal.seconds(time, "time")
         @timeout = Internal.seconds(timeout, "timeout")

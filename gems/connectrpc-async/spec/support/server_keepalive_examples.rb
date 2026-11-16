@@ -98,18 +98,21 @@ RSpec.shared_examples "HTTP/2 server keepalive" do
   def retired?(resource) = resource.send(:retirement_completed?)
 
   describe "PING enforcement" do
-    it "answers PINGs 10 seconds apart with the defaults, with and without calls" do
+    # grpc-go clients ping at most every 10 s; one-way delay jitter can make
+    # an idle connection's gaps arrive shorter, which must never strike.
+    it "answers jittered PINGs at grpc-go's 10 s minimum with the defaults, with and without calls" do
+      gaps = [10, 5.5, 10, 5.5, 10]
       reactor do |task|
         with_keepalive_host(task, keepalive: server_keepalive) do |fixture|
           client = fixture.client
           5.times do |index|
-            fixture.clock.advance(10) unless index.zero?
+            fixture.clock.advance(gaps[index - 1]) unless index.zero?
             ping_through(task, client, format("idle%04d", index))
           end
           held = task.async { unary(fixture, "hold-call") }
           wait_until(task, "held call invoked") { fixture.log[:invoked] == ["hold-call"] }
           5.times do |index|
-            fixture.clock.advance(10)
+            fixture.clock.advance(gaps[index])
             ping_through(task, client, format("busy%04d", index))
           end
           expect(client.wire.goaways).to eq([])

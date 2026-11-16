@@ -89,10 +89,11 @@ and age with graceful GOAWAY, so clients behind L4 load balancers rebalance.
 ## Server
 
 - `ConnectRPC::Async::ServerKeepalive.new(time: 7200, timeout: 20,
-  min_time: 10, permit_without_calls: true, max_connection_age: nil,
+  min_time: 5, permit_without_calls: true, max_connection_age: nil,
   max_connection_age_grace: nil)`. `time: nil` disables server PINGs,
   `min_time: nil` disables enforcement. The defaults accept every valid grpc-go
-  client configuration (10 s is grpc-go's own client minimum) and still stop floods.
+  client configuration (grpc-go clients ping at most every 10 s; 5 s leaves room for
+  network jitter on idle connections, as grpc-go's keepalive example server does) and still stop floods.
 - `keepalive:` on `Host`, `ServerSession` and `ConnectRPC::Falcon::Server`
   (default `ServerKeepalive.new`, nil turns all off). H2 resources only;
   Falcon HTTP/1 resources keep today's idle abort.
@@ -179,7 +180,7 @@ defaults stay compatible:
 | --- | --- |
 | Client placement | Nested `Keepalive` on `ConnectionPolicy` (`keepalive: nil` off) |
 | Client default | Off; the README recommends `time: 300`, safe against grpc-go default enforcement |
-| Server defaults | Tolerant: `min_time: 10`, `permit_without_calls: true`, server PINGs 2 h / 20 s, no age limit |
+| Server defaults | Tolerant: `min_time: 5` (changed from 10 during implementation for jitter margin), `permit_without_calls: true`, server PINGs 2 h / 20 s, no age limit |
 | `idle_timeout` | Becomes a graceful GOAWAY drain for H2 |
 | Observability | `:connection_closed` with a reason for every retirement |
 | Delivery | One PR |
