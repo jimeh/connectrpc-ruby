@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.1.2](https://github.com/jimeh/connectrpc-ruby/compare/v0.1.1...v0.1.2) (2026-11-16)
+
+
+### Features
+
+* add connectrpc-sentry native Sentry tracing package ([#74](https://github.com/jimeh/connectrpc-ruby/issues/74)) ([57d806a](https://github.com/jimeh/connectrpc-ruby/commit/57d806af4723bfee7feb2ba5e9e7c32951d83b26))
+* add the standard gRPC health service ([#75](https://github.com/jimeh/connectrpc-ruby/issues/75)) ([af231c4](https://github.com/jimeh/connectrpc-ruby/commit/af231c4034784e3cb9cca3047fc7630a58b274b2))
+
 ## [0.1.1](https://github.com/jimeh/connectrpc-ruby/compare/v0.1.0...v0.1.1) (2026-11-16)
 
 
