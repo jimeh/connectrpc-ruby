@@ -49,14 +49,20 @@ jobs:
           config-file: .github/release-please-config.json
           manifest-file: .github/.release-please-manifest.json
       # Looked up independently: Release Please reports no PR when its body is
-      # unchanged, and the owner-qualified head filter excludes forks.
+      # unchanged, and the owner-qualified head filter excludes forks. The SHA
+      # comes from the branch ref that createCommitOnBranch compares against;
+      # a PR's head.sha can lag a push that just rebuilt the branch.
       - id: release-pr
         name: Find the release PR
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
           RELEASE_BRANCH: release-please--branches--main--components--connectrpc
         run: |
-          sha="$(gh api "repos/$GITHUB_REPOSITORY/pulls?state=open&base=main&head=$GITHUB_REPOSITORY_OWNER:$RELEASE_BRANCH" --jq '.[0].head.sha // empty')"
+          number="$(gh api "repos/$GITHUB_REPOSITORY/pulls?state=open&base=main&head=$GITHUB_REPOSITORY_OWNER:$RELEASE_BRANCH" --jq '.[0].number // empty')"
+          sha=""
+          if [ -n "$number" ]; then
+            sha="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/$RELEASE_BRANCH" --jq '.object.sha')"
+          fi
           echo "sha=$sha" >> "$GITHUB_OUTPUT"
       # Tooling comes from main. The release PR head is only read as data, so
       # release-branch code never runs with the App token.

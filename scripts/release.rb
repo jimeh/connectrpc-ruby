@@ -13,8 +13,8 @@ when ["prepare"]
 when ["prepare-pr"]
   require_relative "release_preparation"
   # The App-token commit only runs from the Release Please workflow on main.
-  workflow = ENV.fetch("GITHUB_WORKFLOW_REF", "")
-  unless ENV["GITHUB_ACTIONS"] == "true" && workflow.include?("/.github/workflows/release-please.yml@refs/heads/main")
+  workflow = "#{ENV.fetch('GITHUB_REPOSITORY', '')}/.github/workflows/release-please.yml@refs/heads/main"
+  unless ENV["GITHUB_ACTIONS"] == "true" && ENV["GITHUB_WORKFLOW_REF"] == workflow
     abort "release:prepare:pr only runs in .github/workflows/release-please.yml on main"
   end
 

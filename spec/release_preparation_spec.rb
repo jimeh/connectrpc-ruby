@@ -165,16 +165,49 @@ RSpec.describe ReleasePreparation do
     end
   end
 
+  let(:script) { File.expand_path("../scripts/release.rb", __dir__) }
+  let(:workflow_ref) { "o/r/.github/workflows/release-please.yml@refs/heads/main" }
+
+  it "commits through gh when run from the Release Please workflow on main" do
+    release_branch(:minor) do |train, head, _version|
+      Dir.mktmpdir("connectrpc-preparation-gh-") do |bin|
+        body = File.join(bin, "body.json")
+        File.write(File.join(bin, "gh"), <<~SH)
+          #!/bin/sh
+          cat > "#{body}"
+          echo '{"data":{"createCommitOnBranch":{"commit":{"oid":"#{'d' * 40}"}}}}'
+        SH
+        File.chmod(0o755, File.join(bin, "gh"))
+        environment = { "GITHUB_ACTIONS" => "true", "GITHUB_REPOSITORY" => "o/r", "GITHUB_WORKFLOW_REF" => workflow_ref,
+                        "RELEASE_ROOT" => train.root, "RELEASE_HEAD" => head,
+                        "PATH" => "#{bin}:#{ENV.fetch('PATH')}" }
+
+        stdout, stderr, status = Open3.capture3(environment, RbConfig.ruby, script, "prepare-pr")
+
+        expect(status.success?).to be(true), stderr
+        expect(stdout).to include("d" * 40)
+        input = JSON.parse(File.read(body)).dig("variables", "input")
+        expect(input.fetch("branch")).to eq("repositoryNameWithOwner" => "o/r", "branchName" => described_class::BRANCH)
+        expect(input.fetch("expectedHeadOid")).to eq(head)
+        expect(input.dig("fileChanges", "additions").map { |addition| addition.fetch("path") })
+          .to eq(locally_prepared(train).keys.sort)
+      end
+    end
+  end
+
   it "refuses to run outside the Release Please workflow on main" do
-    script = File.expand_path("../scripts/release.rb", __dir__)
     {
       "local" => {},
-      "release tag" => { "GITHUB_ACTIONS" => "true",
+      "release tag" => { "GITHUB_ACTIONS" => "true", "GITHUB_REPOSITORY" => "o/r",
                          "GITHUB_WORKFLOW_REF" => "o/r/.github/workflows/release.yml@refs/tags/v0.2.0" },
-      "other branch" => { "GITHUB_ACTIONS" => "true",
-                          "GITHUB_WORKFLOW_REF" => "o/r/.github/workflows/release-please.yml@refs/heads/topic" }
+      "other branch" => { "GITHUB_ACTIONS" => "true", "GITHUB_REPOSITORY" => "o/r",
+                          "GITHUB_WORKFLOW_REF" => "o/r/.github/workflows/release-please.yml@refs/heads/topic" },
+      "branch prefixed with main" => { "GITHUB_ACTIONS" => "true", "GITHUB_REPOSITORY" => "o/r",
+                                       "GITHUB_WORKFLOW_REF" => "#{workflow_ref}tenance" },
+      "other repository" => { "GITHUB_ACTIONS" => "true", "GITHUB_REPOSITORY" => "o/r",
+                              "GITHUB_WORKFLOW_REF" => workflow_ref.sub("o/r", "x/y") }
     }.each do |label, environment|
-      cleared = { "GITHUB_ACTIONS" => nil, "GITHUB_WORKFLOW_REF" => nil, "GH_TOKEN" => nil }
+      cleared = { "GITHUB_ACTIONS" => nil, "GITHUB_REPOSITORY" => nil, "GITHUB_WORKFLOW_REF" => nil, "GH_TOKEN" => nil }
       _stdout, stderr, status = Open3.capture3(cleared.merge(environment), RbConfig.ruby, script, "prepare-pr")
       expect(status.success?).to be(false), label
       expect(stderr).to include("release:prepare:pr only runs in .github/workflows/release-please.yml on main"), label

@@ -209,6 +209,7 @@ RSpec.describe "Release workflow boundaries" do
     expect(find).not_to have_key("if")
     expect(find.fetch("env")).to eq("GH_TOKEN" => token, "RELEASE_BRANCH" => ReleasePreparation::BRANCH)
     expect(find.fetch("run")).to include("pulls?state=open&base=main&head=$GITHUB_REPOSITORY_OWNER:$RELEASE_BRANCH")
+      .and include("git/ref/heads/$RELEASE_BRANCH\" --jq '.object.sha'")
       .and include('"sha=$sha" >> "$GITHUB_OUTPUT"')
     expect([main, data, ruby, mise, prepare].map { |step| step["if"] }).to all(eq("steps.release-pr.outputs.sha != ''"))
 
