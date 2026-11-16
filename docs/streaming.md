@@ -46,10 +46,11 @@ including the adapter remainder. Every additional framed read reserves a full
 Connect does not use `grpc-timeout`.
 
 A successfully delivered response on a retiring connection uses one absolute
-final-close expiry at the actual final HTTP flush plus 500 ms. A private body EOF
-marker anchors the pinned writer's next successful final flush before body-close
-callbacks or lifecycle observation; payload bytes cannot trigger it. Delayed
-callbacks consume the same total budget. After completed delivery, Falcon
+final-close expiry at the actual final HTTP flush plus 500 ms. A private body
+wrapper anchors it when the writer closes the body without an error after EOF or
+a HEAD response. protocol-http1 closes the body only after the final flush and
+before body-close callbacks or lifecycle observation; payload bytes cannot
+trigger it. Delayed callbacks consume the same total budget. After completed delivery, Falcon
 half-closes raw TCP writes and performs bounded discard. When discard stops,
 Falcon waits only the remaining part of that original 500 ms budget, without
 reading more. It does not add another 500 ms after discard. Earlier owner

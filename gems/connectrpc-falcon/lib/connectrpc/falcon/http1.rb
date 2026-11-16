@@ -7,10 +7,28 @@ require "async/http/protocol/http1/server"
 
 module ConnectRPC
   module Falcon
-    # The pinned HTTP/1 writer flushes framing after body EOF, before close
-    # callbacks. Track that state without inspecting application payload bytes.
+    # protocol-http1 v0.37.1+ closes the body only after the response is fully
+    # written and flushed ("Defer `body.close` in `write_chunked_body`,
+    # `write_fixed_length_body`, and `write_body_and_close`"). A clean close
+    # after EOF or HEAD therefore marks the final flush, before close callbacks.
+    # EOF tracking never inspects application payload bytes.
     class HTTP1ResponseBody < ::Protocol::HTTP::Body::Wrapper
-      attr_reader :eof
+      def initialize(body, head:, &final_flush)
+        super(body)
+        @head = head
+        @final_flush = final_flush
+      end
+
+      # The writer rescues only StandardError, so cancellation during the final
+      # flush closes with a nil error. Grace may start, but write_body raises
+      # and the owner is closed undelivered, which ignores grace.
+      def close(error = nil)
+        final_flush = @final_flush
+        @final_flush = nil
+        final_flush.call if final_flush && error.nil? && (@eof || @head)
+      ensure
+        super
+      end
 
       def read
         chunk = super
@@ -77,21 +95,21 @@ module ConnectRPC
         end
       end
 
-      # Match the pinned writer's positional arguments.
+      # Match the writer's positional arguments. Unreleased protocol-http1
+      # adds a fifth `request` argument (socketry/protocol-http1#65).
       # rubocop:disable-next Style/OptionalBooleanParameter
-      def write_body(version, body, head = false, trailer = nil)
-        if @resource.input_retirement
-          @response_eof = head || body.nil?
-          body = @response_body = HTTP1ResponseBody.new(body) if body
+      def write_body(version, body, head = false, trailer = nil, *rest)
+        if (retirement = @resource.input_retirement) && body
+          body = HTTP1ResponseBody.new(body, head: head) { retirement.final_flushed }
         end
         super
+        # write_empty_body flushes a nil body but has no body to close.
+        retirement&.final_flushed unless body
         written = true
       rescue StandardError
         @resource.failed!
         raise
       ensure
-        @response_body = nil
-        @response_eof = false
         # Upstream returns after final fixed/chunked bytes AND body callbacks.
         begin
           @resource.exchange&.finish(!!written, $ERROR_INFO)
@@ -105,18 +123,6 @@ module ConnectRPC
             @resource.changed
           end
         end
-      end
-
-      private
-
-      def flush_stream
-        result = super
-        if @response_eof || @response_body&.eof
-          @resource.input_retirement&.final_flushed
-          @response_eof = false
-          @response_body = nil
-        end
-        result
       end
     end
     private_constant :HTTP1Connection

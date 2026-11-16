@@ -89,6 +89,25 @@ RSpec.describe "Connect H1 final flush ownership" do
     end
   end
 
+  it "stays undelivered when cancellation interrupts the final flush" do
+    reactor do
+      connection, _owner, body, events, = writer_fixture
+      eof = false
+      allow(body).to receive(:read).and_wrap_original do |read|
+        read.call.tap { |bytes| eof = bytes.nil? }
+      end
+      allow(connection.stream).to receive(:flush).and_wrap_original do |flush|
+        # Not a StandardError, so the writer still closes the body with nil.
+        raise Async::Stop if eof
+
+        flush.call
+      end
+      expect { connection.write_body("HTTP/1.1", body) }.to raise_error(Async::Stop)
+      expect(events).not_to include([:shutdown, Socket::SHUT_WR])
+      expect(events).to include(:raw_close)
+    end
+  end
+
   it "spends delayed callback and discard time within one total 500 ms budget" do
     reactor do |task|
       connection, owner, body, events, clock, = writer_fixture(callback_delay: 0.2)
