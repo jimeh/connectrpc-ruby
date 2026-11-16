@@ -435,11 +435,12 @@ decision. A merged fix closes its specific defect, not the audit as a whole.
   and the host part of M1. L10: when an Async HTTP/2 unary call is cancelled,
   reaches its deadline or has its task stopped while its upload waits for
   flow-control credit, the client now resets the stream with
-  `RST_STREAM(CANCEL)` instead of the pinned async-http's `INTERNAL_ERROR`, so
-  a native server's Context observes explicit cancellation. Servers send no
-  cancellation reset: handler cancellation is an ordinary `canceled` response,
-  and a client reset or lost connection closes the stream without another
-  frame. M1: the Async and Falcon hosts pass each exchange, publication,
+  `RST_STREAM(CANCEL)` instead of the pinned async-http's `INTERNAL_ERROR`.
+  Native servers treat only a peer `CANCEL` as explicit cancellation. A stream
+  upload cancelled while it waits for credit takes the same path. Servers send
+  no cancellation reset: handler cancellation is an ordinary `canceled`
+  response, and a client reset or lost connection closes the stream without
+  another frame. M1: the Async and Falcon hosts pass each exchange, publication,
   rejected Web input and Rack completion the exception from its own unwind
   instead of reading `$ERROR_INFO`. Before the change, only async-http's
   HTTP/1 malformed-request response reached a host site with an unrelated
