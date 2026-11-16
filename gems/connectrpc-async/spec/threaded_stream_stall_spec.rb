@@ -291,6 +291,60 @@ RSpec.describe "ThreadedTransport streams with stalled consumers, owners and clo
     end
   end
 
+  # The operation holds between selecting its reply and returning it while
+  # the block leaves and retires the stream; the selected reply still returns.
+  it "returns another thread's selected reply when the block leaves before the operation resumes" do
+    entered = Thread::Queue.new
+    release = Thread::Queue.new
+    peer = threaded_host(server: mixed_server(watch: lambda { |message, writer, _|
+      writer.send_message(item("first"))
+      entered << message.name
+      release.pop
+      writer.send_message(item("second"))
+    }))
+    origin = "http://127.0.0.1:#{peer.peer.port}"
+    transport = threaded(origin: origin)
+    exchanges = Thread::Queue.new
+    proceed = Thread::Queue.new
+    scope = Thread.new do
+      capture_error do
+        transport.open_stream(stream_request(origin, watch_method)) do |exchange|
+          exchange.write(envelope(item("shared")))
+          exchange.close_send
+          exchanges << [exchange, exchange.read(1024)]
+          proceed.pop
+          raise ArgumentError, "left early"
+        end
+      end
+    end
+    exchange, first = pop_within(exchanges, "the shared exchange after the first message")
+    expect(first).to eq(envelope(item("first")))
+    pop_within(entered, "the stream in the handler")
+    operation = Thread.new do
+      exchange.read(1024)
+    rescue StandardError => e
+      e
+    end
+    eventually("the other thread's read waiting on the owner") do
+      busy_streams(transport) == 1 && blocked?(operation)
+    end
+    pause = ThreadedHelpers::LinePause.new(ThreadedHelpers::THREADED.instance_method(:stream_operation), operation,
+                                           "answered = %i[reply result retired].include?(status)")
+    release << true
+    pop_within(pause.held, "the read holding its selected reply")
+    proceed << true
+    expect(value_within(scope, "the block's early exit")).to be_a(ArgumentError)
+    pause.open
+    expect(value_within(operation, "the other thread's read", timeout: 3)).to start_with(envelope(item("second")))
+    eventually("admission released after the owner retires the stream") { admitted(transport).zero? }
+  ensure
+    pause&.open
+    proceed&.<<(true)
+    release&.<<(true)
+    transport&.close(grace: 0)
+    peer&.stop
+  end
+
   it "drains an open stream during graceful close and refuses new streams" do
     entered = Thread::Queue.new
     release = Thread::Queue.new

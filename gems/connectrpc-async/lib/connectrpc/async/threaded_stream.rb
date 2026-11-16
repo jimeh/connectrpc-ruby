@@ -262,10 +262,10 @@ module ConnectRPC
       # Waits for the reactor to yield the real exchange, so dispatch failures
       # raise before the block, as on Transport.
       def await_open(stream, request)
-        status = await_stream(stream, request, seq: 0)
+        status, = await_stream(stream, request, seq: 0)
         raise_outcome(take(stream), request) if status == :result
         expired!(request, status) unless status == :reply
-        take_reply(stream)
+        stream.proxy&.suspend
       end
 
       # Posts the terminal command with the lifecycle gate open for the engine's
@@ -273,7 +273,7 @@ module ConnectRPC
       # stream already has :cancel queued and never reports success.
       def exit_stream(stream, request)
         post_exit(stream)
-        status = await_stream(stream, request)
+        status, = await_stream(stream, request)
         expired!(request, status) unless status == :result
         broken = stream.broken
         tag, error = take(stream)
@@ -282,9 +282,12 @@ module ConnectRPC
         raise Error.new(:canceled, ABANDONED), cause: nil if broken
       end
 
+      # Opens the gate under the admission lock, so an operation finishing on
+      # another thread either suspends before the exit or sees it and leaves
+      # the gate to terminal cleanup.
       def post_exit(stream)
-        stream.proxy&.resume
         stream.engine.admission.lock.synchronize do
+          stream.proxy&.resume
           stream.exited = true
           stream.commands.push(:exit) unless stream.broken
         end
@@ -299,7 +302,7 @@ module ConnectRPC
         return unless stream.engine.admission.lock.synchronize { stream.finished && !stream.broken }
 
         post_exit(stream)
-        take(stream) if await_stream(stream, request, timeout: 0) == :result
+        take(stream) if await_stream(stream, request, timeout: 0).first == :result
       end
 
       def check_usable(stream, request)
@@ -319,7 +322,7 @@ module ConnectRPC
           seq = begin_operation(stream, request, command)
           answered = false
           begin
-            status = await_stream(stream, request, seq: seq, timeout: command.last)
+            status, reply = await_stream(stream, request, seq: seq, timeout: command.last)
             answered = %i[reply result retired].include?(status)
             expired!(request, status) unless answered
             raise_outcome(settled(stream), request) if status == :result
@@ -328,7 +331,7 @@ module ConnectRPC
               raise Error.new(:unavailable, RETIRED), cause: nil
             end
 
-            tag, value = take_reply(stream)
+            tag, value = reply
             if tag == :error
               check_request!(request)
               raise value
@@ -337,8 +340,10 @@ module ConnectRPC
 
             value
           ensure
-            stream.proxy&.suspend
-            stream.engine.admission.lock.synchronize { stream.busy = false }
+            stream.engine.admission.lock.synchronize do
+              stream.busy = false
+              suspend_operation(stream)
+            end
             break_stream(stream) unless answered
           end
         end
@@ -362,8 +367,14 @@ module ConnectRPC
         seq
       rescue StandardError
         # A concurrent caller's operation may still be in flight with the gate open.
-        stream.proxy&.suspend unless stream.engine.admission.lock.synchronize { stream.busy }
+        stream.engine.admission.lock.synchronize { suspend_operation(stream) unless stream.busy }
         raise
+      end
+
+      # Called under the admission lock. Once the scope exited, terminal
+      # cleanup owns the open gate and only take or abandon detaches it.
+      def suspend_operation(stream)
+        stream.proxy&.suspend unless stream.exited
       end
 
       def settled(stream) = stream.engine.admission.lock.synchronize { stream.result }
@@ -398,17 +409,9 @@ module ConnectRPC
         stream.proxy&.detach
       end
 
-      def take_reply(stream)
-        stream.engine.admission.lock.synchronize do
-          _, reply = stream.reply
-          stream.reply = nil
-          reply
-        end
-      ensure
-        stream.proxy&.suspend
-      end
-
-      # Waits for the reply tagged +seq+ or the terminal outcome. Expiry is the
+      # Waits for the reply tagged +seq+ or the terminal outcome and returns
+      # [status, reply]. A reply is taken in the same critical section that
+      # selects it, so a concurrent break cannot withdraw it. Expiry is the
       # deadline or the operation timeout plus the cleanup allowance, or the
       # cancellation allowance; nil bounds wait until a signal or interrupt. An
       # operation also ends once the scope took or abandoned the stream.
@@ -419,14 +422,18 @@ module ConnectRPC
         lock = stream.engine.admission.lock
         lock.synchronize do
           loop do
-            return :reply if seq && stream.reply&.first == seq
-            return :result if stream.result
-            return :retired if seq && stream.caller_done
+            if seq && stream.reply&.first == seq
+              _, reply = stream.reply
+              stream.reply = nil
+              return [:reply, reply]
+            end
+            return [:result] if stream.result
+            return [:retired] if seq && stream.caller_done
 
             now = Internal.now
-            return :canceled if stream.cancel_expires && stream.cancel_expires <= now
-            return :deadline if deadline && deadline <= now
-            return :timeout if expires && expires <= now
+            return [:canceled] if stream.cancel_expires && stream.cancel_expires <= now
+            return [:deadline] if deadline && deadline <= now
+            return [:timeout] if expires && expires <= now
 
             limit = [deadline, expires, stream.cancel_expires].compact.min
             Thread.handle_interrupt(Object => :immediate) do

@@ -458,7 +458,7 @@
     "ConnectRPC::Async::ThreadedTransport#raise_outcome": {"kind":"method","visibility":"private","parameters":"outcome, request","classification":"internal"},
     "ConnectRPC::Async::ThreadedTransport#settled": {"kind":"method","visibility":"private","parameters":"stream","classification":"internal"},
     "ConnectRPC::Async::ThreadedTransport#stream_operation": {"kind":"method","visibility":"private","parameters":"stream, request, command","classification":"internal"},
-    "ConnectRPC::Async::ThreadedTransport#take_reply": {"kind":"method","visibility":"private","parameters":"stream","classification":"internal"},
+    "ConnectRPC::Async::ThreadedTransport#suspend_operation": {"kind":"method","visibility":"private","parameters":"stream","classification":"internal"},
     "ConnectRPC::Async::ThreadedTransport::Engine#caller_head": {"kind":"method","visibility":"private","parameters":"head","classification":"internal"},
     "ConnectRPC::Async::ThreadedTransport::Engine#forward": {"kind":"method","visibility":"private","parameters":"exchange, name, arguments, timeout","classification":"internal"},
     "ConnectRPC::Async::ThreadedTransport::Engine#post": {"kind":"method","visibility":"private","parameters":"stream, seq, reply","classification":"internal"},

@@ -17,20 +17,32 @@ RSpec.describe "ThreadedTransport stream completion outcome" do
   end
 
   # Makes every later owned connection release fail after it succeeds, on the
-  # owner, and reports each injected failure to +fired+.
-  def fail_release(transport, fired = nil)
+  # owner, and reports each injected failure to +fired+. With +hold+, the
+  # owner's cleanup waits there before raising.
+  def fail_release(transport, fired = nil, hold = nil)
     on_owner(transport) do
       manager = engine_of(transport).inner.instance_variable_get(:@manager)
       release = manager.method(:release)
       manager.define_singleton_method(:release) do |connection|
         release.call(connection)
         fired&.<<(true)
+        hold&.pop
         raise IOError, "private owned cleanup failure"
       end
     end
   end
 
   def exited_mailbox(transport) = stream_mailboxes(transport).find(&:exited)
+  def busy_streams(transport) = stream_mailboxes(transport).count(&:busy)
+
+  # A raw lifecycle handle that records the engine's late failure reporting.
+  def reporting_lifecycle(log)
+    lifecycle = Object.new
+    lifecycle.define_singleton_method(:activate) { |&block| block.call }
+    lifecycle.define_singleton_method(:record_failure) { |error| log << [:record_failure, error.message] }
+    lifecycle.define_singleton_method(:finish) { |delivery:, error: nil| log << [:finish, delivery, error&.message] }
+    lifecycle
+  end
 
   it "holds a normal block exit until the engine returns the stream's outcome" do
     peer = threaded_host(server: mixed_server)
@@ -141,6 +153,114 @@ RSpec.describe "ThreadedTransport stream completion outcome" do
       .to eq([:aborted, IOError, "private owned cleanup failure"])
     expect(admitted(transport)).to eq(0)
   ensure
+    transport&.close(grace: 0)
+    peer&.stop
+  end
+
+  # After the block's normal exit opens the gate for terminal cleanup, an
+  # operation finishing on another thread must not close it again.
+  it "reports a late gRPC cleanup failure after another thread's operation completes past the block's exit" do
+    entered = Thread::Queue.new
+    release = Thread::Queue.new
+    peer = threaded_host(server: mixed_server(watch: lambda { |message, writer, _|
+      writer.send_message(item("first"))
+      entered << message.name
+      release.pop
+      writer.send_message(item("second"))
+    }))
+    origin = "http://127.0.0.1:#{peer.peer.port}"
+    transport = threaded(origin: origin)
+    mixed_client(transport, origin).lookup(item("warm"))
+    fired = Thread::Queue.new
+    hold = Thread::Queue.new
+    fail_release(transport, fired, hold)
+    log = Thread::Queue.new
+    headers = { "content-type" => ["application/grpc+proto"], "te" => ["trailers"] }
+    request = stream_request(origin, watch_method, headers: headers, lifecycle: reporting_lifecycle(log))
+    exchanges = Thread::Queue.new
+    proceed = Thread::Queue.new
+    scope = Thread.new do
+      capture_error do
+        transport.open_grpc_stream(request) do |exchange|
+          exchange.write(envelope(item("shared")))
+          exchange.close_send
+          exchanges << [exchange, exchange.read(1024)]
+          proceed.pop
+          :value
+        end
+      end
+    end
+    exchange, first = pop_within(exchanges, "the shared exchange after the first message")
+    expect(first).to eq(envelope(item("first")))
+    pop_within(entered, "the stream in the handler")
+    operation = Thread.new do
+      exchange.read(1024)
+    rescue StandardError => e
+      e
+    end
+    eventually("the other thread's read waiting on the owner") do
+      busy_streams(transport) == 1 && blocked?(operation)
+    end
+    proceed << true
+    eventually("the scope waiting for the terminal outcome") { exited_mailbox(transport) && blocked?(scope) }
+    release << true
+    expect(value_within(operation, "the other thread's read")).to start_with(envelope(item("second")))
+    pop_within(fired, "the owner's cleanup in the failing release")
+    hold << true
+    error = value_within(scope, "the block's terminal outcome")
+    expect([error.class, error.code, error.message])
+      .to eq([ConnectRPC::Error, "unavailable", "HTTP/2 transport cleanup failed"])
+    expect(Array.new(log.size) { log.pop })
+      .to eq([[:record_failure, "private owned cleanup failure"], [:finish, :aborted, "private owned cleanup failure"]])
+    expect(admitted(transport)).to eq(0)
+  ensure
+    hold&.<<(true)
+    proceed&.<<(true)
+    release&.<<(true)
+    transport&.close(grace: 0)
+    peer&.stop
+  end
+
+  it "reports a late gRPC cleanup failure after another thread's operation is refused past the block's exit" do
+    peer = threaded_host(server: mixed_server)
+    origin = "http://127.0.0.1:#{peer.peer.port}"
+    transport = threaded(origin: origin)
+    mixed_client(transport, origin).lookup(item("warm"))
+    fired = Thread::Queue.new
+    hold = Thread::Queue.new
+    fail_release(transport, fired, hold)
+    log = Thread::Queue.new
+    headers = { "content-type" => ["application/grpc+proto"], "te" => ["trailers"] }
+    request = stream_request(origin, watch_method, headers: headers, lifecycle: reporting_lifecycle(log))
+    exchanges = Thread::Queue.new
+    scope = Thread.new do
+      capture_error do
+        transport.open_grpc_stream(request) do |exchange|
+          exchange.write(envelope(item("refused")))
+          exchange.close_send
+          loop do
+            chunk = exchange.read(1024)
+            break if chunk.nil? || chunk.empty?
+          end
+          exchanges << exchange
+          :value
+        end
+      end
+    end
+    exchange = pop_within(exchanges, "the exchange after EOF")
+    pop_within(fired, "the owner's cleanup in the failing release")
+    refused = capture_error { exchange.write(envelope(item("late"))) }
+    expect([refused.class, refused.code, refused.message])
+      .to eq([ConnectRPC::Error, "unavailable", "HTTP/2 exchange is retired"])
+    hold << true
+    error = value_within(scope, "the block's terminal outcome")
+    expect([error.class, error.code, error.message])
+      .to eq([ConnectRPC::Error, "unavailable", "HTTP/2 transport cleanup failed"])
+    expect(Array.new(log.size) { log.pop })
+      .to eq([[:record_failure, "private owned cleanup failure"], [:finish, :aborted, "private owned cleanup failure"]])
+    expect(admitted(transport)).to eq(0)
+  ensure
+    hold&.<<(true)
     transport&.close(grace: 0)
     peer&.stop
   end
