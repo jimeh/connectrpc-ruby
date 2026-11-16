@@ -355,6 +355,22 @@ RSpec.describe "Connect streaming framing and scope" do
     end
   end
 
+  it "does not retry a failed explicit close_send at completion" do
+    custom, exchange, = transport(frame("reply") + frame("{}", 2))
+    calls = 0
+    exchange.define_singleton_method(:close_send) do
+      calls += 1
+      raise IOError, "close failed" if calls == 1
+    end
+    received = []
+    client(custom).bidi_stream(declaration(ConnectRPC::BidiStreamMethod)) do |duplex|
+      expect { duplex.close_send }.to raise_error(IOError, "close failed")
+      duplex.each { |message| received << message }
+    end
+    expect(received).to eq(["reply"])
+    expect(calls).to eq(1)
+  end
+
   it "rejects wrong declaration, missing block, unsupported capability and unary misuse before binding/I/O" do
     custom = Object.new
     codec = Object.new
