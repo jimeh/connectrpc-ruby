@@ -60,6 +60,20 @@ These affect the Async HTTP/2 and HTTP/1 client transports and the core
 - `HTTP1Transport` sends a unary GET once more when its reused keep-alive
   connection closed before any response head arrived.
 
+These affect native HTTP/2 connections of the Async `Transport`,
+`ThreadedTransport`, `Host` and `ServerSession` and the Falcon server.
+
+- Each connection grows its connection receive window to 16 MiB with a
+  WINDOW_UPDATE on stream 0 right after its SETTINGS. Before 0.3.0 it stayed at
+  64 KiB, so all streams on a connection shared 64 KiB per round trip. Stream
+  windows and the per-stream ingress bound stay at 64 KiB, so each connection's
+  retention ceiling is unchanged. A server can now reach that ceiling in one
+  round trip, including on streams it then refuses because host admission is
+  full. Pass `connection_receive_window: 65_536` to keep the old connection
+  window, or raise `stream_receive_window` for faster large bodies over
+  high-latency links. See
+  [flow-control windows](../gems/connectrpc-async/README.md#flow-control-windows).
+
 These affect `connectrpc-otel` spans and trace propagation.
 
 - `connectrpc-otel` uses the application's global propagator,

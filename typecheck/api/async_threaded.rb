@@ -5,7 +5,8 @@ transport = ConnectRPC::Async::ThreadedTransport.new(
   origin: "https://example.invalid", ca_file: "ca.pem", certificate_chain: ["client"], private_key: "key",
   connection_limit: 2, max_requests: 64, connect_timeout: 5,
   connection_policy: ConnectRPC::Async::ConnectionPolicy.new(wait_for_ready: true),
-  connection_observer: APIConnectionObserver.new
+  connection_observer: APIConnectionObserver.new, stream_receive_window: 1_048_576,
+  connection_receive_window: 16_777_216
 )
 method = ConnectRPC::Method.new(service: "demo.Service", name: "Call", request_type: String, response_type: String,
                                 idempotency: :no_side_effects)

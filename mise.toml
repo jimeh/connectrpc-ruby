@@ -239,6 +239,11 @@ description = "Install and exercise normal HTTP/2 gem dependencies offline"
 depends = ["async:build"]
 run = "mise exec -- ruby gems/connectrpc-async/scripts/run.rb package"
 
+[tasks."async:bench:windows"]
+description = "Time HTTP/2 bodies through a local added-latency proxy to compare receive windows (non-gating)"
+depends = ["async:setup"]
+run = "mise exec -- ruby gems/connectrpc-async/scripts/run.rb window_benchmark"
+
 [tasks."async:example"]
 description = "Run generated unary HTTP/2 localhost example"
 depends = ["async:setup"]

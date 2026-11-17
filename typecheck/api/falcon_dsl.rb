@@ -13,7 +13,9 @@ class ::APIFalconConfiguration
       rack_app { APIApp.new }
       tls { nil }
       tls_provider { APIProvider.new }
-      server_options { { idle_timeout: nil, max_connections: 8, cache: true, keepalive: nil } }
+      server_options do
+        { idle_timeout: nil, max_connections: 8, cache: true, keepalive: nil, stream_receive_window: 1_048_576 }
+      end
       connectrpc_close_grace 2
     end
   end

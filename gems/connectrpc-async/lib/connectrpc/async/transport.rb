@@ -9,12 +9,15 @@ module ConnectRPC
 
       def initialize(origin:, ca_file: nil, certificate_chain: nil, private_key: nil, connection_limit: 1,
                      max_requests: 128, connect_timeout: 10, connection_policy: ConnectionPolicy.new,
-                     connection_observer: nil)
+                     connection_observer: nil, stream_receive_window: 65_536,
+                     connection_receive_window: 16_777_216)
         initialize_affinity
         @origin = parse_origin(origin)
         @connection_limit = Internal.positive_integer(connection_limit, "connection_limit")
         @max_requests = Internal.positive_integer(max_requests, "max_requests")
         @connect_timeout = Internal.seconds(connect_timeout, "connect_timeout")
+        @stream_receive_window = Internal.receive_window(stream_receive_window, "stream_receive_window")
+        @connection_receive_window = Internal.receive_window(connection_receive_window, "connection_receive_window")
         unless connection_policy.is_a?(ConnectionPolicy)
           raise ArgumentError, "connection_policy must be a ConnectionPolicy"
         end
@@ -345,7 +348,10 @@ module ConnectRPC
         connection = Internal::ClientConnection.new(::IO::Stream(socket))
         resource.connection = connection
         connection.resource = resource
-        connection.send_connection_preface(Internal.settings(@max_requests))
+        connection.receive_windows(stream: @stream_receive_window, connection: @connection_receive_window)
+        connection.send_connection_preface(Internal.settings(@max_requests, stream_window: @stream_receive_window)) do
+          connection.grow_connection_window
+        end
         resource.ready = true
         connection.read_in_background(parent: @lifetime)
         connection
