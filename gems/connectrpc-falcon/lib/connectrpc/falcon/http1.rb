@@ -76,11 +76,14 @@ module ConnectRPC
       end
 
       # This listener never switches protocols, so an Upgrade offer is ignored
-      # (RFC 9110 section 7.8) and leaves normal request framing in place.
-      # Upstream reads an offering request's body to connection close.
+      # (RFC 9110 section 7.8). Upstream reads an offering request's body to
+      # connection close; frame it normally instead so the response can be
+      # sent. The connection still closes afterwards: a proxy that tunnels on
+      # the client's offer alone would forward later bytes uninspected.
       def read_request_body(method, headers)
         return super if method == ::Protocol::HTTP::Methods::CONNECT || !headers[::Protocol::HTTP1::UPGRADE]
 
+        @persistent = false
         read_body(headers)
       end
 

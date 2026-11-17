@@ -16,9 +16,21 @@ RSpec.describe "Falcon HTTP/1.1 Upgrade offers" do
     [status, fields, body]
   end
 
+  # Sends one request on a fresh connection. `closed` is true when the server
+  # announced and performed a close after the response, so no later bytes on
+  # the connection were parsed as a request.
+  def offered(origin, bytes)
+    peer = ConnectH1Wire.new(origin)
+    peer.write(bytes)
+    status, fields, body = read_response(peer)
+    [status, body, fields["connection"] == ["close"] && peer.socket.read == ""]
+  ensure
+    peer&.close
+  end
+
   def echo_body(name) = AsyncHelpers::MESSAGE.encode(AsyncHelpers::MESSAGE.new(name: name))
 
-  it "ignores an h2c offer on Rack routes, unary POST and GET RPCs and keeps the connection usable" do
+  it "serves Rack routes and unary POST and GET RPCs that carry an h2c offer, then closes" do
     reactor do
       seen = []
       rack = lambda do |env|
@@ -26,52 +38,84 @@ RSpec.describe "Falcon HTTP/1.1 Upgrade offers" do
         [200, { "content-type" => "text/plain" }, ["ordinary"]]
       end
       falcon(rack_app: rack) do |_host, origin|
-        peer = ConnectH1Wire.new(origin)
-        peer.write("GET /ordinary HTTP/1.1\r\nHost: localhost\r\nAccept-Encoding: identity\r\n#{h2c_offer}\r\n")
-        expect(read_response(peer).values_at(0, 2)).to eq([200, "ordinary"])
+        request = "GET /ordinary HTTP/1.1\r\nHost: localhost\r\nAccept-Encoding: identity\r\n#{h2c_offer}\r\n"
+        expect(offered(origin, request)).to eq([200, "ordinary", true])
 
         bytes = echo_body("offered")
-        peer.write("POST #{AsyncHelpers::ECHO::ECHO.path} HTTP/1.1\r\nHost: localhost\r\n" \
-                   "Content-Type: application/proto\r\nContent-Length: #{bytes.bytesize}\r\n#{h2c_offer}\r\n#{bytes}")
-        status, _fields, body = read_response(peer)
-        expect(status).to eq(200)
-        expect(AsyncHelpers::MESSAGE.decode(body).name).to eq("offered")
+        request = "POST #{AsyncHelpers::ECHO::ECHO.path} HTTP/1.1\r\nHost: localhost\r\n" \
+                  "Content-Type: application/proto\r\nContent-Length: #{bytes.bytesize}\r\n#{h2c_offer}\r\n#{bytes}"
+        status, body, closed = offered(origin, request)
+        expect([status, AsyncHelpers::MESSAGE.decode(body).name, closed]).to eq([200, "offered", true])
 
         query = "encoding=proto&base64=1&message=#{[echo_body('get')].pack('m0').tr('+/', '-_').delete('=')}"
-        peer.write("GET #{AsyncHelpers::ECHO::ECHO.path}?#{query} HTTP/1.1\r\nHost: localhost\r\n#{h2c_offer}\r\n")
-        status, _fields, body = read_response(peer)
-        expect(status).to eq(200)
-        expect(AsyncHelpers::MESSAGE.decode(body).name).to eq("get")
+        status, body, closed = offered(origin, "GET #{AsyncHelpers::ECHO::ECHO.path}?#{query} HTTP/1.1\r\n" \
+                                               "Host: localhost\r\n#{h2c_offer}\r\n")
+        expect([status, AsyncHelpers::MESSAGE.decode(body).name, closed]).to eq([200, "get", true])
         expect(seen).to eq(["/ordinary"])
-      ensure
-        peer&.close
       end
     end
   end
 
-  it "exposes a WebSocket offer to Rack, rejects accepting it and keeps framing for the next request" do
+  it "never parses bytes after an offering request as another request" do
+    reactor do
+      seen = []
+      rack = lambda do |env|
+        seen << env["PATH_INFO"]
+        [200, { "content-type" => "text/plain" }, ["served"]]
+      end
+      falcon(rack_app: rack) do |_host, origin|
+        # A proxy that tunnels on the client's offer alone forwards this
+        # second request without inspecting it.
+        smuggled = "GET /admin HTTP/1.1\r\nHost: localhost\r\n\r\n"
+        expect(offered(origin, "GET /chat HTTP/1.1\r\nHost: localhost\r\nAccept-Encoding: identity\r\n" \
+                               "#{websocket_offer}\r\n#{smuggled}")).to eq([200, "served", true])
+        chunked = "POST /upload HTTP/1.1\r\nHost: localhost\r\nAccept-Encoding: identity\r\n" \
+                  "Transfer-Encoding: chunked\r\n#{websocket_offer}\r\n5\r\nhello\r\n0\r\n\r\n"
+        expect(offered(origin, "#{chunked}#{smuggled}")).to eq([200, "served", true])
+        expect(seen).to eq(%w[/chat /upload])
+      end
+    end
+  end
+
+  it "exposes a WebSocket offer to Rack and rejects every way of accepting it" do
     reactor do
       offers = []
       rack = lambda do |env|
         offers << [env["PATH_INFO"], env["HTTP_UPGRADE"], Array(env["rack.protocol"])]
+        request = env["protocol.http.request"]
+        switch = { "upgrade" => "websocket" }
         case env["PATH_INFO"]
-        when "/protocol" then [200, { "rack.protocol" => "websocket" }, []]
-        when "/101" then [101, { "upgrade" => "websocket" }, []]
-        else [200, { "content-type" => "text/plain" }, ["after"]]
+        when "/protocol" then next [200, { "rack.protocol" => "websocket" }, []]
+        when "/101" then next [101, switch, []]
+        when "/send-interim" then request.send_interim_response(101, switch)
+        when "/write-interim" then request.write_interim_response(101, switch)
+        when "/interim-callback" then request.interim_response.call(101, switch)
         end
+        [200, { "content-type" => "text/plain" }, ["accepted"]]
+      end
+      falcon(rack_app: rack) do |_host, origin|
+        routes = %w[/protocol /101 /send-interim /write-interim /interim-callback]
+        routes.each do |route|
+          request = "POST #{route} HTTP/1.1\r\nHost: localhost\r\nContent-Length: 5\r\n#{websocket_offer}\r\nhello"
+          expect(offered(origin, request).values_at(0, 2)).to eq([501, true]), route
+        end
+        expect(offers).to eq(routes.map { |route| [route, "websocket", ["websocket"]] })
+      end
+    end
+  end
+
+  it "still sends non-switching interim responses from Rack" do
+    reactor do
+      rack = lambda do |env|
+        env["protocol.http.request"].send_interim_response(103, { "link" => "</app.css>; rel=preload" })
+        [200, { "content-type" => "text/plain" }, ["hinted"]]
       end
       falcon(rack_app: rack) do |_host, origin|
         peer = ConnectH1Wire.new(origin)
-        # The unread offering bodies must be framed by Content-Length, not
-        # read to connection close, or the next request becomes body bytes.
-        %w[/protocol /101].each do |route|
-          peer.write("POST #{route} HTTP/1.1\r\nHost: localhost\r\nContent-Length: 5\r\n#{websocket_offer}\r\nhello")
-          expect(read_response(peer).first).to eq(501)
-        end
-        peer.write("GET /after HTTP/1.1\r\nHost: localhost\r\nAccept-Encoding: identity\r\n\r\n")
-        expect(read_response(peer).values_at(0, 2)).to eq([200, "after"])
-        expect(offers).to eq([["/protocol", "websocket", ["websocket"]], ["/101", "websocket", ["websocket"]],
-                              ["/after", nil, []]])
+        peer.write("GET /hinted HTTP/1.1\r\nHost: localhost\r\nAccept-Encoding: identity\r\n#{websocket_offer}\r\n")
+        status, fields = peer.head
+        expect([status, fields["link"]]).to eq([103, ["</app.css>; rel=preload"]])
+        expect(read_response(peer).values_at(0, 2)).to eq([200, "hinted"])
       ensure
         peer&.close
       end

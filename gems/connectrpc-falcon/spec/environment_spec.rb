@@ -76,6 +76,8 @@ RSpec.describe "Falcon service environment" do
   it "rejects including ConnectRPC::Falcon::Environment before Falcon's environments before binding" do
     with_rackup do |root|
       environment = rack_configuration(root, nil, connectrpc_last: false).environments.fetch(0)
+      # The Rack app survives this order; Falcon's application endpoint is what breaks it.
+      expect(environment.evaluator.rack_app.call({}).last).to eq(["config.ru"])
       service = ConnectRPC::Falcon::Service.new(environment)
       expect { service.start }.to raise_error(
         ArgumentError, /include ConnectRPC::Falcon::Environment after Falcon's environments/

@@ -936,7 +936,10 @@
     "ConnectRPC::Falcon::RackGuard#rejected": {"kind":"method","visibility":"private","parameters":"","classification":"internal"},
     "ConnectRPC::Falcon::RackGuard::Request#hijack!": {"kind":"method","visibility":"public","parameters":"","classification":"internal"},
     "ConnectRPC::Falcon::RackGuard::Request#hijack?": {"kind":"method","visibility":"public","parameters":"","classification":"internal"},
-    "ConnectRPC::Falcon::RackGuard::Request#initialize": {"kind":"method","visibility":"public","parameters":"request, reject","classification":"internal"}
+    "ConnectRPC::Falcon::RackGuard::Request#initialize": {"kind":"method","visibility":"public","parameters":"request, reject","classification":"internal"},
+    "ConnectRPC::Falcon::RackGuard::Request#interim_response": {"kind":"method","visibility":"public","parameters":"","classification":"internal"},
+    "ConnectRPC::Falcon::RackGuard::Request#send_interim_response": {"kind":"method","visibility":"public","parameters":"status, headers","classification":"internal"},
+    "ConnectRPC::Falcon::RackGuard::Request#write_interim_response": {"kind":"method","visibility":"public","parameters":"status, headers = nil","classification":"internal"}
   },
   "gems/connectrpc-falcon/lib/connectrpc/falcon/server.rb": {
     "ConnectRPC::Falcon::Server#abort": {"kind":"method","visibility":"public","parameters":"","classification":"supported"},

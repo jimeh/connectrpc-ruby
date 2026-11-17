@@ -160,11 +160,14 @@ HTTP/2 prior knowledge and HTTP/1. The standalone Async Host remains strict h2.
 
 This listener never switches protocols. It ignores HTTP/1.1 `Upgrade` offers,
 such as the h2c offer from `curl --http2`, and serves those requests as
-ordinary HTTP/1.1 RPC or Rack fallback requests on a persistent connection.
-The Rack fallback still sees the offer in `rack.protocol` and `HTTP_UPGRADE`,
-as with plain Falcon. Accepting it (a 101 status, a `rack.protocol` or
-`upgrade` response header, or full/partial Rack hijack) gets 501 before any
-upgrade bytes or socket transfer. CONNECT, HTTP/2 extended CONNECT and HTTP/2
+ordinary HTTP/1.1 RPC or Rack fallback requests. Their bodies use normal
+Content-Length or chunked framing. The connection closes after the response, so
+no bytes that follow an offer are parsed as a request, even behind a proxy that
+starts tunnelling on the client's offer alone. The Rack fallback still sees the
+offer in `rack.protocol` and `HTTP_UPGRADE`, as with plain Falcon. Accepting it
+(a 101 status or interim response, a `rack.protocol` or `upgrade` response
+header, or full/partial Rack hijack) gets 501 before any upgrade bytes or socket
+transfer; other interim responses, such as 103 Early Hints, are sent. CONNECT, HTTP/2 extended CONNECT and HTTP/2
 requests carrying `:protocol` or an `upgrade` field also get 501. WebSockets
 and ActionCable are unsupported here. Ordinary enumerable, chunked, streamed
 and callable HTTP bodies are supported. Callable bodies must close their
