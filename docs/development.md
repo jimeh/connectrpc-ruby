@@ -517,11 +517,13 @@ option, event or metric that the latest release lacks, mark it "Since X.Y.Z"
 in the prose with the version the next release will have:
 
 - Use the version of the open Release Please PR.
-- When no release PR is open, use the next patch after the latest release.
-  Before 1.0, the release config (`bump-patch-for-minor-pre-major`) releases
-  `feat:` commits as a patch.
+- When no release PR is open, use the next patch after the version in
+  `.github/.release-please-manifest.json`. A merged release PR sets that
+  version even while its tag waits to be published. Before 1.0, the release
+  config (`bump-patch-for-minor-pre-major`) releases `feat:` commits as a
+  patch.
 - A breaking change makes the next release a minor (`bump-minor-pre-major`),
-  such as 0.3.0 after 0.2.1. Mark it with that version, and update any markers
+  such as 0.3.0 after 0.2.1 in the manifest. Mark it with that version, and update any markers
   on main that name the superseded patch version.
 
 Keep markers out of headings, so anchors stay stable, and keep them after the
