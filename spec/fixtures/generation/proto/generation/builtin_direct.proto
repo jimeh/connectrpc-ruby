@@ -1,0 +1,5 @@
+syntax = "proto3";
+// Fresh direct children of the interpreter's Math module.
+package math;
+message GenerationFixturePlan { int32 count = 1; }
+service GenerationFixturePlanService { rpc Echo(GenerationFixturePlan) returns (GenerationFixturePlan); }

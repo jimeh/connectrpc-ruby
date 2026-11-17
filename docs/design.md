@@ -471,8 +471,19 @@ roots the runtime loads, such as `URI`, `Zlib`, `Net` and `OpenSSL`), and concre
 protobuf runtime names such as `Google::Protobuf::DescriptorPool` are rejected. Known
 official protobuf types are accepted only under their canonical file, proto name
 and Ruby namespace, preserving WKT imports without allowing application types to
-replace them. The fixed policy follows the pinned protobuf sources, rather than
-reflecting the generator process's constants. A service cannot merge with
+replace them. Packages may also nest under the interpreter's plain modules that no
+other module includes or extends and that core does not load from the standard
+library: `FileTest`, `GC`, `Marshal`, `Math`, `ObjectSpace`, `Process` and
+`Signal`. Official output reopens them, so `math.v1` becomes `Math::V1`. Their
+existing constants stay protected: a package may reopen a module child such as
+`Process::Sys`, but no message, enum or service may replace one, and nothing may
+be declared at or below a value or class child such as `Math::E` or
+`Process::Status`. A top-level message, enum or service named after one of these
+roots, mixed-in modules such as `Kernel` and `Comparable`, `Errno` and class roots
+stay rejected. Reserved-constant errors suggest the `ruby_package` file option.
+The fixed policy follows the pinned protobuf sources and the Ruby 3.4/4.0
+builtin modules, rather than reflecting the generator process's constants; a
+spec compares the builtin data with the running interpreter. A service cannot merge with
 another package. No global registry spans generator invocations.
 Generated files guard directly defined `SERVICE`, `Client` and RPC constants;
 normal `require` is idempotent, while deliberate `load`/redefinition fails clearly.

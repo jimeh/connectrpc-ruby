@@ -283,6 +283,214 @@ RSpec.describe "Service generation" do
     expect(missing).to be_empty, "Unreserved runtime constants: #{missing.join(' ')}"
   end
 
+  def with_ruby_package(request, namespace)
+    request.proto_file.first.options = Google::Protobuf::FileOptions.new(ruby_package: namespace)
+    request
+  end
+
+  def with_extra(request, message: nil, enum: nil)
+    file = request.proto_file.first
+    file.message_type << Google::Protobuf::DescriptorProto.new(name: message) if message
+    if enum
+      file.enum_type << Google::Protobuf::EnumDescriptorProto.new(
+        name: enum, value: [Google::Protobuf::EnumValueDescriptorProto.new(name: "#{enum}_UNSPECIFIED")]
+      )
+    end
+    request
+  end
+
+  {
+    "math.v1" => "Math", "process.v1" => "Process", "signal.v1" => "Signal", "file_test.v1" => "FileTest",
+    "object_space.v1" => "ObjectSpace", "marshal.v1" => "Marshal", "math" => "Math", "process.sys.v1" => "Process"
+  }.each do |package, root|
+    it "generates services nested under builtin module package #{package}" do
+      response = generate(request_for(package: package))
+      expect(response.error).to eq("")
+      expect(response.file.first.content).to include("module #{root}\n", "module EchoService")
+    end
+  end
+
+  %w[Math::V1 GC::V1 GC::Profiler::V1 Process::UID::V1 Signal].each do |namespace|
+    it "generates services under builtin module ruby_package #{namespace}" do
+      response = generate(with_ruby_package(request_for, namespace))
+      expect(response.error).to eq("")
+      expect(response.file.first.content).to include("module #{namespace.split('::').first}\n", "module EchoService")
+    end
+  end
+
+  {
+    "net.v1" => "Net", "file.v1" => "File", "kernel.v1" => "Kernel", "errno.v1" => "Errno",
+    "comparable.v1" => "Comparable", "warning.v1" => "Warning"
+  }.each do |package, root|
+    it "rejects package #{package} under reserved root #{root} and names ruby_package" do
+      response = generate(request_for(package: package))
+      expect(response.error).to include("Reserved top-level Ruby constant #{root} ", "ruby_package")
+      expect(response.file).to be_empty
+    end
+  end
+
+  %w[URI::V1 OpenSSL::V1 Zlib Errno::V1].each do |namespace|
+    it "rejects reserved root ruby_package #{namespace} and names ruby_package" do
+      response = generate(with_ruby_package(request_for, namespace))
+      expect(response.error).to include("Reserved top-level Ruby constant #{namespace.split('::').first} ",
+                                        "ruby_package")
+      expect(response.file).to be_empty
+    end
+  end
+
+  it "rejects top-level Math service and message replacements and names ruby_package" do
+    response = generate(request_for(rpcs: [], service: "Math", package: ""))
+    expect(response.error).to include("Reserved top-level Ruby constant Math ", "ruby_package")
+    request = request_for(rpcs: [], package: "")
+    request.proto_file.first.message_type << Google::Protobuf::DescriptorProto.new(name: "Math")
+    response = generate(request)
+    expect(response.error).to include("Reserved top-level Ruby constant Math ", "ruby_package")
+    expect(response.file).to be_empty
+  end
+
+  it "allows fresh direct children of a builtin module" do
+    response = generate(with_extra(request_for(package: "math"), message: "PlanMessage", enum: "PlanKind"))
+    expect(response.error).to eq("")
+    expect(response.file.first.content).to include("module Math\n", "module EchoService")
+  end
+
+  {
+    "package math.e.v1" => [-> { request_for(package: "math.e.v1") }, "Math::E"],
+    "package process.status.v1" => [-> { request_for(package: "process.status.v1") }, "Process::Status"],
+    "ruby_package Math::DomainError" => [-> { with_ruby_package(request_for, "Math::DomainError") },
+                                         "Math::DomainError"],
+    "ruby_package ObjectSpace::WeakMap::V1" => [-> { with_ruby_package(request_for, "ObjectSpace::WeakMap::V1") },
+                                                "ObjectSpace::WeakMap"],
+    "message E in package math" => [-> { with_extra(request_for(package: "math"), message: "E") }, "Math::E"],
+    "enum PI in package math" => [-> { with_extra(request_for(package: "math"), enum: "PI") }, "Math::PI"],
+    "service Status in package process" => [-> { request_for(service: "Status", package: "process") },
+                                            "Process::Status"],
+    "platform message CLOCK_MONOTONIC in package process" => [
+      -> { with_extra(request_for(package: "process"), message: "CLOCK_MONOTONIC") }, "Process::CLOCK_MONOTONIC"
+    ],
+    "message Sys in package process" => [-> { with_extra(request_for(package: "process"), message: "Sys") },
+                                         "Process::Sys"],
+    "ruby_package GC with message Profiler" => [
+      -> { with_extra(with_ruby_package(request_for, "GC"), message: "Profiler") }, "GC::Profiler"
+    ]
+  }.each do |description, (build, constant)|
+    it "rejects builtin child #{constant} through #{description} and names ruby_package" do
+      response = generate(instance_exec(&build))
+      expect(response.error).to include("Reserved builtin Ruby constant #{constant} ", "ruby_package")
+      expect(response.file).to be_empty
+    end
+  end
+
+  it "keeps builtin reopen policy data consistent with the running Ruby" do
+    require "connectrpc/generator"
+    names = ConnectRPC::Generator::Names
+    # The interpreter's own modules, without RubyGems or Bundler side effects.
+    probe = <<~RUBY
+      modules = ObjectSpace.each_object(Module).to_a
+      facts = ARGV.to_h do |name|
+        root = Object.const_get(name)
+        mixed = modules.any? do |other|
+          !other.equal?(root) && (other.include?(root) || other.singleton_class.include?(root))
+        end
+        children = root.constants(false).to_h do |constant|
+          value = root.const_get(constant, false)
+          kind = if value.instance_of?(Module)
+                   value.constants(false).empty? ? :module : :populated_module
+                 else
+                   :value
+                 end
+          [constant.to_s, kind]
+        end
+        [name, [root.class, mixed, children]]
+      end
+      $stdout.binmode.write(Marshal.dump(facts))
+    RUBY
+    output, error, status = Bundler.with_unbundled_env do
+      Open3.capture3({ "RUBYOPT" => nil, "RUBYLIB" => nil }, RbConfig.ruby, "--disable-gems", "-e", probe,
+                     *names::REOPENABLE_ROOTS, binmode: true)
+    end
+    expect(status.success?).to be(true), error
+    facts = Marshal.load(output) # rubocop:disable Security/MarshalLoad
+    expect(facts.keys).to eq(names::REOPENABLE_ROOTS)
+    expect(names::REOPENABLE_ROOTS - names::TOP_LEVEL_RESERVED).to be_empty
+    facts.each do |root, (type, mixed, children)|
+      expect([type, mixed]).to eq([Module, false]), "#{root} must be a plain, unmixed module"
+      expect(children.select { |_name, kind| kind == :populated_module }.keys).to be_empty
+      modules = children.select { |_name, kind| kind == :module }.keys.sort
+      expect(modules).to eq(names::BUILTIN_MODULE_CHILDREN.fetch(root, []).sort), "#{root} module children"
+      fixed_values = names::BUILTIN_VALUE_CHILDREN.fetch(root, [])
+      values = children.select { |_name, kind| kind == :value }.keys
+      uncovered = values.reject { |name| fixed_values.any? { |entry| entry === name } } # rubocop:disable Style/CaseEquality
+      expect(uncovered).to be_empty, "Unprotected #{root} constants: #{uncovered.join(' ')}"
+      expect(fixed_values.grep(String) - values).to be_empty, "#{root} value children"
+    end
+  end
+
+  it "generates a target that imports a builtin module package and uses its messages" do
+    request = request_for
+    imported = Google::Protobuf::FileDescriptorProto.new(
+      name: "imported.proto", package: "math.v1", syntax: "proto3",
+      message_type: [Google::Protobuf::DescriptorProto.new(name: "Imported")]
+    )
+    request.proto_file << imported
+    request.proto_file.first.dependency << imported.name
+    request.proto_file.first.service.first["method"].first.input_type = ".math.v1.Imported"
+    response = generate(request)
+    expect(response.error).to eq("")
+    expect(response.file.first.content).to include('require "imported_pb"', '"math.v1.Imported"')
+  end
+
+  {
+    "net.v1" => "Reserved top-level Ruby constant Net ", "math.e" => "Reserved builtin Ruby constant Math::E "
+  }.each do |package, message|
+    it "rejects a loaded import in package #{package} and names ruby_package" do
+      request = request_for
+      imported = Google::Protobuf::FileDescriptorProto.new(
+        name: "imported.proto", package: package,
+        message_type: [Google::Protobuf::DescriptorProto.new(name: "Imported")]
+      )
+      request.proto_file << imported
+      request.proto_file.first.dependency << imported.name
+      response = generate(request)
+      expect(response.error).to include(message, "imported.proto", "ruby_package")
+      expect(response.file).to be_empty
+    end
+  end
+
+  it "validates large package-less schemas in roughly linear time" do
+    build = lambda do |count|
+      messages = Array.new(count) do |index|
+        Google::Protobuf::DescriptorProto.new(name: "M#{index}",
+                                              nested_type: [Google::Protobuf::DescriptorProto.new(name: "Inner")])
+      end
+      rpc = Google::Protobuf::MethodDescriptorProto.new(name: "Call", input_type: ".M0", output_type: ".M1.Inner")
+      file = Google::Protobuf::FileDescriptorProto.new(
+        name: "bulk.proto", syntax: "proto3", message_type: messages,
+        service: [Google::Protobuf::ServiceDescriptorProto.new(name: "BulkService", method: [rpc])]
+      )
+      Google::Protobuf::Compiler::CodeGeneratorRequest.new(file_to_generate: [file.name], proto_file: [file])
+    end
+    small = build.call(1_500)
+    large = build.call(6_000)
+    response = generate(large)
+    expect(response.error).to eq("")
+    expect(response.file.first.content).to include("module BulkService", '"M0"', '"M1.Inner"', "def call(request")
+    # Same-run thread CPU ratio: 4x input stays well under quadratic 16x on any
+    # runner speed, and other threads in the suite cannot inflate either sample.
+    cpu = lambda do |request|
+      Array.new(3) do
+        GC.start
+        started = Process.clock_gettime(Process::CLOCK_THREAD_CPUTIME_ID)
+        generate(request)
+        Process.clock_gettime(Process::CLOCK_THREAD_CPUTIME_ID) - started
+      end.min
+    end
+    small_time = cpu.call(small)
+    large_time = cpu.call(large)
+    expect(large_time / small_time).to be < 8, format("1,500: %<small>.3fs, 6,000: %<large>.3fs CPU",
+                                                      small: small_time, large: large_time)
+  end
+
   %w[file ConnectRPC].each do |package|
     it "rejects incompatible loaded import package #{package}" do
       request = request_for
