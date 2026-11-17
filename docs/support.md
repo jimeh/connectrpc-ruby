@@ -451,9 +451,11 @@ unary, client-streaming or fallback response that waits `response_body_timeout`
 (default 60 seconds) for flow-control credit is reset with `CANCEL`, like
 nginx's `send_timeout`. Each HTTP/2 frame write must finish within the keepalive
 `timeout`, or 20 seconds without keepalive, or the connection is aborted. That
-second bound applies to every RPC shape. grpc-go has no flow-control wait bound,
-but sets `TCP_USER_TIMEOUT` to its keepalive timeout, so the kernel fails a
-connection whose sent data stays unacknowledged that long. Go's
+second bound applies to every RPC shape. It is a deadline for each write, which
+a slow peer can miss while still reading, because a write blocked on a full
+send buffer waits for the peer to drain part of it. grpc-go has no flow-control
+wait bound, but sets `TCP_USER_TIMEOUT` to its keepalive timeout, so the kernel
+fails a connection only when its sent data stays unacknowledged that long. Go's
 `golang.org/x/net/http2` server has no credit bound either; its
 `WriteByteTimeout` is off by default, and `http.Server.WriteTimeout` limits the
 whole response of every stream shape, which is why streaming servers leave it

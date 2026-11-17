@@ -190,11 +190,18 @@ set `max_concurrent_streams` lower explicitly.
   shape and whatever `response_body_timeout` is. A peer that stops reading its
   socket fills the server's send buffer and stalls the write; the connection is
   then aborted raw socket first, which cancels its handlers and releases all of
-  its slots. The bound applies to each frame or header block, and a DATA frame
-  is at most the peer's `SETTINGS_MAX_FRAME_SIZE`, 16 KiB with common clients.
-  It does not cover a whole response, and steady progress within one frame does
-  not extend it. Application work under the guard, such as closing a HEAD
-  response's body, does not count as a frame write.
+  its slots. The bound applies to each frame or header block, not to a whole
+  response, and steady progress within one write does not extend it. A write
+  finishes when the kernel accepts its bytes. Once the socket's send buffer is
+  full, the kernel accepts more only after the peer has drained part of it,
+  which on Linux can be a third of the buffer, up to about 1 MiB with the
+  default 4 MiB maximum. So a peer that keeps reading, but too slowly to drain
+  that much within the bound, is also aborted. Unlike grpc-go's
+  `TCP_USER_TIMEOUT`, which fires only when no sent data is acknowledged, the
+  bound is not reset by partial progress. Raise the keepalive `timeout` for
+  clients that read large responses over slow links. Application work under the
+  guard, such as closing a HEAD response's body, does not count as a frame
+  write.
 
 These limits do not bound every way to hold a slot:
 
@@ -212,6 +219,10 @@ These limits do not bound every way to hold a slot:
   `max_connection_age` with `max_connection_age_grace`, or `close` ends the
   call. Keepalive does not, because the peer keeps answering PINGs. A peer that
   stops reading its socket altogether hits the frame write bound instead.
+- A peer that grants a little credit just within each `response_body_timeout`
+  keeps a bounded stream, since each grant starts a new wait, as with nginx's
+  `send_timeout`. A call deadline, `max_connection_age` with
+  `max_connection_age_grace`, or `close` ends it.
 
 ### Fallback application
 
