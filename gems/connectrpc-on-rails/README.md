@@ -350,6 +350,19 @@ These rows do not promise every framework/runtime combination. As checked on
 ending 2026-11-07 for 8.0 and 2027-10-10 for 8.1. The 8.0 compatibility lane
 is not a promise to extend upstream maintenance.
 
+Rails 8.0 and Rails 8.1 before 8.1.4 draw routes lazily in development and
+test when `config.eager_load` is false, and the first draw is not
+thread-safe. Concurrent first requests, such as those a multi-threaded server
+or a threaded test sends, can then fail with `No route matches` for any valid
+route, including ConnectRPC routes. Rails 8.1.4 fixed this upstream ("Make
+lazy route loading thread-safe"). On earlier versions, set
+`config.eager_load = true` in the affected environment so routes are drawn at
+boot. Otherwise, each server process must complete one request that reaches the
+Rails router before it receives concurrent traffic. A file that
+`ActionDispatch::Static` serves does not count, because it never reaches the
+router. Other environments, including production, draw routes at boot and are
+not affected.
+
 ## Development
 
 From the repository root:

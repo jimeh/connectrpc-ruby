@@ -33,4 +33,8 @@ module RailsIntegration
   end
 
   APP = Application.initialize!
+  # Draw routes at boot. Before Rails 8.1.4, lazy route loading marks routes
+  # loaded before drawing them without a lock, so concurrent first requests
+  # can match an empty or partial route set (#86).
+  APP.reload_routes_unless_loaded
 end
