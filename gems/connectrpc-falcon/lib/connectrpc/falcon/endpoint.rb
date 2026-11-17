@@ -17,22 +17,31 @@ module ConnectRPC
       def build_endpoint(endpoint = nil)
         endpoint || tcp_endpoint
       end
+
+      # Forked workers inherit the parent-bound listener; exec'd children must
+      # not. An explicit caller value wins.
+      def bound(close_on_exec: true, **)
+        super
+      end
     end
 
     # socket_accept runs before Wrapper schedules the accepted task, including
     # connections with no ClientHello yet. Never select a generation via SNI.
+    # It takes a peer only while this worker's session has a free slot, so a
+    # full worker leaves peers in the shared backlog for its siblings.
     class AcceptWrapper < ::IO::Endpoint::Wrapper
       def initialize(session, on_reject:)
         super()
         @session = session
         @on_reject = on_reject
         @listeners = {}
+        @backoff = ->(delay) { accept_backoff(delay) }
       end
 
       def socket_accept(server)
         @listeners[::Async::Task.current] = true
         loop do
-          raw, address = super
+          raw, address = @session.send(:accept_raw, server, @backoff)
           accepted = @session.accept(raw)
           return [accepted, address] if accepted
 
@@ -51,6 +60,12 @@ module ConnectRPC
       def stop
         @listeners.each_key(&:stop)
         @listeners.clear
+      end
+
+      private
+
+      def accept_backoff(delay)
+        sleep(delay)
       end
     end
     private_constant :AcceptWrapper

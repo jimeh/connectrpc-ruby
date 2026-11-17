@@ -4,7 +4,7 @@ module ConnectRPC
   module Falcon
     class Server < ::Falcon::Server
       def initialize(server:, endpoint:, rack_app: nil, cache: false, tls: nil, tls_provider: nil,
-                     utilization_registry: nil, max_connections: 128, max_requests: 128,
+                     utilization_registry: nil, max_connections: 1024, max_requests: 128,
                      handshake_timeout: 10, idle_timeout: 60, refresh_interval: 60,
                      refresh_jitter: 0.1, refresh_timeout: 10, on_tls_error: nil,
                      keepalive: ::ConnectRPC::Async::ServerKeepalive.new, max_concurrent_streams: 100,

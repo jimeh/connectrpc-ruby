@@ -15,7 +15,10 @@ module ConnectRPC
       end
 
       REQUIRED_KEYS = %i[version certificate_chain private_key client_ca].freeze
-      private_constant :REQUIRED_KEYS
+      # The expiry watcher re-reads the wall clock at least this often, so a
+      # clock adjustment delays the expired event by at most this many seconds.
+      EXPIRY_RECHECK = 60
+      private_constant :REQUIRED_KEYS, :EXPIRY_RECHECK
 
       def initialize(tls: nil, tls_provider: nil, refresh_interval: 60, refresh_jitter: 0.1,
                      refresh_timeout: 10, on_error: nil, alpn_protocols: ["h2"])
@@ -46,6 +49,7 @@ module ConnectRPC
         @alpn = alpn_protocols.map { |value| value.dup.freeze }.freeze
         @state = :new
         @timer_progress = ::Async::Condition.new
+        @expiry_progress = ::Async::Condition.new
         @lifetime = @owner.async do
           ::Async::Condition.new.wait
         ensure
@@ -61,7 +65,8 @@ module ConnectRPC
         now = Internal.now
         { state: @state, generation: @generation, category: @category,
           source_check_age: @checked_at && (now - @checked_at),
-          publication_age: @published_at && (now - @published_at) }.freeze
+          publication_age: @published_at && (now - @published_at),
+          identity_expires_at: @snapshot&.expires_at }.freeze
       end
 
       def start
@@ -80,6 +85,7 @@ module ConnectRPC
 
         @state = :running
         start_timer if @provider && !@timer
+        watch_expiry if @snapshot && !@expiry
         self
       rescue LifecycleError
         raise
@@ -126,7 +132,6 @@ module ConnectRPC
         check_affinity!
         raise LifecycleError, "TLS admission is closed" unless @state == :running
 
-        @snapshot&.check_validity!
         Capture.new(raw, @snapshot, @generation)
       end
       private :capture
@@ -141,7 +146,6 @@ module ConnectRPC
         end
 
         def handshake
-          @snapshot&.check_validity!
           @socket ||= @snapshot ? @snapshot.socket(@raw) : @raw
           yield @socket if block_given?
           @socket.accept if @snapshot
@@ -165,8 +169,10 @@ module ConnectRPC
         raise LifecycleError, "Use the owning Async reactor and thread"
       end
 
+      # The provider callback, its attempt and the expiry watcher all run
+      # application callbacks, which must not drive this lifecycle.
       def check_recursion!
-        return unless @callback&.current? || @attempt&.current?
+        return unless @callback&.current? || @attempt&.current? || @expiry&.current?
 
         raise LifecycleError, "Recursive TLS provider lifecycle call"
       end
@@ -183,6 +189,7 @@ module ConnectRPC
         @generation = (@generation || 0) + 1
         @published_at = @checked_at = Internal.now
         @category = nil
+        @expiry_progress.signal
       end
 
       def join_attempt
@@ -272,6 +279,44 @@ module ConnectRPC
         end
       end
 
+      # Waits for the current snapshot's earliest identity-chain not_after on
+      # the wall clock, as X.509 validity is defined, and reports :expired once
+      # per generation. The snapshot keeps serving: candidates are validated at
+      # publication, so only an identity that expires while published is
+      # served expired, and a verifying client gets a certificate error.
+      def watch_expiry
+        # Store the identity before the first report can run, so the recursion
+        # guard already covers it.
+        @expiry = ::Async::Task.new(@lifetime, finished: false) do |task|
+          while @state == :running
+            expires = @snapshot.expires_at
+            remaining = expires - Time.now
+            if remaining <= 0 && @expired_generation != @generation
+              @expired_generation = @generation
+              @expiry_reporting = true
+              begin
+                report(:expired)
+              ensure
+                @expiry_reporting = false
+              end
+              next
+            end
+
+            wait = remaining.positive? ? [remaining, EXPIRY_RECHECK].min : Internal::MAX_WAIT
+            begin
+              task.with_timeout(wait) { @expiry_progress.wait }
+            rescue ::Async::TimeoutError
+              nil
+            end
+          end
+        end
+        @expiry.run
+      end
+
+      # The provider attempt and the expiry watcher report from separate tasks.
+      # Each event's status is a frozen snapshot taken right after its category
+      # is recorded, without yielding, so concurrent reporter calls never see
+      # each other's status.
       def report(category)
         @category = category
         event = { category: category, status: status }.freeze
@@ -281,9 +326,13 @@ module ConnectRPC
           rescue StandardError, ScriptError
             warn "ConnectRPC TLS error reporter failed"
           end
+        elsif category == :expired
+          warn "ConnectRPC TLS identity expired"
         else
           warn "ConnectRPC TLS refresh failed (#{category})"
         end
+      rescue IOError, SystemCallError
+        nil # A broken diagnostic stream must not end the watcher or a refresh.
       end
 
       def fail_safely(category)
@@ -296,9 +345,16 @@ module ConnectRPC
 
         @state = :closing
         Internal.cancel(@timer)
+        # Cancelling a parked task is a scheduling point. A parked watcher can
+        # no longer report once the state leaves :running, and the lifetime
+        # cancellation below ends it, so only a watcher inside its reporter is
+        # cancelled and joined here.
+        reporting = @expiry_reporting
+        Internal.cancel(@expiry) if reporting
         Internal.cancel(@attempt)
         Internal.cancel(@callback)
         Internal.join(@timer)
+        Internal.join(@expiry) if reporting
         Internal.join(@callback)
         Internal.join(@attempt)
         @state = :closed

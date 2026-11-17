@@ -514,6 +514,43 @@ RSpec.describe "Real Falcon process-worker lifecycle" do
     end
   end
 
+  it "leaves a peer to the sibling worker while one worker holds its max_connections" do
+    reactor do
+      reader, writer = IO.pipe
+      writer = FalconProcessFixtures::FalconEventWriter.new(writer)
+      writer.sync = true
+      rack = lambda do |_env|
+        body = Process.pid.to_s
+        [200, { "content-type" => "text/plain", "content-length" => body.bytesize.to_s,
+                "cache-control" => "no-store" }, [body]]
+      end
+      config = configuration(writer, make_core: -> { server }, rack: rack, count: 2, max_connections: 1)
+      cluster = FalconProcessFixtures::FalconProcessCluster.new(config, reader, writer)
+      cluster.event(:running, count: 2)
+      origin = "http://127.0.0.1:#{cluster.service.port}"
+      serving_pid = lambda do |wire|
+        wire.write("GET /pid HTTP/1.1\r\nHost: localhost\r\n\r\n")
+        _status, fields = wire.head
+        Integer(wire.socket.read(Integer(fields.fetch("content-length").first)))
+      end
+      held = ConnectH1Wire.new(origin)
+      full = serving_pid.call(held)
+      # A worker that took a peer while full would reset it (EOFError here).
+      served = Array.new(8) do
+        wire = ConnectH1Wire.new(origin)
+        serving_pid.call(wire)
+      ensure
+        wire&.close
+      end
+      expect(served.uniq.size).to eq(1)
+      expect(served).not_to include(full)
+      expect(cluster.events.map { |event| event["kind"] }).not_to include("unhandled")
+    ensure
+      held&.close
+      cluster&.close
+    end
+  end
+
   # The forked worker cannot share a fake clock, so its real timers run with
   # short values; each check waits for the observed frames or EOF. The silent
   # client's PING timeout (about 0.4 s) must beat its age drain (at least

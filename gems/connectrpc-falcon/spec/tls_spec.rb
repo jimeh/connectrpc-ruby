@@ -149,12 +149,14 @@ RSpec.describe "Falcon TLS raw-accept generation" do
       end
     end
   end
-  it "rejects expired cached accepts and captured pending handshake starts while preserving established peers" do
+  it "serves an expired identity to pending and fresh peers, reports it once and recovers on reload" do
     reactor do |task|
       leaf = credentials(404, "localhost", issuer: tls_material[:root], usage: "serverAuth")
-      leaf.first.not_after = Time.now + 2
+      # Certificates hold whole seconds: this leaves 0.5 to 1.5 seconds.
+      leaf.first.not_after = Time.at((Time.now + 1.5).to_i)
       leaf.first.sign(tls_material[:root].last, "SHA256")
-      falcon(scheme: "https", tls: host_tls(leaf)) do |host, origin|
+      events = Async::Queue.new
+      falcon(scheme: "https", tls: host_tls(leaf), on_tls_error: ->(event) { events.enqueue(event) }) do |host, origin|
         with_ca do |ca|
           transport = ConnectRPC::Async::Transport.new(origin: origin, ca_file: ca)
           typed = client(transport, origin)
@@ -164,26 +166,45 @@ RSpec.describe "Falcon TLS raw-accept generation" do
           wait_until(task, "pending pre-expiry socket captured") do
             session.instance_variable_get(:@resources).size == 2
           end
-          # Actual certificate wall-clock expiry is the external timing boundary
-          # under test. No readiness or asynchronous completion is inferred here.
-          remaining = leaf.first.not_after - Time.now
+          # Actual certificate wall-clock expiry is the external timing
+          # boundary under test; the event wait is bounded.
+          event = task.with_timeout(5) { events.dequeue }
+          expect(event[:category]).to eq(:expired)
+          expect(host.tls_status).to include(generation: 1, category: :expired)
+          expect(host.tls_status[:identity_expires_at]).to be <= Time.now
+          # OpenSSL compares validity in whole seconds and still accepts the
+          # not_after second, so wait for the wall clock to pass it.
+          remaining = leaf.first.not_after + 1 - Time.now
           begin
-            task.with_timeout(remaining + 0.01) { Async::Condition.new.wait }
+            task.with_timeout(remaining) { Async::Condition.new.wait } if remaining.positive?
           rescue Async::TimeoutError
             nil
           end
-          expect do
-            peer(origin, context, raw: pending) { raise "Expired pending handshake succeeded" }
-          end.to raise_error(OpenSSL::SSL::SSLError)
-          fresh_raw = IO::Endpoint.tcp("127.0.0.1", URI(origin).port).connect
-          expect(fresh_raw.read(1)).to be_nil
+          [pending, nil].each do |raw|
+            expect do
+              peer(origin, context, raw: raw) { raise "Expired identity verified" }
+            end.to raise_error(OpenSSL::SSL::SSLError, /certificate has expired/)
+          end
+          # Deliberately unverified: this peer only observes the served identity.
+          unverified = OpenSSL::SSL::SSLContext.new
+          unverified.verify_mode = OpenSSL::SSL::VERIFY_NONE
+          unverified.alpn_protocols = ["h2"]
+          uri = URI(origin)
+          raw = IO::Endpoint.tcp(uri.hostname, uri.port).connect
+          ssl = OpenSSL::SSL::SSLSocket.new(raw, unverified)
+          ssl.connect
+          expect(ssl.peer_cert.serial.to_i).to eq(404)
           expect(typed.echo(AsyncHelpers::MESSAGE.new(name: "established")).message.name).to eq("established")
           expect(host.reload_tls(**host_tls)).to eq(2)
+          expect(host.tls_status).to include(generation: 2, category: nil)
+          expect(host.tls_status[:identity_expires_at]).to be > Time.now
           peer(origin, context) { |ssl| expect(ssl.peer_cert.serial.to_i).to eq(101) }
+          expect(events).to be_empty
         ensure
           transport&.close(grace: 0)
+          ssl&.close
+          AsyncHelpers::INTERNAL.raw_close(raw)
           AsyncHelpers::INTERNAL.raw_close(pending)
-          AsyncHelpers::INTERNAL.raw_close(fresh_raw)
         end
       end
     end
@@ -227,7 +248,7 @@ RSpec.describe "Falcon TLS raw-accept generation" do
     end
   end
 
-  it "accounts for setup timeout and pre-handshake admission rejection without leaking connection metrics" do
+  it "accounts for setup timeouts of a slot holder and the peer queued behind it without leaking metrics" do
     reactor do |task|
       registry = Async::Utilization::Registry.new
       falcon(scheme: "https", tls: host_tls, utilization_registry: registry,
@@ -235,9 +256,10 @@ RSpec.describe "Falcon TLS raw-accept generation" do
         first = IO::Endpoint.tcp("127.0.0.1", URI(origin).port).connect
         wait_until(task, "first silent raw socket accepted") { registry.metric(:connections_total).value == 1 }
         excess = IO::Endpoint.tcp("127.0.0.1", URI(origin).port).connect
-        expect(excess.read(1)).to be_nil
+        # The queued peer is accepted once the first times out, then times out itself.
         expect(first.read(1)).to be_nil
-        wait_until(task, "setup rejection metrics finished") { registry.metric(:connections_active).value.zero? }
+        expect(excess.read(1)).to be_nil
+        wait_until(task, "setup timeout metrics finished") { registry.metric(:connections_active).value.zero? }
         expect(registry.metric(:connections_total).value).to eq(2)
         expect(registry.metric(:requests_total).value).to eq(0)
       ensure

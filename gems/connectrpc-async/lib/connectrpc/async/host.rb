@@ -5,10 +5,8 @@ module ConnectRPC
     # Strict HTTP/2 listener composing the same worker session as other hosts.
     # An optional native fallback serves requests outside registered services.
     class Host
-      ACCEPT_RETRY_DELAYS = [0.05, 0.1, 0.2, 0.4, 0.5].freeze
-      ACCEPT_RETRY_ERRORS = [Errno::EMFILE, Errno::ENFILE, Errno::ENOBUFS, Errno::ENOMEM,
-                             Errno::ECONNABORTED, Errno::EINTR].freeze
-      private_constant :ACCEPT_RETRY_DELAYS, :ACCEPT_RETRY_ERRORS
+      BIND_ATTEMPTS = 5
+      private_constant :BIND_ATTEMPTS
 
       # The Host owns no tunnels or socket handoff, so its fallback receives no
       # CONNECT request and cannot switch protocols. Plain CONNECT has no path
@@ -37,7 +35,7 @@ module ConnectRPC
       attr_reader :port, :addresses
 
       def initialize(server:, host: "127.0.0.1", port: 0, tls: nil, tls_provider: nil,
-                     max_connections: 128, max_requests: 128, handshake_timeout: 10, idle_timeout: 60,
+                     max_connections: 1024, max_requests: 128, handshake_timeout: 10, idle_timeout: 60,
                      refresh_interval: 60, refresh_jitter: 0.1, refresh_timeout: 10, on_tls_error: nil,
                      keepalive: ServerKeepalive.new, fallback: nil, max_concurrent_streams: 100,
                      request_body_timeout: 60)
@@ -139,24 +137,44 @@ module ConnectRPC
         ServerSession.new(**)
       end
 
+      # Every resolved address shares one port. With port 0 the kernel picks
+      # it for the first address; a later address that already has that port
+      # in use restarts the whole bind, a bounded number of times.
       def bind
-        ::IO::Endpoint.tcp(@host, @requested_port).bound
+        addresses = Addrinfo.getaddrinfo(@host, @requested_port, nil, :STREAM)
+        ephemeral = addresses.first.ip_port.zero?
+        attempt = 0
+        begin
+          attempt += 1
+          bind_addresses(addresses)
+        rescue Errno::EADDRINUSE
+          raise unless ephemeral && addresses.size > 1 && attempt < BIND_ATTEMPTS
+
+          retry
+        end
+      end
+
+      def bind_addresses(addresses)
+        sockets = []
+        port = 0
+        addresses.each do |address|
+          address = Addrinfo.tcp(address.ip_address, port) unless port.zero?
+          socket = ::IO::Endpoint::Wrapper.default.bind(address)
+          sockets << socket
+          # Exec'd children must not inherit and keep serving the listener.
+          socket.close_on_exec = true
+          port = socket.local_address.ip_port
+        end
+        ::IO::Endpoint::BoundEndpoint.new(::IO::Endpoint.tcp(@host, port), sockets)
+      rescue Exception # rubocop:disable Lint/RescueException -- no listener outlives a failed bind
+        sockets.each { |socket| Internal.raw_close(socket) }
+        raise
       end
 
       def accept_loop(listener)
-        failures = 0
+        backoff = method(:accept_backoff)
         loop do
-          begin
-            raw, = listener.accept
-          rescue *ACCEPT_RETRY_ERRORS
-            raise if failures == ACCEPT_RETRY_DELAYS.size
-            return if @closing
-
-            accept_backoff(ACCEPT_RETRY_DELAYS.fetch(failures))
-            failures += 1
-            next
-          end
-          failures = 0
+          raw, = @session.send(:accept_raw, listener, backoff)
           accepted = @session.accept(raw)
           @session.schedule { accepted.serve } if accepted
         end

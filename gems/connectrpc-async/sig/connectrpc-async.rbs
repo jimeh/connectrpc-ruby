@@ -7,8 +7,8 @@ module ConnectRPC
     end
     type tls = { certificate_chain: Array[String], private_key: String, client_ca: Array[String]? }
     type tls_snapshot = { version: String, certificate_chain: Array[String], private_key: String, client_ca: Array[String]? }
-    type tls_category = :invalid | :source | :version_conflict | :timeout | :closed
-    type tls_status = { state: :new | :starting | :running | :closing | :closed, generation: Integer?, category: tls_category?, source_check_age: Float?, publication_age: Float? }
+    type tls_category = :invalid | :source | :version_conflict | :timeout | :closed | :expired
+    type tls_status = { state: :new | :starting | :running | :closing | :closed, generation: Integer?, category: tls_category?, source_check_age: Float?, publication_age: Float?, identity_expires_at: Time? }
     type tls_event = { category: tls_category, status: tls_status }
     interface _TLSProvider
       def call: () -> tls_snapshot

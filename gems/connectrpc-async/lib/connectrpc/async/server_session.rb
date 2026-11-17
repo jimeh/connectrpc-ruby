@@ -5,7 +5,15 @@ module ConnectRPC
     class ServerSession
       include Internal::Affinity
 
-      def initialize(application:, tls: nil, tls_provider: nil, max_connections: 128, max_requests: 128,
+      # Resource errors back off like Go net/http's Server.Serve; an aborted
+      # handshake or an interrupted call retries after one scheduler turn.
+      ACCEPT_RESOURCE_ERRORS = [Errno::EMFILE, Errno::ENFILE, Errno::ENOBUFS, Errno::ENOMEM].freeze
+      ACCEPT_IMMEDIATE_ERRORS = [Errno::ECONNABORTED, Errno::EINTR].freeze
+      ACCEPT_INITIAL_DELAY = 0.005
+      ACCEPT_MAX_DELAY = 1.0
+      private_constant :ACCEPT_RESOURCE_ERRORS, :ACCEPT_IMMEDIATE_ERRORS, :ACCEPT_INITIAL_DELAY, :ACCEPT_MAX_DELAY
+
+      def initialize(application:, tls: nil, tls_provider: nil, max_connections: 1024, max_requests: 128,
                      handshake_timeout: 10, idle_timeout: 60, refresh_interval: 60, refresh_jitter: 0.1,
                      refresh_timeout: 10, on_tls_error: nil, alpn_protocols: ["h2"], http1: nil, stop_accepting: nil,
                      on_request_rejected: nil, lifecycle_factory: nil, keepalive: ServerKeepalive.new,
@@ -138,10 +146,11 @@ module ConnectRPC
 
       # Hosting SPI. Capture must happen in the accepting task before it
       # schedules any handshake work. The returned handle owns this one peer.
+      # Listeners that take raw sockets through `accept_raw` never reach the
+      # over-capacity close; it remains a fallback for other callers.
       def accept(raw)
         check_affinity!
-        @resources.reject! { |resource| resource.send(:retirement_completed?) }
-        unless @state == :running && @resources.size < @max_connections
+        unless @state == :running && capacity?
           Internal.raw_close(raw)
           return
         end
@@ -196,6 +205,49 @@ module ConnectRPC
         raise LifecycleError, "Server session cannot start after close" unless @state == :new
 
         @tls.send(:check_recursion!)
+      end
+
+      def capacity?
+        @resources.reject! { |resource| resource.send(:retirement_completed?) }
+        @resources.size < @max_connections
+      end
+
+      # Resources signal the shared progress condition when they change and
+      # once their retirement completes, which frees their slot.
+      def wait_for_capacity
+        @progress.wait until capacity?
+      end
+
+      # Hosting SPI step shared by the Host and Falcon listeners. It takes a
+      # peer from `listener` only while a slot is free, so peers above
+      # `max_connections` wait in the kernel backlog, where a sibling listener
+      # or worker process can take them. The capacity check, accept_nonblock
+      # and the caller's following synchronous `accept(raw)` do not yield, so
+      # concurrent listeners never exceed the limit. Resource errors back off
+      # through `backoff`, which receives the delay in seconds. Other errors
+      # propagate to the listener.
+      def accept_raw(listener, backoff)
+        delay = nil
+        loop do
+          wait_for_capacity
+          listener.wait_readable
+          next unless capacity?
+
+          pair = listener.accept_nonblock(exception: false)
+          return pair unless pair == :wait_readable
+        rescue *ACCEPT_RESOURCE_ERRORS => e
+          delay = delay ? [delay * 2, ACCEPT_MAX_DELAY].min : ACCEPT_INITIAL_DELAY
+          begin
+            warn "ConnectRPC accept error: #{e.class}; retrying in #{delay}s"
+          rescue IOError, SystemCallError
+            nil # A broken diagnostic stream must not end the listener.
+          end
+          backoff.call(delay)
+        rescue *ACCEPT_IMMEDIATE_ERRORS
+          # Cross a scheduling boundary so a sustained stream of these
+          # cannot starve established connections or close.
+          ::Async::Task.current.yield
+        end
       end
 
       def check_running_tls!
