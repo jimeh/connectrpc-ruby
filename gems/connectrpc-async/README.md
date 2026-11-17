@@ -199,10 +199,14 @@ set `max_concurrent_streams` lower explicitly.
   that much within the bound, is also aborted. Unlike grpc-go's
   `TCP_USER_TIMEOUT`, which fires when sent data stays unacknowledged, or unsent
   behind a zero window, for that long, so that any progress resets it, this
-  bound is not reset by partial progress. Raise `frame_write_timeout` for
-  clients that read large responses over slow links; nil turns the bound off,
-  leaving only keepalive to catch a peer that also stops answering PINGs.
-  Otherwise the value is finite positive seconds. Application work under the
+  bound is not reset by partial progress. A control frame queued behind a
+  stalled write, such as the ACK of a client's BDP or keepalive PING, waits
+  for that write's bound instead of failing the connection at the keepalive
+  `timeout` first. Raise `frame_write_timeout` for clients that read large
+  responses over slow links. nil turns the bound off; a control frame queued
+  behind a stalled write then still ends the connection after the keepalive
+  `timeout`, or 20 seconds without keepalive. Otherwise the value is finite
+  positive seconds. Application work under the
   guard, such as closing a HEAD response's body, does not count as a frame
   write.
 
@@ -1130,7 +1134,7 @@ The session forwards TLS lifecycle/identity operations, bounded `close` and
 raw-first `abort` for listener/setup failure. Its `keepalive:` (default
 `ServerKeepalive.new`), graceful `idle_timeout`, `max_concurrent_streams:`,
 `request_body_timeout:`, `response_body_timeout:` and `frame_write_timeout:`
-(both since 0.3.0) and the [receive windows](#flow-control-windows) apply to
+(all since 0.3.0) and the [receive windows](#flow-control-windows) apply to
 HTTP/2 resources only; see [Stream admission](#stream-admission). An application other
 than `Application` gets the request and response body bounds on every HTTP/2
 request. Falcon's HTTP/1 resource keeps

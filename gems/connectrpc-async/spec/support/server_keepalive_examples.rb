@@ -1081,6 +1081,57 @@ RSpec.shared_examples "HTTP/2 server keepalive" do
       end
     end
 
+    # A control frame queued behind a timed frame write, such as the ACK of
+    # a grpc-go BDP PING, waits for that write's own bound instead of
+    # failing the connection at its 20 s deadline. Without the write bound,
+    # the control frame deadline still ends the connection.
+    def due_at(clock, due) = clock.sleepers.count { |sleeper| (sleeper.due - due).abs < 1e-9 }
+
+    it "keeps a control frame queued behind a held write until the frame write bound" do
+      reactor do |task|
+        with_keepalive_host(task, keepalive: server_keepalive(time: nil)) do |fixture|
+          client = fixture.client
+          watch(fixture, "sibling", "one")
+          gate = hold_frames(fixture.resource, Protocol::HTTP2::DataFrame::TYPE)
+          fixture.log[:feeds]["sibling"].enqueue("two")
+          gate.started.dequeue
+          send_ping(client, "bdp00001")
+          await_due(task, fixture.clock, 20)
+          fixture.clock.advance(20)
+          wait_until(task, "the control deadline waits for the write bound") { due_at(fixture.clock, 60) == 2 }
+          expect(fixture.resource).not_to be_finished
+          fixture.clock.advance(39.9)
+          expect(fixture.resource).not_to be_finished
+          fixture.clock.advance(0.1)
+          wait_until(task, "connection retired") { retired?(fixture.resource) }
+          expect(client.wire.acks).to eq([])
+        ensure
+          gate&.release&.enqueue(true)
+        end
+      end
+    end
+
+    it "ends a held write at the control frame deadline with frame_write_timeout: nil" do
+      reactor do |task|
+        with_keepalive_host(task, keepalive: server_keepalive(time: nil), frame_write_timeout: nil) do |fixture|
+          client = fixture.client
+          watch(fixture, "sibling", "one")
+          gate = hold_frames(fixture.resource, Protocol::HTTP2::DataFrame::TYPE)
+          fixture.log[:feeds]["sibling"].enqueue("two")
+          gate.started.dequeue
+          send_ping(client, "bdp00001")
+          await_due(task, fixture.clock, 20)
+          fixture.clock.advance(19.9)
+          expect(fixture.resource).not_to be_finished
+          fixture.clock.advance(0.1)
+          wait_until(task, "connection retired") { retired?(fixture.resource) }
+          expect(client.wire.acks).to eq([])
+        ensure
+          gate&.release&.enqueue(true)
+        end
+      end
+    end
+
     it "lets a held frame write outlast the bound with frame_write_timeout: nil" do
       reactor do |task|
         with_keepalive_host(task, keepalive: server_keepalive(time: nil), frame_write_timeout: nil) do |fixture|

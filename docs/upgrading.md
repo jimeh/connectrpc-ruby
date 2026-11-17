@@ -157,7 +157,9 @@ and [Accept errors](../gems/connectrpc-async/README.md#accept-errors).
   reading their socket, for every RPC shape. A write blocked on a full send
   buffer finishes only once the peer has drained part of that buffer, so raise
   the bound with the new `frame_write_timeout:` option for clients that read
-  large responses over slow links (nil turns it off).
+  large responses over slow links. With nil, a control frame such as a PING
+  ACK queued behind the stalled write still ends the connection after the
+  keepalive `timeout`.
 
 These affect `connectrpc-sentry` client propagation. See
 [Propagation](../gems/connectrpc-sentry/README.md#propagation).
