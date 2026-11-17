@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.1](https://github.com/jimeh/connectrpc-ruby/compare/v0.2.0...v0.2.1) (2026-11-17)
+
+
+### Bug Fixes
+
+* reset cancelled H2 uploads with CANCEL and pass host errors explicitly ([#96](https://github.com/jimeh/connectrpc-ruby/issues/96)) ([358e3e1](https://github.com/jimeh/connectrpc-ruby/commit/358e3e19ee527aa39c622691f6e178cb7a615009))
+
 ## [0.2.0](https://github.com/jimeh/connectrpc-ruby/compare/v0.1.2...v0.2.0) (2026-11-16)
 
 
