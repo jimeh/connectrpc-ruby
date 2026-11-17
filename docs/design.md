@@ -588,9 +588,11 @@ Admission-only calls have no fabricated processing result. Portable Rack
 response-finished callbacks take precedence over body close and have their own
 label; they never claim native full-write completion. A consumer that neither
 closes a body nor runs promised callbacks can leave observation unfinished.
-Native Async/Falcon own explicit request exchanges before admission, independent
-handler activation and write/reset/cleanup evidence. Connection setup before an
-RPC exists remains outside this scope. See the
+Native Async/Falcon own explicit request exchanges before handler start,
+independent handler activation and write/reset/cleanup evidence. An HTTP/2
+stream that full host admission refuses while its HEADERS are read gets its
+exchange after the refusal, in a session task, and is never activated.
+Connection setup before an RPC exists remains outside this scope. See the
 [OTel guide](../gems/connectrpc-otel/README.md) for trace semantics, privacy,
 HTTP instrumentation nesting and synchronous processor costs.
 

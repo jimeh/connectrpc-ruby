@@ -836,6 +836,413 @@ RSpec.shared_examples "HTTP/2 server keepalive" do
         end
       end
     end
+
+    # Holds the session's lifecycle factory for requests that carry x-gate,
+    # recording their stream ids, until the example resolves `release`.
+    def gate_lifecycle(fixture)
+      session = keepalive_session(fixture.host)
+      factory = session.instance_variable_get(:@lifecycle_factory)
+      gate = { held: [], release: Async::Promise.new }
+      session.instance_variable_set(:@lifecycle_factory, lambda do |request|
+        if request.headers["x-gate"]
+          gate[:held] << request.stream.id
+          gate[:release].wait
+        end
+        factory&.call(request)
+      end)
+      gate
+    end
+
+    def release_gate(gate)
+      gate[:release].resolve(true) if gate && !gate[:release].resolved?
+    end
+
+    # Records each call of the session's rejection hook, which Falcon counts
+    # in requests_total, before calling it.
+    def count_rejections(fixture)
+      session = keepalive_session(fixture.host)
+      hook = session.instance_variable_get(:@on_request_rejected)
+      rejections = []
+      session.instance_variable_set(:@on_request_rejected, lambda do
+        rejections << true
+        hook&.call
+      end)
+      rejections
+    end
+
+    # The served resource of the connection after the fixture's own.
+    def second_resource(task, fixture)
+      resources = keepalive_session(fixture.host).instance_variable_get(:@resources)
+      resource = nil
+      wait_until(task, "second server connection") do
+        resource = resources.find do |candidate|
+          !candidate.equal?(fixture.resource) && candidate.upkeep && candidate.connection&.reader_task
+        end
+      end
+      resource
+    end
+
+    # Counts the DATA bytes each later stream of `connection` takes as body.
+    def body_bytes(connection)
+      received = Hash.new(0)
+      spy = Module.new do
+        define_method(:process_data) do |frame|
+          received[id] += frame.length
+          super(frame)
+        end
+      end
+      connection.define_singleton_method(:create_stream) do |*arguments, &block|
+        super(*arguments, &block).tap { |stream| stream.extend(spy) }
+      end
+      received
+    end
+
+    # Writes whole requests, each HEADERS followed by its DATA, in one flush.
+    def raw_requests(client, requests)
+      connection = client.connection
+      connection.write_frames do |framer|
+        requests.each do |stream_id, headers, body|
+          frame = Protocol::HTTP2::HeadersFrame.new(stream_id)
+          frame.pack(connection.encode_headers(headers), maximum_size: connection.maximum_frame_size)
+          framer.write_frame(frame)
+          chunks = body.b.scan(/.{1,16384}/m)
+          chunks.each_with_index do |chunk, index|
+            last = index == chunks.size - 1
+            data = Protocol::HTTP2::DataFrame.new(stream_id, last ? Protocol::HTTP2::END_STREAM : 0)
+            data.pack(chunk)
+            framer.write_frame(data)
+          end
+        end
+      end
+    end
+
+    def rejected_completions(fixture)
+      fixture.log[:completions].select { |completion| completion.decision == :admission_rejected }
+    end
+
+    # The refusal is decided while the HEADERS are read: it reaches the wire
+    # while the lifecycle factory for the stream is still held, so dispatch
+    # never saw it, and the reader takes none of its DATA as body.
+    it "refuses a stream at HEADERS, before reading its DATA, when host admission is full" do
+      reactor do |task|
+        with_keepalive_host(task, keepalive: server_keepalive(time: nil), max_requests: 1,
+                                  connection_receive_window: 65_535) do |fixture|
+          gate = gate_lifecycle(fixture)
+          rejections = count_rejections(fixture)
+          held = task.async { unary(fixture, "hold-admission") }
+          wait_until(task, "held call invoked") { fixture.log[:invoked] == ["hold-admission"] }
+          other = keepalive_client(task, fixture.host.port)
+          connection = second_resource(task, fixture).connection
+          received = body_bytes(connection)
+          refused = other.connection.next_stream_id
+          raw_requests(other, [[refused, request_headers(echo_path, %w[x-gate 1]), "x" * 40_000]])
+          # The control writer queues the reset before the PING's ACK.
+          ping_through(task, other, "refused1")
+          expect(other.wire.resets).to eq(refused => KeepaliveClient::REFUSED_STREAM)
+          expect(gate[:held]).to eq([refused])
+          expect(fixture.log[:completions]).to eq([])
+          expect(received).to eq({})
+          expect(connection.streams).to be_empty
+          # Connection credit for the ignored DATA returns once it crosses
+          # half of the 65,535-byte window.
+          expect(other.wire.credit[0]).to eq(40_000)
+
+          release_gate(gate)
+          wait_until(task, "refusal observed") { fixture.log[:completions].size == 1 }
+          completion = fixture.log[:completions].first
+          expect([completion.decision, completion.http_status, completion.delivery])
+            .to eq([:admission_rejected, nil, :completed])
+          expect(rejections.size).to eq(1)
+          fixture.log[:holds]["hold-admission"].enqueue(true)
+          expect(held.wait).to eq([200, encoded("hold-admission")])
+          response = other.connection.call(connect_request(echo_path, "after"))
+          expect([response.status, response.read]).to eq([200, encoded("after")])
+          expect(fixture.log[:invoked]).to eq(%w[hold-admission after])
+          expect(rejected_completions(fixture).size).to eq(1)
+          expect(rejections.size).to eq(1)
+          expect(other.wire.reset_counts).to eq(refused => 1)
+          expect(other.wire.goaways).to eq([])
+        ensure
+          release_gate(gate)
+          close_keepalive_client(other)
+        end
+      end
+    end
+
+    # HEADERS read together reserve slots in order, so one free slot admits
+    # exactly the first stream before any of them dispatches.
+    it "admits one stream of a HEADERS burst into one free slot and refuses the rest at HEADERS" do
+      reactor do |task|
+        with_keepalive_host(task, keepalive: server_keepalive(time: nil), max_requests: 3) do |fixture|
+          gate = gate_lifecycle(fixture)
+          rejections = count_rejections(fixture)
+          held = %w[hold-a hold-b]
+          holds = held.map { |name| task.async { unary(fixture, name) } }
+          wait_until(task, "held calls invoked") { fixture.log[:invoked].sort == held }
+          other = keepalive_client(task, fixture.host.port)
+          received = body_bytes(second_resource(task, fixture).connection)
+          ids = Array.new(3) { other.connection.next_stream_id }
+          names = %w[burst1 burst2 burst3]
+          raw_requests(other, ids.zip(names).map do |id, name|
+            [id, request_headers(echo_path, %w[x-gate 1]), encoded(name)]
+          end)
+          ping_through(task, other, "burst001")
+          expect(other.wire.resets).to eq(ids.drop(1).to_h { |id| [id, KeepaliveClient::REFUSED_STREAM] })
+          wait_until(task, "every factory held; held #{gate[:held]}") { gate[:held].size == 3 }
+          expect(gate[:held]).to match_array(ids)
+          expect(fixture.log[:completions]).to eq([])
+          expect(received).to eq(ids.first => encoded("burst1").bytesize)
+
+          release_gate(gate)
+          wait_until(task, "admitted response DATA") { other.wire.data_bytes[ids.first].positive? }
+          wait_until(task, "refusals observed") { rejected_completions(fixture).size == 2 }
+          expect(rejected_completions(fixture).map { |completion| [completion.http_status, completion.delivery] })
+            .to eq([[nil, :completed]] * 2)
+          expect(rejections.size).to eq(2)
+          held.each { |name| fixture.log[:holds][name].enqueue(true) }
+          expect(holds.map(&:wait)).to eq([[200, encoded("hold-a")], [200, encoded("hold-b")]])
+          expect(fixture.log[:invoked]).to match_array(%w[hold-a hold-b burst1])
+          expect(other.wire.reset_counts).to eq(ids.drop(1).to_h { |id| [id, 1] })
+          expect(other.wire.goaways).to eq([])
+        ensure
+          release_gate(gate)
+          close_keepalive_client(other)
+        end
+      end
+    end
+
+    # Raises from the session's lifecycle factory for requests that carry
+    # x-fail, recording their stream ids.
+    def fail_lifecycle(fixture)
+      session = keepalive_session(fixture.host)
+      factory = session.instance_variable_get(:@lifecycle_factory)
+      failed = []
+      session.instance_variable_set(:@lifecycle_factory, lambda do |request|
+        if request.headers["x-fail"]
+          failed << request.stream.id
+          raise "lifecycle factory failed"
+        end
+        factory&.call(request)
+      end)
+      failed
+    end
+
+    # Records each call of the session's rejection hook, then raises.
+    def fail_rejections(fixture)
+      session = keepalive_session(fixture.host)
+      attempts = []
+      session.instance_variable_set(:@on_request_rejected, lambda do
+        attempts << true
+        raise "rejection hook failed"
+      end)
+      attempts
+    end
+
+    # Holds the fixture connection's call in the only admission slot and
+    # opens a second connection for streams the host then refuses.
+    def fill_admission(task, fixture)
+      held = task.async { unary(fixture, "hold-admission") }
+      wait_until(task, "held call invoked") { fixture.log[:invoked] == ["hold-admission"] }
+      [held, keepalive_client(task, fixture.host.port)]
+    end
+
+    def release_admission(fixture, held)
+      fixture.log[:holds]["hold-admission"].enqueue(true)
+      expect(held.wait).to eq([200, encoded("hold-admission")])
+    end
+
+    # The rejection hook runs before the lifecycle factory, so a factory
+    # that raises still leaves the refusal counted, with no exchange.
+    it "counts a HEADERS refusal once when its lifecycle factory raises" do
+      reactor do |task|
+        with_keepalive_host(task, keepalive: server_keepalive(time: nil), max_requests: 1) do |fixture|
+          rejections = count_rejections(fixture)
+          failed = fail_lifecycle(fixture)
+          held, other = fill_admission(task, fixture)
+          refused = other.connection.next_stream_id
+          raw_requests(other, [[refused, request_headers(echo_path, %w[x-fail 1]), encoded("refused")]])
+          ping_through(task, other, "factory1")
+          expect(other.wire.resets).to eq(refused => KeepaliveClient::REFUSED_STREAM)
+          wait_until(task, "lifecycle factory raised") { failed == [refused] }
+          expect(rejections.size).to eq(1)
+
+          release_admission(fixture, held)
+          wait_until(task, "held call observed") { fixture.log[:completions].size == 1 }
+          expect(rejected_completions(fixture)).to eq([])
+          expect(rejections.size).to eq(1)
+          expect(other.wire.reset_counts).to eq(refused => 1)
+        ensure
+          close_keepalive_client(other)
+        end
+      end
+    end
+
+    # Delivery comes from the reset's write alone, so a rejection hook that
+    # raises leaves a written reset observed as completed.
+    it "completes a HEADERS refusal's delivery once its reset is written when the rejection hook raises" do
+      reactor do |task|
+        with_keepalive_host(task, keepalive: server_keepalive(time: nil), max_requests: 1) do |fixture|
+          attempts = fail_rejections(fixture)
+          held, other = fill_admission(task, fixture)
+          refused = other.connection.next_stream_id
+          raw_requests(other, [[refused, request_headers(echo_path), encoded("refused")]])
+          ping_through(task, other, "rejects1")
+          expect(other.wire.resets).to eq(refused => KeepaliveClient::REFUSED_STREAM)
+          wait_until(task, "refusal observed") { fixture.log[:completions].size == 1 }
+          completion = fixture.log[:completions].first
+          expect([completion.decision, completion.http_status, completion.delivery])
+            .to eq([:admission_rejected, nil, :completed])
+          expect(attempts.size).to eq(1)
+
+          release_admission(fixture, held)
+          wait_until(task, "held call observed") { fixture.log[:completions].size == 2 }
+          expect(rejected_completions(fixture).size).to eq(1)
+          expect(attempts.size).to eq(1)
+        ensure
+          close_keepalive_client(other)
+        end
+      end
+    end
+
+    # A refusal whose reset is never written, because its connection ended
+    # first, is observed once as aborted.
+    it "observes a HEADERS refusal as aborted when its connection ends before the reset is written" do
+      reactor do |task|
+        with_keepalive_host(task, keepalive: server_keepalive(time: nil), max_requests: 1) do |fixture|
+          rejections = count_rejections(fixture)
+          held, other = fill_admission(task, fixture)
+          resource = second_resource(task, fixture)
+          refused = other.connection.next_stream_id
+          gate = hold_frames(resource, Protocol::HTTP2::ResetStreamFrame::TYPE, stream_id: refused)
+          raw_requests(other, [[refused, request_headers(echo_path), encoded("refused")]])
+          gate.started.dequeue
+          wait_until(task, "refusal counted") { rejections.size == 1 }
+          expect(fixture.log[:completions]).to eq([])
+
+          close_keepalive_client(other)
+          wait_until(task, "connection retired") { retired?(resource) }
+          gate.release.enqueue(true)
+          wait_until(task, "refusal observed") { fixture.log[:completions].size == 1 }
+          completion = fixture.log[:completions].first
+          expect([completion.decision, completion.http_status, completion.delivery])
+            .to eq([:admission_rejected, nil, :aborted])
+
+          release_admission(fixture, held)
+          wait_until(task, "held call observed") { fixture.log[:completions].size == 2 }
+          expect(rejected_completions(fixture).size).to eq(1)
+          expect(rejections.size).to eq(1)
+        ensure
+          gate&.release&.enqueue(true)
+          close_keepalive_client(other)
+        end
+      end
+    end
+
+    # A refused stream leaves the connection's streams at once, but counts
+    # toward the stream limit until its reset is written, so a peer that
+    # ignores the limit while resets queue gets the unobserved over-limit
+    # refusal instead of more observed ones.
+    it "counts unwritten HEADERS refusals toward the stream limit" do
+      reactor do |task|
+        with_keepalive_host(task, keepalive: server_keepalive(time: nil), max_requests: 2,
+                                  max_concurrent_streams: 2) do |fixture|
+          rejections = count_rejections(fixture)
+          held, other = fill_admission(task, fixture)
+          sibling = task.async do
+            response = other.connection.call(connect_request(echo_path, "hold-sibling"))
+            [response.status, response.read]
+          end
+          wait_until(task, "sibling call invoked") { fixture.log[:invoked].include?("hold-sibling") }
+          resource = second_resource(task, fixture)
+          refused, over = Array.new(2) { other.connection.next_stream_id }
+          gate = hold_frames(resource, Protocol::HTTP2::ResetStreamFrame::TYPE, stream_id: refused)
+          raw_requests(other, [[refused, request_headers(echo_path), encoded("refused")]])
+          gate.started.dequeue
+          wait_until(task, "refusal counted") { rejections.size == 1 }
+
+          raw_requests(other, [[over, request_headers(echo_path), encoded("over")]])
+          queue = resource.upkeep.instance_variable_get(:@writer).instance_variable_get(:@queue)
+          wait_until(task, "over-limit reset queued behind the held reset") { queue.size == 1 }
+          gate.release.enqueue(true)
+          ping_through(task, other, "limit001")
+          expect(other.wire.resets).to eq(refused => KeepaliveClient::REFUSED_STREAM,
+                                          over => KeepaliveClient::REFUSED_STREAM)
+          wait_until(task, "refusal observed") { rejected_completions(fixture).any? }
+          expect(rejections.size).to eq(1)
+
+          release_admission(fixture, held)
+          fixture.log[:holds]["hold-sibling"].enqueue(true)
+          expect(sibling.wait).to eq([200, encoded("hold-sibling")])
+          wait_until(task, "held calls observed") { fixture.log[:completions].size == 3 }
+          expect(rejected_completions(fixture).size).to eq(1)
+          expect(rejections.size).to eq(1)
+          expect(fixture.log[:invoked]).to match_array(%w[hold-admission hold-sibling])
+          expect(other.wire.reset_counts).to eq(refused => 1, over => 1)
+          expect(other.wire.goaways).to eq([])
+        ensure
+          gate&.release&.enqueue(true)
+          close_keepalive_client(other)
+        end
+      end
+    end
+
+    # A stream holds its reserved slot while its dispatch has not reached
+    # admission, and releases it when the peer resets it. Its held dispatch
+    # then neither runs the application nor counts a refusal, whether the
+    # later call that took the slot has finished or still holds it.
+    { "free" => "after", "taken" => "hold-after" }.each do |slot, later|
+      it "holds a reserved slot until dispatch, releases it on a peer reset, and skips that stream at a #{slot} slot" do
+        reactor do |task|
+          with_keepalive_host(task, keepalive: server_keepalive(time: nil), max_requests: 1) do |fixture|
+            gate = gate_lifecycle(fixture)
+            rejections = count_rejections(fixture)
+            client = fixture.client
+            reserved = client.connection.next_stream_id
+            raw_headers(client, reserved, request_headers(echo_path, %w[x-gate 1]))
+            wait_until(task, "reserved stream's dispatch held") { gate[:held] == [reserved] }
+            other = keepalive_client(task, fixture.host.port)
+            refused = other.connection.next_stream_id
+            raw_requests(other, [[refused, request_headers(echo_path), encoded("refused")]])
+            ping_through(task, other, "reserve1")
+            expect(other.wire.resets).to eq(refused => KeepaliveClient::REFUSED_STREAM)
+            wait_until(task, "refusal observed") { fixture.log[:completions].size == 1 }
+            completion = fixture.log[:completions].first
+            expect([completion.decision, completion.http_status, completion.delivery])
+              .to eq([:admission_rejected, nil, :completed])
+
+            raw_reset(client, reserved)
+            ping_through(task, client, "reserve2")
+            call = task.async do
+              response = other.connection.call(connect_request(echo_path, later))
+              [response.status, response.read]
+            end
+            wait_until(task, "later call invoked") { fixture.log[:invoked] == [later] }
+            held = later.start_with?("hold")
+            expect(call.wait).to eq([200, encoded(later)]) unless held
+            expect(rejections.size).to eq(1)
+            expect(other.wire.reset_counts).to eq(refused => 1)
+            expect(client.wire.resets).to eq({})
+
+            release_gate(gate)
+            expected = [[:admission_rejected, :not_started, :completed, nil], [:processed, :not_started, :aborted, nil]]
+            expected << [:processed, :finished, :completed, 200] unless held
+            wait_until(task, "reset stream's exchange finished") { fixture.log[:completions].size == expected.size }
+            facts = fixture.log[:completions].map do |finished|
+              [finished.decision, finished.processing_state, finished.delivery, finished.http_status]
+            end
+            expect(facts).to match_array(expected)
+            expect(rejections.size).to eq(1)
+            fixture.log[:holds][later].enqueue(true) if held
+            expect(call.wait).to eq([200, encoded(later)])
+            expect(fixture.log[:invoked]).to eq([later])
+            expect(client.wire.resets).to eq({})
+          ensure
+            release_gate(gate)
+            close_keepalive_client(other)
+          end
+        end
+      end
+    end
   end
 
   describe "request body progress" do

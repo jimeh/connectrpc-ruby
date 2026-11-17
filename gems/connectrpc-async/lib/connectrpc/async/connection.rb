@@ -531,6 +531,17 @@ module ConnectRPC
 
         def processing_cancellation = @cancellation_source&.token
 
+        # Upstream enqueues a valid request for dispatch at the end of this
+        # call, right after it assigns the request's headers. A rejected
+        # header block leaves them unset, or raises.
+        def receive_initial_headers(headers, end_stream)
+          result = super
+          @request_enqueued = true if @request&.headers
+          result
+        end
+
+        def enqueued? = !!@request_enqueued
+
         def detach_cancellation
           @cancellation_source = nil
         end
@@ -656,6 +667,10 @@ module ConnectRPC
         # not the client has acknowledged it.
         attr_accessor :stream_limit
 
+        # The session that reserves host admission for each new stream while
+        # its HEADERS are read. Nil skips HEADERS-time admission.
+        attr_accessor :admission
+
         def accept_stream(stream_id)
           super
         ensure
@@ -676,6 +691,11 @@ module ConnectRPC
         # dispatched. Later HEADERS for a client stream that is no longer
         # open, such as a refused stream's trailers, are decoded and dropped;
         # its DATA keeps upstream's connection flow control and is ignored.
+        # An accepted stream that host admission cannot take is refused the
+        # same way once upstream has enqueued its request. Such a stream
+        # leaves `streams` at once, so it counts toward the stream limit
+        # until its reset is written, as a client that honours the limit
+        # counts it until the reset arrives.
         def receive_headers(frame)
           stream_id = frame.stream_id
           return super if streams.key?(stream_id) || !valid_remote_stream_id?(stream_id)
@@ -686,7 +706,10 @@ module ConnectRPC
           end
 
           upkeep = self.upkeep
-          return super unless upkeep && (upkeep.refuse?(stream_id) || (stream_limit && streams.size >= stream_limit))
+          unless upkeep && (upkeep.refuse?(stream_id) || (stream_limit && streams_toward_limit >= stream_limit))
+            super
+            return admit(streams[stream_id], upkeep)
+          end
 
           decode_headers(frame.unpack)
           @remote_stream_id = stream_id
@@ -786,6 +809,31 @@ module ConnectRPC
         end
 
         def close_requests = requests&.close
+
+        # Reserves a host admission slot for a newly enqueued request, or
+        # closes its stream at once with REFUSED_STREAM, before the reader
+        # takes any of its DATA. The control writer sends the reset; the
+        # session observes the refusal. The request is captured first because
+        # upstream detaches it from the closed stream. A retiring connection's
+        # control writer may already have stopped, leaving a queued reset
+        # unresolved, so its streams are left to dispatch, which refuses them.
+        def admit(stream, upkeep)
+          admission = self.admission
+          return if !admission || !upkeep || retiring?
+          return unless stream.is_a?(RequestStream) && stream.enqueued? && !stream.closed?
+          return if admission.send(:reserve_admission, stream)
+
+          request = stream.request
+          written = upkeep.reset(stream, ::Protocol::HTTP2::Error::REFUSED_STREAM)
+          (@refusals ||= []) << written
+          admission.send(:refuse_admission, request, written)
+        end
+
+        # Open streams plus streams refused at HEADERS whose reset is unwritten.
+        def streams_toward_limit
+          @refusals&.reject!(&:resolved?)
+          streams.size + (@refusals&.size || 0)
+        end
 
         # A refusal is delivered once its reset is written; returns the
         # refused stream then, or nil if the stream had already closed.
