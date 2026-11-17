@@ -152,13 +152,12 @@ and [Accept errors](../gems/connectrpc-async/README.md#accept-errors).
   or disable the bound with the new `response_body_timeout:` option (nil turns
   it off). Server-streaming and bidi responses are not affected. See
   [Stream admission](../gems/connectrpc-async/README.md#stream-admission).
-- An HTTP/2 connection whose single frame write does not finish within the
-  keepalive `timeout` (20 seconds by default), or 20 seconds without
-  keepalive, is aborted, failing all of its streams. This catches peers that
-  stop reading their socket, for every RPC shape. A write blocked on a full
-  send buffer finishes only once the peer has drained part of that buffer, so
-  raise the keepalive `timeout` for clients that read large responses over slow
-  links.
+- An HTTP/2 connection whose single frame write does not finish within 60
+  seconds is aborted, failing all of its streams. This catches peers that stop
+  reading their socket, for every RPC shape. A write blocked on a full send
+  buffer finishes only once the peer has drained part of that buffer, so raise
+  the bound with the new `frame_write_timeout:` option for clients that read
+  large responses over slow links (nil turns it off).
 
 These affect `connectrpc-sentry` client propagation. See
 [Propagation](../gems/connectrpc-sentry/README.md#propagation).

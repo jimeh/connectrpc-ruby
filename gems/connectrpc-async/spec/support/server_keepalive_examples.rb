@@ -1042,25 +1042,28 @@ RSpec.shared_examples "HTTP/2 server keepalive" do
       end
     end
 
-    # The bound is the keepalive timeout, or 20 s without keepalive, and
-    # applies to each frame write rather than to the whole response.
+    # The bound is frame_write_timeout, 60 s by default whatever the
+    # keepalive timeout, and applies to each frame write rather than to the
+    # whole response.
     headers = Protocol::HTTP2::HeadersFrame::TYPE
     data = Protocol::HTTP2::DataFrame::TYPE
     end_stream = Protocol::HTTP2::END_STREAM
     [
-      { label: "initial HEADERS", keepalive: { time: nil }, bound: 20, frame: [headers] },
-      { label: "DATA", keepalive: { time: nil, timeout: 7 }, bound: 7, frame: [data] },
-      { label: "DATA without keepalive", keepalive: nil, bound: 20, frame: [data] },
-      { label: "DATA over TLS", keepalive: { time: nil }, bound: 20, frame: [data], tls: true },
-      { label: "END_STREAM DATA", keepalive: { time: nil }, bound: 20, frame: [data, end_stream] },
-      { label: "gRPC trailers", keepalive: { time: nil }, bound: 20, frame: [headers, end_stream],
+      { label: "initial HEADERS", keepalive: { time: nil }, bound: 60, frame: [headers] },
+      { label: "DATA", keepalive: { time: nil }, options: { frame_write_timeout: 7 }, bound: 7, frame: [data] },
+      { label: "DATA with a 7 s keepalive timeout", keepalive: { time: nil, timeout: 7 }, bound: 60, frame: [data] },
+      { label: "DATA without keepalive", keepalive: nil, bound: 60, frame: [data] },
+      { label: "DATA over TLS", keepalive: { time: nil }, bound: 60, frame: [data], tls: true },
+      { label: "END_STREAM DATA", keepalive: { time: nil }, bound: 60, frame: [data, end_stream] },
+      { label: "gRPC trailers", keepalive: { time: nil }, bound: 60, frame: [headers, end_stream],
         content_type: "application/grpc" }
     ].each do |row|
       bound = row[:bound]
       it "aborts the connection when the held #{row[:label]} write does not finish within #{bound} s" do
         reactor do |task|
           keepalive = row[:keepalive] && server_keepalive(**row[:keepalive])
-          with_keepalive_host(task, keepalive: keepalive, tls: row.fetch(:tls, false)) do |fixture|
+          with_keepalive_host(task, keepalive: keepalive, tls: row.fetch(:tls, false),
+                                    **row.fetch(:options, {})) do |fixture|
             frame_type, flags = row[:frame]
             gate = hold_frames(fixture.resource, frame_type, flags: flags)
             start_call(fixture.client, echo_path, "held", content_type: row.fetch(:content_type, "application/proto"))
@@ -1078,6 +1081,23 @@ RSpec.shared_examples "HTTP/2 server keepalive" do
       end
     end
 
+    it "lets a held frame write outlast the bound with frame_write_timeout: nil" do
+      reactor do |task|
+        with_keepalive_host(task, keepalive: server_keepalive(time: nil), frame_write_timeout: nil) do |fixture|
+          gate = hold_frames(fixture.resource, Protocol::HTTP2::DataFrame::TYPE)
+          call = task.async { unary(fixture, "unbounded") }
+          gate.started.dequeue
+          expect(fixture.clock.sleepers).to eq([])
+          fixture.clock.advance(600)
+          expect(fixture.resource).not_to be_finished
+          gate.release.enqueue(true)
+          expect(call.wait).to eq([200, encoded("unbounded")])
+        ensure
+          gate&.release&.enqueue(true)
+        end
+      end
+    end
+
     it "lets a slow reader take up to the bound for each frame of one response" do
       reactor do |task|
         with_keepalive_host(task, keepalive: server_keepalive(time: nil)) do |fixture|
@@ -1086,8 +1106,8 @@ RSpec.shared_examples "HTTP/2 server keepalive" do
           call = task.async { unary(fixture, name) }
           3.times do |index|
             gate.started.dequeue
-            fixture.clock.advance(19.9)
-            await_due(task, fixture.clock, (19.9 * index) + 20)
+            fixture.clock.advance(59.9)
+            await_due(task, fixture.clock, (59.9 * index) + 60)
             expect(fixture.resource).not_to be_finished
             gate.armed = true if index < 2
             gate.release.enqueue(true)
@@ -1102,19 +1122,19 @@ RSpec.shared_examples "HTTP/2 server keepalive" do
 
     it "aborts a graceful drain whose stream frame write stalls past the bound" do
       reactor do |task|
-        with_keepalive_host(task, keepalive: server_keepalive(time: nil)) do |fixture|
+        with_keepalive_host(task, keepalive: server_keepalive(time: nil, timeout: 120)) do |fixture|
           watch(fixture, "sibling", "one")
           gate = hold_frames(fixture.resource, Protocol::HTTP2::DataFrame::TYPE)
           fixture.log[:feeds]["sibling"].enqueue("two")
           gate.started.dequeue
           fixture.clock.advance(10)
-          # The heads-up GOAWAY's own deadline, 20 s from now, comes later.
+          # The heads-up GOAWAY's own deadline, 120 s from now, comes later.
           closing = task.async { fixture.host.close(grace: 5) }
           wait_until(task, "heads-up GOAWAY waits for the frame guard") do
             fixture.resource.connection.guard_waiting?
           end
-          fixture.clock.advance(9.9)
-          await_due(task, fixture.clock, 20)
+          fixture.clock.advance(49.9)
+          await_due(task, fixture.clock, 60)
           expect(fixture.resource).not_to be_finished
           fixture.clock.advance(0.1)
           wait_until(task, "connection retired") { retired?(fixture.resource) }
@@ -1139,8 +1159,8 @@ RSpec.shared_examples "HTTP/2 server keepalive" do
           256.times { fixture.log[:feeds]["flood"].enqueue(chunk) }
           start_call(client, watch_method.path, "flood", content_type: "application/connect+proto")
           wait_until(task, "a server frame write blocked on the socket", within: 10) { probe.writing? }
-          fixture.clock.advance(19.9)
-          await_due(task, fixture.clock, 20)
+          fixture.clock.advance(59.9)
+          await_due(task, fixture.clock, 60)
           expect(fixture.resource).not_to be_finished
           fixture.clock.advance(0.1)
           wait_until(task, "connection retired") { retired?(fixture.resource) }

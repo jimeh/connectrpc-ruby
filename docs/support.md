@@ -451,8 +451,8 @@ Since 0.3.0, the Async `Host` and Falcon's native HTTP/2 listener also bound
 peers that stop reading responses. A unary, client-streaming or fallback
 response that waits `response_body_timeout`
 (default 60 seconds) for flow-control credit is reset with `CANCEL`, like
-nginx's `send_timeout`. Each HTTP/2 frame write must finish within the keepalive
-`timeout`, or 20 seconds without keepalive, or the connection is aborted. That
+nginx's `send_timeout`. Each HTTP/2 frame write must finish within
+`frame_write_timeout` (default 60 seconds), or the connection is aborted. That
 second bound applies to every RPC shape. It is a deadline for each write, which
 a slow peer can miss while still reading, because a write blocked on a full
 send buffer waits for the peer to drain part of it. grpc-go has no flow-control

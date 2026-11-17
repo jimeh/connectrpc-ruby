@@ -226,10 +226,10 @@ RSpec.describe "Host native fallback" do
         with_fallback_host(task, ->(_) { Protocol::HTTP::Response[200, {}, body] }) do |client, clock, resource|
           stream = page_request(client, "HEAD")
           closing.wait
-          clock.advance(30)
+          clock.advance(90)
           release.resolve(true)
           wait_until(task, "HEAD response HEADERS") { client.wire.headers[stream].positive? }
-          ping_through(task, client, "after030")
+          ping_through(task, client, "after090")
           expect(resource).not_to be_finished
         ensure
           release.resolve(true)

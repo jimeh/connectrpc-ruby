@@ -190,22 +190,21 @@ module ConnectRPC
         MAX_STREAM_ID = 0x7fff_ffff
         ACK_SECONDS = 5
         EOF_SECONDS = 1
-        # ServerKeepalive's default timeout, bounding control frames and frame
-        # writes without server keepalive.
+        # ServerKeepalive's default timeout, bounding control frames when only
+        # idle_timeout drains the connection.
         CONTROL_SECONDS = 20
 
         attr_reader :cutoff
 
-        def initialize(resource, parent:, clock:, random:, keepalive:, idle_timeout:)
+        def initialize(resource, parent:, clock:, random:, keepalive:, idle_timeout:, write_timeout: nil)
           @resource = resource
           @parent = parent
           @clock = clock
           @random = random
           @keepalive = keepalive
           @idle_timeout = idle_timeout
-          timeout = keepalive&.timeout || CONTROL_SECONDS
-          @writer = ControlWriter.new(resource, clock: clock, timeout: timeout)
-          @watchdog = WriteWatchdog.new(resource, clock: clock, timeout: timeout)
+          @writer = ControlWriter.new(resource, clock: clock, timeout: keepalive&.timeout || CONTROL_SECONDS)
+          @watchdog = WriteWatchdog.new(resource, clock: clock, timeout: write_timeout) if write_timeout
           if keepalive&.min_time
             @strikes = PingStrikes.new(clock: clock, min_time: keepalive.min_time,
                                        permit_without_calls: keepalive.permit_without_calls)
@@ -224,7 +223,7 @@ module ConnectRPC
         # draining meanwhile, after its upkeep was stopped, gets no more.
         def start
           @writer.start(@parent)
-          @watchdog.start(@parent) unless @resource.finished?
+          @watchdog.start(@parent) if @watchdog && !@resource.finished?
           if (time = @keepalive&.time) && upkeep?
             @resource.keep_alive(@parent, clock: @clock, time: time, timeout: @keepalive.timeout, always: true)
           end
@@ -251,8 +250,8 @@ module ConnectRPC
 
         def stream_written = @strikes&.reset
 
-        def write_started = @watchdog.write_started
-        def write_finished = @watchdog.write_finished
+        def write_started = @watchdog&.write_started
+        def write_finished = @watchdog&.write_finished
 
         # Idle time counts from when the last stream and handler finished, not
         # from other frames, so PINGs cannot extend it.

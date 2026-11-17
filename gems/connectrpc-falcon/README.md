@@ -104,8 +104,8 @@ Include `ConnectRPC::Falcon::Environment` in each service:
 - `tls` or `tls_provider` supplies the TLS source; see [TLS lifecycle](#tls-lifecycle).
 - `server_options` supplies shared limits and host options such as `cache:`,
   `keepalive:`, and since 0.3.0 `max_concurrent_streams:`,
-  `request_body_timeout:`, `response_body_timeout:`, `stream_receive_window:`
-  and `connection_receive_window:`.
+  `request_body_timeout:`, `response_body_timeout:`, `frame_write_timeout:`,
+  `stream_receive_window:` and `connection_receive_window:`.
 - Since 0.3.0, `connectrpc_close_grace` sets the managed worker stop grace in
   seconds (default 5); see [Shutdown](#shutdown).
 - `url` describes the listener.
@@ -433,8 +433,8 @@ Since 0.3.0, native HTTP/2 responses are bounded in the same way as on the Async
 `Host`. `response_body_timeout:` (default 60 seconds, nil turns it off) resets
 with `CANCEL` a unary, client-streaming or Rack fallback response that waits
 that long for flow-control credit; server-streaming and bidi responses are
-exempt. Each frame write must finish within the keepalive `timeout`, or 20
-seconds without keepalive, or the connection is aborted. Neither bound applies
+exempt. Each frame write must finish within `frame_write_timeout:` (default 60
+seconds, nil turns it off), or the connection is aborted. Neither bound applies
 to HTTP/1 connections.
 
 `falcon:interop:grpc` also runs a grpc-go bidi stream through an age drain on
