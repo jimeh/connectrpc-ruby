@@ -53,7 +53,7 @@ module ConnectRPC
     end
 
     # An attempt is recorded before the publisher runs, so a raising publisher
-    # is never invoked twice; headers_published? stays false after that failure.
+    # is never invoked twice; head_failed? reports that failure.
     def publish_snapshot
       @response_metadata.freeze
       @headers_sent = true
@@ -62,7 +62,7 @@ module ConnectRPC
       nil
     end
 
-    def headers_published? = @headers_published
+    def head_failed? = @headers_sent && !@headers_published
   end
 
   class ResponseReader

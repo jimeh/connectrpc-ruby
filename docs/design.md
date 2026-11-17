@@ -84,7 +84,7 @@ stacked and unknown content codings are rejected. Identity-only servers continue
 to reject gzip. Client response preferences use distinct symbol arrays and
 normalize identity to the last fallback. Server gzip capability negotiates
 supported nonidentity accept tokens before identity, ignoring unknown tokens
-and nonzero quality values; `q=0` excludes a coding. Absent accept inherits
+and nonzero quality values; `gzip;q=0` refuses gzip. Absent accept inherits
 request coding; empty accept selects identity.
 Repeated accept fields combine in field order. Gzip-selected empty serialization
 produces a valid nonempty member; zero-length HTTP content bypasses inflation

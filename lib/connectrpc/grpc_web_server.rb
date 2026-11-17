@@ -187,6 +187,7 @@ module ConnectRPC
 
     def render_grpc_web_terminal(state, output) # rubocop:disable Metrics/AbcSize, Metrics/MethodLength
       context = state.context ||= web_context(state, headers: {})
+      fail_unpublished_head(state, "gRPC-Web") if grpc_head_failed?(state, context)
       codec = @status_codec #: _GRPCStatusCodec
       bytes, effective = GRPCWeb.terminal(
         state.error, stream_trailers(state.error, context),

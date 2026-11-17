@@ -6,23 +6,31 @@ module ConnectRPC
 
     def render_stream_terminal(state, output)
       context = state.context ||= streaming_context(state, headers: {})
+      fail_unpublished_head(state, "Connect") if context.send(:head_failed?)
       bytes, effective = stream_terminal_bytes(state, context)
       handler_error = state.error
       # A peer reset may reject terminal delivery. Retain the handler failure
       # independently of that later delivery error.
       observe_stream_result(state, effective) if handler_error
-      publish_stream_head(context, handler_error)
+      context.send(:publish_headers, check: false)
       emit_stream_terminal(bytes, output)
       context.commit! unless handler_error
       observe_stream_result(state, effective) unless handler_error
     end
 
-    # A failed earlier publication is not retried; never finish without a head.
-    def publish_stream_head(context, error)
-      context.send(:publish_headers, check: false)
-      return if context.send(:headers_published?)
+    # A failed head publication is not retried and a stream never finishes
+    # without a head. Stop before serializing the terminal, so a terminal that
+    # exceeds its limits cannot replace the publication failure.
+    def fail_unpublished_head(state, protocol)
+      error = state.error
+      observe_stream_result(state, error) if error
+      raise(error || Error.new(:internal, "#{protocol} headers were not published"))
+    end
 
-      raise(error || Error.new(:internal, "Connect headers were not published"))
+    def grpc_head_failed?(state, context)
+      return context.send(:head_failed?) if context.is_a?(StreamingContext)
+
+      state.head_attempted && !state.published
     end
 
     def stream_terminal_bytes(state, context)

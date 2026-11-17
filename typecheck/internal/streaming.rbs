@@ -56,7 +56,8 @@ module ConnectRPC
     def single_stream_request: (Streaming::Session) -> untyped
     def render_stream_terminal: (Streaming::ServerState, _StreamingOutput) -> void
     def stream_terminal_bytes: (Streaming::ServerState, StreamingContext) -> [String, Error?]
-    def publish_stream_head: (StreamingContext, Error?) -> void
+    def fail_unpublished_head: (Streaming::ServerState | GRPCProtocol::ServerState | GRPCWeb::ServerState, String) -> bot
+    def grpc_head_failed?: (GRPCProtocol::ServerState | GRPCWeb::ServerState, Context) -> bool
     def stream_trailers: (Error?, Context) -> Metadata
     def append_metadata: (Metadata, Metadata) -> void
     def emit_stream_terminal: (String, _StreamingOutput) -> void
@@ -76,7 +77,7 @@ module ConnectRPC
     def check_headers_scope!: () -> nil
     def publish_headers: (?check: bool) -> nil
     def publish_snapshot: () -> nil
-    def headers_published?: () -> bool
+    def head_failed?: () -> bool
   end
   class ResponseReader[Resp]
     @session: Streaming::Session

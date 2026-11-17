@@ -145,6 +145,7 @@ module ConnectRPC
 
     def render_grpc_terminal(state, output)
       context = state.context ||= grpc_context(state, headers: {})
+      fail_unpublished_head(state, "gRPC") if grpc_head_failed?(state, context)
       fields, effective = grpc_terminal_fields(state, context)
       observe_stream_result(state, effective) if state.error
       publish_grpc_head(state)

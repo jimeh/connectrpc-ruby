@@ -168,6 +168,44 @@ RSpec.describe "Server stream terminal head and error metadata" do
         expect(calls).to eq(1)
         expect(events.map(&:first) - [:abort]).to be_empty
       end
+
+      it "finishes no #{protocol} terminal when a handler rescues a failed head publication and returns" do
+        failure = ConnectRPC::Error.new(:unavailable, "host publication failed")
+        target = server(protocol) do |_, writer, _|
+          writer.send_headers
+        rescue ConnectRPC::Error
+          nil
+        end
+        events = []
+        calls = 0
+        publish = lambda do |_|
+          calls += 1
+          raise failure
+        end
+        name = { connect: "Connect", grpc: "gRPC", grpc_web: "gRPC-Web" }.fetch(protocol)
+        expect { dispatch(target, protocol, events, publish: publish) }.to raise_error(ConnectRPC::Error) { |error|
+          expect([error.code, error.message]).to eq(["internal", "#{name} headers were not published"])
+        }
+        expect(calls).to eq(1)
+        expect(events.map(&:first) - [:abort]).to be_empty
+      end
+
+      it "keeps the #{protocol} publisher failure when even the minimal terminal exceeds its limit" do
+        failure = ConnectRPC::Error.new(:unavailable, "host publication failed")
+        limits = protocol == :connect ? { terminal_limit: 1 } : { grpc_status_wire_limit: 1 }
+        target = server(protocol, **limits) { |_, writer, _| writer.send_message("reply") }
+        events = []
+        calls = 0
+        publish = lambda do |_|
+          calls += 1
+          raise failure
+        end
+        expect { dispatch(target, protocol, events, publish: publish) }
+          .to(raise_error { |error| expect(error).to equal(failure) })
+        expect(calls).to eq(1)
+        expect(events.map(&:first) - [:abort]).to be_empty
+        expect(outcomes.map(&:code)).to eq(["unavailable"])
+      end
     end
 
     %i[grpc grpc_web].each do |protocol|

@@ -321,7 +321,10 @@ including a failure after dispatch started but before the stream opened.
   Once the head is published, the terminal carries it instead: Connect
   end-stream metadata, or gRPC and gRPC-Web trailers. There it follows the
   context trailers and precedes the error's own `trailers`, as in connect-go
-  1.21.1. Each value appears in exactly one place.
+  1.21.1. Each value appears in exactly one place. In the terminal it counts
+  toward the terminal byte limits, so large error metadata after the head is
+  published can turn the terminal into the bounded `resource_exhausted`
+  replacement.
 - Client server-streaming and bidi interceptors read response `headers` and
   `trailers` through the endpoint. A client-streaming interceptor reads them
   from the `Response` that `yield` returns.
