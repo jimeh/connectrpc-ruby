@@ -10,6 +10,12 @@ module APICheck
   # The health bridge's generated messages subclass protobuf runtime classes;
   # typed consumers add core's explicit bridge beside it.
   PROTOBUF_BRIDGE = "rbs/google_protobuf_4_36"
+  # Signature manifests list only stdlib libraries, because rbs collection
+  # locks every manifest dependency as stdlib. Consumers name each connectrpc
+  # library whose declarations an optional package's signatures reference.
+  REQUIRED_LIBRARIES = { "on-rails" => %w[connectrpc-rack], "falcon" => %w[connectrpc-async] }.freeze
+
+  def self.libraries(name) = ["connectrpc", *REQUIRED_LIBRARIES.fetch(name, []), "connectrpc-#{name}"]
 
   def self.bridge_paths(root:, installed:)
     BRIDGES.map do |name, relative|
@@ -83,7 +89,7 @@ module APICheck
   def self.falcon_only(root:, working:, installed:, tools:)
     FileUtils.cp_r(File.join(root, "typecheck/falcon"), working)
     configuration = if installed
-                      "library 'connectrpc-falcon'"
+                      libraries("falcon").map { |name| "library #{name.dump}" }.join("\n  ")
                     else
                       directories = [File.join(root, "sig"), *%w[async falcon].map do |name|
                         File.join(root, "gems/connectrpc-#{name}/sig")

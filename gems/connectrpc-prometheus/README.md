@@ -241,10 +241,12 @@ changes only Ruby support versus 4.2.5, whose `DirectFileStore` calls
 
 ## Static signatures
 
-This package owns `sig/` and its discovery manifest. Add
-`library "connectrpc-prometheus"` to a strict Steep target with this gem
-installed. The registry is typed through narrow structural capabilities. See the
-[RBS guide](../../docs/rbs.md) for supported APIs and extension contracts.
+This package owns `sig/` and its discovery manifest. Add `library "connectrpc"`
+and `library "connectrpc-prometheus"` to a strict Steep target with this gem
+installed. The manifest lists only standard libraries, so name each connectrpc
+library explicitly; this also works with `rbs collection`. The registry is typed
+through narrow structural capabilities. See the [RBS guide](../../docs/rbs.md)
+for supported APIs and extension contracts.
 
 ## License
 

@@ -546,8 +546,10 @@ setup/admission before an RPC exists is outside this lifecycle.
 
 ## Static signatures
 
-This package owns `sig/` and its discovery manifest. Add
-`library "connectrpc-falcon"` to a strict Steep target with this gem installed.
+This package owns `sig/` and its discovery manifest. Add `library "connectrpc"`,
+`library "connectrpc-async"` and `library "connectrpc-falcon"` to a strict Steep
+target with this gem installed. The manifest lists only standard libraries, so
+name each connectrpc library explicitly; this also works with `rbs collection`.
 See the [RBS guide](../../docs/rbs.md) for supported APIs, extension contracts,
 partial records, runtime validation and framework-signature limits.
 `mise run rbs:check` checks application callers for this package; strict core

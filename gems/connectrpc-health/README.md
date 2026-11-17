@@ -233,9 +233,11 @@ runtime dependency at its gemspec floor.
 
 ## Static signatures
 
-This package owns `sig/` and its discovery manifest. Add
-`library "connectrpc-health"` to a strict Steep target with this gem installed
-to type the registry and `ConnectRPC::Health::SERVICE`.
+This package owns `sig/` and its discovery manifest. Add `library "connectrpc"`
+and `library "connectrpc-health"` to a strict Steep target with this gem
+installed to type the registry and `ConnectRPC::Health::SERVICE`. The manifest
+lists only standard libraries, so name each connectrpc library explicitly; this
+also works with `rbs collection`.
 
 The generated `grpc.health.v1` message, client and handler factory signatures
 are an explicit opt-in in `rbs/grpc_health_v1`, outside normal gem discovery.

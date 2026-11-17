@@ -1,2 +1,3 @@
-dependencies:
-  - name: connectrpc
+# rbs collection locks every dependency here as a stdlib library, so list only
+# stdlib. Steepfiles name the connectrpc libraries these signatures reference.
+dependencies: []

@@ -129,10 +129,11 @@ at its gemspec floor, including yabeda 0.16.0.
 
 ## Static signatures
 
-This package owns `sig/` and its discovery manifest. Add
-`library "connectrpc-yabeda"` to a strict Steep target with this gem installed.
-See the [RBS guide](../../docs/rbs.md) for supported APIs and extension
-contracts.
+This package owns `sig/` and its discovery manifest. Add `library "connectrpc"`
+and `library "connectrpc-yabeda"` to a strict Steep target with this gem
+installed. The manifest lists only standard libraries, so name each connectrpc
+library explicitly; this also works with `rbs collection`. See the
+[RBS guide](../../docs/rbs.md) for supported APIs and extension contracts.
 
 ## License
 

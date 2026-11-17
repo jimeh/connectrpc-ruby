@@ -208,13 +208,21 @@ target :app do
 end
 ```
 
-Each optional manifest resolves only its dependency closure. Core declares no
-Google runtime or optional hosting/tracing namespace and has no runtime tool
-dependencies. Its GoogleProtobuf binding class signature is available without
-the explicit message-runtime bridge; the binding itself still requires the
-optional runtime require. `library "connectrpc-health"` covers the registry and
-`SERVICE` only; its generated `grpc.health.v1` messages and client are an
-explicit bridge described [below](#opt-in-framework-compatibility).
+Name `library "connectrpc"` beside every optional library. Rails signatures
+also need `library "connectrpc-rack"`, and Falcon signatures need
+`library "connectrpc-async"`. Package manifests list only the standard
+libraries their signatures use, because `rbs collection` locks every manifest
+dependency as a standard library; a gem name there would make Steep fail to
+load the whole environment. Projects that use `rbs collection` lock each
+installed connectrpc package from `Gemfile.lock` as a gem, in any Gemfile order,
+and the `library` lines above remain valid alongside the collection.
+
+Core declares no Google runtime or optional hosting/tracing namespace and has no
+runtime tool dependencies. Its GoogleProtobuf binding class signature is
+available without the explicit message-runtime bridge; the binding itself still
+requires the optional runtime require. `library "connectrpc-health"` covers the
+registry and `SERVICE` only; its generated `grpc.health.v1` messages and client
+are an explicit bridge described [below](#opt-in-framework-compatibility).
 
 | Owner | Supported API and extension SPI |
 | --- | --- |
@@ -394,7 +402,11 @@ ambiguous annotation properties. Positives, strict implementation, RBS validatio
 and Falcon-only checks remain separate.
 `rbs:package` uses the existing optional bundle setups for offline runtime
 archives, resolved by RubyGems from the running Ruby ABI's caches, builds every owned signature package and checks each library through
-normal installed discovery. It checks composed environments in both load orders,
+normal installed discovery. Each optional package also gets an offline
+`rbs collection` consumer whose Gemfile names only that package. The check
+requires `rbs collection install` to lock every connectrpc library as a gem and
+strict `steep check` to pass.
+It checks composed environments in both load orders,
 real Rails subclass inclusion, Rack/Testing calls, native session/TLS operations,
 Falcon endpoint integration, API-only OTel without loading an SDK, and both
 metrics sinks recording through one core metrics layer. The original

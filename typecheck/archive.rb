@@ -14,6 +14,11 @@ module SignatureArchive
   HEALTH_SCHEMA_SHA256 = "164b670058855c6277a0511a14e2a302dd5a8ff899853ca6851b6b201a413d28"
   HEALTH_NOTICES = %w[proto/LICENSE proto/README.md].freeze
   LICENSES = { "connectrpc-health" => %w[MIT Apache-2.0].freeze }.freeze
+  # Every package of the synchronized release train shares one repository,
+  # changelog and issue tracker.
+  PROJECT = "https://github.com/jimeh/connectrpc-ruby"
+  PROJECT_URIS = { "source_code_uri" => PROJECT, "changelog_uri" => "#{PROJECT}/blob/main/CHANGELOG.md",
+                   "bug_tracker_uri" => "#{PROJECT}/issues" }.freeze
 
   def self.licenses(name) = LICENSES.fetch(name, %w[MIT])
 
@@ -32,6 +37,7 @@ module SignatureArchive
     raise "Push host changed: #{spec.name}" unless spec.metadata["allowed_push_host"] == "https://rubygems.org"
     raise "MFA requirement lost: #{spec.name}" unless spec.metadata["rubygems_mfa_required"] == "true"
     raise "License metadata changed: #{spec.name}" unless spec.licenses == licenses(spec.name)
+    raise "Project URI metadata changed: #{spec.name}" unless spec.metadata.slice(*PROJECT_URIS.keys) == PROJECT_URIS
     raise "Type tool runtime dependency: #{spec.name}" if spec.runtime_dependencies.any? do |dependency|
       %w[rbs steep].include?(dependency.name)
     end

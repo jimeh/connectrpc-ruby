@@ -1229,12 +1229,14 @@ for connection events.
 
 ## Static signatures
 
-This package owns `sig/` and its discovery manifest. Add
-`library "connectrpc-async"` to a strict Steep target with this gem installed.
-See the [RBS guide](../../docs/rbs.md) for supported APIs, extension contracts,
-partial records, runtime validation and framework-signature limits.
-`mise run rbs:check` checks application callers for this package; strict core
-source checking is a separate target from backend implementation checking.
+This package owns `sig/` and its discovery manifest. Add `library "connectrpc"`
+and `library "connectrpc-async"` to a strict Steep target with this gem
+installed. The manifest lists only standard libraries, so name each connectrpc
+library explicitly; this also works with `rbs collection`. See the
+[RBS guide](../../docs/rbs.md) for supported APIs, extension contracts, partial
+records, runtime validation and framework-signature limits. `mise run rbs:check`
+checks application callers for this package; strict core source checking is a
+separate target from backend implementation checking.
 
 ## Development
 
