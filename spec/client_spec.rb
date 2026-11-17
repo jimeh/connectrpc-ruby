@@ -253,3 +253,48 @@ RSpec.describe "Connect error code fallback" do
     end
   end
 end
+
+# connect-go 1.21.1 connectWireError/connectWireDetail tolerate these shapes.
+RSpec.describe "Connect unary error body normalization" do
+  def parse(wire)
+    ConnectRPC::Protocol.parse_error(400, { "content-type" => ["application/json"] }, JSON.generate(wire))
+  end
+
+  def detail(fields) = { "code" => "not_found", "message" => "m", "details" => [fields] }
+
+  it "reads a null message as empty and null details as none" do
+    error = parse("code" => "not_found", "message" => nil, "details" => nil)
+    expect([error.code, error.message, error.details]).to eq(["not_found", "", []])
+  end
+
+  [{ "type" => "test.Detail" }, { "type" => "test.Detail", "value" => nil }].each do |fields|
+    it "decodes a detail without a value as empty bytes: #{fields.to_json}" do
+      error = parse(detail(fields))
+      expect(error.details.map { |item| [item.type, item.value] }).to eq([["test.Detail", ""]])
+    end
+  end
+
+  %w[type.googleapis.com/test.Detail example.com/a/b/test.Detail /test.Detail].each do |type|
+    it "keeps the name after the last slash of the detail type URL #{type}" do
+      error = parse(detail("type" => type, "value" => "aGk"))
+      expect(error.code).to eq("not_found")
+      expect(error.details.map { |item| [item.type, item.value] }).to eq([["test.Detail", "hi"]])
+    end
+  end
+
+  # Deliberately stricter than connect-go: ErrorDetail requires a valid type name.
+  [{ "value" => "aGk" }, { "type" => nil }, { "type" => "" }, { "type" => "type.googleapis.com/" },
+   { "type" => "not a name" }, { "type" => 5 }, { "type" => "test.Detail", "value" => "!" },
+   { "type" => "test.Detail", "value" => 5 }].each do |fields|
+    it "falls back to the HTTP status for the whole body with detail #{fields.to_json}" do
+      expect([parse(detail(fields)).code, parse(detail(fields)).message]).to eq(["internal", "HTTP 400"])
+    end
+  end
+
+  [false, {}, "none"].each do |details|
+    it "falls back to the HTTP status for non-array details #{details.to_json}" do
+      error = parse("code" => "not_found", "message" => "m", "details" => details)
+      expect([error.code, error.message]).to eq(["internal", "HTTP 400"])
+    end
+  end
+end

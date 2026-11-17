@@ -6,16 +6,23 @@ module ConnectRPC
 
     def render_stream_terminal(state, output)
       context = state.context ||= streaming_context(state, headers: {})
-      merge_stream_error_metadata(state.error, context)
       bytes, effective = stream_terminal_bytes(state, context)
       handler_error = state.error
       # A peer reset may reject terminal delivery. Retain the handler failure
       # independently of that later delivery error.
       observe_stream_result(state, effective) if handler_error
-      context.send(:publish_headers, check: false)
+      publish_stream_head(context, handler_error)
       emit_stream_terminal(bytes, output)
       context.commit! unless handler_error
       observe_stream_result(state, effective) unless handler_error
+    end
+
+    # A failed earlier publication is not retried; never finish without a head.
+    def publish_stream_head(context, error)
+      context.send(:publish_headers, check: false)
+      return if context.send(:headers_published?)
+
+      raise(error || Error.new(:internal, "Connect headers were not published"))
     end
 
     def stream_terminal_bytes(state, context)
@@ -23,19 +30,22 @@ module ConnectRPC
       Streaming.terminal_bytes(state.error, trailers, wire_limit: @terminal_wire_limit, limit: @terminal_limit)
     end
 
-    def merge_stream_error_metadata(error, context)
-      return unless error && !context.response_metadata.frozen?
-
-      error.metadata.each do |key, values|
-        context.response_metadata[key] = (context.response_metadata[key] || []) + values
-      end
-    end
-
+    # Error metadata joins a head that is still unpublished. Once the head is
+    # committed (frozen), it follows the response trailers in the terminal,
+    # ahead of the error's own trailers, as connect-go places it.
     def stream_trailers(error, context)
       trailers = Metadata.new(context.response_trailers)
-      error&.trailers&.each { |key, values| trailers[key] = (trailers[key] || []) + values }
+      if error
+        head = context.response_metadata
+        append_metadata(head.frozen? ? trailers : head, error.metadata)
+        append_metadata(trailers, error.trailers)
+      end
       context.response_trailers.freeze
       trailers
+    end
+
+    def append_metadata(target, source)
+      source.each { |key, values| target[key] = (target[key] || []) + values }
     end
 
     def emit_stream_terminal(bytes, output)

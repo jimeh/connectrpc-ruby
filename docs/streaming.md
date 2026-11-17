@@ -172,7 +172,9 @@ later Context writes do not change.
 server duplexes, publishes once. It can precede a handler delay or CS input.
 First payload/terminal implicitly publishes. Leading metadata is deeply frozen
 at publication; trailers remain mutable until terminal serialization, then freeze.
-There is no synthetic nil message for publishing headers.
+There is no synthetic nil message for publishing headers. Core invokes the host
+publisher at most once per call. If publication fails, the call raises and the
+host aborts the response; core never finishes a stream with a terminal but no head.
 
 The original processor task owns authenticated peer identity, cancellation and
 instrumentation through handlers, codecs and cleanup. A separate publication
@@ -315,6 +317,11 @@ including a failure after dispatch started but before the stream opened.
   `FrozenError`, so add headers before `yield` or from a wrapper before the
   first `send_message`. Trailers stay writable until the terminal, so trailers
   written after `yield`, including after a handler error, reach it.
+- A handler error's `metadata` joins the head while the head is unpublished.
+  Once the head is published, the terminal carries it instead: Connect
+  end-stream metadata, or gRPC and gRPC-Web trailers. There it follows the
+  context trailers and precedes the error's own `trailers`, as in connect-go
+  1.21.1. Each value appears in exactly one place.
 - Client server-streaming and bidi interceptors read response `headers` and
   `trailers` through the endpoint. A client-streaming interceptor reads them
   from the `Response` that `yield` returns.
@@ -360,8 +367,15 @@ request framing/truncation/gzip is `invalid_argument`; malformed responses are
 `internal`. Bounds remain `resource_exhausted`. Per-message gzip state is independent.
 
 Bounded tolerant terminal input accepts `error: null`, and maps absent/null/unknown
-string codes to `unknown`, preserving valid message/details. Numeric codes,
-nonobjects, malformed details and metadata containers fail. Invalid individual
+string codes to `unknown`, preserving valid message/details. Terminals and unary
+error bodies share one normalization that follows connect-go 1.21.1: a null
+message reads as empty, null details as none, an absent or null detail value as
+empty bytes, and a detail type URL keeps the name after its last `/`. Numeric
+codes, non-string messages, nonobjects, non-object details, invalid base64 and
+metadata containers fail. Unlike connect-go, a detail type that is missing, null,
+empty or not a valid protobuf name after that step also fails the whole error,
+because `ErrorDetail` requires a valid type name. A failed terminal is
+`internal`; a failed unary body uses the HTTP status fallback. Invalid individual
 metadata fields are omitted. Output always uses valid Connect terminal errors.
 A terminal is only a candidate until its HTTP tail and transport cleanup succeed.
 

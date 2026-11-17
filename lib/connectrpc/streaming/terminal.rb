@@ -23,12 +23,10 @@ module ConnectRPC
 
     def self.terminal_error(error, metadata, trailers)
       return if error.nil?
-      raise ArgumentError unless Protocol.valid_wire_error?(error)
 
-      empty = [] #: Array[ErrorDetail]
-      details = Protocol.wire_details(error.fetch("details", empty))
-      code = Error::HTTP_STATUS.key?(error["code"]) ? error["code"] : "unknown"
-      Error.new(code, error.fetch("message", ""), details: details, metadata: metadata, trailers: trailers)
+      wire = Protocol.wire_error_fields(error, fallback: "unknown")
+      Error.new(wire.fetch(:code), wire.fetch(:message), details: wire.fetch(:details), metadata: metadata,
+                                                         trailers: trailers)
     end
 
     def self.terminal_bytes(error, trailers, wire_limit:, limit:)

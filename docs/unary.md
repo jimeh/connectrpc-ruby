@@ -205,6 +205,8 @@ ignores unknown JSON fields. The Google binding handles scalar wrapper roots
 through the native Any decoder because protobuf 4.36 cannot parse those roots
 directly. This does not change Connect error details: each `ErrorDetail` has a
 protobuf type name and binary bytes, with a base64 representation on the wire.
+A zero-length JSON payload is rejected, as connect-go does; send `{}` for an
+empty message.
 
 ### Binding and transport seams
 
@@ -284,8 +286,9 @@ For example:
 
 The server selects a supported compression coding from the ordered accept
 fields before identity. An absent field inherits the request coding; an
-explicitly empty field selects identity. Unknown tokens and quality values are
-ignored. Only one identity or gzip content coding is accepted.
+explicitly empty field selects identity. Unknown tokens and parameters are
+ignored, except that a zero quality value (`gzip;q=0`) refuses gzip. Only one
+identity or gzip content coding is accepted.
 
 Empty serialized messages selected for gzip produce valid nonempty gzip members.
 Zero-length HTTP content is never inflated, after its coding header is validated.

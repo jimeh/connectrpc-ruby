@@ -1,5 +1,6 @@
 # frozen_string_literal: true
 
+require "stringio"
 require_relative "../examples/echo_schema"
 
 RSpec.describe ConnectRPC::Bindings::GoogleProtobuf do
@@ -31,6 +32,26 @@ RSpec.describe ConnectRPC::Bindings::GoogleProtobuf do
       expect { binding.decode(bytes, type: type, codec: codec) }.to raise_error(ConnectRPC::CodecError)
     end
     expect { binding.encode("wrong", type: type, codec: :proto) }.to raise_error(ConnectRPC::CodecError)
+  end
+
+  it "rejects a zero-length JSON payload like connect-go while binary stays an empty message" do
+    expect { binding.decode("", type: type, codec: :json) }.to raise_error(ConnectRPC::CodecError)
+    expect(binding.decode("", type: type, codec: :proto)).to eq(type.new)
+  end
+
+  it "maps a zero-length JSON request to invalid_argument and response to internal" do
+    server = ConnectRPC::Server.new(services: [EchoExample::SERVICE], binding: binding,
+                                    handlers: { EchoExample::ECHO.path => ->(message, _) { message } })
+    response = server.call(path: EchoExample::ECHO.path, http_method: "POST",
+                           headers: { "content-type" => ["application/json"] }, input: StringIO.new(""))
+    expect([response.status, JSON.parse(response.body)["code"]]).to eq([400, "invalid_argument"])
+    empty = ConnectRPC::TransportResponse.new(status: 200, headers: { "content-type" => ["application/json"] },
+                                              body: "")
+    client = ConnectRPC::Client.new(base_url: "https://example.invalid", binding: binding, codec: :json,
+                                    transport: ->(_) { empty })
+    expect { client.call(EchoExample::ECHO, type.new) }.to raise_error(ConnectRPC::Error) { |error|
+      expect(error.code).to eq("internal")
+    }
   end
 
   it "decodes typed binary details rather than treating them as JSON Any" do

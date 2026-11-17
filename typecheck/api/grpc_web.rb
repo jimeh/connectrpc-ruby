@@ -1,7 +1,9 @@
 # frozen_string_literal: true
 
 policy = ConnectRPC::GRPCWebCORS.new(origins: ["https://app.example"], credentials: true,
-                                     request_headers: ["authorization"], expose_headers: ["x-leading"])
+                                     request_headers: ["authorization"], expose_headers: ["x-leading"],
+                                     max_age: 600)
+policy.max_age.succ
 policy.origins.each(&:upcase)
 policy.request_headers.each(&:upcase)
 policy.expose_headers.each(&:upcase)

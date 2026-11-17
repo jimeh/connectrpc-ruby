@@ -63,6 +63,7 @@ module ConnectRPC
       attr_reader lifecycle: Instrumentation::Handle?
       attr_reader cancellation: _Cancellation?
       attr_accessor published: bool
+      attr_accessor head_attempted: bool
       attr_accessor context: Context?
       attr_accessor session: Streaming::Session?
       attr_accessor encoding: encoding

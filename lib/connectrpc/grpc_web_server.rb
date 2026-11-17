@@ -4,7 +4,7 @@ module ConnectRPC
   module GRPCWeb
     class ServerState
       attr_reader :headers, :publish, :lifecycle, :cancellation, :representation, :path
-      attr_accessor :context, :session, :error, :published
+      attr_accessor :context, :session, :error, :published, :head_attempted
 
       def initialize(path:, headers:, representation:, publish:, lifecycle:, cancellation:)
         @path = path
@@ -13,7 +13,7 @@ module ConnectRPC
         @publish = publish
         @lifecycle = lifecycle
         @cancellation = cancellation
-        @published = false
+        @published = @head_attempted = false
       end
     end
   end
@@ -164,10 +164,12 @@ module ConnectRPC
       context = state.context #: Context
       if context.is_a?(StreamingContext)
         context.send(:publish_headers, check: false)
-      else
+      elsif !state.head_attempted
+        state.head_attempted = true
         context.response_metadata.freeze
         publish_web_snapshot(state, context.response_metadata)
       end
+      raise(state.error || Error.new(:internal, "gRPC-Web headers were not published")) unless state.published
     end
 
     def publish_web_snapshot(state, metadata) # rubocop:disable Metrics/AbcSize
@@ -185,7 +187,6 @@ module ConnectRPC
 
     def render_grpc_web_terminal(state, output) # rubocop:disable Metrics/AbcSize, Metrics/MethodLength
       context = state.context ||= web_context(state, headers: {})
-      merge_stream_error_metadata(state.error, context)
       codec = @status_codec #: _GRPCStatusCodec
       bytes, effective = GRPCWeb.terminal(
         state.error, stream_trailers(state.error, context),

@@ -57,6 +57,7 @@ module ConnectRPC
     def self.accept_encoding!: (Array[encoding]?, encoding) -> Array[encoding]
     def self.response_encoding: (headers, encoding, encoding) -> encoding
       | (headers, encoding?, encoding) -> encoding?
+    def self.gzip_acceptable?: (String) -> bool
     def self.metadata: (headers, ?trailers: bool) -> Metadata
     def self.check_size!: (String, Integer) -> nil
     def self.content_length!: (Array[String]?, invalid_code: Symbol) -> Integer?
@@ -64,6 +65,7 @@ module ConnectRPC
     def self.parse_error: (Integer, headers, String) -> Error
     # JSON is untrusted external data. Only the validated wire record leaves parsing.
     def self.wire_error: (String, fallback: String) -> wire_error?
+    def self.wire_error_fields: (untyped, fallback: String) -> wire_error
     def self.valid_wire_error?: (untyped) -> bool
     def self.wire_details: (untyped) -> Array[ErrorDetail]
   end

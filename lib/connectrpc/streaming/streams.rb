@@ -11,7 +11,7 @@ module ConnectRPC
     def initialize(publish:, request_metadata: {}, deadline: nil, lifecycle: nil, cancellation: nil)
       super(request_metadata: request_metadata, deadline: deadline, lifecycle: lifecycle, cancellation: cancellation)
       @publish = publish
-      @headers_sent = false
+      @headers_sent = @headers_published = false
       @owner_thread = Thread.current
       @owner_scheduler = Fiber.scheduler
       @stream_closed = false
@@ -23,10 +23,7 @@ module ConnectRPC
 
       check!
       Metadata.new(metadata).each { |key, values| @response_metadata[key] = values }
-      @response_metadata.freeze
-      @headers_sent = true
-      @publish.call(@response_metadata)
-      nil
+      publish_snapshot
     end
 
     def close
@@ -43,15 +40,29 @@ module ConnectRPC
       raise StreamStateError, "Use the stream's owning reactor and thread"
     end
 
+    # A checked caller is about to write a message, which needs a published head.
     def publish_headers(check: true)
-      return if @headers_sent
+      if @headers_sent
+        return if @headers_published || !check
+
+        raise Error.new(:internal, "Response headers were not published"), cause: nil
+      end
       return send_headers if check
 
+      publish_snapshot
+    end
+
+    # An attempt is recorded before the publisher runs, so a raising publisher
+    # is never invoked twice; headers_published? stays false after that failure.
+    def publish_snapshot
       @response_metadata.freeze
       @headers_sent = true
       @publish.call(@response_metadata)
+      @headers_published = true
       nil
     end
+
+    def headers_published? = @headers_published
   end
 
   class ResponseReader

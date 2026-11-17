@@ -842,11 +842,12 @@ end
 
 module ConnectRPC
   class GRPCWebCORS
-    def initialize: (origins: Array[String], ?credentials: bool, ?request_headers: Array[String], ?expose_headers: Array[String]) -> void
+    def initialize: (origins: Array[String], ?credentials: bool, ?request_headers: Array[String], ?expose_headers: Array[String], ?max_age: Integer) -> void
     attr_reader origins: Array[String]
     attr_reader credentials: bool
     attr_reader request_headers: Array[String]
     attr_reader expose_headers: Array[String]
+    attr_reader max_age: Integer
   end
   interface _GRPCWebOutput
     def write: (String, ?timeout: Numeric?) -> nil

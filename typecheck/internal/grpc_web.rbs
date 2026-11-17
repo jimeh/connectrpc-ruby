@@ -3,9 +3,11 @@ module ConnectRPC
     BASE_REQUEST: Array[String]
     BASE_EXPOSE: Array[String]
     TOKEN: Regexp
+    MAX_AGE_LIMIT: Integer
     private
     def valid_origin?: (String) -> bool
     def names: (Array[String]) -> Array[String]
+    def max_age!: (Integer) -> Integer
   end
   module GRPCWeb
     type representation = :binary | :text
@@ -83,6 +85,7 @@ module ConnectRPC
       attr_accessor session: Streaming::Session?
       attr_accessor error: Error?
       attr_accessor published: bool
+      attr_accessor head_attempted: bool
       def initialize: (path: String, headers: headers, representation: representation, publish: _PublishStreamHead | ^(StreamHead) -> void, lifecycle: Instrumentation::Handle?, cancellation: _Cancellation?) -> void
     end
   end

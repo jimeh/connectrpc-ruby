@@ -4,7 +4,7 @@ module ConnectRPC
   module GRPCProtocol
     class ServerState
       attr_reader :headers, :codec, :publish, :lifecycle, :cancellation
-      attr_accessor :context, :session, :encoding, :error, :published
+      attr_accessor :context, :session, :encoding, :error, :published, :head_attempted
 
       def initialize(headers:, codec:, publish:, lifecycle:, cancellation:)
         @headers = headers
@@ -13,7 +13,7 @@ module ConnectRPC
         @lifecycle = lifecycle
         @cancellation = cancellation
         @encoding = :identity
-        @published = false
+        @published = @head_attempted = false
       end
     end
   end
@@ -114,7 +114,8 @@ module ConnectRPC
       context = state.context #: Context
       if context.is_a?(StreamingContext)
         context.send(:publish_headers, check: false)
-      else
+      elsif !state.head_attempted
+        state.head_attempted = true
         context.response_metadata.freeze
         publish_grpc_snapshot(state, context.response_metadata)
       end
@@ -131,7 +132,6 @@ module ConnectRPC
     end
 
     def grpc_terminal_fields(state, context)
-      merge_stream_error_metadata(state.error, context)
       codec = @status_codec #: _GRPCStatusCodec
       GRPCProtocol.terminal(
         state.error, stream_trailers(state.error, context),
