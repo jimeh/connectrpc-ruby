@@ -91,7 +91,7 @@ reactor, thread or state raises `ConnectRPC::Async::LifecycleError`. Since
 ## Host
 
 `Host.new(server:, host: "127.0.0.1", port: 0, tls: nil, tls_provider: nil,
-max_connections: 128, max_requests: 128, max_concurrent_streams: 100,
+max_connections: 1024, max_requests: 128, max_concurrent_streams: 100,
 request_body_timeout: 60, handshake_timeout: 10, idle_timeout: 60,
 refresh_interval: 60, refresh_jitter: 0.1, refresh_timeout: 10,
 on_tls_error: nil, keepalive: ServerKeepalive.new, fallback: nil)` returns a
@@ -99,17 +99,46 @@ host. `fallback:`, `max_concurrent_streams:` and `request_body_timeout:` are
 available since 0.3.0.
 
 - `start` binds/listens before returning self; `port` and `addresses` expose the
-  actual binding.
+  actual binding. Since 0.3.0, every address `host` resolves to listens on one
+  port. With `port: 0` the kernel picks it for the first address; if a later
+  address already has that port in use, the Host closes what it bound and
+  retries the whole bind up to 5 times before raising. Listeners are
+  close-on-exec, so exec'd child processes do not keep them open.
 - States are new/running/closing/closed; hosts cannot restart.
-- Connection admission happens before TLS/preface. Request admission is
+- Connection admission happens before TLS/preface; see
+  [Connection capacity](#connection-capacity). Request admission is
   described in [Stream admission](#stream-admission).
 - Setup has one combined cooperative timeout.
 - `idle_timeout` counts from when a connection's last stream and handler
   finished, or from its start, and then drains the connection gracefully; see
   [Server keepalive](#server-keepalive). PINGs do not extend it. Nil disables it.
+  The 60-second default frees the connection slots that idle clients hold, in
+  the range of nginx's `keepalive_timeout` (75 seconds). TLS session resumption
+  is off, so an idle gRPC client reconnects with a full TLS handshake after 60
+  seconds. grpc-go's `MaxConnectionIdle` defaults to infinity; for long-lived
+  gRPC clients, raise `idle_timeout` or set it to nil and rely on
+  [server keepalive](#server-keepalive) PINGs to find dead peers.
 
 The Host serves HTTP/2 only. There is no HTTP/1 listener or automatic replay.
 For TLS options, see [TLS and client authentication](#tls-and-client-authentication).
+
+### Connection capacity
+
+`max_connections` caps the connections the Host holds, from raw accept until
+the connection's retirement completes, including pending handshakes and
+draining connections. Since 0.3.0, a listener stops accepting while the Host is
+at the cap, as Go's `netutil.LimitListener` does: a new peer waits in the
+kernel's listen backlog and is accepted on the same TCP connection as soon as a
+slot frees, on whichever listener it reached. Before 0.3.0 the Host accepted and
+immediately closed it. The default is 1024 since 0.3.0, up from 128. Go's
+`net/http` and grpc-go have no connection cap, and nginx's common
+`worker_connections` setting is 1024, which also matches the usual soft limit on
+open files.
+
+`max_connections` bounds resources; it is not denial-of-service protection. A
+peer that never sends its ClientHello or connection preface holds a slot for
+`handshake_timeout`, and idle connections hold theirs until `idle_timeout`.
+Limit connections per client in a proxy in front of the Host.
 
 ### Stream admission
 
@@ -140,9 +169,20 @@ set `max_concurrent_streams` lower explicitly.
   exempt, since they may idle between messages; keepalive and deadlines bound
   them. The value is finite positive seconds; nil turns the bound off.
 
-These limits do not bound every way to hold a slot. Client-streaming and bidi
-calls that stay idle, and peers that stop reading responses, keep their slots
-until a deadline, keepalive failure or `close` ends them.
+These limits do not bound every way to hold a slot:
+
+- Idle client-streaming and bidi calls have no idle bound by design, as in
+  grpc-go and connect-go, because a bound would end legitimate long-lived
+  streams such as subscriptions. A call deadline, `max_connection_age` with
+  `max_connection_age_grace` (both off by default) or `close` ends them.
+  Keepalive only proves that the peer still answers, and
+  `max_concurrent_streams` limits how many streams a connection has, not how
+  long they last, so by default a responsive peer can hold these slots
+  indefinitely.
+- A peer that stops reading responses is not yet bounded. Its stream slot
+  waits for flow-control credit until a deadline or `close` ends it; keepalive
+  does not, because the peer can keep answering PINGs. A response write bound
+  is tracked by [#131](https://github.com/jimeh/connectrpc-ruby/issues/131).
 
 ### Fallback application
 
@@ -212,14 +252,22 @@ requires the owning reactor and thread.
 
 ### Accept errors
 
-Each listener retries accept-only `EMFILE`, `ENFILE`, `ENOBUFS`, `ENOMEM`,
-`ECONNABORTED` and `EINTR` with private cooperative delays of 0.05, 0.1, 0.2,
-0.4 and 0.5 seconds. The sixth consecutive selected failure is terminal.
-The requested delay totals 1.25 seconds; scheduler/native stalls can extend it.
-A successful raw accept resets only that listener's streak, even if admission
-or TLS subsequently rejects the peer. Admitted RPCs and healthy listeners keep
-running during backoff. Other accept errors and unexpected listener errors are
-terminal. No RPC is replayed and no retry policy knobs are exposed.
+Since 0.3.0, accept errors that come from exhausted resources never stop a
+listener on their own, as in Go's `net/http` `Server.Serve` and grpc-go:
+
+- `EMFILE`, `ENFILE`, `ENOBUFS` and `ENOMEM` retry indefinitely with a
+  cooperative delay that starts at 5 ms, doubles and is capped at 1 second.
+  Each delay writes one warning, such as
+  `ConnectRPC accept error: Errno::EMFILE; retrying in 0.005s`, so a sustained
+  failure writes about one line per second per listener. A successful raw
+  accept resets that listener's delay.
+- `ECONNABORTED` and `EINTR` retry at once, after one turn of the scheduler so
+  that a stream of them cannot starve established connections or `close`. They
+  do not affect the delay.
+
+Admitted RPCs and other listeners keep running during a delay, and `close`
+ends it. Other accept errors and unexpected listener errors are terminal, as
+described below. No RPC is replayed and no retry policy knobs are exposed.
 
 ### Terminal failure and startup
 
@@ -251,8 +299,8 @@ returns nil. The Host cannot restart after close or failure.
   only listeners and late acquisitions. It preserves that close's admitted
   RPCs, original grace and outcome without awaiting its peer drain.
 
-Partial failure inside upstream multi-address binding is outside this recovery
-policy.
+When binding one of several resolved addresses fails, `start` closes the
+listeners it already bound and raises the bind error.
 
 ### Server keepalive
 
@@ -976,8 +1024,9 @@ and limits.
 
 Host accepts `tls_provider:`, `refresh_interval: 60`, `refresh_jitter: 0.1`,
 `refresh_timeout: 10` and `on_tls_error:`. `refresh_tls` coalesces immediate
-source checks; `tls_status` exposes safe state/generation and separate monotonic
-source-check/publication ages. Managed `reload_tls` conflicts with provider
+source checks; `tls_status` exposes safe state/generation, the last event
+`category`, separate monotonic source-check/publication ages and, since 0.3.0,
+`identity_expires_at`. Managed `reload_tls` conflicts with provider
 ownership. `TLSConfiguration` also exposes `start`, `refresh`, complete static
 `reload`, `close`, `generation` and `status`. Construction is reactor/thread
 bound; initial static/provider compilation happens on `start`, before accepts.
@@ -992,9 +1041,24 @@ Concurrent callers join one owned attempt, and waiter cancellation does not
 cancel it. Timer intervals start after each completed attempt. Timeout and
 shutdown remain cooperative for arbitrary native/CPU application code.
 
-The earliest served identity-chain expiry is checked against actual wall time
-at accept and again at pending handshake start. There is no maximum staleness
-setting; established connections retain negotiated state until drain/close.
+Candidates are validated when they are published, so a chain that has already
+expired fails `start`, `reload_tls` or a provider refresh as `:invalid`. Since
+0.3.0, an identity that expires while it is published keeps being served, as Go's
+`crypto/tls`, nginx and Envoy serve whatever certificate is configured: a client
+that verifies certificates then fails its handshake with a certificate-expired
+error instead of an unexplained EOF. Before 0.3.0 the Host closed new peers
+instead. Since 0.3.0, `tls_status[:identity_expires_at]` is the earliest
+`not_after` in the served identity chain, as a frozen `Time` (nil before the
+first publication or without TLS), and the session reports category `:expired`
+once per generation when the wall clock reaches it, through `on_tls_error` or a
+warning. The check re-reads the wall clock at least every 60 seconds, so a clock
+adjustment delays the event by at most that. `category` holds the last reported
+event, so a later refresh failure replaces `:expired`; compare
+`identity_expires_at` with the current time to test expiry. A refresh that
+publishes a new identity clears it. As during a provider refresh report, calling
+`close` or `refresh_tls` from the reporter raises `LifecycleError`. There
+is no maximum staleness setting; established connections retain negotiated
+state until drain/close.
 The [Falcon guide](../connectrpc-falcon/README.md#tls-lifecycle) explains complete
 provider semantics and safe diagnostics shared by both hosts.
 
@@ -1025,6 +1089,11 @@ stops and connection drain begins. Its one HTTP/1 construction hook is for the
 optional Falcon-local resource; HTTP/2 resources do not pretend to implement
 HTTP/1. The standalone Host keeps its strict h2 listener and composes the shared
 session.
+
+Since 0.3.0 the Host and Falcon take each peer through the session's private
+accept step, which accepts only while the session is under `max_connections`.
+A hosting caller that calls `accept(raw)` above the cap still has that peer
+closed.
 
 The shared session's private resource completion and lifetime-anchor operations
 are source-coupled to Falcon's local HTTP/1 resource. Use matched Async/Falcon

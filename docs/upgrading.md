@@ -95,6 +95,40 @@ This affects the Google protobuf binding.
   an empty payload. See
   [the Google binding](unary.md#declare-a-method-without-generation).
 
+These affect the Async `Host` and Falcon's native listener. See
+[Connection capacity](../gems/connectrpc-async/README.md#connection-capacity)
+and [Accept errors](../gems/connectrpc-async/README.md#accept-errors).
+
+- `max_connections` defaults to 1024 instead of 128 on `Host`,
+  `ServerSession` and `ConnectRPC::Falcon::Server`. Set it explicitly to keep
+  the old cap, and check that the process's open-file limit leaves room for it.
+- A host at `max_connections` no longer accepts and closes new peers. They wait
+  in the kernel's listen backlog until a connection retires, and a full Falcon
+  worker leaves them for its siblings. A client now sees a slow connection
+  instead of a reset; its connect timeout bounds the wait. A custom host that
+  calls `ServerSession#accept(raw)` itself still has peers above the cap
+  closed.
+- `EMFILE`, `ENFILE`, `ENOBUFS` and `ENOMEM` from `accept` retry indefinitely
+  with a delay from 5 ms doubling to 1 second and a warning per retry, instead
+  of stopping the Host after six failures. `ECONNABORTED` and `EINTR` retry at
+  once. Falcon's native listener used to end its accept loop on these errors
+  and now retries the same way. Watch the warnings, or the open-file count,
+  instead of relying on `Host#wait` to raise.
+- A TLS identity that expires while it is published keeps being served, and
+  the host reports `on_tls_error` category `:expired` once per generation (a
+  warning without a reporter). New handshakes used to be closed before the
+  ClientHello. Verifying clients now fail with a certificate-expired error.
+  Handle `:expired` in reporters that switch on the category, and use the new
+  `tls_status[:identity_expires_at]` to alert before expiry.
+- Calling `close` or `refresh_tls` from `on_tls_error` during the `:expired`
+  report raises `LifecycleError`, as it already did during a provider refresh
+  report.
+- Host listeners and listeners from `ConnectRPC::Falcon::Endpoint#bound` are
+  close-on-exec, so exec'd child processes no longer inherit them. Pass
+  `close_on_exec: false` to `Endpoint#bound` to keep the old behavior.
+- `Host.new(port: 0)` binds every resolved address on one port, so
+  `host.port` is the port of every entry in `host.addresses`.
+
 ## 0.2.0
 
 ### Breaking change: read-only transport cancellation

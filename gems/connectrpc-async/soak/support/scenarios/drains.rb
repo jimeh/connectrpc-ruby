@@ -8,8 +8,10 @@ module Soak
     module_function
 
     # Holds one call on each of MAX_CONNECTIONS fresh transports, so every
-    # admitted connection stays accounted (also once its age drain starts),
-    # then requires one more transport's call to be refused at admission.
+    # admitted connection stays accounted (also once its age drain starts).
+    # One more transport's connection must then wait in the listen backlog,
+    # its call reaching no handler, and succeed once one held call releases
+    # its slot.
     def saturate(campaign, server)
       Soak.poll("earlier server connections to retire before saturation") do
         server.run { |host| Sampler.session_live(host).empty? }
@@ -22,11 +24,21 @@ module Soak
         campaign.task.async { campaign.perform(transports[index], :unary, id: id, action: "hold", timeout: nil) }
       end
       campaign.ledger.await_entered(ids)
-      refused = campaign.ledger.next_id("refused-connection")
-      campaign.perform(transports.last, :unary, id: refused, expect: ["unavailable"])
-      raise Failure, "The refused connection's call reached a handler" unless campaign.ledger.entries(refused).zero?
+      queued = campaign.ledger.next_id("queued-connection")
+      waiting = campaign.task.async { campaign.perform(transports.last, :unary, id: queued) }
+      Soak.poll("the extra connection queued in the listen backlog") do
+        server.run { |host| Sampler.listener_queued?(host) }
+      end
+      raise Failure, "The queued connection's call reached a handler" unless campaign.ledger.entries(queued).zero?
 
-      ids.each { |id| campaign.gates.open(id) }
+      live = server.run { |host| Sampler.session_live(host).size }
+      raise Failure, "#{live} live server connections with a cap of #{MAX_CONNECTIONS}" unless live == MAX_CONNECTIONS
+
+      campaign.gates.open(ids.first)
+      waiting.wait
+      raise Failure, "The queued connection's call did not reach a handler" unless campaign.ledger.entries(queued) == 1
+
+      ids.drop(1).each { |id| campaign.gates.open(id) }
       held.each(&:wait)
       transports.each do |clients|
         raise Failure, "A saturating transport did not close gracefully" unless clients.transport.close(grace: 2)
@@ -43,7 +55,7 @@ RSpec.shared_examples "soak goaway drains" do |kind|
   it "2a age drain: keeps every call successful while max_connection_age drains connections under load (#{kind})" do
     cap = Soak::ConnectionAdmission::MAX_CONNECTIONS
     campaign("2a-age-drain/#{kind}", workload: "Transport unary/stream batches across age drains, then " \
-                                               "#{cap + 1} held connections against max_connections #{cap}",
+                                               "#{cap} held connections and one queued behind max_connections #{cap}",
                                      concurrency: 6, payload_sizes: [16, 4_096], max_connection_age: 0.3,
                                      max_connections: cap) do |c|
       peer = c.peer_thread("#{kind} server")

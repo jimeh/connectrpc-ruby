@@ -20,6 +20,7 @@ host.refresh_tls&.succ
 host.reload_tls(certificate_chain: ["leaf"], private_key: "key", client_ca: nil)
 host.tls_status[:source_check_age]&.round
 host.tls_status[:publication_age]&.round
+host.tls_status[:identity_expires_at]&.to_i
 host.peer_certificate&.to_der
 host.drain_tls(grace: 0)
 host_close = host.close(grace: 5)
@@ -37,7 +38,7 @@ stopped = host.wait
 stopped.nil?
 configuration = ConnectRPC::Async::TLSConfiguration.new(tls_provider: lambda {
   { version: "v1", certificate_chain: ["leaf"], private_key: "key", client_ca: ["ca"] }
-}, on_error: ->(event) { event[:category].to_s })
+}, on_error: ->(event) { event[:category] == :expired })
 configuration.start.generation&.succ
 configuration.refresh&.succ
 configuration.reload(certificate_chain: ["leaf"], private_key: "key", client_ca: nil)
@@ -77,6 +78,7 @@ ConnectRPC::Client.new(base_url: "https://example.invalid", binding: APIBinding.
 transport.close(grace: 0)
 endpoint = ConnectRPC::Falcon::Endpoint.parse("https://127.0.0.1:9292")
 endpoint.scheme.size
+endpoint.bound(close_on_exec: false).close
 # @type var rack_app: ConnectRPC::Rack::_App
 rack_app = APIApp.new
 falcon = ConnectRPC::Falcon::Server.new(

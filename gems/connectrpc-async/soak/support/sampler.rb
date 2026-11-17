@@ -395,6 +395,13 @@ module Soak
       end
     end
 
+    # Whether a completed peer waits, untaken, in one of the server's listen
+    # backlogs: a Host's bound listeners or a Falcon Server's endpoint.
+    def listener_queued?(server)
+      sockets = server.is_a?(ConnectRPC::Async::Host) ? ivar(server, :@bound).sockets : server.endpoint.sockets
+      !IO.select(sockets, nil, nil, 0).nil?
+    end
+
     # High-water mark of a server session's accounted connections, observed
     # after every accept, so admission above `max_connections` cannot hide
     # between samples. Create and read it on the server's peer.

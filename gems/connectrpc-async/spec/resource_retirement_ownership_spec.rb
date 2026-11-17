@@ -23,8 +23,15 @@ RSpec.describe "Shared resource retirement ownership" do
           expect(aborter).not_to be_finished
           expect(waiter).not_to be_finished
 
+          # The retiring resource keeps its slot, so a new peer waits in the backlog.
+          listener = state.fetch(:host).instance_variable_get(:@bound).sockets.first
           excess = IO::Endpoint.tcp("127.0.0.1", URI(state.fetch(:origin)).port).connect
-          expect(excess.read(1)).to be_nil
+          wait_until(task, "the excess peer queued or reset") do
+            # A zero-timeout probe; Async runs IO.select on a thread.
+            IO.select([listener], nil, nil, 0) || # rubocop:disable Lint/IncompatibleIoSelectWithFiberScheduler
+              excess.read_nonblock(1, exception: false).nil?
+          end
+          expect(excess.read_nonblock(1, exception: false)).to eq(:wait_readable)
           expect(session.instance_variable_get(:@resources)).to eq([resource])
           expect { resource.connection.synchronize { raise "late writer entered" } }.to raise_error(IOError)
           expect(resource.connection.writers).to be_empty
@@ -32,6 +39,8 @@ RSpec.describe "Shared resource retirement ownership" do
           join_retirement_tasks(task, aborter, waiter, state.fetch(:handler))
           expect(retirement_complete?(resource)).to be(true)
           expect(session.instance_variable_get(:@identities)).to be_empty
+          # Release the slot the excess peer takes once retirement completes.
+          excess.close
           fresh = ConnectRPC::Async::Transport.new(origin: state.fetch(:origin), **state.fetch(:client_options))
           expect(client(fresh, state.fetch(:origin)).echo(AsyncHelpers::MESSAGE.new(name: "fresh")).message.name)
             .to eq("fresh")

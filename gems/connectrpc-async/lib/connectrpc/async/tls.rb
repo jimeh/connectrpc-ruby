@@ -140,11 +140,8 @@ module ConnectRPC
           freeze
         end
 
-        attr_reader :fingerprint
-
-        def check_validity!
-          raise ArgumentError, "Expired TLS snapshot", cause: nil if @expires_at && Time.now >= @expires_at
-        end
+        # Server snapshots expose the earliest identity-chain not_after.
+        attr_reader :fingerprint, :expires_at
 
         def socket(raw)
           OpenSSL::SSL::SSLSocket.new(raw, @context).tap { |socket| socket.sync_close = true }

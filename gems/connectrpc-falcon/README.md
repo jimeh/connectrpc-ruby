@@ -121,6 +121,27 @@ first provider call. Initialize application-owned database clients there; the
 library never opens a database connection. Falcon binds raw TCP in the parent
 and owns worker count, readiness, health checks and its default restart policy.
 
+### Listener and connection capacity
+
+`server_options` `max_connections:` caps each worker's connections, HTTP/1.1
+and HTTP/2, from raw accept until retirement. Since 0.3.0 the default is 1024,
+up from 128, and a worker at its cap stops taking peers from the shared listen
+backlog, so a sibling worker accepts them, or the peer waits until a slot frees.
+Before 0.3.0 a full worker accepted the peer and closed it. Idle connections
+hold their slot until `idle_timeout` (default 60 seconds); the
+[Async guide](../connectrpc-async/README.md#host) explains that trade-off for
+long-lived gRPC clients. The cap bounds resources and is not denial-of-service
+protection; limit connections per client in a proxy.
+
+Since 0.3.0, accept errors follow the
+[Async Host policy](../connectrpc-async/README.md#accept-errors): `EMFILE`,
+`ENFILE`, `ENOBUFS` and `ENOMEM` retry with a warning and a delay from 5 ms
+doubling to 1 second, and `ECONNABORTED` and `EINTR` retry at once, instead of
+ending the worker's accept loop. `ConnectRPC::Falcon::Endpoint#bound` binds
+close-on-exec by default since 0.3.0, so both the parent-bound listener and a
+directly bound one stay out of exec'd child processes. Forked workers still
+inherit it. Pass `close_on_exec: false` to keep the descriptor across exec.
+
 ### Run inside an application-owned Async task
 
 For direct use inside an application-owned Async task:
@@ -265,9 +286,15 @@ content preserve generation and context; PEM whitespace and trust-anchor order
 do not cause churn. Equal versions with changed content fail. A different
 version can deliberately restore previously used material with a new generation.
 Failed refreshes retain the last good snapshot and source-check timestamp.
-There is no maximum-staleness policy. Actual wall-clock expiry of the earliest
-served identity-chain certificate rejects new accepts and pending handshake
-starts. Established connections retain their negotiated identity/trust.
+There is no maximum-staleness policy. A candidate whose chain has already
+expired fails validation as `:invalid`. Since 0.3.0, an identity that expires
+while it is published keeps being served to new and pending handshakes, so a
+verifying client fails with a certificate-expired error instead of an EOF, and
+each worker reports `:expired` once per generation when the wall clock reaches
+the earliest identity-chain `not_after`. It re-reads the wall clock at least
+every 60 seconds. Before 0.3.0 expiry rejected new accepts and pending
+handshake starts. Established connections retain their negotiated
+identity/trust.
 
 ### Operations and status
 
@@ -277,9 +304,14 @@ starts. Established connections retain their negotiated identity/trust.
 - `tls_generation` is initially 1 for TLS.
 - `tls_status` returns safe state, generation, category, `source_check_age` and
   `publication_age` in monotonic seconds; it never exposes the source version,
-  certificates, keys or fingerprints.
-- `on_tls_error:` receives an immutable safe category/status event. Default
-  diagnostics are fixed safe text; reporter exceptions are isolated.
+  certificates, keys or fingerprints. `category` is the last reported event.
+  Since 0.3.0, `identity_expires_at` is the served identity chain's earliest
+  `not_after` as a frozen `Time`, so `identity_expires_at <= Time.now` tests
+  expiry whatever `category` says.
+- `on_tls_error:` receives an immutable safe category/status event, including
+  `:expired` since 0.3.0. Default diagnostics are fixed safe text; reporter
+  exceptions are isolated. Calling `close` or `refresh_tls` from the reporter
+  raises `LifecycleError`.
 
 Initial failure prevents successful TLS/application traffic before Falcon
 reports startup failure. TCP backlog can still queue connections on the

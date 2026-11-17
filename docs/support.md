@@ -423,6 +423,19 @@ cutoff. For Rails and Rack hosts the proxy owns these limits too, for example
 Envoy's HTTP/2 `max_concurrent_streams` or nginx's
 `http2_max_concurrent_streams` and `client_body_timeout`.
 
+Since 0.3.0, the same hosts stop accepting while a worker holds
+`max_connections` (default 1024) connections, so new peers wait in the listen
+backlog or reach a sibling Falcon worker instead of being reset, and resource
+accept errors such as `EMFILE` retry with a warning and a delay capped at 1
+second instead of stopping the listener. An identity that expires while
+published keeps being served and is reported once as `:expired`. Two ways to
+hold a slot remain: idle client-streaming and bidi calls are unbounded by design,
+as in grpc-go and connect-go, and peers that stop reading responses are not yet
+bounded ([#131](https://github.com/jimeh/connectrpc-ruby/issues/131)). Per-client
+connection limits belong in a proxy. The
+[Async guide](../gems/connectrpc-async/README.md#connection-capacity) owns these
+policies.
+
 `async:interop:keepalive` checks client keepalive, PING enforcement, BDP PINGs
 and the age drain between the pinned grpc-go peer and the Async `Transport` and
 `Host`. `falcon:interop:grpc` checks only the age drain through real Falcon
@@ -502,12 +515,17 @@ reported during #44.
   stays outside fallback cache middleware. The [Falcon guide](../gems/connectrpc-falcon/README.md#rack-fallback-caching)
   retains the opt-in cache semantics and application responsibilities.
 - [#50](https://github.com/jimeh/connectrpc-ruby/pull/50), merged as `95ecf9f`,
-  resolved M4. Each Async Host listener retries named transient accept errors
-  with bounded backoff. The sixth consecutive retried failure or any other
-  listener error stops the Host, and `Host#wait` raises the original cause after
-  cleanup. The [Async guide](../gems/connectrpc-async/README.md) owns the
+  resolved M4. Each Async Host listener retried named transient accept errors
+  with bounded backoff, and the sixth consecutive retried failure or any other
+  listener error stopped the Host. Since 0.3.0
+  ([#117](https://github.com/jimeh/connectrpc-ruby/issues/117)), resource
+  errors retry indefinitely with a delay capped at 1 second, `ECONNABORTED` and
+  `EINTR` retry at once, and Falcon's native listener follows the same policy.
+  Any other listener error still stops the Host, and `Host#wait` raises the
+  original cause after cleanup. The
+  [Async guide](../gems/connectrpc-async/README.md#accept-errors) owns the
   retried errors, delays and lifecycle semantics. This repair does not explain
-  historical H2 client or Falcon failures.
+  historical H2 client failures.
 - [#48](https://github.com/jimeh/connectrpc-ruby/pull/48), merged as `63b70f4`,
   repaired custom observer detach unwind. Every successful attachment receives
   one reverse-order detach attempt even when another detach raises a fatal

@@ -10,7 +10,7 @@ module ConnectRPC
       def self.parse: (String, ?Object?, **Object) -> Endpoint
       def initialize: (URI::Generic, ?Object?, **Object) -> void
       def scheme: () -> String
-      def bound: () -> _BoundEndpoint
+      def bound: (?close_on_exec: bool) -> _BoundEndpoint
       def with: (**Object) -> Endpoint
     end
     # Keep this small Rack capability local: Falcon does not depend on the

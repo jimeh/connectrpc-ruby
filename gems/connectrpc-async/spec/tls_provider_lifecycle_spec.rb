@@ -18,19 +18,19 @@ RSpec.describe "Managed TLS timing and host lifecycle" do
     end
   end
 
-  it "checks the earliest identity chain expiry at raw capture and again on the same pending capture" do
+  it "reports the earliest identity chain expiry and keeps capturing with it after expiry" do
     reactor do
       intermediate = credentials(10, "short intermediate", issuer: tls_material[:root], authority: true)
       intermediate.first.not_after = Time.now + 120
       intermediate.first.sign(tls_material[:root].last, "SHA256")
       leaf = credentials(11, "localhost", issuer: intermediate, usage: "serverAuth")
       manager = ConnectRPC::Async::TLSConfiguration.new(tls: host_tls(leaf, chain: [intermediate])).start
-      raw = Object.new
-      captured = manager.send(:capture, raw)
       expiry = intermediate.first.not_after
+      expect(manager.status[:identity_expires_at]).to eq(expiry)
+      expect(expiry).to be < leaf.first.not_after
+      # Real expiry, served handshakes and the event are covered by tls_expiry_spec.
       allow(Time).to receive(:now).and_return(expiry)
-      expect { manager.send(:capture, raw) }.to raise_error(ArgumentError, "Expired TLS snapshot")
-      expect { captured.handshake }.to raise_error(ArgumentError, "Expired TLS snapshot")
+      expect(manager.send(:capture, Object.new).generation).to eq(1)
       expect(manager.generation).to eq(1)
     ensure
       manager&.close

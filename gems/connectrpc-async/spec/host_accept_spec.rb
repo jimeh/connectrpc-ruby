@@ -95,34 +95,81 @@ RSpec.describe ConnectRPC::Async::Host do
     e
   end
 
-  [Errno::EMFILE, Errno::ENFILE, Errno::ENOBUFS, Errno::ENOMEM, Errno::ECONNABORTED, Errno::EINTR].each do |errno|
-    it "budgets exactly six consecutive #{errno} accept failures without spinning" do
+  def backoff_delays(count) = Array.new(count) { |index| [0.005 * (2**index), 1.0].min }
+
+  def accept_warnings(errno, delays)
+    delays.map { |delay| "ConnectRPC accept error: #{errno}; retrying in #{delay}s\n" }.join
+  end
+
+  [Errno::EMFILE, Errno::ENFILE, Errno::ENOBUFS, Errno::ENOMEM].each do |errno|
+    it "retries 20 consecutive #{errno} accept failures with capped backoff while serving established peers" do
       reactor do |task|
-        host = described_class.new(server: server)
+        host = described_class.new(server: server, idle_timeout: nil)
         entered, release = controlled_backoff(host)
-        errors = Array.new(6) { |i| errno.new("accept #{i}") }
-        faults = AcceptFaults.new { |_index, attempt| raise errors.fetch(attempt - 1) }
-        faults.enable do
-          expect(host.start).to equal(host)
-          expect(host.start).to equal(host)
-          [0.05, 0.1, 0.2, 0.4, 0.5].each_with_index do |delay, index|
-            expect(entered.dequeue).to eq(delay)
-            # The real listener has reached the controlled backoff. An event-loop
-            # turn cannot issue another accept before this boundary is released.
-            task.yield
-            expect(faults.attempts[0]).to eq(index + 1)
-            release.enqueue(true)
+        # The first attempt accepts the established peer; the next 20 fail.
+        faults = AcceptFaults.new { |_index, attempt| raise errno, "accept #{attempt}" if attempt.between?(2, 21) }
+        delays = backoff_delays(20)
+        expect(delays.last(12)).to all(eq(1.0))
+        expect do
+          faults.enable do
+            host.start
+            origin = "http://127.0.0.1:#{host.port}"
+            established = ConnectRPC::Async::Transport.new(origin: origin)
+            typed = client(established, origin)
+            expect(typed.echo(AsyncHelpers::MESSAGE.new(name: "before")).message.name).to eq("before")
+            fresh = ConnectRPC::Async::Transport.new(origin: origin)
+            later = task.async { client(fresh, origin).echo(AsyncHelpers::MESSAGE.new(name: "later")) }
+            delays.each do |delay|
+              expect(entered.dequeue).to eq(delay)
+              expect(typed.echo(AsyncHelpers::MESSAGE.new(name: "during")).message.name).to eq("during")
+              release.enqueue(true)
+            end
+            expect(later.wait.message.name).to eq("later")
+            expect(faults.attempts[0]).to be >= 22
+            expect(faults.accepted[0]).to eq(2)
+            expect(faults.tasks).to all(satisfy { |listener| !listener.finished? })
+          ensure
+            established&.close(grace: 0)
+            fresh&.close(grace: 0)
+            host.close(grace: 0)
           end
-          expect(wait_error(host)).to equal(errors.last)
-          expect(faults.attempts[0]).to eq(6)
-          expect(faults.listeners).to all(be_closed)
+        end.to output(accept_warnings(errno, delays)).to_stderr
+        expect(host.wait).to be_nil
+      end
+    end
+  end
+
+  [Errno::ECONNABORTED, Errno::EINTR].each do |errno|
+    it "retries sustained #{errno} accept failures without backoff, yielding to established peers and close" do
+      reactor do |task|
+        host = described_class.new(server: server, idle_timeout: nil)
+        entered, = controlled_backoff(host)
+        # Without a scheduling boundary per retry, the test task could only
+        # resume once the listener stopped failing at this bound.
+        limit = 100_000
+        faults = AcceptFaults.new do |_index, attempt|
+          raise errno, "immediate" if attempt > 1 && attempt < limit
+        end
+        faults.enable do
+          host.start
+          origin = "http://127.0.0.1:#{host.port}"
+          transport = ConnectRPC::Async::Transport.new(origin: origin)
+          typed = client(transport, origin)
+          expect(typed.echo(AsyncHelpers::MESSAGE.new(name: "before")).message.name).to eq("before")
+          wait_until(task, "sustained #{errno} retries", within: 5) do
+            faults.attempts[0] >= 1_000 || !entered.empty?
+          end
+          expect(entered).to be_empty
+          expect(faults.attempts[0]).to be < limit
+          expect(typed.echo(AsyncHelpers::MESSAGE.new(name: "during")).message.name).to eq("during")
+          transport.close(grace: 0)
+          host.close(grace: 0)
+          expect(host.wait).to be_nil
           expect(faults.tasks).to all(be_finished)
-          expect(host_session(host).instance_variable_get(:@lifetime)).to be_finished
-          expect(host.close(grace: 0)).to be(false)
-          expect(host.close).to be(false)
-          expect(wait_error(host)).to equal(errors.last)
-          expect { host.start }.to raise_error(AsyncHelpers::LIFECYCLE_ERROR)
+          expect(faults.attempts[0]).to be < limit
+          expect(entered).to be_empty
         ensure
+          transport&.close(grace: 0)
           host.close(grace: 0)
         end
       end
@@ -150,70 +197,66 @@ RSpec.describe ConnectRPC::Async::Host do
     end
   end
 
-  it "resets the streak on raw accept even when admission rejects that peer" do
+  it "restarts the resource-error backoff after each successful raw accept" do
     reactor do |task|
-      host = described_class.new(server: server, max_connections: 1, idle_timeout: nil)
+      host = described_class.new(server: server, idle_timeout: nil)
       entered, release = controlled_backoff(host)
+      # Each false attempt waits for and accepts the next peer.
+      plan = [true, true, true, false, true, true, false]
+      faults = AcceptFaults.new { raise Errno::EMFILE, "planned" if plan.shift }
       peers = []
-      terminal = Errno::EMFILE.new("six after reset")
-      faults = AcceptFaults.new do |_index, attempt|
-        raise terminal unless [1, 4].include?(attempt)
-      end
-      faults.enable do
-        host.start
-        peers << IO::Endpoint.tcp("127.0.0.1", host.port).connect
-        expect(entered.dequeue).to eq(0.05)
-        release.enqueue(true)
-        expect(entered.dequeue).to eq(0.1)
-        peers << IO::Endpoint.tcp("127.0.0.1", host.port).connect
-        release.enqueue(true)
-        [0.05, 0.1, 0.2, 0.4, 0.5].each_with_index do |delay, index|
-          expect(entered.dequeue).to eq(delay)
-          # The reset streak is held before its later failures and terminal abort.
-          expect(peers.last.read(1)).to be_nil if index.zero?
-          release.enqueue(true)
+      expect do
+        faults.enable do
+          host.start
+          [[0.005, 0.01, 0.02], [0.005, 0.01]].each_with_index do |delays, index|
+            peers << IO::Endpoint.tcp("127.0.0.1", host.port).connect
+            delays.each do |delay|
+              expect(entered.dequeue).to eq(delay)
+              release.enqueue(true)
+            end
+            wait_until(task, "peer #{index} accepted") { faults.accepted[0] == index + 1 }
+          end
+          expect(plan).to be_empty
+          expect(host_session(host).instance_variable_get(:@resources).size).to eq(2)
+        ensure
+          peers.each(&:close)
+          host.close(grace: 0)
         end
-        expect(wait_error(host)).to equal(terminal)
-        expect(faults.accepted[0]).to eq(2)
-        expect(faults.attempts[0]).to eq(10)
-        expect(peers.last.read(1)).to be_nil
-        expect(faults.tasks).to all(be_finished)
-        task.yield
-      ensure
-        peers.each(&:close)
-        host.close(grace: 0)
-      end
+      end.to output(accept_warnings(Errno::EMFILE, [0.005, 0.01, 0.02, 0.005, 0.01])).to_stderr
     end
   end
 
-  it "keeps a second real listener healthy without resetting the failing listener budget" do
+  it "keeps a second real listener serving while the first backs off without stopping the Host" do
     reactor do
       host = described_class.new(server: server)
       sockets = two_listeners(host)
       entered, release = controlled_backoff(host)
-      original = Errno::ENFILE.new("listener zero")
-      faults = AcceptFaults.new { |index, _attempt| raise original if index.zero? }
-      faults.enable do
-        host.start
-        origin = "http://127.0.0.1:#{sockets.last.local_address.ip_port}"
-        transport = ConnectRPC::Async::Transport.new(origin: origin)
-        [0.05, 0.1, 0.2, 0.4, 0.5].each do |delay|
-          expect(entered.dequeue).to eq(delay)
-          expect(client(transport,
-                        origin).echo(AsyncHelpers::MESSAGE.new(name: "healthy")).message.name).to eq("healthy")
-          transport.close(grace: 0)
-          transport = ConnectRPC::Async::Transport.new(origin: origin)
-          release.enqueue(true)
+      faults = AcceptFaults.new { |index, _attempt| raise Errno::ENFILE, "listener zero" if index.zero? }
+      delays = backoff_delays(10)
+      expect do
+        faults.enable do
+          host.start
+          origin = "http://127.0.0.1:#{sockets.last.local_address.ip_port}"
+          delays.each_with_index do |delay, index|
+            # Keep the failing listener in its last backoff until close.
+            release.enqueue(true) if index.positive?
+            expect(entered.dequeue).to eq(delay)
+            transport = ConnectRPC::Async::Transport.new(origin: origin)
+            expect(client(transport,
+                          origin).echo(AsyncHelpers::MESSAGE.new(name: "healthy")).message.name).to eq("healthy")
+            transport.close(grace: 0)
+          end
+          expect(faults.attempts[0]).to eq(delays.size)
+          expect(faults.accepted[1]).to eq(10)
+          expect(faults.tasks).to all(satisfy { |listener| !listener.finished? })
+          host.close(grace: 0)
+          expect(host.wait).to be_nil
+          expect(sockets).to all(be_closed)
+          expect(faults.tasks).to all(be_finished)
+        ensure
+          host.close(grace: 0)
         end
-        expect(wait_error(host)).to equal(original)
-        expect(faults.attempts[0]).to eq(6)
-        expect(faults.accepted[1]).to eq(5)
-        expect(sockets).to all(be_closed)
-        expect(faults.tasks).to all(be_finished)
-      ensure
-        transport&.close(grace: 0)
-        host.close(grace: 0)
-      end
+      end.to output(accept_warnings(Errno::ENFILE, delays)).to_stderr
     end
   end
 
@@ -275,22 +318,25 @@ RSpec.describe ConnectRPC::Async::Host do
       original_backoff = host.method(:accept_backoff)
       host.define_singleton_method(:accept_backoff) do |delay|
         backoff.enqueue(delay)
-        original_backoff.call(delay)
+        # A real sleep longer than the example, so only close can end it.
+        original_backoff.call(60)
       end
       faults = AcceptFaults.new { raise Errno::EMFILE, "backoff" }
-      faults.enable do
-        host.start
-        expect(backoff.dequeue).to eq(0.05)
-        waiters = 2.times.map { task.async { host.wait } }
-        closers = 2.times.map { task.async { host.close(grace: 0) } }
-        expect(closers.map(&:wait)).to eq([true, true])
-        expect(waiters.map(&:wait)).to eq([nil, nil])
-        expect(host.wait).to be_nil
-        expect(faults.attempts[0]).to eq(1)
-        expect(faults.tasks).to all(be_finished)
-      ensure
-        host.close(grace: 0)
-      end
+      expect do
+        faults.enable do
+          host.start
+          expect(backoff.dequeue).to eq(0.005)
+          waiters = 2.times.map { task.async { host.wait } }
+          closers = 2.times.map { task.async { host.close(grace: 0) } }
+          expect(closers.map(&:wait)).to eq([true, true])
+          expect(waiters.map(&:wait)).to eq([nil, nil])
+          expect(host.wait).to be_nil
+          expect(faults.attempts[0]).to eq(1)
+          expect(faults.tasks).to all(be_finished)
+        ensure
+          host.close(grace: 0)
+        end
+      end.to output(accept_warnings(Errno::EMFILE, [0.005])).to_stderr
     end
   end
 
@@ -358,43 +404,49 @@ RSpec.describe ConnectRPC::Async::Host do
 
   %i[accept backoff].each do |boundary|
     it "resolves ordinary waits and retires resources when the owner is cancelled during #{boundary}" do
-      reactor do |task|
-        ready = Async::Queue.new
-        progress = Async::Queue.new
-        faults = AcceptFaults.new do
-          progress.enqueue(true) if boundary == :accept
-          raise Errno::EMFILE, "owner backoff" if boundary == :backoff
-        end
-        owner = task.async(finished: false) do
-          host = described_class.new(server: server, idle_timeout: nil)
-          if boundary == :backoff
-            real_backoff = host.method(:accept_backoff)
-            host.define_singleton_method(:accept_backoff) do |delay|
-              progress.enqueue(true)
-              real_backoff.call(delay)
-            end
-          end
-          faults.enable do
-            host.start
-            ready.enqueue(host)
-            Async::Queue.new.dequeue
-          end
-        end
-        host = ready.dequeue
-        progress.dequeue
-        waiter = task.async { host.wait }
-        AsyncHelpers::INTERNAL.cancel(owner)
-        owner.wait
-        expect(waiter.wait).to be_nil
-        expect(host.wait).to be_nil
-        # Ordinary wait observes listener stop; owner.wait only observes its result.
-        AsyncHelpers::INTERNAL.join_complete(owner)
-        expect(owner).to be_finished
-        expect(faults.listeners).to all(be_closed)
-        expect(faults.tasks).to all(be_finished)
-        expect(host_session(host).instance_variable_get(:@lifetime)).to be_finished
-        expect(host_session(host).instance_variable_get(:@state)).to eq(:closed)
+      warnings = boundary == :backoff ? accept_warnings(Errno::EMFILE, [0.005]) : ""
+      expect { owner_cancellation(boundary) }.to output(warnings).to_stderr
+    end
+  end
+
+  def owner_cancellation(boundary)
+    reactor do |task|
+      ready = Async::Queue.new
+      progress = Async::Queue.new
+      faults = AcceptFaults.new do
+        progress.enqueue(true) if boundary == :accept
+        raise Errno::EMFILE, "owner backoff" if boundary == :backoff
       end
+      owner = task.async(finished: false) do
+        host = described_class.new(server: server, idle_timeout: nil)
+        if boundary == :backoff
+          real_backoff = host.method(:accept_backoff)
+          host.define_singleton_method(:accept_backoff) do |_delay|
+            progress.enqueue(true)
+            # A real sleep longer than the example, so only cancellation ends it.
+            real_backoff.call(60)
+          end
+        end
+        faults.enable do
+          host.start
+          ready.enqueue(host)
+          Async::Queue.new.dequeue
+        end
+      end
+      host = ready.dequeue
+      progress.dequeue
+      waiter = task.async { host.wait }
+      AsyncHelpers::INTERNAL.cancel(owner)
+      owner.wait
+      expect(waiter.wait).to be_nil
+      expect(host.wait).to be_nil
+      # Ordinary wait observes listener stop; owner.wait only observes its result.
+      AsyncHelpers::INTERNAL.join_complete(owner)
+      expect(owner).to be_finished
+      expect(faults.listeners).to all(be_closed)
+      expect(faults.tasks).to all(be_finished)
+      expect(host_session(host).instance_variable_get(:@lifetime)).to be_finished
+      expect(host_session(host).instance_variable_get(:@state)).to eq(:closed)
     end
   end
 
@@ -584,19 +636,21 @@ RSpec.describe ConnectRPC::Async::Host do
       host = described_class.new(server: server)
       entered, release = controlled_backoff(host)
       faults = AcceptFaults.new { |_index, attempt| raise Errno::EMFILE, "first" if attempt == 1 }
-      faults.enable do
-        expect(host.start).to equal(host)
-        expect(entered.dequeue).to eq(0.05)
-        release.enqueue(true)
-        origin = "http://127.0.0.1:#{host.port}"
-        transport = ConnectRPC::Async::Transport.new(origin: origin)
-        expect(client(transport,
-                      origin).echo(AsyncHelpers::MESSAGE.new(name: "first peer")).message.name).to eq("first peer")
-        expect(faults.accepted[0]).to eq(1)
-      ensure
-        transport&.close(grace: 0)
-        host.close(grace: 0)
-      end
+      expect do
+        faults.enable do
+          expect(host.start).to equal(host)
+          expect(entered.dequeue).to eq(0.005)
+          release.enqueue(true)
+          origin = "http://127.0.0.1:#{host.port}"
+          transport = ConnectRPC::Async::Transport.new(origin: origin)
+          expect(client(transport,
+                        origin).echo(AsyncHelpers::MESSAGE.new(name: "first peer")).message.name).to eq("first peer")
+          expect(faults.accepted[0]).to eq(1)
+        ensure
+          transport&.close(grace: 0)
+          host.close(grace: 0)
+        end
+      end.to output(accept_warnings(Errno::EMFILE, [0.005])).to_stderr
     end
   end
 
