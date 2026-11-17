@@ -1,6 +1,13 @@
 # frozen_string_literal: true
 
 RSpec.shared_examples "native streaming bounds and cancellation" do |protocol = :connect|
+  # A real wire deadline starts with the call and the transport arms real
+  # timers, so no controllable clock can hold it. It must outlast the setup
+  # that each example establishes first: wire saturation and a sibling RPC, or
+  # the first streamed message. That setup usually takes under 50 ms, but CPU
+  # starvation stalled it past the former 0.1-0.2 s deadlines (#132).
+  deadline = 1.0
+
   %i[request response].product(%i[token deadline]).each do |direction, reason|
     it "bounds nonreading #{direction} ownership and advances a same-connection sibling through #{reason}" do
       reactor do |task|
@@ -50,17 +57,17 @@ RSpec.shared_examples "native streaming bounds and cancellation" do |protocol = 
         core = ConnectRPC::Client.new(base_url: origin, transport: transport, protocol: protocol,
                                       instrumentation: bus, binding: ConnectRPC::Bindings::GoogleProtobuf.new)
         source = ConnectRPC::CancellationSource.new
+        timeout = reason == :deadline ? deadline : nil
         call = task.async do
           if direction == :request
-            core.bidi_stream(bidi, timeout: reason == :deadline ? 0.2 : nil, cancellation: source.token) do |duplex|
+            core.bidi_stream(bidi, timeout: timeout, cancellation: source.token) do |duplex|
               duplex.headers
               20.times { duplex.send_message(AsyncHelpers::MESSAGE.new(name: "x" * 200_000)) }
               duplex.close_send
               duplex.each { |_| nil }
             end
           else
-            core.server_stream(ss, AsyncHelpers::MESSAGE.new, timeout: reason == :deadline ? 0.2 : nil,
-                                                              cancellation: source.token) do |reader|
+            core.server_stream(ss, AsyncHelpers::MESSAGE.new, timeout: timeout, cancellation: source.token) do |reader|
               reader.headers
               entered.enqueue(true)
               release.dequeue
@@ -69,8 +76,11 @@ RSpec.shared_examples "native streaming bounds and cancellation" do |protocol = 
           end
         rescue ConnectRPC::Error => e
           e
+        ensure
+          entered.enqueue(:ended)
         end
-        entered.dequeue
+        raise "The call ended before its stream was established: #{call.wait.inspect}" if entered.dequeue == :ended
+
         resources = transport.instance_variable_get(:@resources)
         expect(resources.size).to eq(1)
         client_resource = resources.first
@@ -197,17 +207,32 @@ RSpec.shared_examples "native streaming bounds and cancellation" do |protocol = 
         progress = Async::Queue.new
         call = task.async do
           core.server_stream(ss, AsyncHelpers::MESSAGE.new(name: "progress"),
-                             timeout: reason == :deadline ? 0.1 : nil, cancellation: source.token) do |reader|
+                             timeout: reason == :deadline ? deadline : nil, cancellation: source.token) do |reader|
             expect(reader.receive.name).to eq("progress")
             progress.enqueue(true)
             reader.receive
           end
         rescue ConnectRPC::Error => e
           e
+        ensure
+          progress.enqueue(:ended)
         end
+        raise "The call ended before its receive blocked: #{call.wait.inspect}" unless progress.dequeue == true
+
         entered.dequeue
-        progress.dequeue
+        resources = transport.instance_variable_get(:@resources)
+        expect(resources.size).to eq(1)
+        client_resource = resources.first
+        outgoing = transport.instance_variable_get(:@calls).keys.first&.fetch(:request)
+        raise "The call ended after its first message: #{call.wait.inspect}" if outgoing.nil? || call.finished?
+
+        # An unexpired deadline here proves the second receive started first,
+        # so it blocks on the held handler instead of failing its entry check.
+        expect(outgoing.deadline).not_to be_expired if reason == :deadline
         expect(core.client_stream(cs) { nil }.message.name).to eq("healthy")
+        raise "The call ended during the sibling RPC: #{call.wait.inspect}" if call.finished?
+
+        expect(outgoing.deadline).not_to be_expired if reason == :deadline
         source.cancel if reason == :token
         error = call.wait
         expect(error.code).to eq(reason == :token ? "canceled" : "deadline_exceeded")
@@ -219,7 +244,7 @@ RSpec.shared_examples "native streaming bounds and cancellation" do |protocol = 
         end
         release.enqueue(true)
         expect(core.client_stream(cs) { nil }.message.name).to eq("healthy")
-        expect(transport.instance_variable_get(:@resources).size).to eq(1)
+        expect(transport.instance_variable_get(:@resources)).to eq([client_resource])
         expect(transport.instance_variable_get(:@calls)).to be_empty
       ensure
         release&.enqueue(true)
