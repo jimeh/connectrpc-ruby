@@ -16,8 +16,10 @@ gem "connectrpc-async"
 gem "google-protobuf", ">= 4.36.2", "< 5"
 ```
 
-Give `connectrpc` and `connectrpc-async` the same version requirement, as the
-[package policy](../README.md#packages) requires.
+These lines leave the version open. Add the same requirement to both
+`connectrpc` and `connectrpc-async`, such as the one the
+[README quick start](../README.md#quick-start) uses, because the
+[package policy](../README.md#packages) requires matching versions.
 
 Save the server as `server.rb` and run `bundle exec ruby server.rb`. It serves
 Connect and native gRPC on one HTTP/2 port, h2c here, inside a reactor the

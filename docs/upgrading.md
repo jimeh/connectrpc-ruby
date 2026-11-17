@@ -48,3 +48,17 @@ does not need to be regenerated.
   an idle HTTP/2 connection with GOAWAY instead of aborting it. Pass
   `keepalive: nil` to turn off server PINGs and enforcement. See
   [Server keepalive](../gems/connectrpc-async/README.md#server-keepalive).
+- The OpenTelemetry adapter writes local `error.type` classifications in lower
+  case on every protocol, such as `operation_failed` and `preflight_rejected`.
+  Before 0.2.0, gRPC and gRPC-Web spans reported them in upper case
+  (`OPERATION_FAILED`). Only gRPC and gRPC-Web status codes are upper case.
+  Update dashboards and alerts that match the old values.
+- When an instrumentation subscriber injects `baggage`, the client now appends
+  it after the caller's `baggage` metadata instead of replacing it, so the
+  request carries both. Other injected keys still replace the caller's values.
+- `require "connectrpc/async"` and `require "connectrpc/falcon"` check the
+  upstream Async hooks they depend on. When one has changed, the require
+  raises an error that lists each changed hook with its installed gem version
+  and the versions the package was tested with, instead of failing later at
+  runtime. Pin the socketry gems to tested versions until a ConnectRPC release
+  supports the new ones.
