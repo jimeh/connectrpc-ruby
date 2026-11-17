@@ -21,7 +21,7 @@ These affect the Async HTTP/2 and HTTP/1 client transports and the core
 - Client transport failures that a fixed phrase can classify now append it
   to the message, such as `HTTP/2 transport failed: connection refused` or
   `HTTP transport failed: TLS verification failed`. They also keep the
-  original exception as `cause`, where 0.2.0 set it to nil. Code that matches
+  original exception as `cause`; before 0.3.0 it was nil. Code that matches
   the exact message should match its prefix instead. Codec, compression and
   metadata errors still have no `cause`.
 - Admission failures say `... transport admission is closed` once a transport

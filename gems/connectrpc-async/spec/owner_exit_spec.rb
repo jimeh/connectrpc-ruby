@@ -113,6 +113,46 @@ RSpec.describe "Client transport owner exit without close" do
       end
     end
 
+    # A cancelled task resolves its promise before it stops its children, so
+    # its fiber stays alive while their cleanup yields. Here that cleanup
+    # waits until another task runs, after the owner's block has returned.
+    # The reactor runs in a thread so a guard that spins on the resolved task
+    # fails the bounded join instead of freezing the suite.
+    it "lets a cancelled task under the owner of an unclosed #{name} finish its yielding cleanup" do
+      cleaned = Thread::Queue.new
+      outcome = Thread.new do
+        Sync do |root|
+          release = Async::Promise.new
+          worker = nil
+          owner = root.async do |owned|
+            kind.new(origin: "http://127.0.0.1:1")
+            worker = owned.async do |child|
+              child.async do
+                Async::Promise.new.wait
+              ensure
+                release.wait
+                cleaned << true
+              end
+              Async::Promise.new.wait
+            end
+            :owner
+          end
+          owner.wait
+          worker.stop
+          root.yield
+          release.resolve(nil)
+          owner.wait
+          root.yield until owner.finished?
+          :done
+        end
+      end
+      expect(outcome.join(5)&.value).to eq(:done)
+      expect(cleaned.size).to eq(1)
+    ensure
+      outcome&.kill
+      outcome&.join(5)
+    end
+
     it "returns from a root Sync block that leaves a #{name} unclosed" do
       outcome = Thread.new do
         Sync do

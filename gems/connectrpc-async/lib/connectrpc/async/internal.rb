@@ -287,18 +287,23 @@ module ConnectRPC
           end
         end
 
-        # The first running non-transient task under `node` outside a guard
-        # subtree, descending through finished tasks whose children remain.
+        # The first non-transient task under `node`, outside a guard subtree,
+        # whose block is still running, descending through tasks whose block
+        # has ended but whose children remain. A cancelled task resolves
+        # before it stops its children, so its fiber can stay alive while
+        # their cleanup yields; waiting on it would return at once and spin.
         def self.pending(node)
           node.children&.each do |child|
             next if child.transient? || GUARDS.key?(child)
-            return child if child.alive?
+            return child if child.alive? && !resolved?(child)
 
             found = pending(child)
             return found if found
           end
           nil
         end
+
+        def self.resolved?(task) = task.completed? || task.failed? || task.cancelled?
 
         def self.join(task)
           task.wait
