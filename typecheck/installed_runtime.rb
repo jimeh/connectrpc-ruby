@@ -208,15 +208,25 @@ end
 carrier = {}
 call = ConnectRPC::Instrumentation::Call.new(role: :client, protocol: :connect, method: nil,
                                              server_address: nil, server_port: nil, carrier: carrier)
-custom = ConnectRPC::OTel::Subscriber.new(tracer_provider: APITracerProvider.new)
+custom = ConnectRPC::OTel::Subscriber.new(
+  tracer_provider: APITracerProvider.new,
+  propagator: OpenTelemetry::Trace::Propagation::TraceContext.text_map_propagator
+)
 observer = custom.start(call)
 expected_parent = "00-#{'74' * 16}-#{'73' * 8}-01"
-raise "Default propagation missed custom span context" unless carrier["traceparent"] == expected_parent &&
-                                                              carrier["tracestate"] == "vendor=value"
+raise "Explicit propagation missed custom span context" unless carrier["traceparent"] == expected_parent &&
+                                                               carrier["tracestate"] == "vendor=value"
 
-observer.finished(ConnectRPC::Instrumentation::Completion.new(outcome: nil, processing_state: :not_started,
-                                                              decision: :processed, delivery: :unobserved,
-                                                              error: nil, http_status: nil, duration: 0.0))
+unobserved = ConnectRPC::Instrumentation::Completion.new(outcome: nil, processing_state: :not_started,
+                                                         decision: :processed, delivery: :unobserved,
+                                                         error: nil, http_status: nil, duration: 0.0)
+observer.finished(unobserved)
+# The default uses the global propagator, which is no-op without an SDK.
+global_carrier = {}
+ConnectRPC::OTel::Subscriber.new(tracer_provider: APITracerProvider.new)
+                            .start(call.with(carrier: global_carrier)).finished(unobserved)
+raise "No-op global propagation injected" unless global_carrier.empty?
+
 subscriber = ConnectRPC::OTel::Subscriber.new
 ConnectRPC::Instrumentation.new(subscribers: [subscriber])
 raise "SDK loaded late" if defined?(OpenTelemetry::SDK)

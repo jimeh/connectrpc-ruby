@@ -34,7 +34,7 @@ RSpec.describe "Error types and propagated metadata" do
                        input: input, output: output, publish: ->(_) {}, http2: true)
     end
 
-    it "keeps a native gRPC operation failure lowercase beside an OK status" do
+    it "names a native gRPC operation failure by its exception class, not its OK status code" do
       _, exporter, bus = tracing
       invoker = lambda do |_method, request, context|
         context.record_failure(RuntimeError.new("recorded"))
@@ -42,8 +42,39 @@ RSpec.describe "Error types and propagated metadata" do
       end
       native_grpc(server(bus, protocol: :grpc, invoker: invoker))
       attributes = span_attributes(exporter)
-      expect(attributes["error.type"]).to eq("operation_failed")
+      expect(attributes["error.type"]).to eq("RuntimeError")
       expect(attributes["rpc.response.status_code"]).to eq("OK")
+    end
+
+    it "falls back to operation_failed for an anonymous exception class" do
+      _, exporter, bus = tracing
+      invoker = lambda do |_method, request, context|
+        context.record_failure(Class.new(StandardError).new("recorded"))
+        request
+      end
+      native_grpc(server(bus, protocol: :grpc, invoker: invoker))
+      expect(span_attributes(exporter)["error.type"]).to eq("operation_failed")
+    end
+
+    it "names a client failure without an RPC code by its exception class" do
+      _, exporter, bus = tracing
+      client = ConnectRPC::Client.new(base_url: "https://example.invalid", binding: binding,
+                                      transport: ->(_) { raise "unreachable" }, instrumentation: bus)
+      expect { client.call(rpc, "hi", timeout: 0) }.to raise_error(ArgumentError)
+      attributes = span_attributes(exporter)
+      expect(attributes["error.type"]).to eq("ArgumentError")
+      expect(attributes).not_to have_key("rpc.response.status_code")
+    end
+
+    it "keeps a non-OK wire code ahead of the original exception class on both roles" do
+      _, exporter, bus = tracing
+      target = server(bus, protocol: :connect, invoker: ->(*) { raise "handler bug" })
+      client = ConnectRPC::Client.new(base_url: "https://example.invalid", binding: binding, instrumentation: bus,
+                                      transport: ConnectRPC::Testing::Transport.new(server: target))
+      expect { client.call(rpc, "hi") }.to raise_error(ConnectRPC::Error) { |error| expect(error.code).to eq("internal") }
+      spans = rpc_spans(exporter)
+      expect(spans.map(&:kind).sort).to eq(%i[client server])
+      expect(spans.map { |span| span.attributes["error.type"] }).to eq(%w[internal internal])
     end
 
     it "uppercases a native gRPC status code" do

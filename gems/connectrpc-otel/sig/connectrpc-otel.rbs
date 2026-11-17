@@ -10,7 +10,7 @@ module ConnectRPC
       def empty?: () -> bool
       def to_s: () -> String
     end
-    # The default W3C propagator consumes these API capabilities. Id contents
+    # The W3C propagator consumes these API capabilities. Id contents
     # and lengths remain the provider's runtime responsibility.
     interface _SpanContext
       def valid?: () -> bool

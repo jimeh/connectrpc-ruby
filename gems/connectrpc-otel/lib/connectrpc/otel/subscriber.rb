@@ -10,22 +10,22 @@ module ConnectRPC
       SERVER_ERRORS = %w[unknown deadline_exceeded unimplemented internal unavailable data_loss].freeze
       private_constant :SERVER_ERRORS
 
+      # Without an explicit propagator, the global one is read at each use, so
+      # SDK configuration after construction applies.
       def initialize(tracer_provider: OpenTelemetry.tracer_provider, propagator: nil,
                      request_metadata: [], response_metadata: [])
         @tracer = tracer_provider.tracer("connectrpc-otel", VERSION,
                                          attributes: { "connectrpc.semconv.version" => SEMCONV_VERSION })
-        @propagator = propagator || OpenTelemetry::Context::Propagation::CompositeTextMapPropagator.compose_propagators(
-          [OpenTelemetry::Trace::Propagation::TraceContext.text_map_propagator,
-           OpenTelemetry::Baggage::Propagation.text_map_propagator]
-        )
+        @propagator = propagator
         @request_metadata = allowlist(request_metadata)
         @response_metadata = allowlist(response_metadata)
       end
 
-      def start(call) # rubocop:disable Metrics/MethodLength, Metrics/AbcSize
+      def start(call) # rubocop:disable Metrics/MethodLength, Metrics/AbcSize, Metrics/PerceivedComplexity
         parent = if call.role == :server
                    # Always extract serialized propagation, even for an in-process call.
-                   @propagator.extract(call.carrier, context: OpenTelemetry::Context.empty, getter: Getter.new)
+                   (@propagator || OpenTelemetry.propagation)
+                     .extract(call.carrier, context: OpenTelemetry::Context.empty, getter: Getter.new)
                  else
                    OpenTelemetry::Context.current
                  end
@@ -50,10 +50,10 @@ module ConnectRPC
       # Propagators may replace, join, edit in place or remove the shared
       # carrier's baggage. Keep baggage that earlier subscribers staged exactly
       # once, ahead of the members this propagator added.
-      def inject(carrier, context) # rubocop:disable Metrics/AbcSize
+      def inject(carrier, context) # rubocop:disable Metrics/AbcSize, Metrics/CyclomaticComplexity
         # Copy entries too: a propagator may mutate the staged strings in place.
         staged = Array(carrier["baggage"]).map(&:dup).freeze
-        @propagator.inject(carrier, context: context)
+        (@propagator || OpenTelemetry.propagation).inject(carrier, context: context)
         return if staged.empty?
 
         # Drop each staged member once from what the propagator left behind.
@@ -103,8 +103,11 @@ module ConnectRPC
 
       # rubocop:enable Metrics/AbcSize, Metrics/CyclomaticComplexity, Metrics/PerceivedComplexity
 
+      # Carrier keys are lowercase; propagators such as B3 multi-header and X-Ray
+      # ask for mixed-case header names.
       class Getter
         def get(carrier, key) # rubocop:disable Metrics/CyclomaticComplexity
+          key = key.downcase
           values = Array(carrier[key])
           return unless values.all? { |value| value.is_a?(String) && value.ascii_only? }
           return values.first if key == "traceparent" && values.size == 1
@@ -148,14 +151,16 @@ module ConnectRPC
           @span.set_attribute("connectrpc.delivery", completion.delivery.to_s)
           @span.set_attribute("http.response.status_code", completion.http_status) if completion.http_status
           if completion.delivery == :aborted
-            code = completion.outcome&.code
-            type = if %i[grpc
-                         grpc_web].include?(@protocol) && code && code != "OK"
-                     status_code(code)
-                   else
-                     "delivery_aborted"
-                   end
-            fail_span(type)
+            # A non-OK code keeps its role classification: a client cancellation
+            # aborts server delivery but is not a server error. Reapplied here
+            # because an earlier observer's fatal exit can skip processing_finished.
+            outcome = completion.outcome
+            if outcome&.code && outcome.code != "OK"
+              error = processing_error(outcome)
+              fail_span(error) if error
+            else
+              fail_span("delivery_aborted")
+            end
           elsif completion.decision != :processed
             fail_span(completion.decision.to_s)
           end
@@ -166,7 +171,8 @@ module ConnectRPC
         private
 
         # Keep role-specific wire codes and independent operation failures in one table.
-        # Only status codes take the protocol's casing; local classifications stay lowercase.
+        # Status codes take the protocol's casing and other exceptions their class
+        # name (semconv); local classifications stay lowercase.
         # rubocop:disable Metrics/AbcSize, Metrics/CyclomaticComplexity, Metrics/PerceivedComplexity
         def processing_error(outcome)
           if outcome.code && outcome.code != "OK"
@@ -174,7 +180,9 @@ module ConnectRPC
 
             return nil
           end
-          return "operation_failed" if outcome.error && !outcome.error.is_a?(ConnectRPC::Error)
+          error = outcome.error
+          # Anonymous exception classes have no name.
+          return error.class.name || "operation_failed" if error && !error.is_a?(ConnectRPC::Error)
           return "operation_failed" if outcome.code.nil? && outcome.error
           return "preflight_rejected" if outcome.http_status && outcome.http_status != 200 && outcome.code.nil?
 

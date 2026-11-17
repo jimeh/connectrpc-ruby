@@ -44,6 +44,15 @@ module TraceHelpers
   end
 
   def current_span = OpenTelemetry::Trace.current_span
+
+  # The global propagator OpenTelemetry::SDK.configure installs by default
+  # (OTEL_PROPAGATORS unset): W3C trace context plus baggage.
+  def sdk_default_propagator
+    OpenTelemetry::Context::Propagation::CompositeTextMapPropagator.compose_propagators(
+      [OpenTelemetry::Trace::Propagation::TraceContext.text_map_propagator,
+       OpenTelemetry::Baggage::Propagation.text_map_propagator]
+    )
+  end
 end
 
 RSpec.configure do |config|
@@ -53,5 +62,14 @@ RSpec.configure do |config|
   config.include FalconHelpers
   config.include TraceHelpers
   config.order = :random
+  # Subscribers use the application's global propagator; each example starts
+  # from the SDK default and restores whatever was installed before.
+  config.around do |example|
+    original = OpenTelemetry.propagation
+    OpenTelemetry.propagation = sdk_default_propagator
+    example.run
+  ensure
+    OpenTelemetry.propagation = original
+  end
   config.disable_monkey_patching!
 end

@@ -457,10 +457,10 @@ connection retirement or `shutdown`. Changes that coalesce back to the status it
 last sent cause no send; `max_watchers` bounds that cost.
 See the [health guide](../gems/connectrpc-health/README.md#watch-streams-the-server-cannot-see-end).
 
-OTel's default unknown-method redaction omits the convention's
-`rpc.method_original` attribute. This is a documented privacy choice, not full
-semantic-convention compliance. SDK/exporter ownership and blocking remain
-application responsibilities.
+OTel never records the convention's `rpc.method_original` attribute for unknown
+methods, because the core call carries no request path. This is a documented
+limitation, not full semantic-convention compliance. SDK/exporter ownership and
+blocking remain application responsibilities.
 
 ## Adoption gates
 

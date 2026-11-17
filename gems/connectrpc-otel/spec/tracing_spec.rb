@@ -94,6 +94,57 @@ RSpec.describe ConnectRPC::OTel::Subscriber do
     expect(aborted.status.code).to eq(OpenTelemetry::Trace::Status::ERROR)
   end
 
+  describe "aborted delivery" do
+    # Drives one lifecycle directly: delivery aborts while processing runs, then
+    # processing finishes with code. With skip_processing, an earlier observer's
+    # fatal exit skips this subscriber's processing_finished, yet finished still runs.
+    def aborted_span(role, protocol, code, skip_processing: false)
+      fatal = Class.new(Exception) # rubocop:disable Lint/InheritException -- skip later observers
+      earlier = Object.new
+      earlier.define_singleton_method(:processing_finished) { |_| raise fatal } if skip_processing
+      subscriber = Object.new
+      subscriber.define_singleton_method(:start) { |_| earlier }
+      otel = ConnectRPC::OTel::Subscriber.new(tracer_provider: provider)
+      owner = Object.new
+      handle = ConnectRPC::Instrumentation.new(subscribers: [subscriber, otel])
+                                          .start(owner: owner, role: role, method: AsyncHelpers::ECHO::ECHO,
+                                                 carrier: {}, protocol: protocol)
+      handle.begin_processing(owner)
+      handle.finish(delivery: :aborted)
+      begin
+        handle.processing_finished(code: code)
+      rescue fatal
+        nil
+      end
+      span = rpc_spans(exporter).fetch(0)
+      expect(span.attributes["connectrpc.delivery"]).to eq("aborted")
+      span
+    end
+
+    [
+      [:server, :connect, "canceled", nil],
+      [:server, :grpc, "canceled", nil],
+      [:server, :connect, "invalid_argument", nil],
+      [:server, :connect, "internal", "internal"],
+      [:server, :grpc, "internal", "INTERNAL"],
+      [:client, :connect, "unavailable", "unavailable"],
+      [:client, :grpc, "canceled", "CANCELLED"],
+      [:server, :connect, "OK", "delivery_aborted"],
+      [:client, :connect, "OK", "delivery_aborted"],
+      [:server, :connect, nil, "delivery_aborted"]
+    ].each do |role, protocol, code, error_type|
+      [false, true].each do |skip_processing|
+        suffix = skip_processing ? " without processing_finished" : ""
+        it "classifies #{role} #{protocol} #{code.inspect} by role#{suffix}" do
+          span = aborted_span(role, protocol, code, skip_processing: skip_processing)
+          expect(span.attributes["error.type"]).to eq(error_type)
+          expected = error_type ? OpenTelemetry::Trace::Status::ERROR : OpenTelemetry::Trace::Status::UNSET
+          expect(span.status.code).to eq(expected)
+        end
+      end
+    end
+  end
+
   it "extracts repeated/malformed carriers defensively, without ambient in-process parent fallback" do
     parent = provider.tracer("test").start_span("ambient")
     target = server(instrumentation: bus)

@@ -172,6 +172,20 @@ RSpec.describe "Trace propagation" do
     end
 
     context "with the real OpenTelemetry subscriber" do
+      # The OTel subscriber uses the global propagator; install the one
+      # OpenTelemetry::SDK.configure sets by default and restore the original.
+      around do |example|
+        original = OpenTelemetry.propagation
+        OpenTelemetry.propagation =
+          OpenTelemetry::Context::Propagation::CompositeTextMapPropagator.compose_propagators(
+            [OpenTelemetry::Trace::Propagation::TraceContext.text_map_propagator,
+             OpenTelemetry::Baggage::Propagation.text_map_propagator]
+          )
+        example.run
+      ensure
+        OpenTelemetry.propagation = original
+      end
+
       def otel_baggage
         OpenTelemetry::Baggage.set_value("tenant", "acme")
       end
