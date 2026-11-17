@@ -339,16 +339,18 @@ gRPC timer nor a NetHTTP unary timeout. The
 budgets.
 
 This policy is **provisional**. Neither connect-go nor connect-es has a tail
-timer: both wait for EOF, bounded only by the call's deadline, and reject extra
-data. The one-second bound stops a nil-deadline client from holding a stream
+timer. connect-go waits for EOF, bounded only by the call's deadline, and
+rejects extra data. connect-es does the same after a successful terminal, but
+reports a terminal error without reading further. The one-second bound stops a nil-deadline client from holding a stream
 whose peer never closes it. It can also turn a fully received result into
-`unavailable` when a server or proxy delays EOF. Library servers send the
-terminal envelope before `processing_finished` lifecycle observation, and their
-EOF waits for that observation to finish. [#102](https://github.com/jimeh/connectrpc-ruby/issues/102)
+`unavailable` when a server or proxy delays EOF. After a successful handler,
+library servers send the terminal envelope before `processing_finished`
+lifecycle observation, and their EOF waits for that observation to finish. [#102](https://github.com/jimeh/connectrpc-ruby/issues/102)
 evaluates a configurable budget, or returning the received terminal after a
 stalled tail.
 
-Native gRPC requires actual final H2 HEADERS and EOF, and has no tail timer.
+Native gRPC requires actual final H2 HEADERS and EOF, as gRPC itself does, and
+has no tail timer. That requirement follows the ordinary compatibility rules.
 
 ### Native gRPC rich status
 
@@ -359,9 +361,10 @@ and duplicate `grpc-status` or `grpc-message` fields. The
 [gRPC guide](grpc.md) defines the full status parsing rules.
 
 This policy is **provisional**. No reference client rejects all of these
-cases. grpc-go 1.85.0 also fails a code mismatch with `internal`. It ignores
-undecodable or duplicate details and keeps `grpc-status`, and it accepts
-details on OK when their code is also OK. connect-go 1.21.1 fails malformed
+cases. grpc-go 1.85.0 also fails a code mismatch and invalid base64 with
+`internal`. It ignores details that repeat or do not parse as a
+`google.rpc.Status`, keeping `grpc-status`, and accepts details on OK only when
+their code is also OK. connect-go 1.21.1 fails malformed
 details, but lets a rich code replace `grpc-status` and ignores details on OK.
 connect-es 2.3.0 also lets the rich status replace `grpc-status`, and reports
 malformed details as `data_loss`.
@@ -387,18 +390,18 @@ application work. [Falcon Web cleanup](grpc-web.md#bounds-and-host-spi) is
 separate: original input cleanup gates its staged terminal and incomplete-upload
 rejection head. Web does not inherit Connect's response-first grace.
 
-The behavior is **promised**: response-first delivery, no reuse after
+The behavior is **promised**: response-first ordering, no reuse after
 incomplete input, no pipelined dispatch on a retiring connection, and admission
 and socket ownership through retirement. The budgets are **provisional** tuning
 values: the 500 ms total, the 100 ms / 256 KiB discard allowance, the 64 KiB
 read reservation, and Falcon Web's 100 ms rejected-input cleanup allowance. The
 Connect values follow Go's `net/http` server, which discards up to 256 KiB of
 unread body (`maxPostHandlerReadBytes`) and waits 500 ms after its write
-half-close (`rstAvoidanceDelay`). Go reads that remainder before it writes the
-response, and closes the connection instead when more remains; Falcon writes the
-response first. A client that sends
-its whole upload before reading can therefore stall when the response exceeds
-socket buffering. That needs a large early response; early Connect responses
+half-close (`rstAvoidanceDelay`). Unless the connection is already closing or
+full duplex, Go reads that remainder before it writes the response, and closes
+the connection instead when more remains. Falcon writes the response first, so
+a client that sends its whole upload before reading can stall when the response
+exceeds socket buffering. That needs a large early response; early Connect responses
 are usually small errors.
 
 ### HTTP/2 keepalive and connection age
@@ -453,7 +456,7 @@ application responsibilities.
 ## Adoption gates
 
 The review gates are closed. A release adopts the profile once its revision is
-qualified and its release notes say so.
+qualified and its documentation and release notes record the adoption.
 
 ### Closed gates
 
@@ -553,9 +556,9 @@ reported during #44.
 
 ### Before a release adopts the profile
 
-1. Choose the release. The profile is adopted on whichever 0.x version is
-   current when the library is judged stable. A 1.x release comes later, after
-   the contract has proven stable for some time.
+1. Choose the release: a future 0.x release, chosen once the library is judged
+   stable. A 1.x release comes later, after the contract has proven stable for
+   some time.
 2. Qualify that release's revision with its declared CI, installed-caller and
    protocol gates.
 3. Record adoption in that release. A documentation change replaces the notice

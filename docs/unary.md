@@ -423,8 +423,9 @@ transport accept explicit cancellation. Native HTTP/2 publishes peer
 `RST_STREAM(CANCEL)` before input teardown; normal END_STREAM/half-close, other
 reset codes, connection loss and host shutdown do not manufacture explicit
 cancellation. The [support contract](support.md#delivery-cancellation-and-metadata)
-classifies this signal policy as provisional. Rack/Rails and Falcon HTTP/1 add no
-peer detection or token env injection. Synchronous adapters cannot interrupt blocked application code.
+classifies this signal policy as provisional. Rack/Rails and Falcon HTTP/1 add
+no peer detection or token env injection. Synchronous adapters cannot interrupt
+blocked application code.
 See [design](design.md) for ownership and transport limits.
 
 ## Interceptors

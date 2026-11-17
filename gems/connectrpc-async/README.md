@@ -1075,8 +1075,9 @@ Transport remain H2-only. Use the independent
 [`HTTP1Transport`](#explicit-http11-client) for Connect unary, server streaming
 and client streaming. See the streaming guide for Falcon's cooperative 500 ms
 total final-close budget and unchanged 100 ms / 256 KiB discard limits. The
-client's one-second absolute HTTP tail policy applies even with a nil RPC
-deadline and can reject otherwise valid late EOF or slow intermediaries.
+client's provisional one-second absolute HTTP tail policy applies even with a
+nil RPC deadline and can reject otherwise valid late EOF or slow intermediaries.
+See the [support contract](../../docs/support.md#native-client-completion).
 
 Use `async:conformance` and `async:interop:streaming` for the exact official
 native client/server inventories and independent pinned Go streaming matrix.

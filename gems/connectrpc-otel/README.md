@@ -205,7 +205,7 @@ application-owned reactor.
 
 The streaming guide defines Falcon's cooperative 500 ms total final-close budget
 and unchanged 100 ms / 256 KiB discard limits. Native Connect streaming clients
-have a separate one-second absolute HTTP tail policy. It applies even with a nil
+have a separate, provisional one-second absolute HTTP tail policy. It applies even with a nil
 RPC deadline and can reject otherwise valid late EOF or slow intermediaries.
 
 ## Native gRPC
