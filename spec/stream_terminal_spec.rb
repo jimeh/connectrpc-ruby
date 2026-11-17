@@ -190,6 +190,35 @@ RSpec.describe "Server stream terminal head and error metadata" do
         expect(events.map(&:first) - [:abort]).to be_empty
       end
 
+      # The error path observes processing before publishing the head, so a
+      # subscriber can attempt the first publication after the early check.
+      it "finishes no #{protocol} terminal when publication first fails inside processing_finished" do
+        failure = ConnectRPC::Error.new(:unavailable, "host publication failed")
+        handler_error = ConnectRPC::Error.new(:aborted, "handler failed")
+        retained = nil
+        observer = Object.new
+        observer.define_singleton_method(:start) { |_| observer }
+        observer.define_singleton_method(:processing_finished) { |_| retained.send_headers }
+        isolated = []
+        target = server(protocol, instrumentation: ConnectRPC::Instrumentation.new(
+          subscribers: [observer], on_error: ->(error) { isolated << error }
+        )) do |_, _, context|
+          retained = context
+          raise handler_error
+        end
+        events = []
+        calls = 0
+        publish = lambda do |_|
+          calls += 1
+          raise failure
+        end
+        expect { dispatch(target, protocol, events, publish: publish) }
+          .to(raise_error { |error| expect(error).to equal(handler_error) })
+        expect(isolated).to include(failure)
+        expect(calls).to eq(1)
+        expect(events.map(&:first) - [:abort]).to be_empty
+      end
+
       it "keeps the #{protocol} publisher failure when even the minimal terminal exceeds its limit" do
         failure = ConnectRPC::Error.new(:unavailable, "host publication failed")
         limits = protocol == :connect ? { terminal_limit: 1 } : { grpc_status_wire_limit: 1 }

@@ -12,7 +12,7 @@ module ConnectRPC
       # A peer reset may reject terminal delivery. Retain the handler failure
       # independently of that later delivery error.
       observe_stream_result(state, effective) if handler_error
-      context.send(:publish_headers, check: false)
+      publish_stream_head(context, handler_error)
       emit_stream_terminal(bytes, output)
       context.commit! unless handler_error
       observe_stream_result(state, effective) unless handler_error
@@ -25,6 +25,15 @@ module ConnectRPC
       error = state.error
       observe_stream_result(state, error) if error
       raise(error || Error.new(:internal, "#{protocol} headers were not published"))
+    end
+
+    # Error-path observation runs first and can attempt the first publication,
+    # so check again after publishing; a failed attempt is never retried.
+    def publish_stream_head(context, error)
+      context.send(:publish_headers, check: false)
+      return unless context.send(:head_failed?)
+
+      raise(error || Error.new(:internal, "Connect headers were not published"))
     end
 
     def grpc_head_failed?(state, context)

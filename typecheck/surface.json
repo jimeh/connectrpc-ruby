@@ -1944,6 +1944,7 @@
     "ConnectRPC::Server#emit_stream_terminal": {"kind":"method","visibility":"private","parameters":"bytes, output","classification":"internal"},
     "ConnectRPC::Server#fail_unpublished_head": {"kind":"method","visibility":"private","parameters":"state, protocol","classification":"internal"},
     "ConnectRPC::Server#grpc_head_failed?": {"kind":"method","visibility":"private","parameters":"state, context","classification":"internal"},
+    "ConnectRPC::Server#publish_stream_head": {"kind":"method","visibility":"private","parameters":"context, error","classification":"internal"},
     "ConnectRPC::Server#observe_stream_result": {"kind":"method","visibility":"private","parameters":"state, effective","classification":"internal"},
     "ConnectRPC::Server#render_stream_terminal": {"kind":"method","visibility":"private","parameters":"state, output","classification":"internal"},
     "ConnectRPC::Server#stream_head": {"kind":"method","visibility":"private","parameters":"metadata, codec, encoding","classification":"internal"},

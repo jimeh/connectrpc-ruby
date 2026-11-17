@@ -58,6 +58,7 @@ module ConnectRPC
     def stream_terminal_bytes: (Streaming::ServerState, StreamingContext) -> [String, Error?]
     def fail_unpublished_head: (Streaming::ServerState | GRPCProtocol::ServerState | GRPCWeb::ServerState, String) -> bot
     def grpc_head_failed?: (GRPCProtocol::ServerState | GRPCWeb::ServerState, Context) -> bool
+    def publish_stream_head: (StreamingContext, Error?) -> void
     def stream_trailers: (Error?, Context) -> Metadata
     def append_metadata: (Metadata, Metadata) -> void
     def emit_stream_terminal: (String, _StreamingOutput) -> void
