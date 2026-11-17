@@ -37,7 +37,7 @@ A transport provides `call(request)` with these host-neutral value objects:
 | Object | Fields |
 | --- | --- |
 | `TransportRequest` | `url` (URI), `http_method`, `headers` (lower-case keys, string arrays), `body` (bytes), `response_limit`, `deadline`, `lifecycle`, `cancellation` |
-| `TransportResponse` | `status` (integer), `headers` (repeated string arrays), `body` (bounded bytes) |
+| `TransportResponse` | `status` (integer), `headers` (repeated string arrays), `body` (bounded bytes); optional `cause` accessor, outside the record members, holding an in-process exception that is never sent |
 | `Response` | `message` (binding type), `metadata`, `trailers` (Metadata objects) |
 
 `TransportRequest.deadline` is a `Deadline` or `nil`. Custom transports must

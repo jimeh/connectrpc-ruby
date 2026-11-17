@@ -215,7 +215,9 @@ Bindings implement `encode(message, type:, codec:)` and
 `decode(bytes, type:, codec:)`, raising `ConnectRPC::CodecError` for codec
 failures. Transports implement `call(TransportRequest)` and return a
 `TransportResponse`. Their fields and responsibilities are documented in
-[design](design.md). Neither seam requires Google or Rack types.
+[design](design.md). Neither seam requires Google or Rack types. Since 0.3.0,
+an in-process transport can set `TransportResponse#cause` on an error response;
+the client raises its decoded error with that exception as the `cause`.
 
 ## Use unary GET
 
@@ -331,6 +333,46 @@ detail with `detail.decode(binding: binding, type: message_class)` after choosin
 the class corresponding to `detail.type`. `Error#code` is a frozen String such
 as `"invalid_argument"`, even though `Error.new` accepts a Symbol, so compare it
 with a String: `error.code == "invalid_argument"`.
+
+The peer never sees an unexpected exception, so log or report it on the server.
+Since 0.3.0, pass `on_error:` to the Server:
+
+```ruby
+server = ConnectRPC::Server.new(
+  services: [service::SERVICE], binding: binding, handlers: handlers,
+  on_error: ->(error) { logger.error(error.full_message(highlight: false)) }
+)
+```
+
+Core calls `on_error` with the original exception when a `StandardError` that
+is not a `ConnectRPC::Error` escapes a handler, an interceptor, a custom
+invoker or unary response encoding, and the peer receives the generic
+`internal` error. This covers Connect, gRPC and gRPC-Web, unary and streaming,
+on every host. The callable runs on the request's thread or fiber, inside the
+RPC's instrumentation scope, so request-scoped loggers and an active trace
+still apply. Exceptions raised by `on_error` itself are ignored, and the peer
+response is unchanged.
+
+Some failures are not reported. When the deadline or a cancellation already
+decides the outcome, the peer receives `deadline_exceeded` or `canceled`
+instead. Failures that core maps to its own error first, such as a streaming
+response message the binding cannot encode, reach
+[instrumentation](#instrumentation) only.
+
+Hosts add their own reporting:
+
+- Since 0.3.0, [connectrpc-rack](../gems/connectrpc-rack/README.md) also writes
+  each unexpected exception with its backtrace to `env["rack.errors"]`.
+- Since 0.3.0, [connectrpc-testing](../gems/connectrpc-testing/README.md)
+  records the original exception as `TransportResponse#cause`, and the client
+  raises its decoded `internal` error with that `cause`.
+- [connectrpc-on-rails](../gems/connectrpc-on-rails/README.md) builds its own
+  Server per request. Handler exceptions follow Rails: `rescue_from`, the
+  controller logger and `Rails.error`. Unexpected exceptions outside the action,
+  such as from a server interceptor, go to `env["rack.errors"]` as on Rack.
+- [connectrpc-sentry](../gems/connectrpc-sentry/README.md) already reports
+  unexpected handler exceptions, so do not also send them to Sentry from
+  `on_error`.
 
 ## Limits
 

@@ -283,8 +283,8 @@ module ConnectRPC
       raise Error.new(:internal, "Unsupported response content encoding")
     end
 
-    def validate_response!(status, headers, body)
-      raise Protocol.parse_error(status, headers, body) unless status == 200
+    def validate_response!(status, headers, body, cause = nil)
+      raise Protocol.parse_error(status, headers, body), cause: cause unless status == 200
 
       content_type = Protocol.single(headers, "content-type")
       return if Protocol.content_codec(content_type) == @codec
@@ -304,7 +304,7 @@ module ConnectRPC
     def accept_response(response, deadline, lifecycle)
       headers = Protocol.headers(response.headers)
       body = response_body(response, headers, deadline, lifecycle)
-      validate_response!(response.status, headers, body)
+      validate_response!(response.status, headers, body, response.cause)
       [headers, body]
     rescue ArgumentError => e
       # Header names and values with invalid encodings fail String case and pattern checks.

@@ -17,19 +17,26 @@ module ConnectRPC
       private
 
       def perform_call(request)
-        request.cancellation ? request.cancellation.check! : request.deadline&.check!
-        response = dispatch(request)
-        request.cancellation ? request.cancellation.check! : request.deadline&.check!
+        check_active!(request)
+        unexpected = nil
+        response = dispatch(request, ->(error) { unexpected = error })
+        check_active!(request)
         Protocol.check_size!(response.body, request.response_limit)
+        # The client raises its decoded error with this cause; it is never encoded.
+        response.cause = unexpected if unexpected
         response
       end
 
-      def dispatch(request)
+      def check_active!(request)
+        request.cancellation ? request.cancellation.check! : request.deadline&.check!
+      end
+
+      def dispatch(request, on_error)
         headers = request.headers.dup
         headers["connect-timeout-ms"] = [request.deadline.timeout_ms] if request.deadline
         @server.call(path: request.url.path, http_method: request.http_method,
                      headers: headers, input: BytesReader.new(request.body), query: request.url.query || "",
-                     cancellation: request.cancellation)
+                     cancellation: request.cancellation, on_error: on_error)
       end
 
       def validate!(request)
