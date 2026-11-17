@@ -453,10 +453,11 @@ response that waits `response_body_timeout`
 (default 60 seconds) for flow-control credit is reset with `CANCEL`, like
 nginx's `send_timeout`. Each HTTP/2 frame write must finish within
 `frame_write_timeout` (default 60 seconds), or the connection is aborted. That
-second bound applies to every RPC shape, and a control frame queued behind a
-stalled write waits for it rather than for the keepalive timeout. It is a deadline for each write, which
-a slow peer can miss while still reading, because a write blocked on a full
-send buffer waits for the peer to drain part of it. grpc-go has no flow-control
+second bound applies to every RPC shape, and control frames queued behind a
+stalled write wait for it rather than for the keepalive timeout. It is a
+deadline for each write, which a slow peer can miss while still reading,
+because a write blocked on a full send buffer waits for the peer to drain part
+of it. grpc-go has no flow-control
 wait bound, but sets `TCP_USER_TIMEOUT` to its keepalive timeout, so the kernel
 fails a connection whose sent data stays unacknowledged, or unsent behind a zero
 window, that long; a peer that keeps reading slowly resets it. Go's

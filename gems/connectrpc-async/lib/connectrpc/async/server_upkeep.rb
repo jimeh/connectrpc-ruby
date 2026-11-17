@@ -11,7 +11,9 @@ module ConnectRPC
       # once it holds the frame guard, within the cleanup allowance. Otherwise
       # the connection fails raw-first. A frame write that `writes` times
       # keeps its own bound: a control frame waiting behind it fails the
-      # connection no earlier than that write's deadline. At most MAX_PENDING frames wait; a
+      # connection no earlier than that write's deadline. The frames queued
+      # behind a frame written late that way waited for the same write, so
+      # their deadlines count again from when it was written. At most MAX_PENDING frames wait; a
       # peer that outruns the writer, such as a PING flood with enforcement
       # off, fails the connection rather than growing the queue or blocking
       # the reader.
@@ -24,6 +26,7 @@ module ConnectRPC
           @timeout = timeout
           @writes = writes
           @queue = ::Async::Queue.new
+          @resumed = nil
         end
 
         def start(parent)
@@ -52,7 +55,10 @@ module ConnectRPC
           written = nil
           loop do
             frame, deadline, written = @queue.dequeue
+            deadline = [deadline, @resumed + @timeout].max if @resumed
             deliver(frame, deadline)
+            now = @clock.now
+            @resumed = now if now > deadline
             written.resolve(true)
           end
         rescue StandardError => e
@@ -63,7 +69,9 @@ module ConnectRPC
         end
 
         # Earlier frames meet earlier deadlines, so time spent queued behind
-        # them is already within this frame's bound. Both watchdogs stop
+        # them is already within this frame's bound. A frame written past its
+        # deadline could only have waited for a timed write, so `run` restarts
+        # the deadlines of the frames behind it from that write. Both watchdogs stop
         # before the guard is released, because release hands control to the
         # next waiter before this task resumes.
         def deliver(frame, deadline)

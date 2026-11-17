@@ -1111,6 +1111,65 @@ RSpec.shared_examples "HTTP/2 server keepalive" do
       end
     end
 
+    # A frame written late because it waited for a timed write passes its
+    # lateness on, so the control frames queued behind it are not failed
+    # for a deadline they missed only by waiting for the same write.
+    it "writes every control frame queued behind a held write that finishes within the bound" do
+      reactor do |task|
+        with_keepalive_host(task, keepalive: server_keepalive(time: nil)) do |fixture|
+          client = fixture.client
+          watch(fixture, "sibling", "one")
+          gate = hold_frames(fixture.resource, Protocol::HTTP2::DataFrame::TYPE)
+          fixture.log[:feeds]["sibling"].enqueue("two")
+          gate.started.dequeue
+          send_ping(client, "bdp00001")
+          send_ping(client, "bdp00002")
+          await_due(task, fixture.clock, 20)
+          fixture.clock.advance(20)
+          wait_until(task, "the control deadline waits for the write bound") { due_at(fixture.clock, 60) == 2 }
+          fixture.clock.advance(10)
+          gate.release.enqueue(true)
+          wait_until(task, "both ACKs; acks #{client.wire.acks}") { client.wire.acks.size == 2 }
+          expect(client.wire.acks).to eq(%w[bdp00001 bdp00002])
+          ping_through(task, client, "after030")
+          expect(fixture.resource).not_to be_finished
+        ensure
+          gate&.release&.enqueue(true)
+        end
+      end
+    end
+
+    it "sends a drain's GOAWAY and PING queued behind a held write that finishes within the bound" do
+      reactor do |task|
+        with_keepalive_host(task, keepalive: server_keepalive(time: nil)) do |fixture|
+          client = fixture.client
+          client.wire.ack_pings = false
+          watch(fixture, "sibling", "one")
+          gate = hold_frames(fixture.resource, Protocol::HTTP2::DataFrame::TYPE)
+          fixture.log[:feeds]["sibling"].enqueue("two")
+          gate.started.dequeue
+          closing = task.async { fixture.host.close(grace: 120) }
+          wait_until(task, "heads-up GOAWAY waits for the frame guard") do
+            fixture.resource.connection.guard_waiting?
+          end
+          await_due(task, fixture.clock, 20)
+          fixture.clock.advance(20)
+          wait_until(task, "the control deadline waits for the write bound") { due_at(fixture.clock, 60) == 2 }
+          fixture.clock.advance(10)
+          gate.release.enqueue(true)
+          wait_until(task, "drain PING; goaways #{client.wire.goaways}") do
+            client.wire.pings == [KeepaliveClient::DRAIN_PING]
+          end
+          expect(client.wire.goaways).to eq([[KeepaliveClient::MAX_STREAM_ID, KeepaliveClient::NO_ERROR,
+                                              "graceful_stop"]])
+          expect(fixture.resource).not_to be_finished
+        ensure
+          gate&.release&.enqueue(true)
+          closing&.stop
+        end
+      end
+    end
+
     it "ends a held write at the control frame deadline with frame_write_timeout: nil" do
       reactor do |task|
         with_keepalive_host(task, keepalive: server_keepalive(time: nil), frame_write_timeout: nil) do |fixture|
@@ -1173,13 +1232,14 @@ RSpec.shared_examples "HTTP/2 server keepalive" do
 
     it "aborts a graceful drain whose stream frame write stalls past the bound" do
       reactor do |task|
-        with_keepalive_host(task, keepalive: server_keepalive(time: nil, timeout: 120)) do |fixture|
+        with_keepalive_host(task, keepalive: server_keepalive(time: nil)) do |fixture|
           watch(fixture, "sibling", "one")
           gate = hold_frames(fixture.resource, Protocol::HTTP2::DataFrame::TYPE)
           fixture.log[:feeds]["sibling"].enqueue("two")
           gate.started.dequeue
           fixture.clock.advance(10)
-          # The heads-up GOAWAY's own deadline, 120 s from now, comes later.
+          # The heads-up GOAWAY's own deadline, 20 s from now, waits for the
+          # held write's bound.
           closing = task.async { fixture.host.close(grace: 5) }
           wait_until(task, "heads-up GOAWAY waits for the frame guard") do
             fixture.resource.connection.guard_waiting?

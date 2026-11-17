@@ -199,10 +199,12 @@ set `max_concurrent_streams` lower explicitly.
   that much within the bound, is also aborted. Unlike grpc-go's
   `TCP_USER_TIMEOUT`, which fires when sent data stays unacknowledged, or unsent
   behind a zero window, for that long, so that any progress resets it, this
-  bound is not reset by partial progress. A control frame queued behind a
-  stalled write, such as the ACK of a client's BDP or keepalive PING, waits
-  for that write's bound instead of failing the connection at the keepalive
-  `timeout` first. Raise `frame_write_timeout` for clients that read large
+  bound is not reset by partial progress. Control frames queued behind a
+  stalled write, such as the ACKs of a client's BDP or keepalive PINGs or a
+  drain's GOAWAY and PING, wait for that write's bound instead of failing the
+  connection at the keepalive `timeout` first, and their deadlines count again
+  once it finishes. A control frame can therefore wait for several frame writes
+  in turn, each within its own bound, while the peer keeps reading. Raise `frame_write_timeout` for clients that read large
   responses over slow links. nil turns the bound off; a control frame queued
   behind a stalled write then still ends the connection after the keepalive
   `timeout`, or 20 seconds without keepalive. Otherwise the value is finite
@@ -406,7 +408,9 @@ nonnegative or nil and requires `max_connection_age`.
   finish. Each control frame must be written within `timeout` seconds of being
   queued, including any wait behind another stream's stuck frame, and its own
   write within the 100 ms cleanup allowance; otherwise the connection is
-  aborted. At most 1024 control frames wait; a peer that outruns the writer,
+  aborted. Since 0.3.0, a stuck frame write that `frame_write_timeout` bounds
+  is the exception: control frames waiting behind it wait for its bound, and
+  their deadlines count again from when it finishes. At most 1024 control frames wait; a peer that outruns the writer,
   such as a PING flood with `min_time: nil`, fails the connection. Server
   PINGs, age grace and close also bound a stuck connection. The
   `too_many_pings` GOAWAY is stricter: it must be written within 100 ms of the
