@@ -1722,6 +1722,52 @@ RSpec.shared_examples "HTTP/2 server keepalive" do
       end
     end
 
+    # The control writer is woken without yielding, so a starved writer can
+    # dequeue a frame after its deadline. With no timed write to wait out,
+    # the frame fails the connection instead of being written late.
+    it "fails a control frame the writer dequeues past its deadline" do
+      reactor do |task|
+        with_keepalive_host(task, keepalive: server_keepalive(time: nil)) do |fixture|
+          written = fixture.resource.upkeep.refuse(99)
+          fixture.clock.advance(21)
+          expect(written.wait).to be(false)
+          wait_until(task, "connection retired") { retired?(fixture.resource) }
+        end
+      end
+    end
+
+    # The first ACK is written exactly at its 20 s deadline, so it was not
+    # late and the second ACK keeps the same deadline. With no timed write
+    # left to wait out, the second ACK fails the connection at once rather
+    # than when the watch next wakes.
+    it "fails the next control frame at once when one is written exactly at the shared deadline" do
+      reactor do |task|
+        with_keepalive_host(task, keepalive: server_keepalive(time: nil)) do |fixture|
+          client = fixture.client
+          watch(fixture, "sibling", "one")
+          gate = hold_frames(fixture.resource, Protocol::HTTP2::DataFrame::TYPE)
+          fixture.log[:feeds]["sibling"].enqueue("two")
+          gate.started.dequeue
+          client.connection.write_frames do |framer|
+            %w[bdp00001 bdp00002].each do |payload|
+              frame = Protocol::HTTP2::PingFrame.new
+              frame.pack(payload)
+              framer.write_frame(frame)
+            end
+          end
+          await_due(task, fixture.clock, 20)
+          fixture.clock.advance(20)
+          await_behind_write(task, fixture.clock)
+          gate.release.enqueue(true)
+          wait_until(task, "connection retired") { retired?(fixture.resource) }
+          expect(client.wire.acks).to eq(["bdp00001"])
+          expect(fixture.clock.now).to eq(20)
+        ensure
+          gate&.release&.enqueue(true)
+        end
+      end
+    end
+
     it "sends a drain's GOAWAY and PING queued behind a held write that finishes within the bound" do
       reactor do |task|
         with_keepalive_host(task, keepalive: server_keepalive(time: nil)) do |fixture|

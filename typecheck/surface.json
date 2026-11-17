@@ -576,6 +576,7 @@
     "ConnectRPC::Async::Internal::WriteWatchdog#remaining": {"kind":"method","visibility":"public","parameters":"","classification":"internal"},
     "ConnectRPC::Async::Internal::WriteWatchdog#run": {"kind":"method","visibility":"private","parameters":"","classification":"internal"},
     "ConnectRPC::Async::Internal::WriteWatchdog#start": {"kind":"method","visibility":"public","parameters":"parent","classification":"internal"},
+    "ConnectRPC::Async::Internal::WriteWatchdog#timeout": {"kind":"attribute","visibility":"public","classification":"internal"},
     "ConnectRPC::Async::Internal::WriteWatchdog#write_finished": {"kind":"method","visibility":"public","parameters":"","classification":"internal"},
     "ConnectRPC::Async::Internal::WriteWatchdog#write_started": {"kind":"method","visibility":"public","parameters":"","classification":"internal"}
   },

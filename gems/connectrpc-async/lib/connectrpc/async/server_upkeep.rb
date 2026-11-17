@@ -34,6 +34,7 @@ module ConnectRPC
           @resumed = nil
           @stall = WriteWatchdog.new(resource, clock: clock, timeout: CLEANUP_SECONDS,
                                                message: "HTTP/2 control frame write stalled")
+          @step = [timeout, writes&.timeout].compact.min
           # The frame being delivered, if any: its number and deadline.
           @serial = 0
           @deadline = nil
@@ -94,8 +95,14 @@ module ConnectRPC
         # either way the frames behind it waited too, so `run` restarts their
         # deadlines from that write. Both bounds are disarmed before the guard
         # is released, because release hands control to the next waiter
-        # before this task resumes.
+        # before this task resumes. A frame dequeued past its deadline, with
+        # no timed write to wait out, fails at once: the watcher would only
+        # see it after the write.
         def deliver(frame, deadline)
+          if deadline <= @clock.now && !@writes&.remaining&.positive?
+            raise IOError, "HTTP/2 control frame was not written in time"
+          end
+
           @serial += 1
           @deadline = deadline
           @delivering.signal
@@ -137,13 +144,21 @@ module ConnectRPC
         def delivering?(serial) = @serial == serial && !@deadline.nil?
 
         # Sleeps up to `seconds` and returns whether the frame `serial` is
-        # still being delivered. Writing a frame past its deadline restarts
-        # the next frame's deadline `timeout` after that write, so sleeping at
-        # most `timeout` at a time never oversleeps that deadline.
+        # still being delivered. Writing that frame cannot cut a sleep short,
+        # so each step lasts at most the smaller of `timeout` and the write
+        # bound, which never passes the next frame's first check:
+        # - a frame written before its deadline leaves the next frame a
+        #   deadline at least as late, while steps end by the earlier one;
+        # - a frame written past its deadline restarts the next one's deadline
+        #   `timeout` after that write;
+        # - a frame written exactly at its deadline can leave the next one
+        #   already expired. `deliver` fails it at once unless it waits for a
+        #   timed write, which started after that write, so its bound ends at
+        #   least the write bound later.
         def undelivered_after?(serial, seconds)
           due = @clock.now + seconds
           while (left = due - @clock.now).positive?
-            @clock.sleep([left, @timeout].min)
+            @clock.sleep([left, @step].min)
             return false unless delivering?(serial)
           end
           delivering?(serial)
@@ -157,6 +172,8 @@ module ConnectRPC
       # or header block, not to a whole response, and continuous progress
       # within one frame does not extend it.
       class WriteWatchdog
+        attr_reader :timeout
+
         def initialize(resource, clock:, timeout:, message: "HTTP/2 frame write did not finish in time")
           @resource = resource
           @clock = clock
