@@ -71,26 +71,25 @@ module Soak
     end
   end
 
-  # Maxima observed while load is established, each against its configured cap.
+  # Maxima observed while load is established. Each observation is checked
+  # against the cap given with it, so a value within one phase's cap never
+  # fails a later phase with a stricter cap; the maxima are for the report.
   class Peaks
     def initialize
       @values = {}
       @caps = {}
+      @violations = []
     end
 
     def observe(name, value, cap:)
       @values[name] = [@values.fetch(name, value), value].max
       @caps[name] = cap
+      @violations << "#{name} peaked at #{value}, above its cap #{cap}" if value > cap
       value
     end
 
     def to_h = @values.to_h { |name, value| [name, { peak: value, cap: @caps[name] }] }
-
-    def problems
-      @values.filter_map do |name, value|
-        "#{name} peaked at #{value}, above its cap #{@caps[name]}" if value > @caps[name]
-      end
-    end
+    def problems = @violations.dup
   end
 
   # Every resource the library creates during a campaign, observed by a
