@@ -542,6 +542,11 @@ Prometheus and Yabeda packages.
 
 Call facts contain role, Connect protocol, recognized immutable Method or nil,
 client endpoint host/port and a propagation carrier, never message objects.
+Since 0.3.0, client calls also carry the request's `url_scheme`, its `url_path`
+(base path plus method path, never a GET query, which can carry the message)
+and the client transport's `transport_class`, so a subscriber can match URL
+propagation targets and recognize transports that its SDK already patches.
+These are nil on servers and default to nil for earlier `Call.new` callers.
 The client starts before timeout/metadata validation and applies validated staged
 injection transactionally to copied metadata. An injected key replaces the
 caller's values, except `baggage`, which becomes the caller's values followed by
@@ -589,7 +594,7 @@ RPC exists remains outside this scope. See the
 [OTel guide](../gems/connectrpc-otel/README.md) for trace semantics, privacy,
 HTTP instrumentation nesting and synchronous processor costs.
 
-The optional Sentry package uses the same callbacks without core changes. Its
+The optional Sentry package uses the same callbacks and call facts. Its
 server observation nests under an open host span and ends at
 `processing_finished`, because Rack and Rails hosts send their request
 transaction before delivery completes; without a host span it owns a

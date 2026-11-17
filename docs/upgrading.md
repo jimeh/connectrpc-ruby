@@ -147,6 +147,22 @@ and [Accept errors](../gems/connectrpc-async/README.md#accept-errors).
 - `Host.new(port: 0)` binds every resolved address on one port, so
   `host.port` is the port of every entry in `host.addresses`.
 
+These affect `connectrpc-sentry` client propagation. See
+[Propagation](../gems/connectrpc-sentry/README.md#propagation).
+
+- `trace_propagation_targets` match the request URL as `scheme://host/path`,
+  as Sentry's HTTP integrations do, instead of only the host and `host:port`.
+  URL strings such as `"https://api.internal"` and scheme-anchored regexes now
+  propagate. Host-anchored regexes such as `/\Aapi\.internal\z/` and targets
+  naming a port such as `"api.internal:8443"` no longer match; use
+  `%r{\Ahttps?://api\.internal/}` or a plain host substring instead.
+- On the core `NetHTTP` transport with Sentry's default `:http` patch applied,
+  the subscriber no longer injects when the patch propagates the request, so
+  requests carry one set of `sentry-*` baggage members instead of two. The
+  duplicate set after caller baggage is gone. `sentry-trace` and the leading
+  Sentry baggage already came from the patch's `http.client` span, a child of
+  the `rpc.client` span.
+
 ## 0.2.0
 
 ### Breaking change: read-only transport cancellation

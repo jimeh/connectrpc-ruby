@@ -51,8 +51,7 @@ module ConnectRPC
     def stream_call(method, request, metadata, timeout, cancellation, &)
       injection = {} #: headers
       lifecycle = @instrumentation&.start(owner: self, role: :client, method: method, carrier: injection,
-                                          protocol: @protocol,
-                                          server_address: @base_url.hostname.freeze, server_port: @base_url.port)
+                                          protocol: @protocol, **request_facts(method))
       lifecycle&.begin_processing(self)
       work = lambda do
         run_stream(method, request, metadata, timeout: timeout, cancellation: cancellation,
@@ -99,10 +98,9 @@ module ConnectRPC
       metadata
     end
 
-    def stream_request(method, metadata, deadline, cancellation, lifecycle) # rubocop:disable Metrics/MethodLength
+    def stream_request(method, metadata, deadline, cancellation, lifecycle)
       url = @base_url.dup
-      base_path = @base_url.path #: String
-      url.path = base_path.delete_suffix("/") + method.path
+      url.path = request_path(method)
       return grpc_stream_request(url, metadata, deadline, cancellation, lifecycle) if @protocol == :grpc
 
       headers = metadata.to_h.merge("content-type" => [Streaming::CONTENT_TYPES.fetch(@codec)],

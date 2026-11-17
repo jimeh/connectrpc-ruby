@@ -88,14 +88,19 @@ module ConnectRPC
     def initialize: (subscribers: Array[_Subscriber], ?on_error: (^(StandardError) -> void | _InstrumentationErrorHandler)?) -> void
 
     class Call
-      def initialize: (role: :client | :server, protocol: :connect | :grpc | :grpc_web, method: declaration?, server_address: String?, server_port: Integer?, carrier: Hash[String, String | Array[String]]) -> void
-        | (:client | :server, :connect | :grpc | :grpc_web, declaration?, String?, Integer?, Hash[String, String | Array[String]]) -> void
+      def self.new: (role: :client | :server, protocol: :connect | :grpc | :grpc_web, method: declaration?, server_address: String?, server_port: Integer?, carrier: Hash[String, String | Array[String]], ?url_scheme: String?, ?url_path: String?, ?transport_class: Class?) -> instance
+        | (:client | :server, :connect | :grpc | :grpc_web, declaration?, String?, Integer?, Hash[String, String | Array[String]], ?String?, ?String?, ?Class?) -> instance
+      def initialize: (role: :client | :server, protocol: :connect | :grpc | :grpc_web, method: declaration?, server_address: String?, server_port: Integer?, carrier: Hash[String, String | Array[String]], ?url_scheme: String?, ?url_path: String?, ?transport_class: Class?) -> void
       attr_reader role: :client | :server
       attr_reader protocol: :connect | :grpc | :grpc_web
       attr_reader method: declaration?
       attr_reader server_address: String?
       attr_reader server_port: Integer?
       attr_reader carrier: Hash[String, String | Array[String]]
+      # Since 0.3.0. Client request facts; nil on servers.
+      attr_reader url_scheme: String?
+      attr_reader url_path: String?
+      attr_reader transport_class: Class?
     end
 
     class Outcome
