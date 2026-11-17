@@ -29,11 +29,13 @@ module ConnectRPC
       def headers: () -> _Headers
       def body: () -> _Body?
     end
+    # async-http closes a bodyless response after sending it.
     interface _Response
       def status: () -> Integer
       def headers: () -> _Headers
       def body: () -> _Body?
       def body=: (_Body?) -> _Body?
+      def close: (?Exception?) -> void
     end
     interface _Application
       def call: (_Request, ?lifecycle: Instrumentation::Handle?) -> _Response?
