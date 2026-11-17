@@ -183,12 +183,14 @@ RSpec.describe ConnectRPC::Async::HTTP1Transport, "stale keep-alive resend" do
 
     it "records no failure of the resent attempt when the resend succeeds" do
       script = ->(index, count) { index == 1 && count == 2 ? :close : :respond }
-      with_scripted_peer(script) do |transport, origin|
+      with_scripted_peer(script) do |transport, origin, accepted, served|
         expect(transport.call(get(origin)).body).to eq("ok")
         recorded = []
         outgoing = get(origin)
         outgoing.lifecycle = recording_lifecycle(recorded)
         expect(transport.call(outgoing).body).to eq("ok")
+        # The second call crossed the closed reused connection and was resent.
+        expect([accepted.size, served]).to eq([2, { 1 => 2, 2 => 1 }])
         expect(recorded).to include(:activate)
         expect(recorded.grep_v(Symbol)).to be_empty
       end

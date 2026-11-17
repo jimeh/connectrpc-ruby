@@ -215,13 +215,27 @@ module ConnectRPC
 
         # The guard lives as long as the owner's block and every other task
         # under the owner, then aborts an unclosed transport so the owner can
-        # finish. Owner cancellation still cancels it directly.
+        # finish. Owner cancellation still cancels it directly. A registered
+        # watcher beside it waits for the owner and signals the guard, which
+        # itself waits only on a condition: when the guard waited on the owner
+        # task instead, an owner cancellation on Ruby 4 changed how its abort
+        # interleaved with native socket close.
         def install_owner_guard
+          exited = ::Async::Condition.new
           @lifetime = @owner.async do |guard|
             OwnerGuard.register(guard)
-            OwnerGuard.await(@owner)
+            exited.wait
           ensure
-            abort_owned unless @state == :closed
+            begin
+              abort_owned unless @state == :closed
+            ensure
+              Internal.cancel(@owner_watcher)
+            end
+          end
+          @owner_watcher = @owner.async do |watcher|
+            OwnerGuard.register(watcher)
+            OwnerGuard.await(@owner)
+            exited.signal
           end
         end
 

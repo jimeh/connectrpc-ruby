@@ -147,6 +147,10 @@ RSpec.describe "Caller Async timeouts around client calls" do
   end
 
   it "re-raises a caller's timeout that lands during HTTP/2 cleanup after completing disposition" do
+    # The caller's zero-duration timer must fire inside the cleanup budget; a
+    # wider budget keeps that margin under load and still ends the stuck
+    # frame's wait well inside the outcome bound.
+    stub_const("ConnectRPC::Async::Internal::CLEANUP_SECONDS", 0.5)
     reactor do |task|
       host = deadline_host(server: server)
       origin = "http://127.0.0.1:#{host.port}"
@@ -194,6 +198,8 @@ RSpec.describe "Caller Async timeouts around client calls" do
   end
 
   it "re-raises a caller's timeout that lands during HTTP/1 cleanup after completing disposition" do
+    # The caller's zero-duration timer must fire inside the cleanup budget.
+    stub_const("ConnectRPC::Async::Internal::CLEANUP_SECONDS", 0.5)
     with_http1_peer(response: http1_wire) do |transport, origin, accepted, _requests, task|
       held = Async::Promise.new
       outgoing = request("#{origin}/held")
