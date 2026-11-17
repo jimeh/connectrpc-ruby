@@ -22,6 +22,7 @@ RSpec.describe "Falcon rejected Web HTTP/1 input" do
     # Core has prepared the original error; the host still owns input cleanup.
     original = target.method(:call_grpc_web)
     target.define_singleton_method(:call_grpc_web) do |**arguments|
+      events[:processing]&.call
       native_body = arguments[:input].instance_variable_get(:@body)
       events[:body] = native_body
       original_read = native_body.method(:read)
@@ -255,11 +256,7 @@ RSpec.describe "Falcon rejected Web HTTP/1 input" do
         falcon(server: rejected_server(events), scheme: tls ? "https" : "http", tls: tls ? host_tls : nil,
                utilization_registry: registry) do |host, origin|
           rejected_socket(origin, tls: tls) do |socket|
-            # This peer establishes wire progress before we observe its cleanup.
-            started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
-            rejection_prefix(socket, timeout: failure == :deadline ? "30m" : nil)
-            processor = events[:prepared].dequeue
-            resource = host.instance_variable_get(:@session).instance_variable_get(:@resources).find(&:active)
+            resource = nil
             closed_states = []
             backend_closes = []
             trace = TracePoint.new(:call) do |event|
@@ -271,7 +268,18 @@ RSpec.describe "Falcon rejected Web HTTP/1 input" do
                 closed_states << [resource.raw.closed?, Async::Task.current]
               end
             end
-            trace.enable
+            # Cleanup can finish before this fiber resumes: an already expired
+            # 30 ms deadline retires the input without yielding (#132). So the
+            # processor itself captures its resource and starts observation.
+            events[:processing] = lambda do
+              resource = host.instance_variable_get(:@session).instance_variable_get(:@resources).find(&:active)
+              trace.enable
+            end
+            # This peer establishes wire progress before we observe its cleanup.
+            started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+            rejection_prefix(socket, timeout: failure == :deadline ? "30m" : nil)
+            processor = events[:prepared].dequeue
+            expect(resource).not_to be_nil
             case failure
             when :malformed then socket.write("invalid-chunk\r\n")
             when :truncated
