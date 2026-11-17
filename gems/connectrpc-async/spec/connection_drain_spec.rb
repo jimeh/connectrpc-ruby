@@ -118,8 +118,11 @@ RSpec.describe "HTTP/2 GOAWAY draining and replacement" do
       expect(peer.accepted).to eq(1)
       gate.enqueue(true)
       expect(call.wait).to eq("/next")
-      expect(resource.raw).to be_closed
+      expect(resource.send(:raw_failed?)).to be(true)
       expect([peer.accepted, meter.peak]).to eq([2, 1])
+      # The descriptor closes once the old connection's retirement completes.
+      wait_until(task, "removed connection retired") { resource.send(:retirement_completed?) }
+      expect(resource.raw).to be_closed
       expect(lease_usage(transport)).to eq(0)
     ensure
       gate&.enqueue(true)

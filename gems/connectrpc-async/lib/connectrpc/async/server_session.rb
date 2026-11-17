@@ -648,20 +648,21 @@ module ConnectRPC
       end
 
       def retire_session
-        # Listener cleanup and a Ruby 4 close can both yield. Fail every peer
-        # before crossing either: an H2 shutdown never yields, so H2 peers
-        # fail before HTTP/1 retirement closes its raw sockets.
-        h2, http1 = @resources.partition { |resource| resource.is_a?(Internal::Resource) }
+        # Every accepted peer fails before this cleanup can yield. An H2
+        # shutdown never yields; an HTTP/1 close (on Ruby 4) and listener
+        # cleanup can.
+        resources = @resources.dup
+        h2, http1 = resources.partition { |resource| resource.is_a?(Internal::Resource) }
         h2.each { |resource| resource.send(:fail_raw) }
-        http1.each { |resource| Internal.raw_close(resource.raw) }
-        # Only retirement closes an H2 descriptor, so every resource retires
-        # even when listener cleanup or another resource fails; the first
-        # failure is raised afterwards.
-        failure = retain_failure { stop_accepting }
-        @resources.each do |resource|
-          error = retain_failure { resource.abort }
-          failure ||= error
-        end
+        # Only retirement closes an H2 descriptor, so a failure or interruption
+        # never skips a later step. Listeners prune @resources while a step
+        # yields, so each pass walks its own array.
+        failures = http1.map { |resource| retain_failure { Internal.raw_close(resource.raw) } }
+        failures << retain_failure { stop_accepting }
+        failures.concat((resources | @resources).map { |resource| retain_failure { resource.abort } })
+        failures.compact!
+        # An interruption wins over an ordinary failure, as in CompletionJoin.
+        failure = failures.find { |error| !error.is_a?(StandardError) } || failures.first
         raise failure if failure
 
         @admitted.clear

@@ -436,13 +436,22 @@ RSpec.describe "Retirement lifecycle coordinators" do
     end
   end
 
-  [false, true].each do |resource_fails|
-    it "closes accepted raw peers that never served when listener cleanup fails" \
-       "#{' and the first resource abort raises' if resource_fails}" do
+  # Session retirement fails every peer, then retires every resource whatever
+  # fails, is interrupted or prunes the resource list, and raises the first
+  # interruption, otherwise the first failure, afterwards.
+  {
+    listener: "listener cleanup fails",
+    resource_raises: "listener cleanup fails and the first resource abort raises",
+    pruned: "listener cleanup fails and a listener prunes a retired resource",
+    resource_interrupted: "listener cleanup fails and the first resource abort is interrupted",
+    http1_interrupted: "listener cleanup fails and an HTTP/1 raw close is interrupted"
+  }.each do |mode, description|
+    it "closes accepted raw peers that never served when #{description}" do
       reactor do |task|
         bound = IO::Endpoint.tcp("127.0.0.1", 0).bound
         port = bound.sockets.first.local_address.ip_port
         failure = RuntimeError.new("listener cleanup failed")
+        interruption = Async::Cancel.new("interrupted")
         session = ConnectRPC::Async::ServerSession.new(application: ConnectRPC::Async::Application.new(server: server),
                                                        stop_accepting: -> { raise failure }).start
         peers = 2.times.map do
@@ -452,28 +461,53 @@ RSpec.describe "Retirement lifecycle coordinators" do
           peer
         end
         resources = session.instance_variable_get(:@resources).dup
-        if resource_fails
+        case mode
+        when :resource_raises, :resource_interrupted
+          error = mode == :resource_raises ? RuntimeError.new("first resource abort failed") : interruption
           allow(resources.first).to receive(:abort).and_wrap_original do |abort|
             abort.call
-            raise "first resource abort failed"
+            raise error
           end
+        when :pruned
+          # A listener waiting for capacity prunes the retired resource.
+          allow(resources.first).to receive(:abort).and_wrap_original do |abort|
+            abort.call
+            session.send(:capacity?)
+          end
+        when :http1_interrupted
+          http1_raw = Object.new
+          http1_raw.define_singleton_method(:closed?) { false }
+          http1_raw.define_singleton_method(:close) { raise interruption }
+          http1 = Struct.new(:raw) do
+            def abort = nil
+            def owns_task?(_task) = false
+            def retirement_completed? = true
+          end
+          session.instance_variable_get(:@resources).unshift(http1.new(http1_raw))
         end
-        # The listener failure is raised once every resource has retired.
-        expect { session.abort }.to raise_error(equal(failure))
+        if %i[resource_interrupted http1_interrupted].include?(mode)
+          # The interruption wins over the listener failure: session cleanup
+          # ends cancelled, so abort returns rather than raising it.
+          expected = nil
+          expect { session.abort }.not_to raise_error
+        else
+          expected = failure
+          expect { session.abort }.to raise_error(equal(expected))
+        end
         expect(resources).to all(satisfy { |resource| retirement_complete?(resource) })
         expect(resources.map(&:raw)).to all(be_closed)
         wait_until(task, "both peers read end of stream") do
           peers.all? { |peer| peer.read_nonblock(1, exception: false).nil? }
         end
-        # The owner guard reports the same cleanup failure when it ends.
+        # The owner guard reports the same cleanup outcome when it ends.
         guard = session.instance_variable_get(:@lifetime)
         reported = task.async do
           guard.wait
-        rescue RuntimeError => e
+        rescue Exception => e # rubocop:disable Lint/RescueException -- the guard re-raises the retained interruption
           e
         end
         guard.cancel
-        expect(reported.wait).to equal(failure)
+        expect(reported.wait).to be(expected)
       ensure
         peers&.each { |raw| AsyncHelpers::INTERNAL.raw_close(raw) }
         bound&.close
