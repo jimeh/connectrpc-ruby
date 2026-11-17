@@ -989,8 +989,10 @@ module ConnectRPC
         # writes its final GOAWAY, a peer that leaves after every stream has
         # closed, by its GOAWAY, an EOF or a reset, lost nothing: the work left
         # is local, such as a stream worker's cleanup and observers. A
-        # too_many_pings decision keeps its own bound instead.
+        # too_many_pings decision keeps its own bound instead. The EOF or
+        # reset after our own raw failure is never the peer leaving.
         def outlives_peer?(error)
+          return false if @raw_failed
           return false unless @drain_running && !@finishing && !@aborted && @connection.streams.empty?
           return false if @upkeep&.violated?
 
@@ -1022,8 +1024,9 @@ module ConnectRPC
           if launch
             @aborted = true
             # A peer that ends the connection once its streams finished, as a
-            # GOAWAY asks, ends a drain cleanly, whether by EOF or a reset.
-            peer_left = @connection&.reader_task&.current? && empty?
+            # GOAWAY asks, ends a drain cleanly, whether by EOF or a reset. The
+            # EOF after our own raw failure is not the peer's.
+            peer_left = !@raw_failed && @connection&.reader_task&.current? && empty?
             @abort_during_drain = true if @drain_task && !@drained && !peer_left
             @cleanup = ::Async::Task.new(@lifetime, transient: true, finished: false) { retire(error) }
           end

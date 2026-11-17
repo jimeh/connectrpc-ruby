@@ -607,6 +607,40 @@ RSpec.shared_examples "HTTP/2 server keepalive" do
       end
     end
 
+    # Session retirement shuts raw TCP down before it aborts each resource, so
+    # a draining reader can see EOF first. That EOF is not the peer leaving.
+    it "does not read a session abort's raw failure in a drain as the peer leaving" do
+      reactor do |task|
+        with_keepalive_host(task, keepalive: server_keepalive(time: nil, min_time: nil)) do |fixture|
+          client = fixture.client
+          resource = fixture.resource
+          session = keepalive_session(fixture.host)
+          client.wire.ack_pings = false
+          closing = task.async { fixture.host.close(grace: 5) }
+          wait_until(task, "drain PING") { client.wire.pings == [KeepaliveClient::DRAIN_PING] }
+          held = Async::Queue.new
+          release = Async::Queue.new
+          allow(session).to receive(:stop_accepting).and_wrap_original do |stop|
+            held.enqueue(true)
+            release.dequeue
+            stop.call
+          end
+          aborter = task.async { session.abort }
+          held.dequeue
+          wait_until(task, "server reader saw EOF") { resource.connection.reader_task.finished? }
+          expect(resource.peer_departed?).to be(false)
+          expect(resource).to be_finished
+          release.enqueue(true)
+          aborter.wait
+          expect(resource.instance_variable_get(:@drain_task).wait).to be(false)
+          expect(closing.wait).to be(false)
+          expect(retired?(resource)).to be(true)
+        ensure
+          release&.enqueue(true)
+        end
+      end
+    end
+
     it "lets session close supersede a drain without raising its cutoff" do
       reactor do |task|
         with_keepalive_host(task, keepalive: server_keepalive(time: nil, min_time: nil,
