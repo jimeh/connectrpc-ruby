@@ -29,18 +29,23 @@ module Soak
     def setting(name, default) = Float(ENV.fetch("CONNECTRPC_SOAK_#{name}", default))
 
     def main(*arguments)
-      packages = arguments.take_while { |argument| PACKAGES.include?(argument) }
-      if packages.empty? || packages.uniq.size != packages.size
-        abort "Usage: ruby scripts/soak.rb #{PACKAGES.join('|')}... [rspec arguments]"
-      end
-
+      packages = packages(arguments)
       settings = self.settings
-      statuses = packages.to_h do |package|
-        [package, run(package, settings, arguments.drop(packages.size))]
-      end
-      puts "Lifecycle campaigns: #{statuses.map { |package, status| "#{package} #{status}" }.join(', ')}" \
-        if packages.size > 1
+      statuses = packages.to_h { |package| [package, run(package, settings, arguments.drop(packages.size))] }
+      report(statuses) if packages.size > 1
       exit(statuses.values.all?("passed") ? 0 : 1)
+    end
+
+    # The leading package names, each at most once.
+    def packages(arguments)
+      packages = arguments.take_while { |argument| PACKAGES.include?(argument) }
+      return packages unless packages.empty? || packages.uniq.size != packages.size
+
+      abort "Usage: ruby scripts/soak.rb #{PACKAGES.join('|')}... [rspec arguments]"
+    end
+
+    def report(statuses)
+      puts "Lifecycle campaigns: #{statuses.map { |package, status| "#{package} #{status}" }.join(', ')}"
     end
 
     def run(package, settings, arguments)
