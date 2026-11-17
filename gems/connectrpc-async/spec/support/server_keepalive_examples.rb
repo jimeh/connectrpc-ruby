@@ -127,6 +127,24 @@ RSpec.shared_examples "HTTP/2 server keepalive" do
     gate
   end
 
+  # Holds one control frame's write once the control writer holds the frame
+  # guard, before the frame reaches the buffered stream. A frame held inside
+  # the stream would also hold the reader at its next buffer refill, which
+  # flushes pending output first, so the reader could not see the peer leave.
+  def hold_control_frame(resource, frame_type, stream_id:)
+    gate = Data.define(:started, :release).new(Async::Queue.new, Async::Queue.new)
+    armed = true
+    resource.connection.define_singleton_method(:write_frame) do |frame|
+      if armed && frame.type == frame_type && frame.stream_id == stream_id
+        armed = false
+        gate.started.enqueue(true)
+        gate.release.dequeue
+      end
+      super(frame)
+    end
+    gate
+  end
+
   def retired?(resource) = resource.send(:retirement_completed?)
 
   def client_tls
@@ -1153,7 +1171,7 @@ RSpec.shared_examples "HTTP/2 server keepalive" do
           held, other = fill_admission(task, fixture)
           resource = second_resource(task, fixture)
           refused = other.connection.next_stream_id
-          gate = hold_frames(resource, Protocol::HTTP2::ResetStreamFrame::TYPE, stream_id: refused)
+          gate = hold_control_frame(resource, Protocol::HTTP2::ResetStreamFrame::TYPE, stream_id: refused)
           raw_requests(other, [[refused, request_headers(echo_path), encoded("refused")]])
           gate.started.dequeue
           wait_until(task, "refusal counted") { rejections.size == 1 }
@@ -1195,7 +1213,7 @@ RSpec.shared_examples "HTTP/2 server keepalive" do
           wait_until(task, "sibling call invoked") { fixture.log[:invoked].include?("hold-sibling") }
           resource = second_resource(task, fixture)
           refused, over = Array.new(2) { other.connection.next_stream_id }
-          gate = hold_frames(resource, Protocol::HTTP2::ResetStreamFrame::TYPE, stream_id: refused)
+          gate = hold_control_frame(resource, Protocol::HTTP2::ResetStreamFrame::TYPE, stream_id: refused)
           raw_requests(other, [[refused, request_headers(echo_path), encoded("refused")]])
           gate.started.dequeue
           wait_until(task, "refusal counted") { rejections.size == 1 }
