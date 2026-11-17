@@ -1,0 +1,5 @@
+syntax = "proto3";
+package math.rbs_fixture.v1;
+message Sample { string text = 1; }
+message Measure { int32 count = 1; }
+service Gauge { rpc Read(Sample) returns (Measure) { option idempotency_level = NO_SIDE_EFFECTS; } }

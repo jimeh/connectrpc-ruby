@@ -38,10 +38,18 @@ module ConnectRPC
         ]
       }.freeze
 
-      def self.validate!(parts, kind, origin, file)
+      RUBY_PACKAGE_HINT = "set the ruby_package file option to choose another Ruby namespace"
+
+      def self.validate!(parts, kind, origin, file) # rubocop:disable Metrics/MethodLength
         name = parts.join("::")
         if reserved_root?(parts, kind)
-          raise InvalidDescriptor, "Reserved top-level Ruby constant #{parts.first} for #{file}: #{origin}"
+          # Below a reopenable root, only a builtin child is ever reserved.
+          constant = if parts.size > 1 && Names::REOPENABLE_ROOTS.include?(parts.first)
+                       "builtin Ruby constant #{parts.take(2).join('::')}"
+                     else
+                       "top-level Ruby constant #{parts.first}"
+                     end
+          raise InvalidDescriptor, "Reserved #{constant} for #{file}: #{origin}; #{RUBY_PACKAGE_HINT}"
         end
 
         protected_name = protected_runtime(parts, kind) || protected_protobuf_type(parts, kind, origin, file)
@@ -58,9 +66,19 @@ module ConnectRPC
         parts.take(3).join("::")
       end
 
-      def self.reserved_root?(parts, kind)
-        Names::TOP_LEVEL_RESERVED.include?(parts.first) &&
-          !(parts.first == "Google" && (parts.size > 1 || kind == :package))
+      # Google and the reopenable builtin roots accept package modules. Google
+      # nesting is otherwise left to the protobuf runtime checks; a builtin root
+      # also rejects replacing a module child and anything at or below a value
+      # or class child.
+      def self.reserved_root?(parts, kind) # rubocop:disable Metrics/CyclomaticComplexity, Metrics/PerceivedComplexity
+        root, child = parts
+        return false unless Names::TOP_LEVEL_RESERVED.include?(root)
+        return true unless root == "Google" || Names::REOPENABLE_ROOTS.include?(root)
+        return kind != :package if child.nil?
+        return false if root == "Google"
+        return parts.size == 2 && kind != :package if Names::BUILTIN_MODULE_CHILDREN.fetch(root, []).include?(child)
+
+        Names::BUILTIN_VALUE_CHILDREN.fetch(root, []).any? { |entry| entry === child } # rubocop:disable Style/CaseEquality -- String or platform Regexp
       end
 
       def self.protected_protobuf_type(parts, kind, origin, file)

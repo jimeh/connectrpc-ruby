@@ -52,6 +52,23 @@ client.call(RbsFixture::Api::Echo::EXCHANGE, request).message.count.succ
 ConnectRPC::Response.new(message: response.message, metadata: ConnectRPC::Metadata.new, trailers: ConnectRPC::Metadata.new)
 RbsFixture::Api::NoCalls.handlers
 
+# Generated services nest under reopened builtin modules beside their members.
+require "builtin_connect"
+require "builtin_mapped_connect"
+Math::RbsFixture::V1::Gauge.handlers(
+  read: ->(sample, _context) { Math::RbsFixture::V1::Measure.new(count: sample.text.size) }
+)
+Process::RbsFixture::Inspector.handlers(
+  check: ->(probe, _context) { Math::RbsFixture::V1::Measure.new(count: probe.text.size) }
+)
+Math::RbsFixture::V1::Gauge::READ.idempotency.to_s
+gauge = Math::RbsFixture::V1::Gauge::Client.new(client: client)
+gauge.read(Math::RbsFixture::V1::Sample.new(text: "pi"), timeout: nil).message.count.succ
+inspector = Process::RbsFixture::Inspector::Client.new(client: client)
+inspector.check(Process::RbsFixture::Probe.new(text: "pid")).message.count.succ
+Math.sqrt(Math::PI).floor.succ
+Process.pid.succ
+
 # A manual token association is an application assertion, rather than inference.
 # @type var manual: ConnectRPC::Method[RbsFixture::Messages::Envelope::Request, RbsFixture::Messages::Envelope::Reply]
 manual = ConnectRPC::Method.new(service: "rbs_service.v1.Manual", name: "Exchange",

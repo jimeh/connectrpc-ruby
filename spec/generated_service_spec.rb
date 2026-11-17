@@ -10,6 +10,8 @@ require "generation/service_connect"
 require "generation/dotted_connect"
 require "generation/google_connect"
 require "generation/google_ruby_connect"
+require "generation/builtin_root_connect"
+require "generation/builtin_direct_connect"
 require "generation_empty_connect"
 
 RSpec.describe "Generated service integration" do
@@ -53,6 +55,26 @@ RSpec.describe "Generated service integration" do
       expect(decoded.class).to equal(google_type)
       expect(decoded).to eq(message)
     end
+  end
+
+  it "reopens the builtin Math module for official nested and direct-child messages" do
+    expect(Math::PI).to be_a(Float)
+    expect(Math::DomainError).to be < StandardError
+    { Math::GenerationFixture::V1::EchoService => Math::GenerationFixture::V1::Message,
+      Math::GenerationFixturePlanService => Math::GenerationFixturePlan }.each do |builtin_service, builtin_type|
+      expect(builtin_service::ECHO.request_type).to equal(builtin_type)
+      expect(builtin_service::ECHO.response_type).to equal(builtin_type)
+      expect(builtin_service::SERVICE.methods).to eq([builtin_service::ECHO])
+      %i[proto json].each do |codec|
+        message = builtin_type.new(count: 7)
+        decoded = binding.decode(binding.encode(message, type: builtin_type, codec: codec), type: builtin_type,
+                                                                                            codec: codec)
+        expect(decoded.class).to equal(builtin_type)
+        expect(decoded).to eq(message)
+      end
+    end
+    expect(Math::GenerationFixture::V1::EchoService::ECHO.path).to eq("/math.generation_fixture.v1.EchoService/Echo")
+    expect(Math::GenerationFixturePlanService::ECHO.path).to eq("/math.GenerationFixturePlanService/Echo")
   end
 
   it "forwards omitted, nil, finite, metadata and arbitrary options with return identity" do

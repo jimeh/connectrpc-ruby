@@ -7,6 +7,8 @@ require "generation/types_connect"
 require "generation/dotted_connect"
 require "generation/google_connect"
 require "generation/google_ruby_connect"
+require "generation/builtin_root_connect"
+require "generation/builtin_direct_connect"
 require "generation_empty_connect"
 require "connectrpc/bindings/google_protobuf"
 require_relative "localhost"
@@ -35,11 +37,21 @@ abort "WKT class mismatch" unless google_service::TIME.request_type.equal?(Googl
                                   google_service::TIME.response_type.equal?(Google::Protobuf::Timestamp)
 abort "Mapped Google class mismatch" unless mapped_service::ECHO.request_type.equal?(mapped_type) &&
                                             mapped_service::ECHO.response_type.equal?(mapped_type)
+# Official output reopens the interpreter's Math module without replacing its members.
+builtin = { Math::GenerationFixture::V1::EchoService => Math::GenerationFixture::V1::Message,
+            Math::GenerationFixturePlanService => Math::GenerationFixturePlan }
+abort "Builtin Math module changed" unless Math::PI.instance_of?(Float) && Math::DomainError < StandardError
+builtin.each do |builtin_service, builtin_type|
+  abort "Builtin module class mismatch" unless builtin_service::ECHO.request_type.equal?(builtin_type) &&
+                                               builtin_service::ECHO.response_type.equal?(builtin_type)
+end
 handlers = service.handlers(echo: handler, fail: failure, get_http: handler)
 handlers.merge!(google_service.handlers(echo: handler, time: handler))
 handlers.merge!(mapped_service.handlers(echo: handler))
-server = ConnectRPC::Server.new(services: [service::SERVICE, google_service::SERVICE, mapped_service::SERVICE],
-                                binding: binding, handlers: handlers)
+builtin.each_key { |builtin_service| handlers.merge!(builtin_service.handlers(echo: handler)) }
+services = [service::SERVICE, google_service::SERVICE, mapped_service::SERVICE,
+            *builtin.keys.map { |entry| entry::SERVICE }]
+server = ConnectRPC::Server.new(services: services, binding: binding, handlers: handlers)
 host = EchoExample::Localhost.new(ConnectRPC::Rack.new(server: server))
 begin
   %i[proto json].each do |codec|
@@ -83,6 +95,16 @@ begin
     abort "Mapped Google round trip mismatch" unless mapped_response.instance_of?(mapped_type) &&
                                                      mapped_response == mapped_message
     puts "Google #{codec}: package/ruby_package/WKT exact class identity and typed calls passed (Ruby #{RUBY_VERSION})"
+    builtin.each do |builtin_service, builtin_type|
+      builtin_client = builtin_service::Client.new(client: ConnectRPC::Client.new(base_url: host.url, binding: binding,
+                                                                                  codec: codec))
+      builtin_message = builtin_type.new(count: 7)
+      builtin_response = builtin_client.echo(builtin_message, timeout: 2).message
+      abort "Builtin module round trip mismatch" unless builtin_response.instance_of?(builtin_type) &&
+                                                        builtin_response == builtin_message
+    end
+    puts "Builtin Math #{codec}: nested package and direct child class identity and typed calls passed " \
+         "(Ruby #{RUBY_VERSION})"
   end
   abort "Proto2 service type mismatch" unless GenerationFixture::Types::LegacyService::LEGACY_GET.request_type ==
                                               GenerationFixture::Types::Outer_name::PB__value

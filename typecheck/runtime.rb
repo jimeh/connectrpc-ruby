@@ -3,6 +3,8 @@
 require "connectrpc"
 require "connectrpc/bindings/google_protobuf"
 require "service_connect"
+require "builtin_connect"
+require "builtin_mapped_connect"
 require_relative "consumers/support"
 
 unless Gem.loaded_specs.fetch("google-protobuf").version.to_s == "4.36.2"
@@ -12,7 +14,9 @@ end
 pairs = {
   RbsFixture::Api::Echo::EXCHANGE => [RbsFixture::Messages::Envelope::Request, RbsFixture::Messages::Envelope::Reply],
   RbsFixture::Api::Echo::PLAIN => [RbsPlain::V1::Request, RbsPlain::V1::Outer::Reply],
-  RbsFixture::Api::Echo::RESET => [Google::Protobuf::Empty, Google::Protobuf::Empty]
+  RbsFixture::Api::Echo::RESET => [Google::Protobuf::Empty, Google::Protobuf::Empty],
+  Math::RbsFixture::V1::Gauge::READ => [Math::RbsFixture::V1::Sample, Math::RbsFixture::V1::Measure],
+  Process::RbsFixture::Inspector::CHECK => [Process::RbsFixture::Probe, Math::RbsFixture::V1::Measure]
 }
 pairs.each do |method, (request, reply)|
   raise "Official request class mismatch" unless method.request_type.equal?(request)
@@ -20,7 +24,9 @@ pairs.each do |method, (request, reply)|
 end
 raise "Generated safety mapping lost" unless RbsFixture::Api::Echo::EXCHANGE.idempotency == :no_side_effects &&
                                              RbsFixture::Api::Echo::PLAIN.idempotency == :idempotent &&
-                                             RbsFixture::Api::Echo::RESET.idempotency == :unknown
+                                             RbsFixture::Api::Echo::RESET.idempotency == :unknown &&
+                                             Math::RbsFixture::V1::Gauge::READ.idempotency == :no_side_effects
+raise "Builtin module members changed" unless Math::PI.instance_of?(Float) && Process.pid.positive?
 
 %w[proto json].each do |codec|
   handlers = RbsFixture::Api::Echo.handlers(
@@ -33,10 +39,15 @@ raise "Generated safety mapping lost" unless RbsFixture::Api::Echo::EXCHANGE.ide
     plain: ->(request, _context) { RbsPlain::V1::Outer::Reply.new(text: request.text) },
     reset: ->(request, _context) { request }
   )
+  measure = ->(input, _context) { Math::RbsFixture::V1::Measure.new(count: input.text.size) }
+  handlers.merge!(Math::RbsFixture::V1::Gauge.handlers(read: measure),
+                  Process::RbsFixture::Inspector.handlers(check: measure))
   binding = ConnectRPC::Bindings::GoogleProtobuf.new
   recorder = LifecycleRecorder.new
   instrumentation = ConnectRPC::Instrumentation.new(subscribers: [recorder])
-  server = ConnectRPC::Server.new(services: [RbsFixture::Api::Echo::SERVICE], binding: binding, handlers: handlers,
+  services = [RbsFixture::Api::Echo::SERVICE, Math::RbsFixture::V1::Gauge::SERVICE,
+              Process::RbsFixture::Inspector::SERVICE]
+  server = ConnectRPC::Server.new(services: services, binding: binding, handlers: handlers,
                                   instrumentation: instrumentation)
   core = ConnectRPC::Client.new(base_url: "https://rbs.invalid", binding: binding,
                                 transport: LoopbackTransport.new(server), codec: codec.to_sym, use_get: true)
@@ -59,6 +70,14 @@ raise "Generated safety mapping lost" unless RbsFixture::Api::Echo::EXCHANGE.ide
   raise "Proto2 import failed" unless client.plain(RbsPlain::V1::Request.new(text: "plain")).message.text == "plain"
   raise "WKT failed" unless client.reset(Google::Protobuf::Empty.new).message.is_a?(Google::Protobuf::Empty)
 
+  gauge = Math::RbsFixture::V1::Gauge::Client.new(client: core)
+  raise "Builtin package call failed" unless gauge.read(Math::RbsFixture::V1::Sample.new(text: "pi")).message.count == 2
+
+  inspector = Process::RbsFixture::Inspector::Client.new(client: core)
+  unless inspector.check(Process::RbsFixture::Probe.new(text: "pid")).message.count == 3
+    raise "Builtin ruby_package call failed"
+  end
+
   begin
     client.exchange(RbsFixture::Messages::Envelope::Reply.new)
     raise "Wrong request accepted"
@@ -66,5 +85,5 @@ raise "Generated safety mapping lost" unless RbsFixture::Api::Echo::EXCHANGE.ide
     raise unless e.code == "invalid_argument"
   end
 end
-puts "Official distinct/nested/imported/ruby_package/WKT messages: generated Client and handlers " \
+puts "Official distinct/nested/imported/ruby_package/WKT/builtin-module messages: generated Client and handlers " \
      "passed in proto/json (Ruby #{RUBY_VERSION})"

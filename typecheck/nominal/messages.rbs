@@ -25,3 +25,19 @@ module Google
     end
   end
 end
+module Math
+  module RbsFixture
+    module V1
+      class Sample
+      end
+      class Measure
+      end
+    end
+  end
+end
+module Process
+  module RbsFixture
+    class Probe
+    end
+  end
+end
