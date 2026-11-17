@@ -122,7 +122,11 @@ RSpec.describe "Native admission and forced teardown observation" do
         origin = "http://127.0.0.1:#{host.port}"
         transport = ConnectRPC::Async::Transport.new(origin: origin)
         typed = client(transport, origin)
-        second_transport = ConnectRPC::Async::Transport.new(origin: origin)
+        # The host refuses the stream with REFUSED_STREAM; without the default
+        # resend, one refused stream is one admission rejection.
+        second_transport = ConnectRPC::Async::Transport.new(
+          origin: origin, connection_policy: ConnectRPC::Async::ConnectionPolicy.new(retry_refused: false)
+        )
         second = client(second_transport, origin)
         second.echo(AsyncHelpers::MESSAGE.new(name: "warmup"))
         exporter.reset
@@ -130,7 +134,7 @@ RSpec.describe "Native admission and forced teardown observation" do
         entered.dequeue
         resource = host_session(host).instance_variable_get(:@resources).first
         if delivery == :aborted
-          gate = FrameGate.new(resource.socket, frame_type: 1)
+          gate = FrameGate.new(resource.socket, frame_type: Protocol::HTTP2::ResetStreamFrame::TYPE)
           resource.connection.stream.instance_variable_set(:@io, gate)
           gate.armed = true
         end
@@ -141,7 +145,7 @@ RSpec.describe "Native admission and forced teardown observation" do
         end
         if gate
           gate.started.dequeue
-          # The rejection's header frame has started. Force teardown of its
+          # The refusal's RST_STREAM frame has started. Force teardown of its
           # independently owned connection before the frame can finish.
           resource.abort
           expect(rejected.wait.code).to eq("unavailable")
@@ -151,10 +155,14 @@ RSpec.describe "Native admission and forced teardown observation" do
         end
         wait_until(task, "admission span completion") { rpc_spans(exporter).size == 1 }
         span = rpc_spans(exporter).first
+        error_type = delivery == :aborted ? "delivery_aborted" : "admission_rejected"
         expect(span.attributes).to include("connectrpc.processing.state" => "not_started",
                                            "connectrpc.decision" => "admission_rejected",
                                            "connectrpc.delivery" => delivery.to_s,
-                                           "http.response.status_code" => 503)
+                                           "error.type" => error_type)
+        expect(span.status.code).to eq(OpenTelemetry::Trace::Status::ERROR)
+        # A refusal is a stream reset, not an HTTP response.
+        expect(span.attributes).not_to have_key("http.response.status_code")
         expect(span.attributes).not_to have_key("rpc.response.status_code")
         release.enqueue(true)
         expect(active.wait.message.name).to eq("admitted")

@@ -8,7 +8,8 @@ module ConnectRPC
       def initialize(application:, tls: nil, tls_provider: nil, max_connections: 128, max_requests: 128,
                      handshake_timeout: 10, idle_timeout: 60, refresh_interval: 60, refresh_jitter: 0.1,
                      refresh_timeout: 10, on_tls_error: nil, alpn_protocols: ["h2"], http1: nil, stop_accepting: nil,
-                     on_request_rejected: nil, lifecycle_factory: nil, keepalive: ServerKeepalive.new)
+                     on_request_rejected: nil, lifecycle_factory: nil, keepalive: ServerKeepalive.new,
+                     max_concurrent_streams: 100, request_body_timeout: 60)
         initialize_affinity
         raise ArgumentError, "application must be callable" unless application.respond_to?(:call)
         raise ArgumentError, "stop_accepting must be callable" if stop_accepting && !stop_accepting.respond_to?(:call)
@@ -27,6 +28,16 @@ module ConnectRPC
         @selector = ::Async::HTTP::Protocol::HTTP.new if http1
         @max_connections = Internal.positive_integer(max_connections, "max_connections")
         @max_requests = Internal.positive_integer(max_requests, "max_requests")
+        unless max_concurrent_streams.is_a?(Integer) && max_concurrent_streams.between?(1, 0xffff_ffff)
+          raise ArgumentError, "max_concurrent_streams must be an integer from 1 to 4294967295"
+        end
+
+        # One connection can never have more streams admitted than the host,
+        # so a client queues locally instead of sending streams to refuse.
+        @max_concurrent_streams = [max_concurrent_streams, @max_requests].min
+        unless request_body_timeout.nil?
+          @request_body_timeout = Internal.seconds(request_body_timeout, "request_body_timeout")
+        end
         @handshake_timeout = Internal.seconds(handshake_timeout, "handshake_timeout")
         @idle_timeout = Internal.seconds(idle_timeout, "idle_timeout") unless idle_timeout.nil?
         @keepalive = keepalive
@@ -109,7 +120,7 @@ module ConnectRPC
         targets = @resources.reject { |resource| resource.send(:retirement_completed?) }
                             .select { |resource| resource.generation < cutoff }
         targets.each { |resource| resource.draining = true }
-        drain_resources(targets, Internal.now + grace)
+        drain_resources(targets, Internal.now + grace, reason: "tls_rotation")
       end
 
       def peer_certificate
@@ -245,19 +256,22 @@ module ConnectRPC
         connection = Internal::ServerConnection.new(stream)
         resource.connection = connection
         connection.resource = resource
-        connection.read_connection_preface(Internal.settings(@max_requests))
+        connection.stream_limit = @max_concurrent_streams
+        connection.read_connection_preface(Internal.settings(@max_requests,
+                                                             max_concurrent_streams: @max_concurrent_streams))
         resource
       end
 
-      # HTTP/2 idle expiry drains gracefully; keepalive adds PINGs, PING
+      # Every HTTP/2 connection has upkeep for its control frames, refusals and
+      # graceful drains. Idle expiry drains it; keepalive adds PINGs, PING
       # enforcement and the age limit.
       def keep_up(resource)
-        return unless @keepalive || @idle_timeout
-
         upkeep = Internal::ServerUpkeep.new(resource, parent: @lifetime, clock: @clock, random: @random,
                                                       keepalive: @keepalive, idle_timeout: @idle_timeout)
-        # Frames reach the upkeep only after its tasks run; the reader starts later.
-        resource.upkeep = upkeep.start
+        # A drain that starts while the upkeep's tasks start keeps its frames
+        # queued for the writer. The reader starts later.
+        resource.upkeep = upkeep
+        upkeep.start
       end
 
       # HTTP/1 resources are aborted once idle.
@@ -296,13 +310,16 @@ module ConnectRPC
           end
         end
         @admitted.delete_if { |stream, completed| completed && stream.respond_to?(:closed?) && stream.closed? }
-        key = request.respond_to?(:stream) ? request.stream : request
-        if @state != :running || resource.draining || @admitted.size >= @max_requests
-          if exchange
-            exchange.decision = :admission_rejected
-            exchange.http_status = 503
-          end
+        http2 = request.respond_to?(:stream)
+        key = http2 ? request.stream : request
+        # An HTTP/2 stream on a draining connection was opened before its
+        # cutoff, so only full admission refuses it, with REFUSED_STREAM.
+        if @admitted.size >= @max_requests || (!http2 && (@state != :running || resource.draining))
+          exchange&.decision = :admission_rejected
           @on_request_rejected&.call
+          return Internal::ServerConnection::REFUSAL if http2
+
+          exchange&.http_status = 503
           retirement&.processor_finished
           retirement&.head_resolved(503)
           return @application.admission_response(request) if @application.respond_to?(:admission_response)
@@ -312,6 +329,7 @@ module ConnectRPC
 
         @admitted[key] = false
         begin
+          bound_input(request) if http2
           retirement&.on_close do
             complete_admission(key, wire: true)
             resource.changed
@@ -383,6 +401,16 @@ module ConnectRPC
         end
       end
 
+      # Client-streaming and bidi routes may idle between messages; every other
+      # admitted HTTP/2 request body must make progress while its handler waits.
+      def bound_input(request)
+        return unless @request_body_timeout
+        return if @application.respond_to?(:input_stream_route?, true) &&
+                  @application.send(:input_stream_route?, request)
+
+        request.stream.bound_input(@clock, @request_body_timeout)
+      end
+
       def complete_processor(publication, task, key, resource, error)
         @identities.delete(task)
         complete_admission(key, processor: true)
@@ -407,9 +435,17 @@ module ConnectRPC
         end
       end
 
-      def drain_resources(resources, expires)
+      # HTTP/2 connections start a two-phase GOAWAY drain with `reason` as
+      # debug data. HTTP/1 connections drain without one.
+      def drain_resources(resources, expires, reason:)
         tasks = resources.map do |resource|
-          @lifetime.async(finished: false) { resource.drain(@lifetime, expires) }
+          @lifetime.async(finished: false) do
+            if resource.is_a?(Internal::Resource)
+              resource.drain(@lifetime, expires, reason: reason)
+            else
+              resource.drain(@lifetime, expires)
+            end
+          end
         end
         tasks.map(&:wait).all?
       end
@@ -422,7 +458,7 @@ module ConnectRPC
         stop_accepting
         @tls.close
         @resources.each { |resource| resource.draining = true }
-        drained = drain_resources(@resources, expires)
+        drained = drain_resources(@resources, expires, reason: "graceful_stop")
         @admitted.clear
         @h1_wire.clear
         decide_close_outcome(drained)

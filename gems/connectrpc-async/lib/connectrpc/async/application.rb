@@ -53,7 +53,16 @@ module ConnectRPC
             !Streaming.codec(Protocol.single(headers, "content-type")).nil?)
       end
 
-      private :publication?, :http1_streaming_route?
+      # Client-streaming and bidi routes, whose request bodies may idle.
+      def input_stream_route?(request)
+        path = request.path&.split("?", 2)&.first
+        return false unless path && @server.handles?(path)
+
+        declaration = @server.instance_variable_get(:@methods)[path]
+        declaration.is_a?(ClientStreamMethod) || declaration.is_a?(BidiStreamMethod)
+      end
+
+      private :publication?, :http1_streaming_route?, :input_stream_route?
 
       def admission_response(request)
         path = request.path&.split("?", 2)&.first

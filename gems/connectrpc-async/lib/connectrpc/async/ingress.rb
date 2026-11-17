@@ -46,12 +46,26 @@ module ConnectRPC
         end
       end
 
+      # A server request body made no progress within request_body_timeout.
+      class RequestBodyTimeout < IOError; end
+
       class Ingress < ::Protocol::HTTP::Body::Writable
         def initialize(stream, length)
           super(length, queue: IngressQueue.new)
           @stream = stream
           @remaining = length
           @retained = 0
+          @progress_clock = nil
+          @progress_seconds = nil
+        end
+
+        # Bounds each read that waits for body bytes to `seconds` on `clock`.
+        # Only body bytes or the end of the body end a wait, so empty or
+        # padding-only DATA does not extend it. On expiry the stream is reset
+        # with CANCEL and the read raises RequestBodyTimeout.
+        def bound_progress(clock, seconds)
+          @progress_clock = clock
+          @progress_seconds = seconds
         end
 
         def write(bytes)
@@ -60,6 +74,7 @@ module ConnectRPC
         end
 
         def read
+          timer = progress_timer if @progress_seconds && !@error && @queue.empty? && !@queue.closed?
           chunk = super
           if chunk
             @retained -= chunk.bytesize
@@ -70,6 +85,8 @@ module ConnectRPC
             raise EOFError, "Expected #{length} bytes, #{@remaining} bytes #{direction}!"
           end
           chunk
+        ensure
+          Internal.cancel(timer)
         end
 
         def close(error = nil)
@@ -83,6 +100,31 @@ module ConnectRPC
           stream.finish_input(self, error)
           stream.reclaim_input(discarded) unless error
         end
+
+        # Lives only inside one blocked read, so EOF, reset, close and
+        # retirement all end it with that read.
+        def progress_timer
+          timer = ::Async::Task.new(::Async::Task.current, finished: false) do
+            @progress_clock.sleep(@progress_seconds)
+            stalled
+          end
+          timer.run
+          timer
+        end
+
+        # Never yields, so the waiting read cannot cancel it part way.
+        def stalled
+          stream = @stream
+          return unless stream
+
+          @error ||= RequestBodyTimeout.new("HTTP/2 request body made no progress within request_body_timeout")
+          stream.input_stalled
+          @retained = 0
+          @queue.clear
+          @queue.close
+        end
+
+        private :progress_timer, :stalled
 
         # A normal producer EOF preserves preceding data. A failed producer
         # releases it immediately, and both paths detach the retired stream.

@@ -166,10 +166,12 @@ RSpec.describe "HTTP/2 ownership and setup bounds" do
       expect { client(transport, origin).echo(AsyncHelpers::MESSAGE.new) }.to raise_error(ConnectRPC::Error) { |e|
         expect(e.code).to eq("unavailable")
       }
+      # Full host admission refuses an HTTP/2 stream with REFUSED_STREAM.
       other = ConnectRPC::Async::Transport.new(origin: origin)
-      response = other.call(request("#{origin}#{AsyncHelpers::ECHO::ECHO.path}",
-                                    headers: { "content-type" => ["application/proto"] }))
-      expect(response.status).to eq(503)
+      expect do
+        other.call(request("#{origin}#{AsyncHelpers::ECHO::ECHO.path}",
+                           headers: { "content-type" => ["application/proto"] }))
+      end.to raise_error(ConnectRPC::Error) { |e| expect(e.code).to eq("unavailable") }
       release.enqueue(true)
       expect(first.wait.message.name).to eq("held")
     ensure
