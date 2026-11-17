@@ -37,11 +37,20 @@ RSpec.describe "Opt-in service RBS generation" do
     )
   end
 
-  ["unknown=true", "rbs=false", "rbs=TRUE", "rbs", "rbs=", "rbs=true,rbs=true", "rbs=true,", ",rbs=true",
-   "rbs=true,,rbs=true"].each do |parameter|
+  it "accepts rbs=false as the default Ruby-only output" do
+    original = ConnectRPC::Generator.generate(rbs_request(""))
+    response = ConnectRPC::Generator.generate(rbs_request("rbs=false"))
+    expect(response.error).to eq("")
+    expect(response.file.map(&:name)).to eq(%w[api_connect.rb])
+    expect(response).to eq(original)
+  end
+
+  ["unknown=true", "rbs=TRUE", "rbs=False", "rbs", "rbs=", "rbs=true,rbs=true", "rbs=false,rbs=true",
+   "rbs=false,rbs=false", "rbs=true,", "rbs=false,", ",rbs=true", "rbs=true,,rbs=true"].each do |parameter|
     it "rejects parameter #{parameter.inspect} without partial output" do
       response = ConnectRPC::Generator.generate(rbs_request(parameter))
       expect(response.error).to match(/parameter/i)
+      expect(response.error).to include("rbs=true", "rbs=false")
       expect(response.file).to be_empty
     end
   end

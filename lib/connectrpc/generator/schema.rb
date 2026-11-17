@@ -6,8 +6,9 @@ module ConnectRPC
       attr_reader :targets, :types, :ruby_types, :rbs
 
       def initialize(request)
-        unless ["", "rbs=true"].include?(request.parameter)
-          raise InvalidDescriptor, "Invalid plugin parameters #{request.parameter.inspect}; expected rbs=true or empty"
+        unless ["", "rbs=false", "rbs=true"].include?(request.parameter)
+          raise InvalidDescriptor,
+                "Invalid plugin parameters #{request.parameter.inspect}; expected rbs=true, rbs=false or empty"
         end
 
         @rbs = request.parameter == "rbs=true"
@@ -141,17 +142,23 @@ module ConnectRPC
 
       def validate_namespaces
         loaded = loaded_files
-        loaded_names = loaded.map(&:name)
-        relevant = loaded.flat_map do |file|
+        loaded_names = loaded.to_set(&:name)
+        relevant = loaded.each_with_object(Set.new) do |file, result|
           namespace = Names.namespace(file)
           if namespace.empty?
-            [*file.message_type, *file.enum_type, *file.service].map { |type| [Names.rubify(type.name)] }
+            [*file.message_type, *file.enum_type, *file.service].each { |type| result << [Names.rubify(type.name)] }
           else
-            [namespace]
+            result << namespace
           end
         end
+        # A namespace is relevant when it starts with a relevant entry or is an
+        # ancestor of one. Sets keep this linear in large package-less files.
+        ancestors = relevant.each_with_object(Set.new) do |prefix, result|
+          prefix.each_index { |index| result << prefix.take(index + 1) }
+        end
         @namespaces.each do |parts, declarations|
-          next unless relevant.any? { |prefix| parts.take(prefix.size) == prefix || prefix.take(parts.size) == parts }
+          nested = parts.each_index.any? { |index| relevant.include?(parts.take(index + 1)) }
+          next unless nested || ancestors.include?(parts)
 
           declarations.each do |kind, origin, file|
             RuntimeNames.validate!(parts, kind, origin, file) if loaded_names.include?(file)

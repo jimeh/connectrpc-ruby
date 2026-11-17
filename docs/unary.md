@@ -116,7 +116,7 @@ Proto2 and proto3, including optional presence and mixed unary/streaming
 services, are supported. Editions and unsupported plugin parameters are rejected.
 Default output is `dir/foo_connect.rb` for service-bearing `dir/foo.proto`.
 Message generation remains official `--ruby_out`. Set `rbs=true` to also emit
-`dir/foo_connect.rbs`.
+`dir/foo_connect.rbs`; `rbs=false` is accepted and equals the default.
 
 The gem ships optional core signatures; the [RBS guide](rbs.md) covers official
 message `--rbs_out`, explicit protobuf bridge selection and strict Steep
@@ -128,7 +128,12 @@ Leading-underscore RPCs, object hooks, implicit conversion methods, reserved
 runtime names and collisions visible in the request fail with diagnostics.
 Compatible `google.*` and `Google::...` Ruby package nesting is supported,
 including WKT imports; replacing `Google`, `ConnectRPC` or concrete protobuf
-runtime constants is rejected. Cross-invocation namespace conflicts cannot all
+runtime constants is rejected. Packages may nest under the builtin modules
+`FileTest`, `GC`, `Marshal`, `Math`, `ObjectSpace`, `Process` and `Signal`
+(`math.v1` becomes `Math::V1`), but not at or below their existing values and
+classes, such as `Math::E` or `Process::Status`. Other reserved roots, such as
+`File`, `Kernel`, `Errno` and the standard library roots core loads, fail with a
+suggestion to set `ruby_package`. Cross-invocation namespace conflicts cannot all
 be discovered; generated code also guards its directly defined constants at
 load time. See [design](design.md).
 

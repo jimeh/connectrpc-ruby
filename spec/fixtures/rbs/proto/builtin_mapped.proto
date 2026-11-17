@@ -1,0 +1,6 @@
+syntax = "proto3";
+package rbs_builtin.v1;
+option ruby_package = "Process::RbsFixture";
+import "builtin.proto";
+message Probe { string text = 1; }
+service Inspector { rpc Check(Probe) returns (math.rbs_fixture.v1.Measure); }

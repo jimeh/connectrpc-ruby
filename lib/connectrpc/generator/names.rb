@@ -40,6 +40,23 @@ module ConnectRPC
         UDPSocket UNIXServer UNIXSocket URI UnboundMethod UncaughtThrowError UnicodeNormalize Warning ZeroDivisionError
         Zlib
       ].freeze
+      # Interpreter-defined plain modules that no other module includes or
+      # extends and that core does not load from the standard library. Official
+      # package modules reopen them safely, so packages may nest under them;
+      # replacing the root itself stays reserved through TOP_LEVEL_RESERVED.
+      REOPENABLE_ROOTS = %w[FileTest GC Marshal Math ObjectSpace Process Signal].freeze
+      # Existing constants of those roots on Ruby 3.4.12 and 4.0.9. A package may
+      # reopen a module child; nothing may be declared at or below a value or
+      # class child, which official output would replace or fail to reopen.
+      BUILTIN_MODULE_CHILDREN = { "GC" => %w[Profiler].freeze, "Process" => %w[GID Sys UID].freeze }.freeze
+      BUILTIN_VALUE_CHILDREN = {
+        "GC" => %w[INTERNAL_CONSTANTS OPTS].freeze,
+        "Marshal" => %w[MAJOR_VERSION MINOR_VERSION].freeze,
+        "Math" => %w[DomainError E PI].freeze,
+        "ObjectSpace" => %w[WeakKeyMap WeakMap].freeze,
+        # Clock, priority and resource-limit constants vary by platform.
+        "Process" => ["Status", "Tms", "WNOHANG", "WUNTRACED", "Waiter", /\A(?:CLOCK|PRIO|RLIMIT|RLIM)_/].freeze
+      }.freeze
 
       def self.identifier!(name, description)
         return if IDENTIFIER.match?(name)

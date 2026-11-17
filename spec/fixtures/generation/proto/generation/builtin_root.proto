@@ -1,0 +1,5 @@
+syntax = "proto3";
+// Nests under the interpreter's Math module, which official output reopens.
+package math.generation_fixture.v1;
+message Message { int32 count = 1; }
+service EchoService { rpc Echo(Message) returns (Message); }
