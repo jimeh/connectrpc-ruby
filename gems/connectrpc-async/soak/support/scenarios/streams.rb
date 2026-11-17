@@ -68,6 +68,30 @@ module Soak
                      "#{last.inspect}"
     end
 
+    # Starts a unary call on `clients` that holds in its handler, so it stays
+    # in flight on the same connection while a victim is cancelled or
+    # interrupted. A ThreadedTransport sibling runs on its own caller thread.
+    def hold_sibling(campaign, clients, threaded: false)
+      id = campaign.ledger.next_id("sibling")
+      call = proc { campaign.perform(clients, :unary, id: id, action: "hold") }
+      waiter = threaded ? Thread.new(&call) : campaign.task.async(&call)
+      campaign.ledger.await_entered([id])
+      [id, waiter]
+    end
+
+    # Releases a held sibling once its victims ended and requires its success.
+    def release_sibling(campaign, sibling)
+      id, waiter = sibling
+      campaign.gates.open(id)
+      if waiter.is_a?(Thread)
+        raise Failure, "Sibling caller #{id} did not finish" unless waiter.join(10)
+      else
+        waiter.wait
+      end
+      outcome = campaign.ledger.outcome_of(id)
+      raise Failure, "Sibling #{id} ended #{outcome.inspect} after its victims ended" unless outcome == :ok
+    end
+
     # Records the high-water mark of every ingress queue, taken after every
     # push since the campaign began, so growth after saturation also counts.
     # Call it once a held stream has ended.
@@ -82,7 +106,8 @@ RSpec.shared_examples "soak stream retirement" do |kind|
   it "3 stream retirement: cancels, expires and interrupts calls while same-connection siblings finish (#{kind})" do
     campaign("3-stream-retirement/#{kind}",
              workload: "4 held server streams (token/deadline/complete), saturated flood + cancel, threaded " \
-                       "Timeout/raise/kill, x7 sibling shapes", concurrency: 12,
+                       "Timeout/raise/kill, each with a held same-connection sibling; x7 sibling shapes",
+             concurrency: 12,
              payload_sizes: [16, Soak::Topology::FLOOD_MESSAGE]) do |c|
       peer = c.peer_thread("#{kind} server")
       server = c.server(peer, kind: kind, connections: -> { 2 })
@@ -109,10 +134,12 @@ RSpec.shared_examples "soak stream retirement" do |kind|
         end
         c.ledger.await_entered(victims.map(&:first))
         c.concurrently(*Soak::Builders::H2_SHAPES.map { |shape| -> { c.perform(clients, shape) } })
+        sibling = Soak::StreamSteps.hold_sibling(c, clients)
         victims.each do |id, ending, source|
           ending == :token ? source.cancel : (ending == :complete && c.gates.open(id))
         end
         calls.each(&:wait)
+        Soak::StreamSteps.release_sibling(c, sibling)
         victims.reject { |_, ending| ending == :complete }.each do |id, ending|
           reason = Soak.poll("server-side end of #{ending} victim #{id}") { c.ledger.ended(id) }
           allowed = ending == :token ? [:canceled] : %i[canceled deadline_exceeded]
@@ -125,10 +152,11 @@ RSpec.shared_examples "soak stream retirement" do |kind|
         flood, resume = Soak::StreamSteps.flood(c, clients, id: flood_id, protocol: protocol,
                                                             cancellation: flood_source.token, expect: ["canceled"])
         Soak::StreamSteps.await_saturation(clients.transport)
-        c.perform(clients, :unary)
+        sibling = Soak::StreamSteps.hold_sibling(c, clients)
         flood_source.cancel
         resume.resolve(true)
         flood.wait
+        Soak::StreamSteps.release_sibling(c, sibling)
         Soak::StreamSteps.record_ingress(c)
         expect(Soak.poll("server-side end of the flood") { c.ledger.ended(flood_id) }).to eq(:canceled)
         c.peaks.observe("output queued bytes", Soak::StreamSteps.output_peak(bodies), cap: Soak::StreamSteps::OUTPUT_CAP)
@@ -150,10 +178,11 @@ RSpec.shared_examples "soak stream retirement" do |kind|
           [how, caller]
         end
         c.ledger.await_entered(ids.values)
-        c.on_threads(-> { c.perform(threaded, :unary) })
+        sibling = Soak::StreamSteps.hold_sibling(c, threaded, threaded: true)
         threads[:raise].raise(Soak::StreamSteps::Interrupted, "interrupted")
         threads[:kill].kill
         threads.each_value { |thread| raise Soak::Failure, "Interrupted caller did not exit" unless thread.join(10) }
+        Soak::StreamSteps.release_sibling(c, sibling)
         c.ledger.outcome(ids[:kill], :killed, expect: [:killed])
         ids.each_value do |id|
           expect(Soak.poll("server-side end of interrupted threaded call #{id}") { c.ledger.ended(id) })

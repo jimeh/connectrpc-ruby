@@ -63,7 +63,12 @@ module Soak
       { opened: after.reject { |fd, link| before[fd] == link }, closed: before.reject { |fd, link| after[fd] == link } }
     end
 
-    def rss_kb = File.read("/proc/self/status")[/^VmRSS:\s+(\d+)/, 1]&.to_i
+    # Linux only; reported as nil where /proc is absent.
+    def rss_kb
+      File.read("/proc/self/status")[/^VmRSS:\s+(\d+)/, 1]&.to_i
+    rescue SystemCallError
+      nil
+    end
   end
 
   # Maxima observed while load is established, each against its configured cap.
@@ -262,7 +267,7 @@ module Soak
     # A reused persistent client keeps the identical connection across rounds.
     def reuse_problems(entry, identity)
       return [] unless entry.options[:reuse] && !closed?(entry)
-      return [] if identity.empty?
+      return [] if identity.empty? && entry.identity.nil?
 
       entry.identity ||= identity
       entry.identity == identity ? [] : ["#{entry.label} connections changed from #{entry.identity} to #{identity}"]
@@ -436,7 +441,9 @@ module Soak
     def teardown
       errors = @cleanups[:close].reverse.map { |block| attempt(&block) }
       errors << attempt { settle!("retirement of every owned object of #{name}", round_end: true) }
-      @tracker.leftovers.each { |object| attempt { Tracker.force_close(object) } }
+      leftovers = []
+      errors << attempt { leftovers = @tracker.leftovers }
+      leftovers.each { |object| attempt { Tracker.force_close(object) } }
       errors.concat(@cleanups[:stop].reverse.map { |block| attempt(&block) })
       errors.compact.first
     end

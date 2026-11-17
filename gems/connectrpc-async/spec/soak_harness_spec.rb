@@ -138,7 +138,8 @@ RSpec.describe "Lifecycle campaign harness" do
           2.times { release.enqueue(true) }
           calls.each(&:wait)
           clients.transport.close(grace: 1)
-          c.peaks.observe("client sockets", meter.peak, cap: 1)
+          # Warmups stay within their cap, so the overshoot fails a measured round.
+          c.peaks.observe("client sockets", meter.peak, cap: measured?(c) ? 1 : 2)
         end
       end
     end.to raise_error(Soak::Failure, /client sockets peaked at 2, above its cap 1/)
@@ -163,7 +164,7 @@ RSpec.describe "Lifecycle campaign harness" do
             bytes = stream && Soak::Sampler.stream_retained(stream)
             bytes if bytes && bytes > 16_384
           end
-          c.peaks.observe("client stream retained bytes", retained, cap: 16_384)
+          c.peaks.observe("client stream retained bytes", retained, cap: measured?(c) ? 16_384 : 65_536)
           resume.resolve(true)
           call.wait
           clients.transport.close(grace: 1)

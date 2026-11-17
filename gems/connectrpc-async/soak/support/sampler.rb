@@ -357,6 +357,11 @@ module Soak
     def tls_attempt?(server) = !ivar(tls_configuration(server), :@attempt).nil?
 
     # The most input bytes any live HTTP/2 server stream retains unread.
+    # Live server resources that a drain (drain_tls, close) has marked.
+    def draining(server)
+      session_live(server).select { |resource| resource.respond_to?(:draining) && resource.draining }
+    end
+
     # The live server stream retaining the most unread input, with its
     # remaining receive credit, or nil when no stream exists.
     def server_ingress(server)

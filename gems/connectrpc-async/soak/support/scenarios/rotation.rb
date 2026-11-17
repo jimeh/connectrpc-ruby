@@ -79,10 +79,18 @@ RSpec.shared_examples "soak tls rotation" do |kind|
         expect(leaf).to eq(serial)
         Soak::Builders::H2_SHAPES.each { |shape| c.perform(current, shape) }
         if old
-          drain = c.task.async { server.run { |host| host.drain_tls(grace: 5) } }
+          # The drain runs as a peer task, so this command returns once the
+          # old generation is marked draining, while its call is still held.
+          drained = Thread::Queue.new
+          marked = server.run do |host|
+            Async { drained << host.drain_tls(grace: 5) }
+            Soak::Sampler.draining(host).size
+          end
+          expect(marked).to be_positive
+          expect(held).not_to be_finished
           c.gates.open(held_id)
           held.wait
-          expect(drain.wait).to be(true)
+          expect(drained.pop(timeout: 10)).to be(true)
           Soak.poll("old-generation client connection retired") do
             Soak::Sampler.live_connections(old.transport).empty?
           end

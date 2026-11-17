@@ -784,6 +784,11 @@ mise run falcon:soak    # Falcon HTTP/2 and HTTP/1.1 (HTTP1Transport, Net::HTTP)
 mise run soak           # both, Async then Falcon
 ```
 
+The campaign is exercised on Linux, locally and in CI. It counts descriptors
+through `/dev/fd`, but RSS and the TCP ports and states in its diagnostics come
+from `/proc`; without `/proc` it reports RSS as missing and descriptor targets
+without socket details. Other platforms are untested.
+
 [`scripts/soak.rb`](../scripts/soak.rb) runs `scripts/run.rb soak` for each
 named package in turn, each in its own process group. A failed package does not
 stop the next one, and the script exits non-zero if any package failed.
@@ -830,7 +835,8 @@ descriptor targets (TCP sockets with their ports and state) and exits with 124.
 After the cleanup budget the supervisor kills the process group. Any failure,
 deadline or kill exits non-zero. Reproduce a run with its recorded seed. Keep the
 first failure of an intermittent result and its report; do not replace it with a
-later pass.
+later pass. The next run for the same package and Ruby replaces the report, so
+copy `vendor/<pkg>/soak/<Ruby>/` aside before rerunning.
 
 `spec/soak_harness_spec.rb` runs in `async:test`. It plants a leaked descriptor,
 thread, Async task, cancellation registration, unretired resource (also one

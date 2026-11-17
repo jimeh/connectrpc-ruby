@@ -61,7 +61,7 @@ module Soak
       expires = Soak.now + timeout
       until waiting.empty?
         remaining = expires - Soak.now
-        id = @entered.pop(timeout: [remaining, 0].max) if remaining.positive?
+        id = remaining.positive? ? @entered.pop(timeout: remaining) : nil
         raise "Timed out waiting for handlers #{waiting.inspect} to start" unless id
 
         waiting.delete(id)

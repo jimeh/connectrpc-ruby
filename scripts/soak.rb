@@ -104,8 +104,12 @@ module Soak
       nil
     end
 
+    # Appends the supervisor's record on a line of its own, even when a
+    # killed child left its last record unterminated.
     def record(directory, **fields)
-      File.open(File.join(directory, "campaign.jsonl"), "a") do |file|
+      path = File.join(directory, "campaign.jsonl")
+      File.open(path, "a+") do |file|
+        file.puts if file.size.positive? && file.pread(1, file.size - 1) != "\n"
         file.puts(JSON.generate({ **fields, at: Time.now.utc.iso8601(3) }))
       end
     end
