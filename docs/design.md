@@ -405,7 +405,7 @@ actual final HTTP/2 HEADERS, as described in the [gRPC guide](grpc.md).
 For Connect, the Async backend preserves leading repeated fields and leading
 `trailer-*` metadata while ignoring actual trailing HEADERS after backend validation.
 It reconstructs lengths normalized by the backend; malformed lengths and some
-singleton repeats can fail before core. Conservative frame/window settings do
+singleton repeats can fail before core. Bounded frame/window settings do
 not provide a hard process-memory/header-size guarantee. Independent connect-go
 unary h2c/TLS/mTLS results are separate from core's identity and gzip conformance
 profiles. Combined gzip specs exercise opaque bytes and wire/decompressed bounds

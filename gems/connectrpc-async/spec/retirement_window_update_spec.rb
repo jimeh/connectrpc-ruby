@@ -35,7 +35,8 @@ RSpec.describe "Input reclaim inside the retirement window" do
         nil
       end
       origin = origin_for(bound)
-      transport = ConnectRPC::Async::Transport.new(origin: origin)
+      # The 40,000 buffered bytes must limit a 64 KiB window.
+      transport = ConnectRPC::Async::Transport.new(origin: origin, stream_receive_window: 65_536)
       outgoing = ConnectRPC::StreamRequest.new(url: URI("#{origin}/stream"), http_method: "POST", headers: {})
       transport.open_stream(outgoing) do |exchange|
         exchange.close_send

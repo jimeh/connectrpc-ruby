@@ -438,11 +438,13 @@ limits belong in a proxy. The
 policies.
 
 Since 0.3.0, the Async hosts and HTTP/2 client transports take
-`stream_receive_window` (default 64 KiB, which is also the per-stream ingress
-bound) and `connection_receive_window` (default 16 MiB, announced with a
-WINDOW_UPDATE right after SETTINGS). A stream moves at most one stream window
-per round trip, so raise it for large bodies over high-latency links at the
-cost of memory; see
+`stream_receive_window` and `connection_receive_window` (default 16 MiB,
+announced with a WINDOW_UPDATE right after SETTINGS). The stream window is also
+the per-stream ingress bound. It defaults to 64 KiB on hosts and 4 MiB on
+`Transport` and `ThreadedTransport`, as in Go's net/http2 client, so a client
+call can retain up to 4 MiB of unread response payload. A stream moves at most
+one stream window per round trip, so raise the host's window for large uploads
+over high-latency links at the cost of memory; see
 [flow-control windows](../gems/connectrpc-async/README.md#flow-control-windows).
 For Rails and Rack hosts the proxy owns these windows, for example Envoy's
 `initial_stream_window_size` and `initial_connection_window_size`.

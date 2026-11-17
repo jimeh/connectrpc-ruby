@@ -150,7 +150,8 @@ RSpec.describe "Lifecycle campaign harness" do
       control("retained stream bytes") do |c|
         server = c.server(c.peer_thread("host"))
         c.run do
-          clients = c.transport(server.origin, label: "round transport")
+          clients = c.transport(server.origin, label: "round transport",
+                                               stream_receive_window: 65_536)
           resume = Async::Promise.new
           call = c.task.async do
             c.perform(clients, :server_stream, action: "flood", count: 20) do |reader|
@@ -179,7 +180,8 @@ RSpec.describe "Lifecycle campaign harness" do
         server = c.server(c.peer_thread("host"))
         c.ingress_meter
         c.run do
-          clients = c.transport(server.origin, label: "round transport")
+          clients = c.transport(server.origin, label: "round transport",
+                                               stream_receive_window: 65_536)
           source = c.call_source("flood source")
           resume = Async::Promise.new
           call = c.task.async do

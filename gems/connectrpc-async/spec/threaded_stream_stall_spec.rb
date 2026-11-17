@@ -37,7 +37,8 @@ RSpec.describe "ThreadedTransport streams with stalled consumers, owners and clo
       end
     }))
     origin = "http://127.0.0.1:#{peer.peer.port}"
-    transport = threaded(origin: origin)
+    # 40 messages of 8 KiB exhaust a 64 KiB window, not the 4 MiB default.
+    transport = threaded(origin: origin, stream_receive_window: 65_536)
     typed = mixed_client(transport, origin)
     first = Thread::Queue.new
     resume = Thread::Queue.new

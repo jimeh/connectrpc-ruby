@@ -9,7 +9,7 @@ module ConnectRPC
 
       def initialize(origin:, ca_file: nil, certificate_chain: nil, private_key: nil, connection_limit: 1,
                      max_requests: 128, connect_timeout: 10, connection_policy: ConnectionPolicy.new,
-                     connection_observer: nil, stream_receive_window: 65_536,
+                     connection_observer: nil, stream_receive_window: 4_194_304,
                      connection_receive_window: 16_777_216)
         initialize_affinity
         @origin = parse_origin(origin)
