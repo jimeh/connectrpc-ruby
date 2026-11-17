@@ -111,8 +111,9 @@ RSpec.shared_examples "soak stream retirement" do |kind|
              payload_sizes: [16, Soak::Topology::FLOOD_MESSAGE]) do |c|
       peer = c.peer_thread("#{kind} server")
       server = c.server(peer, kind: kind, connections: -> { 2 })
+      # The 4 MB flood saturates WINDOW, not the 4 MiB client default.
       clients = c.transport(server.origin, label: "persistent transport", persistent: true, reuse: true,
-                                           connections: 1)
+                                           connections: 1, stream_receive_window: Soak::StreamSteps::WINDOW)
       threaded = c.threaded(server.origin, label: "persistent threaded", persistent: true, reuse: true)
       bodies = Soak::StreamSteps.watch_outputs(self)
       c.ingress_meter
@@ -199,8 +200,9 @@ RSpec.shared_examples "soak stream retirement" do |kind|
              payload_sizes: [16, Soak::Topology::FLOOD_MESSAGE]) do |c|
       peer = c.peer_thread("#{kind} servers")
       server = c.server(peer, kind: kind, connections: -> { 1 })
+      # The 4 MB flood saturates WINDOW, not the 4 MiB client default.
       clients = c.transport(server.origin, label: "persistent transport", persistent: true, reuse: true,
-                                           connections: 1)
+                                           connections: 1, stream_receive_window: Soak::StreamSteps::WINDOW)
       c.ingress_meter
       c.run do
         id = c.ledger.next_id("paused")

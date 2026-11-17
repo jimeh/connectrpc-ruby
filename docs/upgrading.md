@@ -65,13 +65,21 @@ These affect native HTTP/2 connections of the Async `Transport`,
 
 - Each connection grows its connection receive window to 16 MiB with a
   WINDOW_UPDATE on stream 0 right after its SETTINGS. Before 0.3.0 it stayed at
-  64 KiB, so all streams on a connection shared 64 KiB per round trip. Stream
-  windows and the per-stream ingress bound stay at 64 KiB, so each connection's
-  retention ceiling is unchanged. A server can now reach that ceiling in one
-  round trip on the streams it admits. Pass `connection_receive_window: 65_536`
-  to keep the old connection window, or raise `stream_receive_window` for faster
-  large bodies over high-latency links. See [flow-control
-  windows](../gems/connectrpc-async/README.md#flow-control-windows).
+  64 KiB, so all streams on a connection shared 64 KiB per round trip. Host
+  stream windows and their per-stream ingress bound stay at 64 KiB, so each
+  server connection's retention ceiling is unchanged. A server can now reach
+  that ceiling in one round trip on the streams it admits. Pass
+  `connection_receive_window: 65_536` to keep the old connection window, or
+  raise the host's `stream_receive_window` for faster large uploads over
+  high-latency links.
+- `Transport` and `ThreadedTransport` advertise a 4 MiB stream window instead
+  of 64 KiB, so one response stream is no longer limited to 64 KiB per round
+  trip: a 3 MiB download over 50 ms of round-trip time takes about 0.13 s
+  instead of 5 to 7 s. Each call can now retain up to 4 MiB of unread response
+  payload, so a transport's ceiling grows from 8 MiB to 512 MiB at the default
+  `max_requests` of 128. Pass `stream_receive_window: 65_536` to keep the old
+  client window. See
+  [flow-control windows](../gems/connectrpc-async/README.md#flow-control-windows).
 
 These affect `connectrpc-otel` spans and trace propagation.
 

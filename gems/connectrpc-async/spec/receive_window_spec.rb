@@ -159,6 +159,93 @@ RSpec.describe "HTTP/2 receive windows" do
     peer&.stop
   end
 
+  it "defaults client stream windows to 4 MiB and keeps the host's at 64 KiB" do
+    calls = {
+      "Transport" => lambda do |origin|
+        reactor do
+          transport = ConnectRPC::Async::Transport.new(origin: origin)
+          client(transport, origin).echo(AsyncHelpers::MESSAGE.new(name: "w")).message.name
+        ensure
+          transport&.close(grace: 0)
+        end
+      end,
+      "ThreadedTransport" => lambda do |origin|
+        transport = threaded(origin: origin)
+        client(transport, origin).echo(AsyncHelpers::MESSAGE.new(name: "w")).message.name
+      ensure
+        transport&.close(grace: 0)
+      end
+    }
+    calls.each do |name, call|
+      observed = Thread::Queue.new
+      hosts = []
+      peer = threaded_host(server: server(echo: lambda { |message, _context|
+        connection = host_session(hosts.first).instance_variable_get(:@resources).first.connection
+        # The client's advertised window and the host's own, as sent.
+        observed << [connection.remote_settings.initial_window_size,
+                     connection.local_settings.pending.initial_window_size]
+        message
+      }))
+      hosts << peer.peer
+      origin = "http://127.0.0.1:#{peer.peer.port}"
+      expect(call.call(origin)).to eq("w")
+      expect(pop_within(observed, "the host's view of the #{name} windows")).to eq([4_194_304, 65_536]), name
+    ensure
+      peer&.stop
+    end
+  end
+
+  it "retains at most the default 4 MiB client stream window for an unread response" do
+    reactor do |task|
+      bound = IO::Endpoint.tcp("127.0.0.1", 0).bound
+      listener = bound.sockets.first
+      peers = Async::Queue.new
+      peer = task.async do
+        socket, = listener.accept
+        connection = Async::HTTP::Protocol::HTTP2::Server.new(IO::Stream(socket))
+        wire = observe_ingress_wire(connection)
+        connection.read_connection_preface(AsyncHelpers::INTERNAL.settings(128))
+        connection.read_in_background(parent: task)
+        incoming = connection.requests.dequeue
+        incoming.stream.send_headers([[":status", "200"]])
+        peers.enqueue([connection, wire, incoming.stream])
+        Async::Promise.new.wait
+      ensure
+        AsyncHelpers::INTERNAL.raw_close(socket)
+        connection&.close
+      end
+      origin = "http://127.0.0.1:#{listener.local_address.ip_port}"
+      transport = ConnectRPC::Async::Transport.new(origin: origin)
+      outgoing = ConnectRPC::StreamRequest.new(url: URI("#{origin}/stream"), http_method: "POST", headers: {})
+      transport.open_stream(outgoing) do |exchange|
+        exchange.close_send
+        exchange.response_head
+        connection, wire, stream = peers.dequeue
+        body = exchange.instance_variable_get(:@operation).fetch(:response).stream.instance_variable_get(:@input)
+        # Raw frames spend the whole default window while nothing reads.
+        256.times { ingress_data(connection, stream.id, "a" * 16_384) }
+        ingress_barrier(task, connection, wire)
+        expect(ingress_backlog(body)).to eq([4_194_304, 256])
+        expect(wire[:credit][stream.id]).to eq(0)
+        expect(wire[:resets]).to be_empty
+        # One byte past the window resets only this stream.
+        ingress_data(connection, stream.id, "a")
+        ingress_barrier(task, connection, wire)
+        expect(wire[:resets]).to eq(stream.id => Protocol::HTTP2::Error::FLOW_CONTROL_ERROR)
+        expect(wire[:goaway]).to be_nil
+      end
+    ensure
+      begin
+        transport&.close(grace: 0)
+        peer&.stop
+        peer&.wait
+      ensure
+        # A failed peer re-raises from wait; the listener still closes.
+        bound&.close
+      end
+    end
+  end
+
   it "validates both windows on every client and server constructor" do
     reactor do
       constructors = {
