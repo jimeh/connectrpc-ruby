@@ -80,10 +80,11 @@ input/output, typed errors and cooperative deadlines. See the
 ### Unexpected errors
 
 The client receives only a generic `internal` error when a handler raises an
-exception that is not a `ConnectRPC::Error`. The middleware writes the RPC path
-and the exception's full message and backtrace to `env["rack.errors"]`, prefixed
-with `[connectrpc.rack]`. For an application reporter, pass `on_error:` to the
-core Server; both run. See [errors](../../docs/unary.md#errors).
+exception that is not a `ConnectRPC::Error`. Since 0.3.0, the middleware writes
+the RPC path and the exception's full message and backtrace to
+`env["rack.errors"]`, prefixed with `[connectrpc.rack]`. For an application
+reporter, pass `on_error:` to the core Server; both run. See
+[errors](../../docs/unary.md#errors).
 
 ### Limitations
 

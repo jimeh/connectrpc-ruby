@@ -333,7 +333,7 @@ as `"invalid_argument"`, even though `Error.new` accepts a Symbol, so compare it
 with a String: `error.code == "invalid_argument"`.
 
 The peer never sees an unexpected exception, so log or report it on the server.
-Pass `on_error:` to the Server:
+Since 0.3.0, pass `on_error:` to the Server:
 
 ```ruby
 server = ConnectRPC::Server.new(
@@ -358,10 +358,10 @@ response message the binding cannot encode, reach
 
 Hosts add their own reporting:
 
-- [connectrpc-rack](../gems/connectrpc-rack/README.md) also writes each
-  unexpected exception with its backtrace to `env["rack.errors"]`.
-- [connectrpc-testing](../gems/connectrpc-testing/README.md) raises the decoded
-  `internal` error with the original exception as its `cause`.
+- Since 0.3.0, [connectrpc-rack](../gems/connectrpc-rack/README.md) also writes
+  each unexpected exception with its backtrace to `env["rack.errors"]`.
+- Since 0.3.0, [connectrpc-testing](../gems/connectrpc-testing/README.md) raises
+  the decoded `internal` error with the original exception as its `cause`.
 - [connectrpc-on-rails](../gems/connectrpc-on-rails/README.md) builds its own
   Server per request. Handler exceptions follow Rails: `rescue_from`, the
   controller logger and `Rails.error`. Unexpected exceptions outside the action,
