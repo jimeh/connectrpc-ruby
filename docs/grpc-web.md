@@ -106,6 +106,11 @@ invoker, callbacks, authentication, sessions, cookies, CSRF and security headers
 remain active. Preflight does not bypass actual POST checks. A valid CSRF token
 does not override Rails' origin policy. No CSRF exemption is installed.
 
+Core CORS requires gRPC-Web to be enabled and adds CORS fields only to
+preflights and gRPC-Web responses, never to Connect responses. A cross-origin
+browser Connect client such as connect-es therefore needs outer CORS middleware,
+such as rack-cors, with `cors: nil` on that mount.
+
 ## Interceptors
 
 Web unary calls run the Server's [unary interceptors](unary.md#interceptors)

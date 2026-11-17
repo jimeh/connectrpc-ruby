@@ -1,8 +1,9 @@
 # Plan: long-running lifecycle campaign (#34)
 
 Base: origin/main 5c5e094. Branch: test/lifecycle-campaign. One PR.
-Status: accepted by Jim on 2026-11-16 with every recommended option. Revised
-after a Codex plan review.
+Status: implemented in [#99](https://github.com/jimeh/connectrpc-ruby/pull/99).
+Accepted by Jim on 2026-11-16 with every recommended option and revised after a
+Codex plan review; the plan below is kept as approved.
 
 ## Accepted decisions
 

@@ -136,7 +136,8 @@ end # => nil
 Generated mixed-service wrappers preserve these blocks, all options, actual nil
 timeouts and cancellation tokens. The same configured `Client(use_get: true)`
 uses GET for eligible unary calls and POST for streaming, without mode changes,
-retry, fallback or resend. Legacy `mode: :unary` remains accepted.
+retry, fallback or resend. `mode:` defaults to `:unary`, its only accepted
+value, so streaming needs no mode change.
 
 `send_message` returns nil after bounded local ownership transfer, not wire
 flush or peer receipt. Nil is forbidden as a streaming message. `receive` returns

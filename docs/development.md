@@ -512,6 +512,15 @@ tag-triggered publishing workflow. See the
 for App and trusted-publisher setup, synchronized versions and recovery.
 Project MIT licensing is approved. Releasing still needs separate, explicit authorization.
 
+Guides on main describe the next release. When a PR documents a feature,
+option, event or metric that the latest release lacks, mark it "Since X.Y.Z"
+in the prose, using the version of the open Release Please PR. A breaking
+change uses the next minor version instead. Keep markers out of headings, so
+anchors stay stable, and keep them after the release, so readers on older
+installs can tell what they lack. Fixes and behavior changes to existing
+features need no marker; breaking minors also need migration notes in
+[upgrading.md](upgrading.md).
+
 ## Optional Rails development
 
 The self-contained [Rails adapter guide](../gems/connectrpc-on-rails/README.md)

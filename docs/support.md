@@ -19,10 +19,8 @@ and [protocol and host matrix](#protocol-and-host-matrix). The
 adopting release will preserve. The [evidence map](#what-the-evidence-establishes)
 explains what has been exercised and where qualification is limited.
 
-The source baseline is `073f95a`, including the
-[H1 client](https://github.com/jimeh/connectrpc-ruby/pull/44) and
-[Falcon cache repair](https://github.com/jimeh/connectrpc-ruby/pull/47).
-Reading source for this guide adds no runtime qualification. The
+This guide describes the source on `main`. For a release, read it at that
+release's tag. Reading source for this guide adds no runtime qualification. The
 [#26 disposition ledger](https://github.com/jimeh/connectrpc-ruby/issues/26)
 distinguishes source inspection and historical probes from current runtime
 evidence.
@@ -56,7 +54,7 @@ ConnectRPC gem used by the application: `connectrpc-rack`, `connectrpc-on-rails`
 `connectrpc-sentry`.
 Only the packages actually used need to be installed.
 
-Existing gemspec ranges such as `~> 0.1.0` allow patch versions to differ.
+Existing gemspec ranges of the form `~> M.m.0` allow patch versions to differ.
 An installable combination is not necessarily supported. This policy adds no
 runtime version guard and does not itself change gemspec dependency ranges;
 [development](development.md#gem-dependency-constraints) owns that policy. Native packages
@@ -490,7 +488,7 @@ reported during #44.
 - [#47](https://github.com/jimeh/connectrpc-ruby/pull/47), merged as `073f95a`,
   resolved M3. Falcon fallback caching defaults to `cache: false`, with explicit
   opt-in through `ConnectRPC::Falcon::Server.new` or `server_options`. Native RPC
-  stays outside fallback cache middleware. The [Falcon guide](../gems/connectrpc-falcon/README.md#run-a-service)
+  stays outside fallback cache middleware. The [Falcon guide](../gems/connectrpc-falcon/README.md#rack-fallback-caching)
   retains the opt-in cache semantics and application responsibilities.
 - [#50](https://github.com/jimeh/connectrpc-ruby/pull/50), merged as `95ecf9f`,
   resolved M4. Each Async Host listener retries named transient accept errors

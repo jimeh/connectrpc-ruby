@@ -1,6 +1,7 @@
 # Health: connectrpc-health (grpc.health.v1)
 
-Status: approved by Jim; implementation contract for one PR (issue #30).
+Status: implemented in [#75](https://github.com/jimeh/connectrpc-ruby/pull/75)
+(issue #30). The contract below is kept as approved.
 Base: `8c2dd4b`. Branch `feat/grpc-health`, PR title
 `feat: add the standard gRPC health service`. The draft had a cross-engine
 plan review; accepted findings were checked against the code.

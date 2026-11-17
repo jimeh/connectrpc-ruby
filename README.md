@@ -186,6 +186,23 @@ application. Their `~>` dependency ranges allow patch versions to differ, but th
 [support policy](docs/support.md#match-the-connectrpc-package-versions)
 requires matching versions.
 
+### Pick packages by scenario
+
+Every scenario also needs `connectrpc`, and `google-protobuf` for generated
+code. The [protocol and host matrix](#protocol-and-host-support) lists exactly
+what each host and transport supports.
+
+| Scenario | Add | How |
+| --- | --- | --- |
+| A Rails app serves RPCs | `connectrpc-on-rails` | [Rails controller usage](gems/connectrpc-on-rails/README.md#usage). Rails serves Connect and gRPC-Web unary only, not native gRPC or streaming. |
+| Puma or Sidekiq calls a Go service (connect-go or grpc-go) | `connectrpc-async` | [`ThreadedTransport`](gems/connectrpc-async/README.md#ordinary-threads) from any thread, with `protocol: :grpc` for grpc-go. Core's Net::HTTP transport is enough for Connect unary calls to connect-go. |
+| You run a gRPC server | `connectrpc-async` | The [gRPC quick start](docs/grpc.md#quick-start) serves Connect and native gRPC from one Async `Host`. |
+| Kubernetes health checks | `connectrpc-health`, plus `connectrpc-async` or `connectrpc-falcon` | [Health hosts](gems/connectrpc-health/README.md#hosts). Kubernetes `grpc:` probes need native gRPC over HTTP/2. |
+| RPCs run next to a Rack or Rails app on Falcon | `connectrpc-falcon` | [Run a service](gems/connectrpc-falcon/README.md#run-a-service) with the app as the Rack fallback. |
+| Browser clients call the server | The host's package | [gRPC-Web](docs/grpc-web.md) for grpc-web clients. Cross-origin Connect clients such as connect-es need [outer CORS middleware](docs/grpc-web.md#cors-and-rails). |
+| Tests call handlers without sockets | `connectrpc-testing` | [Testing usage](gems/connectrpc-testing/README.md#usage). |
+| You need traces, metrics or error reports | `connectrpc-otel`, `connectrpc-prometheus` or `connectrpc-yabeda`, `connectrpc-sentry` | Each package README, linked in the table above. |
+
 ## Protocol and host support
 
 U means unary, SS server streaming, CS client streaming and bidi bidirectional
@@ -234,6 +251,11 @@ targets Ruby 3.4.12 and 4.0.9 on Linux x64.
 
 ## Documentation
 
+Guides on `main` describe the next release. "Since X.Y.Z" marks a feature,
+option or metric that older installs lack. To read the guides for an installed
+version, browse the repository at its tag, such as
+[`v0.2.1`](https://github.com/jimeh/connectrpc-ruby/tree/v0.2.1).
+
 | Guide | Covers |
 | --- | --- |
 | [Unary RPC](docs/unary.md) | Code generation, manual declarations, GET, gzip, metadata, errors, limits, deadlines, cancellation and instrumentation |
@@ -242,6 +264,7 @@ targets Ruby 3.4.12 and 4.0.9 on Linux x64.
 | [gRPC-Web](docs/grpc-web.md) | Server-side gRPC-Web, CORS and browser clients |
 | [Signatures (RBS)](docs/rbs.md) | Shipped RBS signatures, generated `.rbs` files and Steep setup |
 | [Support contract](docs/support.md) | Target 0.x protocol, host, platform and API compatibility |
+| [Upgrading](docs/upgrading.md) | Migration notes for releases with breaking changes |
 | [Design](docs/design.md) | Internal boundaries, wire behavior and extension seams |
 | [Runnable examples](examples/README.md) | Two-terminal servers and clients for every host and transport |
 | [Development](docs/development.md) | Setup, verification tiers, coverage, updates and PR guidance |

@@ -52,11 +52,12 @@ including typed deliberate error details.
 
 To use the installed gem's plugin in your own project, put
 `protoc-gen-connectrpc-ruby` on PATH (for example by running protoc through
-`bundle exec`) and generate official messages and Connect glue together:
+`bundle exec`) and generate official messages and Connect glue together. With
+the schema at `proto/greeting.proto`:
 
 ```sh
 mkdir -p generated
-protoc -I examples/proto --ruby_out=generated --connectrpc-ruby_out=generated greeting.proto
+bundle exec protoc -I proto --ruby_out=generated --connectrpc-ruby_out=generated greeting.proto
 ```
 
 This creates official `greeting_pb.rb` and `greeting_connect.rb`. Add
@@ -130,6 +131,13 @@ including WKT imports; replacing `Google`, `ConnectRPC` or concrete protobuf
 runtime constants is rejected. Cross-invocation namespace conflicts cannot all
 be discovered; generated code also guards its directly defined constants at
 load time. See [design](design.md).
+
+Generated service modules use protoc's Ruby constant rule, which upcases the
+first letter and keeps underscores, so service `kw_service` becomes
+`Kw_service`. This matches the message constants in official `_pb.rb` files.
+grpc-ruby's `_services_pb.rb` camelizes service names instead (`KwService`), so
+code migrating from grpc-ruby may need different constants for services whose
+names contain underscores.
 
 ## Declare a method without generation
 
@@ -309,7 +317,9 @@ details: [...], metadata: {...}, trailers: {...})` from a handler. Unexpected
 application exceptions become `internal` with `"Internal error"`. Clients raise
 `ConnectRPC::Error` with `code`, `details`, `metadata`, and `trailers`. Decode a
 detail with `detail.decode(binding: binding, type: message_class)` after choosing
-the class corresponding to `detail.type`.
+the class corresponding to `detail.type`. `Error#code` is a frozen String such
+as `"invalid_argument"`, even though `Error.new` accepts a Symbol, so compare it
+with a String: `error.code == "invalid_argument"`.
 
 ## Limits
 

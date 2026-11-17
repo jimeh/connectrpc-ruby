@@ -276,8 +276,8 @@ peer-presented chain is a verified chain.
 
 ## Shutdown
 
-`close(grace: 5)` and normal managed worker stop stop accepts/refresh, then
-perform bounded connection drain. HTTP/1 completion includes fixed/chunked wire
+`close(grace: 5)` and a normal managed worker stop both end accepts and TLS
+refresh, then perform bounded connection drain. HTTP/1 completion includes fixed/chunked wire
 bytes and response-finished callbacks. On grace expiry, teardown closes raw TCP
 before cancelling owned work and buffered/TLS cleanup. Callback close is guarded
 against reentry. Fatal teardown or owner cancellation outside the managed stop
