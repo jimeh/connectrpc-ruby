@@ -826,6 +826,7 @@
     "ConnectRPC::Falcon::Endpoint#initialize": {"kind":"method","visibility":"public","parameters":"url, endpoint = nil, **options","classification":"supported"}
   },
   "gems/connectrpc-falcon/lib/connectrpc/falcon/environment.rb": {
+    "ConnectRPC::Falcon::Environment#connectrpc_close_grace": {"kind":"method","visibility":"public","parameters":"","classification":"spi"},
     "ConnectRPC::Falcon::Environment#connectrpc_server": {"kind":"method","visibility":"public","parameters":"","classification":"spi"},
     "ConnectRPC::Falcon::Environment#endpoint": {"kind":"method","visibility":"public","parameters":"","classification":"spi"},
     "ConnectRPC::Falcon::Environment#make_server": {"kind":"method","visibility":"public","parameters":"bound","classification":"spi"},
@@ -835,12 +836,14 @@
     "ConnectRPC::Falcon::Environment#tls": {"kind":"method","visibility":"public","parameters":"","classification":"spi"},
     "ConnectRPC::Falcon::Environment#tls_provider": {"kind":"method","visibility":"public","parameters":"","classification":"spi"},
     "ConnectRPC::Falcon::Service#managed_stop?": {"kind":"method","visibility":"private","parameters":"error","classification":"internal"},
-    "ConnectRPC::Falcon::Service#run": {"kind":"method","visibility":"public","parameters":"_instance, evaluator, listener","classification":"internal"}
+    "ConnectRPC::Falcon::Service#run": {"kind":"method","visibility":"public","parameters":"_instance, evaluator, listener","classification":"internal"},
+    "ConnectRPC::Falcon::Service#start": {"kind":"method","visibility":"public","parameters":"","classification":"internal"}
   },
   "gems/connectrpc-falcon/lib/connectrpc/falcon/http1.rb": {
     "ConnectRPC::Falcon::HTTP1Connection#close_read": {"kind":"method","visibility":"public","parameters":"","classification":"internal"},
     "ConnectRPC::Falcon::HTTP1Connection#each": {"kind":"method","visibility":"public","parameters":"...","classification":"internal"},
     "ConnectRPC::Falcon::HTTP1Connection#next_request": {"kind":"method","visibility":"public","parameters":"","classification":"internal"},
+    "ConnectRPC::Falcon::HTTP1Connection#read_request_body": {"kind":"method","visibility":"public","parameters":"method, headers","classification":"internal"},
     "ConnectRPC::Falcon::HTTP1Connection#rejected_input=": {"kind":"attribute","visibility":"public","classification":"internal"},
     "ConnectRPC::Falcon::HTTP1Connection#resource": {"kind":"attribute","visibility":"public","classification":"internal"},
     "ConnectRPC::Falcon::HTTP1Connection#resource=": {"kind":"attribute","visibility":"public","classification":"internal"},
@@ -924,6 +927,7 @@
     "ConnectRPC::Falcon::ListenerApplication#http1_streaming_route?": {"kind":"method","visibility":"private","parameters":"request","classification":"internal"},
     "ConnectRPC::Falcon::ListenerApplication#initialize": {"kind":"method","visibility":"public","parameters":"application, scheme","classification":"internal"},
     "ConnectRPC::Falcon::ListenerApplication#publication?": {"kind":"method","visibility":"private","parameters":"request","classification":"internal"},
+    "ConnectRPC::Falcon::ListenerApplication#switch_requested?": {"kind":"method","visibility":"private","parameters":"request","classification":"internal"},
     "ConnectRPC::Falcon::RackBody#close": {"kind":"method","visibility":"public","parameters":"*","classification":"internal"},
     "ConnectRPC::Falcon::RackGuard#call": {"kind":"method","visibility":"public","parameters":"env","classification":"internal"},
     "ConnectRPC::Falcon::RackGuard#completing_body": {"kind":"method","visibility":"private","parameters":"env, status, headers, original","classification":"internal"},

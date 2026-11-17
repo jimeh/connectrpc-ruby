@@ -14,6 +14,7 @@ class ::APIFalconConfiguration
       tls { nil }
       tls_provider { APIProvider.new }
       server_options { { idle_timeout: nil, max_connections: 8, cache: true, keepalive: nil } }
+      connectrpc_close_grace 2
     end
   end
 end

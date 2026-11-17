@@ -18,6 +18,7 @@ RSpec.describe "Falcon service owner cancellation" do
         bound = ConnectRPC::Falcon::Endpoint.parse("http://127.0.0.1:0").bound
         core = server
         evaluator = Object.new
+        evaluator.define_singleton_method(:connectrpc_close_grace) { 5 }
         evaluator.define_singleton_method(:make_server) do |endpoint|
           owners.enqueue(Async::Task.current)
           ConnectRPC::Falcon::Server.new(server: core, endpoint: endpoint, rack_app: rack)

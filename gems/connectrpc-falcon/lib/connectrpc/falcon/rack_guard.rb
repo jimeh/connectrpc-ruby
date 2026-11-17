@@ -150,7 +150,7 @@ module ConnectRPC
 
       def call(request, lifecycle: nil, publication: nil, resource: nil)
         request.scheme ||= @scheme
-        if request.method == "CONNECT" || request.protocol || request.headers["upgrade"]
+        if switch_requested?(request)
           lifecycle&.host_rejected!
           return ::Protocol::HTTP::Response[501, {}, nil]
         end
@@ -170,6 +170,18 @@ module ConnectRPC
         end
         response.body = CloseOnce.new(response.body) if response.body
         response
+      end
+
+      private
+
+      # An HTTP/1 Upgrade header (async-http moves it to request.protocol) is
+      # only an offer, which this listener ignores. CONNECT, HTTP/2 extended
+      # CONNECT's :protocol and an HTTP/2 upgrade field demand a tunnel.
+      def switch_requested?(request)
+        return true if request.method == ::Protocol::HTTP::Methods::CONNECT
+        return false if request.version&.start_with?("HTTP/1")
+
+        !!(request.protocol || request.headers["upgrade"])
       end
     end
     private_constant :ListenerApplication

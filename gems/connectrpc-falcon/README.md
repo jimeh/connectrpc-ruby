@@ -104,7 +104,16 @@ Include `ConnectRPC::Falcon::Environment` in each service:
 - `tls` or `tls_provider` supplies the TLS source; see [TLS lifecycle](#tls-lifecycle).
 - `server_options` supplies shared limits and host options such as `cache:`
   and `keepalive:`.
+- `connectrpc_close_grace` sets the managed worker stop grace in seconds
+  (default 5); see [Shutdown](#shutdown).
 - `url` describes the listener.
+
+When combining Falcon environments, include them first and
+`ConnectRPC::Falcon::Environment` last. With `Falcon::Environment::Rack`
+included first, its `config.ru` application becomes the fallback unless the
+service defines `rack_app`. Including `ConnectRPC::Falcon::Environment` first
+lets Falcon's application environment replace the listener endpoint, so
+starting the service raises `ArgumentError` before binding.
 
 Application `prepare!` runs after fork, before static TLS compilation or the
 first provider call. Initialize application-owned database clients there; the
@@ -149,8 +158,14 @@ HTTP/2 prior knowledge and HTTP/1. The standalone Async Host remains strict h2.
 
 ### Unsupported on this listener
 
-This listener rejects upgrades, CONNECT tunnels, full/partial Rack hijack and
-protocol upgrades before successful upgrade bytes or socket transfer. WebSockets
+This listener never switches protocols. It ignores HTTP/1.1 `Upgrade` offers,
+such as the h2c offer from `curl --http2`, and serves those requests as
+ordinary HTTP/1.1 RPC or Rack fallback requests on a persistent connection.
+The Rack fallback still sees the offer in `rack.protocol` and `HTTP_UPGRADE`,
+as with plain Falcon. Accepting it (a 101 status, a `rack.protocol` or
+`upgrade` response header, or full/partial Rack hijack) gets 501 before any
+upgrade bytes or socket transfer. CONNECT, HTTP/2 extended CONNECT and HTTP/2
+requests carrying `:protocol` or an `upgrade` field also get 501. WebSockets
 and ActionCable are unsupported here. Ordinary enumerable, chunked, streamed
 and callable HTTP bodies are supported. Callable bodies must close their
 supplied stream according to the Protocol::Rack contract. Plain Falcon and the
@@ -284,6 +299,11 @@ against reentry. Fatal teardown or owner cancellation outside the managed stop
 boundary uses raw-first abort and offers no response-delivery guarantee.
 HTTP response completion is separate from TLS `close_notify`; orderly TLS
 shutdown is not promised.
+
+Managed worker stop uses the service's `connectrpc_close_grace` (default 5
+seconds). Keep it below the Falcon container's graceful stop timeout, after
+which the container kills workers. `falcon host` uses async-container's default
+of 10 seconds, which `ASYNC_CONTAINER_GRACEFUL_STOP` overrides.
 
 ### Close results
 

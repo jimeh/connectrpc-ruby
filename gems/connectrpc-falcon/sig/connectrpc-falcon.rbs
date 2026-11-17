@@ -59,6 +59,7 @@ module ConnectRPC
       def tls: () -> Async::tls?
       def tls_provider: () -> (Async::_TLSProvider | ^() -> Async::tls_snapshot)?
       def server_options: () -> server_options
+      def connectrpc_close_grace: () -> Numeric
       def connectrpc_server: () -> ConnectRPC::Server
       def make_server: (Endpoint | _BoundEndpoint) -> Server
     end

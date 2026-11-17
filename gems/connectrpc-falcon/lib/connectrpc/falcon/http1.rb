@@ -75,6 +75,15 @@ module ConnectRPC
         request
       end
 
+      # This listener never switches protocols, so an Upgrade offer is ignored
+      # (RFC 9110 section 7.8) and leaves normal request framing in place.
+      # Upstream reads an offering request's body to connection close.
+      def read_request_body(method, headers)
+        return super if method == ::Protocol::HTTP::Methods::CONNECT || !headers[::Protocol::HTTP1::UPGRADE]
+
+        read_body(headers)
+      end
+
       def each(...)
         super
       rescue Exception => e # rubocop:disable Lint/RescueException -- cancellation also ends the exchange

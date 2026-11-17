@@ -227,7 +227,8 @@ RSpec.describe "Falcon Rack/Rails fallback boundary" do
     end
   end
 
-  it "rejects actual CONNECT, WebSocket and h2c Upgrade requests before fallback success" do
+  # Upgrade offers are served as ordinary HTTP/1.1; see upgrade_spec.rb.
+  it "rejects actual CONNECT requests before fallback success" do
     reactor do
       seen = []
       falcon(rack_app: lambda { |env|
@@ -235,16 +236,12 @@ RSpec.describe "Falcon Rack/Rails fallback boundary" do
         [200, {}, ["unsafe"]]
       }) do |_host, origin|
         uri = URI(origin)
-        [["CONNECT", "localhost:443", ""], ["GET", "/", "Upgrade: websocket\r\nConnection: Upgrade\r\n"],
-         ["GET", "/", "Upgrade: h2c\r\nConnection: Upgrade\r\n"]].each do |method, route, extra|
-          raw = IO::Endpoint.tcp(uri.hostname, uri.port).connect
-          raw.write("#{method} #{route} HTTP/1.1\r\nHost: localhost\r\n#{extra}\r\n")
-          line = raw.gets
-          expect(line).to start_with("HTTP/1.1 501")
-        ensure
-          AsyncHelpers::INTERNAL.raw_close(raw)
-        end
+        raw = IO::Endpoint.tcp(uri.hostname, uri.port).connect
+        raw.write("CONNECT localhost:443 HTTP/1.1\r\nHost: localhost:443\r\n\r\n")
+        expect(raw.gets).to start_with("HTTP/1.1 501")
         expect(seen).to be_empty
+      ensure
+        AsyncHelpers::INTERNAL.raw_close(raw)
       end
     end
   end
