@@ -32,8 +32,12 @@ module ConnectRPC
       # `with_timeout`, which they re-raise unchanged, from their own expiry.
       class Expired < ::Async::TimeoutError; end
 
-      # A caller's own Async timeout, not one of ours.
-      def self.foreign_timeout?(error) = error.is_a?(::Async::TimeoutError) && !error.is_a?(Expired)
+      # A caller's own Async timeout, raised into the waiting fiber by the
+      # caller's timer. `owned`, the failure a joined task or worker delivered,
+      # is a transport failure whatever its class.
+      def self.foreign_timeout?(error, owned = nil)
+        error.is_a?(::Async::TimeoutError) && !error.is_a?(Expired) && !error.equal?(owned)
+      end
 
       # Waits for a promise until `expires`, like `wait` does for a task.
       def self.wait_event(event, expires)
@@ -164,11 +168,12 @@ module ConnectRPC
           interruption
         end
 
-        # Like Internal.wait, adding a caller's own timeout to `retained`.
+        # Like Internal.wait, adding a caller's own timeout to `retained`. The
+        # task's own failure is raised whatever its class.
         def self.wait(task, expires, retained)
           Internal.wait(task, expires)
         rescue ::Async::TimeoutError => e
-          raise unless Internal.foreign_timeout?(e)
+          raise unless Internal.foreign_timeout?(e, (task.result if task.failed?))
 
           retained << e
           retry

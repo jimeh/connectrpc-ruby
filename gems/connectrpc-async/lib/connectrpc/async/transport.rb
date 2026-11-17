@@ -140,8 +140,9 @@ module ConnectRPC
       rescue StandardError => e
         request.lifecycle&.record_failure(e)
         check_request!(request)
-        # The caller's own enclosing Async timeout is not a transport failure.
-        raise if Internal.foreign_timeout?(e)
+        # The caller's own enclosing Async timeout is not a transport failure;
+        # the worker's delivered failure is.
+        raise if Internal.foreign_timeout?(e, (result if tag == :error))
         if operation[:grpc] && (failure = operation[:response]&.stream&.grpc_error)
           raise failure, cause: nil
         end
@@ -270,8 +271,9 @@ module ConnectRPC
         rescue StandardError => e
           request.lifecycle&.record_failure(e)
           check_request!(request)
-          # The caller's own enclosing Async timeout is not a transport failure.
-          raise if e.is_a?(ConnectRPC::Error) || Internal.foreign_timeout?(e)
+          # The caller's own enclosing Async timeout is not a transport failure;
+          # the worker's delivered failure is.
+          raise if e.is_a?(ConnectRPC::Error) || Internal.foreign_timeout?(e, (result if tag == :error))
 
           raise Error.new(:unavailable, Internal::ClientFailure.message("HTTP/2", e)), cause: e
         ensure
@@ -508,8 +510,8 @@ module ConnectRPC
           operation[:cleanup_error] ||= e
           begin
             operation[:resource]&.abort
-          rescue StandardError
-            raise unless operation[:grpc]
+          rescue StandardError => abort_error
+            abort_failed(operation, abort_error, interruptions)
           ensure
             Internal.cancel(cleanup_task)
             pending = Internal::Retaining.join(cleanup_task)
@@ -526,8 +528,8 @@ module ConnectRPC
                 # A failed release may precede usage accounting. Retire the
                 # aborted connection without retrying release or cleanup.
                 @manager.retire(connection)
-              rescue StandardError
-                raise unless operation[:grpc]
+              rescue StandardError => abort_error
+                abort_failed(operation, abort_error, interruptions)
               end
             end
           end
@@ -538,6 +540,16 @@ module ConnectRPC
           end
         end
         raise interruptions.first unless interruptions.empty?
+      end
+
+      # An abort joins connection retirement in the caller's fiber, where the
+      # caller's own timeout is retained. Its other failures fail a unary call.
+      def abort_failed(operation, error, interruptions)
+        if Internal.foreign_timeout?(error)
+          interruptions << error
+        elsif !operation[:grpc]
+          raise error
+        end
       end
 
       def close_owned(expires)

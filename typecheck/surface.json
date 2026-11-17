@@ -356,6 +356,7 @@
     "ConnectRPC::Async::HTTP1Transport#dispatch": {"kind":"method","visibility":"private","parameters":"operation, streaming: false","classification":"internal"},
     "ConnectRPC::Async::HTTP1Transport#exchange": {"kind":"method","visibility":"private","parameters":"operation","classification":"internal"},
     "ConnectRPC::Async::HTTP1Transport#finish": {"kind":"method","visibility":"private","parameters":"operation, timeout: nil","classification":"internal"},
+    "ConnectRPC::Async::HTTP1Transport#first_attempt": {"kind":"method","visibility":"private","parameters":"request","classification":"internal"},
     "ConnectRPC::Async::HTTP1Transport#force_operations": {"kind":"method","visibility":"private","parameters":"","classification":"internal"},
     "ConnectRPC::Async::HTTP1Transport#initialize": {"kind":"method","visibility":"public","parameters":"origin:, ca_file: nil, certificate_chain: nil, private_key: nil, connection_limit: 4, max_requests: 128, connect_timeout: 10","classification":"supported"},
     "ConnectRPC::Async::HTTP1Transport#inspect": {"kind":"method","visibility":"public","parameters":"","classification":"internal"},
@@ -373,7 +374,11 @@
     "ConnectRPC::Async::HTTP1Transport#setup": {"kind":"method","visibility":"private","parameters":"operation, resource","classification":"internal"},
     "ConnectRPC::Async::HTTP1Transport#streaming_capabilities": {"kind":"method","visibility":"public","parameters":"","classification":"spi"},
     "ConnectRPC::Async::HTTP1Transport#with_operation": {"kind":"method","visibility":"private","parameters":"request","classification":"internal"},
-    "ConnectRPC::Async::HTTP1Transport#write": {"kind":"method","visibility":"private","parameters":"operation, bytes","classification":"internal"}
+    "ConnectRPC::Async::HTTP1Transport#write": {"kind":"method","visibility":"private","parameters":"operation, bytes","classification":"internal"},
+    "ConnectRPC::Async::HTTP1Transport::AttemptLifecycle#activate": {"kind":"method","visibility":"public","parameters":"&","classification":"internal"},
+    "ConnectRPC::Async::HTTP1Transport::AttemptLifecycle#flush": {"kind":"method","visibility":"public","parameters":"","classification":"internal"},
+    "ConnectRPC::Async::HTTP1Transport::AttemptLifecycle#initialize": {"kind":"method","visibility":"public","parameters":"lifecycle","classification":"internal"},
+    "ConnectRPC::Async::HTTP1Transport::AttemptLifecycle#record_failure": {"kind":"method","visibility":"public","parameters":"error","classification":"internal"}
   },
   "gems/connectrpc-async/lib/connectrpc/async/ingress.rb": {
     "ConnectRPC::Async::Internal::Ingress#bound_progress": {"kind":"method","visibility":"public","parameters":"clock, seconds","classification":"internal"},
@@ -397,7 +402,7 @@
     "ConnectRPC::Async::Internal.close_consumed_http1": {"kind":"method","visibility":"public","parameters":"request","classification":"internal"},
     "ConnectRPC::Async::Internal.fields": {"kind":"method","visibility":"public","parameters":"headers","classification":"internal"},
     "ConnectRPC::Async::Internal.finite": {"kind":"method","visibility":"public","parameters":"value, name, requirement","classification":"internal"},
-    "ConnectRPC::Async::Internal.foreign_timeout?": {"kind":"method","visibility":"public","parameters":"error","classification":"internal"},
+    "ConnectRPC::Async::Internal.foreign_timeout?": {"kind":"method","visibility":"public","parameters":"error, owned = nil","classification":"internal"},
     "ConnectRPC::Async::Internal.headers": {"kind":"method","visibility":"public","parameters":"message","classification":"internal"},
     "ConnectRPC::Async::Internal.join": {"kind":"method","visibility":"public","parameters":"task","classification":"internal"},
     "ConnectRPC::Async::Internal.join_complete": {"kind":"method","visibility":"public","parameters":"...","classification":"internal"},
@@ -768,6 +773,7 @@
   },
   "gems/connectrpc-async/lib/connectrpc/async/transport.rb": {
     "ConnectRPC::Async::Transport#abort_owned": {"kind":"method","visibility":"private","parameters":"","classification":"internal"},
+    "ConnectRPC::Async::Transport#abort_failed": {"kind":"method","visibility":"private","parameters":"operation, error, interruptions","classification":"internal"},
     "ConnectRPC::Async::Transport#abort_setup": {"kind":"method","visibility":"private","parameters":"resource","classification":"internal"},
     "ConnectRPC::Async::Transport#acquire": {"kind":"method","visibility":"private","parameters":"operation, task","classification":"internal"},
     "ConnectRPC::Async::Transport#activate": {"kind":"method","visibility":"private","parameters":"request, &work","classification":"internal"},

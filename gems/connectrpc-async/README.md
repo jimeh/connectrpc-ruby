@@ -85,7 +85,8 @@ never closed is aborted, without a graceful drain, once its owner task's block
 and every other task under that owner have finished, so the owner can finish.
 A live task under the owner keeps the transport open. Applications own the
 Async reactor, authorization and lifecycle. Using an object from the wrong
-reactor, thread or state raises `ConnectRPC::Async::LifecycleError`.
+reactor, thread or state raises `ConnectRPC::Async::LifecycleError`. Since
+0.2.2, that constant is public, so applications can rescue it by name.
 
 ## Host
 
@@ -765,8 +766,9 @@ resources. Admission fails with `HTTP/1 transport admission is full` at
 is no hidden thread, pipelining, replay or fallback, and one resend: a server
 may close an idle keep-alive connection while the next request crosses it, so
 a unary GET whose reused connection closed before any response head is sent
-once more on another connection, unless it was cancelled or its deadline
-expired. POST and streams are never resent.
+once more on another connection, unless it was cancelled, its deadline expired
+or the transport started closing. Call observers see no failure from the
+attempt that was resent. POST and streams are never resent.
 
 ### Deadlines and reuse
 

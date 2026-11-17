@@ -127,4 +127,85 @@ RSpec.describe ConnectRPC::Async::HTTP1Transport, "stale keep-alive resend" do
       expect([accepted.size, served]).to eq([1, { 1 => 2 }])
     end
   end
+
+  it "stops a GET whose deadline expired before the resend" do
+    expired = false
+    calls = nil
+    # Expires only between the attempts: after the first one fails and leaves
+    # the transport's admission, before the resend enters it.
+    deadline = ConnectRPC::Deadline.new(5, clock: -> { expired && calls.empty? ? 100 : 0 })
+    script = lambda do |index, count|
+      next :respond unless index == 1 && count == 2
+
+      expired = true
+      :close
+    end
+    with_scripted_peer(script) do |transport, origin, accepted, served|
+      calls = transport.instance_variable_get(:@calls)
+      expect(transport.call(get(origin)).body).to eq("ok")
+      error = failure { transport.call(get(origin, deadline: deadline)) }
+      expect(error.code).to eq("deadline_exceeded")
+      expect([accepted.size, served]).to eq([1, { 1 => 2 }])
+    end
+  end
+
+  it "raises the first failure when the transport starts closing before the resend" do
+    closer = nil
+    script = lambda do |index, count|
+      next :respond unless index == 1 && count == 2
+
+      # Close waits for the call, which is still in its first attempt.
+      closer = @task.async { @transport.close(grace: 5) }
+      :close
+    end
+    with_scripted_peer(script) do |transport, origin, accepted, served, task|
+      @transport = transport
+      @task = task
+      expect(transport.call(get(origin)).body).to eq("ok")
+      error = failure { transport.call(get(origin)) }
+      expect([error.code, error.message]).to eq(["unavailable", "HTTP/1 transport failed: connection closed"])
+      expect(error.cause).to be_a(EOFError)
+      expect([accepted.size, served]).to eq([1, { 1 => 2 }])
+      expect(closer.wait).to be(true)
+    end
+  end
+
+  context "with a call lifecycle" do
+    def recording_lifecycle(recorded)
+      lifecycle = Object.new
+      lifecycle.define_singleton_method(:activate) do |&block|
+        recorded << :activate
+        block.call
+      end
+      lifecycle.define_singleton_method(:record_failure) { |error| recorded << error }
+      lifecycle
+    end
+
+    it "records no failure of the resent attempt when the resend succeeds" do
+      script = ->(index, count) { index == 1 && count == 2 ? :close : :respond }
+      with_scripted_peer(script) do |transport, origin|
+        expect(transport.call(get(origin)).body).to eq("ok")
+        recorded = []
+        outgoing = get(origin)
+        outgoing.lifecycle = recording_lifecycle(recorded)
+        expect(transport.call(outgoing).body).to eq("ok")
+        expect(recorded).to include(:activate)
+        expect(recorded.grep_v(Symbol)).to be_empty
+      end
+    end
+
+    it "still records the failures of a GET that is not resent" do
+      script = ->(_index, _count) { :close }
+      with_scripted_peer(script) do |transport, origin|
+        recorded = []
+        outgoing = get(origin)
+        outgoing.lifecycle = recording_lifecycle(recorded)
+        error = failure { transport.call(outgoing) }
+        expect(error.message).to eq("HTTP/1 transport failed: connection closed")
+        failures = recorded.grep_v(Symbol)
+        expect(failures).not_to be_empty
+        expect(failures).to all(equal(error.cause))
+      end
+    end
+  end
 end

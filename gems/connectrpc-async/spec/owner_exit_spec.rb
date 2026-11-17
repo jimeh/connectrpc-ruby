@@ -76,6 +76,23 @@ RSpec.describe "Client transport owner exit without close" do
       end
     end
 
+    it "aborts an unclosed #{name} once its owner block raises, letting the owner finish" do
+      with_both_origins do |task, origins|
+        origin = origins.fetch(kind)
+        transport = nil
+        owner = task.async(finished: false) do
+          transport = kind.new(origin: origin)
+          echo(transport, origin, "owned")
+          raise IOError, "owner failed"
+        end
+        expect { owner.wait }.to raise_error(IOError, "owner failed")
+        wait_until(task, "the owner task to finish") { owner.finished? }
+        expect(state(transport)).to eq(:closed)
+        expect(raws(transport)).not_to be_empty
+        expect(raws(transport)).to all(be_closed)
+      end
+    end
+
     it "still aborts an unclosed #{name} when its owner is cancelled" do
       with_both_origins do |task, origins|
         origin = origins.fetch(kind)

@@ -38,10 +38,12 @@ module ConnectRPC
       def call(request)
         check_affinity!
         CallCancellation.with_request(request) do |outgoing|
+          sent = first_attempt(outgoing)
+          deferred = sent.lifecycle unless sent.equal?(outgoing)
           attempt = nil
           resent = false
           begin
-            with_operation(outgoing) do |operation|
+            with_operation(sent) do |operation|
               attempt = operation
               exchange(operation)
             end
@@ -50,8 +52,13 @@ module ConnectRPC
             # entry are complete. Its cancellation and deadline still apply.
             raise if resent || !resend?(attempt, e)
 
+            # Observers never see the failures of an attempt that is resent.
             resent = true
+            deferred = nil
+            sent = outgoing
             retry
+          ensure
+            deferred&.flush
           end
         end
       end
@@ -84,11 +91,44 @@ module ConnectRPC
         TransportResponse.new(status: head.status, headers: head.headers, body: bytes)
       end
 
+      # Holds a first attempt's failures until the call knows it is not resent.
+      class AttemptLifecycle
+        def initialize(lifecycle)
+          @lifecycle = lifecycle
+          @failures = []
+        end
+
+        def activate(&) = @lifecycle.activate(&)
+
+        def record_failure(error)
+          @failures ? @failures << error : @lifecycle.record_failure(error)
+          nil
+        end
+
+        def flush
+          failures = @failures
+          @failures = nil
+          failures.each { |error| @lifecycle.record_failure(error) }
+          nil
+        end
+      end
+      private_constant :AttemptLifecycle
+
+      # Only a GET with a lifecycle needs its first attempt's failures held.
+      def first_attempt(request)
+        return request unless request.lifecycle && request.http_method == "GET"
+
+        attempt = request.dup
+        attempt.lifecycle = AttemptLifecycle.new(request.lifecycle)
+        attempt
+      end
+
       # A server may close an idle keep-alive connection while the next
       # request crosses it. Only a safe GET that found its reused connection
-      # closed before any response head is sent once more.
+      # closed before any response head is sent once more, and only while the
+      # transport still admits calls.
       def resend?(operation, error)
-        operation && operation[:reused] && !operation[:head] &&
+        @state == :running && operation && operation[:reused] && !operation[:head] &&
           operation.fetch(:request).http_method == "GET" &&
           Internal::ClientFailure.connection_closed?(error.cause)
       end
@@ -163,8 +203,9 @@ module ConnectRPC
         check_request!(request)
         raise if e.is_a?(Error)
 
-        if Internal.foreign_timeout?(e)
-          # The caller's own enclosing Async timeout is not a transport failure.
+        if Internal.foreign_timeout?(e, (result if tag == :error))
+          # The caller's own enclosing Async timeout is not a transport failure;
+          # the worker's delivered failure is.
           interruption = e
           raise
         end
@@ -461,8 +502,10 @@ module ConnectRPC
 
           accepted = true
         rescue Exception => e # rubocop:disable Lint/RescueException -- no exit may bypass final joins and disposition
-          # A caller's own Async timeout is an interruption, not a cleanup failure.
-          if e.is_a?(StandardError) && !Internal.foreign_timeout?(e)
+          # A caller's own Async timeout is an interruption, not a cleanup
+          # failure; the cleanup task's own failure is.
+          owned = operation[:cleanup_task]
+          if e.is_a?(StandardError) && !Internal.foreign_timeout?(e, (owned.result if owned&.failed?))
             operation[:cleanup_error] ||= e
             operation.fetch(:request).lifecycle&.record_failure(e)
           else
