@@ -1279,10 +1279,15 @@ through a local proxy that adds 50 ms of round-trip time; `--stream` or
 | 1 MiB / 1 MiB / 16 MiB (`--stream 1048576`) | 0.35 s | 0.43 s | 0.31 s |
 | 4 MiB / 4 MiB / 16 MiB (`--stream 4194304`) | 0.12 s | 0.17 s | 0.12 s |
 
-grpc-go starts both windows at 64 KiB and grows them up to 16 MiB by
-estimating the bandwidth-delay product, unless the application sets them. Go's
-net/http2 uses 4 MiB stream and 1 GiB connection windows on clients and 1 MiB
-for both on servers. This package does not size windows dynamically.
+grpc-go starts both windows at 64 KiB and grows them up to 16 MiB by estimating
+the bandwidth-delay product, unless the application sets them. Go's net/http2
+uses 4 MiB stream and 1 GiB connection windows on clients and 1 MiB for both on
+servers. This package does not size windows dynamically. The client connection
+window stays at 16 MiB, grpc-go's ceiling, instead of net/http2's 1 GiB, because
+the two windows mean different things. net/http2 returns connection credit as
+the application reads, so its 1 GiB also caps unread bytes. This package returns
+it as DATA arrives, so the connection window bounds only bytes in flight, and
+the stream windows bound memory.
 
 ### Ingress flow control
 
