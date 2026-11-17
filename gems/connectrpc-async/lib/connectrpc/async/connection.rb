@@ -100,7 +100,7 @@ module ConnectRPC
       end
 
       # Version-coupled wrappers around the selected stack, not a frame codec.
-      module Connection
+      module Connection # rubocop:disable Metrics/ModuleLength
         include Liveness
         include ReceiveWindows
 
