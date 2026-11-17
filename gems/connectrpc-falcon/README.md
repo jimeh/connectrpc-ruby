@@ -531,6 +531,8 @@ mise run falcon:verify
 `falcon:interop` are separate discoverable leaves. Both Ruby lanes exercise real
 localhost protocols and workers. The Go peer uses the repository's independently
 pinned Connect/Go graph. This is unary subset evidence, not full conformance.
+`falcon:soak` runs the non-gating long-running lifecycle campaign; see
+[development](../../docs/development.md#lifecycle-campaign).
 
 ## License
 

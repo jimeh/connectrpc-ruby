@@ -91,6 +91,24 @@ fix on `main`. See [development](development.md#pins-lifted-canary). Like the CI
 schedule, GitHub disables this scheduled workflow after 60 days without
 repository activity.
 
+## Lifecycle campaign
+
+A separate workflow, [`soak.yml`](../.github/workflows/soak.yml), runs nightly
+at 02:43 UTC and on manual dispatch only, so it never gates a pull request or
+`main`. Its matrix runs `mise run async:soak` and `mise run falcon:soak` on Ruby
+3.4.12 and 4.0.9, with `fail-fast: false`, the lane's `CI_EXPECTED_RUBY_VERSION`
+and a 60-minute job timeout. Each lane runs 50 rounds per scenario under a
+2,700-second run deadline and a 120-second cleanup budget. It uses the canary's
+pinned actions and environment and disables the setup-ruby bundle cache, because
+each package setup task installs its own bundle.
+
+Whatever the outcome, every lane appends the campaign's `summary.md` to the job
+summary and uploads `vendor/<pkg>/soak/<Ruby>/` (the JSON lines and summary) as
+the `soak-<pkg>-ruby-<Ruby>` artifact for 14 days. A red run is an investigation
+signal: download its artifact, then rerun locally with the recorded seed. See
+[development](development.md#lifecycle-campaign). GitHub disables this scheduled
+workflow after 60 days without repository activity.
+
 ## Runtime boundary
 
 CI pins `ruby/setup-ruby` v1.335.0 and `actions/setup-go` v7.0.0 by full commit,
