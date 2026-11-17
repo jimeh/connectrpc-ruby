@@ -418,8 +418,10 @@ and are still closed once idle. See
 Since 0.3.0, `max_concurrent_streams:` (default 100) and `request_body_timeout:`
 (default 60 seconds) also apply to native HTTP/2 connections as on the Async
 `Host`: a stream over the connection's limit or over full `max_requests`
-admission is refused with `REFUSED_STREAM`, and a stalled request body other
-than a client or bidi stream is reset with `CANCEL`. See [Stream
+admission is refused with `REFUSED_STREAM` while its HEADERS are read, before
+any of its DATA, and a stalled request body other than a client or bidi stream
+is reset with `CANCEL`. A refusal for full admission counts once in
+`requests_total`. See [Stream
 admission](../connectrpc-async/README.md#stream-admission). HTTP/1 requests keep
 the bare 503 when admission is full.
 
@@ -587,9 +589,12 @@ its controllers'
 Configure `instrumentation:` on the core Client/Server to enable the fixed
 neutral per-call lifecycle or the optional
 [OpenTelemetry adapter](../connectrpc-otel/README.md). Native hosts create
-explicit handles before request admission, activate the actual handler tasks,
-and finish after full-write/reset/cleanup evidence. Connection-level
-setup/admission before an RPC exists is outside this lifecycle.
+explicit handles before a request's handler starts, activate the actual handler
+tasks, and finish after full-write/reset/cleanup evidence. An HTTP/2 stream
+refused at HEADERS because admission is full is observed once after the refusal,
+as on the [Async Host](../connectrpc-async/README.md#rpc-observation).
+Connection-level setup/admission before an RPC exists is outside this
+lifecycle.
 
 ## Static signatures
 

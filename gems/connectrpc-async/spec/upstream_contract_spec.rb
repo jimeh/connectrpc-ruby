@@ -232,6 +232,41 @@ RSpec.describe "connectrpc-async upstream contract" do
       end
     end
 
+    # Host admission refuses a stream at HEADERS once upstream has enqueued it.
+    it "enqueues a valid request inside Request::Stream#receive_initial_headers after setting its headers" do
+      reactor do |task|
+        connection_pair(task) do |server, client|
+          seen = []
+          spy = Module.new do
+            define_method(:receive_initial_headers) do |headers, end_stream|
+              queued = connection.requests.size
+              result = super(headers, end_stream)
+              seen << [id, connection.requests.size - queued, !request&.headers.nil?, enqueued?]
+              result
+            end
+          end
+          server.define_singleton_method(:create_stream) do |*arguments, &block|
+            super(*arguments, &block).tap { |stream| stream.extend(spy) }
+          end
+          _, incoming = open_request(server, client, Protocol::HTTP::Body::Buffered.wrap(["hello"]))
+          expect(seen).to eq([[incoming.stream.id, 1, true, true]])
+
+          # A duplicate single-value field fails structured validation with 400.
+          rejected = client.next_stream_id
+          frame = Protocol::HTTP2::HeadersFrame.new(rejected, Protocol::HTTP2::END_STREAM)
+          fields = [[":method", "POST"], [":scheme", "http"], [":authority", "localhost"], [":path", "/contract"],
+                    %w[content-type a/b], %w[content-type c/d]]
+          client.write_frames do |framer|
+            frame.pack(client.encode_headers(fields), maximum_size: client.maximum_frame_size)
+            framer.write_frame(frame)
+          end
+          wait_until(task, "rejected HEADERS processed; seen #{seen}") { seen.size == 2 }
+          expect(seen.last).to eq([rejected, 0, false, false])
+          expect(server.requests.size).to eq(0)
+        end
+      end
+    end
+
     it "lets upstream Stream#closed stop the Output that send_body stores in @output" do
       reactor do |task|
         connection_pair(task) do |server, client|

@@ -14,7 +14,7 @@ module ConnectRPC
       # Checked once per process while the package loads, so an upstream
       # change fails require with a named reason instead of hanging later.
       # spec/upstream_contract_spec.rb pins the behavior behind each entry.
-      module UpstreamContract
+      module UpstreamContract # rubocop:disable Metrics/ModuleLength
         ISSUE = "https://github.com/jimeh/connectrpc-ruby/issues/68"
         TESTED = { "async" => "2.46.0", "async-http" => "0.105.0", "protocol-http2" => "0.29.2" }.freeze
         VERSIONS = {
@@ -53,6 +53,8 @@ module ConnectRPC
           ["async-http", "#{H2}::Server", :close, :public, "(_ = ?)", "#{H2}::Server"],
           ["async-http", "#{H2}::Client", :create_response, :public, "()", "#{H2}::Client"],
           ["async-http", "#{H2}::Server", :each, :public, "(task: ?)", "#{H2}::Server"],
+          ["async-http", "#{H2}::Request::Stream", :receive_initial_headers, :public, "(_, _)",
+           "#{H2}::Request::Stream"],
           ["protocol-http2", "#{H2}::Server", :create_stream, :public, "(_ = ?, &)", "Protocol::HTTP2::Connection"],
           ["protocol-http2", "#{H2}::Server", :send_goaway, :public, "(_ = ?, _ = ?)", "Protocol::HTTP2::Connection"],
           *%w[Client Server].map do |side|

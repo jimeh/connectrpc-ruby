@@ -3,7 +3,7 @@
 require "protocol/http/body/buffered"
 
 # A raw h2c client for server keepalive specs. It records the server's
-# SETTINGS, PINGs, ACKs, GOAWAYs, resets, HEADERS and DATA frames. It acknowledges server
+# SETTINGS, PINGs, ACKs, GOAWAYs, resets, HEADERS, DATA and WINDOW_UPDATE frames. It acknowledges server
 # PINGs only while `ack_pings` is set, and records a GOAWAY without applying
 # it, so it can keep opening streams like a peer that raced the GOAWAY. With
 # `ack_settings: false` it neither applies nor acknowledges server SETTINGS.
@@ -21,7 +21,10 @@ module KeepaliveClient
 
   class Wire
     # `sequence` orders the ACKs and GOAWAYs as they arrived.
-    attr_reader :settings, :pings, :acks, :goaways, :resets, :headers, :data, :data_bytes, :sequence
+    # `reset_counts` counts every RST_STREAM per stream; `credit` sums the
+    # WINDOW_UPDATE increments per stream, 0 for the connection.
+    attr_reader :settings, :pings, :acks, :goaways, :resets, :reset_counts, :headers, :data, :data_bytes, :credit,
+                :sequence
     attr_accessor :ack_pings
 
     def initialize
@@ -30,9 +33,11 @@ module KeepaliveClient
       @acks = []
       @goaways = []
       @resets = {}
+      @reset_counts = Hash.new(0)
       @headers = Hash.new(0)
       @data = Hash.new(0)
       @data_bytes = Hash.new(0)
+      @credit = Hash.new(0)
       @sequence = []
       @ack_pings = true
     end
@@ -41,6 +46,7 @@ module KeepaliveClient
       return record_stream(frame) unless frame.connection?
 
       case frame
+      when Protocol::HTTP2::WindowUpdateFrame then @credit[0] += frame.unpack
       when Protocol::HTTP2::SettingsFrame then @settings << frame.unpack unless frame.acknowledgement?
       when Protocol::HTTP2::PingFrame then record_ping(frame)
       when Protocol::HTTP2::GoawayFrame
@@ -51,7 +57,10 @@ module KeepaliveClient
 
     def record_stream(frame)
       case frame
-      when Protocol::HTTP2::ResetStreamFrame then @resets[frame.stream_id] = frame.unpack
+      when Protocol::HTTP2::ResetStreamFrame
+        @resets[frame.stream_id] = frame.unpack
+        @reset_counts[frame.stream_id] += 1
+      when Protocol::HTTP2::WindowUpdateFrame then @credit[frame.stream_id] += frame.unpack
       when Protocol::HTTP2::HeadersFrame then @headers[frame.stream_id] += 1
       when Protocol::HTTP2::DataFrame
         @data[frame.stream_id] += 1

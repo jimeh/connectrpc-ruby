@@ -158,12 +158,23 @@ set `max_concurrent_streams` lower explicitly.
 - A stream over its connection's limit, or one that arrives while host
   admission is full or the host is aborting, is reset with
   `RST_STREAM(REFUSED_STREAM)`. That tells the client the request was not
-  processed and is safe to retry. The handler is not called. The server still
-  decodes the stream's header block and ignores its later frames, so the
+  processed and is safe to retry. The handler is not called. The server
+  decides while it reads the stream's HEADERS, before it reads any of the
+  stream's DATA, as grpc-go and Go's `golang.org/x/net/http2` refuse streams
+  over their limits. An admitted stream takes its request slot at that point,
+  so streams whose HEADERS arrive together take free slots in order and one
+  free slot admits exactly one of them. A slot taken this way is released if
+  the peer resets the stream before its handler starts; that stream is then
+  neither processed nor counted as a refusal. The server still
+  decodes a refused stream's header block and ignores its later frames, and
+  the connection returns credit for any DATA the client already sent, so the
   connection and its other streams see no error. Metrics and traces record a
-  refusal for full host admission or an abort as `admission_rejected`, without
-  an HTTP status. A stream over the connection's limit is refused before
-  dispatch and is not observed.
+  refusal for full host admission or an abort once as `admission_rejected`,
+  without an HTTP status; its delivery completes once the reset is written. A
+  stream over the connection's limit is refused the same way and is not
+  observed. A stream refused for full host admission counts toward that limit
+  until its reset is written, so a client that ignores the limit cannot keep
+  more observed refusals waiting on one connection than the limit allows.
 - Since 0.3.0, `request_body_timeout` bounds how long a handler waits for
   request body bytes on an admitted HTTP/2 stream, like nginx's
   `client_body_timeout`. Each wait starts again when body bytes arrive; empty or
@@ -413,6 +424,10 @@ nonnegative or nil and requires `max_connection_age`.
   waiting behind it wait for its bound, and their deadlines count again from
   when it finishes. At most 1024 control frames wait; a peer that outruns the
   writer, such as a PING flood with `min_time: nil`, fails the connection.
+  Each refused stream queues one reset there. A compliant client counts a
+  stream as open until its reset arrives, so it can reach that cap with
+  refused streams only when the connection's stream limit is above about
+  1,000.
   Server PINGs, age grace and close also bound a stuck connection. The
   `too_many_pings` GOAWAY is stricter: it must be written within 100 ms of the
   third strike, or the connection is aborted. Without keepalive, the reader
@@ -1225,15 +1240,12 @@ stream window of unread payload, so a server connection retains at most
 `stream_receive_window` times its stream limit (the smaller of
 `max_concurrent_streams` and `max_requests`), as before 0.3.0: 6.25 MiB with
 the defaults, 100 MiB with 1 MiB windows. Admitted requests hold at most
-`stream_receive_window` times `max_requests` (default 128) across the host:
-8 MiB with the defaults. A stream that arrives while host admission is full
-can also fill its window before the server refuses it, so one burst can
-briefly add up to the smaller of `connection_receive_window` and the
-connection's stream limit times the stream window. Lower
-`connection_receive_window` to cap that burst. A client transport retains at
-most `stream_receive_window` times its own `max_requests`. These add to core's
-per-message `request_limit` and `response_limit` buffering and the other
-allocations listed under [Ingress bounds](#ingress-bounds).
+`stream_receive_window` times `max_requests` (default 128) across the host: 8
+MiB with the defaults. A stream that arrives while host admission is full is
+refused before the server reads its DATA, so it retains nothing. A client
+transport retains at most `stream_receive_window` times its own `max_requests`.
+These add to core's per-message `request_limit` and `response_limit` buffering
+and the other allocations listed under [Ingress bounds](#ingress-bounds).
 
 The defaults keep the 64 KiB per-stream bound and favor memory over
 throughput on high-latency links. Raise `stream_receive_window` on the side
@@ -1422,11 +1434,14 @@ Client interceptors run on the calling task or thread for `Transport`,
 Configure `instrumentation:` on the core Client/Server to enable the fixed
 neutral per-call lifecycle or the optional
 [OpenTelemetry adapter](../connectrpc-otel/README.md). Native hosts create
-explicit handles before request admission, activate the actual handler tasks,
-and finish after full-write/reset/cleanup evidence. Shared H2 client connection
-attempts run outside every RPC lifecycle, so tracing never parents connection
-setup to the call that triggered it. Use the transport's `connection_observer`
-for connection events.
+explicit handles before a request's handler starts, activate the actual handler
+tasks, and finish after full-write/reset/cleanup evidence. An HTTP/2 stream
+refused while its HEADERS are read, because host admission is full, gets its
+handle in a separate task after the refusal. That handle is never activated and
+finishes once the reset is written, or as not delivered if the connection ends
+first. Shared H2 client connection attempts run outside every RPC lifecycle, so
+tracing never parents connection setup to the call that triggered it. Use the
+transport's `connection_observer` for connection events.
 
 ## Static signatures
 
