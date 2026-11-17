@@ -480,6 +480,15 @@ RSpec.describe "connectrpc-async upstream contract" do
       expect(connection.local_window.available).to eq(before + 100)
     end
 
+    it "protocol-http2 update_local_settings retargets connection replenishment to the stream window " \
+       "(delete Connection#update_local_settings)" do
+      connection = Protocol::HTTP2::Client.new(framer.new)
+      connection.local_window.desired = 16_777_216
+      connection.send_settings([[Protocol::HTTP2::Settings::INITIAL_WINDOW_SIZE, 65_536]])
+      connection.update_local_settings(connection.local_settings.acknowledge)
+      expect(connection.local_window.desired).to eq(65_536)
+    end
+
     it "async-http read_in_background runs its first pass, including close on EOF, before any caller can " \
        "reach its task (delete Connection#read_in_background)" do
       reactor do |task|

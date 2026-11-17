@@ -51,6 +51,9 @@ module ConnectRPC
           ["async-http", "#{H2}::Server", :each, :public, "(task: ?)", "#{H2}::Server"],
           ["protocol-http2", "#{H2}::Server", :create_stream, :public, "(_ = ?, &)", "Protocol::HTTP2::Connection"],
           ["protocol-http2", "#{H2}::Server", :send_goaway, :public, "(_ = ?, _ = ?)", "Protocol::HTTP2::Connection"],
+          *%w[Client Server].map do |side|
+            ["protocol-http2", "#{H2}::#{side}", :update_local_settings, :public, "(_)", "Protocol::HTTP2::Connection"]
+          end,
           *%w[Request Response].flat_map do |side|
             STREAM_HOOKS.map { |gem, *hook| [gem, "#{H2}::#{side}::Stream", *hook] }
           end

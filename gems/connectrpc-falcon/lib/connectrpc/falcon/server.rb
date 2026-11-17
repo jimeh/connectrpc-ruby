@@ -8,7 +8,8 @@ module ConnectRPC
                      handshake_timeout: 10, idle_timeout: 60, refresh_interval: 60,
                      refresh_jitter: 0.1, refresh_timeout: 10, on_tls_error: nil,
                      keepalive: ::ConnectRPC::Async::ServerKeepalive.new, max_concurrent_streams: 100,
-                     request_body_timeout: 60)
+                     request_body_timeout: 60, stream_receive_window: 65_536,
+                     connection_receive_window: 16_777_216)
         raise ArgumentError, "cache must be true or false" unless [true, false].include?(cache)
 
         configured = if endpoint.is_a?(::IO::Endpoint::BoundEndpoint)
@@ -39,7 +40,8 @@ module ConnectRPC
           alpn_protocols: %w[h2 http/1.1], http1: HTTP1Resource.method(:new),
           stop_accepting: method(:stop_accepting), on_request_rejected: -> { @request_total.increment },
           keepalive: keepalive, max_concurrent_streams: max_concurrent_streams,
-          request_body_timeout: request_body_timeout
+          request_body_timeout: request_body_timeout, stream_receive_window: stream_receive_window,
+          connection_receive_window: connection_receive_window
         )
         # Preserve parent-bound descriptors while installing a worker-local
         # accept wrapper through IO::Endpoint's supported wrapper option.

@@ -154,8 +154,8 @@ response. Native output retains one queued and one in-flight 16 KiB entity
 fragment. Text uses raw slices of at most 12,288 bytes and flushes padded groups
 at existing write boundaries, including the first small prefix.
 
-Native H2 ingress remains 65,536 bytes/five entries with 16 KiB chunks and
-consumption-based stream credit. The H1 input adapter may retain one pinned
+Native H2 ingress remains one stream receive window (65,536 bytes/five entries
+by default) with 16 KiB chunks and consumption-based stream credit. The H1 input adapter may retain one pinned
 backend chunk of up to 64 KiB. During rejected-input cleanup this remainder can
 coexist with one discard read of at most 64 KiB. Complete parsed field blocks are checked before application copies;
 H2 includes pseudo/status fields. Parser/readahead, HPACK/CONTINUATION temporaries,

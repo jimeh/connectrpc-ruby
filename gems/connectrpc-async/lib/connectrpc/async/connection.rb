@@ -5,13 +5,25 @@ module ConnectRPC
     module Internal
       # A server advertises its per-connection stream limit, which can be
       # lower than its host-wide request admission.
-      def self.settings(max_requests, max_concurrent_streams: max_requests)
+      def self.settings(max_requests, max_concurrent_streams: max_requests, stream_window: 65_536)
         {
           ::Protocol::HTTP2::Settings::ENABLE_PUSH => 0,
           ::Protocol::HTTP2::Settings::MAXIMUM_CONCURRENT_STREAMS => max_concurrent_streams,
           ::Protocol::HTTP2::Settings::MAXIMUM_FRAME_SIZE => 16_384,
-          ::Protocol::HTTP2::Settings::INITIAL_WINDOW_SIZE => 65_536
+          ::Protocol::HTTP2::Settings::INITIAL_WINDOW_SIZE => stream_window
         }
+      end
+
+      # From the RFC 9113 initial window, 65,535, to the largest it allows.
+      # The stream window is also each stream's retained ingress bound.
+      # Connection credit returns on receipt, so the connection window bounds
+      # bytes in flight, not retained bytes.
+      def self.receive_window(value, name)
+        unless value.is_a?(Integer) && value.between?(65_535, ::Protocol::HTTP2::MAXIMUM_ALLOWED_WINDOW_SIZE)
+          raise ArgumentError, "#{name} must be an integer from 65535 to 2147483647"
+        end
+
+        value
       end
 
       # Raised before a writer enters the guard of a connection that can no
@@ -49,9 +61,48 @@ module ConnectRPC
         end
       end
 
+      # Receive windows of a client or server connection.
+      module ReceiveWindows
+        # Set before the preface. Streams use the stream window before the
+        # peer acknowledges SETTINGS: accepting more than the peer may yet
+        # send is safe, and a peer may spend the larger window before its ACK.
+        def receive_windows(stream:, connection:)
+          @stream_receive_window = stream
+          @connection_receive_window = connection
+        end
+
+        attr_reader :stream_receive_window
+
+        # Grows the connection window from the RFC 9113 initial 65,535 with
+        # one WINDOW_UPDATE on stream 0, as net/http2 does, instead of waiting
+        # for the first DATA. Credit is reserved before the write, as for
+        # stream updates.
+        def grow_connection_window
+          target = @connection_receive_window
+          return unless target
+
+          local_window.desired = target
+          increment = target - local_window.available
+          return unless increment.positive?
+
+          local_window.expand(increment)
+          frame = ::Protocol::HTTP2::WindowUpdateFrame.new(0)
+          frame.pack(increment)
+          write_frame(frame)
+        end
+
+        # protocol-http2 retargets connection replenishment to the stream
+        # window when the peer acknowledges SETTINGS.
+        def update_local_settings(changes)
+          super
+          local_window.desired = @connection_receive_window if @connection_receive_window
+        end
+      end
+
       # Version-coupled wrappers around the selected stack, not a frame codec.
       module Connection
         include Liveness
+        include ReceiveWindows
 
         attr_accessor :resource, :defer_close
         attr_reader :writers, :reader_task
@@ -196,6 +247,12 @@ module ConnectRPC
       module Stream # rubocop:disable Metrics/ModuleLength
         attr_reader :grpc_initial_headers, :grpc_initial_end_stream, :grpc_trailers, :grpc_error, :grpc_reset,
                     :declared_length
+
+        def initialize(...)
+          super
+          window = connection.stream_receive_window
+          local_window.capacity = window if window && window > local_window.capacity
+        end
 
         def grpc_mark! = @grpc = true
         def grpc? = !!@grpc
