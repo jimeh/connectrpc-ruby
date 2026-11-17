@@ -75,7 +75,7 @@ These affect native HTTP/2 connections of the Async `Transport`,
 - `Transport` and `ThreadedTransport` advertise a 4 MiB stream window instead
   of 64 KiB, so one response stream is no longer limited to 64 KiB per round
   trip: a 3 MiB download over 50 ms of round-trip time takes about 0.13 s
-  instead of 7 s. Each call can now retain up to 4 MiB of unread response
+  instead of 5 to 7 s. Each call can now retain up to 4 MiB of unread response
   payload, so a transport's ceiling grows from 8 MiB to 512 MiB at the default
   `max_requests` of 128. Pass `stream_receive_window: 65_536` to keep the old
   client window. See

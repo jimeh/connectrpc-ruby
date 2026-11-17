@@ -1249,27 +1249,27 @@ refused before the server reads its DATA, so it retains nothing.
 
 A client call retains at most one stream window of unread response payload,
 4 MiB by default, for example while a streaming call's application stops
-reading. A client transport therefore retains at most
-`stream_receive_window` times its own `max_requests`: 512 MiB with the
-defaults, against 8 MiB before 0.3.0. A unary call reads its response as it
-arrives into one buffer bounded by core's `response_limit` (default 4 MiB), so
-it holds at most that buffer plus one window of unread bytes, and an oversized
+reading. A client transport therefore retains at most `stream_receive_window`
+times its own `max_requests`: 512 MiB with the defaults, against 8 MiB before
+0.3.0. A Connect unary call reads its response as it arrives into one buffer
+bounded by core's `response_wire_limit` (default `response_limit`, 4 MiB), so it
+holds at most that buffer plus one window of unread bytes, and an oversized
 response still fails with `resource_exhausted`. These add to core's per-message
 `request_limit` and `response_limit` buffering and the other allocations listed
-under [Ingress bounds](#ingress-bounds). Pass `stream_receive_window: 65_536`
-to restore the 64 KiB client bound, for example on a transport that holds many
+under [Ingress bounds](#ingress-bounds). Pass `stream_receive_window: 65_536` to
+restore the 64 KiB client bound, for example on a transport that holds many
 concurrent streams whose readers fall behind.
 
 Since 0.3.0, the client default follows Go's net/http2 client; before, client
 streams used 64 KiB. A client receives only the responses it requested, so a
-larger window costs memory only for calls the application started, and a unary
-response at core's default 4 MiB `response_limit` fits in one window, so it
-never waits for stream credit. The server default keeps the 64 KiB per-stream
-bound, because a server receives whatever its peers send. Raise the host's
-`stream_receive_window` for faster uploads when the round-trip time matters.
-`mise run async:bench:windows` measured these with 3 MiB unary bodies through a
-local proxy that adds 50 ms of round-trip time; `--stream` or `--connection` in
-bytes sets a window on both the client and the host:
+larger window costs memory only for calls the application started, and a Connect
+unary response within the default 4 MiB `response_wire_limit` fits in one
+window, so it never waits for stream credit. The server default keeps the 64 KiB
+per-stream bound, because a server receives whatever its peers send. Raise the
+host's `stream_receive_window` for faster uploads when the round-trip time
+matters. `mise run async:bench:windows` measured these with 3 MiB unary bodies
+through a local proxy that adds 50 ms of round-trip time; `--stream` or
+`--connection` in bytes sets a window on both the client and the host:
 
 | Windows (client stream / host stream / connection) | Download | 4 concurrent downloads | Upload |
 | --- | --- | --- | --- |
