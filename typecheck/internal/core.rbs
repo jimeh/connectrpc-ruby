@@ -365,6 +365,7 @@ module ConnectRPC
       end
     end
     class ConnectionObserver
+      OUTCOMES: Hash[Symbol, String]
       @recorder: _Recorder
       @labels: labels
       @keys: Hash[Symbol, Symbol]

@@ -16,8 +16,8 @@
 `connectrpc-otel` turns the core ConnectRPC per-call lifecycle into
 OpenTelemetry CLIENT and SERVER spans for Connect unary/streaming, native gRPC
 and server gRPC-Web RPCs. Use it when your application already configures an
-OpenTelemetry SDK and you want one span per RPC, linked across services by W3C
-trace context.
+OpenTelemetry SDK and you want one span per RPC, linked across services by the
+application's propagator.
 
 The package is experimental. See the [supported 0.x contract](../../docs/support.md)
 for the target support profile, matched package versions, compatibility policy
@@ -54,10 +54,10 @@ instrumentation = ConnectRPC::Instrumentation.new(
 ```
 
 Every `Subscriber.new` keyword is optional. `tracer_provider:` defaults to
-`OpenTelemetry.tracer_provider`, `propagator:` to the W3C default described
-below, and `request_metadata:` and `response_metadata:` to capturing no
-metadata. For native Rails controllers, override the private `connect_instrumentation`
-hook instead; see [host notes](#host-notes).
+`OpenTelemetry.tracer_provider`, `propagator:` to the application's global
+propagator described below, and `request_metadata:` and `response_metadata:`
+to capturing no metadata. For native Rails controllers, override the private
+`connect_instrumentation` hook instead; see [host notes](#host-notes).
 
 `mise run otel:example` runs a generated caller with a real in-memory SDK
 exporter from the repository root.
@@ -69,9 +69,12 @@ The application owns its SDK, sampling, processors and exporters. Requiring
 providers/propagators, or creates network clients.
 
 - The default tracer provider is the application's OpenTelemetry provider.
-- An explicit W3C trace-context plus baggage propagator is used by default,
-  including when the global propagator is no-op. Pass `propagator:` to select
-  another application propagator.
+- Since 0.2.2, the default propagator is the global `OpenTelemetry.propagation`,
+  looked up at each use, so SDK configuration made after the subscriber is
+  built applies, including `OTEL_PROPAGATORS` (for example `b3`). Without SDK
+  configuration the global propagator is no-op and nothing propagates, as with
+  other OpenTelemetry instrumentation. Pass `propagator:` to use a specific
+  propagator instead.
 - Span finish invokes application-owned processors synchronously; a synchronous
   exporter can block the calling thread/reactor. This package makes no
   nonblocking guarantee.
@@ -96,15 +99,20 @@ which are Development.
 - SERVER treats `unknown`, `deadline_exceeded`, `unimplemented`, `internal`,
   `unavailable`, and `data_loss` as errors. Delivered `invalid_argument`, for
   example, leaves SERVER status UNSET.
-- Independent operation failures and host aborts are errors.
-- `error.type` contains a bounded code or a local classification; success
-  remains UNSET. Codes are the RPC codes above. Local classifications are
-  `operation_failed` (an original non-Connect failure, or a failure without an
-  emitted code), `preflight_rejected` (a bare HTTP rejection with no RPC code),
-  `delivery_aborted` (an aborted delivery, unless a gRPC or gRPC-Web call has a
-  non-OK code, which is reported instead) and the
-  `admission_rejected` and `host_rejected` decisions. Local classifications are
-  lower-case on every protocol.
+- Independent operation failures are errors.
+- An aborted delivery after `OK` or without an RPC code is an error. With a
+  non-OK code, the role policy above decides: a client cancellation aborts
+  server delivery but leaves the SERVER span `canceled` and UNSET, while the
+  CLIENT span reports the code as an error.
+- `error.type` contains a bounded code, an exception class name or a local
+  classification; success remains UNSET. Codes are the RPC codes above and take
+  precedence. Otherwise an original non-Connect exception reports its class
+  name, such as `RuntimeError`. Local classifications are `operation_failed` (a
+  failure without an emitted code whose exception is a `ConnectRPC::Error` or
+  has an anonymous class), `preflight_rejected` (a bare HTTP rejection with no
+  RPC code), `delivery_aborted` (an aborted delivery after `OK` or without an
+  RPC code) and the `admission_rejected` and `host_rejected` decisions. Local
+  classifications are lower-case on every protocol.
 
 There are no automatic exception events, descriptions, stacks, payloads, raw
 URLs/queries, certificate data or arbitrary metadata.
@@ -112,10 +120,10 @@ URLs/queries, certificate data or arbitrary metadata.
 ### Unknown methods
 
 Unknown methods use span name `connectrpc` and `rpc.method=_OTHER`. This adapter
-redacts `rpc.method_original` by default. That attribute is conditionally
-required by v1.44.0 for unknown methods, so this privacy default is a specific
-conformance limitation. This is not a claim of full semantic-convention
-compliance. Instrumentation scope `connectrpc-otel` identifies its package
+never records `rpc.method_original`, because the core call carries no request
+path. That attribute is conditionally required by v1.44.0 for unknown methods,
+so this is a specific conformance limitation. This is not a claim of full
+semantic-convention compliance. Instrumentation scope `connectrpc-otel` identifies its package
 version and has `connectrpc.semconv.version=1.44.0`. API 1.11.1/SDK 1.13.1 support
 scope attributes, but no tracer schema URL; none is supplied.
 
@@ -125,16 +133,17 @@ Metadata capture requires explicit names, at most 32 per direction, each at most
 128 bytes. Values retain repeated arrays, limited to eight printable ASCII
 entries of 256 bytes each, under `connectrpc.request.metadata.<name>` and
 `connectrpc.response.metadata.<name>`. No wildcards are accepted. Selecting
-sensitive names is the application's responsibility. Baggage propagates but
-is not captured as span attributes. Request injection is staged and validated
-before merging into copied metadata; invalid injection is discarded and
-reported without changing caller metadata or protocol headers. Injected keys
-replace caller values, except `baggage`: the wire carries the caller's
-`baggage` values first, then the injected ones. When an earlier subscriber has
-staged `baggage`, that baggage stays first, each list member exactly once,
-followed by the members the propagator added, whether the default or a custom
-propagator replaces, joins, edits or removes the value. Core keeps duplicate
-members and does not validate W3C syntax; see
+sensitive names is the application's responsibility. Baggage propagates when
+the propagator carries it, as the SDK default does, but is never captured as
+span attributes. Request injection is staged and validated before merging
+into copied metadata; invalid injection is discarded and reported without
+changing caller metadata or protocol headers. Injected keys replace caller
+values, except `baggage`: the wire carries the caller's `baggage` values first,
+then the injected ones. When an earlier subscriber has staged `baggage`, that
+baggage stays first, each list member exactly once, followed by the members the
+propagator added, whether the propagator replaces, joins, edits, removes or
+leaves the value alone. Core keeps duplicate members and does not validate W3C
+syntax; see
 [design](../../docs/design.md#rpc-lifecycle-observation) for receiver limits.
 
 ## Processing and delivery

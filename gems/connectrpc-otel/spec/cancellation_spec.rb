@@ -34,8 +34,8 @@ RSpec.describe "Cancellation tracing" do
     parent&.finish
   end
 
-  %i[async falcon].each do |backend|
-    it "finishes #{backend} cancellation on its executing fibers after a foreign thread only signals" do
+  [%i[async connect], %i[falcon connect], %i[async grpc]].each do |backend, protocol|
+    it "finishes #{backend} #{protocol} cancellation on its executing fibers after a foreign thread only signals" do
       provider, exporter, = tracing
       reactor do |task|
         entered = Async::Queue.new
@@ -51,7 +51,7 @@ RSpec.describe "Cancellation tracing" do
         subscriber.define_singleton_method(:start) { |_| observer }
         tracing_subscriber = ConnectRPC::OTel::Subscriber.new(tracer_provider: provider)
         observed_bus = ConnectRPC::Instrumentation.new(subscribers: [tracing_subscriber, subscriber])
-        target = server(instrumentation: observed_bus, echo: lambda { |message, current|
+        target = server(instrumentation: observed_bus, protocol: protocol, echo: lambda { |message, current|
           context = current
           entered.enqueue(true)
           release.dequeue
@@ -60,7 +60,7 @@ RSpec.describe "Cancellation tracing" do
         })
         runner = lambda do |_host, origin|
           transport = ConnectRPC::Async::Transport.new(origin: origin)
-          typed = client(transport, origin, instrumentation: observed_bus)
+          typed = client(transport, origin, instrumentation: observed_bus, protocol: protocol)
           parent = provider.tracer("test").start_span("parent")
           execution_thread = Thread.current
           call = task.async(finished: false) do
@@ -78,10 +78,16 @@ RSpec.describe "Cancellation tracing" do
           release.enqueue(true)
           wait_until(task, "two exported canceled spans") { rpc_spans(exporter).size == 2 }
           spans = rpc_spans(exporter)
-          expect(spans.map { |span| span.attributes["rpc.response.status_code"] }).to eq(%w[canceled canceled])
+          code = protocol == :grpc ? "CANCELLED" : "canceled"
+          expect(spans.map { |span| span.attributes["rpc.response.status_code"] }).to eq([code, code])
           receiver = spans.find { |span| span.kind == :server }
+          caller = spans.find { |span| span.kind == :client }
+          # A client cancellation is not a server error, even though the server's delivery aborted.
           expect(receiver.attributes["connectrpc.delivery"]).to eq("aborted")
-          expect(receiver.status.code).to eq(OpenTelemetry::Trace::Status::ERROR)
+          expect(receiver.attributes).not_to have_key("error.type")
+          expect(receiver.status.code).to eq(OpenTelemetry::Trace::Status::UNSET)
+          expect(caller.attributes["error.type"]).to eq(code)
+          expect(caller.status.code).to eq(OpenTelemetry::Trace::Status::ERROR)
           expect(callbacks.grep(ConnectRPC::Instrumentation::Outcome).size).to eq(2)
           expect(callbacks.grep(ConnectRPC::Instrumentation::Completion).size).to eq(2)
           expect(callbacks.grep(Array).map(&:first)).to all(equal(execution_thread))

@@ -8,6 +8,13 @@ require "echo_connect"
 require "opentelemetry/sdk"
 require "opentelemetry/sdk/trace/export/in_memory_span_exporter"
 
+# The application owns the global propagator. This is the one
+# OpenTelemetry::SDK.configure installs by default, set directly so the example
+# configures no exporter and stays offline.
+OpenTelemetry.propagation = OpenTelemetry::Context::Propagation::CompositeTextMapPropagator.compose_propagators(
+  [OpenTelemetry::Trace::Propagation::TraceContext.text_map_propagator,
+   OpenTelemetry::Baggage::Propagation.text_map_propagator]
+)
 exporter = OpenTelemetry::SDK::Trace::Export::InMemorySpanExporter.new
 provider = OpenTelemetry::SDK::Trace::TracerProvider.new
 provider.add_span_processor(OpenTelemetry::SDK::Trace::Export::SimpleSpanProcessor.new(exporter))

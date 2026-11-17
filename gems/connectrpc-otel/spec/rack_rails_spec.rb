@@ -100,6 +100,9 @@ RSpec.describe "Rack and native Rails tracing" do
   ensure
     host&.close
     parent&.finish
+    # Instrumentation cannot be uninstalled. Untrace every host so later
+    # examples, which install the SDK-default global propagator, keep plain Net::HTTP.
+    net_http.config[:untraced_hosts] = [//] if net_http&.installed?
     OpenTelemetry.tracer_provider = original_provider if original_provider
     OpenTelemetry.propagation = original_propagator if original_propagator
   end

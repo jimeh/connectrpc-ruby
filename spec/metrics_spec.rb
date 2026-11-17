@@ -284,6 +284,18 @@ RSpec.describe "Backend-neutral metrics" do
       )
     end
 
+    it "bounds attempt outcome labels to the documented set, recording anything else as other" do
+      observer = self.observer
+      known = %i[ready refused timeout tls protocol closed other]
+      [*known, :surprise, "ready", nil].each do |outcome|
+        observer.call(event(:attempt_finished, state: :connecting, outcome: outcome))
+      end
+      outcomes = recorder.calls.filter_map do |op, key, labels|
+        labels.fetch(:outcome) if op == :increment && key == :client_connection_attempts_total
+      end
+      expect(outcomes).to eq([*known.map(&:to_s), "other", "other", "other"])
+    end
+
     it "records nothing for connection_closed events with unchanged counts" do
       observer = self.observer
       %i[keepalive_timeout drain_timeout goaway closed].each do |reason|

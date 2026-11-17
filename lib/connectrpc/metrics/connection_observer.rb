@@ -14,6 +14,9 @@ module ConnectRPC
     # can still overwrite the current state and counts.
     class ConnectionObserver
       TRANSPORT = /\A[a-z0-9_]{1,64}\z/
+      # The documented attempt outcomes; anything else is recorded as other.
+      OUTCOMES = %i[ready refused timeout tls protocol closed other].to_h { |outcome| [outcome, outcome.to_s] }.freeze
+      private_constant :OUTCOMES
 
       attr_reader :transport
 
@@ -98,7 +101,7 @@ module ConnectRPC
 
       def attempt_finished(outcome, duration)
         @recorder.increment(@keys.fetch(:client_connection_attempts_total),
-                            @labels.merge(outcome: outcome.to_s), 1)
+                            @labels.merge(outcome: OUTCOMES.fetch(outcome, "other")), 1)
         @recorder.observe(@keys.fetch(:client_connection_attempt_seconds), @labels, duration) if duration
       end
 

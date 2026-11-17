@@ -683,7 +683,7 @@ run independently of the other package jobs. Runtime bundles never gain an SDK.
 Package checks install normal dependencies offline into a fresh external
 GEM_HOME, then run copied generated callers with actual SDK in-memory exports.
 See the [package guide](../gems/connectrpc-otel/README.md) for the precise trace
-baseline and unknown-method default-redaction limitation.
+baseline and the unknown-method `rpc.method_original` limitation.
 
 ## Optional metrics development
 
