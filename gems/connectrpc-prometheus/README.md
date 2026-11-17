@@ -97,7 +97,7 @@ any other exporter over the same registry.
   `connect_instrumentation` method, separately from `connect_limits`.
 - **Falcon** (`connectrpc-falcon`): serve the exporter through the `rack_app`
   fallback. RPC traffic bypasses it; the fallback receives `/metrics`.
-- **Async standalone `Host`**: since 0.2.2, pass a native Protocol::HTTP
+- **Async standalone `Host`**: since 0.3.0, pass a native Protocol::HTTP
   exporter as the Host's `fallback:`. RPC traffic bypasses it; it receives every
   other path.
 
@@ -169,8 +169,8 @@ Base labels `B` are `grpc_type`, `grpc_service`, `grpc_method` and
 | `grpc_client_connection_state_changes_total` | counter | `transport`, `state` | Async state change |
 | `grpc_client_connection_state` | gauge | `transport`, `state` | 1 for the current state, starts `idle` |
 | `grpc_client_admission_rejected_total` | counter | `transport` | Async admission rejection |
-| `grpc_client_connections` | gauge | `transport`, `state` | current connections; `state` is `active` or `draining`, starts 0; since 0.2.2 |
-| `grpc_client_pending_calls` | gauge | `transport` | current calls waiting for a connection, starts 0; since 0.2.2 |
+| `grpc_client_connections` | gauge | `transport`, `state` | current connections; `state` is `active` or `draining`, starts 0; since 0.3.0 |
+| `grpc_client_pending_calls` | gauge | `transport` | current calls waiting for a connection, starts 0; since 0.3.0 |
 
 Classification at finish, with `code` from the outcome's code or its normalized
 error's code:
@@ -195,7 +195,7 @@ histogram; average messages per stream is `msg_*_total / handled_total`.
 - `grpc_code` uses Go `codes.Code` strings (`OK`, `Canceled`, `InvalidArgument`,
   ..., `Unauthenticated`); anything else is `Unknown`.
 - There are no peer, address, path, metadata or error-text labels.
-- Since 0.2.2, `grpc_client_connections{state="active"}` counts connections that
+- Since 0.3.0, `grpc_client_connections{state="active"}` counts connections that
   accept new calls; `state="draining"` counts connections that no longer do
   (after a GOAWAY, or failed while calls unwind) until their last call ends.
   Their sum is the transport's accounted connections, which can include a

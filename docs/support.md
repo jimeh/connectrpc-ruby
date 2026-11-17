@@ -412,7 +412,7 @@ or a third-party server that owns the connection. Configure keepalive, PING
 enforcement and connection age limits there, for example Envoy's
 `max_connection_duration` or nginx's `keepalive_timeout`.
 
-Since 0.2.2, the same hosts limit streams per HTTP/2 connection
+Since 0.3.0, the same hosts limit streams per HTTP/2 connection
 (`max_concurrent_streams`, default 100) below the host-wide `max_requests`
 (default 128), refuse a stream over either limit with `REFUSED_STREAM`, and
 reset a stalled request body (`request_body_timeout`, default 60 seconds) with

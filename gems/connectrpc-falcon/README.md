@@ -103,9 +103,9 @@ Include `ConnectRPC::Falcon::Environment` in each service:
 - `rack_app` supplies the optional fallback.
 - `tls` or `tls_provider` supplies the TLS source; see [TLS lifecycle](#tls-lifecycle).
 - `server_options` supplies shared limits and host options such as `cache:`,
-  `keepalive:`, and since 0.2.2 `max_concurrent_streams:` and
+  `keepalive:`, and since 0.3.0 `max_concurrent_streams:` and
   `request_body_timeout:`.
-- Since 0.2.2, `connectrpc_close_grace` sets the managed worker stop grace in
+- Since 0.3.0, `connectrpc_close_grace` sets the managed worker stop grace in
   seconds (default 5); see [Shutdown](#shutdown).
 - `url` describes the listener.
 
@@ -312,7 +312,7 @@ boundary uses raw-first abort and offers no response-delivery guarantee.
 HTTP response completion is separate from TLS `close_notify`; orderly TLS
 shutdown is not promised.
 
-Since 0.2.2, managed worker stop uses the service's `connectrpc_close_grace`
+Since 0.3.0, managed worker stop uses the service's `connectrpc_close_grace`
 (default 5 seconds). Keep it below the Falcon container's graceful stop
 timeout, after which the container kills workers. `falcon host` uses
 async-container's default of 10 seconds, which `ASYNC_CONTAINER_GRACEFUL_STOP`
@@ -382,7 +382,7 @@ drains idle HTTP/2 connections gracefully. HTTP/1 connections have no keepalive
 and are still closed once idle. See
 [Server keepalive](../connectrpc-async/README.md#server-keepalive).
 
-Since 0.2.2, `max_concurrent_streams:` (default 100) and `request_body_timeout:`
+Since 0.3.0, `max_concurrent_streams:` (default 100) and `request_body_timeout:`
 (default 60 seconds) also apply to native HTTP/2 connections as on the Async
 `Host`: a stream over the connection's limit or over full `max_requests`
 admission is refused with `REFUSED_STREAM`, and a stalled request body other

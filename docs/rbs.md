@@ -7,9 +7,9 @@ Every package ships its own gem-discovered signatures and dependency manifest.
 Core also generates mixed unary/streaming service signatures. RBS and Steep are
 development tools; neither is required by the runtime. Default Connect
 generation writes only Ruby files. The plugin parameter `rbs=true` also adds
-`<stem>_connect.rbs` for each service-bearing input; `rbs=false` explicitly
-selects the default Ruby-only output. Unknown, duplicate, combined, invalid and
-trailing parameters fail without files.
+`<stem>_connect.rbs` for each service-bearing input. Since 0.3.0, `rbs=false`
+explicitly selects the default Ruby-only output. Unknown, duplicate, combined,
+invalid and trailing parameters fail without files.
 
 ## Generate messages and services
 
