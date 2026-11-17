@@ -22,8 +22,15 @@ RSpec.shared_examples "HTTP/2 server keepalive" do
                                                          response_type: AsyncHelpers::MESSAGE)
   end
 
+  def collect_method
+    @collect_method ||= ConnectRPC::ClientStreamMethod.new(service: "test.Keepalive", name: "Collect",
+                                                           request_type: AsyncHelpers::MESSAGE,
+                                                           response_type: AsyncHelpers::MESSAGE)
+  end
+
   # Unary calls are logged and those named hold* wait for their release.
-  # Watch streams every name the example feeds until it feeds nil.
+  # Watch streams every name the example feeds until it feeds nil. Collect
+  # logs its start and joins every name it receives.
   def keepalive_server(log)
     echo = lambda do |message, _context|
       log[:invoked] << message.name
@@ -37,10 +44,19 @@ RSpec.shared_examples "HTTP/2 server keepalive" do
         output.send_message(AsyncHelpers::MESSAGE.new(name: name))
       end
     end
+    collect = lambda do |reader, _context|
+      log[:invoked] << "collect"
+      names = []
+      while (message = reader.receive)
+        names << message.name
+      end
+      AsyncHelpers::MESSAGE.new(name: names.join(","))
+    end
     handlers = AsyncHelpers::ECHO.handlers(echo: echo, fail: ->(message, _context) { message })
-    services = [AsyncHelpers::ECHO::SERVICE, ConnectRPC::Service.new(name: "test.Keepalive", methods: [watch_method])]
+    services = [AsyncHelpers::ECHO::SERVICE,
+                ConnectRPC::Service.new(name: "test.Keepalive", methods: [watch_method, collect_method])]
     ConnectRPC::Server.new(services: services, binding: ConnectRPC::Bindings::GoogleProtobuf.new,
-                           handlers: handlers.merge(watch_method.path => watch))
+                           handlers: handlers.merge(watch_method.path => watch, collect_method.path => collect))
   end
 
   def keepalive_log
@@ -48,25 +64,29 @@ RSpec.shared_examples "HTTP/2 server keepalive" do
     { invoked: [], finished: [], holds: queues.call, feeds: queues.call }
   end
 
-  def with_keepalive_host(task, keepalive:, idle_timeout: nil, tls: false)
+  def with_keepalive_host(task, keepalive:, idle_timeout: nil, tls: false, **)
     log = keepalive_log
     host = keepalive_host(server: keepalive_server(log), idle_timeout: idle_timeout, keepalive: keepalive,
-                          tls: tls ? host_tls : nil)
+                          tls: tls ? host_tls : nil, **)
     session = keepalive_session(host)
     clock = ConnectionPeer::FakeClock.new
     session.instance_variable_set(:@clock, clock)
     session.instance_variable_set(:@random, ConnectionPeer::SequenceRandom.new(0.5))
     client = keepalive_client(task, host.port, tls: tls ? client_tls : nil)
     resource = nil
-    wait_until(task, "server connection upkeep") do
-      (resource = session.instance_variable_get(:@resources).first)&.upkeep
-    end
+    wait_until(task, "server connection upkeep") { resource = served_resource(session) }
     yield KeepaliveClient::Fixture.new(host, clock, client, resource, log)
   ensure
     log[:holds].each_value { |queue| queue.enqueue(true) }
     log[:feeds].each_value { |queue| queue.enqueue(nil) }
     close_keepalive_client(client)
     host&.close(grace: 0)
+  end
+
+  # The reader starts once the upkeep's timers have started.
+  def served_resource(session)
+    resource = session.instance_variable_get(:@resources).first
+    resource if resource&.upkeep && resource.connection&.reader_task
   end
 
   def unary(fixture, name)
@@ -271,7 +291,9 @@ RSpec.shared_examples "HTTP/2 server keepalive" do
 
   describe "local close" do
     # The session's final GOAWAY closes the connection before its reader
-    # stops. A PING the reader already read is applied in that window.
+    # stops. A PING the reader already read is applied in that window. The
+    # held reader cannot read the drain PING's ACK, so the 5 s fallback
+    # writes the cutoff.
     it "ignores a client PING applied after the final GOAWAY instead of sending a second GOAWAY" do
       reactor do |task|
         with_keepalive_host(task, keepalive: server_keepalive(time: nil)) do |fixture|
@@ -293,8 +315,14 @@ RSpec.shared_examples "HTTP/2 server keepalive" do
           end
           send_ping(client, "late-001")
           held.wait
-          expect(fixture.host.close(grace: 1)).to be(true)
-          expect(client.wire.goaways).to eq([[0, KeepaliveClient::NO_ERROR, ""]])
+          closing = task.async { fixture.host.close(grace: 1) }
+          await_due(task, fixture.clock, 5)
+          fixture.clock.advance(5)
+          expect(closing.wait).to be(true)
+          expect(client.wire.goaways).to eq(
+            [[KeepaliveClient::MAX_STREAM_ID, KeepaliveClient::NO_ERROR, "graceful_stop"],
+             [0, KeepaliveClient::NO_ERROR, "graceful_stop"], [0, KeepaliveClient::NO_ERROR, ""]]
+          )
           expect(client.wire.acks).to eq([])
         end
       end
@@ -604,6 +632,327 @@ RSpec.shared_examples "HTTP/2 server keepalive" do
                                              [1, KeepaliveClient::NO_ERROR, "max_idle"]])
           wait_until(task, "server half-close") { client.eof? }
           wait_until(task, "connection retired") { retired?(fixture.resource) }
+        end
+      end
+    end
+  end
+
+  describe "stream admission" do
+    # One connection holding body-less streams up to the host-wide cap used
+    # to leave every other connection with 503.
+    it "refuses streams over the per-connection limit and keeps other connections served" do
+      reactor do |task|
+        with_keepalive_host(task, keepalive: server_keepalive(time: nil)) do |fixture|
+          client = fixture.client
+          ids = Array.new(128) do
+            client.connection.next_stream_id.tap { |id| raw_headers(client, id, request_headers(echo_path)) }
+          end
+          ping_through(task, client, "seen0128")
+          # Body-less streams invoke no handler; host admission shows their dispatch.
+          admitted = keepalive_session(fixture.host).instance_variable_get(:@admitted)
+          wait_until(task, "every held stream dispatched or refused; admitted #{admitted.size}") do
+            admitted.size + client.wire.resets.size == 128
+          end
+          other = keepalive_client(task, fixture.host.port)
+          response = other.connection.call(connect_request(echo_path, "other"))
+          expect([response.status, response.read]).to eq([200, encoded("other")])
+          wait_until(task, "over-limit refusals; resets #{client.wire.resets.size}") do
+            client.wire.resets.size == 28
+          end
+          expect(client.wire.resets).to eq(ids.drop(100).to_h { |id| [id, KeepaliveClient::REFUSED_STREAM] })
+          expect(client.wire.goaways).to eq([])
+          expect(client.wire.settings.first).to include([Protocol::HTTP2::Settings::MAXIMUM_CONCURRENT_STREAMS, 100])
+        ensure
+          close_keepalive_client(other)
+        end
+      end
+    end
+
+    it "advertises max_concurrent_streams and enforces it before the client acknowledges SETTINGS" do
+      reactor do |task|
+        with_keepalive_host(task, keepalive: server_keepalive(time: nil), max_concurrent_streams: 2) do |fixture|
+          early = keepalive_client(task, fixture.host.port, ack_settings: false)
+          expect(early.wire.settings.first).to include([Protocol::HTTP2::Settings::MAXIMUM_CONCURRENT_STREAMS, 2])
+          ids = Array.new(3) do
+            early.connection.next_stream_id.tap { |id| raw_headers(early, id, request_headers(echo_path)) }
+          end
+          ping_through(task, early, "unacked1")
+          wait_until(task, "refusal; resets #{early.wire.resets}") { early.wire.resets.any? }
+          expect(early.wire.resets).to eq(ids.last => KeepaliveClient::REFUSED_STREAM)
+          expect(early.wire.goaways).to eq([])
+        ensure
+          close_keepalive_client(early)
+        end
+      end
+    end
+
+    # Clients then queue streams the host could never admit, rather than
+    # sending them to be refused.
+    it "advertises max_requests when it is below max_concurrent_streams" do
+      reactor do |task|
+        with_keepalive_host(task, keepalive: server_keepalive(time: nil), max_requests: 3) do |fixture|
+          expect(fixture.client.wire.settings.first)
+            .to include([Protocol::HTTP2::Settings::MAXIMUM_CONCURRENT_STREAMS, 3])
+        end
+      end
+    end
+
+    # Refused streams keep HPACK, CONTINUATION and flow control in step, and
+    # their later frames never fail the connection or its open sibling.
+    it "decodes and drops fragmented, indexed and late frames of streams over the limit beside a healthy sibling" do
+      reactor do |task|
+        with_keepalive_host(task, keepalive: server_keepalive(time: nil), max_concurrent_streams: 1) do |fixture|
+          client = fixture.client
+          wire = client.wire
+          response = watch(fixture, "sibling", "one")
+          fragmented = client.connection.next_stream_id
+          padding = Array.new(24) { |index| ["x-pad-#{index}", "p" * 1000] }
+          headers = raw_headers(client, fragmented, request_headers(echo_path, *padding, %w[x-indexed marker]))
+          expect(headers.continuation).not_to be_nil
+          indexed = client.connection.next_stream_id
+          raw_headers(client, indexed, request_headers(echo_path, %w[x-indexed marker]))
+          wait_until(task, "both streams refused") { wire.resets.keys == [fragmented, indexed] }
+          expect(wire.resets.values).to eq([KeepaliveClient::REFUSED_STREAM, KeepaliveClient::REFUSED_STREAM])
+          raw_data(client, fragmented, "x" * 1000)
+          raw_headers(client, fragmented, [%w[x-trailer late]], end_stream: true)
+          raw_reset(client, indexed)
+          ping_through(task, client, "lateok01")
+
+          fixture.log[:feeds]["sibling"].enqueue("two")
+          read_until(response, "two")
+          fixture.log[:feeds]["sibling"].enqueue(nil)
+          nil while response.body.read
+          wait_until(task, "sibling closed") { fixture.resource.connection.streams.empty? }
+          expect(unary(fixture, "after")).to eq([200, encoded("after")])
+          expect(wire.goaways).to eq([])
+          expect(fixture.log[:invoked]).to eq(["after"])
+        end
+      end
+    end
+
+    it "refuses a stream with REFUSED_STREAM instead of 503 when host admission is full" do
+      reactor do |task|
+        with_keepalive_host(task, keepalive: server_keepalive(time: nil), max_requests: 1) do |fixture|
+          held = task.async { unary(fixture, "hold-admission") }
+          wait_until(task, "held call invoked") { fixture.log[:invoked] == ["hold-admission"] }
+          other = keepalive_client(task, fixture.host.port)
+          refused = other.connection.next_stream_id
+          raw_headers(other, refused, request_headers(echo_path), end_stream: true)
+          wait_until(task, "refusal; resets #{other.wire.resets}") do
+            other.wire.resets[refused] == KeepaliveClient::REFUSED_STREAM
+          end
+          fixture.log[:holds]["hold-admission"].enqueue(true)
+          expect(held.wait).to eq([200, encoded("hold-admission")])
+          expect(fixture.log[:invoked]).to eq(["hold-admission"])
+        ensure
+          close_keepalive_client(other)
+        end
+      end
+    end
+  end
+
+  describe "request body progress" do
+    def admitted(fixture) = keepalive_session(fixture.host).instance_variable_get(:@admitted)
+    # Due times of pending request body waits; other timers also sleep.
+    def body_waits(fixture) = fixture.clock.sleepers.select { |sleeper| sleeper.seconds == 60 }.map(&:due)
+
+    it "resets a unary stream whose body stalls with CANCEL after 60 s and releases its admission" do
+      reactor do |task|
+        with_keepalive_host(task, keepalive: server_keepalive(time: nil)) do |fixture|
+          client = fixture.client
+          stalled = client.connection.next_stream_id
+          raw_headers(client, stalled, request_headers(echo_path))
+          await_due(task, fixture.clock, 60)
+          expect(admitted(fixture).size).to eq(1)
+          fixture.clock.advance(59)
+          ping_through(task, client, "early059")
+          expect(client.wire.resets).to eq({})
+          fixture.clock.advance(1)
+          wait_until(task, "CANCEL; resets #{client.wire.resets}") do
+            client.wire.resets[stalled] == KeepaliveClient::CANCEL
+          end
+          wait_until(task, "admission released") { admitted(fixture).empty? }
+          expect(fixture.log[:invoked]).to eq([])
+          expect(unary(fixture, "after")).to eq([200, encoded("after")])
+          expect(client.wire.goaways).to eq([])
+        end
+      end
+    end
+
+    it "restarts the bound on body bytes, not on empty DATA" do
+      reactor do |task|
+        with_keepalive_host(task, keepalive: server_keepalive(time: nil)) do |fixture|
+          client = fixture.client
+          stream = client.connection.next_stream_id
+          raw_headers(client, stream, request_headers(echo_path))
+          await_due(task, fixture.clock, 60)
+          fixture.clock.advance(30)
+          raw_data(client, stream, "")
+          ping_through(task, client, "empty030")
+          expect(body_waits(fixture)).to eq([60])
+          raw_data(client, stream, encoded("slow").byteslice(0, 2))
+          await_due(task, fixture.clock, 90)
+          wait_until(task, "the first body wait ended") { body_waits(fixture) == [90] }
+          fixture.clock.advance(59)
+          ping_through(task, client, "bytes089")
+          expect(client.wire.resets).to eq({})
+          fixture.clock.advance(1)
+          wait_until(task, "CANCEL") { client.wire.resets[stream] == KeepaliveClient::CANCEL }
+        end
+      end
+    end
+
+    it "ends the bound with the body's end or a peer reset" do
+      reactor do |task|
+        with_keepalive_host(task, keepalive: server_keepalive(time: nil)) do |fixture|
+          client = fixture.client
+          finished = client.connection.next_stream_id
+          raw_headers(client, finished, request_headers(echo_path))
+          await_due(task, fixture.clock, 60)
+          raw_data(client, finished, encoded("whole"), end_stream: true)
+          wait_until(task, "response DATA") { client.wire.data[finished].positive? }
+          expect(fixture.log[:invoked]).to eq(["whole"])
+          expect(body_waits(fixture)).to eq([])
+
+          reset = client.connection.next_stream_id
+          raw_headers(client, reset, request_headers(echo_path))
+          await_due(task, fixture.clock, 60)
+          raw_reset(client, reset)
+          wait_until(task, "admission released") { admitted(fixture).empty? }
+          expect(body_waits(fixture)).to eq([])
+          expect(client.wire.resets).to eq({})
+        end
+      end
+    end
+
+    it "lets a client-streaming request idle past the bound" do
+      reactor do |task|
+        with_keepalive_host(task, keepalive: server_keepalive(time: nil)) do |fixture|
+          client = fixture.client
+          body = Protocol::HTTP::Body::Writable.new
+          request = Protocol::HTTP::Request["POST", collect_method.path,
+                                            { "content-type" => "application/connect+proto" }, body,
+                                            scheme: "http", authority: "127.0.0.1"]
+          call = task.async { client.connection.call(request) }
+          wait_until(task, "Collect started") { fixture.log[:invoked] == ["collect"] }
+          ping_through(task, client, "collect0")
+          expect(body_waits(fixture)).to eq([])
+          fixture.clock.advance(61)
+          ping_through(task, client, "collect1")
+          expect(client.wire.resets).to eq({})
+          bytes = encoded("idle")
+          body.write([0, bytes.bytesize].pack("CN") + bytes)
+          body.close_write
+          response = call.wait
+          expect(response.status).to eq(200)
+          expect(read_until(response, encoded("idle"))).to include(encoded("idle"))
+        end
+      end
+    end
+  end
+
+  describe "graceful close" do
+    def expect_graceful_drain(task, fixture, reason)
+      client = fixture.client
+      wire = client.wire
+      wait_until(task, "heads-up GOAWAY and drain PING; goaways #{wire.goaways}") do
+        wire.pings == [KeepaliveClient::DRAIN_PING]
+      end
+      expect(wire.goaways).to eq([[KeepaliveClient::MAX_STREAM_ID, KeepaliveClient::NO_ERROR, reason]])
+      expect(unary(fixture, "during")).to eq([200, encoded("during")])
+      send_ping(client, KeepaliveClient::DRAIN_PING, ack: true)
+      wait_until(task, "cutoff GOAWAY") { wire.goaways.size == 2 }
+      expect(wire.goaways.last).to eq([3, KeepaliveClient::NO_ERROR, reason])
+      refused = client.connection.next_stream_id
+      raw_headers(client, refused, request_headers(echo_path), end_stream: true)
+      wait_until(task, "refusal") { wire.resets[refused] == KeepaliveClient::REFUSED_STREAM }
+    end
+
+    [[:close, true], [:close, false], [:drain_tls, true]].each do |operation, keepalive|
+      it "#{operation} sends the heads-up GOAWAY at once, dispatching until the cutoff " \
+         "#{keepalive ? 'with' : 'without'} keepalive" do
+        reactor do |task|
+          options = { keepalive: keepalive ? server_keepalive(time: nil) : nil, tls: operation == :drain_tls }
+          with_keepalive_host(task, **options) do |fixture|
+            fixture.client.wire.ack_pings = false
+            held = task.async { unary(fixture, "hold-drain") }
+            wait_until(task, "held call invoked") { fixture.log[:invoked] == ["hold-drain"] }
+            draining = task.async do
+              if operation == :close
+                fixture.host.close(grace: 5)
+              else
+                fixture.host.reload_tls(**host_tls)
+                fixture.host.drain_tls(grace: 5)
+              end
+            end
+            expect_graceful_drain(task, fixture, operation == :close ? "graceful_stop" : "tls_rotation")
+            fixture.log[:holds]["hold-drain"].enqueue(true)
+            expect(held.wait).to eq([200, encoded("hold-drain")])
+            expect(draining.wait).to be(true)
+            expect(fixture.log[:invoked]).to eq(%w[hold-drain during])
+          end
+        end
+      end
+    end
+
+    it "takes over an age drain before its ACK, keeping its reason and dispatching until the cutoff" do
+      reactor do |task|
+        with_keepalive_host(task, keepalive: server_keepalive(time: nil, min_time: nil,
+                                                              max_connection_age: 100)) do |fixture|
+          client = fixture.client
+          wire = client.wire
+          wire.ack_pings = false
+          held = task.async { unary(fixture, "hold-age") }
+          wait_until(task, "held call invoked") { fixture.log[:invoked] == ["hold-age"] }
+          await_due(task, fixture.clock, 100)
+          fixture.clock.advance(100)
+          wait_until(task, "drain PING") { wire.pings == [KeepaliveClient::DRAIN_PING] }
+          closing = task.async { fixture.host.close(grace: 5) }
+          expect(unary(fixture, "during")).to eq([200, encoded("during")])
+          expect(wire.goaways.size).to eq(1)
+          send_ping(client, KeepaliveClient::DRAIN_PING, ack: true)
+          wait_until(task, "cutoff GOAWAY") { wire.goaways.size == 2 }
+          fixture.log[:holds]["hold-age"].enqueue(true)
+          expect(held.wait).to eq([200, encoded("hold-age")])
+          expect(closing.wait).to be(true)
+          expect(wire.goaways).to eq([[KeepaliveClient::MAX_STREAM_ID, KeepaliveClient::NO_ERROR, "max_age"],
+                                      [3, KeepaliveClient::NO_ERROR, "max_age"],
+                                      [3, KeepaliveClient::NO_ERROR, ""]])
+        end
+      end
+    end
+
+    it "joins a drain that is already waiting for EOF without another GOAWAY" do
+      reactor do |task|
+        with_keepalive_host(task, keepalive: server_keepalive(time: nil, min_time: nil,
+                                                              max_connection_age: 100)) do |fixture|
+          # A second descriptor keeps the socket open after the client closes.
+          keeper = fixture.client.raw.dup
+          await_due(task, fixture.clock, 100)
+          fixture.clock.advance(100)
+          wait_until(task, "server half-close") { fixture.client.eof? }
+          await_due(task, fixture.clock, 101)
+          closing = task.async { fixture.host.close(grace: 5) }
+          # Close marks every connection draining just before joining its drain.
+          wait_until(task, "close joined the drain") { fixture.resource.draining }
+          keeper.close
+          expect(closing.wait).to be(true)
+          expect(fixture.client.wire.goaways.map(&:first)).to eq([KeepaliveClient::MAX_STREAM_ID, 0])
+        ensure
+          keeper&.close unless keeper&.closed?
+        end
+      end
+    end
+
+    it "aborts at once with grace 0, ending a pending request body wait" do
+      reactor do |task|
+        with_keepalive_host(task, keepalive: server_keepalive(time: nil)) do |fixture|
+          client = fixture.client
+          raw_headers(client, client.connection.next_stream_id, request_headers(echo_path))
+          await_due(task, fixture.clock, 60)
+          expect(fixture.host.close(grace: 0)).to be(false)
+          expect(retired?(fixture.resource)).to be(true)
+          wait_until(task, "body wait ended") { fixture.clock.sleepers.none? { |sleeper| sleeper.seconds == 60 } }
         end
       end
     end

@@ -42,9 +42,9 @@ RSpec.shared_examples "owned pending close" do |protocol|
             closed_reentries << [session.close(grace: 0), host.close(grace: 0)]
           end
           expiries = []
-          allow(session).to receive(:drain_resources).and_wrap_original do |drain, resources, expires|
+          allow(session).to receive(:drain_resources).and_wrap_original do |drain, resources, expires, **options|
             expiries << expires
-            drain.call(resources, expires)
+            drain.call(resources, expires, **options)
           end
           type = protocol == :h1 ? ConnectRPC::Async::HTTP1Transport : ConnectRPC::Async::Transport
           sibling_transport = type.new(origin: origin, **settings)

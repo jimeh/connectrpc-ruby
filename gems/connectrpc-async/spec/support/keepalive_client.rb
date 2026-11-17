@@ -2,23 +2,26 @@
 
 require "protocol/http/body/buffered"
 
-# A raw h2c client for server keepalive specs. It records the server's PINGs,
-# ACKs, GOAWAYs, resets and DATA frames. It acknowledges server PINGs only
-# while `ack_pings` is set, and records a GOAWAY without applying it, so it can
-# keep opening streams like a peer that raced the GOAWAY.
+# A raw h2c client for server keepalive specs. It records the server's
+# SETTINGS, PINGs, ACKs, GOAWAYs, resets and DATA frames. It acknowledges server
+# PINGs only while `ack_pings` is set, and records a GOAWAY without applying
+# it, so it can keep opening streams like a peer that raced the GOAWAY. With
+# `ack_settings: false` it neither applies nor acknowledges server SETTINGS.
 module KeepaliveClient
   DRAIN_PING = [1, 6, 1, 8, 0, 3, 3, 9].pack("C*")
   MAX_STREAM_ID = 0x7fff_ffff
   NO_ERROR = Protocol::HTTP2::Error::NO_ERROR
   ENHANCE_YOUR_CALM = Protocol::HTTP2::Error::ENHANCE_YOUR_CALM
   REFUSED_STREAM = Protocol::HTTP2::Error::REFUSED_STREAM
+  CANCEL = Protocol::HTTP2::Error::CANCEL
 
   class Wire
     # `sequence` orders the ACKs and GOAWAYs as they arrived.
-    attr_reader :pings, :acks, :goaways, :resets, :data, :sequence
+    attr_reader :settings, :pings, :acks, :goaways, :resets, :data, :sequence
     attr_accessor :ack_pings
 
     def initialize
+      @settings = []
       @pings = []
       @acks = []
       @goaways = []
@@ -30,15 +33,19 @@ module KeepaliveClient
 
     def record(frame)
       case frame
-      when Protocol::HTTP2::PingFrame
-        (frame.acknowledgement? ? @acks : @pings) << frame.unpack
-        @sequence << [:ack, frame.unpack] if frame.acknowledgement?
+      when Protocol::HTTP2::SettingsFrame then @settings << frame.unpack unless frame.acknowledgement?
+      when Protocol::HTTP2::PingFrame then record_ping(frame)
       when Protocol::HTTP2::GoawayFrame
         @goaways << frame.unpack
         @sequence << [:goaway, *frame.unpack]
       when Protocol::HTTP2::ResetStreamFrame then @resets[frame.stream_id] = frame.unpack
       when Protocol::HTTP2::DataFrame then @data[frame.stream_id] += 1
       end
+    end
+
+    def record_ping(frame)
+      (frame.acknowledgement? ? @acks : @pings) << frame.unpack
+      @sequence << [:ack, frame.unpack] if frame.acknowledgement?
     end
   end
 
@@ -49,7 +56,7 @@ module KeepaliveClient
   end
 
   # With a `tls` context the client negotiates h2 over TLS; `raw` stays TCP.
-  def keepalive_client(task, port, tls: nil)
+  def keepalive_client(task, port, tls: nil, ack_settings: true)
     raw = IO::Endpoint.tcp("127.0.0.1", port).connect
     socket = raw
     if tls
@@ -67,6 +74,9 @@ module KeepaliveClient
       super(frame) if frame.acknowledgement? || wire.ack_pings
     end
     connection.define_singleton_method(:receive_goaway) { |_frame| nil }
+    unless ack_settings
+      connection.define_singleton_method(:receive_settings) { |frame| super(frame) if frame.acknowledgement? }
+    end
     connection.send_connection_preface(AsyncHelpers::INTERNAL.settings(128))
     reader = connection.read_in_background(parent: task)
     Client.new(connection, wire, raw, reader)

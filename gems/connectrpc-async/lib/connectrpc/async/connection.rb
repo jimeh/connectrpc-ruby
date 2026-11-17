@@ -3,10 +3,12 @@
 module ConnectRPC
   module Async
     module Internal
-      def self.settings(max_requests)
+      # A server advertises its per-connection stream limit, which can be
+      # lower than its host-wide request admission.
+      def self.settings(max_requests, max_concurrent_streams: max_requests)
         {
           ::Protocol::HTTP2::Settings::ENABLE_PUSH => 0,
-          ::Protocol::HTTP2::Settings::MAXIMUM_CONCURRENT_STREAMS => max_requests,
+          ::Protocol::HTTP2::Settings::MAXIMUM_CONCURRENT_STREAMS => max_concurrent_streams,
           ::Protocol::HTTP2::Settings::MAXIMUM_FRAME_SIZE => 16_384,
           ::Protocol::HTTP2::Settings::INITIAL_WINDOW_SIZE => 65_536
         }
@@ -394,6 +396,15 @@ module ConnectRPC
           @cancellation_source = nil
         end
 
+        # Bounds each handler wait for request body progress.
+        def bound_input(clock, seconds) = @input&.bound_progress(clock, seconds)
+
+        # The handler waited too long for request body progress. The control
+        # writer sends CANCEL and the stream closes without yielding.
+        def input_stalled
+          connection.upkeep&.reset(self, ::Protocol::HTTP2::Error::CANCEL) unless closed?
+        end
+
         def response_written? = @response_written && !@response_reset && (!@grpc || @grpc_terminal_written)
 
         def send_body(...)
@@ -482,12 +493,16 @@ module ConnectRPC
         end
       end
 
-      # A stream opened after a drain's cutoff GOAWAY. It decodes its header
-      # block to keep HPACK in sync and is reset, never dispatched.
-      class RefusedStream < ::Protocol::HTTP2::Stream; end
-
       class ServerConnection < ::Async::HTTP::Protocol::HTTP2::Server
         include Connection
+
+        # Returned by the session's dispatch instead of a response: the
+        # stream is reset with REFUSED_STREAM, which a client may retry.
+        REFUSAL = Object.new.freeze
+
+        # The advertised SETTINGS_MAX_CONCURRENT_STREAMS, enforced whether or
+        # not the client has acknowledged it.
+        attr_accessor :stream_limit
 
         def accept_stream(stream_id)
           super
@@ -500,25 +515,30 @@ module ConnectRPC
         def create_stream(id = next_stream_id, &)
           return super unless valid_remote_stream_id?(id)
 
-          refused = upkeep&.refuse?(id)
-          super { (refused ? RefusedStream : RequestStream).create(self, id) }
+          super { RequestStream.create(self, id) }
         end
 
-        # Streams above a drain's cutoff are refused after normal bookkeeping.
-        # Later HEADERS for one, such as trailers, are decoded and dropped.
+        # A new stream above a drain's cutoff, or over the stream limit, is
+        # refused before upstream would accept it or fail the connection. Its
+        # header block is decoded to keep HPACK in sync, and it is never
+        # dispatched. Later HEADERS for a client stream that is no longer
+        # open, such as a refused stream's trailers, are decoded and dropped;
+        # its DATA keeps upstream's connection flow control and is ignored.
         def receive_headers(frame)
-          upkeep = self.upkeep
           stream_id = frame.stream_id
-          return super unless upkeep&.refuse?(stream_id) && !streams.key?(stream_id)
+          return super if streams.key?(stream_id) || !valid_remote_stream_id?(stream_id)
 
           if stream_id <= remote_stream_id
             decode_headers(frame.unpack)
             return
           end
 
-          super
-          stream = streams[stream_id]
-          upkeep.refuse(stream) if stream.is_a?(RefusedStream)
+          upkeep = self.upkeep
+          return super unless upkeep && (upkeep.refuse?(stream_id) || (stream_limit && streams.size >= stream_limit))
+
+          decode_headers(frame.unpack)
+          @remote_stream_id = stream_id
+          upkeep.refuse(stream_id)
         end
 
         # With server keepalive, the reader only decides; the control writer
@@ -568,9 +588,13 @@ module ConnectRPC
             next if request.stream.closed?
 
             worker = ::Async::Task.new(task, finished: false) do |_worker, incoming|
-              response = error = written = nil
+              response = error = written = refused = nil
               begin
                 response = yield(incoming)
+                if (refused = response.equal?(REFUSAL))
+                  response = nil
+                  next written = refuse(incoming.stream)
+                end
                 incoming.stream.exchange.http_status = response&.status if incoming.stream.exchange
                 unless incoming.stream.closed?
                   synchronize do
@@ -587,7 +611,7 @@ module ConnectRPC
 
                 reset(incoming.stream, e)
               ensure
-                finish_request(response, incoming, written, error)
+                finish_request(response, incoming, written, error, refused: refused)
               end
             end
             @resource.track(worker)
@@ -597,18 +621,28 @@ module ConnectRPC
 
         private
 
-        def finish_request(response, incoming, written, error)
+        # A refusal has no HTTP response; its reset alone completes delivery.
+        def finish_request(response, incoming, written, error, refused: false)
           cleaned = close_request(response, incoming) { |failure| error ||= failure }
         rescue Exception => e # rubocop:disable Lint/RescueException -- cleanup escapes also end the exchange
           error ||= e
           raise
         ensure
-          incoming.stream.exchange&.finish(written && cleaned && incoming.stream.response_written? &&
+          incoming.stream.exchange&.finish(written && cleaned && (refused || incoming.stream.response_written?) &&
             !@resource.finished?, error)
           @resource.changed
         end
 
         def close_requests = requests&.close
+
+        # A refusal is delivered once its reset is written; returns the
+        # refused stream then, or nil if the stream had already closed.
+        def refuse(stream)
+          return if stream.closed?
+
+          stream.send_reset_stream(::Protocol::HTTP2::Error::REFUSED_STREAM)
+          stream
+        end
 
         def close_request(response, request)
           response&.close
@@ -632,6 +666,9 @@ module ConnectRPC
       end
 
       class Resource
+        # Errors showing the peer already closed or reset the connection.
+        PEER_LEFT = [Errno::ECONNRESET, Errno::EPIPE, Errno::ENOTCONN].freeze
+
         attr_accessor :raw, :socket, :connection, :task, :generation, :snapshot, :ready, :draining, :upkeep
         attr_reader :tasks, :progress, :activity_at, :keepalive
         # Called when the connection stops accepting new streams, before any
@@ -646,6 +683,7 @@ module ConnectRPC
           @tasks = []
           @maintenance = []
           @controls = []
+          @supervisors = []
           @keepalive = nil
           @upkeep = nil
           @close_reason = nil
@@ -670,9 +708,15 @@ module ConnectRPC
         # Long-lived connection upkeep. Unlike tracked tasks it never keeps the
         # resource from being empty, but retirement still captures, cancels and
         # joins it, and its own abort is an owned abort. Graceful drains stop
-        # ordinary upkeep first; control writers run until the half-close.
-        def maintain(task, control: false)
-          tasks = control ? @controls : @maintenance
+        # ordinary upkeep once the cutoff is written; control writers run until
+        # the half-close. A supervisor bounds its own decision and is never
+        # stopped by a drain.
+        def maintain(task, control: false, supervisor: false)
+          tasks = if supervisor
+                    @supervisors
+                  else
+                    (control ? @controls : @maintenance)
+                  end
           tasks.reject!(&:finished?)
           tasks << task
           task
@@ -745,7 +789,10 @@ module ConnectRPC
           launch = !@cleanup
           if launch
             @aborted = true
-            @abort_during_drain = true if @drain_task && !@drained
+            # A peer that ends the connection once its streams finished, as a
+            # GOAWAY asks, ends a drain cleanly, whether by EOF or a reset.
+            peer_left = @connection&.reader_task&.current? && empty?
+            @abort_during_drain = true if @drain_task && !@drained && !peer_left
             @cleanup = ::Async::Task.new(@lifetime, transient: true, finished: false) { retire(error) }
           end
           if owned
@@ -756,7 +803,12 @@ module ConnectRPC
           nil
         end
 
-        def drain(parent, expires)
+        # With server upkeep, the connection first runs its two-phase GOAWAY
+        # drain with `reason` as debug data, or keeps one already running, and
+        # dispatches streams until the cutoff GOAWAY is written. Then it waits
+        # for the accepted work, sends a final GOAWAY naming the cutoff,
+        # half-closes and discards input until EOF, all within `expires`.
+        def drain(parent, expires, reason: "graceful_stop")
           return Internal.wait(@drain_task, expires) if @drain_task
 
           if @aborted
@@ -770,12 +822,17 @@ module ConnectRPC
             return true
           end
           @drain_task = ::Async::Task.new(parent, finished: false) do
+            @upkeep&.drain(reason)&.wait
+            next !@abort_during_drain if @aborted
+
             stop_maintenance
             @progress.wait until empty?
             next !@abort_during_drain if @aborted
 
             finish_drain { @connection.send_goaway }
-          rescue EOFError
+          rescue EOFError, *PEER_LEFT
+            # The connection was empty, so a peer that resets it after the
+            # GOAWAY, as a client retiring it raw-first does, lost no work.
             @drained = true
             true
           rescue StandardError
@@ -806,7 +863,7 @@ module ConnectRPC
             timer.run
             stop_maintenance
             finish_drain
-          rescue EOFError
+          rescue EOFError, *PEER_LEFT
             @drained = true
             true
           rescue StandardError
@@ -869,8 +926,8 @@ module ConnectRPC
             [stream.respond_to?(:response_task) ? stream.response_task : nil,
              stream.respond_to?(:output_task) ? stream.output_task : nil]
           end
-          [*@connection&.writers&.keys, @connection&.reader_task, *@tasks, *@maintenance, *@controls, @task,
-           *outputs].compact.uniq
+          [*@connection&.writers&.keys, @connection&.reader_task, *@tasks, *@maintenance, *@controls, *@supervisors,
+           @task, *outputs].compact.uniq
         end
 
         def capture_retirement

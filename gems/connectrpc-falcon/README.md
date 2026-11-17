@@ -102,8 +102,9 @@ Include `ConnectRPC::Falcon::Environment` in each service:
 - `connectrpc_server` (required) constructs a `ConnectRPC::Server` in the worker.
 - `rack_app` supplies the optional fallback.
 - `tls` or `tls_provider` supplies the TLS source; see [TLS lifecycle](#tls-lifecycle).
-- `server_options` supplies shared limits and host options such as `cache:`
-  and `keepalive:`.
+- `server_options` supplies shared limits and host options such as `cache:`,
+  `keepalive:`, and since 0.2.2 `max_concurrent_streams:` and
+  `request_body_timeout:`.
 - Since 0.2.2, `connectrpc_close_grace` sets the managed worker stop grace in
   seconds (default 5); see [Shutdown](#shutdown).
 - `url` describes the listener.
@@ -288,7 +289,9 @@ parent-bound listener.
 
 `drain_tls(grace: 5)` captures a generation cutoff and retires older connections.
 Pending older handshakes close immediately. Already admitted responses can
-finish; later requests/streams are refused.
+finish. Older HTTP/2 connections get the two-phase GOAWAY drain with debug data
+`tls_rotation`, so streams opened before its cutoff are still served and later
+ones are refused with `REFUSED_STREAM`. Later HTTP/1 requests get a bare 503.
 
 `peer_certificate` returns a detached authenticated client leaf only in the
 exact session handler task. Child tasks, other servers, plaintext and
@@ -298,9 +301,12 @@ peer-presented chain is a verified chain.
 ## Shutdown
 
 `close(grace: 5)` and a normal managed worker stop both end accepts and TLS
-refresh, then perform bounded connection drain. HTTP/1 completion includes fixed/chunked wire
-bytes and response-finished callbacks. On grace expiry, teardown closes raw TCP
-before cancelling owned work and buffered/TLS cleanup. Callback close is guarded
+refresh, then perform bounded connection drain. HTTP/2 connections get the
+two-phase GOAWAY drain with debug data `graceful_stop` and keep serving streams
+opened before its cutoff; HTTP/1 requests that arrive during the drain get a
+bare 503. HTTP/1 completion includes fixed/chunked wire bytes and
+response-finished callbacks. On grace expiry, teardown closes raw TCP before
+cancelling owned work and buffered/TLS cleanup. Callback close is guarded
 against reentry. Fatal teardown or owner cancellation outside the managed stop
 boundary uses raw-first abort and offers no response-delivery guarantee.
 HTTP response completion is separate from TLS `close_notify`; orderly TLS
@@ -375,6 +381,15 @@ enforcement with `too_many_pings`, and the graceful age drain. `idle_timeout`
 drains idle HTTP/2 connections gracefully. HTTP/1 connections have no keepalive
 and are still closed once idle. See
 [Server keepalive](../connectrpc-async/README.md#server-keepalive).
+
+Since 0.2.2, `max_concurrent_streams:` (default 100) and `request_body_timeout:`
+(default 60 seconds) also apply to native HTTP/2 connections as on the Async
+`Host`: a stream over the connection's limit or over full `max_requests`
+admission is refused with `REFUSED_STREAM`, and a stalled request body other
+than a client or bidi stream is reset with `CANCEL`. See [Stream
+admission](../connectrpc-async/README.md#stream-admission). HTTP/1 requests keep
+the bare 503 when admission is full.
+
 `falcon:interop:grpc` also runs a grpc-go bidi stream through an age drain on
 two real workers over TLS.
 

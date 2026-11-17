@@ -412,6 +412,17 @@ or a third-party server that owns the connection. Configure keepalive, PING
 enforcement and connection age limits there, for example Envoy's
 `max_connection_duration` or nginx's `keepalive_timeout`.
 
+Since 0.2.2, the same hosts limit streams per HTTP/2 connection
+(`max_concurrent_streams`, default 100) below the host-wide `max_requests`
+(default 128), refuse a stream over either limit with `REFUSED_STREAM`, and
+reset a stalled request body (`request_body_timeout`, default 60 seconds) with
+`CANCEL`, except for client and bidi streams. `close(grace:)`, managed Falcon
+worker stop and `drain_tls` use the same two-phase GOAWAY drain, with debug data
+`graceful_stop` or `tls_rotation`, and keep serving streams opened before its
+cutoff. For Rails and Rack hosts the proxy owns these limits too, for example
+Envoy's HTTP/2 `max_concurrent_streams` or nginx's
+`http2_max_concurrent_streams` and `client_body_timeout`.
+
 `async:interop:keepalive` checks client keepalive, PING enforcement, BDP PINGs
 and the age drain between the pinned grpc-go peer and the Async `Transport` and
 `Host`. `falcon:interop:grpc` checks only the age drain through real Falcon
