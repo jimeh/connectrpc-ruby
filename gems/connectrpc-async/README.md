@@ -1285,9 +1285,10 @@ uses 4 MiB stream and 1 GiB connection windows on clients and 1 MiB for both on
 servers. This package does not size windows dynamically. The client connection
 window stays at 16 MiB, grpc-go's ceiling, instead of net/http2's 1 GiB, because
 the two windows mean different things. net/http2 returns connection credit as
-the application reads, so its 1 GiB also caps unread bytes. This package returns
-it as DATA arrives, so the connection window bounds only bytes in flight, and
-the stream windows bound memory.
+the application reads, so its connection window also caps unread bytes at about
+1 GiB. This package returns connection credit as DATA arrives, so the connection
+window bounds only bytes in flight, and the stream windows bound unread ingress
+payload.
 
 ### Ingress flow control
 
