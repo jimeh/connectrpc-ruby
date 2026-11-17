@@ -1,0 +1,2 @@
+--require ./soak/soak_helper
+--format documentation

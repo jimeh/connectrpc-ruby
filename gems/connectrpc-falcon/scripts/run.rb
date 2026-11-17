@@ -32,10 +32,15 @@ arguments = case command
             when "canary" then nil
             when "exec" then ["exec", *ARGV]
             when "test" then ["exec", "rspec", *ARGV]
+            # The lifecycle campaign; scripts/soak.rb supervises it. Its own
+            # options file replaces .rspec, so spec_helper and SimpleCov never load.
+            when "soak"
+              ["exec", "rspec", "--options", "soak/.rspec", "--default-path", "soak", "--pattern", "**/*_soak.rb",
+               *ARGV]
             when "check" then ["exec", "rubocop", ".", "--config", File.join(root, ".rubocop.yml"), *ARGV]
             when "build", "package", "example", "interop", "streaming_interop" then ["exec", "ruby",
                                                                                      "scripts/#{command}.rb", *ARGV]
-            else abort "Usage: run.rb setup|floors|canary|test|check|build|package|example|interop|exec"
+            else abort "Usage: run.rb setup|floors|canary|test|soak|check|build|package|example|interop|exec"
             end
 unless command == "exec"
   puts "Falcon backend; Ruby #{RUBY_VERSION}; Bundler 4.0.23; Gemfile #{environment.fetch('BUNDLE_GEMFILE')}"

@@ -772,6 +772,82 @@ streaming SPI under normal installed discovery outside the checkout, in both
 package load orders. The [streaming guide](streaming.md) documents the fixed
 one-second tail policy and its compatibility tradeoff.
 
+## Lifecycle campaign
+
+The long-running lifecycle campaign repeatedly drives the native clients and
+servers through connection churn and faults, then checks that everything they
+own retires. It is non-gating and belongs to no `test` or `verify` task:
+
+```sh
+mise run async:soak     # Async H2 Transport, ThreadedTransport and Host
+mise run falcon:soak    # Falcon HTTP/2 and HTTP/1.1 (HTTP1Transport, Net::HTTP)
+mise run soak           # both, Async then Falcon
+```
+
+The campaign is exercised on Linux, locally and in CI. It counts descriptors
+through `/dev/fd`, but RSS and the TCP ports and states in its diagnostics come
+from `/proc`; without `/proc` it reports RSS as missing and descriptor targets
+without socket details. Other platforms are untested.
+
+[`scripts/soak.rb`](../scripts/soak.rb) runs `scripts/run.rb soak` for each
+named package in turn, each in its own process group. A failed package does not
+stop the next one, and the script exits non-zero if any package failed.
+`scripts/run.rb soak` runs RSpec over `soak/**/*_soak.rb` with `soak/.rspec`,
+which loads `soak/soak_helper.rb` instead of `spec_helper`, so SimpleCov never
+starts. The scenarios (churn, GOAWAY drains, stream retirement,
+stuck frames, slow peers, peer failure, TLS rotation, shutdown, keepalive and
+refusal) and their invariants are specified in the
+[campaign plan](plans/lifecycle-campaign.md). Shared HTTP/2 scenarios live in
+`gems/connectrpc-async/soak/support/scenarios/` and run against both the Async
+Host and Falcon; every private-state read lives in
+`gems/connectrpc-async/soak/support/sampler.rb`, the one file to update when
+library internals move.
+
+Each scenario runs warmup rounds until two consecutive post-cleanup samples of
+threads, `/dev/fd` entries and unfinished Async tasks (harness, peer and
+ThreadedTransport owner reactors) are identical, at most three. Every measured
+round must then settle its owned objects (client and server resources retired,
+owner threads joined, registries and shared cancellation listeners empty) and
+return exactly to that sample. Every call without its own cancellation source
+carries the campaign's shared, never-cancelled token, also when it is expected
+to fail. Admission, byte, socket, server connection and stream-buffer peaks are
+sampled under established load against their configured caps, and a handler
+ledger proves at-most-once execution. There are no tolerance bands. RSS and GC
+live slots are reported, never asserted.
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `CONNECTRPC_SOAK_ROUNDS` | 5 | Measured rounds per scenario |
+| `CONNECTRPC_SOAK_DEADLINE` | 900 | Run deadline in seconds; raise it for runs well above the default rounds (CI uses 2,700 for 50) |
+| `CONNECTRPC_SOAK_CLEANUP` | 60 | Seconds after the deadline before the process group is killed |
+| `CONNECTRPC_SOAK_SEED` | random | Seed for scenario choices and RSpec order; always recorded |
+| `CONNECTRPC_SOAK_ONLY` | none | Ruby regular expression matched against example descriptions |
+
+Extra task arguments go to RSpec, for example
+`mise run async:soak -- soak/drains_soak.rb` or
+`CONNECTRPC_SOAK_ONLY="2a age drain|7 rotation" mise run falcon:soak`.
+
+Reports go to `vendor/<pkg>/soak/<Ruby>/`: `campaign.jsonl` gains one line per
+environment record, baseline, round and scenario as they happen, and the
+supervisor renders `summary.md` from it, also after a hang. At the deadline the
+supervisor sends TERM; the child records thread backtraces, Async task trees and
+descriptor targets (TCP sockets with their ports and state) and exits with 124.
+After the cleanup budget the supervisor kills the process group. Any failure,
+deadline or kill exits non-zero. Reproduce a run with its recorded seed. Keep the
+first failure of an intermittent result and its report; do not replace it with a
+later pass. The next run for the same package and Ruby replaces the report, so
+copy `vendor/<pkg>/soak/<Ruby>/` aside before rerunning.
+
+`spec/soak_harness_spec.rb` runs in `async:test`. It plants a leaked descriptor,
+thread, Async task, cancellation registration, unretired resource (also one
+that only looks superseded), open round-scoped client, replaced reused
+connection, duplicate handler execution, transient socket-cap overshoot,
+over-cap retained stream bytes, ingress growth after a saturated window and a
+leak in every warmup in small real
+campaigns, and requires each to fail at its intended check. Only the poll that
+detects a planted leak is shortened. Another control requires teardown to run
+every cleanup after a failing one and report the first error.
+
 ## Official browser development
 
 `mise run browser:setup` installs development-only tools under `vendor/browser`;

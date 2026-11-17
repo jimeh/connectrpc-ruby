@@ -1100,6 +1100,8 @@ their newest releases. `async:verify` checks the independent bundle, installed
 packages and connect-go interoperability. Core require and core/Rails
 dependencies stay independent. The [backend evidence](#verification-evidence)
 above describes what these checks exercise.
+`async:soak` runs the non-gating long-running lifecycle campaign; see
+[development](../../docs/development.md#lifecycle-campaign).
 
 ## License
 

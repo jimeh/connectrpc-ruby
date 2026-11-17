@@ -1010,6 +1010,24 @@ run = [
 description = "Run both non-gating pins-lifted canary lanes (Ruby 3.4.12)"
 depends = ["canary:async", "canary:falcon"]
 
+# Long-running lifecycle campaign: non-gating, run nightly by .github/workflows/soak.yml.
+# scripts/soak.rb supervises each package's soak/ scenarios with a run deadline and
+# cleanup budget; reports go to vendor/<pkg>/soak/<ruby>/. See docs/development.md.
+[tasks."async:soak"]
+description = "Run the Async H2 client/Host and ThreadedTransport lifecycle campaign (non-gating)"
+depends = ["async:setup"]
+run = "mise exec -- ruby scripts/soak.rb async"
+
+[tasks."falcon:soak"]
+description = "Run the Falcon HTTP/2 and HTTP/1.1 lifecycle campaign (non-gating)"
+depends = ["falcon:setup"]
+run = "mise exec -- ruby scripts/soak.rb falcon"
+
+[tasks.soak]
+description = "Run both lifecycle campaigns, Async then Falcon even if Async fails (non-gating)"
+depends = ["async:setup", "falcon:setup"]
+run = "mise exec -- ruby scripts/soak.rb async falcon"
+
 # Release preparation never tags, creates a GitHub release, or publishes gems.
 [tasks."release:check"]
 description = "Check eleven synchronized versions, installation guides and release guards offline"
