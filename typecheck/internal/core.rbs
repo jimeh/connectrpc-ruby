@@ -180,9 +180,10 @@ module ConnectRPC
     @error_limit: Integer
     @unary_interceptors: Interceptors::Chain?
     @stream_interceptors: Interceptors::Chain?
+    @on_error: (^(StandardError) -> void | _ServerErrorHandler)?
     private
     def invoke_unary: (Method[untyped, untyped], untyped, Context, server_protocol) -> untyped
-    def process_call: (path: String, http_method: String, headers: headers, input: _Input?, query: String, ?lifecycle: Instrumentation::Handle?, ?cancellation: _Cancellation?) -> TransportResponse
+    def process_call: (path: String, http_method: String, headers: headers, input: _Input?, query: String, ?lifecycle: Instrumentation::Handle?, ?cancellation: _Cancellation?, ?on_error: (^(StandardError) -> void | _ServerErrorHandler)?) -> TransportResponse
     def process_get: (String, headers, _Input?, String, Instrumentation::Handle?, _Cancellation?) { (Context) -> void } -> TransportResponse
     def empty_get_body?: (headers, _Input?, _Check?) -> bool
     def get_headers: (headers, Hash[String, String]) -> headers
@@ -201,6 +202,7 @@ module ConnectRPC
     def validate_headers!: (headers) -> nil
     def request_deadline: (headers) -> Deadline?
     def response_headers: (Context?, String) -> headers
+    def report_unexpected: (StandardError, ?(^(StandardError) -> void | _ServerErrorHandler)?) -> nil
     def terminal_error: (Error, Context?, _Cancellation?) -> Error
     def error_response: (Error, Context?, ?Instrumentation::Handle?) -> TransportResponse
   end

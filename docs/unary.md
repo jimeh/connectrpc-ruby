@@ -332,6 +332,38 @@ the class corresponding to `detail.type`. `Error#code` is a frozen String such
 as `"invalid_argument"`, even though `Error.new` accepts a Symbol, so compare it
 with a String: `error.code == "invalid_argument"`.
 
+The peer never sees an unexpected exception, so log or report it on the server.
+Pass `on_error:` to the Server:
+
+```ruby
+server = ConnectRPC::Server.new(
+  services: [service::SERVICE], binding: binding, handlers: handlers,
+  on_error: ->(error) { logger.error(error.full_message(highlight: false)) }
+)
+```
+
+Core calls `on_error` with the original exception for every `StandardError`
+that is not a `ConnectRPC::Error`, raised by a handler, an interceptor, a custom
+invoker or response encoding, before it sends the generic `internal` error. This
+covers Connect, gRPC and gRPC-Web, unary and streaming, on every host. The
+callable runs on the request's thread or fiber, inside the RPC's
+instrumentation scope, so request-scoped loggers and an active trace still
+apply. Exceptions raised by `on_error` itself are ignored, and the peer response
+is unchanged.
+
+Hosts add their own reporting:
+
+- [connectrpc-rack](../gems/connectrpc-rack/README.md) also writes each
+  unexpected exception with its backtrace to `env["rack.errors"]`.
+- [connectrpc-testing](../gems/connectrpc-testing/README.md) raises the decoded
+  `internal` error with the original exception as its `cause`.
+- [connectrpc-on-rails](../gems/connectrpc-on-rails/README.md) builds its own
+  Server per request. Handler exceptions follow Rails: `rescue_from`, the
+  controller logger and `Rails.error`.
+- [connectrpc-sentry](../gems/connectrpc-sentry/README.md) already reports
+  unexpected handler exceptions, so do not also send them to Sentry from
+  `on_error`.
+
 ## Limits
 
 Serialized/decompressed request and response limits default to 4 MiB each.

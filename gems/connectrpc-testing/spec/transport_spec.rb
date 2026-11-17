@@ -345,6 +345,36 @@ RSpec.describe ConnectRPC::Testing::Transport do
     expect(response.headers["x-leading"]).to eq(["one", "two,three"])
   end
 
+  it "raises the decoded internal error with the unexpected handler exception as its cause" do
+    failure = RuntimeError.new("handler bug")
+    reports = []
+    allow(handler).to receive(:call) do |_message, context|
+      context.response_metadata["x-leading"] = ["kept"]
+      raise failure
+    end
+    server_options[:on_error] = ->(error) { reports << error }
+    expect { client.echo(type.new(name: "boom")) }.to raise_error(ConnectRPC::Error) do |error|
+      expect([error.code, error.message, error.metadata["x-leading"]]).to eq(["internal", "Internal error", ["kept"]])
+      expect(error.cause).to be(failure)
+    end
+    expect(reports).to eq([failure])
+  end
+
+  it "returns manual gRPC-Web responses for unexpected handler exceptions" do
+    rpc = ConnectRPC::Method.new(service: "testing.Web", name: "Call", request_type: type, response_type: type)
+    reports = []
+    web = ConnectRPC::Server.new(services: [ConnectRPC::Service.new(name: rpc.service, methods: [rpc])],
+                                 binding: binding, status_codec: binding, protocol: %i[connect grpc_web],
+                                 handlers: { rpc.path => ->(*) { raise "handler bug" } },
+                                 on_error: ->(error) { reports << error.message })
+    outgoing = request(url: URI("https://example.invalid#{rpc.path}"),
+                       headers: { "content-type" => ["application/grpc-web"] }, body: [0, 0].pack("CN"))
+    response = described_class.new(server: web).call(outgoing)
+    expect(response.status).to eq(200)
+    expect(response.body).to include("grpc-status: 13\r\n")
+    expect(reports).to eq(["handler bug"])
+  end
+
   it "preserves frozen malformed caller input on core failure" do
     headers = { "content-type" => ["application/proto"].freeze,
                 "content-length" => ["2"].freeze }.freeze

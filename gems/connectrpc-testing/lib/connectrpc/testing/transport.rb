@@ -17,19 +17,29 @@ module ConnectRPC
       private
 
       def perform_call(request)
-        request.cancellation ? request.cancellation.check! : request.deadline&.check!
-        response = dispatch(request)
-        request.cancellation ? request.cancellation.check! : request.deadline&.check!
+        check_active!(request)
+        unexpected = nil
+        response = dispatch(request, ->(error) { unexpected = error })
+        check_active!(request)
         Protocol.check_size!(response.body, request.response_limit)
-        response
+        # gRPC-Web reports its status inside a 200 body, which stays the caller's to decode.
+        return response unless unexpected && response.status != 200
+
+        # Raise the error the client would decode, keeping the in-process exception as its cause.
+        raise Protocol.parse_error(response.status, Protocol.headers(response.headers), response.body),
+              cause: unexpected
       end
 
-      def dispatch(request)
+      def check_active!(request)
+        request.cancellation ? request.cancellation.check! : request.deadline&.check!
+      end
+
+      def dispatch(request, on_error)
         headers = request.headers.dup
         headers["connect-timeout-ms"] = [request.deadline.timeout_ms] if request.deadline
         @server.call(path: request.url.path, http_method: request.http_method,
                      headers: headers, input: BytesReader.new(request.body), query: request.url.query || "",
-                     cancellation: request.cancellation)
+                     cancellation: request.cancellation, on_error: on_error)
       end
 
       def validate!(request)

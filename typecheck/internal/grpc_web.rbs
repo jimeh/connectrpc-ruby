@@ -81,12 +81,13 @@ module ConnectRPC
       attr_reader cancellation: _Cancellation?
       attr_reader representation: representation
       attr_reader path: String
+      attr_reader on_error: (^(StandardError) -> void | _ServerErrorHandler)?
       attr_accessor context: Context?
       attr_accessor session: Streaming::Session?
       attr_accessor error: Error?
       attr_accessor published: bool
       attr_accessor head_attempted: bool
-      def initialize: (path: String, headers: headers, representation: representation, publish: _PublishStreamHead | ^(StreamHead) -> void, lifecycle: Instrumentation::Handle?, cancellation: _Cancellation?) -> void
+      def initialize: (path: String, headers: headers, representation: representation, publish: _PublishStreamHead | ^(StreamHead) -> void, lifecycle: Instrumentation::Handle?, cancellation: _Cancellation?, ?on_error: (^(StandardError) -> void | _ServerErrorHandler)?) -> void
     end
   end
   class Server
@@ -95,7 +96,7 @@ module ConnectRPC
     def merge_cors_fields: (headers, headers) -> headers
     def cors_preflight: (headers, GRPCWebCORS, String?, bool?) -> TransportResponse
     def web_preflight: (String, headers, _Cancellation?) -> TransportResponse?
-    def call_grpc_web_unary: (String, String, headers, _Input?, Instrumentation::Handle?, _Cancellation?) -> TransportResponse
+    def call_grpc_web_unary: (String, String, headers, _Input?, Instrumentation::Handle?, _Cancellation?, (^(StandardError) -> void | _ServerErrorHandler)?) -> TransportResponse
     def process_grpc_web: (GRPCWeb::ServerState, _StreamingInput, _GRPCWebOutput, GRPCWeb::representation, Array[grpc_web_cardinality]) -> void
     def execute_grpc_web: (GRPCWeb::ServerState, _StreamingInput, GRPCWeb::Output, GRPCWeb::representation, Array[grpc_web_cardinality]) -> void
     def web_context: (GRPCWeb::ServerState, ?declaration?, ?headers: headers) -> Context

@@ -11,13 +11,19 @@ module ConnectRPC
                    response_wire_limit: response_limit, protocol: :connect, mode: :unary, encoding: :identity,
                    instrumentation: nil, get_query_limit: nil, terminal_wire_limit: 65_536, terminal_limit: 65_536,
                    status_codec: nil, grpc_status_wire_limit: 65_536, grpc_status_limit: 65_536, cors: nil,
-                   interceptors: [])
+                   interceptors: [], on_error: nil)
       Protocol.profile!(protocol, mode, encoding, server: true)
       @protocol = Protocol.server_protocols(protocol)
       unless cors.nil? || (cors.is_a?(GRPCWebCORS) && @protocol.include?(:grpc_web))
         raise ArgumentError, "cors requires a GRPCWebCORS policy and explicit gRPC-Web enablement"
       end
 
+      if on_error
+        probe = on_error #: (^(StandardError) -> void | _ServerErrorHandler) & _InterceptorProbe
+        raise ArgumentError, "on_error must be callable" unless probe.respond_to?(:call)
+      end
+
+      @on_error = on_error
       @cors = cors
       @grpc_status_wire_limit = Protocol.limit!(grpc_status_wire_limit)
       @grpc_status_limit = Protocol.limit!(grpc_status_limit)
@@ -60,17 +66,19 @@ module ConnectRPC
 
     # Keep processing and terminal ensures adjacent to their owner.
     # rubocop:disable Metrics/MethodLength, Metrics/AbcSize, Metrics/CyclomaticComplexity, Metrics/PerceivedComplexity
-    def call(path:, http_method:, headers:, input:, query: "", lifecycle: nil, cancellation: nil)
+    # on_error is the host's per-call reporter. It runs after the Server's own
+    # on_error for the same unexpected exception.
+    def call(path:, http_method:, headers:, input:, query: "", lifecycle: nil, cancellation: nil, on_error: nil)
       if @protocol.include?(:grpc_web)
         early = cors_response(path: path, http_method: http_method, headers: headers)
         return early if early
         if request_protocol(headers, http_method) == :grpc_web
-          return call_grpc_web_unary(path, http_method, headers, input, lifecycle, cancellation)
+          return call_grpc_web_unary(path, http_method, headers, input, lifecycle, cancellation, on_error)
         end
       end
       unless lifecycle || @instrumentation
         return process_call(path: path, http_method: http_method, headers: headers, input: input, query: query,
-                            cancellation: cancellation)
+                            cancellation: cancellation, on_error: on_error)
       end
 
       owned = lifecycle.nil?
@@ -83,7 +91,7 @@ module ConnectRPC
         record_request_metadata(active, Protocol.headers(headers))
         active.activate do
           process_call(path: path, http_method: http_method, headers: headers, input: input, query: query,
-                       lifecycle: active, cancellation: cancellation)
+                       lifecycle: active, cancellation: cancellation, on_error: on_error)
         end
       rescue Exception => e # rubocop:disable Lint/RescueException -- include escapes from processing cleanup
         error = e
@@ -106,7 +114,7 @@ module ConnectRPC
       GRPCProtocol.intent?(headers) ? :grpc : :connect
     end
 
-    def process_call(path:, http_method:, headers:, input:, query:, lifecycle: nil, cancellation: nil)
+    def process_call(path:, http_method:, headers:, input:, query:, lifecycle: nil, cancellation: nil, on_error: nil)
       # @type var response: TransportResponse?
       # @type var context: Context?
       context = nil
@@ -143,6 +151,7 @@ module ConnectRPC
         response = error_response(terminal_error(e, context, cancellation), context, lifecycle)
       rescue StandardError => e
         lifecycle&.record_failure(e)
+        report_unexpected(e, on_error)
         safe = terminal_error(Error.new(:internal, "Internal error"), context, cancellation)
         response = error_response(safe, context, lifecycle)
       ensure
@@ -385,6 +394,21 @@ module ConnectRPC
       context&.response_trailers&.each { |key, values| headers["trailer-#{key}"] = values }
       headers["accept-encoding"] = ["gzip, identity"] if @encoding == :gzip
       headers.merge("content-type" => [content_type])
+    end
+
+    # Reporters run on the calling thread or fiber, inside the instrumented call
+    # scope, and never change the peer response.
+    def report_unexpected(error, host = nil)
+      [@on_error, host].each do |reporter|
+        next unless reporter
+
+        begin
+          reporter.call(error)
+        rescue StandardError
+          nil
+        end
+      end
+      nil
     end
 
     def terminal_error(error, context, cancellation)

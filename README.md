@@ -157,6 +157,9 @@ Next steps:
 
 - The [unary guide](docs/unary.md) covers generation options, GET, gzip,
   metadata, errors, limits, deadlines and cancellation.
+- Unexpected handler exceptions reach the client only as a generic `internal`
+  error. Pass `on_error:` to the Server to log or report them; see
+  [errors](docs/unary.md#errors).
 - The [runnable examples](examples/README.md) pair Rack, Rails, Async and
   Falcon servers with Net::HTTP and Async clients, including mutual TLS.
 - The [streaming guide](docs/streaming.md) covers server, client and

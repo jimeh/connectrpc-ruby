@@ -118,6 +118,7 @@ module ConnectRPC
     rescue StandardError => e
       state.context&.record_failure(e)
       state.lifecycle&.record_failure(e)
+      report_unexpected(e, state.is_a?(GRPCWeb::ServerState) ? state.on_error : nil) unless e.is_a?(Error)
       safe = e.is_a?(Error) ? e : Error.new(:internal, "Internal error")
       state.error = terminal_error(safe, state.context, state.cancellation)
     end

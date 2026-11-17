@@ -18,7 +18,8 @@ capability = output
 capability.write("data", timeout: nil)
 capability.finish(terminal: "prepared")
 server.call_grpc_web(path: "/typed.API/Call", http_method: "POST", headers: {}, input: APIStreamExchange.new,
-                     output: output, capabilities: %i[unary server_stream], publish: APIStreamPublisher.new)
+                     output: output, capabilities: %i[unary server_stream], publish: APIStreamPublisher.new,
+                     on_error: ->(failure) { warn(failure.message) })
 
 server.start_call(path: "/typed.API/Call", headers: {})&.finish(delivery: :unobserved)
 server.start_call(path: "/typed.API/Call", headers: {}, http_method: "GET")&.finish(delivery: :unobserved)

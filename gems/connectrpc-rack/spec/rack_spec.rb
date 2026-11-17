@@ -207,6 +207,51 @@ RSpec.describe ConnectRPC::Rack do
     end
   end
 
+  it "writes unexpected exceptions to rack.errors by default and leaves deliberate errors out" do
+    errors = StringIO.new
+    allow(handler).to receive(:call).and_raise(RuntimeError, "database unavailable")
+    status, _headers, body = request("rack.errors" => errors)
+    expect(status).to eq(500)
+    expect(JSON.parse(body)).to include("code" => "internal", "message" => "Internal error")
+    expect(errors.string).to start_with("[connectrpc.rack] #{method.path}: ")
+    expect(errors.string).to include("database unavailable (RuntimeError)", "rack_spec.rb")
+
+    deliberate = StringIO.new
+    allow(handler).to receive(:call).and_raise(ConnectRPC::Error.new(:not_found, "missing"))
+    expect(request("rack.errors" => deliberate).first).to eq(404)
+    expect(deliberate.string).to be_empty
+  end
+
+  it "keeps rack.errors reporting alongside a server on_error hook" do
+    reports = []
+    errors = StringIO.new
+    allow(handler).to receive(:call).and_raise(RuntimeError, "database unavailable")
+    target = ConnectRPC::Server.new(services: [EchoExample::SERVICE], binding: binding,
+                                    handlers: { method.path => handler }, on_error: ->(error) { reports << error })
+    env = Rack::MockRequest.env_for(method.path, method: "POST", input: "{}", "CONTENT_TYPE" => "application/json",
+                                                 "rack.errors" => errors)
+    expect(described_class.new(server: target).call(env).first).to eq(500)
+    expect(reports.map(&:message)).to eq(["database unavailable"])
+    expect(errors.string).to include("database unavailable (RuntimeError)")
+  end
+
+  it "frames RPC responses with content-length with and without instrumentation" do
+    subscriber = Object.new
+    subscriber.define_singleton_method(:start) { |_call| self }
+    instrumentation = ConnectRPC::Instrumentation.new(subscribers: [subscriber])
+    [nil, instrumentation].each do |observed|
+      target = ConnectRPC::Server.new(services: [EchoExample::SERVICE], binding: binding,
+                                      handlers: { method.path => handler }, instrumentation: observed)
+      env = Rack::MockRequest.env_for(method.path, method: "POST", input: '{"name":"framed"}',
+                                                   "CONTENT_TYPE" => "application/json")
+      status, headers, body = Rack::Lint.new(described_class.new(server: target)).call(env)
+      bytes = +""
+      body.each { |chunk| bytes << chunk }
+      body.close
+      expect([status, headers["content-length"]]).to eq([200, bytes.bytesize.to_s])
+    end
+  end
+
   it "preserves deliberate typed errors, metadata and trailers" do
     detail = ConnectRPC::ErrorDetail.new(type: "example.v1.EchoMessage", value: message.to_proto)
     error = ConnectRPC::Error.new(:permission_denied, "deliberate", details: [detail],

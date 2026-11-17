@@ -75,7 +75,13 @@ raise "Missing trailer" unless response.trailers["x-tested"] == ["yes"]
 ```
 
 Calls through `client` raise `ConnectRPC::Error` for error responses, exactly as
-they would over the network.
+they would over the network. When a handler raises an exception that is not a
+`ConnectRPC::Error`, the error is still the generic `internal` one the peer
+would decode, and its `cause` is the original exception, so test failures show
+the handler's backtrace. The low-level `transport.call` raises that error
+instead of returning the error response. Manual gRPC-Web requests still return
+their 200 response with `grpc-status: 13`. A Server `on_error:` reporter still
+runs in both cases.
 
 ## Request handling
 

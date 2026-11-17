@@ -69,12 +69,21 @@ The middleware translates `PATH_INFO`, raw `QUERY_STRING`, request headers and
 - Registered service paths belong to ConnectRPC, including unknown methods.
 - Unrelated paths call the downstream app, or return 404 when none was supplied.
 - Repeated response metadata and `trailer-*` fields remain Rack 3 arrays.
+- RPC responses carry `content-length`, with or without instrumentation.
 - Rack env normalization loses the distinction between underscore and hyphen
   request metadata names; native metadata acceptance is unchanged.
 
 The core Server owns unary proto/JSON negotiation, identity/opt-in gzip, bounded
 input/output, typed errors and cooperative deadlines. See the
 [unary guide](../../docs/unary.md) for those options.
+
+### Unexpected errors
+
+The client receives only a generic `internal` error when a handler raises an
+exception that is not a `ConnectRPC::Error`. The middleware writes the RPC path
+and the exception's full message and backtrace to `env["rack.errors"]`, prefixed
+with `[connectrpc.rack]`. For an application reporter, pass `on_error:` to the
+core Server; both run. See [errors](../../docs/unary.md#errors).
 
 ### Limitations
 

@@ -29,7 +29,10 @@ module ConnectRPC
 
       lifecycle = @server.start_call(path: path, headers: headers, http_method: env.fetch("REQUEST_METHOD"))
       response = @server.call(path: path, http_method: env.fetch("REQUEST_METHOD"), headers: headers,
-                              input: env["rack.input"], query: env.fetch("QUERY_STRING", ""), lifecycle: lifecycle)
+                              input: env["rack.input"], query: env.fetch("QUERY_STRING", ""), lifecycle: lifecycle,
+                              on_error: error_log(env, path))
+      # An explicit length keeps framing identical when Body hides the Array from to_ary-based middleware.
+      response_headers = response.headers.merge("content-length" => response.body.bytesize.to_s)
       body = [response.body]
       if lifecycle
         callbacks = env["rack.response_finished"]
@@ -41,7 +44,7 @@ module ConnectRPC
           body = Body.new(body, lifecycle)
         end
       end
-      result = [response.status, response.headers, body]
+      result = [response.status, response_headers, body]
       transferred = true
       result
     rescue Exception => e # rubocop:disable Lint/RescueException -- observe cancellation, then preserve it
@@ -89,6 +92,15 @@ module ConnectRPC
       raise
     ensure
       body.discard(error) if !transferred && body.is_a?(Body)
+    end
+
+    # The host's error stream records exceptions that become a generic internal
+    # error. Server on_error remains the application's reporter.
+    def error_log(env, path)
+      errors = env["rack.errors"]
+      return unless errors
+
+      ->(error) { errors.puts("[connectrpc.rack] #{path}: #{error.full_message(highlight: false)}") }
     end
 
     def request_headers(env)
