@@ -55,15 +55,22 @@ class DelayProxy
   def pipe(from, to)
     queue = Thread::Queue.new
     Thread.new do
-      loop { queue << [now + @delay, from.readpartial(65_536)] }
+      loop do
+        # Stamp the deadline after the read returns, so idle time before the
+        # chunk arrived does not count toward its delay.
+        bytes = from.readpartial(65_536)
+        queue << [now + @delay, bytes]
+      end
     rescue IOError, SystemCallError
       queue << nil
     end
     Thread.new do
       while (item = queue.pop)
         due, bytes = item
-        # The added latency is the point of this relay.
-        sleep(due - now) if due > now
+        # The added latency is the point of this relay. Read the clock once:
+        # a second read can pass the deadline and hand sleep a negative value.
+        wait = due - now
+        sleep(wait) if wait.positive?
         to.write(bytes)
       end
     rescue IOError, SystemCallError

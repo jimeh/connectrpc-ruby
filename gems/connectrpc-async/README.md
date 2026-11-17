@@ -1173,16 +1173,16 @@ allocations listed under [Ingress bounds](#ingress-bounds).
 The defaults keep the 64 KiB per-stream bound and favor memory over
 throughput on high-latency links. Raise `stream_receive_window` on the side
 that receives large bodies, the client for downloads and the server for
-uploads, when the round-trip time matters. Measured with 3 MiB unary bodies
-through a local proxy that adds 50 ms of round-trip time (median of three runs;
-`mise run async:bench:windows -- --stream <bytes>` reproduces a row):
+uploads, when the round-trip time matters. `mise run async:bench:windows`
+measured these with 3 MiB unary bodies through a local proxy that adds 50 ms of
+round-trip time; pass `--stream` or `--connection` in bytes for other rows:
 
 | Windows (stream / connection) | Download | 4 concurrent downloads | Upload |
 | --- | --- | --- | --- |
-| 64 KiB / 64 KiB (before 0.3.0) | 6.3 s | 16.5 s | 6.3 s |
-| 64 KiB / 16 MiB (default) | 5.0 s | 5.2 s | 5.0 s |
-| 1 MiB / 16 MiB | 0.36 s | 0.50 s | 0.37 s |
-| 4 MiB / 16 MiB | 0.14 s | 0.23 s | 0.12 s |
+| 64 KiB / 64 KiB (the windows before 0.3.0) | 7.1 s | 17.3 s | 6.9 s |
+| 64 KiB / 16 MiB (default) | 5.0 s | 5.1 s | 5.0 s |
+| 1 MiB / 16 MiB | 0.28 s | 0.45 s | 0.31 s |
+| 4 MiB / 16 MiB | 0.12 s | 0.20 s | 0.12 s |
 
 grpc-go starts both windows at 64 KiB and grows them up to 16 MiB by
 estimating the bandwidth-delay product, unless the application sets them. Go's
