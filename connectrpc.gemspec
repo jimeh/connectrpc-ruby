@@ -16,6 +16,8 @@ Gem::Specification.new do |spec|
   spec.metadata["allowed_push_host"] = "https://rubygems.org"
   spec.metadata["rubygems_mfa_required"] = "true"
   spec.metadata["source_code_uri"] = spec.homepage
+  spec.metadata["changelog_uri"] = "#{spec.homepage}/blob/main/CHANGELOG.md"
+  spec.metadata["bug_tracker_uri"] = "#{spec.homepage}/issues"
   spec.files = Dir.glob("lib/**/*.rb", base: __dir__) + Dir.glob("exe/*", base: __dir__) +
                Dir.glob("sig/**/*.{rbs,yaml}", base: __dir__) + Dir.glob("rbs/**/*.rbs", base: __dir__) +
                %w[lib/connectrpc/bindings/descriptors/status.bin

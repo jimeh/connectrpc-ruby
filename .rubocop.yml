@@ -21,8 +21,11 @@ Style/Documentation:
   Enabled: false
 
 # Scenario harnesses keep setup, assertions and deterministic cleanup together.
+# Gemspecs are declarative package metadata.
 Metrics/BlockLength:
   Exclude:
+    - "*.gemspec"
+    - gems/*/*.gemspec
     - typecheck/prove.rb
     - typecheck/package.rb
     - typecheck/runtime.rb

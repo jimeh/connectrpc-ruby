@@ -260,12 +260,13 @@ becomes `resource_exhausted` and is not reported.
 
 ## Static signatures
 
-This package owns `sig/` and its discovery manifest. Add
-`library "connectrpc-sentry"` to a strict Steep target with this gem installed.
-The supported API is `Subscriber.new(capture_exceptions: bool)` and
-`Subscriber#start`; observers are private. The signatures do not describe the
-Sentry SDK. See the [RBS guide](../../docs/rbs.md) for supported APIs and
-extension contracts.
+This package owns `sig/` and its discovery manifest. Add `library "connectrpc"`
+and `library "connectrpc-sentry"` to a strict Steep target with this gem
+installed. The manifest lists only standard libraries, so name each connectrpc
+library explicitly; this also works with `rbs collection`. The supported API is
+`Subscriber.new(capture_exceptions: bool)` and `Subscriber#start`; observers are
+private. The signatures do not describe the Sentry SDK. See the
+[RBS guide](../../docs/rbs.md) for supported APIs and extension contracts.
 
 ## Development
 

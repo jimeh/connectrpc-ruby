@@ -15,6 +15,8 @@ Gem::Specification.new do |spec|
   spec.metadata["allowed_push_host"] = "https://rubygems.org"
   spec.metadata["rubygems_mfa_required"] = "true"
   spec.metadata["source_code_uri"] = spec.homepage
+  spec.metadata["changelog_uri"] = "#{spec.homepage}/blob/main/CHANGELOG.md"
+  spec.metadata["bug_tracker_uri"] = "#{spec.homepage}/issues"
   spec.files = %w[LICENSE README.md lib/connectrpc/health.rb lib/connectrpc/health/registry.rb
                   lib/connectrpc/health/version.rb lib/connectrpc/health/watcher.rb
                   lib/grpc/health/v1/health_connect.rb

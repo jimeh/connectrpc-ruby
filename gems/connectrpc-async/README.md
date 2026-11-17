@@ -96,7 +96,7 @@ request_body_timeout: 60, handshake_timeout: 10, idle_timeout: 60,
 refresh_interval: 60, refresh_jitter: 0.1, refresh_timeout: 10,
 on_tls_error: nil, keepalive: ServerKeepalive.new, fallback: nil)` returns a
 host. `fallback:`, `max_concurrent_streams:` and `request_body_timeout:` are
-available since 0.2.2.
+available since 0.3.0.
 
 - `start` binds/listens before returning self; `port` and `addresses` expose the
   actual binding.
@@ -113,7 +113,7 @@ For TLS options, see [TLS and client authentication](#tls-and-client-authenticat
 
 ### Stream admission
 
-`max_requests` caps the requests admitted across the whole host. Since 0.2.2,
+`max_requests` caps the requests admitted across the whole host. Since 0.3.0,
 each HTTP/2 connection advertises the smaller of `max_concurrent_streams`, an
 integer from 1 to 2^32-1, and `max_requests` as its
 `SETTINGS_MAX_CONCURRENT_STREAMS`, and enforces it whether or not the client has
@@ -131,7 +131,7 @@ set `max_concurrent_streams` lower explicitly.
   refusal for full host admission or an abort as `admission_rejected`, without
   an HTTP status. A stream over the connection's limit is refused before
   dispatch and is not observed.
-- Since 0.2.2, `request_body_timeout` bounds how long a handler waits for
+- Since 0.3.0, `request_body_timeout` bounds how long a handler waits for
   request body bytes on an admitted HTTP/2 stream, like nginx's
   `client_body_timeout`. Each wait starts again when body bytes arrive; empty or
   padding-only DATA frames do not count. When a wait exceeds it, the server
@@ -146,7 +146,7 @@ until a deadline, keepalive failure or `close` ends them.
 
 ### Fallback application
 
-Since 0.2.2, the Host accepts a fallback application.
+Since 0.3.0, the Host accepts a fallback application.
 
 `fallback:` takes a native Protocol::HTTP callable, `call(request)` returning a
 `Protocol::HTTP::Response`, like [Application](#application)'s fallback. It is
@@ -537,7 +537,7 @@ servers do not answer it with `too_many_pings`.
 
 - `connection_observer` receives frozen `ConnectionEvent` values with `type`
   (`:state_changed`, `:attempt_finished`, `:admission_rejected`,
-  `:connection_closed`, or `:counts_changed` since 0.2.2), `state`,
+  `:connection_closed`, or `:counts_changed` since 0.3.0), `state`,
   `previous_state`, `outcome`, `duration` in monotonic seconds, and the counts
   `active`, `draining`, `pending_calls` and `pending_bytes`. An
   `:attempt_finished` outcome is `:ready`, `:refused`, `:timeout`, `:tls`,
@@ -550,7 +550,7 @@ servers do not answer it with `too_many_pings`.
   a removed socket that is still closing. `pending_calls` counts calls waiting
   to acquire a connection, and `pending_bytes` the request bytes reserved by
   admitted calls.
-- Since 0.2.2, `:counts_changed` is emitted when `active`, `draining` or
+- Since 0.3.0, `:counts_changed` is emitted when `active`, `draining` or
   `pending_calls` differs from the last published event's counts without another
   event reporting it: a call starts or stops waiting, or a connection drains or
   is removed. A call that finds spare capacity emits nothing. `pending_bytes`
@@ -1229,12 +1229,14 @@ for connection events.
 
 ## Static signatures
 
-This package owns `sig/` and its discovery manifest. Add
-`library "connectrpc-async"` to a strict Steep target with this gem installed.
-See the [RBS guide](../../docs/rbs.md) for supported APIs, extension contracts,
-partial records, runtime validation and framework-signature limits.
-`mise run rbs:check` checks application callers for this package; strict core
-source checking is a separate target from backend implementation checking.
+This package owns `sig/` and its discovery manifest. Add `library "connectrpc"`
+and `library "connectrpc-async"` to a strict Steep target with this gem
+installed. The manifest lists only standard libraries, so name each connectrpc
+library explicitly; this also works with `rbs collection`. See the
+[RBS guide](../../docs/rbs.md) for supported APIs, extension contracts, partial
+records, runtime validation and framework-signature limits. `mise run rbs:check`
+checks application callers for this package; strict core source checking is a
+separate target from backend implementation checking.
 
 ## Development
 

@@ -116,7 +116,8 @@ Proto2 and proto3, including optional presence and mixed unary/streaming
 services, are supported. Editions and unsupported plugin parameters are rejected.
 Default output is `dir/foo_connect.rb` for service-bearing `dir/foo.proto`.
 Message generation remains official `--ruby_out`. Set `rbs=true` to also emit
-`dir/foo_connect.rbs`; `rbs=false` is accepted and equals the default.
+`dir/foo_connect.rbs`. Since 0.3.0, `rbs=false` is accepted and equals the
+default.
 
 The gem ships optional core signatures; the [RBS guide](rbs.md) covers official
 message `--rbs_out`, explicit protobuf bridge selection and strict Steep

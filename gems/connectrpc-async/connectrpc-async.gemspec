@@ -15,6 +15,9 @@ Gem::Specification.new do |spec|
   spec.required_ruby_version = ">= 3.4"
   spec.metadata["allowed_push_host"] = "https://rubygems.org"
   spec.metadata["rubygems_mfa_required"] = "true"
+  spec.metadata["source_code_uri"] = spec.homepage
+  spec.metadata["changelog_uri"] = "#{spec.homepage}/blob/main/CHANGELOG.md"
+  spec.metadata["bug_tracker_uri"] = "#{spec.homepage}/issues"
   spec.files = Dir.glob("sig/**/*.{rbs,yaml}", base: __dir__) +
                Dir.glob(["lib/**/*.rb", "LICENSE", "README.md"], base: __dir__).sort
   spec.require_paths = ["lib"]

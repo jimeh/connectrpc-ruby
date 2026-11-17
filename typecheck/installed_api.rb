@@ -2,6 +2,7 @@
 
 require_relative "api_check"
 require_relative "archive"
+require_relative "collection"
 require_relative "../scripts/package_build"
 
 module InstalledAPI
@@ -50,11 +51,14 @@ module InstalledAPI
     %w[api falcon api_check.rb installed_runtime.rb installed_streaming.rb installed_web.rb].each do |name|
       FileUtils.cp_r(File.join(root, "typecheck", name), working)
     end
-    # Each library must resolve independently through its installed manifest.
+    # Each library resolves through its installed manifest beside the documented
+    # connectrpc libraries its signatures reference.
     libraries = ["connectrpc", *APICheck::PACKAGES.map { |name| "connectrpc-#{name}" }]
-    libraries.each do |name|
-      RBSHarness.capture!([RbConfig.ruby, "-S", "rbs", "-r", name, "validate"], working: working)
+    [["connectrpc"], *APICheck::PACKAGES.map { |name| APICheck.libraries(name) }].each do |closure|
+      RBSHarness.capture!([RbConfig.ruby, "-S", "rbs", *closure.flat_map { |name| ["-r", name] }, "validate"],
+                          working: working)
     end
+    RBSCollection.check(working: working)
     # The parent process still has the tooling bundle's RubyGems cache. Resolve
     # the fresh GEM_HOME in an unbundled child, as the actual consumer does.
     owners = APICheck::BRIDGES.transform_keys { |name| "connectrpc-#{name}" }
@@ -95,6 +99,7 @@ module InstalledAPI
     %w[forward reverse].each do |order|
       puts RBSHarness.capture!([RbConfig.ruby, "installed_runtime.rb", order], working: working)
     end
-    puts "Eleven installed signature libraries discovered independently and in two orders; API-only OTel closure"
+    puts "Eleven installed signature libraries discovered with their documented closures and in two orders; " \
+         "API-only OTel closure"
   end
 end

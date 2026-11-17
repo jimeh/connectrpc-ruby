@@ -69,7 +69,7 @@ transport = ConnectRPC::Async::Transport.new(
 Transport names match `/\A[a-z0-9_]{1,64}\z/` and must be unique per process;
 asking one `Metrics` for a repeated name raises `ArgumentError`. An observer
 built after `Yabeda.configure!` publishes `idle` 1 and 0 for the other states,
-and 0 for its connection and pending-call gauges (since 0.2.2), immediately. One
+and 0 for its connection and pending-call gauges (since 0.3.0), immediately. One
 built before it registers a Yabeda collector that publishes its current state
 and last known counts on each `Yabeda.collect!`, such as a yabeda-prometheus
 scrape; until then its series appear only as events record them. Events recorded
@@ -82,7 +82,7 @@ structures, and adapters own their own safety.
 ## Metrics and names
 
 Each metric is declared with a group, name, optional unit, `comment`, `tags`
-and, for histograms, `buckets`. Every gauge (connection state and, since 0.2.2,
+and, for histograms, `buckets`. Every gauge (connection state and, since 0.3.0,
 `client_connections` and `client_pending_calls`) declares `aggregation: :sum`.
 yabeda-prometheus exports `group_name_unit`, which produces exactly the
 connectrpc-prometheus names, for example `grpc_server_handled_total`,
@@ -129,10 +129,11 @@ at its gemspec floor, including yabeda 0.16.0.
 
 ## Static signatures
 
-This package owns `sig/` and its discovery manifest. Add
-`library "connectrpc-yabeda"` to a strict Steep target with this gem installed.
-See the [RBS guide](../../docs/rbs.md) for supported APIs and extension
-contracts.
+This package owns `sig/` and its discovery manifest. Add `library "connectrpc"`
+and `library "connectrpc-yabeda"` to a strict Steep target with this gem
+installed. The manifest lists only standard libraries, so name each connectrpc
+library explicitly; this also works with `rbs collection`. See the
+[RBS guide](../../docs/rbs.md) for supported APIs and extension contracts.
 
 ## License
 

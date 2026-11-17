@@ -7,6 +7,30 @@ The [changelog](../CHANGELOG.md) lists every change.
 
 ## 0.3.0
 
+### Breaking change: Steepfiles name core explicitly
+
+Only applications that type-check with Steep or RBS are affected. The optional
+gems' signature manifests no longer name connectrpc gems, because
+`rbs collection` locks every manifest dependency as a standard library and then
+fails to load the whole environment. Without `rbs collection`, an optional
+library therefore no longer loads core's signatures. Add `library "connectrpc"`
+beside each optional connectrpc library, and `library "connectrpc-async"` beside
+`library "connectrpc-falcon"`:
+
+```ruby
+target :app do
+  library "connectrpc"
+  library "connectrpc-async" # Required by connectrpc-falcon.
+  library "connectrpc-falcon"
+  check "app"
+end
+```
+
+Projects that use `rbs collection` now install every connectrpc package as a
+gem in any Gemfile order and need no other change. Runtime behavior, generated
+code and signature declarations are unchanged. See
+[package APIs](rbs.md#package-apis-and-extension-contracts).
+
 ### Behavior changes
 
 These affect the Async HTTP/2 and HTTP/1 client transports and the core
