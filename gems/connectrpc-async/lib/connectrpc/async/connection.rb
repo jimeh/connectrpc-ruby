@@ -17,7 +17,7 @@ module ConnectRPC
       # From the RFC 9113 initial window, 65,535, to the largest it allows.
       # The stream window is also each stream's retained ingress bound.
       # Connection credit returns on receipt, so the connection window bounds
-      # bytes in flight, not retained bytes.
+      # bytes in flight; retained bytes stay within the stream windows.
       def self.receive_window(value, name)
         unless value.is_a?(Integer) && value.between?(65_535, ::Protocol::HTTP2::MAXIMUM_ALLOWED_WINDOW_SIZE)
           raise ArgumentError, "#{name} must be an integer from 65535 to 2147483647"

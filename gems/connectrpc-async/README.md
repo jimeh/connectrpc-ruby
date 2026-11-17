@@ -1150,22 +1150,32 @@ for a server. Each is an integer from 65,535, the HTTP/2 initial window, to
   streams of a connection. Each side grows its connection window from 65,535
   with one `WINDOW_UPDATE` on stream 0 right after its SETTINGS, as Go's
   net/http2 does. Connection credit returns as DATA arrives rather than when it
-  is read, so this window adds no retained memory; the stream windows bound
-  that. Keep it at least the stream window times the streams expected to
-  transfer at once.
+  is read, so unread bytes never exceed the stream windows. The connection
+  window instead limits how fast those windows can fill: before 0.3.0, one
+  round trip delivered at most 64 KiB per connection. Keep it at least the
+  stream window times the streams expected to transfer at once.
 
-Memory grows with the stream window. A host retains at most about
-`stream_receive_window` times its admitted requests (`max_requests`, default
-128) in unread request payload: 8 MiB with the defaults, 128 MiB with 1 MiB
-windows. A client transport is bounded the same way by its own `max_requests`.
-These add to core's per-message `request_limit` and `response_limit` buffering
-and the other allocations listed under [Ingress bounds](#ingress-bounds).
+Memory grows with the stream window. Each open stream retains at most one
+stream window of unread payload, so a server connection retains at most
+`stream_receive_window` times its stream limit (the smaller of
+`max_concurrent_streams` and `max_requests`), as before 0.3.0: 6.25 MiB with
+the defaults, 100 MiB with 1 MiB windows. Admitted requests hold at most
+`stream_receive_window` times `max_requests` (default 128) across the host:
+8 MiB with the defaults. A stream that arrives while host admission is full
+can also fill its window before the server refuses it, so one burst can
+briefly add up to the smaller of `connection_receive_window` and the
+connection's stream limit times the stream window. Lower
+`connection_receive_window` to cap that burst. A client transport retains at
+most `stream_receive_window` times its own `max_requests`. These add to core's
+per-message `request_limit` and `response_limit` buffering and the other
+allocations listed under [Ingress bounds](#ingress-bounds).
 
 The defaults keep the 64 KiB per-stream bound and favor memory over
 throughput on high-latency links. Raise `stream_receive_window` on the side
 that receives large bodies, the client for downloads and the server for
 uploads, when the round-trip time matters. Measured with 3 MiB unary bodies
-through a local proxy that adds 50 ms of round-trip time (median of three runs):
+through a local proxy that adds 50 ms of round-trip time (median of three runs;
+`mise run async:bench:windows -- --stream <bytes>` reproduces a row):
 
 | Windows (stream / connection) | Download | 4 concurrent downloads | Upload |
 | --- | --- | --- | --- |

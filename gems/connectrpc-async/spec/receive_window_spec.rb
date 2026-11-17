@@ -138,6 +138,27 @@ RSpec.describe "HTTP/2 receive windows" do
     end
   end
 
+  it "passes both windows from ThreadedTransport to its owner's connections" do
+    observed = Thread::Queue.new
+    hosts = []
+    # The handler runs on the host's reactor thread, which owns the connection.
+    peer = threaded_host(server: server(echo: lambda { |message, _context|
+      connection = host_session(hosts.first).instance_variable_get(:@resources).first.connection
+      observed << [connection.remote_settings.initial_window_size, connection.remote_window.available]
+      message
+    }))
+    hosts << peer.peer
+    origin = "http://127.0.0.1:#{peer.peer.port}"
+    transport = threaded(origin: origin, stream_receive_window: 131_072, connection_receive_window: 262_144)
+    expect(client(transport, origin).echo(AsyncHelpers::MESSAGE.new(name: "w")).message.name).to eq("w")
+    # No response DATA has been sent yet, so the host's send window is the
+    # client's whole connection window.
+    expect(pop_within(observed, "the handler's view of the client windows")).to eq([131_072, 262_144])
+  ensure
+    transport&.close(grace: 0)
+    peer&.stop
+  end
+
   it "validates both windows on every client and server constructor" do
     reactor do
       constructors = {

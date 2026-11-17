@@ -38,9 +38,11 @@ arguments = case command
               ["exec", "rspec", "--options", "soak/.rspec", "--default-path", "soak", "--pattern", "**/*_soak.rb",
                *ARGV]
             when "check" then ["exec", "rubocop", ".", "--config", File.join(root, ".rubocop.yml")]
-            when "build", "package", "example", "interop", "streaming_interop", "http1_interop"
+            when "build", "package", "example", "interop", "streaming_interop", "http1_interop", "window_benchmark"
               ["exec", "ruby", "scripts/#{command}.rb", *ARGV]
-            else abort "Usage: run.rb setup|floors|canary|test|soak|check|build|package|example|interop|exec"
+            else
+              abort "Usage: run.rb setup|floors|canary|test|soak|check|build|package|example|interop|" \
+                    "window_benchmark|exec"
             end
 unless command == "exec"
   puts "Async backend; Ruby #{RUBY_VERSION}; Bundler 4.0.23; Gemfile #{environment.fetch('BUNDLE_GEMFILE')}"
