@@ -342,14 +342,19 @@ server = ConnectRPC::Server.new(
 )
 ```
 
-Core calls `on_error` with the original exception for every `StandardError`
-that is not a `ConnectRPC::Error`, raised by a handler, an interceptor, a custom
-invoker or response encoding, before it sends the generic `internal` error. This
-covers Connect, gRPC and gRPC-Web, unary and streaming, on every host. The
-callable runs on the request's thread or fiber, inside the RPC's
-instrumentation scope, so request-scoped loggers and an active trace still
-apply. Exceptions raised by `on_error` itself are ignored, and the peer response
-is unchanged.
+Core calls `on_error` with the original exception when a `StandardError` that
+is not a `ConnectRPC::Error` escapes a handler, an interceptor or a custom
+invoker and the peer receives the generic `internal` error. This covers
+Connect, gRPC and gRPC-Web, unary and streaming, on every host. The callable
+runs on the request's thread or fiber, inside the RPC's instrumentation scope,
+so request-scoped loggers and an active trace still apply. Exceptions raised by
+`on_error` itself are ignored, and the peer response is unchanged.
+
+Some failures are not reported. When the deadline or a cancellation already
+decides the outcome, the peer receives `deadline_exceeded` or `canceled`
+instead. Failures that core maps to its own error first, such as a streaming
+response message the binding cannot encode, reach
+[instrumentation](#instrumentation) only.
 
 Hosts add their own reporting:
 
@@ -359,7 +364,8 @@ Hosts add their own reporting:
   `internal` error with the original exception as its `cause`.
 - [connectrpc-on-rails](../gems/connectrpc-on-rails/README.md) builds its own
   Server per request. Handler exceptions follow Rails: `rescue_from`, the
-  controller logger and `Rails.error`.
+  controller logger and `Rails.error`. Unexpected exceptions outside the action,
+  such as from a server interceptor, go to `env["rack.errors"]` as on Rack.
 - [connectrpc-sentry](../gems/connectrpc-sentry/README.md) already reports
   unexpected handler exceptions, so do not also send them to Sentry from
   `on_error`.

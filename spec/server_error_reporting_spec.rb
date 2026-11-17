@@ -74,6 +74,23 @@ RSpec.describe ConnectRPC::Server, "unexpected error reporting" do
     expect([observed, attached]).to eq([[true], false])
   end
 
+  it "does not report an exception when the deadline outcome wins arbitration" do
+    now = 100.0
+    allow(Process).to receive(:clock_gettime).and_call_original
+    allow(Process).to receive(:clock_gettime).with(Process::CLOCK_MONOTONIC) { now }
+    late = lambda do |_request, _context|
+      now += 2
+      raise failure
+    end
+    server = described_class.new(services: [EchoExample::SERVICE], binding: EchoExample::BINDING,
+                                 handlers: { method.path => late }, on_error: ->(error) { reports << error })
+    response = server.call(path: method.path, http_method: "POST", input: StringIO.new("{}"),
+                           headers: { "content-type" => ["application/json"], "connect-timeout-ms" => ["1000"] },
+                           on_error: ->(error) { reports << error })
+    expect(JSON.parse(response.body)).to include("code" => "deadline_exceeded")
+    expect(reports).to be_empty
+  end
+
   it "requires a callable on_error" do
     expect { build(on_error: "log") }.to raise_error(ArgumentError, "on_error must be callable")
   end
@@ -153,5 +170,28 @@ RSpec.describe ConnectRPC::Server, "unexpected error reporting on gRPC, gRPC-Web
     expect(reports).to eq([failure])
     expect(JSON.parse(written.byteslice(5..)).fetch("error")).to include("code" => "internal",
                                                                          "message" => "Internal error")
+  end
+
+  it "does not report a streaming exception when the deadline outcome wins arbitration" do
+    now = 100.0
+    allow(Process).to receive(:clock_gettime).and_call_original
+    allow(Process).to receive(:clock_gettime).with(Process::CLOCK_MONOTONIC) { now }
+    stream = ConnectRPC::ServerStreamMethod.new(service: method.service, name: "Watch", request_type: :request,
+                                                response_type: :response)
+    late = lambda do |_request, _writer, _context|
+      now += 2
+      raise failure
+    end
+    server = described_class.new(services: [ConnectRPC::Service.new(name: stream.service, methods: [stream])],
+                                 binding: binding, on_error: ->(error) { reports << error },
+                                 handlers: { stream.path => late })
+    written = +""
+    output = Object.new
+    output.define_singleton_method(:write) { |chunk, **| written << chunk }
+    server.call_stream(path: stream.path, http_method: "POST", input: native_input, output: output,
+                       headers: { "content-type" => ["application/connect+proto"], "connect-timeout-ms" => ["1000"] },
+                       publish: ->(_head) {}, http2: true)
+    expect(JSON.parse(written.byteslice(5..)).fetch("error")).to include("code" => "deadline_exceeded")
+    expect(reports).to be_empty
   end
 end

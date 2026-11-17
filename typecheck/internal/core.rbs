@@ -202,6 +202,7 @@ module ConnectRPC
     def validate_headers!: (headers) -> nil
     def request_deadline: (headers) -> Deadline?
     def response_headers: (Context?, String) -> headers
+    def report_stream_error: (StandardError, Error, Streaming::ServerState | GRPCProtocol::ServerState | GRPCWeb::ServerState) -> nil
     def report_unexpected: (StandardError, ?(^(StandardError) -> void | _ServerErrorHandler)?) -> nil
     def terminal_error: (Error, Context?, _Cancellation?) -> Error
     def error_response: (Error, Context?, ?Instrumentation::Handle?) -> TransportResponse

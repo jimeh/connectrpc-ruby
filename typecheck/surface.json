@@ -1806,6 +1806,7 @@
     "ConnectRPC::Server#process_call": {"kind":"method","visibility":"private","parameters":"path:, http_method:, headers:, input:, query:, lifecycle: nil, cancellation: nil, on_error: nil","classification":"internal"},
     "ConnectRPC::Server#process_get": {"kind":"method","visibility":"private","parameters":"path, headers, input, query, lifecycle, state","classification":"internal"},
     "ConnectRPC::Server#record_request_metadata": {"kind":"method","visibility":"private","parameters":"lifecycle, headers","classification":"internal"},
+    "ConnectRPC::Server#report_stream_error": {"kind":"method","visibility":"private","parameters":"error, safe, state","classification":"internal"},
     "ConnectRPC::Server#report_unexpected": {"kind":"method","visibility":"private","parameters":"error, host = nil","classification":"internal"},
     "ConnectRPC::Server#request_context": {"kind":"method","visibility":"private","parameters":"headers, lifecycle = nil, cancellation = nil","classification":"internal"},
     "ConnectRPC::Server#request_deadline": {"kind":"method","visibility":"private","parameters":"headers","classification":"internal"},

@@ -151,8 +151,10 @@ module ConnectRPC
         response = error_response(terminal_error(e, context, cancellation), context, lifecycle)
       rescue StandardError => e
         lifecycle&.record_failure(e)
-        report_unexpected(e, on_error)
-        safe = terminal_error(Error.new(:internal, "Internal error"), context, cancellation)
+        internal = Error.new(:internal, "Internal error")
+        safe = terminal_error(internal, context, cancellation)
+        # A deadline or cancellation outcome that wins arbitration is not reported.
+        report_unexpected(e, on_error) if safe.equal?(internal)
         response = error_response(safe, context, lifecycle)
       ensure
         context&.close
@@ -409,6 +411,14 @@ module ConnectRPC
         end
       end
       nil
+    end
+
+    # Report only a converted exception whose generic internal error survived
+    # arbitration. Only the portable gRPC-Web unary path carries a host reporter.
+    def report_stream_error(error, safe, state)
+      return if error.equal?(safe) || !state.error.equal?(safe)
+
+      report_unexpected(error, state.is_a?(GRPCWeb::ServerState) ? state.on_error : nil)
     end
 
     def terminal_error(error, context, cancellation)
