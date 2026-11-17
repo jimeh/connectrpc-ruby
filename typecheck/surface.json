@@ -524,6 +524,7 @@
     "ConnectRPC::Async::ServerSession#schedule": {"kind":"method","visibility":"public","parameters":"&","classification":"spi"},
     "ConnectRPC::Async::ServerSession#serve": {"kind":"method","visibility":"private","parameters":"resource","classification":"internal"},
     "ConnectRPC::Async::ServerSession#setup_connection": {"kind":"method","visibility":"private","parameters":"resource","classification":"internal"},
+    "ConnectRPC::Async::ServerSession#shutdown_raw": {"kind":"method","visibility":"private","parameters":"raw","classification":"internal"},
     "ConnectRPC::Async::ServerSession#start": {"kind":"method","visibility":"public","parameters":"","classification":"spi"},
     "ConnectRPC::Async::ServerSession#stop_accepting": {"kind":"method","visibility":"private","parameters":"","classification":"internal"},
     "ConnectRPC::Async::ServerSession#tls_generation": {"kind":"method","visibility":"public","parameters":"","classification":"spi"},

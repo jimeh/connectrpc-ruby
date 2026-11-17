@@ -7,8 +7,9 @@ RSpec.shared_examples "owned pending close" do |protocol|
 
   modes = %i[h2c mtls mtls_provider]
   cases = modes.product(%i[normal expired abort interrupted], [false])
-  # Issue #135: a scheduling point while TLS shuts down, after every raw
-  # socket has failed, must not strand a close interrupt in a reader.
+  # Issue #135: one scheduling point in TLS shutdown, here at its entry as in
+  # the issue's bisection, made raw-first retirement strand a close interrupt
+  # in a server reader on Ruby 4.0.9.
   cases += modes.product(%i[abort interrupted], [true])
   cases.each do |mode, outcome, tls_yield|
     it "returns nil for owned #{protocol} #{mode} positive grace until actual #{outcome} completion" \

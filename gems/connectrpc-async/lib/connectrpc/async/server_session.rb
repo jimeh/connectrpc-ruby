@@ -648,17 +648,32 @@ module ConnectRPC
       end
 
       def retire_session
-        # Listener cleanup can yield. Fail every peer before crossing it.
-        @resources.each do |resource|
-          resource.is_a?(Internal::Resource) ? resource.send(:fail_raw) : Internal.raw_close(resource.raw)
+        # Listener cleanup and a Ruby 4 close can both yield. Shut every peer
+        # down first, which never yields.
+        h2, http1 = @resources.partition { |resource| resource.is_a?(Internal::Resource) }
+        h2.each { |resource| resource.send(:fail_raw) }
+        http1.each { |resource| shutdown_raw(resource.raw) }
+        # HTTP/1 retirement still expects its raw socket closed first. Each
+        # close can yield, so it follows every shutdown.
+        http1.each { |resource| Internal.raw_close(resource.raw) } # rubocop:disable Style/CombinableLoops
+        begin
+          stop_accepting
+        ensure
+          # Retirement closes each H2 descriptor, even after a listener
+          # cleanup failure.
+          @resources.each(&:abort)
         end
-        stop_accepting
-        @resources.each(&:abort)
         @admitted.clear
         @h1_wire.clear
         @tls.close
         finish_closed(@close_outcome)
         Internal.cancel(@lifetime)
+      end
+
+      def shutdown_raw(raw)
+        raw.shutdown(Socket::SHUT_RDWR) if raw && !raw.closed?
+      rescue IOError, SystemCallError
+        nil
       end
     end
   end

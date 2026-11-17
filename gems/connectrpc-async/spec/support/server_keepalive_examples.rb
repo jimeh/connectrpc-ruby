@@ -547,6 +547,21 @@ RSpec.shared_examples "HTTP/2 server keepalive" do
                                                               max_connection_age: 100)) do |fixture|
           # A second descriptor keeps the socket open after the client closes.
           keeper = fixture.client.raw.dup
+          resource = fixture.resource
+          raw = resource.raw
+          # The discard read lingers after its EOF, so retirement reaches its
+          # closes first. No close may reach raw while the read is on it.
+          discarding_at_close = []
+          allow(raw).to receive(:readpartial).and_wrap_original do |read, *args|
+            read.call(*args)
+          rescue EOFError
+            3.times { Async::Task.current.yield }
+            raise
+          end
+          allow(raw).to receive(:close).and_wrap_original do |close|
+            discarding_at_close << resource.instance_variable_get(:@discarding)
+            close.call
+          end
           await_due(task, fixture.clock, 100)
           fixture.clock.advance(100)
           wait_until(task, "server half-close") { fixture.client.eof? }
@@ -554,8 +569,10 @@ RSpec.shared_examples "HTTP/2 server keepalive" do
           await_due(task, fixture.clock, 101)
           fixture.clock.advance(1)
           expect(closing.wait).to be(false)
-          expect(retired?(fixture.resource)).to be(true)
-          expect(fixture.resource.raw).to be_closed
+          expect(retired?(resource)).to be(true)
+          expect(raw).to be_closed
+          expect(discarding_at_close).not_to be_empty
+          expect(discarding_at_close).to all(be(false))
         ensure
           keeper&.close
         end

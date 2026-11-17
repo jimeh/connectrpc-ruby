@@ -1270,6 +1270,10 @@ module ConnectRPC
             capture_retirement
             break if @retirement_members.keys.all?(&:finished?)
           end
+          # A drain's discard read is not a member, but the shutdown ends it
+          # with EOF. The protocol stream and TLS socket below close raw too,
+          # so every close waits for that read to leave raw.
+          @progress.wait while @discarding
           begin
             @connection&.finish_close(error)
           rescue StandardError
@@ -1281,14 +1285,15 @@ module ConnectRPC
               nil
             end
           end
-          # Every member has joined, and a drain's discard read wakes on the
-          # shutdown, so this close has no blocked fiber left to interrupt.
-          @progress.wait while @discarding
           Internal.raw_close(@raw)
           @retirement_completed = true
           changed
+          # The client manager reserves a removed connection's slot until its
+          # descriptor is closed.
+          unusable
         ensure
-          # An interrupted retirement still releases the descriptor.
+          # An interrupted retirement still releases the descriptor, although
+          # a fiber still blocked on raw may then get a late close interrupt.
           Internal.raw_close(@raw)
         end
       end
