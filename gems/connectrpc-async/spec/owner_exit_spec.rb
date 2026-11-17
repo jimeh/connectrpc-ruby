@@ -125,13 +125,14 @@ RSpec.describe "Client transport owner exit without close" do
           release = Async::Promise.new
           worker = nil
           owner = root.async do |owned|
-            kind.new(origin: "http://127.0.0.1:1")
+            transport = kind.new(origin: "http://127.0.0.1:1")
             worker = owned.async do |child|
               child.async do
                 Async::Promise.new.wait
               ensure
                 release.wait
-                cleaned << true
+                # Work still running under the owner keeps the transport open.
+                cleaned << state(transport)
               end
               Async::Promise.new.wait
             end
@@ -148,6 +149,7 @@ RSpec.describe "Client transport owner exit without close" do
       end
       expect(outcome.join(5)&.value).to eq(:done)
       expect(cleaned.size).to eq(1)
+      expect(cleaned.pop).to eq(:running)
     ensure
       outcome&.kill
       outcome&.join(5)

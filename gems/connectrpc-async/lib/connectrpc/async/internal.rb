@@ -295,15 +295,13 @@ module ConnectRPC
         def self.pending(node)
           node.children&.each do |child|
             next if child.transient? || GUARDS.key?(child)
-            return child if child.alive? && !resolved?(child)
+            return child if child.alive? && !(child.completed? || child.failed? || child.cancelled?)
 
             found = pending(child)
             return found if found
           end
           nil
         end
-
-        def self.resolved?(task) = task.completed? || task.failed? || task.cancelled?
 
         def self.join(task)
           task.wait
