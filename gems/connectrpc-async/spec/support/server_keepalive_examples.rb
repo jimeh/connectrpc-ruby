@@ -761,6 +761,46 @@ RSpec.shared_examples "HTTP/2 server keepalive" do
       end
     end
 
+    # The departure cancels the control writer, but a writer already due to
+    # run gets that cancellation only after its next write, which then fails
+    # because the peer left. The held write stands in for that ordering by
+    # outlasting the cancellation; its failure must not fail the drain.
+    it "lets a drain finish when a control frame write fails after the peer left" do
+      reactor do |task|
+        with_keepalive_host(task, keepalive: server_keepalive(time: nil)) do |fixture|
+          client = fixture.client
+          client.wire.ack_pings = false
+          connection = fixture.resource.connection
+          release = hold_post_delivery(fixture)
+          closing = task.async { fixture.host.close(grace: 5) }
+          await_due(task, fixture.clock, 5)
+          started = Async::Promise.new
+          failing = Async::Promise.new
+          connection.define_singleton_method(:write_frame) do |frame|
+            return super(frame) unless frame.type == Protocol::HTTP2::ResetStreamFrame::TYPE
+
+            started.resolve(true)
+            begin
+              failing.wait
+            rescue Async::Cancel
+              retry
+            end
+            raise Errno::EPIPE
+          end
+          written = fixture.resource.upkeep.refuse(99)
+          started.wait
+          send_goaway(client)
+          wait_until(task, "server reader ended") { connection.reader_task.finished? }
+          failing.resolve(true)
+          expect(written.wait).to be(false)
+          expect(fixture.resource).not_to be_finished
+          release.enqueue(true)
+          expect(closing.wait).to be(true)
+          expect(fixture.log[:completions].map(&:delivery)).to eq([:completed])
+        end
+      end
+    end
+
     it "keeps a too_many_pings decision ahead of a peer that leaves while a drain waits for its work" do
       reactor do |task|
         with_keepalive_host(task, keepalive: server_keepalive(time: nil)) do |fixture|
