@@ -97,7 +97,11 @@ copying every attribute of the RPC scope (`update_from_scope`, `rack_env`,
   matches. **Sub-decision:** `Call` has no URL, so targets match `host` and
   `host:port` (recommended; scheme-anchored regexes then fail closed).
   Alternative: ignore targets and document it. Sentry baggage is prepended to
-  baggage staged by earlier subscribers.
+  baggage staged by earlier subscribers. Superseded in 0.3.0 by
+  [#128](https://github.com/jimeh/connectrpc-ruby/issues/128): `Call` now carries
+  `url_scheme`, `url_path` and `transport_class`, targets match Sentry's
+  `scheme://host/path` URL form, and clients on the core `NetHTTP` transport
+  leave propagation to an applied `:http` patch whenever it will propagate.
 - Known core limit (#73, not this PR): `Client#injected_metadata`
   replaces caller `baggage` metadata with injected values via `Hash#merge`,
   for OTel too.
@@ -202,7 +206,8 @@ assertion.
 
 ## Open questions
 
-None. D4 targets match `host` and `host:port`; the caller-baggage limit is #73.
+None. D4 targets matched `host` and `host:port` until #128 added URL facts;
+the caller-baggage limit is #73.
 
 ## Implementation notes
 

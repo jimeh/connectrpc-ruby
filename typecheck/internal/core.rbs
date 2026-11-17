@@ -119,6 +119,9 @@ module ConnectRPC
     def read_chunk: (_Input, Integer) -> String?
     def read_chunks: (String) -> nil
   end
+  interface _TransportClassProbe
+    def class: () -> Class
+  end
   class Client
     @protocol: :connect | :grpc
     @grpc_status_wire_limit: Integer
@@ -150,6 +153,8 @@ module ConnectRPC
     def default_transport: () -> Transports::NetHTTP
     def encode_request: [Req, Resp] (Method[Req, Resp], Req, _Check?, ?Instrumentation::Handle?) -> String
     def build_request: [Req, Resp] (Method[Req, Resp], Req, Metadata, _Check?, ?Instrumentation::Handle?) -> TransportRequest
+    def request_path: (declaration) -> String
+    def request_facts: (declaration) -> { server_address: String?, server_port: Integer?, url_scheme: String?, url_path: String, transport_class: Class }
     def request_headers: (Metadata, Deadline?, ?get: bool) -> headers
     def compress_request: (String, _Check?, ?Instrumentation::Handle?) -> String
     def response_body: (TransportResponse, headers, _Check?, ?Instrumentation::Handle?) -> String
@@ -213,7 +218,7 @@ module ConnectRPC
   class Instrumentation
     @subscribers: Array[_Subscriber]
     @on_error: (^(StandardError) -> void | _InstrumentationErrorHandler)?
-    def start: (owner: Object, role: :client | :server, method: declaration?, carrier: Hash[String, String | Array[String]], ?server_address: String?, ?server_port: Integer?, ?path: String?, ?protocol: :connect | :grpc | :grpc_web) -> Handle
+    def start: (owner: Object, role: :client | :server, method: declaration?, carrier: Hash[String, String | Array[String]], ?server_address: String?, ?server_port: Integer?, ?path: String?, ?protocol: :connect | :grpc | :grpc_web, ?url_scheme: String?, ?url_path: String?, ?transport_class: Class?) -> Handle
     def safely: [T] () { () -> T } -> T?
     def self.carrier: (headers | metadata_input) -> headers
     # Reflection is erased here only, before each capability enters Callbacks.
