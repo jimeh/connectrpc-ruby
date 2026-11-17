@@ -103,8 +103,11 @@ module ConnectRPC
 
       # rubocop:enable Metrics/AbcSize, Metrics/CyclomaticComplexity, Metrics/PerceivedComplexity
 
+      # Carrier keys are lowercase; propagators such as B3 multi-header and X-Ray
+      # ask for mixed-case header names.
       class Getter
         def get(carrier, key) # rubocop:disable Metrics/CyclomaticComplexity
+          key = key.downcase
           values = Array(carrier[key])
           return unless values.all? { |value| value.is_a?(String) && value.ascii_only? }
           return values.first if key == "traceparent" && values.size == 1

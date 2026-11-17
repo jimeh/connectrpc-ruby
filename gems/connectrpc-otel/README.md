@@ -69,7 +69,7 @@ The application owns its SDK, sampling, processors and exporters. Requiring
 providers/propagators, or creates network clients.
 
 - The default tracer provider is the application's OpenTelemetry provider.
-- Since 0.2.2, the default propagator is the global `OpenTelemetry.propagation`,
+- Since 0.3.0, the default propagator is the global `OpenTelemetry.propagation`,
   looked up at each use, so SDK configuration made after the subscriber is
   built applies, including `OTEL_PROPAGATORS` (for example `b3`). Without SDK
   configuration the global propagator is no-op and nothing propagates, as with

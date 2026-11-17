@@ -36,6 +36,31 @@ These affect the Async HTTP/2 and HTTP/1 client transports and the core
 - `HTTP1Transport` sends a unary GET once more when its reused keep-alive
   connection closed before any response head arrived.
 
+These affect `connectrpc-otel` spans and trace propagation.
+
+- `connectrpc-otel` uses the application's global propagator,
+  `OpenTelemetry.propagation`, when `Subscriber.new` gets no `propagator:`,
+  instead of a fixed W3C trace-context plus baggage propagator.
+  `OpenTelemetry::SDK.configure` installs trace context plus baggage unless
+  `OTEL_PROPAGATORS` says otherwise, so SDK applications keep W3C propagation
+  and now also honor settings such as `b3`. An application that never sets a
+  global propagator, such as one with only the API installed, now propagates
+  nothing. Pass `propagator:` to keep the old behavior. See
+  [what the application owns](../gems/connectrpc-otel/README.md#what-the-application-owns).
+- An OpenTelemetry SERVER span whose response delivery aborted with a non-OK
+  code now follows the server error policy, as a delivered response does. A
+  client cancellation leaves the span UNSET with `rpc.response.status_code`
+  `canceled` (`CANCELLED` for gRPC) and no `error.type`; it was ERROR with
+  `error.type=delivery_aborted` (or `CANCELLED`). A Connect CLIENT span whose
+  delivery aborted with a non-OK code reports that code as `error.type`
+  instead of `delivery_aborted`. An abort after `OK` or without a code is
+  unchanged. Update server error-rate dashboards and alerts that counted
+  client cancellations.
+- `error.type` for a failure from a non-Connect exception without an RPC code
+  is the exception's class name, such as `RuntimeError`, instead of
+  `operation_failed`. Anonymous exception classes still report
+  `operation_failed`.
+
 ## 0.2.0
 
 ### Breaking change: read-only transport cancellation

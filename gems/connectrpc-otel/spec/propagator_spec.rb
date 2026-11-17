@@ -80,6 +80,14 @@ RSpec.describe "Propagator selection" do
     expect(linked?(exporter)).to be(false)
   end
 
+  it "extracts a propagator's mixed-case keys from the lowercased carrier" do
+    provider, exporter, = tracing
+    OpenTelemetry.propagation = header_propagator.new("X-B3-TraceId")
+    seen = round_trip(provider, subscriber(provider))
+    expect(seen).to have_key("x-b3-traceid")
+    expect(linked?(exporter)).to be(true)
+  end
+
   it "prefers an explicit propagator over the global one" do
     provider, exporter, = tracing
     OpenTelemetry.propagation = header_propagator.new("x-global")
