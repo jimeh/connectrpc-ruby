@@ -195,10 +195,14 @@ module ConnectRPC
           @resource&.changed
         end
 
+        # The reader closes with its failure, or with nil once a GOAWAY closed
+        # the connection. A drain may keep the resource after the peer left.
         def close(error = nil)
           close_requests
           if @defer_close
             @resource&.changed
+          elsif @resource && @reader_task&.current? && @resource.outlives_peer?(error)
+            @resource.peer_departed!
           elsif @resource
             @resource.abort(error)
           else
@@ -976,6 +980,34 @@ module ConnectRPC
         def finishing? = @finishing
         def unusable = @on_unusable&.call(self)
 
+        # Whether the drain, not an abort, ends the connection after the
+        # reader ended with `error`. Once a drain has started, and until it
+        # writes its final GOAWAY, a peer that leaves after every stream has
+        # closed, by its GOAWAY, an EOF or a reset, lost nothing: the work left
+        # is local, such as a stream worker's cleanup and observers. A
+        # too_many_pings decision keeps its own bound instead.
+        def outlives_peer?(error)
+          return false unless @drain_running && !@finishing && !@aborted && @connection.streams.empty?
+          return false if @upkeep&.violated?
+
+          case error
+          when nil then @connection.goaway_received?
+          when EOFError, *PEER_LEFT then true
+          else false
+          end
+        end
+
+        # Nothing more reaches the peer, so upkeep and control writers stop,
+        # and the drain ends the connection once the remaining work finishes
+        # within its grace. Each task is cancelled once, so a frame write in
+        # progress finishes; only raw-first retirement forces one.
+        def peer_departed!
+          @peer_departed = @finishing = true
+          tasks = @maintenance_stopped ? @controls : [*@maintenance, *@controls]
+          tasks.each { |task| task.cancel unless task.current? || task.finished? }
+          changed
+        end
+
         def abort(error = IOError.new("HTTP/2 connection closed"))
           return if @cleanup&.current?
 
@@ -1003,7 +1035,9 @@ module ConnectRPC
         # drain with `reason` as debug data, or keeps one already running, and
         # dispatches streams until the cutoff GOAWAY is written. Then it waits
         # for the accepted work, sends a final GOAWAY naming the cutoff,
-        # half-closes and discards input until EOF, all within `expires`.
+        # half-closes and discards input until EOF, all within `expires`. A
+        # peer that leaves once its streams closed ends the drain when the
+        # remaining work finishes, without the final GOAWAY.
         def drain(parent, expires, reason: "graceful_stop")
           return Internal.wait(@drain_task, expires) if @drain_task
 
@@ -1018,12 +1052,15 @@ module ConnectRPC
             return true
           end
           @drain_task = ::Async::Task.new(parent, finished: false) do
+            @drain_running = true
             @upkeep&.drain(reason)&.wait
             next !@abort_during_drain if @aborted
 
-            stop_maintenance
+            stop_maintenance unless @peer_departed
             @progress.wait until empty?
             next !@abort_during_drain if @aborted
+            # The peer is gone, so nothing more is sent.
+            next @drained = true if @peer_departed
 
             finish_drain { @connection.send_goaway }
           rescue EOFError, *PEER_LEFT
@@ -1096,7 +1133,10 @@ module ConnectRPC
 
         # Graceful close and drain stop upkeep before waiting for emptiness. A
         # keepalive writer still waiting for the guard stops at once.
-        def stop_maintenance = stop_tasks(@maintenance)
+        def stop_maintenance
+          @maintenance_stopped = true
+          stop_tasks(@maintenance)
+        end
 
         # Control frames queued after the final GOAWAY are dropped.
         def stop_control = stop_tasks(@controls)

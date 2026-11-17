@@ -258,6 +258,9 @@ module ConnectRPC
         # Without server keepalive, client PINGs keep the stack's own reply.
         def answers_pings? = !@keepalive.nil?
 
+        # Whether a too_many_pings decision is ending the connection.
+        def violated? = @violated
+
         # A client PING, decided before anything can yield; the reader never
         # writes its ACK or the GOAWAY itself.
         def ping(frame)
