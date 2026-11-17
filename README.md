@@ -219,8 +219,9 @@ These limits apply across the matrix:
   `ThreadedTransport` covers unary and server streaming, for Connect and
   native gRPC.
 - The standalone Async `Host` is H2-only. Falcon is the Ruby H1 streaming host.
-- Native Connect streaming clients apply a one-second HTTP tail policy, even
-  without an RPC deadline. See the [streaming guide](docs/streaming.md).
+- Native Connect streaming clients apply a provisional one-second HTTP tail
+  policy, even without an RPC deadline. See the
+  [streaming guide](docs/streaming.md).
 - There is no H1 bidi, HTTP/3, protocol fallback or RPC replay. Faraday is
   unsupported. The Async H2 `Transport` resends a Connect unary call once only
   when the server provably never processed its stream; see

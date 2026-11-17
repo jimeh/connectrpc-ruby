@@ -164,7 +164,9 @@ and owner abort. Each discard read is at most 64 KiB; progress does not reset th
 budget and a following request is never consumed. Expiry or malformed framing
 retires that connection raw-first, preserving the original RPC outcome and
 independent aborted delivery. This best effort does not promise delivery for
-arbitrarily slow uploads or extend existing cleanup allowances. See the
+arbitrarily slow uploads or extend existing cleanup allowances. The 100 ms
+allowance is a provisional budget in the
+[support contract](support.md#falcon-connect-h1-retirement). See the
 [Falcon guide](../gems/connectrpc-falcon/README.md#grpc-web).
 
 `Server#cors_response(path:, http_method:, headers:, response: nil)` is a pure

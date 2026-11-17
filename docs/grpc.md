@@ -58,9 +58,13 @@ the field block budget. Numeric values above uint32 map to unknown; there is no
 10-character spelling limit or unbounded integer parse. Output is canonical.
 Rich status codes compare numerically before unknown-code normalization, and
 rich messages take precedence over grpc-message. Invalid percent escapes remain
-literal; decoded invalid UTF8 is scrubbed. As a deliberate stricter policy than
-grpc-go, details on OK, malformed or duplicate details, and mismatched rich codes
-produce safe internal instead of silently dropping rich data.
+literal; decoded invalid UTF8 is scrubbed. Details on OK, malformed or
+duplicate details, and mismatched rich codes produce safe internal instead of
+silently dropping rich data. grpc-go 1.85.0 also rejects a mismatch and invalid
+base64, but ignores details that repeat or do not parse as a `google.rpc.Status`,
+and accepts details on OK when their code is also OK. The
+[support contract](support.md#native-grpc-rich-status) classifies this strict
+policy as provisional.
 
 Missing server timeout means no logical expiry. gRPC timeout accepts all six
 case-sensitive units and zero as immediately expired. Clients default to 30

@@ -371,8 +371,9 @@ application-owned reactor.
 
 The streaming guide defines Falcon's cooperative 500 ms total final-close budget
 and unchanged 100 ms / 256 KiB discard limits. Native Connect streaming clients
-have a separate one-second absolute HTTP tail policy. It applies even with a nil
-RPC deadline and can reject otherwise valid late EOF or slow intermediaries.
+have a separate, provisional one-second absolute HTTP tail policy. It applies
+even with a nil RPC deadline and can reject otherwise valid late EOF or slow
+intermediaries.
 
 ### HTTP/1.1 input retirement
 
@@ -389,7 +390,10 @@ shutdown can shorten either phase; failed delivery receives no success grace.
 
 Both timers are cooperative and may overshoot under scheduler delay. Holding
 admission during remaining grace increases resource retention. This is best
-effort reset avoidance, with no arbitrary network-delivery guarantee.
+effort reset avoidance, with no arbitrary network-delivery guarantee. The
+[support contract](../../docs/support.md#falcon-connect-h1-retirement) promises
+this behavior and treats the 500 ms, 100 ms, 256 KiB and 64 KiB values as
+provisional tuning values.
 
 ### Streaming conformance
 
@@ -448,7 +452,9 @@ remains separate from aborted delivery and cleanup failure. Terminal bytes stay
 staged until the original processor and application cleanup succeed. This is a
 best effort within bounded cleanup, not a delivery promise for arbitrarily slow
 uploads. The tail budget runs once and does not restart or stack; existing
-backend input-cancellation and teardown allowances remain separate.
+backend input-cancellation and teardown allowances remain separate. The support
+contract classifies the 100 ms allowance as a
+[provisional budget](../../docs/support.md#falcon-connect-h1-retirement).
 
 ## Explicit unary cancellation
 
