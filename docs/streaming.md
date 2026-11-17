@@ -68,7 +68,9 @@ even if the original request finishes. Fully consumed nonretiring input retains
 persistence. Raw socket abort precedes framed/Finishable close on forced teardown.
 Both timers are cooperative and can overshoot under scheduler delay. Remaining
 grace retains resources and is best effort reset avoidance, not a guarantee of
-response delivery under arbitrary network or peer failure.
+response delivery under arbitrary network or peer failure. The
+[support contract](support.md#falcon-connect-h1-retirement) promises this
+response-first behavior and treats its budgets as provisional tuning values.
 
 The production official H1 profiles pass 174/174 identity and 160/160 gzip cases
 on both pinned Rubies, including the original oversized CS cases over TCP/TLS.
@@ -90,7 +92,10 @@ is a protocol error. A stalled tail is `unavailable`, including with `timeout: n
 A shorter real RPC deadline or explicit cancellation can win first. Otherwise
 valid responses with late EOF or slow intermediaries can be rejected. This is
 this library's interoperability policy, not a Connect requirement, RPC deadline,
-wire timeout header or general stream watchdog.
+wire timeout header or general stream watchdog. The
+[support contract](support.md#native-client-completion) classifies it as
+provisional, and [#102](https://github.com/jimeh/connectrpc-ruby/issues/102)
+evaluates relaxing it.
 
 An incidental send I/O failure permits terminal-only recovery of at most 262,144
 additional wire body bytes in one absolute 100 ms, including response headers,

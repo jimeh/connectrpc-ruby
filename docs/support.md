@@ -6,8 +6,9 @@ preserve. It records the target contract agreed in
 [#27](https://github.com/jimeh/connectrpc-ruby/issues/27).
 
 **The profile has not been adopted by a release.** Current artifacts remain
-experimental and are not declared supported or production ready. Adoption
-requires the [remaining audit dispositions and release qualification](#adoption-gates).
+experimental and are not declared supported or production ready. The audit,
+lifecycle and policy-review gates are closed; adoption now waits for a qualified
+release that names this contract, as the [adoption gates](#adoption-gates) describe.
 This document does not authorize publication, release preparation, deployment
 or a 1.x promise.
 
@@ -24,7 +25,7 @@ The source baseline is `073f95a`, including the
 Reading source for this guide adds no runtime qualification. The
 [#26 disposition ledger](https://github.com/jimeh/connectrpc-ruby/issues/26)
 distinguishes source inspection and historical probes from current runtime
-evidence; a passing selected profile does not close that audit.
+evidence.
 
 ## Compatibility and package versions
 
@@ -32,6 +33,9 @@ Once a release adopts this profile, patch releases preserve the documented
 application API, extension SPI and wire defaults within its 0.x minor series.
 This includes documented options, generated caller contracts, error behavior,
 limits, timing and resource policies, and observable tracing conventions.
+Interoperability policies marked **provisional** under
+[deliberate policies](#deliberate-policies-and-limitations) are the exception:
+that section defines how a release may change them.
 
 Breaking changes belong in minor releases. Their migration notes must explain
 the affected calls, configuration, wire behavior and generated code. A minor
@@ -302,6 +306,28 @@ does not mean all optional implementation is checked.
 
 ## Deliberate policies and limitations
 
+The [#27](https://github.com/jimeh/connectrpc-ruby/issues/27) policy review on
+2026-11-17 compared each deliberate interoperability policy with connect-go
+1.21.1, connect-es 2.3.0 and grpc-go 1.85.0, then classified it:
+
+- **Promised** policies follow the
+  [compatibility rules](#compatibility-and-package-versions): patch releases
+  preserve them, and only a minor release with migration notes changes them.
+- **Provisional** policies are kept but remain under review. Any minor release
+  may change one, with release notes. A patch release may also relax a
+  provisional rejection, so that it accepts peer behavior it rejects today, but
+  never makes one reject more.
+
+| Policy | Classification | Follow-up |
+| --- | --- | --- |
+| [Native Connect client completion](#native-client-completion) | Provisional | [#102](https://github.com/jimeh/connectrpc-ruby/issues/102) |
+| [Native gRPC rich status](#native-grpc-rich-status) | Provisional | None |
+| [Falcon Connect H1 retirement](#falcon-connect-h1-retirement) | Behavior promised; budgets provisional | None |
+| [Server cancellation signal](#delivery-cancellation-and-metadata) | Provisional | [#103](https://github.com/jimeh/connectrpc-ruby/issues/103) |
+
+The other entries in this section describe scope and accepted limitations, and
+follow the ordinary compatibility rules.
+
 ### Native client completion
 
 Native Connect streaming clients require HTTP EOF and transport completion
@@ -312,10 +338,36 @@ gRPC timer nor a NetHTTP unary timeout. The
 [streaming guide](streaming.md#completion-policy) defines recovery and cleanup
 budgets.
 
-Native gRPC requires actual final H2 HEADERS and EOF. It deliberately rejects
-malformed/duplicate rich details, details on OK and mismatched rich codes with
-safe internal errors. The [gRPC guide](grpc.md) explains this policy, which is
-stricter than grpc-go.
+This policy is **provisional**. Neither connect-go nor connect-es has a tail
+timer: both wait for EOF, bounded only by the call's deadline, and reject extra
+data. The one-second bound stops a nil-deadline client from holding a stream
+whose peer never closes it. It can also turn a fully received result into
+`unavailable` when a server or proxy delays EOF. Library servers send the
+terminal envelope before `processing_finished` lifecycle observation, and their
+EOF waits for that observation to finish. [#102](https://github.com/jimeh/connectrpc-ruby/issues/102)
+evaluates a configurable budget, or returning the received terminal after a
+stalled tail.
+
+Native gRPC requires actual final H2 HEADERS and EOF, and has no tail timer.
+
+### Native gRPC rich status
+
+Native gRPC clients reject each of these with a safe `internal` error:
+malformed or duplicate `grpc-status-details-bin`, details on an OK status, a
+rich status code that differs from `grpc-status`, an invalid detail type URL,
+and duplicate `grpc-status` or `grpc-message` fields. The
+[gRPC guide](grpc.md) defines the full status parsing rules.
+
+This policy is **provisional**. No reference client rejects all of these
+cases. grpc-go 1.85.0 also fails a code mismatch with `internal`. It ignores
+undecodable or duplicate details and keeps `grpc-status`, and it accepts
+details on OK when their code is also OK. connect-go 1.21.1 fails malformed
+details, but lets a rich code replace `grpc-status` and ignores details on OK.
+connect-es 2.3.0 also lets the rich status replace `grpc-status`, and reports
+malformed details as `data_loss`.
+Strict handling never silently drops rich data. The cost is an `internal` error
+where grpc-go would report the server's own code, which takes a misbehaving
+server to trigger. A later release may relax it toward grpc-go.
 
 ### Falcon Connect H1 retirement
 
@@ -334,6 +386,20 @@ Cooperative timers can overshoot and cannot preempt arbitrary native or
 application work. [Falcon Web cleanup](grpc-web.md#bounds-and-host-spi) is
 separate: original input cleanup gates its staged terminal and incomplete-upload
 rejection head. Web does not inherit Connect's response-first grace.
+
+The behavior is **promised**: response-first delivery, no reuse after
+incomplete input, no pipelined dispatch on a retiring connection, and admission
+and socket ownership through retirement. The budgets are **provisional** tuning
+values: the 500 ms total, the 100 ms / 256 KiB discard allowance, the 64 KiB
+read reservation, and Falcon Web's 100 ms rejected-input cleanup allowance. The
+Connect values follow Go's `net/http` server, which discards up to 256 KiB of
+unread body (`maxPostHandlerReadBytes`) and waits 500 ms after its write
+half-close (`rstAvoidanceDelay`). Go reads that remainder before it writes the
+response, and closes the connection instead when more remains; Falcon writes the
+response first. A client that sends
+its whole upload before reading can therefore stall when the response exceeds
+socket buffering. That needs a large early response; early Connect responses
+are usually small errors.
 
 ### HTTP/2 keepalive and connection age
 
@@ -361,6 +427,14 @@ signals and an observed deadline. A stuck H2 frame may fail its connection and
 siblings during bounded cleanup. Retention and byte limits do not bound total RSS, parser/HPACK
 allocation, codec work or application CPU.
 
+The cancellation signal is **provisional**. grpc-go 1.85.0 cancels a handler on
+any peer reset and on connection loss, and Go's `net/http`, which connect-go
+uses, cancels the request context when the client's connection closes. A
+library handler whose peer has gone keeps running until it finishes, a send
+fails or its deadline expires.
+[#103](https://github.com/jimeh/connectrpc-ruby/issues/103) evaluates observing
+those signals; a change would land in a minor release.
+
 Rack env normalization loses the distinction between underscore and hyphen
 request metadata names. NetHTTP and rackup/WEBrick also coalesce some repeated
 fields. Native metadata acceptance is not narrowed to compensate.
@@ -378,11 +452,36 @@ application responsibilities.
 
 ## Adoption gates
 
-[#26](https://github.com/jimeh/connectrpc-ruby/issues/26) owns audit dispositions.
-The findings below retain their audit IDs so readers can follow each repair or
-decision. A merged fix closes its specific defect, not the audit as a whole.
+The review gates are closed. A release adopts the profile once its revision is
+qualified and its release notes say so.
 
-### Resolved or disclosed
+### Closed gates
+
+- **Audit.** [#26](https://github.com/jimeh/connectrpc-ruby/issues/26) closed
+  on 2026-11-16 with a final disposition for every finding. L12, the Rack
+  metadata-name limitation, is an accepted residual limitation, disclosed
+  [above](#delivery-cancellation-and-metadata) and in the
+  [Rack guide](../gems/connectrpc-rack/README.md). Every other finding is
+  resolved, as listed under [audit dispositions](#audit-dispositions).
+- **Lifecycle validation.**
+  [#99](https://github.com/jimeh/connectrpc-ruby/pull/99), merged as `1cb5647`,
+  delivered [#34](https://github.com/jimeh/connectrpc-ruby/issues/34): a
+  non-gating campaign that repeats connection churn, GOAWAY, cancellation,
+  slow and failing peers, TLS rotation, keepalive and shutdown across the native
+  clients and hosts, and requires every owned resource to retire. It found no
+  library defects. The [`soak.yml`](../.github/workflows/soak.yml) run on
+  `1cb5647` on 2026-11-17 passed all four lanes: Async and Falcon on both MRI
+  versions. [CI](ci.md#lifecycle-campaign) describes the nightly schedule.
+- **Policy review.** Completed on 2026-11-17 and recorded under
+  [deliberate policies](#deliberate-policies-and-limitations). Its follow-ups,
+  [#102](https://github.com/jimeh/connectrpc-ruby/issues/102) and
+  [#103](https://github.com/jimeh/connectrpc-ruby/issues/103), change only
+  provisional policies and do not gate adoption.
+
+### Audit dispositions
+
+Each entry keeps its #26 audit ID. #48 repaired a separate lifecycle finding
+reported during #44.
 
 - #39 resolved H1/M2 and the core part of M1; #40 resolved L17's archive modes.
 - [#47](https://github.com/jimeh/connectrpc-ruby/pull/47), merged as `073f95a`,
@@ -448,18 +547,20 @@ decision. A merged fix closes its specific defect, not the audit as a whole.
   body still reads `$ERROR_INFO` on an argless close, because protocol-rack
   closes a rejected Rack response from its own rescue clause without passing
   the exception.
-- L12 is disclosed above as a Rack adapter limitation. This guide corrects
-  L18's current documentation drift without declaring the audit complete.
+- L12 is the accepted Rack adapter limitation described above.
+  [#46](https://github.com/jimeh/connectrpc-ruby/pull/46), merged as `805bb80`,
+  resolved L18's documentation drift.
 
 ### Before a release adopts the profile
 
-1. Reconcile every accepted material finding in #26. Record accepted fixes or
-   explicit residual-limit decisions, with current regression and qualification
-   evidence for affected capability rows. This guide does not pre-accept the
-   remaining defects as supported behavior.
-2. Qualify the adopting revision with its declared CI, installed-caller and
+1. Choose the release. The profile is adopted on whichever 0.x version is
+   current when the library is judged stable. A 1.x release comes later, after
+   the contract has proven stable for some time.
+2. Qualify that release's revision with its declared CI, installed-caller and
    protocol gates.
-3. Identify the release and migration notes that adopt this contract.
+3. Record adoption in that release. A documentation change replaces the notice
+   at the top of this guide with the adopting version, and the release notes
+   state that the version adopts this contract.
 
 Release automation ([#36](https://github.com/jimeh/connectrpc-ruby/issues/36))
 is described in [releasing](releasing.md). Merging a release PR is the separate
