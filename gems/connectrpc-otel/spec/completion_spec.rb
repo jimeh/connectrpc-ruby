@@ -82,7 +82,7 @@ RSpec.describe "Native admission and forced teardown observation" do
     end
   end
 
-  it "retains an Async connection failure without exposing it through the public error cause" do
+  it "retains an Async connection failure and keeps it as the public error cause" do
     calls, recorder = record_calls
     _provider, _exporter, bus = tracing(subscribers: [recorder])
     reserved = Socket.new(Socket::AF_INET, Socket::SOCK_STREAM, 0)
@@ -93,7 +93,7 @@ RSpec.describe "Native admission and forced teardown observation" do
       typed = client(transport, origin, instrumentation: bus)
       expect { typed.echo(AsyncHelpers::MESSAGE.new, timeout: nil) }.to raise_error(ConnectRPC::Error) do |error|
         expect(error.code).to eq("unavailable")
-        expect(error.cause).to be_nil
+        expect(error.cause).to be_a(Errno::ECONNREFUSED)
         outcome = calls.first.last.find { |event| event.first == :processing }.last
         expect(outcome.error).to be_a(Errno::ECONNREFUSED)
         expect(outcome.normalized_error).to equal(error)

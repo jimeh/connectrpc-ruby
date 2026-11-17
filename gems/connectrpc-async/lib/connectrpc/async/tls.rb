@@ -25,21 +25,52 @@ module ConnectRPC
           certificate
         end
 
+        # Names the input that failed validation, never its value.
+        class InvalidInput < ArgumentError
+          attr_reader :input
+
+          def initialize(input)
+            @input = input
+            super("Invalid #{input}")
+          end
+        end
+
+        def self.input(name)
+          yield
+        rescue InvalidInput
+          raise
+        rescue StandardError
+          raise InvalidInput.new(name), cause: nil
+        end
+
         def self.identity(chain, pem)
-          raise ArgumentError unless chain.is_a?(Array) && !chain.empty?
-          raise ArgumentError unless pem.is_a?(String) && PRIVATE_KEY.match?(pem.strip)
+          certificates = input(:certificate_chain) do
+            raise ArgumentError unless chain.is_a?(Array) && !chain.empty?
 
-          certificates = chain.map { |element| certificate(element) }
-          key = OpenSSL::PKey.read(pem.dup) { nil }
-          digest = %w[ED25519 ED448].include?(key.oid) ? nil : "SHA256"
-          challenge = SecureRandom.random_bytes(32)
-          signature = key.sign(digest, challenge)
-          raise ArgumentError unless certificates.first.public_key.verify(digest, signature, challenge)
+            chain.map { |element| certificate(element) }
+          end
+          key = input(:private_key) do
+            raise ArgumentError unless pem.is_a?(String) && PRIVATE_KEY.match?(pem.strip)
 
-          certificates.each_cons(2) do |child, issuer|
-            raise ArgumentError unless child.issuer == issuer.subject && child.verify(issuer.public_key)
+            OpenSSL::PKey.read(pem.dup) { nil }
+          end
+          input(:private_key) do
+            digest = %w[ED25519 ED448].include?(key.oid) ? nil : "SHA256"
+            challenge = SecureRandom.random_bytes(32)
+            signature = key.sign(digest, challenge)
+            raise ArgumentError unless certificates.first.public_key.verify(digest, signature, challenge)
+          end
+          input(:certificate_chain) do
+            certificates.each_cons(2) do |child, issuer|
+              raise ArgumentError unless child.issuer == issuer.subject && child.verify(issuer.public_key)
+            end
           end
           [certificates, key]
+        end
+
+        # RFC 6066 section 3 forbids a server name for an IP literal.
+        def self.server_name(host)
+          host unless Resolv::IPv4::Regex.match?(host) || Resolv::IPv6::Regex.match?(host)
         end
 
         def self.configure(context)
@@ -85,7 +116,7 @@ module ConnectRPC
           configure(context)
           store = OpenSSL::X509::Store.new
           store.set_default_paths
-          store.add_file(ca_file) if ca_file
+          input(:ca_file) { store.add_file(ca_file) } if ca_file
           context.cert_store = store
           if certificate_chain || private_key
             certificates, key = identity(certificate_chain, private_key)
@@ -94,6 +125,9 @@ module ConnectRPC
           context.alpn_protocols = alpn_protocols
           context.setup
           new(context, false)
+        rescue InvalidInput => e
+          # Errors name only the input: snapshots never leak paths or keys.
+          raise ArgumentError, "Invalid TLS client configuration: #{e.input}", cause: nil
         rescue StandardError
           raise ArgumentError, "Invalid TLS client configuration", cause: nil
         end

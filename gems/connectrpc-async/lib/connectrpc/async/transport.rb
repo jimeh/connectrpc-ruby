@@ -81,7 +81,7 @@ module ConnectRPC
 
       def perform_stream(request, grpc: false)
         raise ArgumentError, "Request URL must match the transport origin" unless same_origin?(request.url)
-        raise Error.new(:unavailable, "HTTP/2 transport admission is closed or full") unless @state == :running
+        raise Error.new(:unavailable, "HTTP/2 transport admission is closed") unless @state == :running
 
         operation = { request: request, tasks: {}, grpc: grpc }
         # Streams reserve an admission slot but no request bytes.
@@ -105,7 +105,7 @@ module ConnectRPC
           end
           if grpc && completed && operation[:cleanup_error]
             check_request!(request)
-            raise Error.new(:unavailable, "HTTP/2 transport cleanup failed"), cause: nil
+            raise Error.new(:unavailable, "HTTP/2 transport cleanup failed"), cause: operation[:cleanup_error]
           end
         end
       end
@@ -131,7 +131,7 @@ module ConnectRPC
         operation.fetch(:tasks)[child] = true
         expires = Internal.now + timeout if timeout
         expires = [expires || Float::INFINITY, Internal.now + request.deadline.remaining].min if request.deadline
-        tag, result = wait_event(event, expires)
+        tag, result = Internal.wait_event(event, expires)
         check_request!(request)
         raise result if tag == :error
         raise IOError, "HTTP/2 operation stopped" unless tag == :result
@@ -140,12 +140,15 @@ module ConnectRPC
       rescue StandardError => e
         request.lifecycle&.record_failure(e)
         check_request!(request)
+        # The caller's own enclosing Async timeout is not a transport failure;
+        # the worker's delivered failure is.
+        raise if Internal.foreign_timeout?(e, (result if tag == :error))
         if operation[:grpc] && (failure = operation[:response]&.stream&.grpc_error)
           raise failure, cause: nil
         end
         raise if e.is_a?(ConnectRPC::Error)
 
-        raise Error.new(:unavailable, "HTTP/2 transport failed"), cause: nil
+        raise Error.new(:unavailable, Internal::ClientFailure.message("HTTP/2", e)), cause: e
       ensure
         registration&.unregister
         # The call's one cleanup budget owns stopping a still-blocked task.
@@ -238,7 +241,7 @@ module ConnectRPC
         raise ArgumentError, "Request URL must match the transport origin" unless same_origin?(request.url)
 
         check_request!(request)
-        raise Error.new(:unavailable, "HTTP/2 transport admission is closed or full") unless @state == :running
+        raise Error.new(:unavailable, "HTTP/2 transport admission is closed") unless @state == :running
 
         event = ::Async::Promise.new
         operation = { request: request }
@@ -246,8 +249,8 @@ module ConnectRPC
         bytes = request.http_method == "GET" ? request.url.request_uri.bytesize : request.body.bytesize
         operation[:bytes] = @manager.admit(bytes, full: @calls.size >= @max_requests)
         @calls[operation] = true
-        registration = request.cancellation&.on_cancel { event.resolve([:cancellation, nil]) }
         begin
+          registration = request.cancellation&.on_cancel { event.resolve([:cancellation, nil]) }
           check_request!(request)
           operation[:task] = @lifetime.async(finished: false) do
             result = activate(request) { exchange(operation) }
@@ -259,18 +262,20 @@ module ConnectRPC
             event.resolve([:stopped, nil])
           end
           expires = Internal.now + request.deadline.remaining if request.deadline
-          tag, result = wait_event(event, expires)
+          tag, result = Internal.wait_event(event, expires)
           check_request!(request)
           raise result if tag == :error
           raise Error.new(:unavailable, "HTTP/2 connection closed") unless result
 
           result
-        rescue ::Async::TimeoutError, StandardError => e
+        rescue StandardError => e
           request.lifecycle&.record_failure(e)
           check_request!(request)
-          raise e if e.is_a?(ConnectRPC::Error)
+          # The caller's own enclosing Async timeout is not a transport failure;
+          # the worker's delivered failure is.
+          raise if e.is_a?(ConnectRPC::Error) || Internal.foreign_timeout?(e, (result if tag == :error))
 
-          raise Error.new(:unavailable, "HTTP/2 transport failed"), cause: nil
+          raise Error.new(:unavailable, Internal::ClientFailure.message("HTTP/2", e)), cause: e
         ensure
           registration&.unregister
           begin
@@ -287,28 +292,14 @@ module ConnectRPC
         request.cancellation ? request.cancellation.check! : request.deadline&.check!
       end
 
-      def wait_event(event, expires)
-        loop do
-          return event.wait unless expires
-
-          remaining = expires - Internal.now
-          raise ::Async::TimeoutError if remaining <= 0
-
-          begin
-            return event.wait(timeout: [remaining, Internal::MAX_WAIT].min)
-          rescue ::Async::TimeoutError
-            raise if Internal.now >= expires
-          end
-        end
-      end
-
       def parse_origin(value)
         uri = URI(value)
         unless %w[http https].include?(uri.scheme) && uri.host && !uri.userinfo && !uri.query && !uri.fragment &&
-               uri.path.empty?
+               ["", "/"].include?(uri.path)
           raise ArgumentError, "Origin must contain only an HTTP(S) scheme, host and port"
         end
 
+        uri.path = ""
         uri.freeze
       end
 
@@ -345,10 +336,10 @@ module ConnectRPC
         if @snapshot
           socket = @snapshot.socket(resource.raw)
           resource.socket = socket
-          socket.hostname = @origin.hostname
+          socket.hostname = Internal::TLS.server_name(@origin.hostname)
           socket.connect
           socket.post_connection_check(@origin.hostname)
-          raise OpenSSL::SSL::SSLError, "HTTP/2 ALPN is required" unless socket.alpn_protocol == "h2"
+          raise Internal::ALPNError, "HTTP/2 ALPN is required" unless socket.alpn_protocol == "h2"
         end
         resource.socket = socket
         connection = Internal::ClientConnection.new(::IO::Stream(socket))
@@ -510,31 +501,35 @@ module ConnectRPC
             response.close
           end
         end
+        # A caller's own Async timeout landing during cleanup is re-raised
+        # unchanged once cleanup has used its budget and released the lease.
+        interruptions = []
         begin
-          Internal.wait(cleanup_task, expires)
+          Internal::Retaining.wait(cleanup_task, expires, interruptions)
         rescue StandardError => e
           operation[:cleanup_error] ||= e
           begin
             operation[:resource]&.abort
-          rescue StandardError
-            raise unless operation[:grpc]
+          rescue StandardError => abort_error
+            abort_failed(operation, abort_error, interruptions)
           ensure
             Internal.cancel(cleanup_task)
-            Internal.join(cleanup_task)
+            pending = Internal::Retaining.join(cleanup_task)
+            interruptions << pending if pending
           end
         ensure
           if (connection = operation.delete(:connection))
             begin
               @manager.release(connection)
             rescue StandardError => e
-              operation[:cleanup_error] ||= e
+              Internal.foreign_timeout?(e) ? interruptions << e : operation[:cleanup_error] ||= e
               begin
                 operation[:resource]&.abort
                 # A failed release may precede usage accounting. Retire the
                 # aborted connection without retrying release or cleanup.
                 @manager.retire(connection)
-              rescue StandardError
-                raise unless operation[:grpc]
+              rescue StandardError => abort_error
+                abort_failed(operation, abort_error, interruptions)
               end
             end
           end
@@ -543,6 +538,17 @@ module ConnectRPC
             lifecycle&.record_failure(error)
             lifecycle&.finish(delivery: :aborted, error: error)
           end
+        end
+        raise interruptions.first unless interruptions.empty?
+      end
+
+      # An abort joins connection retirement in the caller's fiber, where the
+      # caller's own timeout is retained. Its other failures fail a unary call.
+      def abort_failed(operation, error, interruptions)
+        if Internal.foreign_timeout?(error)
+          interruptions << error
+        elsif !operation[:grpc]
+          raise error
         end
       end
 

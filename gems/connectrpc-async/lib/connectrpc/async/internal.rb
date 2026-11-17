@@ -27,6 +27,66 @@ module ConnectRPC
       class WaitTimeout < ::Async::TimeoutError; end
       private_constant :WaitTimeout
 
+      # Every internal expiry. It is an Async::TimeoutError, so existing rescues
+      # still match, while client waits can tell a caller's own enclosing
+      # `with_timeout`, which they re-raise unchanged, from their own expiry.
+      class Expired < ::Async::TimeoutError; end
+
+      # A caller's own Async timeout, raised into the waiting fiber by the
+      # caller's timer. `owned`, the failure a joined task or worker delivered,
+      # is a transport failure whatever its class.
+      def self.foreign_timeout?(error, owned = nil)
+        error.is_a?(::Async::TimeoutError) && !error.is_a?(Expired) && !error.equal?(owned)
+      end
+
+      # Waits for a promise until `expires`, like `wait` does for a task.
+      def self.wait_event(event, expires)
+        loop do
+          return event.wait unless expires
+
+          remaining = expires - now
+          raise Expired if remaining <= 0
+
+          begin
+            return ::Async::Task.current.with_timeout([remaining, MAX_WAIT].min, WaitTimeout) { event.wait }
+          rescue WaitTimeout
+            raise Expired if now >= expires
+          end
+        end
+      end
+
+      # Negotiated a protocol other than the one the client requires.
+      class ALPNError < OpenSSL::SSL::SSLError; end
+
+      # Fixed, non-secret phrases for client transport failures. They name
+      # what failed, never the origin, address, path or certificate details.
+      module ClientFailure
+        CONNECTION_CLOSED = [EOFError, Errno::ECONNRESET, Errno::EPIPE, Errno::ECONNABORTED].freeze
+        TLS_VERIFICATION = ["certificate verify failed", "does not match the server certificate"].freeze
+
+        def self.reason(error)
+          case error
+          when Errno::ECONNREFUSED then "connection refused"
+          when SocketError then "name resolution failed"
+          when Errno::EHOSTUNREACH, Errno::ENETUNREACH then "host unreachable"
+          when ::Async::TimeoutError, Errno::ETIMEDOUT, ::IO::TimeoutError then "timed out"
+          when ALPNError then "ALPN negotiation failed"
+          when OpenSSL::SSL::SSLError
+            TLS_VERIFICATION.any? { |text| error.message.include?(text) } ? "TLS verification failed" : "TLS error"
+          when *CONNECTION_CLOSED then "connection closed"
+          when ::Protocol::HTTP2::Error then "HTTP/2 protocol error"
+          when HTTP1ResponseError then "malformed response"
+          end
+        end
+
+        def self.message(prefix, error)
+          reason = reason(error)
+          reason ? "#{prefix} transport failed: #{reason}" : "#{prefix} transport failed"
+        end
+
+        def self.connection_closed?(error) = CONNECTION_CLOSED.any? { |closed| error.is_a?(closed) }
+      end
+
       def self.now = Process.clock_gettime(Process::CLOCK_MONOTONIC)
 
       def self.positive_integer(value, name)
@@ -70,14 +130,14 @@ module ConnectRPC
 
         loop do
           remaining = expires - now
-          raise ::Async::TimeoutError if remaining <= 0
+          raise Expired if remaining <= 0
 
           begin
             return ::Async::Task.current.with_timeout([remaining, MAX_WAIT].min, WaitTimeout) { task.wait }
           rescue WaitTimeout
             # Never mistake a child's timeout for this supervisor's timer, or
             # expose our sentinel to a surrounding wait on this task.
-            raise ::Async::TimeoutError if now >= expires
+            raise Expired if now >= expires
           end
         end
       end
@@ -87,6 +147,37 @@ module ConnectRPC
       rescue StandardError
         # The owner/supervisor reports the original failure.
         nil
+      end
+
+      # Client cleanup waits in a caller's fiber. The caller's own Async
+      # timeout landing there does not abandon the wait; the caller re-raises
+      # it once its disposition is complete.
+      module Retaining
+        # Returns an interruption of the joiner. The joined task's own failure
+        # is reported by its owner.
+        def self.join(task)
+          interruption = nil
+          begin
+            task&.wait unless task&.current?
+          rescue StandardError => e
+            unless task.failed? && task.result.equal?(e)
+              interruption ||= e
+              retry
+            end
+          end
+          interruption
+        end
+
+        # Like Internal.wait, adding a caller's own timeout to `retained`. The
+        # task's own failure is raised whatever its class.
+        def self.wait(task, expires, retained)
+          Internal.wait(task, expires)
+        rescue ::Async::TimeoutError => e
+          raise unless Internal.foreign_timeout?(e, (task.result if task.failed?))
+
+          retained << e
+          retry
+        end
       end
 
       def self.join_complete(...) = CompletionJoin.call(...)
@@ -122,11 +213,29 @@ module ConnectRPC
           raise LifecycleError, "Use the owning Async reactor and thread"
         end
 
+        # The guard lives as long as the owner's block and every other task
+        # under the owner, then aborts an unclosed transport so the owner can
+        # finish. Owner cancellation still cancels it directly. A registered
+        # watcher beside it waits for the owner and signals the guard, which
+        # itself waits only on a condition: when the guard waited on the owner
+        # task instead, an owner cancellation on Ruby 4 changed how its abort
+        # interleaved with native socket close.
         def install_owner_guard
-          @lifetime = @owner.async do
-            ::Async::Condition.new.wait
+          exited = ::Async::Condition.new
+          @lifetime = @owner.async do |guard|
+            OwnerGuard.register(guard)
+            exited.wait
           ensure
-            abort_owned unless @state == :closed
+            begin
+              abort_owned unless @state == :closed
+            ensure
+              Internal.cancel(@owner_watcher)
+            end
+          end
+          @owner_watcher = @owner.async do |watcher|
+            OwnerGuard.register(watcher)
+            OwnerGuard.await(@owner)
+            exited.signal
           end
         end
 
@@ -159,6 +268,47 @@ module ConnectRPC
         end
 
         private :initialize_affinity, :check_affinity!, :install_owner_guard, :finish_closed
+      end
+
+      # Client transport lifetime guards. Every guard skips every guard
+      # subtree, its own and other transports' on the same owner, so guards
+      # never wait on each other.
+      module OwnerGuard
+        GUARDS = ObjectSpace::WeakKeyMap.new
+
+        def self.register(task)
+          GUARDS[task] = true
+        end
+
+        def self.await(owner)
+          join(owner)
+          while (task = pending(owner))
+            join(task)
+          end
+        end
+
+        # The first non-transient task under `node`, outside a guard subtree,
+        # whose block is still running, descending through tasks whose block
+        # has ended but whose children remain. A cancelled task resolves
+        # before it stops its children, so its fiber can stay alive while
+        # their cleanup yields; waiting on it would return at once and spin.
+        def self.pending(node)
+          node.children&.each do |child|
+            next if child.transient? || GUARDS.key?(child)
+            return child if child.alive? && !(child.completed? || child.failed? || child.cancelled?)
+
+            found = pending(child)
+            return found if found
+          end
+          nil
+        end
+
+        def self.join(task)
+          task.wait
+        rescue StandardError
+          # The task's owner reports its failure.
+          nil
+        end
       end
 
       # Core reads at most n bytes. Keep only the remainder of the current

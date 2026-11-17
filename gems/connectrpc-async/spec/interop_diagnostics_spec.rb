@@ -4,7 +4,7 @@ require "stringio"
 require_relative "../scripts/support/interop_diagnostics"
 
 RSpec.describe HTTP2InteropDiagnostics do
-  it "reports the original setup exception without changing the public unavailable error" do
+  it "reports the original setup exception beside the classified public unavailable error" do
     reactor do
       # Binding without listening reserves the port while making TCP connect fail.
       reserved = Socket.new(Socket::AF_INET, Socket::SOCK_STREAM, 0)
@@ -19,8 +19,8 @@ RSpec.describe HTTP2InteropDiagnostics do
         typed.echo(AsyncHelpers::MESSAGE.new(name: "private payload"), metadata: { "x-private" => "private metadata" })
       end.to raise_error(ConnectRPC::Error) { |error|
         expect(error.code).to eq("unavailable")
-        expect(error.message).to eq("HTTP/2 transport failed")
-        expect(error.cause).to be_nil
+        expect(error.message).to eq("HTTP/2 transport failed: connection refused")
+        expect(error.cause).to be_a(Errno::ECONNREFUSED)
       }
 
       expect(output.string.lines.size).to eq(1)

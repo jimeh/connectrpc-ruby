@@ -13,7 +13,7 @@ module ConnectRPC
       # attempt in progress and removed connections whose raw socket is still
       # open; the draining set holds at most `max_draining` connections.
       class ConnectionManager
-        UNAVAILABLE = "HTTP/2 transport admission is closed or full"
+        FULL = "HTTP/2 transport admission is full"
         CLOSING = "HTTP/2 transport is closing"
         TRANSIENT = "HTTP/2 connection is in transient failure"
         STOPPED = "HTTP/2 connection setup stopped"
@@ -88,7 +88,7 @@ module ConnectRPC
           limit = @policy.max_pending_bytes
           if full || (limit && @pending_bytes + bytes > limit)
             emit(:admission_rejected)
-            raise Error.new(:unavailable, UNAVAILABLE), cause: nil
+            raise Error.new(:unavailable, FULL), cause: nil
           end
           @pending_bytes += bytes
           bytes
@@ -372,16 +372,9 @@ module ConnectRPC
         end
 
         def wait_setup(outcome, expires)
-          loop do
-            remaining = expires - Internal.now
-            raise ::Async::TimeoutError, "HTTP/2 connection setup timed out" if remaining <= 0
-
-            begin
-              return outcome.wait(timeout: [remaining, MAX_WAIT].min)
-            rescue ::Async::TimeoutError
-              raise if Internal.now >= expires
-            end
-          end
+          Internal.wait_event(outcome, expires)
+        rescue Expired
+          raise Expired, "HTTP/2 connection setup timed out"
         end
 
         def succeed(attempt, connection)

@@ -9,12 +9,13 @@ module ConnectRPC
     # thread per process runs an Async reactor and the inner Transport; callers
     # hand each call to it through a queue and wait on a per-call mailbox.
     class ThreadedTransport
-      UNAVAILABLE = "HTTP/2 transport admission is closed or full"
+      CLOSED = "HTTP/2 transport admission is closed"
+      FULL = "HTTP/2 transport admission is full"
       STOPPED = "HTTP/2 transport owner stopped"
       OWNER = :connectrpc_async_threaded_owner
       # Bounds front retries when each new owner stops before admitting the call.
       START_ATTEMPTS = 3
-      private_constant :UNAVAILABLE, :STOPPED, :OWNER, :START_ATTEMPTS
+      private_constant :CLOSED, :FULL, :STOPPED, :OWNER, :START_ATTEMPTS
 
       # Count and byte admission for one process. Engines that replace a failed
       # owner share it, so a stopped engine's mailboxes stay charged.
@@ -128,7 +129,7 @@ module ConnectRPC
         def admit(call, max_requests, max_bytes)
           @admission.lock.synchronize do
             return false if @state == :stopped
-            raise Error.new(:unavailable, UNAVAILABLE), cause: nil unless @state == :running
+            raise Error.new(:unavailable, CLOSED), cause: nil unless @state == :running
 
             if @admission.count >= max_requests || (max_bytes && @admission.bytes + call.bytes > max_bytes)
               @admission.rejected += 1
@@ -136,7 +137,7 @@ module ConnectRPC
                 @admission.notice = self
                 @inbox.push(:rejected)
               end
-              raise Error.new(:unavailable, UNAVAILABLE), cause: nil
+              raise Error.new(:unavailable, FULL), cause: nil
             end
             @admission.count += 1
             @admission.bytes += call.bytes
@@ -433,7 +434,7 @@ module ConnectRPC
 
         @lock.synchronize do
           inherit_fork_state
-          raise Error.new(:unavailable, UNAVAILABLE), cause: nil unless @state == :open
+          raise Error.new(:unavailable, CLOSED), cause: nil unless @state == :open
 
           pid = Process.pid
           unless @admission&.pid == pid
@@ -586,10 +587,11 @@ module ConnectRPC
       def parse_origin(value)
         uri = URI(value)
         unless %w[http https].include?(uri.scheme) && uri.host && !uri.userinfo && !uri.query && !uri.fragment &&
-               uri.path.empty?
+               ["", "/"].include?(uri.path)
           raise ArgumentError, "Origin must contain only an HTTP(S) scheme, host and port"
         end
 
+        uri.path = ""
         uri.freeze
       end
 

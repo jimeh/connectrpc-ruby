@@ -485,11 +485,13 @@ RSpec.describe "HTTP/2 refused Connect unary retry" do
         # which also retires the held output; a reset keeps the connection.
         expect([output.finished?, lease_usage(transport)]).to eq([false, 1]) if kind == :reset
         gate.release.enqueue(true)
-        begin
+        outcome = begin
           call.wait
-        rescue ConnectRPC::Error
-          nil
+        rescue ConnectRPC::Error, Async::TimeoutError => e
+          e
         end
+        # The caller's own timer reaches it unchanged, not as a transport failure.
+        expect([outcome.class, outcome.message]).to eq([Async::TimeoutError, "execution expired"]) if ending == :timeout
         wait_until(task, "call cleaned up") { transport.instance_variable_get(:@calls).empty? }
         expect(output).to be_finished
         # A drained GOAWAY connection closes once its last lease returns.

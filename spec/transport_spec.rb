@@ -292,7 +292,7 @@ RSpec.describe ConnectRPC::Transports::NetHTTP do
         request = transport_request(url, timeout: budget)
         expect { transport.call(request) }.to raise_error(ConnectRPC::Error) do |error|
           expect(error.code).to eq(code)
-          expect(error.message).to eq(expired ? "Deadline exceeded" : "HTTP transport failed")
+          expect(error.message).to eq(expired ? "Deadline exceeded" : "HTTP transport failed: timed out")
           expect(request.deadline.expired?).to eq(expired)
         end
         expect(progress.pop(timeout: 1)).to eq(:body_started)
@@ -407,5 +407,65 @@ RSpec.describe ConnectRPC::Transports::NetHTTP do
       release << true
     end
     expect(owned_threads - before).to be_empty
+  end
+
+  describe "classified connection failures" do
+    def failure(url)
+      transport.call(transport_request(url, timeout: 5))
+      raise "Expected a transport failure"
+    rescue ConnectRPC::Error => e
+      e
+    end
+
+    def expect_failure(error, reason, cause)
+      expect([error.code, error.message]).to eq(["unavailable", "HTTP transport failed: #{reason}"])
+      expect(error.cause).to be_a(cause)
+      expect(error.message).not_to include("127.0.0.1", ".invalid", "certificate", "SSL")
+    end
+
+    it "names a refused connection and keeps the original cause" do
+      # Binding without listening reserves a port whose connections are refused.
+      reserved = Socket.new(Socket::AF_INET, Socket::SOCK_STREAM, 0)
+      reserved.bind(Socket.sockaddr_in(0, "127.0.0.1"))
+      error = failure("http://127.0.0.1:#{reserved.local_address.ip_port}")
+      expect_failure(error, "connection refused", Errno::ECONNREFUSED)
+    ensure
+      reserved&.close
+    end
+
+    it "names a failed name resolution" do
+      expect_failure(failure("http://connectrpc-ruby-client-failure.invalid"), "name resolution failed", SocketError)
+    end
+
+    it "names an untrusted server certificate" do
+      key = OpenSSL::PKey::EC.generate("prime256v1")
+      certificate = OpenSSL::X509::Certificate.new
+      certificate.version = 2
+      certificate.serial = 1
+      certificate.subject = certificate.issuer = OpenSSL::X509::Name.parse("/CN=untrusted")
+      certificate.public_key = key
+      certificate.not_before = Time.now - 60
+      certificate.not_after = Time.now + 3600
+      certificate.sign(key, "SHA256")
+      context = OpenSSL::SSL::SSLContext.new
+      context.add_certificate(certificate, key)
+      listener = TCPServer.new("127.0.0.1", 0)
+      worker = Thread.new do
+        raw = listener.accept
+        ssl = OpenSSL::SSL::SSLSocket.new(raw, context)
+        ssl.sync_close = true
+        ssl.accept
+      rescue OpenSSL::SSL::SSLError, IOError, SystemCallError
+        nil
+      ensure
+        raw&.close unless raw&.closed?
+      end
+      error = failure("https://127.0.0.1:#{listener.addr[1]}")
+      expect_failure(error, "TLS verification failed", OpenSSL::SSL::SSLError)
+      expect(worker.join(5)).to be(worker)
+    ensure
+      listener&.close
+      worker&.kill
+    end
   end
 end

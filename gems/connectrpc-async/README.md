@@ -80,8 +80,13 @@ explicit, separate object for ordinary threads.
 
 Scheduler-compatible I/O yields; CPU, native codecs and native DNS may block.
 Ensure graceful close before the owner exits. Owner cancellation aborts only
-owned sockets/tasks and makes no delivery promise. Applications own the Async
-reactor, authorization and lifecycle.
+owned sockets/tasks and makes no delivery promise. A client transport that is
+never closed is aborted, without a graceful drain, once its owner task's block
+and every other task under that owner have finished, so the owner can finish.
+A live task under the owner keeps the transport open. Applications own the
+Async reactor, authorization and lifecycle. Using an object from the wrong
+reactor, thread or state raises `ConnectRPC::Async::LifecycleError`. Since
+0.3.0, that constant is public, so applications can rescue it by name.
 
 ## Host
 
@@ -344,12 +349,26 @@ connection_limit: 1, max_requests: 128, connect_timeout: 10,
 connection_policy: ConnectionPolicy.new, connection_observer: nil)` implements
 core's transport seam for HTTP/2.
 
-- Origins contain only scheme/host/port. Request paths, including core's base
-  prefix, remain intact.
-- One connection multiplexes requests. Full admission fails with unavailable;
-  acquisition waits honor finite RPC deadlines.
+- Origins contain only scheme/host/port; a bare trailing `/` is accepted.
+  Request paths, including core's base prefix, remain intact.
+- One connection multiplexes requests. Admission fails with unavailable:
+  `HTTP/2 transport admission is full` at `max_requests` or
+  `max_pending_bytes`, and `HTTP/2 transport admission is closed` once closing.
+  Acquisition waits honor finite RPC deadlines.
 - Nil RPC deadlines remain unbounded, while each connection attempt has its own
   `connect_timeout`.
+- An enclosing Async `with_timeout` around a call or stream operation ends it
+  with that same `Async::TimeoutError`, not a ConnectRPC error. The stream is
+  reset and its admission released as for any interrupted call. An already
+  expired RPC deadline or cancellation still wins.
+- Connection and transport failures raise unavailable
+  `HTTP/2 transport failed: <reason>`, keeping the original exception as
+  `cause`. The reason is one of `connection refused`, `name resolution
+  failed`, `host unreachable`, `timed out`, `TLS verification failed`,
+  `ALPN negotiation failed`, `TLS error`, `connection closed` or `HTTP/2
+  protocol error`; an unclassified failure has no reason. Messages never
+  include the origin, addresses or certificate details. `HTTP1Transport` uses
+  the same reasons with `HTTP/1`, plus `malformed response`.
 - No redirects, proxy environment routing or HTTP/1 fallback.
 - The transport carries opaque encoded bytes; core owns compression and
   negotiation.
@@ -742,7 +761,14 @@ lease waits count toward admission. Four long streams can occupy every default
 slot. Configure capacity or give waiters cancellation/deadlines; fairness is not
 promised. `close(grace: 5)` stops admission and drains admitted operations,
 including waiters, returning false on forced teardown. Owner exit aborts owned
-resources. There is no hidden thread, pipelining, retry, replay or fallback.
+resources. Admission fails with `HTTP/1 transport admission is full` at
+`max_requests` and `HTTP/1 transport admission is closed` once closing. There
+is no hidden thread, pipelining, replay or fallback, and one resend: a server
+may close an idle keep-alive connection while the next request crosses it, so
+a unary GET whose reused connection closed before any response head is sent
+once more on another connection, unless it was cancelled, its deadline expired
+or the transport started closing. Call observers see no failure from the
+attempt that was resent. POST and streams are never resent.
 
 ### Deadlines and reuse
 
@@ -893,7 +919,15 @@ an empty array, prevent auto-chaining through the client-auth trust store.
 
 Both roles require TLS >=1.2 and post-check ALPN `h2`. Clients always verify
 peer/hostname, including localhost, using system roots plus optional `ca_file`.
-Client chain/key must appear together; TLS options are invalid for h2c.
+Client chain/key must appear together; TLS options are invalid for h2c. IP
+literal origins send no server name (RFC 6066 section 3), and the certificate
+must still match the address.
+
+Client TLS inputs differ in kind: `ca_file` is a filesystem path to a PEM CA
+bundle, `certificate_chain` is an array of PEM certificate strings, leaf first,
+and `private_key` is a PEM string. An invalid input raises `ArgumentError`
+naming the input, such as `Invalid TLS client configuration: ca_file`, without
+its value or a cause.
 
 ### Client authentication
 

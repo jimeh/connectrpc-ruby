@@ -95,7 +95,7 @@ RSpec.describe "HTTP/2 client TLS setup" do
 
   it "requires complete paired client identity, rejects plaintext TLS options and invalid origins and bounds" do
     reactor do
-      %w[http://localhost/ http://user@localhost http://localhost?query https://localhost/#fragment
+      %w[http://localhost/prefix http://user@localhost http://localhost?query https://localhost/#fragment
          ftp://localhost].each do |origin|
         expect { ConnectRPC::Async::Transport.new(origin: origin) }.to raise_error(ArgumentError)
       end

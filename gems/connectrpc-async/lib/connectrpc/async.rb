@@ -15,12 +15,14 @@ require "protocol/http/body/buffered"
 require "io/endpoint/host_endpoint"
 require "io/endpoint/bound_endpoint"
 require "openssl"
+require "resolv"
 
 module ConnectRPC
   # Explicit, optional integration. The application owns the Async reactor.
   module Async
+    # Raised when a lifecycle operation runs outside its owning reactor,
+    # thread or allowed state.
     class LifecycleError < StandardError; end
-    private_constant :LifecycleError
   end
 end
 

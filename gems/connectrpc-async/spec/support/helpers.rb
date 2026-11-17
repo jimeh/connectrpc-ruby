@@ -2,7 +2,7 @@
 
 module AsyncHelpers
   INTERNAL = ConnectRPC::Async.const_get(:Internal)
-  LIFECYCLE_ERROR = ConnectRPC::Async.const_get(:LifecycleError)
+  LIFECYCLE_ERROR = ConnectRPC::Async::LifecycleError
   ECHO = Example::V1::EchoService
   MESSAGE = Example::V1::EchoMessage
 
