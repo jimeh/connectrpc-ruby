@@ -198,10 +198,12 @@ histogram; average messages per stream is `msg_*_total / handled_total`.
 - Since 0.2.2, `grpc_client_connections{state="active"}` counts connections that
   accept new calls; `state="draining"` counts connections that no longer do
   (after a GOAWAY, or failed while calls unwind) until their last call ends.
-  Their sum is the transport's open accounted connections.
+  Their sum is the transport's accounted connections, which can include a
+  failed connection whose socket closed while its calls unwind.
   `grpc_client_pending_calls` counts calls waiting to acquire a connection;
   calls that find spare capacity never appear in it. Both return to 0 after the
-  transport closes. There is no pending-bytes gauge. `HTTP1Transport` and server
+  transport closes and every call still unwinding at close has ended. There is
+  no pending-bytes gauge. `HTTP1Transport` and server
   hosts publish no connection gauges.
 - Message sizes are encoded payload bytes as framed: after compression,
   excluding the 5-byte envelope prefix, end-stream and trailer frames, gRPC-Web

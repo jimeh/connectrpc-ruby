@@ -134,7 +134,8 @@ load time. See [design](design.md).
 
 Generated service modules use protoc's Ruby constant rule, which upcases the
 first letter and keeps underscores, so service `kw_service` becomes
-`Kw_service`. This matches the message constants in official `_pb.rb` files.
+`Kw_service`. A name that does not start with a letter gets a `PB_` prefix, so
+`_service` becomes `PB__service`. This matches the message constants in official `_pb.rb` files.
 grpc-ruby's `_services_pb.rb` camelizes service names instead (`KwService`), so
 code migrating from grpc-ruby may need different constants for services whose
 names contain underscores.

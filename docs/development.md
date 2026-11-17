@@ -514,10 +514,18 @@ Project MIT licensing is approved. Releasing still needs separate, explicit auth
 
 Guides on main describe the next release. When a PR documents a feature,
 option, event or metric that the latest release lacks, mark it "Since X.Y.Z"
-in the prose, using the version of the open Release Please PR. A breaking
-change uses the next minor version instead. Keep markers out of headings, so
-anchors stay stable, and keep them after the release, so readers on older
-installs can tell what they lack. Fixes and behavior changes to existing
+in the prose with the version the next release will have:
+
+- Use the version of the open Release Please PR.
+- When no release PR is open, use the next patch after the latest release.
+  Before 1.0, the release config (`bump-patch-for-minor-pre-major`) releases
+  `feat:` commits as a patch.
+- A breaking change makes the next release a minor (`bump-minor-pre-major`),
+  such as 0.3.0 after 0.2.1. Mark it with that version, and update any markers
+  on main that name the superseded patch version.
+
+Keep markers out of headings, so anchors stay stable, and keep them after the
+release, so readers on older installs can tell what they lack. Fixes and behavior changes to existing
 features need no marker; breaking minors also need migration notes in
 [upgrading.md](upgrading.md).
 
