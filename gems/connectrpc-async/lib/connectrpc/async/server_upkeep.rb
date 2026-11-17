@@ -17,6 +17,11 @@ module ConnectRPC
       # MAX_PENDING frames wait; a peer that outruns the writer, such as a
       # PING flood with enforcement off, fails the connection rather than
       # growing the queue or blocking the reader.
+      #
+      # Both bounds are kept by long-lived tasks, so delivering a frame only
+      # records and signals state and never yields to arm or disarm a timer.
+      # Under CPU starvation each yield costs a reactor iteration, which
+      # could outlast a bound such as the too_many_pings GOAWAY's.
       class ControlWriter
         MAX_PENDING = 1024
 
@@ -27,12 +32,26 @@ module ConnectRPC
           @writes = writes
           @queue = ::Async::Queue.new
           @resumed = nil
+          @stall = WriteWatchdog.new(resource, clock: clock, timeout: CLEANUP_SECONDS,
+                                               message: "HTTP/2 control frame write stalled")
+          # The frame being delivered, if any: its number and deadline.
+          @serial = 0
+          @deadline = nil
+          @delivering = ::Async::Condition.new
         end
 
+        # Starting each task can yield. A connection that starts retiring
+        # meanwhile gets no more tasks.
         def start(parent)
           task = ::Async::Task.new(parent, finished: false) { run }
           @resource.maintain(task, control: true)
           task.run
+          unless @resource.finished?
+            watcher = ::Async::Task.new(parent, finished: false) { watch }
+            @resource.maintain(watcher, control: true)
+            watcher.run
+          end
+          @stall.start(parent) unless @resource.finished?
           task
         end
 
@@ -69,40 +88,65 @@ module ConnectRPC
         end
 
         # Earlier frames meet earlier deadlines, so time spent queued behind
-        # them is already within this frame's bound. A frame written past its
-        # deadline waited for a timed write, or its own bounded write crossed
-        # the deadline; either way the frames behind it waited too, so `run`
-        # restarts their deadlines from that write. Both watchdogs stop before
-        # the guard is released, because release hands control to the next
-        # waiter before this task resumes.
+        # them is already within this frame's bound, and only the frame being
+        # delivered needs watching. A frame written past its deadline waited
+        # for a timed write, or its own bounded write crossed the deadline;
+        # either way the frames behind it waited too, so `run` restarts their
+        # deadlines from that write. Both bounds are disarmed before the guard
+        # is released, because release hands control to the next waiter
+        # before this task resumes.
         def deliver(frame, deadline)
+          @serial += 1
+          @deadline = deadline
+          @delivering.signal
           connection = @resource.connection
-          queued = watchdog(deadline - @clock.now, "HTTP/2 control frame was not written in time", behind: @writes)
           connection.synchronize do
-            stalled = watchdog(CLEANUP_SECONDS, "HTTP/2 control frame write stalled")
+            @stall.write_started
             begin
               connection.write_frame(frame)
             ensure
-              Internal.cancel(stalled)
-              Internal.cancel(queued)
+              @stall.write_finished
+              @deadline = nil
             end
           end
         ensure
-          Internal.cancel(queued)
+          @deadline = nil
         end
 
-        # With `behind`, an expired deadline first waits out a frame write
-        # that `behind` still times, since that write has its own bound.
-        def watchdog(seconds, message, behind: nil)
-          timer = ::Async::Task.new(::Async::Task.current, finished: false) do
-            @clock.sleep(seconds) if seconds.positive?
-            while (remaining = behind&.remaining)&.positive?
-              @clock.sleep(remaining)
-            end
-            @resource.abort(IOError.new(message))
+        # Fails the connection when the frame being delivered misses its
+        # deadline.
+        def watch
+          loop do
+            @delivering.wait until @deadline
+            serial = @serial
+            next unless undelivered_after?(serial, @deadline - @clock.now) && outlasts_writes?(serial)
+
+            break @resource.abort(IOError.new("HTTP/2 control frame was not written in time"))
           end
-          timer.run
-          timer
+        end
+
+        # An expired deadline first waits out each frame write that `writes`
+        # still times, since that write has its own bound.
+        def outlasts_writes?(serial)
+          while (remaining = @writes&.remaining)&.positive?
+            return false unless undelivered_after?(serial, remaining)
+          end
+          true
+        end
+
+        def delivering?(serial) = @serial == serial && !@deadline.nil?
+
+        # Sleeps up to `seconds` and returns whether the frame `serial` is
+        # still being delivered. Writing a frame past its deadline restarts
+        # the next frame's deadline `timeout` after that write, so sleeping at
+        # most `timeout` at a time never oversleeps that deadline.
+        def undelivered_after?(serial, seconds)
+          due = @clock.now + seconds
+          while (left = due - @clock.now).positive?
+            @clock.sleep([left, @timeout].min)
+            return false unless delivering?(serial)
+          end
+          delivering?(serial)
         end
       end
 
@@ -113,10 +157,11 @@ module ConnectRPC
       # or header block, not to a whole response, and continuous progress
       # within one frame does not extend it.
       class WriteWatchdog
-        def initialize(resource, clock:, timeout:)
+        def initialize(resource, clock:, timeout:, message: "HTTP/2 frame write did not finish in time")
           @resource = resource
           @clock = clock
           @timeout = timeout
+          @message = message
           @started = ::Async::Condition.new
           @serial = 0
           @started_at = nil
@@ -156,7 +201,7 @@ module ConnectRPC
             @clock.sleep(remaining) if remaining.positive?
             next unless @started_at && @serial == serial
 
-            break @resource.abort(IOError.new("HTTP/2 frame write did not finish in time"))
+            break @resource.abort(IOError.new(@message))
           end
         end
       end

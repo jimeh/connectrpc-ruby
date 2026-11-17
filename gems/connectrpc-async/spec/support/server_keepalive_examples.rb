@@ -179,6 +179,46 @@ RSpec.shared_examples "HTTP/2 server keepalive" do
       end
     end
 
+    # Under CPU starvation every yield costs the control writer a reactor
+    # iteration (#139), so arming and disarming its bounds must never yield.
+    # The four PINGs arrive in one write, so the reader queues every ACK and
+    # the GOAWAY before the writer runs, and one resume writes them all.
+    it "writes the ACKs and too_many_pings GOAWAY of one read in a single control writer resume" do
+      reactor do |task|
+        with_keepalive_host(task, keepalive: server_keepalive(time: nil)) do |fixture|
+          client = fixture.client
+          connection = fixture.resource.connection
+          writer = nil
+          resumes = nil
+          switches = []
+          connection.define_singleton_method(:write_frame) do |frame|
+            writer ||= Fiber.current if frame.type == Protocol::HTTP2::PingFrame::TYPE
+            super(frame)
+          ensure
+            resumes ||= switches.count(writer) if frame.type == Protocol::HTTP2::GoawayFrame::TYPE
+          end
+          payloads = Array.new(4) { |index| format("strike%02d", index) }
+          trace = TracePoint.new(:fiber_switch) { switches << Fiber.current }
+          trace.enable do
+            client.connection.write_frames do |framer|
+              payloads.each do |payload|
+                frame = Protocol::HTTP2::PingFrame.new
+                frame.pack(payload)
+                framer.write_frame(frame)
+              end
+            end
+            wait_until(task, "too_many_pings GOAWAY written") { resumes }
+          end
+          expect(resumes).to eq(1)
+          wait_until(task, "server half-close") { client.eof? }
+          expect(client.wire.sequence).to eq(
+            [*payloads.map { |payload| [:ack, payload] },
+             [:goaway, 0, KeepaliveClient::ENHANCE_YOUR_CALM, "too_many_pings"]]
+          )
+        end
+      end
+    end
+
     it "forgives a PING after a server DATA write and names the cutoff in its GOAWAY" do
       reactor do |task|
         with_keepalive_host(task, keepalive: server_keepalive(time: nil)) do |fixture|
@@ -1560,6 +1600,14 @@ RSpec.shared_examples "HTTP/2 server keepalive" do
     # the control frame deadline still ends the connection.
     def due_at(clock, due) = clock.sleepers.count { |sleeper| (sleeper.due - due).abs < 1e-9 }
 
+    # Past its 20 s deadline, the control frame waits for the held write's
+    # 60 s bound, in steps that may end sooner.
+    def await_behind_write(task, clock)
+      wait_until(task, "the control deadline waits for the write bound; pending #{clock.sleepers.map(&:due)}") do
+        due_at(clock, 60) >= 1 && clock.sleepers.count { |sleeper| sleeper.due > 20 && sleeper.due <= 60 } == 2
+      end
+    end
+
     it "keeps a control frame queued behind a held write until the frame write bound" do
       reactor do |task|
         with_keepalive_host(task, keepalive: server_keepalive(time: nil)) do |fixture|
@@ -1571,7 +1619,7 @@ RSpec.shared_examples "HTTP/2 server keepalive" do
           send_ping(client, "bdp00001")
           await_due(task, fixture.clock, 20)
           fixture.clock.advance(20)
-          wait_until(task, "the control deadline waits for the write bound") { due_at(fixture.clock, 60) == 2 }
+          await_behind_write(task, fixture.clock)
           expect(fixture.resource).not_to be_finished
           fixture.clock.advance(39.9)
           expect(fixture.resource).not_to be_finished
@@ -1607,7 +1655,7 @@ RSpec.shared_examples "HTTP/2 server keepalive" do
           wait_until(task, "the second ACK queued behind the first") { queue.size == 1 }
           await_due(task, fixture.clock, 20)
           fixture.clock.advance(20)
-          wait_until(task, "the control deadline waits for the write bound") { due_at(fixture.clock, 60) == 2 }
+          await_behind_write(task, fixture.clock)
           fixture.clock.advance(10)
           gate.release.enqueue(true)
           wait_until(task, "both ACKs; acks #{client.wire.acks}") { client.wire.acks.size == 2 }
@@ -1616,6 +1664,60 @@ RSpec.shared_examples "HTTP/2 server keepalive" do
           expect(fixture.resource).not_to be_finished
         ensure
           gate&.release&.enqueue(true)
+        end
+      end
+    end
+
+    # The first ACK is written 10 s late, behind the held write, so the
+    # second one's deadline restarts at 50 s. The untimed guard holder that
+    # takes the guard in between has no bound of its own, and the second
+    # ACK still fails the connection at its restarted deadline rather than
+    # at the 60 s write bound the first ACK was waiting for.
+    it "fails at a restarted control frame deadline that falls before the bound it waited for" do
+      reactor do |task|
+        with_keepalive_host(task, keepalive: server_keepalive(time: nil)) do |fixture|
+          client = fixture.client
+          connection = fixture.resource.connection
+          watch(fixture, "sibling", "one")
+          gate = hold_frames(fixture.resource, Protocol::HTTP2::DataFrame::TYPE)
+          fixture.log[:feeds]["sibling"].enqueue("two")
+          gate.started.dequeue
+          client.connection.write_frames do |framer|
+            %w[bdp00001 bdp00002].each do |payload|
+              frame = Protocol::HTTP2::PingFrame.new
+              frame.pack(payload)
+              framer.write_frame(frame)
+            end
+          end
+          wait_until(task, "the first ACK waits for the frame guard") { connection.guard_waiting? }
+          release = Async::Promise.new
+          holding = Async::Promise.new
+          holder = task.async do
+            connection.synchronize do
+              holding.resolve(true)
+              release.wait
+            end
+          end
+          waiting = connection.instance_variable_get(:@frame_guard).waiting
+          wait_until(task, "the guard holder queued behind the first ACK") { waiting.size == 2 }
+          await_due(task, fixture.clock, 20)
+          fixture.clock.advance(20)
+          await_behind_write(task, fixture.clock)
+          fixture.clock.advance(10)
+          gate.release.enqueue(true)
+          wait_until(task, "the first ACK") { client.wire.acks == ["bdp00001"] }
+          holding.wait
+          fixture.clock.advance(10)
+          await_due(task, fixture.clock, 50)
+          fixture.clock.advance(9.9)
+          expect(fixture.resource).not_to be_finished
+          fixture.clock.advance(0.1)
+          wait_until(task, "connection retired") { retired?(fixture.resource) }
+          expect(client.wire.acks).to eq(["bdp00001"])
+        ensure
+          gate&.release&.enqueue(true)
+          release&.resolve(true)
+          holder&.wait
         end
       end
     end
@@ -1635,7 +1737,7 @@ RSpec.shared_examples "HTTP/2 server keepalive" do
           end
           await_due(task, fixture.clock, 20)
           fixture.clock.advance(20)
-          wait_until(task, "the control deadline waits for the write bound") { due_at(fixture.clock, 60) == 2 }
+          await_behind_write(task, fixture.clock)
           fixture.clock.advance(10)
           gate.release.enqueue(true)
           wait_until(task, "drain PING; goaways #{client.wire.goaways}") do
