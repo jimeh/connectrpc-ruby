@@ -69,19 +69,20 @@ transport = ConnectRPC::Async::Transport.new(
 Transport names match `/\A[a-z0-9_]{1,64}\z/` and must be unique per process;
 asking one `Metrics` for a repeated name raises `ArgumentError`. An observer
 built after `Yabeda.configure!` publishes `idle` 1 and 0 for the other states,
-and 0 for its connection and pending-call gauges, immediately. One built before
-it registers a Yabeda collector that publishes its current state and last known
-counts on each `Yabeda.collect!`, such as a yabeda-prometheus scrape; until then
-its series appear only as events record them. Events recorded before
-`configure!` still update the values that collector publishes. Async swallows connection observer
-`StandardError`s, including recording before `configure!`, so those failures
-are not reported through `on_error`. Callbacks may run from separate threads and fibers; Yabeda
-stores values in concurrent structures, and adapters own their own safety.
+and 0 for its connection and pending-call gauges (since 0.2.2), immediately. One
+built before it registers a Yabeda collector that publishes its current state
+and last known counts on each `Yabeda.collect!`, such as a yabeda-prometheus
+scrape; until then its series appear only as events record them. Events recorded
+before `configure!` still update the values that collector publishes. Async
+swallows connection observer `StandardError`s, including recording before
+`configure!`, so those failures are not reported through `on_error`. Callbacks
+may run from separate threads and fibers; Yabeda stores values in concurrent
+structures, and adapters own their own safety.
 
 ## Metrics and names
 
 Each metric is declared with a group, name, optional unit, `comment`, `tags`
-and, for histograms, `buckets`. Every gauge (connection state,
+and, for histograms, `buckets`. Every gauge (connection state and, since 0.2.2,
 `client_connections` and `client_pending_calls`) declares `aggregation: :sum`.
 yabeda-prometheus exports `group_name_unit`, which produces exactly the
 connectrpc-prometheus names, for example `grpc_server_handled_total`,

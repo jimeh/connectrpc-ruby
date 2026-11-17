@@ -1,7 +1,9 @@
 # Plan: HTTP/2 keepalive, enforcement and connection age (#69)
 
 Base: origin/main 8c2dd4b. Branch: feat/h2-keepalive. One PR.
-Status: accepted by Jim on 2026-11-16. Revised after a Codex plan review.
+Status: implemented in [#76](https://github.com/jimeh/connectrpc-ruby/pull/76).
+Accepted by Jim on 2026-11-16 and revised after a Codex plan review; the plan
+below is kept as approved.
 
 ## Objective
 

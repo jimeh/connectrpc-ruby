@@ -32,14 +32,15 @@ unless examples.fetch("server").keys == DemoExample::SERVERS.keys &&
 end
 
 if ARGV.include?("--list")
+  width = [*DemoExample::SERVERS.keys, *DemoExample::CLIENTS.keys].map(&:length).max + 1
   puts "Servers (mise run example:server -- NAME [--mtls]; PORT overrides #{DemoExample::DEFAULT_PORT}):"
   DemoExample::SERVERS.each do |name, served|
-    puts "  #{name.ljust(12)} #{served.map { |http, protocols| "#{http} #{protocols.keys.join('+')}" }.join(', ')}"
+    puts "  #{name.ljust(width)} #{served.map { |http, protocols| "#{http} #{protocols.keys.join('+')}" }.join(', ')}"
   end
   puts "  --mtls: serve TLS and require a client certificate (#{DemoExample::MTLS_SERVERS.join(', ')})"
   puts "Clients (mise run example:client -- NAME [RPC [ARGS...]] [options]):"
   DemoExample::CLIENTS.each do |name, speaks|
-    puts "  #{name.ljust(12)} #{speaks[:http]} #{speaks[:protocols].keys.join('+')}"
+    puts "  #{name.ljust(width)} #{speaks[:http]} #{speaks[:protocols].keys.join('+')}"
   end
   puts "RPCs: #{DemoExample::RPCS.map { |rpc, shape| "#{rpc} (#{DemoExample::SHAPES[shape]})" }.join(', ')}"
   puts "Options: --server NAME --url URL --codec proto|json --get --gzip --protocol connect|grpc"

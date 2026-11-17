@@ -13,7 +13,7 @@ These files show how to use ConnectRPC:
 | File | Shows |
 | --- | --- |
 | [servers/](servers/) | One file per host: Rack, Rails, Async and Falcon |
-| [clients/](clients/) | One file per transport: NetHTTP, Async HTTP/1.1 and Async HTTP/2 |
+| [clients/](clients/) | One file per transport: NetHTTP, Async HTTP/1.1, Async HTTP/2 and Async threaded |
 | [demo/handlers.rb](demo/handlers.rb) | The service implementation, one handler per RPC shape, and the `ConnectRPC::Server` the hosts share |
 | [demo/calls.rb](demo/calls.rb) | Calling each RPC shape through the generated client |
 | [demo/call_log.rb](demo/call_log.rb) | An instrumentation subscriber that logs each RPC on the server |

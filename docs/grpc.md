@@ -3,6 +3,89 @@
 The [supported 0.x contract](support.md) defines the target compatibility
 boundary and the remaining adoption gates.
 
+## Quick start
+
+This serves and calls the `Greet::V1::GreetService` from the
+[README quick start](../README.md#quick-start) over native gRPC. Generate
+`lib/greet/v1/greet_pb.rb` and `lib/greet/v1/greet_connect.rb` as step 3 there
+shows. The Gemfile needs these gems:
+
+```ruby
+gem "connectrpc"
+gem "connectrpc-async"
+gem "google-protobuf", ">= 4.36.2", "< 5"
+```
+
+These lines leave the version open. Add the same requirement to both
+`connectrpc` and `connectrpc-async`, such as the one the
+[README quick start](../README.md#quick-start) uses, because the
+[package policy](../README.md#packages) requires matching versions.
+
+Save the server as `server.rb` and run `bundle exec ruby server.rb`. It serves
+Connect and native gRPC on one HTTP/2 port, h2c here, inside a reactor the
+application owns. On Ctrl-C, `ensure` closes the host gracefully and Ruby then
+reports the `Interrupt`:
+
+```ruby
+$LOAD_PATH.unshift(File.expand_path("lib", __dir__))
+require "async"
+require "connectrpc/async"
+require "connectrpc/bindings/google_protobuf"
+require "greet/v1/greet_connect"
+
+service = Greet::V1::GreetService
+greet = lambda do |request, _context|
+  Greet::V1::GreetResponse.new(greeting: "Hello, #{request.name}!")
+end
+server = ConnectRPC::Server.new(
+  services: [service::SERVICE],
+  binding: ConnectRPC::Bindings::GoogleProtobuf.new,
+  handlers: service.handlers(greet: greet),
+  protocol: :auto
+)
+
+Sync do
+  host = ConnectRPC::Async::Host.new(server: server, port: 8080).start
+  puts "Serving Connect and gRPC on http://127.0.0.1:#{host.port}"
+  host.wait # Returns once host.close stops the listeners.
+ensure
+  host&.close(grace: 5)
+end
+```
+
+Save the client as `client.rb` and run `bundle exec ruby client.rb` from another
+terminal. `ThreadedTransport` lets a plain thread, such as a Puma or Sidekiq
+worker, call without a reactor:
+
+```ruby
+$LOAD_PATH.unshift(File.expand_path("lib", __dir__))
+require "connectrpc/async"
+require "connectrpc/bindings/google_protobuf"
+require "greet/v1/greet_connect"
+
+transport = ConnectRPC::Async::ThreadedTransport.new(origin: "http://127.0.0.1:8080")
+core = ConnectRPC::Client.new(
+  base_url: "http://127.0.0.1:8080",
+  binding: ConnectRPC::Bindings::GoogleProtobuf.new,
+  transport: transport,
+  protocol: :grpc
+)
+client = Greet::V1::GreetService::Client.new(client: core)
+begin
+  response = client.greet(Greet::V1::GreetRequest.new(name: "gRPC"), timeout: 2)
+  puts response.message.greeting # => Hello, gRPC!
+ensure
+  transport.close
+end
+```
+
+Code that already runs in a reactor task can use `ConnectRPC::Async::Transport`
+with the same options instead. Other gRPC clients, such as grpc-go, can call
+the same server. The [Async guide](../gems/connectrpc-async/README.md) covers
+TLS, mTLS, keepalive and connection management.
+
+## Protocol and configuration
+
 Configure `Client(protocol: :grpc)` with an Async transport and a protobuf
 binding. Unary, server streaming, client streaming and bidi use the existing
 method declarations, generated clients and scoped stream endpoints. Configure

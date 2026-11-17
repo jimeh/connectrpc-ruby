@@ -35,18 +35,18 @@ gemspec reads its owning static version without requiring runtime code. OTel use
 its same owning constant for instrumentation. The root `CHANGELOG.md` describes the entire train.
 The tag convention is one `v0.x.y` tag, not eleven component tags.
 
-The initial manifest is empty and `initial-version` is `0.1.0`. A manifest entry
-of `0.1.0` would claim a previous version and is not the bootstrap mechanism.
-There is no permanent `release-as` override or history cutoff. Because source
-already has version `0.1.0`, the first generated release PR normally changes
-only the changelog and manifest. It does not exercise future version updates.
+`.github/.release-please-manifest.json` records the last released version, and
+each release PR updates it. The config's `initial-version` of `0.1.0` only
+seeded the first release, when the manifest was empty. There is no permanent
+`release-as` override or history cutoff.
 
 Before 1.0, `fix:` and compatible `feat:` commits increment the patch. A breaking
 commit (`!` or a `BREAKING CHANGE:` footer) increments the minor. Breaking
 minors require migration notes explaining affected calls, options, defaults,
-wire behavior, tracing and generated code. Keep migration notes on main in a
-committed document or the breaking commit footer. Bot-generated release branches
-are not durable homes for hand-edited migration notes.
+wire behavior, tracing and generated code. Keep migration notes on main in
+[upgrading.md](upgrading.md), with a summary in the breaking commit footer.
+Bot-generated release branches are not durable homes for hand-edited migration
+notes.
 
 The train uses matching package versions. Internal gem dependencies keep the
 existing pessimistic minor-series range, `~> M.m.0`; a patch does not narrow

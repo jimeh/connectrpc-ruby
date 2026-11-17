@@ -1,6 +1,15 @@
 # Threaded transport and resilient Async connections
 
-Status: design for review. No implementation is approved by this document.
+Status: implemented. PR A
+([#54](https://github.com/jimeh/connectrpc-ruby/pull/54)) delivered the
+connection manager core, PR B
+([#56](https://github.com/jimeh/connectrpc-ruby/pull/56)) threaded Connect
+unary, PR C ([#63](https://github.com/jimeh/connectrpc-ruby/pull/63)) GOAWAY
+replacement and the refused-stream retry, and PR D
+([#67](https://github.com/jimeh/connectrpc-ruby/pull/67)) the stream proxy.
+Client and bidi streaming from threads remain the later phase in
+[#29](https://github.com/jimeh/connectrpc-ruby/issues/29). The design below is
+kept as approved.
 Base: `95ecf9f` (Async Host accept recovery, #50).
 Issues: [#28](https://github.com/jimeh/connectrpc-ruby/issues/28) (Async
 connection management) and [#29](https://github.com/jimeh/connectrpc-ruby/issues/29)

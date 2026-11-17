@@ -1,6 +1,9 @@
 # Metrics: connectrpc-prometheus and connectrpc-yabeda
 
-Status: approved by Jim; implementation contract for one PR.
+Status: implemented in [#66](https://github.com/jimeh/connectrpc-ruby/pull/66),
+with the connection gauges and Host fallback follow-up in
+[#100](https://github.com/jimeh/connectrpc-ruby/pull/100); see
+[Follow-up (#70)](#follow-up-70). The contract below is kept as approved.
 Base: `fc80614`. Branch `feat/metrics-prometheus-yabeda`, PR title
 `feat: add Prometheus and Yabeda metrics packages`. The draft had a
 cross-engine plan review; accepted findings were checked against the code.
@@ -168,9 +171,9 @@ Label `transport`: app-chosen, `/\A[a-z0-9_]{1,64}\z/`, unique per process.
 | `grpc_client_admission_rejected_total` | counter | `transport` |
 
 Under `DirectFileStore` the state gauge sums to the number of workers in each
-state. Active/draining/pending gauges are left out because events do not
-publish those counts on every change; they need an Async follow-up (PRs C/D
-own that file). Async swallows observer `StandardError`s, so connection
+state. Active/draining/pending gauges are left out because events do not publish
+those counts on every change. The [follow-up](#follow-up-70) added them with a
+`:counts_changed` event. Async swallows observer `StandardError`s, so connection
 recorder failures are not reported through `on_error`; documented.
 
 ## Labels and naming
@@ -204,7 +207,7 @@ default; also connection attempts). Sizes `[64, 256, 1024, 4096, 16384, 65536,
   construct per worker after fork, consistent with the worker-local
   `prepare!`; exporter in the `rack_app:` fallback.
 - Async standalone `Host`: a separate metrics listener (own port), since Host
-  has no fallback. Adding `fallback:` to Host is a possible follow-up.
+  has no fallback. The [follow-up](#follow-up-70) later added `fallback:`.
 - Rack: exporter middleware beside the app. Rails: exporter middleware or
   yabeda-prometheus/yabeda-rails; instrumentation via private
   `connect_instrumentation`.

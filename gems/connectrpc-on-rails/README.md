@@ -75,7 +75,7 @@ require "connectrpc/on_rails"
 require "connectrpc/bindings/google_protobuf"
 require "echo_connect"
 
-class EchoController < ApplicationController
+class EchoController < ActionController::API
   include ConnectRPC::OnRails::Controller
 
   private
@@ -98,6 +98,12 @@ class EchoController < ApplicationController
   end
 end
 ```
+
+A controller that inherits `ActionController::Base`, as a default
+`ApplicationController` does, keeps Rails forgery protection. Every POST RPC
+without a CSRF token then fails with HTTP 500 and Connect code `internal`. Use
+`ActionController::API` for token-authenticated RPC, or see
+[Request and security policy](#request-and-security-policy).
 
 ### 3. Route the service
 
@@ -137,7 +143,13 @@ There is no render helper or routing DSL.
 
 `connect_limits` accepts core `request_limit:`, `response_limit:`,
 `request_wire_limit:`, `response_wire_limit:`, `get_query_limit:` and
-`encoding:` keywords; omitted options use core's 4 MiB defaults.
+`encoding:` keywords; omitted options use core's 4 MiB defaults. The concern
+splats the returned Hash into `ConnectRPC::Server.new`, so it also accepts any
+other Server keyword, such as the gRPC-Web `grpc_status_wire_limit:` and
+`grpc_status_limit:` that the [Web guide](../../docs/grpc-web.md#cors-and-rails)
+shows. Do not return the keywords the concern sets itself: `services`,
+`binding`, `handlers`, `invoker`, `instrumentation`, `interceptors`, `protocol`,
+`status_codec` and `cors`. A duplicate silently replaces the concern's value.
 
 Private `connect_request`, `connect_context`, and `connect_method` expose the
 same typed objects to callbacks and handlers.
@@ -229,7 +241,7 @@ objects, so return a frozen list built once and keep per-call state in the call
 object:
 
 ```ruby
-class EchoController < ApplicationController
+class EchoController < ActionController::API
   include ConnectRPC::OnRails::Controller
 
   INTERCEPTORS = [RequireTenant.new].freeze
@@ -345,10 +357,11 @@ Bundler 4.0.23:
 | 8.0.5.1 (Action Pack floor) | 3.4.12 | Lowest-allowed evidence (`floors:rails`) |
 
 These rows do not promise every framework/runtime combination. As checked on
-2026-11-02, Rails'
+2026-11-17, Rails'
 [maintenance policy](https://rubyonrails.org/maintenance) lists security support
-ending 2026-11-07 for 8.0 and 2027-10-10 for 8.1. The 8.0 compatibility lane
-is not a promise to extend upstream maintenance.
+for 8.0 as ended on 2026-11-07, and security support for 8.1 until 2027-10-10.
+The gemspec still allows 8.0, and the 8.0 lane remains compatibility evidence
+only. Upstream no longer ships 8.0 security fixes, so use 8.1.
 
 Rails 8.0 and Rails 8.1 before 8.1.4 draw routes lazily in development and
 test when `config.eager_load` is false, and the first draw is not

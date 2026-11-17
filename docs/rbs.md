@@ -4,11 +4,11 @@ The [supported 0.x contract](support.md) defines the target compatibility
 boundary and the remaining adoption gates.
 
 Every package ships its own gem-discovered signatures and dependency manifest.
-Core also generates mixed unary/streaming service signatures. RBS
-and Steep are development tools; neither is required by the runtime. Default
-Connect generation produces exactly the same Ruby files as before. Only the
-plugin parameter `rbs=true` adds `<stem>_connect.rbs` for each service-bearing
-input. Unknown, duplicate, invalid and trailing parameters fail without files.
+Core also generates mixed unary/streaming service signatures. RBS and Steep are
+development tools; neither is required by the runtime. Default Connect
+generation writes only Ruby files. The plugin parameter `rbs=true` also adds
+`<stem>_connect.rbs` for each service-bearing input. Unknown, duplicate, invalid
+and trailing parameters fail without files.
 
 ## Generate messages and services
 

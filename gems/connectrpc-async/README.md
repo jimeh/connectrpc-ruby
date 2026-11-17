@@ -85,9 +85,11 @@ reactor, authorization and lifecycle.
 
 ## Host
 
-`Host.new(server:, host: "127.0.0.1", port: 0, tls: nil, max_connections: 128,
-max_requests: 128, handshake_timeout: 10, idle_timeout: 60,
-keepalive: ServerKeepalive.new, fallback: nil)` returns a host.
+`Host.new(server:, host: "127.0.0.1", port: 0, tls: nil, tls_provider: nil,
+max_connections: 128, max_requests: 128, handshake_timeout: 10,
+idle_timeout: 60, refresh_interval: 60, refresh_jitter: 0.1,
+refresh_timeout: 10, on_tls_error: nil, keepalive: ServerKeepalive.new,
+fallback: nil)` returns a host. `fallback:` is available since 0.2.2.
 
 - `start` binds/listens before returning self; `port` and `addresses` expose the
   actual binding.
@@ -104,6 +106,8 @@ For TLS options, see [TLS and client authentication](#tls-and-client-authenticat
 
 ### Fallback application
 
+Since 0.2.2, the Host accepts a fallback application.
+
 `fallback:` takes a native Protocol::HTTP callable, `call(request)` returning a
 `Protocol::HTTP::Response`, like [Application](#application)'s fallback. It is
 not a Rack app. Core keeps whole registered service prefixes, including unknown
@@ -116,7 +120,7 @@ when full) and connection lifetime. An exception from the fallback fails only
 its own stream. The Host owns no tunnels or socket handoff, so no `CONNECT`
 request reaches the fallback. An extended CONNECT (`:protocol`) request gets a
 bare 501. A plain CONNECT has no `:path`, so the Host resets its stream, with or
-without a fallback, as before. A fallback response with status 101 or a
+without a fallback. A fallback response with status 101 or a
 `protocol` is closed and replaced by 501.
 
 The fallback inherits the Host's HTTP/2-only listener, so it serves only
@@ -260,7 +264,7 @@ nonnegative or nil and requires `max_connection_age`.
   PINGs, age grace and close also bound a stuck connection. The
   `too_many_pings` GOAWAY is stricter: it must be written within 100 ms of the
   third strike, or the connection is aborted. Without keepalive, the reader
-  answers client PINGs itself, as before, and idle drain frames use the
+  answers client PINGs itself, and idle drain frames use the
   20-second default `timeout`.
 
 Idle and age expiry drain a connection in three steps, as grpc-go does:
@@ -471,12 +475,12 @@ servers do not answer it with `too_many_pings`.
 
 - `connection_observer` receives frozen `ConnectionEvent` values with `type`
   (`:state_changed`, `:attempt_finished`, `:admission_rejected`,
-  `:connection_closed` or `:counts_changed`), `state`, `previous_state`,
-  `outcome`, `duration` in monotonic seconds, and the counts `active`,
-  `draining`, `pending_calls` and `pending_bytes`. An `:attempt_finished`
-  outcome is `:ready`, `:refused`, `:timeout`, `:tls`, `:protocol`, `:closed` or
-  `:other`. Observers that switch on `type` should ignore types they do not
-  know.
+  `:connection_closed`, or `:counts_changed` since 0.2.2), `state`,
+  `previous_state`, `outcome`, `duration` in monotonic seconds, and the counts
+  `active`, `draining`, `pending_calls` and `pending_bytes`. An
+  `:attempt_finished` outcome is `:ready`, `:refused`, `:timeout`, `:tls`,
+  `:protocol`, `:closed` or `:other`. Observers that switch on `type` should
+  ignore types they do not know.
 - Every event carries the counts at the time it was published. `active` counts
   accounted connections that accept new calls. `draining` counts accounted
   connections that no longer accept new calls (after a GOAWAY, or failed or
@@ -484,16 +488,16 @@ servers do not answer it with `too_many_pings`.
   a removed socket that is still closing. `pending_calls` counts calls waiting
   to acquire a connection, and `pending_bytes` the request bytes reserved by
   admitted calls.
-- `:counts_changed` is emitted when `active`, `draining` or `pending_calls`
-  differs from the last published event's counts without another event
-  reporting it: a call starts or stops waiting, or a connection drains or is
-  removed. A call that finds spare capacity emits nothing. `pending_bytes`
+- Since 0.2.2, `:counts_changed` is emitted when `active`, `draining` or
+  `pending_calls` differs from the last published event's counts without another
+  event reporting it: a call starts or stops waiting, or a connection drains or
+  is removed. A call that finds spare capacity emits nothing. `pending_bytes`
   changes with every call and never triggers it. After transport close and its
-  cleanup, the last event carries zero `active`, `draining` and
-  `pending_calls`; a connection whose call is still unwinding at close
-  publishes its removal when the call ends. A `ThreadedTransport` owner
-  publishes from its reactor, so a stalled owner publishes nothing until it
-  runs again; a replacement owner starts from zero counts.
+  cleanup, the last event carries zero `active`, `draining` and `pending_calls`;
+  a connection whose call is still unwinding at close publishes its removal when
+  the call ends. A `ThreadedTransport` owner publishes from its reactor, so a
+  stalled owner publishes nothing until it runs again; a replacement owner
+  starts from zero counts.
 - `:connection_closed` is emitted exactly once when a ready connection leaves
   the manager, which for a connection with calls in progress is when its last
   call ends. Its `outcome` is the first recorded reason: `:keepalive_timeout`,

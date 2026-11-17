@@ -37,6 +37,7 @@ on this package.
 ## Usage
 
 ```ruby
+require "connectrpc/bindings/google_protobuf"
 require "connectrpc/health"
 
 health = ConnectRPC::Health::Registry.new(max_watchers: 100)
@@ -96,12 +97,39 @@ Kubernetes [`grpc:` probes](https://kubernetes.io/docs/tasks/configure-pod-conta
 and `grpc_health_probe` need native gRPC, so serve health from the Async Host or
 Falcon over HTTP/2. Kubernetes probes use plaintext h2c only. A second
 plaintext `Host` on a probe port can share the registry with a TLS application
-host; that separate port is also the recommended authentication boundary:
+host; that separate port is also the recommended authentication boundary.
+
+Kubelet probes the pod IP, so bind the probe host to `0.0.0.0`. The default
+`127.0.0.1` accepts only loopback connections, and every probe would fail.
+`Host#start` also needs an application-owned Async task; see
+[reactor ownership](../connectrpc-async/README.md#reactor-ownership). Both
+hosts run in the same reactor. `server` is the application server from
+[Usage](#usage), and `tls` is its
+[TLS hash](../connectrpc-async/README.md#tls-and-client-authentication):
 
 ```ruby
+require "async"
+require "connectrpc/async"
+
 probe = ConnectRPC::Server.new(services: [ConnectRPC::Health::SERVICE], handlers: health.handlers,
                                binding: ConnectRPC::Bindings::GoogleProtobuf.new, protocol: :grpc)
-ConnectRPC::Async::Host.new(server: probe, port: 8081).start
+Sync do
+  app_host = ConnectRPC::Async::Host.new(server: server, host: "0.0.0.0", port: 8443, tls: tls).start
+  probe_host = ConnectRPC::Async::Host.new(server: probe, host: "0.0.0.0", port: 8081).start
+  app_host.wait # To stop, call health.shutdown, then app_host.close(grace: 5).
+ensure
+  health.shutdown
+  app_host&.close(grace: 5)
+  probe_host&.close(grace: 5)
+end
+```
+
+The pod's probe then targets port 8081:
+
+```yaml
+readinessProbe:
+  grpc:
+    port: 8081
 ```
 
 With Falcon, each worker process builds its own server, so a registry is
