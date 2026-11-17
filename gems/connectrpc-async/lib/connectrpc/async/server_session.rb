@@ -649,7 +649,9 @@ module ConnectRPC
 
       def retire_session
         # Listener cleanup can yield. Fail every peer before crossing it.
-        @resources.each { |resource| Internal.raw_close(resource.raw) }
+        @resources.each do |resource|
+          resource.is_a?(Internal::Resource) ? resource.send(:fail_raw) : Internal.raw_close(resource.raw)
+        end
         stop_accepting
         @resources.each(&:abort)
         @admitted.clear

@@ -539,6 +539,29 @@ RSpec.shared_examples "HTTP/2 server keepalive" do
       end
     end
 
+    # Retirement shuts raw TCP down before it closes it, so its own failure
+    # also ends the discard with EOF.
+    it "reports a drain joined in its final discard as not drained when its bound aborts it" do
+      reactor do |task|
+        with_keepalive_host(task, keepalive: server_keepalive(time: nil, min_time: nil,
+                                                              max_connection_age: 100)) do |fixture|
+          # A second descriptor keeps the socket open after the client closes.
+          keeper = fixture.client.raw.dup
+          await_due(task, fixture.clock, 100)
+          fixture.clock.advance(100)
+          wait_until(task, "server half-close") { fixture.client.eof? }
+          closing = task.async { fixture.host.close(grace: 5) }
+          await_due(task, fixture.clock, 101)
+          fixture.clock.advance(1)
+          expect(closing.wait).to be(false)
+          expect(retired?(fixture.resource)).to be(true)
+          expect(fixture.resource.raw).to be_closed
+        ensure
+          keeper&.close
+        end
+      end
+    end
+
     it "lets session close supersede a drain without raising its cutoff" do
       reactor do |task|
         with_keepalive_host(task, keepalive: server_keepalive(time: nil, min_time: nil,

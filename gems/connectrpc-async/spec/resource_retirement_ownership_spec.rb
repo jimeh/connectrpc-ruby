@@ -401,7 +401,7 @@ RSpec.describe "Retirement lifecycle coordinators" do
       session = ConnectRPC::Async::ServerSession.new(application: ConnectRPC::Async::Application.new(server: server),
                                                      stop_accepting: lambda {
                                                        boundary.enqueue(session.instance_variable_get(:@resources)
-                                                         .map { |resource| resource.raw.closed? })
+                                                         .map { |resource| resource.send(:raw_failed?) })
                                                        release.dequeue
                                                        bound.close
                                                      }).start

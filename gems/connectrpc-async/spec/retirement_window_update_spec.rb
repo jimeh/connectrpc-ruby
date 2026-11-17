@@ -2,13 +2,13 @@
 
 require "protocol/http/body/writable"
 
-# Retirement closes raw TCP, and Resource#abort marks the resource finished,
+# Retirement fails raw TCP, and Resource#abort marks the resource finished,
 # before close! marks the connection closed. A consumer that reads buffered
 # input in that window must not attempt a stream WINDOW_UPDATE on it.
 RSpec.describe "Input reclaim inside the retirement window" do
   def origin_for(bound) = "http://127.0.0.1:#{bound.sockets.first.local_address.ip_port}"
 
-  # Records [connection closed, resource finished, raw closed] when the
+  # Records [connection closed, resource finished, raw failed] when the
   # stream first reclaims input credit, proving which window the read hit.
   def reclaim_states(stream, &)
     states = []
@@ -16,10 +16,21 @@ RSpec.describe "Input reclaim inside the retirement window" do
       next unless event.method_id == :reclaim_input && event.self.equal?(stream) && states.empty?
 
       connection = stream.connection
-      states << [connection.closed?, connection.resource.finished?, connection.resource.raw.closed?]
+      states << [connection.closed?, connection.resource.finished?, connection.resource.send(:raw_failed?)]
     end
-    trace.enable(&)
+    trace.enable { yield states }
     states
+  end
+
+  # Holds the window between session raw failure and resource abort open
+  # until `seen` records the woken task, or 2 s pass. The failed socket's
+  # own reader would otherwise abort the resource first.
+  def hold_abort(resource, seen)
+    allow(resource).to receive(:abort).and_wrap_original do |abort, *args|
+      deadline = Async::Clock.now + 2
+      Async::Task.current.yield while seen.empty? && Async::Clock.now < deadline
+      abort.call(*args)
+    end
   end
 
   it "returns buffered response bytes to a client read inside the window" do
@@ -75,9 +86,9 @@ RSpec.describe "Input reclaim inside the retirement window" do
     end
   end
 
-  # Session retirement closes every raw socket before it aborts each
+  # Session retirement fails every raw socket before it aborts each
   # resource, and listener cleanup can yield in between.
-  it "returns a buffered request message to a handler read after session raw close and before resource abort" do
+  it "returns a buffered request message to a handler read after session raw failure and before resource abort" do
     reactor do |task|
       wake = Async::Condition.new
       entered = Async::Queue.new
@@ -115,7 +126,8 @@ RSpec.describe "Input reclaim inside the retirement window" do
         stream = resource.connection.streams.values.first
         window = stream.instance_variable_get(:@local_window)
         wait_until(task, "buffered request limits the stream window") { window.limited? }
-        states = reclaim_states(stream) do
+        states = reclaim_states(stream) do |seen|
+          hold_abort(resource, seen)
           # Wake the handler, then retire the session before it can run.
           wake.signal
           session.abort

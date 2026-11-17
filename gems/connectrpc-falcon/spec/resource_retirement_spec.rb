@@ -7,12 +7,13 @@ require_relative "../../connectrpc-async/spec/support/pending_close"
 RSpec.describe "Falcon shared retirement completion" do
   include RetirementHelpers
 
-  def retirement_host(core, tls: nil, **)
-    endpoint = ConnectRPC::Falcon::Endpoint.parse("#{tls ? 'https' : 'http'}://127.0.0.1:0")
-    host = ConnectRPC::Falcon::Server.new(server: core, endpoint: endpoint, tls: tls, **)
+  def retirement_host(core, tls: nil, tls_provider: nil, **)
+    scheme = tls || tls_provider ? "https" : "http"
+    endpoint = ConnectRPC::Falcon::Endpoint.parse("#{scheme}://127.0.0.1:0")
+    host = ConnectRPC::Falcon::Server.new(server: core, endpoint: endpoint, tls: tls, tls_provider: tls_provider, **)
     host.run
     port = host.instance_variable_get(:@owned_bound).sockets.first.local_address.ip_port
-    [host, "#{tls ? 'https' : 'http'}://127.0.0.1:#{port}"]
+    [host, "#{scheme}://127.0.0.1:#{port}"]
   end
 
   include_examples "retirement close corrections", :h1

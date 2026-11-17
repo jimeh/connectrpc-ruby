@@ -5,8 +5,14 @@ require_relative "retirement_helpers"
 RSpec.shared_examples "owned pending close" do |protocol|
   include RetirementHelpers
 
-  %i[h2c mtls].product(%i[normal expired abort interrupted]).each do |mode, outcome|
-    it "returns nil for owned #{protocol} #{mode} positive grace until actual #{outcome} completion" do
+  modes = %i[h2c mtls mtls_provider]
+  cases = modes.product(%i[normal expired abort interrupted], [false])
+  # Issue #135: a scheduling point while TLS shuts down, after every raw
+  # socket has failed, must not strand a close interrupt in a reader.
+  cases += modes.product(%i[abort interrupted], [true])
+  cases.each do |mode, outcome, tls_yield|
+    it "returns nil for owned #{protocol} #{mode} positive grace until actual #{outcome} completion" \
+       "#{' across a TLS shutdown yield' if tls_yield}" do
       reactor do |task|
         with_ca do |ca_file|
           entered = Async::Queue.new
@@ -33,9 +39,15 @@ RSpec.shared_examples "owned pending close" do |protocol|
             message
           })
           tls, settings = retirement_tls(mode, ca_file)
-          host, origin = retirement_host(core, tls: tls, idle_timeout: nil)
-          origin = origin.sub("http:", "https:") if tls
+          host, origin = retirement_host(core, **tls, idle_timeout: nil)
+          origin = origin.sub("http:", "https:") unless tls.empty?
           session = host.instance_variable_get(:@session)
+          if tls_yield
+            allow(session.instance_variable_get(:@tls)).to receive(:shutdown).and_wrap_original do |shutdown|
+              Async::Task.current.yield
+              shutdown.call
+            end
+          end
           closed_reentries = []
           allow(session).to receive(:finish_closed).and_wrap_original do |finish, value|
             finish.call(value)

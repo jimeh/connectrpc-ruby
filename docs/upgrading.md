@@ -80,6 +80,13 @@ These affect native HTTP/2 connections of the Async `Transport`,
   `max_requests` of 128. Pass `stream_receive_window: 65_536` to keep the old
   client window. See
   [flow-control windows](../gems/connectrpc-async/README.md#flow-control-windows).
+- Forced teardown (an abort, an expired grace, or a keepalive or
+  write-progress failure) shuts raw TCP down in both directions at once and
+  closes the descriptor after the connection's tasks have joined. Before 0.3.0
+  it closed the descriptor first, so a peer saw a reset whenever unread input
+  remained. It now sees end of stream first. On Ruby 4 the old close could
+  raise a stray `IOError: stream closed in another thread` into a server
+  connection's reader task.
 
 These affect `connectrpc-otel` spans and trace propagation.
 

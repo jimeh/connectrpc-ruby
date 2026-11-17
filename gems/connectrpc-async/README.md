@@ -973,9 +973,9 @@ else, so later calls on the connection wait behind it until it finishes or
 their own deadline or cancellation ends them. With `keepalive` set, a frame
 that never finishes also blocks the keepalive PING, so the connection retires
 within `time + timeout` and the waiting calls, which sent nothing, move to a
-new connection. Forced teardown closes raw TCP
-before cancelling and joining writers/readers, then performs buffered/TLS
-cleanup.
+new connection. Forced teardown shuts raw TCP down before cancelling and
+joining writers/readers, then performs buffered/TLS cleanup and closes the
+descriptor.
 These are cooperative bounds, not arbitrary native/application interruption
 guarantees.
 
@@ -1021,7 +1021,7 @@ The client `Transport` and `HTTP1Transport` close return types remain `bool`.
 Private task joins distinguish a resolved result from actual finalization. They
 block on required children and task-local progress/finalization notifications,
 retaining captured child identities through reparenting or transient changes.
-A scheduling opportunity after raw close establishes no completion boundary;
+A scheduling opportunity after raw failure establishes no completion boundary;
 all retained task joins still precede disposal and retirement publication.
 
 These joins require cooperative tasks and a live application reactor. A

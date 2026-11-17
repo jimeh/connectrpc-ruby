@@ -217,10 +217,10 @@ module ConnectRPC
           super_method.call(error)
         end
 
-        # Retirement closes raw TCP, and abort marks the resource finished,
-        # before close! marks this connection closed. Session retirement closes
+        # Retirement fails raw TCP, and abort marks the resource finished,
+        # before close! marks this connection closed. Session retirement fails
         # every raw socket before it aborts each resource.
-        def retiring? = closed? || !!@resource&.finished? || !!@resource&.raw&.closed?
+        def retiring? = closed? || !!@resource&.finished? || !!@resource&.send(:raw_failed?)
 
         private
 
@@ -1068,6 +1068,9 @@ module ConnectRPC
 
             finish_drain { @connection.send_goaway }
           rescue EOFError, *PEER_LEFT
+            # A local raw failure also surfaces as EOF or EPIPE.
+            next false if @raw_failed
+
             # The connection was empty, so a peer that resets it after the
             # GOAWAY, as a client retiring it raw-first does, lost no work.
             @drained = true
@@ -1101,6 +1104,8 @@ module ConnectRPC
             stop_maintenance
             finish_drain
           rescue EOFError, *PEER_LEFT
+            next false if @raw_failed
+
             @drained = true
             true
           rescue StandardError
@@ -1126,7 +1131,14 @@ module ConnectRPC
           Internal.join_complete(reader) if reader
           # Discard unread inbound control bytes before closing TCP, so
           # the peer receives the complete response/GOAWAY rather than RST.
-          loop { @raw.readpartial(16_384) }
+          # Retirement closes raw only after this read has left it.
+          @discarding = true
+          begin
+            loop { @raw.readpartial(16_384) }
+          ensure
+            @discarding = false
+            changed
+          end
         end
 
         def retirement_parent=(parent)
@@ -1152,7 +1164,22 @@ module ConnectRPC
 
         def retirement_completed? = !!@retirement_completed
 
-        # Retirement starts, closing raw TCP, before the owner notification
+        # Fails the peer at once, without closing the descriptor. On Ruby 4,
+        # IO#close interrupts every fiber blocked on the socket through the
+        # scheduler, and Async delivers that IOError by raising into the fiber
+        # wherever it is suspended next, even after it has already left the
+        # read. A shutdown wakes those fibers with EOF or EPIPE instead.
+        # Retirement closes the descriptor once they have all left it.
+        def fail_raw
+          @raw_failed = true
+          @raw.shutdown(Socket::SHUT_RDWR) if @raw && !@raw.closed?
+        rescue IOError, SystemCallError
+          nil
+        end
+
+        def raw_failed? = !!@raw_failed || !!@raw&.closed?
+
+        # Retirement starts, failing raw TCP, before the owner notification
         # can yield; a caller cancelled in that notification cannot leave it
         # unstarted. The notification still precedes any retirement join.
         def start_cleanup
@@ -1216,8 +1243,9 @@ module ConnectRPC
         end
 
         def retire(error)
-          # Raw TCP precedes any protocol, buffered stream or TLS disposal.
-          Internal.raw_close(@raw)
+          # Failing raw TCP precedes any protocol, buffered stream or TLS
+          # disposal.
+          fail_raw
           # Best-effort scheduling hint only. A return proves no unwind or
           # completion; the retained-task joins below establish retirement.
           ::Async::Task.current.yield
@@ -1253,8 +1281,15 @@ module ConnectRPC
               nil
             end
           end
+          # Every member has joined, and a drain's discard read wakes on the
+          # shutdown, so this close has no blocked fiber left to interrupt.
+          @progress.wait while @discarding
+          Internal.raw_close(@raw)
           @retirement_completed = true
           changed
+        ensure
+          # An interrupted retirement still releases the descriptor.
+          Internal.raw_close(@raw)
         end
       end
     end
