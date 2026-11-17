@@ -441,7 +441,9 @@ connection, or take over one in progress, keeping its debug data and cutoff and
 never raising the cutoff. Once the cutoff GOAWAY is written, they wait for the
 accepted streams, send a final GOAWAY naming the cutoff, half-close and wait for
 EOF, all within their own grace. A peer that closes or resets the connection
-after its streams finished, as the GOAWAY asks, counts as drained. A
+after its streams finished, as the GOAWAY asks, counts as drained. Local work
+still running after delivery, such as stream cleanup and instrumentation
+observers, then finishes within the grace, and no final GOAWAY is sent. A
 `too_many_pings` decision keeps its own 1-second EOF bound during a takeover.
 Every write in these steps follows the control frame rules above.
 
