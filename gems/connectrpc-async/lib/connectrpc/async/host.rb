@@ -24,11 +24,11 @@ module ConnectRPC
           response = @fallback.call(request)
           return response unless response
 
-          # The fallback contract requires only status, headers and body.
+          # The fallback response contract does not include protocol.
           switching = response.status == 101 || (response.respond_to?(:protocol) && response.protocol)
           return response unless switching
 
-          response.body&.close
+          response.close
           ::Protocol::HTTP::Response[501, {}, nil]
         end
       end
