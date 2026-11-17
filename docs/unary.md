@@ -345,12 +345,13 @@ server = ConnectRPC::Server.new(
 ```
 
 Core calls `on_error` with the original exception when a `StandardError` that
-is not a `ConnectRPC::Error` escapes a handler, an interceptor or a custom
-invoker and the peer receives the generic `internal` error. This covers
-Connect, gRPC and gRPC-Web, unary and streaming, on every host. The callable
-runs on the request's thread or fiber, inside the RPC's instrumentation scope,
-so request-scoped loggers and an active trace still apply. Exceptions raised by
-`on_error` itself are ignored, and the peer response is unchanged.
+is not a `ConnectRPC::Error` escapes a handler, an interceptor, a custom
+invoker or unary response encoding, and the peer receives the generic
+`internal` error. This covers Connect, gRPC and gRPC-Web, unary and streaming,
+on every host. The callable runs on the request's thread or fiber, inside the
+RPC's instrumentation scope, so request-scoped loggers and an active trace
+still apply. Exceptions raised by `on_error` itself are ignored, and the peer
+response is unchanged.
 
 Some failures are not reported. When the deadline or a cancellation already
 decides the outcome, the peer receives `deadline_exceeded` or `canceled`
