@@ -1241,7 +1241,8 @@
     "ConnectRPC::Bindings::GoogleProtobuf#decode_wrapper": {"kind":"method","visibility":"private","parameters":"bytes, type","classification":"internal"},
     "ConnectRPC::Bindings::GoogleProtobuf#encode": {"kind":"method","visibility":"public","parameters":"message, type:, codec:","classification":"supported"},
     "ConnectRPC::Bindings::GoogleProtobuf#encode_status": {"kind":"method","visibility":"public","parameters":"error","classification":"supported"},
-    "ConnectRPC::Bindings::GoogleProtobuf#status_types": {"kind":"method","visibility":"private","parameters":"","classification":"internal"}
+    "ConnectRPC::Bindings::GoogleProtobuf#status_types": {"kind":"method","visibility":"private","parameters":"","classification":"internal"},
+    "ConnectRPC::Bindings::GoogleProtobuf.status_types": {"kind":"method","visibility":"private","parameters":"","classification":"internal"}
   },
   "lib/connectrpc/cancellation.rb": {
     "ConnectRPC::CallCancellation#cancelled?": {"kind":"method","visibility":"public","parameters":"","classification":"internal"},
@@ -1468,6 +1469,8 @@
     "ConnectRPC::GRPCProtocol::ServerState#encoding=": {"kind":"attribute","visibility":"public","classification":"internal"},
     "ConnectRPC::GRPCProtocol::ServerState#error": {"kind":"attribute","visibility":"public","classification":"internal"},
     "ConnectRPC::GRPCProtocol::ServerState#error=": {"kind":"attribute","visibility":"public","classification":"internal"},
+    "ConnectRPC::GRPCProtocol::ServerState#head_attempted": {"kind":"attribute","visibility":"public","classification":"internal"},
+    "ConnectRPC::GRPCProtocol::ServerState#head_attempted=": {"kind":"attribute","visibility":"public","classification":"internal"},
     "ConnectRPC::GRPCProtocol::ServerState#headers": {"kind":"attribute","visibility":"public","classification":"internal"},
     "ConnectRPC::GRPCProtocol::ServerState#initialize": {"kind":"method","visibility":"public","parameters":"headers:, codec:, publish:, lifecycle:, cancellation:","classification":"internal"},
     "ConnectRPC::GRPCProtocol::ServerState#lifecycle": {"kind":"attribute","visibility":"public","classification":"internal"},
@@ -1505,7 +1508,9 @@
   "lib/connectrpc/grpc_web_cors.rb": {
     "ConnectRPC::GRPCWebCORS#credentials": {"kind":"attribute","visibility":"public","classification":"supported"},
     "ConnectRPC::GRPCWebCORS#expose_headers": {"kind":"attribute","visibility":"public","classification":"supported"},
-    "ConnectRPC::GRPCWebCORS#initialize": {"kind":"method","visibility":"public","parameters":"origins:, credentials: false, request_headers: [], expose_headers: []","classification":"supported"},
+    "ConnectRPC::GRPCWebCORS#initialize": {"kind":"method","visibility":"public","parameters":"origins:, credentials: false, request_headers: [], expose_headers: [], max_age: 0","classification":"supported"},
+    "ConnectRPC::GRPCWebCORS#max_age": {"kind":"attribute","visibility":"public","classification":"supported"},
+    "ConnectRPC::GRPCWebCORS#max_age!": {"kind":"method","visibility":"private","parameters":"value","classification":"internal"},
     "ConnectRPC::GRPCWebCORS#names": {"kind":"method","visibility":"private","parameters":"values","classification":"internal"},
     "ConnectRPC::GRPCWebCORS#origins": {"kind":"attribute","visibility":"public","classification":"supported"},
     "ConnectRPC::GRPCWebCORS#request_headers": {"kind":"attribute","visibility":"public","classification":"supported"},
@@ -1539,6 +1544,8 @@
     "ConnectRPC::GRPCWeb::ServerState#context=": {"kind":"attribute","visibility":"public","classification":"internal"},
     "ConnectRPC::GRPCWeb::ServerState#error": {"kind":"attribute","visibility":"public","classification":"internal"},
     "ConnectRPC::GRPCWeb::ServerState#error=": {"kind":"attribute","visibility":"public","classification":"internal"},
+    "ConnectRPC::GRPCWeb::ServerState#head_attempted": {"kind":"attribute","visibility":"public","classification":"internal"},
+    "ConnectRPC::GRPCWeb::ServerState#head_attempted=": {"kind":"attribute","visibility":"public","classification":"internal"},
     "ConnectRPC::GRPCWeb::ServerState#headers": {"kind":"attribute","visibility":"public","classification":"internal"},
     "ConnectRPC::GRPCWeb::ServerState#initialize": {"kind":"method","visibility":"public","parameters":"path:, headers:, representation:, publish:, lifecycle:, cancellation:","classification":"internal"},
     "ConnectRPC::GRPCWeb::ServerState#lifecycle": {"kind":"attribute","visibility":"public","classification":"internal"},
@@ -1752,6 +1759,7 @@
     "ConnectRPC::Protocol.content_encoding": {"kind":"method","visibility":"public","parameters":"headers","classification":"internal"},
     "ConnectRPC::Protocol.content_length!": {"kind":"method","visibility":"public","parameters":"entries, invalid_code:","classification":"internal"},
     "ConnectRPC::Protocol.error_body": {"kind":"method","visibility":"public","parameters":"error, limit","classification":"internal"},
+    "ConnectRPC::Protocol.gzip_acceptable?": {"kind":"method","visibility":"public","parameters":"token","classification":"internal"},
     "ConnectRPC::Protocol.headers": {"kind":"method","visibility":"public","parameters":"values","classification":"internal"},
     "ConnectRPC::Protocol.identity_encoding?": {"kind":"method","visibility":"public","parameters":"headers","classification":"internal"},
     "ConnectRPC::Protocol.limit!": {"kind":"method","visibility":"public","parameters":"value","classification":"internal"},
@@ -1765,6 +1773,7 @@
     "ConnectRPC::Protocol.valid_wire_error?": {"kind":"method","visibility":"public","parameters":"object","classification":"internal"},
     "ConnectRPC::Protocol.wire_details": {"kind":"method","visibility":"public","parameters":"details","classification":"internal"},
     "ConnectRPC::Protocol.wire_error": {"kind":"method","visibility":"public","parameters":"body, fallback:","classification":"internal"},
+    "ConnectRPC::Protocol.wire_error_fields": {"kind":"method","visibility":"public","parameters":"object, fallback:","classification":"internal"},
     "ConnectRPC::Response": {"kind":"Struct","visibility":"public","members":["message","metadata","trailers"],"options":["keyword_init: true"],"classification":"supported"},
     "ConnectRPC::TransportRequest": {"kind":"Struct","visibility":"public","members":["url","http_method","headers","body","response_limit","deadline","lifecycle","cancellation"],"options":["keyword_init: true"],"classification":"supported"},
     "ConnectRPC::TransportResponse": {"kind":"Struct","visibility":"public","members":["status","headers","body"],"options":["keyword_init: true"],"classification":"supported"}
@@ -1931,8 +1940,11 @@
     "ConnectRPC::Streaming::ServerState#session=": {"kind":"attribute","visibility":"public","classification":"internal"}
   },
   "lib/connectrpc/streaming/server_terminal.rb": {
+    "ConnectRPC::Server#append_metadata": {"kind":"method","visibility":"private","parameters":"target, source","classification":"internal"},
     "ConnectRPC::Server#emit_stream_terminal": {"kind":"method","visibility":"private","parameters":"bytes, output","classification":"internal"},
-    "ConnectRPC::Server#merge_stream_error_metadata": {"kind":"method","visibility":"private","parameters":"error, context","classification":"internal"},
+    "ConnectRPC::Server#fail_unpublished_head": {"kind":"method","visibility":"private","parameters":"state, protocol","classification":"internal"},
+    "ConnectRPC::Server#grpc_head_failed?": {"kind":"method","visibility":"private","parameters":"state, context","classification":"internal"},
+    "ConnectRPC::Server#publish_stream_head": {"kind":"method","visibility":"private","parameters":"context, error","classification":"internal"},
     "ConnectRPC::Server#observe_stream_result": {"kind":"method","visibility":"private","parameters":"state, effective","classification":"internal"},
     "ConnectRPC::Server#render_stream_terminal": {"kind":"method","visibility":"private","parameters":"state, output","classification":"internal"},
     "ConnectRPC::Server#stream_head": {"kind":"method","visibility":"private","parameters":"metadata, codec, encoding","classification":"internal"},
@@ -2000,9 +2012,9 @@
     "ConnectRPC::Streaming::Session#decode_message": {"kind":"method","visibility":"private","parameters":"bytes, length","classification":"internal"},
     "ConnectRPC::Streaming::Session#encode_message": {"kind":"method","visibility":"private","parameters":"message","classification":"internal"},
     "ConnectRPC::Streaming::Session#headers": {"kind":"method","visibility":"public","parameters":"","classification":"internal"},
-    "ConnectRPC::Streaming::Session#receive": {"kind":"method","visibility":"public","parameters":"","classification":"internal"},
+    "ConnectRPC::Streaming::Session#receive": {"kind":"method","visibility":"public","parameters":"skip_data: false","classification":"internal"},
     "ConnectRPC::Streaming::Session#receive_eof": {"kind":"method","visibility":"private","parameters":"","classification":"internal"},
-    "ConnectRPC::Streaming::Session#receive_message": {"kind":"method","visibility":"private","parameters":"","classification":"internal"},
+    "ConnectRPC::Streaming::Session#receive_message": {"kind":"method","visibility":"private","parameters":"skip_data","classification":"internal"},
     "ConnectRPC::Streaming::Session#remote_completed?": {"kind":"method","visibility":"public","parameters":"error","classification":"internal"},
     "ConnectRPC::Streaming::Session#request_complete?": {"kind":"method","visibility":"public","parameters":"","classification":"internal"},
     "ConnectRPC::Streaming::Session#send_message": {"kind":"method","visibility":"public","parameters":"message","classification":"internal"},
@@ -2052,8 +2064,10 @@
     "ConnectRPC::StreamRequest": {"kind":"Struct","visibility":"public","members":["url","http_method","headers","deadline","lifecycle","cancellation"],"options":["keyword_init: true"],"classification":"spi"},
     "ConnectRPC::StreamingContext#check_headers_scope!": {"kind":"method","visibility":"private","parameters":"","classification":"internal"},
     "ConnectRPC::StreamingContext#close": {"kind":"method","visibility":"public","parameters":"","classification":"internal"},
+    "ConnectRPC::StreamingContext#head_failed?": {"kind":"method","visibility":"private","parameters":"","classification":"internal"},
     "ConnectRPC::StreamingContext#initialize": {"kind":"method","visibility":"public","parameters":"publish:, request_metadata: {}, deadline: nil, lifecycle: nil, cancellation: nil","classification":"internal"},
     "ConnectRPC::StreamingContext#publish_headers": {"kind":"method","visibility":"private","parameters":"check: true","classification":"internal"},
+    "ConnectRPC::StreamingContext#publish_snapshot": {"kind":"method","visibility":"private","parameters":"","classification":"internal"},
     "ConnectRPC::StreamingContext#send_headers": {"kind":"method","visibility":"public","parameters":"metadata: {}","classification":"supported"}
   },
   "lib/connectrpc/streaming/terminal.rb": {

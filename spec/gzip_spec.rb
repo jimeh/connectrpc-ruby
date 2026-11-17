@@ -79,7 +79,9 @@ RSpec.describe "bounded unary gzip" do
   end
 
   { nil => "gzip", [] => nil, [""] => nil, ["identity, gzip"] => "gzip", ["br", "GZIP, identity"] => "gzip",
-    ["gzip;q=1, br"] => nil, ["identity"] => nil }.each do |accept, selected|
+    ["gzip;q=1, br"] => "gzip", ["gzip;q=1.0, identity;q=0.5"] => "gzip", ["identity", " GZip ; Q=0.5"] => "gzip",
+    ["gzip;level=1"] => "gzip", ["gzip;q=bogus"] => "gzip", ["gzip;q=0"] => nil, ["gzip ; q=0.0, identity"] => nil,
+    ["gzip;Q=0.000"] => nil, ["gzip;q=0, gzip;q=1"] => "gzip", ["identity"] => nil }.each do |accept, selected|
     it "negotiates #{accept.inspect} with mandatory identity fallback" do
       headers = { "content-encoding" => ["GZip"] }
       headers["accept-encoding"] = accept unless accept.nil?

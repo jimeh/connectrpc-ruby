@@ -11,8 +11,10 @@ module ConnectRPC
         @headers || operation(:reading) { leading }
       end
 
-      def receive
-        operation(:reading) { receive_message }
+      # skip_data counts a message without decoding, inflating or observing it.
+      # Envelope bounds still apply, and the terminal still decides the outcome.
+      def receive(skip_data: false)
+        operation(:reading) { receive_message(skip_data) }
       end
 
       # Server single-request methods: true only at a clean end of input.
@@ -55,19 +57,21 @@ module ConnectRPC
 
       private
 
-      def receive_message
+      def receive_message(skip_data)
         raise StreamStateError, "Normal response consumption was relinquished" if @recovering
 
         return completed_receive if @eof
 
         leading
-        frame = @reader.read_frame
+        frame = @reader.read_frame(skip_data: skip_data)
         return receive_eof unless frame
 
         flags, bytes, length = frame
         return accept_terminal(bytes) if flags.anybits?(2)
+        return decode_message(bytes, length) unless skip_data
 
-        decode_message(bytes, length)
+        @received += 1
+        nil
       end
 
       def completed_receive

@@ -56,8 +56,11 @@ module ConnectRPC
     def single_stream_request: (Streaming::Session) -> untyped
     def render_stream_terminal: (Streaming::ServerState, _StreamingOutput) -> void
     def stream_terminal_bytes: (Streaming::ServerState, StreamingContext) -> [String, Error?]
-    def merge_stream_error_metadata: (Error?, Context) -> void
+    def fail_unpublished_head: (Streaming::ServerState | GRPCProtocol::ServerState | GRPCWeb::ServerState, String) -> bot
+    def grpc_head_failed?: (GRPCProtocol::ServerState | GRPCWeb::ServerState, Context) -> bool
+    def publish_stream_head: (StreamingContext, Error?) -> void
     def stream_trailers: (Error?, Context) -> Metadata
+    def append_metadata: (Metadata, Metadata) -> void
     def emit_stream_terminal: (String, _StreamingOutput) -> void
     def observe_stream_result: (Streaming::ServerState | GRPCProtocol::ServerState | GRPCWeb::ServerState, Error?) -> void
     def streaming_context: (Streaming::ServerState, ?headers: headers) -> StreamingContext
@@ -66,6 +69,7 @@ module ConnectRPC
   class StreamingContext
     @publish: ^(Metadata) -> void
     @headers_sent: bool
+    @headers_published: bool
     @owner_thread: Thread
     @owner_scheduler: Object?
     @stream_closed: bool
@@ -73,6 +77,8 @@ module ConnectRPC
     private
     def check_headers_scope!: () -> nil
     def publish_headers: (?check: bool) -> nil
+    def publish_snapshot: () -> nil
+    def head_failed?: () -> bool
   end
   class ResponseReader[Resp]
     @session: Streaming::Session
@@ -235,7 +241,7 @@ module ConnectRPC
       attr_reader sent: Integer
       def initialize: (binding: _Binding, method: declaration, codec: codec, state: Context | CallCancellation, input: _StreamingInput | (_StreamExchange | _GRPCStreamExchange), output: _StreamingOutput | (_StreamExchange | _GRPCStreamExchange), request_limit: Integer, response_limit: Integer, request_wire_limit: Integer, response_wire_limit: Integer, request_encoding: encoding, response_encoding: encoding, terminal_wire_limit: Integer, terminal_limit: Integer, ?server: bool, ?context: Context?, ?lifecycle: Instrumentation::Handle?, ?accept_encoding: Array[encoding], ?strategy: ConnectStrategy | GRPCProtocol::Strategy | GRPCWeb::Strategy, ?publish: (^() -> void)?) -> void
       def headers: () -> Metadata
-      def receive: () -> untyped
+      def receive: (?skip_data: bool) -> untyped
       def request_complete?: () -> bool
       def send_message: (untyped) -> nil
       def close_send: () -> nil
@@ -258,7 +264,7 @@ module ConnectRPC
       def initialize_framing: (Integer, Integer, encoding, encoding, terminal_wire_limit: Integer, terminal_limit: Integer) -> void
       def initialize_reader: (Integer, Integer, encoding, encoding, terminal_wire_limit: Integer, terminal_limit: Integer) -> void
       def initialize_writer: (Integer, Integer, encoding, encoding, terminal_wire_limit: Integer, terminal_limit: Integer) -> void
-      def receive_message: () -> untyped
+      def receive_message: (bool) -> untyped
       def completed_receive: () -> nil
       def receive_eof: () -> nil
       def decode_message: (String, Integer) -> untyped

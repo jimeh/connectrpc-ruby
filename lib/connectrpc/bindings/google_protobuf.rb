@@ -19,6 +19,23 @@ module ConnectRPC
         google.protobuf.Int32Value google.protobuf.UInt32Value google.protobuf.BoolValue google.protobuf.StringValue
         google.protobuf.BytesValue
       ].freeze
+      STATUS_LOCK = Mutex.new
+      private_constant :STATUS_LOCK
+
+      # Built once per process. The pool is intentionally detached from
+      # generated_pool and public constants.
+      def self.status_types
+        @status_types || STATUS_LOCK.synchronize do
+          @status_types ||= begin
+            pool = Google::Protobuf::DescriptorPool.new
+            path = File.join(__dir__, "descriptors/status.bin")
+            set = Google::Protobuf::FileDescriptorSet.decode(File.binread(path))
+            set.file.each { |file| pool.add_serialized_file(Google::Protobuf::FileDescriptorProto.encode(file)) }
+            [pool.lookup("google.rpc.Status").msgclass, pool.lookup("google.protobuf.Any").msgclass].freeze
+          end
+        end
+      end
+      private_class_method :status_types
 
       def encode(message, type:, codec:)
         Protocol.codec!(codec)
@@ -32,6 +49,8 @@ module ConnectRPC
       def decode(bytes, type:, codec:)
         Protocol.codec!(codec)
         return type.decode(bytes) if codec == :proto
+        # connect-go rejects this too: an empty body is not a JSON object.
+        raise CodecError, "Zero-length payload is not valid JSON" if bytes.empty?
         return decode_wrapper(bytes, type) if WRAPPERS.include?(type.descriptor.name)
 
         type.decode_json(bytes, ignore_unknown_fields: true)
@@ -71,13 +90,7 @@ module ConnectRPC
 
       private
 
-      def status_types
-        # This pool is intentionally detached from generated_pool and public constants.
-        pool = Google::Protobuf::DescriptorPool.new
-        set = Google::Protobuf::FileDescriptorSet.decode(File.binread(File.join(__dir__, "descriptors/status.bin")))
-        set.file.each { |file| pool.add_serialized_file(Google::Protobuf::FileDescriptorProto.encode(file)) }
-        [pool.lookup("google.rpc.Status").msgclass, pool.lookup("google.protobuf.Any").msgclass]
-      end
+      def status_types = GoogleProtobuf.send(:status_types)
 
       def decode_wrapper(bytes, type)
         # Native protobuf 4.36 cannot parse a scalar wrapper at the JSON root.

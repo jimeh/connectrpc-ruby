@@ -87,12 +87,13 @@ RSpec.describe "gRPC public callers and status codec" do
     kind.new(service: "test.Tokens", name: "Call", request_type: :request_token, response_type: :response_token)
   end
 
-  def client(body: "", status: "0", trailers_only: false, extra_fields: {}, http_status: 200, kind: ConnectRPC::Method)
+  def client(body: "", status: "0", trailers_only: false, extra_fields: {}, http_status: 200, kind: ConnectRPC::Method,
+             head_fields: {}, **)
     source = StringIO.new(body)
     fields = { "grpc-status" => [status] }.merge(extra_fields)
     head = ConnectRPC::GRPCHead.new(
       status: http_status, end_stream: trailers_only,
-      headers: { "content-type" => ["application/grpc"] }.merge(trailers_only ? fields : {})
+      headers: { "content-type" => ["application/grpc"] }.merge(head_fields, trailers_only ? fields : {})
     )
     exchange = Object.new
     exchange.define_singleton_method(:response_head) { |**| head }
@@ -106,8 +107,12 @@ RSpec.describe "gRPC public callers and status codec" do
     transport.define_singleton_method(:grpc_capabilities) { %i[unary server_stream client_stream bidi_stream] }
     transport.define_singleton_method(:open_grpc_stream) { |_, &work| work.call(exchange) }
     core = ConnectRPC::Client.new(base_url: "https://example.invalid", protocol: :grpc, binding: binding,
-                                  status_codec: status_codec, transport: transport)
+                                  status_codec: status_codec, transport: transport, **)
     [core, rpc(kind), exchange, transport]
+  end
+
+  def single_response(core, method)
+    method.is_a?(ConnectRPC::ClientStreamMethod) ? core.client_stream(method) { nil } : core.call(method, "q")
   end
 
   def envelope(bytes, flags = 0) = [flags, bytes.bytesize].pack("CN") + bytes
@@ -145,6 +150,45 @@ RSpec.describe "gRPC public callers and status codec" do
         end.to raise_error(ConnectRPC::Error) { |error| expect(error.code).to eq("unimplemented") }
       end
     end
+
+    describe "surplus #{kind.name.split('::').last} responses" do
+      let(:received) { [] }
+      let(:bus) do
+        sizes = received
+        observer = Object.new
+        observer.define_singleton_method(:start) { |_| observer }
+        observer.define_singleton_method(:message_received) { |bytes| sizes << bytes }
+        ConnectRPC::Instrumentation.new(subscribers: [observer])
+      end
+      # A flag-1 surplus payload that is not gzip proves the frame was skipped, not inflated.
+      let(:surplus) { envelope("reply") + envelope("surplus") + envelope("not gzip", 1) }
+
+      it "skips them without decoding, inflating or observing them, then fails OK cardinality" do
+        core, method, = client(body: surplus, kind: kind, head_fields: { "grpc-encoding" => ["gzip"] },
+                               accept_encoding: [:gzip], instrumentation: bus)
+        expect(binding).to receive(:decode).once.and_call_original
+        expect { single_response(core, method) }.to raise_error(ConnectRPC::Error) { |error|
+          expect([error.code, error.message]).to eq(["unimplemented", "Expected exactly one response"])
+        }
+        expect(received).to eq([5])
+      end
+
+      it "lets a non-OK trailer status win over them" do
+        core, method, = client(body: surplus, status: "5", kind: kind, head_fields: { "grpc-encoding" => ["gzip"] },
+                               accept_encoding: [:gzip])
+        expect(binding).to receive(:decode).once.and_call_original
+        expect { single_response(core, method) }.to raise_error(ConnectRPC::Error) { |error|
+          expect(error.code).to eq("not_found")
+        }
+      end
+
+      it "still bounds a surplus envelope by the response wire limit" do
+        core, method, = client(body: envelope("reply") + envelope("x" * 9), kind: kind, response_wire_limit: 8)
+        expect { single_response(core, method) }.to raise_error(ConnectRPC::Error) { |error|
+          expect(error.code).to eq("resource_exhausted")
+        }
+      end
+    end
   end
 
   it "calls the native exchange close_send once for a server stream" do
@@ -166,6 +210,16 @@ RSpec.describe "gRPC public callers and status codec" do
     expect(Google::Protobuf::DescriptorPool.generated_pool.lookup("google.rpc.Status")).to be_nil
     expect(Google.const_defined?(:Rpc, false)).to be(false)
     expect { status_codec.decode_status(bytes, code: 42) }.to raise_error(ConnectRPC::CodecError)
+  end
+
+  it "builds the detached status descriptor pool once per process" do
+    error = ConnectRPC::Error.new(:not_found, "rich", details: [ConnectRPC::ErrorDetail.new(type: "a.B", value: "x")])
+    warm = status_codec.encode_status(error)
+    expect(Google::Protobuf::DescriptorPool).not_to receive(:new)
+    other = ConnectRPC::Bindings::GoogleProtobuf.new
+    expect(other.encode_status(error)).to eq(warm)
+    expect(other.decode_status(warm, code: 5).details.map(&:to_h)).to eq(error.details.map(&:to_h))
+    expect(Google::Protobuf::DescriptorPool.generated_pool.lookup("google.rpc.Status")).to be_nil
   end
 
   it "compares rich unknown status against the raw leading-zero numeric code before mapping unknown" do
@@ -278,6 +332,37 @@ RSpec.describe "gRPC public callers and status codec" do
       expect(reads.sum(&:first)).to be <= 262_144
       expect(reads.size).to be <= 4 if bound == :absolute
     end
+  end
+
+  it "replaces any custom status codec failure with an internal native terminal and reports it" do
+    codec = Object.new
+    codec.define_singleton_method(:encode_status) { |_| nil.bytesize }
+    codec.define_singleton_method(:decode_status) { |_, **| nil }
+    detail = ConnectRPC::ErrorDetail.new(type: "opaque.Type", value: "x")
+    detailed = ConnectRPC::Error.new(:not_found, "safe", details: [detail])
+    reported = []
+    on_error = ->(error) { reported << error }
+    trailers = ConnectRPC::Metadata.new("x-trailer" => ["t"])
+    fields, effective = grpc.terminal(detailed, trailers, codec: codec, wire_limit: 1000, limit: 1000,
+                                                          on_error: on_error)
+    expect(fields).to eq("grpc-status" => ["13"], "grpc-message" => ["Cannot encode gRPC status"])
+    expect([effective.code, effective.message]).to eq(["internal", "Cannot encode gRPC status"])
+    expect(reported.map(&:class)).to eq([NoMethodError])
+
+    method = rpc
+    target = ConnectRPC::Server.new(services: [ConnectRPC::Service.new(name: method.service, methods: [method])],
+                                    binding: binding, status_codec: codec, protocol: :grpc,
+                                    handlers: { method.path => ->(*) { raise detailed } })
+    finished = []
+    output = Object.new
+    output.define_singleton_method(:write) { |*, **| nil }
+    output.define_singleton_method(:finish) { |headers:| finished << headers }
+    output.define_singleton_method(:abort) { nil }
+    incoming = StringIO.new(envelope("request"))
+    incoming.define_singleton_method(:read) { |n, **| super(n) }
+    target.call_grpc(path: method.path, http_method: "POST", headers: { "content-type" => ["application/grpc"] },
+                     input: incoming, output: output, publish: ->(_) {}, http2: true)
+    expect(finished).to eq([{ "grpc-status" => ["13"], "grpc-message" => ["Cannot encode gRPC status"] }])
   end
 
   it "uses a unary custom invoker without handler entries and passes ordinary Context" do

@@ -132,10 +132,6 @@ module ConnectRPC
       fields = status_fields(error, trailers, codec, limit)
       check_fields!(fields, [wire_limit, FIELD_LIMIT].min)
       [snapshot(fields), error]
-    rescue CodecError => e
-      on_error&.call(e)
-      terminal(Error.new(:internal, "Cannot encode gRPC status"), Metadata.new, codec: codec,
-                                                                                wire_limit: wire_limit, limit: limit)
     rescue Error => e
       raise unless e.code == "resource_exhausted"
 
@@ -143,6 +139,11 @@ module ConnectRPC
       fields = { "grpc-status" => ["8"] }
       check_fields!(fields, [wire_limit, FIELD_LIMIT].min)
       [snapshot(fields), replacement]
+    rescue StandardError => e
+      # Any custom status codec failure, not only CodecError, as GRPCWeb.terminal.
+      on_error&.call(e)
+      terminal(Error.new(:internal, "Cannot encode gRPC status"), Metadata.new, codec: codec,
+                                                                                wire_limit: wire_limit, limit: limit)
     end
 
     def self.request_deadline(headers) # rubocop:disable Metrics/AbcSize

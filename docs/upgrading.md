@@ -85,6 +85,16 @@ These affect `connectrpc-otel` spans and trace propagation.
   `operation_failed`. Anonymous exception classes still report
   `operation_failed`.
 
+This affects the Google protobuf binding.
+
+- The Google protobuf binding rejects a zero-length JSON payload, as connect-go
+  does, instead of decoding it as an empty message. A server answers
+  `invalid_argument` and a client raises `internal`. Send the message's JSON
+  form instead: `{}` for an empty ordinary message, or a well-known type's own
+  form, such as `""` for an empty `StringValue`. Binary protobuf still accepts
+  an empty payload. See
+  [the Google binding](unary.md#declare-a-method-without-generation).
+
 ## 0.2.0
 
 ### Breaking change: read-only transport cancellation

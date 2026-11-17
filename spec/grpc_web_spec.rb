@@ -350,6 +350,22 @@ RSpec.describe "gRPC-Web server" do
     expect(response.headers).not_to have_key("access-control-allow-credentials")
   end
 
+  it "emits a configured preflight max_age and validates its range" do
+    expect(ConnectRPC::GRPCWebCORS.new(origins: []).max_age).to eq(0)
+    [0, 600, 86_400].each do |max_age|
+      policy = ConnectRPC::GRPCWebCORS.new(origins: ["https://app.example"], max_age: max_age)
+      expect(policy.max_age).to eq(max_age)
+      response = call(server(cors: policy), verb: "OPTIONS", headers: {
+                        "origin" => ["https://app.example"], "access-control-request-method" => ["POST"]
+                      })
+      expect(response.status).to eq(204)
+      expect(response.headers["access-control-max-age"]).to eq([max_age.to_s])
+    end
+    [-1, 86_401, 1.5, "600", nil, true].each do |invalid|
+      expect { ConnectRPC::GRPCWebCORS.new(origins: [], max_age: invalid) }.to raise_error(ArgumentError)
+    end
+  end
+
   [{ "origin" => ["https://denied.example"] }, { "origin" => ["https://app.example", "https://app.example"] },
    { "access-control-request-method" => ["GET"] },
    { "access-control-request-headers" => ["authorization"] }].each do |invalid|

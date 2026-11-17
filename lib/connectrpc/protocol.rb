@@ -97,7 +97,16 @@ module ConnectRPC
       return request_encoding unless headers.key?("accept-encoding")
 
       tokens = headers.fetch("accept-encoding").flat_map { |entry| entry.split(",") }
-      tokens.any? { |token| token.strip.casecmp?("gzip") } ? :gzip : :identity
+      tokens.any? { |token| gzip_acceptable?(token) } ? :gzip : :identity
+    end
+
+    # RFC 9110 section 12.5.3: only an explicit zero weight refuses a coding.
+    # Other parameters and malformed weights are ignored.
+    def self.gzip_acceptable?(token)
+      name, *parameters = token.split(";")
+      return false unless name&.strip&.casecmp?("gzip")
+
+      parameters.none? { |parameter| /\Aq=0(?:\.0{0,3})?\z/i.match?(parameter.strip) }
     end
 
     def self.metadata(headers, trailers: false)
@@ -155,34 +164,44 @@ module ConnectRPC
 
     def self.wire_error(body, fallback:)
       # JSON.parse is the external data boundary; validate before assembling wire_error.
-      object = JSON.parse(body)
-      return unless valid_wire_error?(object)
+      wire_error_fields(JSON.parse(body), fallback: fallback)
+    rescue JSON::ParserError, ArgumentError, TypeError, EncodingError
+      # Invalid Connect error bodies use the protocol's HTTP fallback table.
+      nil
+    end
+
+    # Shared by unary error bodies and streaming terminals. Normalizes the
+    # shapes connect-go 1.21.1 tolerates: null message, details or detail value,
+    # and a type URL (the name follows its last slash). Any other malformed
+    # element raises ArgumentError, which invalidates the whole error.
+    def self.wire_error_fields(object, fallback:)
+      raise ArgumentError unless valid_wire_error?(object)
 
       code = Error::HTTP_STATUS.key?(object["code"]) ? object["code"] : fallback
       # @type var details: Array[ErrorDetail]
       details = []
-      { code: code, message: object.fetch("message", ""), details: wire_details(object.fetch("details", details)) }
-    rescue JSON::ParserError, ArgumentError, TypeError, EncodingError
-      # Invalid Connect error bodies use the protocol's HTTP fallback table.
-      nil
+      message = object["message"] || ""
+      { code: code, message: message, details: wire_details(object["details"].nil? ? details : object["details"]) }
     end
 
     def self.valid_wire_error?(object)
       return false unless object.is_a?(Hash)
 
       code = object["code"]
-      message = object.fetch("message", "")
+      message = object["message"]
       (code.nil? || (code.is_a?(String) && code.valid_encoding?)) &&
-        message.is_a?(String) && message.valid_encoding?
+        (message.nil? || (message.is_a?(String) && message.valid_encoding?))
     end
 
     def self.wire_details(details)
       raise ArgumentError unless details.is_a?(Array)
 
       details.map do |detail|
-        raise ArgumentError unless detail.is_a?(Hash)
+        raise ArgumentError unless detail.is_a?(Hash) && detail["type"].is_a?(String)
 
-        ErrorDetail.new(type: detail["type"], value: Metadata.decode_binary(detail["value"]))
+        type = detail["type"].split("/", -1).last || ""
+        value = detail["value"]
+        ErrorDetail.new(type: type, value: value.nil? ? "".b : Metadata.decode_binary(value))
       end
     end
   end

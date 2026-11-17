@@ -61,7 +61,11 @@ Exactly one framed protobuf request and request EOF precede invocation. Empty
 protobuf is a message; missing or excess requests are UNIMPLEMENTED. Excess
 framing is detected without decoding a second message. Reserved flags, request
 terminal, truncation, malformed protobuf/base64 and malformed Content-Length
-are INVALID_ARGUMENT. Unnegotiated compressed DATA is INTERNAL. Unsupported
+are INVALID_ARGUMENT. Native gRPC on the same Server reports a malformed request
+as INTERNAL instead. Each follows its reference server: grpc-go 1.85.0 maps a
+server request decode failure to INTERNAL (`rpc_util.go`), while connect-go
+1.21.1, the reference gRPC-Web server, maps it to INVALID_ARGUMENT on every
+protocol (`envelope.go`). Unnegotiated compressed DATA is INTERNAL. Unsupported
 valid grpc-encoding tokens are UNIMPLEMENTED; malformed/repeated encoding is
 INTERNAL. Web remains identity-only on a mixed server configured with gzip.
 
@@ -84,13 +88,18 @@ for auth, CSRF and trace request headers.
 
 Owned OPTIONS preflight returns empty 204 or 403 before RPC observation, body
 reads, binding or application callbacks. Requested method must be POST and
-requested names must be allowed. Max-Age is zero. Actual Web requests without
-Origin are allowed; disallowed or ambiguous origins receive 403 before input.
+requested names must be allowed. Max-Age defaults to zero, so browsers
+preflight every call. Since 0.3.0, `max_age:` accepts an Integer from 0 to
+86,400 seconds. Actual Web requests without Origin are allowed; disallowed or
+ambiguous origins receive 403 before input.
 Allowed-origin policy also decorates RPC errors, negotiation failures and native
 admission 503. Vary merges Origin, Accept and preflight controls without replacing
 application cache, cookie or security fields. Conflicting application
-access-control fields fail closed before publication. Set `cors: nil` when outer
-middleware already owns CORS. CORS does not authenticate or replace CSRF checks.
+access-control fields fail closed before publication. A head that cannot be
+published, such as one with a conflicting access-control field or over the field
+limit, fails the call and the host aborts the response; no terminal is sent
+without a head. Set `cors: nil` when outer middleware already owns CORS. CORS
+does not authenticate or replace CSRF checks.
 
 Native Rails overrides stay private:
 
@@ -116,8 +125,10 @@ such as rack-cors, with `cors: nil` on that mount.
 Web unary calls run the Server's [unary interceptors](unary.md#interceptors)
 with `call.protocol == :grpc_web`, after the single request frame is read and
 decoded and around the invoker. Response metadata written before or after
-`yield` is published with the head after the chain returns; trailers and error
-metadata reach the terminal frame. Server-streaming Web calls run the Server's
+`yield`, and a unary error's metadata, are published with the head after the
+chain returns; trailers reach the terminal frame. A server-streaming error's
+metadata joins the head while it is unpublished, and the terminal frame after
+the head is published. Server-streaming Web calls run the Server's
 [stream interceptors](streaming.md#interceptors) with
 `call.protocol == :grpc_web`, after the single request frame is read and
 decoded; the call is a `ServerStreamCall::ServerStreaming` carrying that

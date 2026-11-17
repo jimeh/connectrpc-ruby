@@ -194,6 +194,27 @@ RSpec.describe "Connect streaming framing and scope" do
     end
   end
 
+  it "reads a null terminal message as empty and null details as none" do
+    error, = engine.parse_terminal('{"error":{"code":"not_found","message":null,"details":null}}')
+    expect([error.code, error.message, error.details]).to eq(["not_found", "", []])
+  end
+
+  ['{"type":"test.Detail"}', '{"type":"test.Detail","value":null}',
+   '{"type":"type.googleapis.com/test.Detail","value":""}'].each do |detail|
+    it "normalizes the terminal error detail #{detail} like connect-go" do
+      error, = engine.parse_terminal("{\"error\":{\"code\":\"not_found\",\"details\":[#{detail}]}}")
+      expect(error.details.map { |item| [item.type, item.value] }).to eq([["test.Detail", ""]])
+    end
+  end
+
+  # Deliberately stricter than connect-go: ErrorDetail requires a valid type name.
+  ['{"value":""}', '{"type":null}', '{"type":""}', '{"type":"type.googleapis.com/"}', '{"type":"not a name"}',
+   '{"type":"test.Detail","value":5}', "null"].each do |detail|
+    it "rejects the terminal with error detail #{detail}" do
+      expect_code(:internal) { engine.parse_terminal("{\"error\":{\"code\":\"not_found\",\"details\":[#{detail}]}}") }
+    end
+  end
+
   it "omits invalid individual metadata while deeply freezing valid snapshots" do
     _, metadata = engine.parse_terminal('{"metadata":{"x-good":["a"],"x-bad":[4]}}')
     expect(metadata.to_h).to eq("x-good" => ["a"])

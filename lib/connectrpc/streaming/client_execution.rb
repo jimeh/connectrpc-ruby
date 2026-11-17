@@ -115,7 +115,8 @@ module ConnectRPC
       raise Error.new(:unimplemented, "Expected exactly one response"), cause: nil if message.nil?
 
       if @protocol == :grpc
-        session.receive until session.consumed?
+        # Surplus messages are counted, not decoded; the trailers decide.
+        session.receive(skip_data: true) until session.consumed?
       else
         session.receive
       end
