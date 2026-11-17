@@ -205,8 +205,9 @@ ignores unknown JSON fields. The Google binding handles scalar wrapper roots
 through the native Any decoder because protobuf 4.36 cannot parse those roots
 directly. This does not change Connect error details: each `ErrorDetail` has a
 protobuf type name and binary bytes, with a base64 representation on the wire.
-A zero-length JSON payload is rejected, as connect-go does; send `{}` for an
-empty message.
+A zero-length JSON payload is rejected, as connect-go does. Send the message's
+JSON form instead: `{}` for an empty ordinary message, or the well-known type's
+own form, such as `""` for an empty `StringValue`.
 
 ### Binding and transport seams
 
