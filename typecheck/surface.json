@@ -538,6 +538,7 @@
   "gems/connectrpc-async/lib/connectrpc/async/server_upkeep.rb": {
     "ConnectRPC::Async::Internal::ControlWriter#deliver": {"kind":"method","visibility":"private","parameters":"frame, deadline","classification":"internal"},
     "ConnectRPC::Async::Internal::ControlWriter#delivering?": {"kind":"method","visibility":"private","parameters":"serial","classification":"internal"},
+    "ConnectRPC::Async::Internal::ControlWriter#first_check": {"kind":"method","visibility":"private","parameters":"deadline","classification":"internal"},
     "ConnectRPC::Async::Internal::ControlWriter#initialize": {"kind":"method","visibility":"public","parameters":"resource, clock:, timeout:, writes: nil","classification":"internal"},
     "ConnectRPC::Async::Internal::ControlWriter#outlasts_writes?": {"kind":"method","visibility":"private","parameters":"serial","classification":"internal"},
     "ConnectRPC::Async::Internal::ControlWriter#run": {"kind":"method","visibility":"private","parameters":"","classification":"internal"},

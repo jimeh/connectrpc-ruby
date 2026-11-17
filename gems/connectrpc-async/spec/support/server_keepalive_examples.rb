@@ -1755,7 +1755,68 @@ RSpec.shared_examples "HTTP/2 server keepalive" do
           gate.release.enqueue(true)
           wait_until(task, "the ACK") { client.wire.acks == ["bdp00001"] }
           holding.wait
+          await_due(task, fixture.clock, 25)
           fixture.clock.advance(4.9)
+          expect(fixture.resource).not_to be_finished
+          fixture.clock.advance(0.1)
+          wait_until(task, "connection retired") { retired?(fixture.resource) }
+          expect(refused.wait).to be(false)
+        ensure
+          gate&.release&.enqueue(true)
+          release&.resolve(true)
+          holder&.wait
+        end
+      end
+    end
+
+    # The reset is dequeued past its deadline while a second stream's DATA
+    # write, timed from 20 s, holds the guard, so it waits out that write's
+    # 80 s bound. The write finishes at 25 s and hands the guard to an
+    # untimed holder; the reset still fails the connection only at 80 s.
+    it "waits out the bound of a timed write running when a control frame is dequeued past its deadline" do
+      reactor do |task|
+        with_keepalive_host(task, keepalive: server_keepalive(time: nil)) do |fixture|
+          client = fixture.client
+          connection = fixture.resource.connection
+          watch(fixture, "sibling", "one")
+          watch(fixture, "other", "uno")
+          gate = hold_frames(fixture.resource, Protocol::HTTP2::DataFrame::TYPE)
+          fixture.log[:feeds]["sibling"].enqueue("two")
+          gate.started.dequeue
+          send_ping(client, "bdp00001")
+          waiting = connection.instance_variable_get(:@frame_guard).waiting
+          wait_until(task, "the ACK waits for the frame guard") { waiting.size == 1 }
+          refused = fixture.resource.upkeep.refuse(99)
+          fixture.log[:feeds]["other"].enqueue("dos")
+          wait_until(task, "the second stream's DATA queued behind the ACK") { waiting.size == 2 }
+          release = Async::Promise.new
+          holding = Async::Promise.new
+          holder = task.async do
+            connection.synchronize do
+              holding.resolve(true)
+              release.wait
+            end
+          end
+          wait_until(task, "the guard holder queued behind that DATA") { waiting.size == 3 }
+          gate.armed = true
+          await_due(task, fixture.clock, 20)
+          fixture.clock.advance(20)
+          await_behind_write(task, fixture.clock)
+          gate.release.enqueue(true)
+          gate.started.dequeue
+          wait_until(task, "the ACK") { client.wire.acks == ["bdp00001"] }
+          fixture.clock.advance(5)
+          gate.release.enqueue(true)
+          holding.wait
+          fixture.clock.advance(15)
+          # Beside the first DATA write's watchdog, the watch sleeps on from
+          # 40 s toward 80 s, unless it failed the connection.
+          wait_until(task, "the watch passes 40 s") do
+            retired?(fixture.resource) || due_at(fixture.clock, 60) == 2
+          end
+          expect(fixture.resource).not_to be_finished
+          fixture.clock.advance(39.9)
+          await_due(task, fixture.clock, 80)
           expect(fixture.resource).not_to be_finished
           fixture.clock.advance(0.1)
           wait_until(task, "connection retired") { retired?(fixture.resource) }
