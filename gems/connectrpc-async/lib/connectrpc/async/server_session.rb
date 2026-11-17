@@ -237,7 +237,11 @@ module ConnectRPC
           return pair unless pair == :wait_readable
         rescue *ACCEPT_RESOURCE_ERRORS => e
           delay = delay ? [delay * 2, ACCEPT_MAX_DELAY].min : ACCEPT_INITIAL_DELAY
-          warn "ConnectRPC accept error: #{e.class}; retrying in #{delay}s"
+          begin
+            warn "ConnectRPC accept error: #{e.class}; retrying in #{delay}s"
+          rescue IOError, SystemCallError
+            nil # A broken diagnostic stream must not end the listener.
+          end
           backoff.call(delay)
         rescue *ACCEPT_IMMEDIATE_ERRORS
           # Cross a scheduling boundary so a sustained stream of these

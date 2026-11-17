@@ -1056,7 +1056,9 @@ adjustment delays the event by at most that. `category` holds the last reported
 event, so a later refresh failure replaces `:expired`; compare
 `identity_expires_at` with the current time to test expiry. A refresh that
 publishes a new identity clears it. As during a provider refresh report, calling
-`close` or `refresh_tls` from the reporter raises `LifecycleError`. There
+`close` or `refresh_tls` from the reporter raises `LifecycleError`;
+`reload_tls` and `drain_tls` work there, so a static-TLS reporter can publish a
+replacement identity. There
 is no maximum staleness setting; established connections retain negotiated
 state until drain/close.
 The [Falcon guide](../connectrpc-falcon/README.md#tls-lifecycle) explains complete

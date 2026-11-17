@@ -182,6 +182,82 @@ RSpec.describe "HTTP/2 TLS identity expiry" do
     end
   end
 
+  # Wall time read by the watcher's own loop is past expiry; every other read,
+  # including candidate validation inside a reporter, sees real time.
+  def expire_for_watcher(manager)
+    allow(Time).to receive(:now).and_wrap_original do |original|
+      reader = caller_locations.find { |frame| frame.path.end_with?("/async/tls.rb", "/async/tls_configuration.rb") }
+      if reader&.base_label == "watch_expiry"
+        manager.status.fetch(:identity_expires_at) + 1
+      else
+        original.call
+      end
+    end
+  end
+
+  it "guards a reporter that runs as soon as the watcher starts" do
+    reactor do
+      result = nil
+      manager = nil
+      reporter = lambda do |_event|
+        result = manager.close
+      rescue StandardError => e
+        result = e
+      end
+      manager = ConnectRPC::Async::TLSConfiguration.new(tls: host_tls, on_error: reporter)
+      # Models expiry between candidate validation and the watcher's first pass.
+      expire_for_watcher(manager)
+      expect(manager.start).to equal(manager)
+      expect(result).to be_a(AsyncHelpers::LIFECYCLE_ERROR)
+      expect(manager.status).to include(state: :running, category: :expired)
+    ensure
+      manager&.close
+    end
+  end
+
+  it "lets a static reporter publish a replacement identity on :expired" do
+    reactor do |task|
+      events = Async::Queue.new
+      result = nil
+      replacement = host_tls
+      manager = ConnectRPC::Async::TLSConfiguration.new(tls: host_tls, on_error: lambda { |event|
+        result ||= manager.reload(**replacement)
+        events.enqueue(event)
+      }).start
+      expire_for_watcher(manager)
+      manager.instance_variable_get(:@expiry_progress).signal
+      expect(await(task, events, "the expired event")[:status]).to include(category: :expired, generation: 1)
+      expect(result).to eq(2)
+      # The watcher's stubbed clock also sees the replacement as expired, so
+      # it reports that generation once too, after re-arming for it.
+      expect(await(task, events, "the replacement's event")[:status]).to include(category: :expired, generation: 2)
+      expect(manager.status).to include(state: :running, generation: 2)
+    ensure
+      manager&.close
+    end
+  end
+
+  it "keeps watching when the expiry warning cannot be written" do
+    reactor do |task|
+      warned = Async::Queue.new
+      manager = ConnectRPC::Async::TLSConfiguration.new(tls: host_tls)
+      allow(manager).to receive(:warn) do |*arguments|
+        warned.enqueue(arguments)
+        raise Errno::EPIPE, "stderr closed"
+      end
+      manager.start
+      expire_for_watcher(manager)
+      manager.instance_variable_get(:@expiry_progress).signal
+      expect(await(task, warned, "the expiry warning")).to eq(["ConnectRPC TLS identity expired"])
+      expect(manager.instance_variable_get(:@expiry)).not_to be_finished
+      manager.reload(**host_tls)
+      expect(await(task, warned, "the next generation's warning")).to eq(["ConnectRPC TLS identity expired"])
+      expect(manager.status).to include(generation: 2, category: :expired)
+    ensure
+      manager&.close
+    end
+  end
+
   it "warns once without a reporter" do
     reactor do |task|
       warned = Async::Queue.new

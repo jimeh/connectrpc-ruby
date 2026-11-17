@@ -631,6 +631,35 @@ RSpec.describe ConnectRPC::Async::Host do
     end
   end
 
+  it "keeps retrying when the accept warning cannot be written" do
+    reactor do
+      host = described_class.new(server: server)
+      entered, release = controlled_backoff(host)
+      faults = AcceptFaults.new { |_index, attempt| raise Errno::EMFILE, "attempt #{attempt}" if attempt <= 2 }
+      warnings = []
+      allow(host_session(host)).to receive(:warn) do |message|
+        warnings << message
+        raise Errno::EPIPE, "stderr closed"
+      end
+      faults.enable do
+        host.start
+        [0.005, 0.01].each do |delay|
+          expect(entered.dequeue).to eq(delay)
+          release.enqueue(true)
+        end
+        origin = "http://127.0.0.1:#{host.port}"
+        transport = ConnectRPC::Async::Transport.new(origin: origin)
+        expect(client(transport, origin).echo(AsyncHelpers::MESSAGE.new(name: "after")).message.name).to eq("after")
+        expect(warnings.length).to eq(2)
+        expect(faults.tasks).to all(satisfy { |listener| !listener.finished? })
+      ensure
+        transport&.close(grace: 0)
+        host.close(grace: 0)
+      end
+      expect(host.wait).to be_nil
+    end
+  end
+
   it "recovers a first-accept transient failure before a fresh generated call" do
     reactor do
       host = described_class.new(server: server)

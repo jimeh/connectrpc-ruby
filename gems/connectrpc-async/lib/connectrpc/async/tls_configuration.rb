@@ -285,13 +285,20 @@ module ConnectRPC
       # publication, so only an identity that expires while published is
       # served expired, and a verifying client gets a certificate error.
       def watch_expiry
-        @expiry = @lifetime.async(finished: false) do |task|
+        # Store the identity before the first report can run, so the recursion
+        # guard already covers it.
+        @expiry = ::Async::Task.new(@lifetime, finished: false) do |task|
           while @state == :running
             expires = @snapshot.expires_at
             remaining = expires - Time.now
             if remaining <= 0 && @expired_generation != @generation
               @expired_generation = @generation
-              report(:expired)
+              @expiry_reporting = true
+              begin
+                report(:expired)
+              ensure
+                @expiry_reporting = false
+              end
               next
             end
 
@@ -303,6 +310,7 @@ module ConnectRPC
             end
           end
         end
+        @expiry.run
       end
 
       # The provider attempt and the expiry watcher report from separate tasks.
@@ -323,6 +331,8 @@ module ConnectRPC
         else
           warn "ConnectRPC TLS refresh failed (#{category})"
         end
+      rescue IOError, SystemCallError
+        nil # A broken diagnostic stream must not end the watcher or a refresh.
       end
 
       def fail_safely(category)
@@ -335,11 +345,16 @@ module ConnectRPC
 
         @state = :closing
         Internal.cancel(@timer)
-        Internal.cancel(@expiry)
+        # Cancelling a parked task is a scheduling point. A parked watcher can
+        # no longer report once the state leaves :running, and the lifetime
+        # cancellation below ends it, so only a watcher inside its reporter is
+        # cancelled and joined here.
+        reporting = @expiry_reporting
+        Internal.cancel(@expiry) if reporting
         Internal.cancel(@attempt)
         Internal.cancel(@callback)
         Internal.join(@timer)
-        Internal.join(@expiry)
+        Internal.join(@expiry) if reporting
         Internal.join(@callback)
         Internal.join(@attempt)
         @state = :closed

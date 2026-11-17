@@ -105,8 +105,11 @@ and [Accept errors](../gems/connectrpc-async/README.md#accept-errors).
 - A host at `max_connections` no longer accepts and closes new peers. They wait
   in the kernel's listen backlog until a connection retires, and a full Falcon
   worker leaves them for its siblings. A client now sees a slow connection
-  instead of a reset; its connect timeout bounds the wait. A custom host that
-  calls `ServerSession#accept(raw)` itself still has peers above the cap
+  instead of a reset. The kernel completes the TCP handshake, so the wait is
+  bounded by whatever covers the client's next step: the Async `Transport`'s
+  `connect_timeout` covers TLS and the HTTP/2 SETTINGS exchange, while a
+  plaintext HTTP/1.1 client needs a request or read timeout. A custom host
+  that calls `ServerSession#accept(raw)` itself still has peers above the cap
   closed.
 - `EMFILE`, `ENFILE`, `ENOBUFS` and `ENOMEM` from `accept` retry indefinitely
   with a delay from 5 ms doubling to 1 second and a warning per retry, instead
@@ -122,7 +125,8 @@ and [Accept errors](../gems/connectrpc-async/README.md#accept-errors).
   `tls_status[:identity_expires_at]` to alert before expiry.
 - Calling `close` or `refresh_tls` from `on_tls_error` during the `:expired`
   report raises `LifecycleError`, as it already did during a provider refresh
-  report.
+  report. `reload_tls` and `drain_tls` work there, so a static-TLS reporter can
+  publish a replacement identity.
 - Host listeners and listeners from `ConnectRPC::Falcon::Endpoint#bound` are
   close-on-exec, so exec'd child processes no longer inherit them. Pass
   `close_on_exec: false` to `Endpoint#bound` to keep the old behavior.

@@ -65,7 +65,7 @@ module ConnectRPC
       private
 
       def accept_backoff(delay)
-        ::Async::Task.current.sleep(delay)
+        sleep(delay)
       end
     end
     private_constant :AcceptWrapper

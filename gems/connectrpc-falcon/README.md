@@ -311,7 +311,7 @@ identity/trust.
 - `on_tls_error:` receives an immutable safe category/status event, including
   `:expired` since 0.3.0. Default diagnostics are fixed safe text; reporter
   exceptions are isolated. Calling `close` or `refresh_tls` from the reporter
-  raises `LifecycleError`.
+  raises `LifecycleError`; `reload_tls` and `drain_tls` work there.
 
 Initial failure prevents successful TLS/application traffic before Falcon
 reports startup failure. TCP backlog can still queue connections on the
