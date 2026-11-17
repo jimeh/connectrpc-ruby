@@ -129,8 +129,8 @@ module ConnectRPC
         end
 
         # Once applied, Sentry's :http patch propagates on the core Net::HTTP transport
-        # itself and prepends its baggage to ours. Its own checks are mirrored so exactly
-        # one of the two injects: it skips the DSN's host, and it matches targets against
+        # itself and prepends its baggage to ours. Its own checks are mirrored so the two
+        # never both inject: it skips the DSN's host, and it matches targets against
         # the URL it rebuilds from the request path, escaping it again (%20 becomes %2520).
         def patch_propagates?(call)
           return false unless net_http_patched?(call.transport_class)
