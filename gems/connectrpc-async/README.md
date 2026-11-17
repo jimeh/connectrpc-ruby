@@ -94,9 +94,12 @@ reactor, thread or state raises `ConnectRPC::Async::LifecycleError`. Since
 max_connections: 1024, max_requests: 128, max_concurrent_streams: 100,
 request_body_timeout: 60, handshake_timeout: 10, idle_timeout: 60,
 refresh_interval: 60, refresh_jitter: 0.1, refresh_timeout: 10,
-on_tls_error: nil, keepalive: ServerKeepalive.new, fallback: nil)` returns a
-host. `fallback:`, `max_concurrent_streams:` and `request_body_timeout:` are
-available since 0.3.0.
+on_tls_error: nil, keepalive: ServerKeepalive.new, fallback: nil,
+stream_receive_window: 65_536, connection_receive_window: 16_777_216)` returns
+a host. `fallback:`, `max_concurrent_streams:`, `request_body_timeout:`,
+`stream_receive_window:` and `connection_receive_window:` are available since
+0.3.0. The receive windows size request uploads; see
+[Flow-control windows](#flow-control-windows).
 
 - `start` binds/listens before returning self; `port` and `addresses` expose the
   actual binding. Since 0.3.0, every address `host` resolves to listens on one
@@ -394,8 +397,10 @@ PING at most every 10 seconds, so the run takes about 45 seconds.
 
 `Transport.new(origin:, ca_file: nil, certificate_chain: nil, private_key: nil,
 connection_limit: 1, max_requests: 128, connect_timeout: 10,
-connection_policy: ConnectionPolicy.new, connection_observer: nil)` implements
-core's transport seam for HTTP/2.
+connection_policy: ConnectionPolicy.new, connection_observer: nil,
+stream_receive_window: 65_536, connection_receive_window: 16_777_216)`
+implements core's transport seam for HTTP/2. Since 0.3.0, the receive windows
+size response downloads; see [Flow-control windows](#flow-control-windows).
 
 - Origins contain only scheme/host/port; a bare trailing `/` is accepted.
   Request paths, including core's base prefix, remain intact.
@@ -1080,9 +1085,9 @@ wakes waiting calls before joining its connection close.
 
 The session forwards TLS lifecycle/identity operations, bounded `close` and
 raw-first `abort` for listener/setup failure. Its `keepalive:` (default
-`ServerKeepalive.new`), graceful `idle_timeout`, `max_concurrent_streams:` and
-`request_body_timeout:` apply to HTTP/2 resources only; see [Stream
-admission](#stream-admission). An application other than `Application` gets the
+`ServerKeepalive.new`), graceful `idle_timeout`, `max_concurrent_streams:`,
+`request_body_timeout:` and the [receive windows](#flow-control-windows) apply
+to HTTP/2 resources only; see [Stream admission](#stream-admission). An application other than `Application` gets the
 request body bound on every HTTP/2 request. Falcon's HTTP/1 resource keeps
 closing idle connections, has no keepalive, and answers a request with a bare
 503 when admission is full or the session is closing. The optional
@@ -1121,9 +1126,68 @@ HTTP/2 trailing HEADERS for core metadata. The stack normalizes lengths using
 Ruby Integer: `+10`, hexadecimal and underscores can normalize before core;
 malformed/duplicate lengths may reset/close connections, and singleton header
 policies can produce bare errors before core. These outcomes are tested and
-are not a full protocol conformance claim. Settings use 16KiB frames, 64KiB
-stream windows and bounded stream admission; they do not bound total process
-memory or HPACK/header-continuation buffering.
+are not a full protocol conformance claim. Settings use 16KiB frames, the
+configured stream window and bounded stream admission; they do not bound total
+process memory or HPACK/header-continuation buffering.
+
+### Flow-control windows
+
+Since 0.3.0, `stream_receive_window:` and `connection_receive_window:` size the
+HTTP/2 receive windows of `Transport`, `ThreadedTransport`, `Host`,
+`ServerSession` and the Falcon server. They limit how much the peer may send
+before this side returns credit: response bodies for a client, request bodies
+for a server. Each is an integer from 65,535, the HTTP/2 initial window, to
+2,147,483,647.
+
+- `stream_receive_window` (default 65,536) is advertised as
+  `SETTINGS_INITIAL_WINDOW_SIZE` and is also each stream's
+  [ingress bound](#ingress-bounds): stream credit returns only as the
+  application consumes or discards bytes, so a stream retains at most this many
+  unread payload bytes. A stream receives at most one window per round trip, so
+  its download or upload rate is at most about the window divided by the
+  round-trip time: 64 KiB at 50 ms RTT is under 1.3 MiB/s.
+- `connection_receive_window` (default 16 MiB) caps bytes in flight across all
+  streams of a connection. Each side grows its connection window from 65,535
+  with one `WINDOW_UPDATE` on stream 0 right after its SETTINGS, as Go's
+  net/http2 does. Connection credit returns as DATA arrives rather than when it
+  is read, so unread bytes never exceed the stream windows. The connection
+  window instead limits how fast those windows can fill: before 0.3.0, one
+  round trip delivered at most 64 KiB per connection. Keep it at least the
+  stream window times the streams expected to transfer at once.
+
+Memory grows with the stream window. Each open stream retains at most one
+stream window of unread payload, so a server connection retains at most
+`stream_receive_window` times its stream limit (the smaller of
+`max_concurrent_streams` and `max_requests`), as before 0.3.0: 6.25 MiB with
+the defaults, 100 MiB with 1 MiB windows. Admitted requests hold at most
+`stream_receive_window` times `max_requests` (default 128) across the host:
+8 MiB with the defaults. A stream that arrives while host admission is full
+can also fill its window before the server refuses it, so one burst can
+briefly add up to the smaller of `connection_receive_window` and the
+connection's stream limit times the stream window. Lower
+`connection_receive_window` to cap that burst. A client transport retains at
+most `stream_receive_window` times its own `max_requests`. These add to core's
+per-message `request_limit` and `response_limit` buffering and the other
+allocations listed under [Ingress bounds](#ingress-bounds).
+
+The defaults keep the 64 KiB per-stream bound and favor memory over
+throughput on high-latency links. Raise `stream_receive_window` on the side
+that receives large bodies, the client for downloads and the server for
+uploads, when the round-trip time matters. `mise run async:bench:windows`
+measured these with 3 MiB unary bodies through a local proxy that adds 50 ms of
+round-trip time; pass `--stream` or `--connection` in bytes for other rows:
+
+| Windows (stream / connection) | Download | 4 concurrent downloads | Upload |
+| --- | --- | --- | --- |
+| 64 KiB / 64 KiB (the windows before 0.3.0) | 7.1 s | 17.3 s | 6.9 s |
+| 64 KiB / 16 MiB (default) | 5.0 s | 5.1 s | 5.0 s |
+| 1 MiB / 16 MiB | 0.28 s | 0.45 s | 0.31 s |
+| 4 MiB / 16 MiB | 0.12 s | 0.20 s | 0.12 s |
+
+grpc-go starts both windows at 64 KiB and grows them up to 16 MiB by
+estimating the bandwidth-delay product, unless the application sets them. Go's
+net/http2 uses 4 MiB stream and 1 GiB connection windows on clients and 1 MiB
+for both on servers. This package does not size windows dynamically.
 
 ### Ingress flow control
 
@@ -1140,8 +1204,9 @@ follows [HTTP/2 flow control](https://www.rfc-editor.org/rfc/rfc9113.html#sectio
 
 ### Ingress bounds
 
-With the current settings, each queue retains at most 65,536 payload bytes in at
-most five data entries, independent of frame count. Each returned native chunk is
+With the default stream window, each queue retains at most 65,536 payload bytes
+in at most five data entries, independent of frame count. A larger
+`stream_receive_window` raises the byte bound to that window, in 16 KiB entries. Each returned native chunk is
 at most 16,384 bytes. The core input adapter can retain one such chunk's remainder;
 the shared reader can hold one decoded DATA frame of at most 16,384 bytes.
 Coalescing/copying can temporarily retain old and new bounded chunks. String byte

@@ -103,8 +103,9 @@ Include `ConnectRPC::Falcon::Environment` in each service:
 - `rack_app` supplies the optional fallback.
 - `tls` or `tls_provider` supplies the TLS source; see [TLS lifecycle](#tls-lifecycle).
 - `server_options` supplies shared limits and host options such as `cache:`,
-  `keepalive:`, and since 0.3.0 `max_concurrent_streams:` and
-  `request_body_timeout:`.
+  `keepalive:`, and since 0.3.0 `max_concurrent_streams:`,
+  `request_body_timeout:`, `stream_receive_window:` and
+  `connection_receive_window:`.
 - Since 0.3.0, `connectrpc_close_grace` sets the managed worker stop grace in
   seconds (default 5); see [Shutdown](#shutdown).
 - `url` describes the listener.
@@ -421,6 +422,12 @@ admission is refused with `REFUSED_STREAM`, and a stalled request body other
 than a client or bidi stream is reset with `CANCEL`. See [Stream
 admission](../connectrpc-async/README.md#stream-admission). HTTP/1 requests keep
 the bare 503 when admission is full.
+
+Since 0.3.0, `stream_receive_window:` (default 65,536) and
+`connection_receive_window:` (default 16 MiB) size native HTTP/2 request
+uploads as on the Async `Host`, with the same memory and throughput trade-off.
+See [Flow-control windows](../connectrpc-async/README.md#flow-control-windows).
+They do not apply to HTTP/1.
 
 `falcon:interop:grpc` also runs a grpc-go bidi stream through an age drain on
 two real workers over TLS.

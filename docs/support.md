@@ -436,6 +436,16 @@ connection limits belong in a proxy. The
 [Async guide](../gems/connectrpc-async/README.md#connection-capacity) owns these
 policies.
 
+Since 0.3.0, the Async hosts and HTTP/2 client transports take
+`stream_receive_window` (default 64 KiB, which is also the per-stream ingress
+bound) and `connection_receive_window` (default 16 MiB, announced with a
+WINDOW_UPDATE right after SETTINGS). A stream moves at most one stream window
+per round trip, so raise it for large bodies over high-latency links at the
+cost of memory; see
+[flow-control windows](../gems/connectrpc-async/README.md#flow-control-windows).
+For Rails and Rack hosts the proxy owns these windows, for example Envoy's
+`initial_stream_window_size` and `initial_connection_window_size`.
+
 `async:interop:keepalive` checks client keepalive, PING enforcement, BDP PINGs
 and the age drain between the pinned grpc-go peer and the Async `Transport` and
 `Host`. `falcon:interop:grpc` checks only the age drain through real Falcon

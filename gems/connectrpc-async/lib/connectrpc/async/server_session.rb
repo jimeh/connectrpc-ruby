@@ -17,7 +17,9 @@ module ConnectRPC
                      handshake_timeout: 10, idle_timeout: 60, refresh_interval: 60, refresh_jitter: 0.1,
                      refresh_timeout: 10, on_tls_error: nil, alpn_protocols: ["h2"], http1: nil, stop_accepting: nil,
                      on_request_rejected: nil, lifecycle_factory: nil, keepalive: ServerKeepalive.new,
-                     max_concurrent_streams: 100, request_body_timeout: 60)
+                     max_concurrent_streams: 100, request_body_timeout: 60,
+                     stream_receive_window: 65_536,
+                     connection_receive_window: 16_777_216)
         initialize_affinity
         raise ArgumentError, "application must be callable" unless application.respond_to?(:call)
         raise ArgumentError, "stop_accepting must be callable" if stop_accepting && !stop_accepting.respond_to?(:call)
@@ -43,6 +45,8 @@ module ConnectRPC
         # One connection can never have more streams admitted than the host,
         # so a client queues locally instead of sending streams to refuse.
         @max_concurrent_streams = [max_concurrent_streams, @max_requests].min
+        @stream_receive_window = Internal.receive_window(stream_receive_window, "stream_receive_window")
+        @connection_receive_window = Internal.receive_window(connection_receive_window, "connection_receive_window")
         unless request_body_timeout.nil?
           @request_body_timeout = Internal.seconds(request_body_timeout, "request_body_timeout")
         end
@@ -309,8 +313,11 @@ module ConnectRPC
         resource.connection = connection
         connection.resource = resource
         connection.stream_limit = @max_concurrent_streams
+        connection.receive_windows(stream: @stream_receive_window, connection: @connection_receive_window)
         connection.read_connection_preface(Internal.settings(@max_requests,
-                                                             max_concurrent_streams: @max_concurrent_streams))
+                                                             max_concurrent_streams: @max_concurrent_streams,
+                                                             stream_window: @stream_receive_window))
+        connection.grow_connection_window
         resource
       end
 
