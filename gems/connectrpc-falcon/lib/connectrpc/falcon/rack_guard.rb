@@ -22,7 +22,8 @@ module ConnectRPC
         # status is checked. Other interim responses, such as 100 and 103, pass.
         def send_interim_response(status, headers = nil)
           @reject.call if Integer(status, exception: false) == 101
-          __getobj__.interim_response&.call(status, headers)
+          # Upstream's HTTP/1 writer cannot take nil headers.
+          __getobj__.interim_response&.call(status, headers || {})
         end
 
         def write_interim_response(status, headers = nil) = send_interim_response(status, headers)

@@ -167,7 +167,10 @@ starts tunnelling on the client's offer alone. The Rack fallback still sees the
 offer in `rack.protocol` and `HTTP_UPGRADE`, as with plain Falcon. Accepting it
 (a 101 status or interim response, a `rack.protocol` or `upgrade` response
 header, or full/partial Rack hijack) gets 501 before any upgrade bytes or socket
-transfer; other interim responses, such as 103 Early Hints, are sent. CONNECT, HTTP/2 extended CONNECT and HTTP/2
+transfer; other interim responses, such as 103 Early Hints, are sent. The
+HTTP/1 connection's response writers refuse a 101 status too, even when code
+reaches them through `request.connection`. Writing raw bytes to the connection
+stream bypasses HTTP framing and is unsupported. CONNECT, HTTP/2 extended CONNECT and HTTP/2
 requests carrying `:protocol` or an `upgrade` field also get 501. WebSockets
 and ActionCable are unsupported here. Ordinary enumerable, chunked, streamed
 and callable HTTP bodies are supported. Callable bodies must close their

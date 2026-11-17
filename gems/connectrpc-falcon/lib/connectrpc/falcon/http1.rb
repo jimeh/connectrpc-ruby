@@ -87,8 +87,15 @@ module ConnectRPC
         read_body(headers)
       end
 
-      # RackGuard turns this into 501. Checking at the writer also covers code
-      # that reaches the connection directly instead of the guarded request.
+      # Neither status writer may emit 101, whichever route reaches it.
+      # RackGuard turns the raise into 501; earlier listener checks keep the
+      # server's own 101 responses from getting here.
+      def write_response(version, status, headers, reason = nil)
+        raise Unsupported, "Protocol switching is unsupported" if Integer(status, exception: false) == 101
+
+        super
+      end
+
       def write_interim_response(version, status, headers, reason = nil)
         raise Unsupported, "Protocol switching is unsupported" if Integer(status, exception: false) == 101
 
