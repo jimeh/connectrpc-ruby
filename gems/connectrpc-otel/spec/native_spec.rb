@@ -170,7 +170,7 @@ RSpec.describe "Native host tracing" do
   it "records Falcon listener rejection independently of core processing" do
     reactor do |task|
       falcon(server: server(instrumentation: bus)) do |_host, origin|
-        status, = http1(origin, AsyncHelpers::ECHO::ECHO.path, headers: { "upgrade" => "websocket" })
+        status, = h2(origin, AsyncHelpers::ECHO::ECHO.path, protocol: "websocket")
         expect(status).to eq(501)
         wait_until(task, "host rejection completion") { rpc_spans(exporter).size == 1 }
         span = rpc_spans(exporter).first

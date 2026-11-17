@@ -96,7 +96,7 @@ RSpec.describe "Host completion classification" do
   it "records a Falcon HTTP/1 listener rejection by decision" do
     reactor do |task|
       falcon(server: server(instrumentation: bus)) do |_host, origin|
-        status, = http1(origin, echo.path, headers: { "upgrade" => "websocket" })
+        status, = h2(origin, echo.path, protocol: "websocket")
         expect(status).to eq(501)
         wait_until(task, "host rejection completion") { total(:grpc_server_rejected_total).positive? }
         expect(value(:grpc_server_rejected_total, MetricsHelpers::ECHO_LABELS.merge(reason: "host_rejected")))

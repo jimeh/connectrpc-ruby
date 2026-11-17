@@ -130,23 +130,11 @@ RSpec.describe "Falcon HTTP/1.1 Upgrade offers" do
         [200, { "content-type" => "text/plain" }, ["h2"]]
       end
       falcon(rack_app: rack) do |_host, origin|
-        authority = URI(origin).authority
-        raw = IO::Endpoint.tcp("127.0.0.1", URI(origin).port).connect
-        connection = Async::HTTP::Protocol::HTTP2.client(raw)
-        call = lambda do |method, path, headers: {}, protocol: nil|
-          request = Protocol::HTTP::Request[method, path, headers, nil, scheme: "http", authority: authority,
-                                                                        protocol: protocol]
-          response = connection.call(request)
-          [response.status, response.read]
-        end
-        expect(call.call("GET", "/upgrade", headers: { "upgrade" => "websocket" }).first).to eq(501)
-        expect(call.call("GET", "/protocol", protocol: "websocket").first).to eq(501)
-        expect(call.call("CONNECT", "/chat", protocol: "websocket").first).to eq(501)
-        expect(call.call("GET", "/plain")).to eq([200, "h2"])
+        expect(h2(origin, "/upgrade", headers: { "upgrade" => "websocket" }).first).to eq(501)
+        expect(h2(origin, "/protocol", protocol: "websocket").first).to eq(501)
+        expect(h2(origin, "/chat", method: "CONNECT", protocol: "websocket").first).to eq(501)
+        expect(h2(origin, "/plain", headers: { "accept-encoding" => "identity" }).values_at(0, 2)).to eq([200, "h2"])
         expect(seen).to eq(["/plain"])
-      ensure
-        connection&.close
-        AsyncHelpers::INTERNAL.raw_close(raw)
       end
     end
   end
