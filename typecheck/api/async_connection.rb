@@ -35,3 +35,8 @@ state = transport.connection_state
 state.to_s
 ConnectRPC::Async::Transport.new(origin: "http://example.invalid", connection_observer: APIConnectionObserver.new)
 transport.close(grace: 0)
+begin
+  transport.close
+rescue ConnectRPC::Async::LifecycleError => e
+  e.message.to_s
+end

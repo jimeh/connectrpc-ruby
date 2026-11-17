@@ -3,14 +3,14 @@
 require "connectrpc/transports/net_http"
 
 RSpec.describe "Explicit unary cancellation" do
-  it "does not expose the original transport failure through the public cause" do
+  it "keeps the original transport failure as the local cause without copying its text" do
     request = ConnectRPC::TransportRequest.new(url: URI("http://example.invalid"), http_method: "POST",
                                                headers: {}, body: "", response_limit: 100, deadline: nil)
     transport = ConnectRPC::Transports::NetHTTP.new
     allow(transport).to receive(:connection).and_raise(SocketError, "private network information")
     expect { transport.call(request) }.to raise_error(ConnectRPC::Error) do |error|
-      expect(error.code).to eq("unavailable")
-      expect(error.cause).to be_nil
+      expect([error.code, error.message]).to eq(["unavailable", "HTTP transport failed: name resolution failed"])
+      expect([error.cause.class, error.cause.message]).to eq([SocketError, "private network information"])
     end
   end
 end

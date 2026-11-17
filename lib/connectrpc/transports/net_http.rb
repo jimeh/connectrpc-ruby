@@ -140,7 +140,24 @@ module ConnectRPC
              OpenSSL::SSL::SSLError => e
         request.lifecycle&.record_failure(e)
         check_request!(request)
-        raise Error.new(:unavailable, "HTTP transport failed"), cause: nil
+        reason = failure_reason(e)
+        raise Error.new(:unavailable, reason ? "HTTP transport failed: #{reason}" : "HTTP transport failed"), cause: e
+      end
+
+      # A fixed, non-secret phrase naming what failed. These errors are local
+      # to the caller, so they keep the original exception as their cause.
+      def failure_reason(error) # rubocop:disable Metrics/MethodLength, Metrics/CyclomaticComplexity
+        case error
+        when Errno::ECONNREFUSED then "connection refused"
+        when SocketError then "name resolution failed"
+        when Errno::EHOSTUNREACH, Errno::ENETUNREACH then "host unreachable"
+        when Net::OpenTimeout, Net::ReadTimeout, Net::WriteTimeout, Errno::ETIMEDOUT, IO::TimeoutError then "timed out"
+        when OpenSSL::SSL::SSLError
+          verification = ["certificate verify failed", "does not match the server certificate"]
+          verification.any? { |text| error.message.include?(text) } ? "TLS verification failed" : "TLS error"
+        when EOFError, Errno::ECONNRESET, Errno::EPIPE, Errno::ECONNABORTED then "connection closed"
+        when Net::HTTPBadResponse, Net::HTTPHeaderSyntaxError then "malformed response"
+        end
       end
 
       def check_request!(request)

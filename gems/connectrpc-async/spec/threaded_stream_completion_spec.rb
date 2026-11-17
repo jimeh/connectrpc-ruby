@@ -117,7 +117,8 @@ RSpec.describe "ThreadedTransport stream completion outcome" do
         name == :lookup ? typed.lookup(item("late")) : typed.watch(item("late")) { |reader| reader.each { nil } }
       end
       expect(error).to be_a(ConnectRPC::Error)
-      expect([error.code, error.message, error.cause]).to eq(["unavailable", "HTTP/2 transport cleanup failed", nil])
+      expect([error.code, error.message]).to eq(["unavailable", "HTTP/2 transport cleanup failed"])
+      expect(error.cause.message).to eq("private owned cleanup failure")
       expect(outcomes.last.normalized_error).to equal(error)
       expect(completions.last.delivery).to eq(:aborted)
       expect(completions.last.error.message).to eq("private owned cleanup failure")

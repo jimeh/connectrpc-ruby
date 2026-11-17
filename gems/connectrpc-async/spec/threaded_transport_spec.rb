@@ -14,7 +14,7 @@ RSpec.describe "ThreadedTransport construction and Connect unary from plain thre
       [{ origin: origin, connection_policy: nil }, "connection_policy must be a ConnectionPolicy"],
       [{ origin: origin, connection_observer: Object.new }, "connection_observer must respond to call"],
       [{ origin: origin, ca_file: "ca.pem" }, "TLS options require an HTTPS origin"],
-      [{ origin: "https://127.0.0.1:1", ca_file: "/nonexistent/ca.pem" }, "Invalid TLS client configuration"]
+      [{ origin: "https://127.0.0.1:1", ca_file: "/nonexistent/ca.pem" }, "Invalid TLS client configuration: ca_file"]
     ]
     invalid.each do |options, message|
       expect { threaded(**options) }.to raise_error(ArgumentError, message)

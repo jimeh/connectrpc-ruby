@@ -43,7 +43,8 @@ RSpec.describe "Native streaming terminal completion" do
           expect(result).to be_nil
         else
           expect(result.code).to eq(scenario == :remote_error ? "not_found" : "unavailable")
-          expect(result.cause).to be_nil
+          # A remote error has no local cause; a local transport failure keeps its own.
+          expect(result.cause).to(scenario == :remote_error ? be_nil : be_a(IOError))
         end
         expect(transport.instance_variable_get(:@calls)).to be_empty
         expect(lease_usage(transport)).to eq(0)
@@ -99,7 +100,8 @@ RSpec.describe "Native streaming terminal completion" do
         source.cancel if mode == :token
         error = call.wait
         expect(error.code).to eq(code.to_s)
-        expect(error.cause).to be_nil
+        # Only the transport's own operation expiry is a local failure with a cause.
+        expect(error.cause).to(code == :unavailable ? be_a(AsyncHelpers::INTERNAL::Expired) : be_nil)
         if mode == :nil_deadline
           # Elapsed time is the external native tail policy under test; readiness
           # was established above by the actual one-byte transport read.

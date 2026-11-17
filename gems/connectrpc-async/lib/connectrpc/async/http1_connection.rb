@@ -6,6 +6,9 @@ require_relative "http1_stream"
 module ConnectRPC
   module Async
     module Internal
+      # A malformed HTTP/1 response head or unsupported framing.
+      class HTTP1ResponseError < IOError; end
+
       class HTTP1Connection < ::Protocol::HTTP1::Connection
         STATUS = %r{\AHTTP/1\.1 ([0-9]{3}) [\x09\x20-\x7e\x80-\xff]*\z}n
 
@@ -18,14 +21,14 @@ module ConnectRPC
           loop do
             line = read_line
             match = STATUS.match(line)
-            raise IOError, "Invalid HTTP/1.1 status line" unless match
+            raise HTTP1ResponseError, "Invalid HTTP/1.1 status line" unless match
 
             @response_version = "HTTP/1.1"
             status = match[1].to_i
             headers = read_headers
             leading = snapshot(headers)
             validate_framing!(leading)
-            raise IOError, "HTTP upgrade is unsupported" if status == 101
+            raise HTTP1ResponseError, "HTTP upgrade is unsupported" if status == 101
 
             # protocol-http1's parser compares the transfer token literally.
             # Our validation already permits exactly one case-insensitive token.
@@ -33,7 +36,7 @@ module ConnectRPC
             self.persistent &&= persistent?(@response_version, method, headers)
             if status.between?(100, 199)
               interim += 1
-              raise IOError, "Too many interim responses" if interim > 16
+              raise HTTP1ResponseError, "Too many interim responses" if interim > 16
 
               next
             end
@@ -61,11 +64,11 @@ module ConnectRPC
           lengths = headers["content-length"]
           coding = headers["transfer-encoding"]
           if lengths && (lengths.size != 1 || !/\A[0-9]+\z/.match?(lengths.first))
-            raise IOError, "Invalid HTTP Content-Length"
+            raise HTTP1ResponseError, "Invalid HTTP Content-Length"
           end
           return unless coding && (lengths || coding.size != 1 || !coding.first.strip.casecmp?("chunked"))
 
-          raise IOError, "Unsupported HTTP transfer framing"
+          raise HTTP1ResponseError, "Unsupported HTTP transfer framing"
         end
       end
 

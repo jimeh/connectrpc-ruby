@@ -112,7 +112,8 @@ RSpec.describe "gRPC owned cleanup outcome" do
           else
             expect { cleanup_call(core, method, timeout: nil) }.to raise_error(ConnectRPC::Error) { |error|
               expect(error.code).to eq("unavailable")
-              expect(error.cause).to be_nil
+              # The local cleanup failure is the cause; its text stays out of the message.
+              expect(error.cause).to equal(outcomes.last.error)
               expect(error.message).not_to include(original.message)
               expect(outcomes.last.normalized_error).to equal(error)
             }

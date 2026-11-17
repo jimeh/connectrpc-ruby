@@ -246,8 +246,14 @@ serialized winner. Completion directly rechecks source state, including after
 decoding or exceptional codec/transport paths. HTTP response receipt alone
 cannot complete the client. Instrumentation and callbacks run outside state
 locks, and only the executing fibers complete instrumentation. Every error core
-normalizes from a rescued exception has a fixed safe message and no `cause`;
-lifecycle observers receive the original failure.
+normalizes from a rescued codec, compression or metadata exception has a fixed
+safe message and no `cause`; lifecycle observers receive the original failure.
+Client transport connection failures are local to the caller, so they carry a
+fixed classified phrase, such as `HTTP transport failed: connection refused`,
+and keep the original exception as `cause`. The phrase never includes hosts,
+addresses, paths or certificate text. A handler that re-raises such an error
+sends only its code and message to its peer; `cause` is never serialized, and
+server-produced, peer-facing messages stay redacted.
 
 `TransportRequest.deadline` remains the actual Deadline or nil.
 `TransportRequest.cancellation` and `StreamRequest.cancellation` implement

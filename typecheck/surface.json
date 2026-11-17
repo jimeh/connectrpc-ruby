@@ -354,6 +354,7 @@
     "ConnectRPC::Async::HTTP1Transport#close_owned": {"kind":"method","visibility":"private","parameters":"expires","classification":"internal"},
     "ConnectRPC::Async::HTTP1Transport#close_send": {"kind":"method","visibility":"private","parameters":"operation","classification":"internal"},
     "ConnectRPC::Async::HTTP1Transport#dispatch": {"kind":"method","visibility":"private","parameters":"operation, streaming: false","classification":"internal"},
+    "ConnectRPC::Async::HTTP1Transport#exchange": {"kind":"method","visibility":"private","parameters":"operation","classification":"internal"},
     "ConnectRPC::Async::HTTP1Transport#finish": {"kind":"method","visibility":"private","parameters":"operation, timeout: nil","classification":"internal"},
     "ConnectRPC::Async::HTTP1Transport#force_operations": {"kind":"method","visibility":"private","parameters":"","classification":"internal"},
     "ConnectRPC::Async::HTTP1Transport#initialize": {"kind":"method","visibility":"public","parameters":"origin:, ca_file: nil, certificate_chain: nil, private_key: nil, connection_limit: 4, max_requests: 128, connect_timeout: 10","classification":"supported"},
@@ -364,13 +365,13 @@
     "ConnectRPC::Async::HTTP1Transport#parse_origin": {"kind":"method","visibility":"private","parameters":"value","classification":"internal"},
     "ConnectRPC::Async::HTTP1Transport#read": {"kind":"method","visibility":"private","parameters":"operation, length, timeout: nil","classification":"internal"},
     "ConnectRPC::Async::HTTP1Transport#read_body": {"kind":"method","visibility":"private","parameters":"operation","classification":"internal"},
+    "ConnectRPC::Async::HTTP1Transport#resend?": {"kind":"method","visibility":"private","parameters":"operation, error","classification":"internal"},
     "ConnectRPC::Async::HTTP1Transport#response_head": {"kind":"method","visibility":"private","parameters":"operation, timeout: nil","classification":"internal"},
     "ConnectRPC::Async::HTTP1Transport#retire_cleanup": {"kind":"method","visibility":"private","parameters":"operation","classification":"internal"},
     "ConnectRPC::Async::HTTP1Transport#retire_idle": {"kind":"method","visibility":"private","parameters":"resource","classification":"internal"},
     "ConnectRPC::Async::HTTP1Transport#same_origin?": {"kind":"method","visibility":"private","parameters":"uri","classification":"internal"},
     "ConnectRPC::Async::HTTP1Transport#setup": {"kind":"method","visibility":"private","parameters":"operation, resource","classification":"internal"},
     "ConnectRPC::Async::HTTP1Transport#streaming_capabilities": {"kind":"method","visibility":"public","parameters":"","classification":"spi"},
-    "ConnectRPC::Async::HTTP1Transport#wait_event": {"kind":"method","visibility":"private","parameters":"event, expires","classification":"internal"},
     "ConnectRPC::Async::HTTP1Transport#with_operation": {"kind":"method","visibility":"private","parameters":"request","classification":"internal"},
     "ConnectRPC::Async::HTTP1Transport#write": {"kind":"method","visibility":"private","parameters":"operation, bytes","classification":"internal"}
   },
@@ -396,6 +397,7 @@
     "ConnectRPC::Async::Internal.close_consumed_http1": {"kind":"method","visibility":"public","parameters":"request","classification":"internal"},
     "ConnectRPC::Async::Internal.fields": {"kind":"method","visibility":"public","parameters":"headers","classification":"internal"},
     "ConnectRPC::Async::Internal.finite": {"kind":"method","visibility":"public","parameters":"value, name, requirement","classification":"internal"},
+    "ConnectRPC::Async::Internal.foreign_timeout?": {"kind":"method","visibility":"public","parameters":"error","classification":"internal"},
     "ConnectRPC::Async::Internal.headers": {"kind":"method","visibility":"public","parameters":"message","classification":"internal"},
     "ConnectRPC::Async::Internal.join": {"kind":"method","visibility":"public","parameters":"task","classification":"internal"},
     "ConnectRPC::Async::Internal.join_complete": {"kind":"method","visibility":"public","parameters":"...","classification":"internal"},
@@ -404,6 +406,7 @@
     "ConnectRPC::Async::Internal.raw_close": {"kind":"method","visibility":"public","parameters":"raw","classification":"internal"},
     "ConnectRPC::Async::Internal.seconds": {"kind":"method","visibility":"public","parameters":"value, name, zero: false","classification":"internal"},
     "ConnectRPC::Async::Internal.wait": {"kind":"method","visibility":"public","parameters":"task, expires = nil","classification":"internal"},
+    "ConnectRPC::Async::Internal.wait_event": {"kind":"method","visibility":"public","parameters":"event, expires","classification":"internal"},
     "ConnectRPC::Async::Internal::AdmissionBody#close": {"kind":"method","visibility":"public","parameters":"error = nil","classification":"internal"},
     "ConnectRPC::Async::Internal::AdmissionBody#initialize": {"kind":"method","visibility":"public","parameters":"body, &completion","classification":"internal"},
     "ConnectRPC::Async::Internal::Affinity#check_affinity!": {"kind":"method","visibility":"private","parameters":"","classification":"internal"},
@@ -411,6 +414,9 @@
     "ConnectRPC::Async::Internal::Affinity#finish_closed": {"kind":"method","visibility":"private","parameters":"outcome","classification":"internal"},
     "ConnectRPC::Async::Internal::Affinity#initialize_affinity": {"kind":"method","visibility":"private","parameters":"","classification":"internal"},
     "ConnectRPC::Async::Internal::Affinity#install_owner_guard": {"kind":"method","visibility":"private","parameters":"","classification":"internal"},
+    "ConnectRPC::Async::Internal::ClientFailure.connection_closed?": {"kind":"method","visibility":"public","parameters":"error","classification":"internal"},
+    "ConnectRPC::Async::Internal::ClientFailure.message": {"kind":"method","visibility":"public","parameters":"prefix, error","classification":"internal"},
+    "ConnectRPC::Async::Internal::ClientFailure.reason": {"kind":"method","visibility":"public","parameters":"error","classification":"internal"},
     "ConnectRPC::Async::Internal::Exchange#decision": {"kind":"attribute","visibility":"public","classification":"internal"},
     "ConnectRPC::Async::Internal::Exchange#decision=": {"kind":"attribute","visibility":"public","classification":"internal"},
     "ConnectRPC::Async::Internal::Exchange#finish": {"kind":"method","visibility":"public","parameters":"completed, error = nil","classification":"internal"},
@@ -422,7 +428,13 @@
     "ConnectRPC::Async::Internal::Input#read_fragment": {"kind":"method","visibility":"private","parameters":"length","classification":"internal"},
     "ConnectRPC::Async::Internal::Input#release_remainder": {"kind":"method","visibility":"public","parameters":"","classification":"internal"},
     "ConnectRPC::Async::Internal::MonotonicClock.now": {"kind":"method","visibility":"public","parameters":"","classification":"internal"},
-    "ConnectRPC::Async::Internal::MonotonicClock.sleep": {"kind":"method","visibility":"public","parameters":"seconds","classification":"internal"}
+    "ConnectRPC::Async::Internal::MonotonicClock.sleep": {"kind":"method","visibility":"public","parameters":"seconds","classification":"internal"},
+    "ConnectRPC::Async::Internal::OwnerGuard.await": {"kind":"method","visibility":"public","parameters":"owner","classification":"internal"},
+    "ConnectRPC::Async::Internal::OwnerGuard.join": {"kind":"method","visibility":"public","parameters":"task","classification":"internal"},
+    "ConnectRPC::Async::Internal::OwnerGuard.pending": {"kind":"method","visibility":"public","parameters":"node","classification":"internal"},
+    "ConnectRPC::Async::Internal::OwnerGuard.register": {"kind":"method","visibility":"public","parameters":"task","classification":"internal"},
+    "ConnectRPC::Async::Internal::Retaining.join": {"kind":"method","visibility":"public","parameters":"task","classification":"internal"},
+    "ConnectRPC::Async::Internal::Retaining.wait": {"kind":"method","visibility":"public","parameters":"task, expires, retained","classification":"internal"}
   },
   "gems/connectrpc-async/lib/connectrpc/async/keepalive_monitor.rb": {
     "ConnectRPC::Async::Internal::KeepaliveMonitor#acknowledged": {"kind":"method","visibility":"public","parameters":"payload","classification":"internal"},
@@ -719,7 +731,11 @@
     "ConnectRPC::Async::Internal::TLS.client": {"kind":"method","visibility":"public","parameters":"ca_file:, certificate_chain:, private_key:, alpn_protocols: [\"h2\"]","classification":"internal"},
     "ConnectRPC::Async::Internal::TLS.configure": {"kind":"method","visibility":"public","parameters":"context","classification":"internal"},
     "ConnectRPC::Async::Internal::TLS.identity": {"kind":"method","visibility":"public","parameters":"chain, pem","classification":"internal"},
-    "ConnectRPC::Async::Internal::TLS.server": {"kind":"method","visibility":"public","parameters":"certificate_chain:, private_key:, client_ca:, alpn_protocols: [\"h2\"]","classification":"internal"}
+    "ConnectRPC::Async::Internal::TLS.input": {"kind":"method","visibility":"public","parameters":"name","classification":"internal"},
+    "ConnectRPC::Async::Internal::TLS.server": {"kind":"method","visibility":"public","parameters":"certificate_chain:, private_key:, client_ca:, alpn_protocols: [\"h2\"]","classification":"internal"},
+    "ConnectRPC::Async::Internal::TLS.server_name": {"kind":"method","visibility":"public","parameters":"host","classification":"internal"},
+    "ConnectRPC::Async::Internal::TLS::InvalidInput#initialize": {"kind":"method","visibility":"public","parameters":"input","classification":"internal"},
+    "ConnectRPC::Async::Internal::TLS::InvalidInput#input": {"kind":"attribute","visibility":"public","classification":"internal"}
   },
   "gems/connectrpc-async/lib/connectrpc/async/tls_configuration.rb": {
     "ConnectRPC::Async::TLSConfiguration#capture": {"kind":"method","visibility":"private","parameters":"raw","classification":"internal"},
@@ -783,8 +799,7 @@
     "ConnectRPC::Async::Transport#setup_connection": {"kind":"method","visibility":"private","parameters":"resource","classification":"internal"},
     "ConnectRPC::Async::Transport#stopped_output": {"kind":"method","visibility":"private","parameters":"operation","classification":"internal"},
     "ConnectRPC::Async::Transport#stream_operation": {"kind":"method","visibility":"private","parameters":"operation, timeout: nil, &work","classification":"internal"},
-    "ConnectRPC::Async::Transport#streaming_capabilities": {"kind":"method","visibility":"public","parameters":"","classification":"spi"},
-    "ConnectRPC::Async::Transport#wait_event": {"kind":"method","visibility":"private","parameters":"event, expires","classification":"internal"}
+    "ConnectRPC::Async::Transport#streaming_capabilities": {"kind":"method","visibility":"public","parameters":"","classification":"spi"}
   },
   "gems/connectrpc-async/lib/connectrpc/async/upstream_contract.rb": {
     "ConnectRPC::Async::Internal::UpstreamContract.failure": {"kind":"method","visibility":"public","parameters":"gem, text","classification":"internal"},
@@ -2049,6 +2064,7 @@
     "ConnectRPC::Transports::NetHTTP#configure_http": {"kind":"method","visibility":"private","parameters":"http, deadline","classification":"internal"},
     "ConnectRPC::Transports::NetHTTP#connection": {"kind":"method","visibility":"private","parameters":"uri, deadline","classification":"internal"},
     "ConnectRPC::Transports::NetHTTP#exchange": {"kind":"method","visibility":"private","parameters":"http, request, outgoing","classification":"internal"},
+    "ConnectRPC::Transports::NetHTTP#failure_reason": {"kind":"method","visibility":"private","parameters":"error","classification":"internal"},
     "ConnectRPC::Transports::NetHTTP#outgoing_request": {"kind":"method","visibility":"private","parameters":"request","classification":"internal"},
     "ConnectRPC::Transports::NetHTTP#perform_call": {"kind":"method","visibility":"private","parameters":"request","classification":"internal"},
     "ConnectRPC::Transports::NetHTTP#prepare_request": {"kind":"method","visibility":"private","parameters":"request","classification":"internal"},

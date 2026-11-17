@@ -9,15 +9,15 @@ RSpec.describe "gRPC operation wait ceilings" do
       operation = { request: outgoing, tasks: {}, grpc: true }
       expires_at = nil
       before = AsyncHelpers::INTERNAL.now
-      allow(transport).to receive(:wait_event) do |_, expires|
+      allow(AsyncHelpers::INTERNAL).to receive(:wait_event) do |_, expires|
         expires_at = expires
-        raise Async::TimeoutError
+        raise AsyncHelpers::INTERNAL::Expired
       end
       expect do
         transport.send(:stream_operation, operation) { nil }
       end.to raise_error(ConnectRPC::Error) { |e|
-        expect(e.code).to eq("unavailable")
-        expect(e.cause).to be_nil
+        expect([e.code, e.message]).to eq(["unavailable", "HTTP/2 transport failed: timed out"])
+        expect(e.cause).to be_a(AsyncHelpers::INTERNAL::Expired)
       }
       expect(expires_at - before).to be_within(0.1).of(9_999_999.999)
     ensure

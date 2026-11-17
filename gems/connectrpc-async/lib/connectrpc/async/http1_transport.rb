@@ -38,18 +38,20 @@ module ConnectRPC
       def call(request)
         check_affinity!
         CallCancellation.with_request(request) do |outgoing|
-          with_operation(outgoing) do |operation|
-            operate(operation) { dispatch(operation) }
-            head = response_head(operation)
-            bytes = operate(operation) { read_body(operation) }
-            if head.status == 200
-              finish(operation)
-            else
-              # A complete HTTP error is useful to core even if upload is
-              # blocked. Abort before any yield can emit a normal chunk EOF.
-              cleanup(operation)
+          attempt = nil
+          resent = false
+          begin
+            with_operation(outgoing) do |operation|
+              attempt = operation
+              exchange(operation)
             end
-            TransportResponse.new(status: head.status, headers: head.headers, body: bytes)
+          rescue Error => e
+            # The first operation's cleanup, lease disposition and admission
+            # entry are complete. Its cancellation and deadline still apply.
+            raise if resent || !resend?(attempt, e)
+
+            resent = true
+            retry
           end
         end
       end
@@ -68,13 +70,35 @@ module ConnectRPC
 
       private
 
+      def exchange(operation)
+        operate(operation) { dispatch(operation) }
+        head = response_head(operation)
+        bytes = operate(operation) { read_body(operation) }
+        if head.status == 200
+          finish(operation)
+        else
+          # A complete HTTP error is useful to core even if upload is
+          # blocked. Abort before any yield can emit a normal chunk EOF.
+          cleanup(operation)
+        end
+        TransportResponse.new(status: head.status, headers: head.headers, body: bytes)
+      end
+
+      # A server may close an idle keep-alive connection while the next
+      # request crosses it. Only a safe GET that found its reused connection
+      # closed before any response head is sent once more.
+      def resend?(operation, error)
+        operation && operation[:reused] && !operation[:head] &&
+          operation.fetch(:request).http_method == "GET" &&
+          Internal::ClientFailure.connection_closed?(error.cause)
+      end
+
       def with_operation(request)
         raise ArgumentError, "Request URL must match the transport origin" unless same_origin?(request.url)
 
         check_request!(request)
-        unless @state == :running && @calls.size < @max_requests
-          raise Error.new(:unavailable, "HTTP/1 transport admission is closed or full"), cause: nil
-        end
+        raise Error.new(:unavailable, "HTTP/1 transport admission is closed"), cause: nil unless @state == :running
+        raise Error.new(:unavailable, "HTTP/1 transport admission is full"), cause: nil if @calls.size >= @max_requests
 
         # Registry values record cancellation delivery, not task completion.
         operation = { request: request, tasks: {}, events: {}, writer_state: :pending, writer_reported: false }
@@ -85,7 +109,7 @@ module ConnectRPC
           check_cleanup!(operation)
           result
         rescue Exception => e # rubocop:disable Lint/RescueException -- preserve the caller's original interruption through finalization
-          interruption = e unless e.is_a?(StandardError)
+          interruption = e unless e.is_a?(StandardError) && !Internal.foreign_timeout?(e)
           raise
         ensure
           begin
@@ -127,7 +151,7 @@ module ConnectRPC
         expires = [expires || Float::INFINITY, Internal.now + request.deadline.remaining].min if request.deadline
         expires = [expires || Float::INFINITY, operation[:completion_expires]].min if operation[:completion_expires]
         check_operation!(operation)
-        tag, result = wait_event(event, expires)
+        tag, result = Internal.wait_event(event, expires)
         check_request!(request)
         check_operation!(operation)
         raise result if tag == :error
@@ -139,7 +163,13 @@ module ConnectRPC
         check_request!(request)
         raise if e.is_a?(Error)
 
-        raise Error.new(:unavailable, "HTTP/1 transport failed"), cause: nil
+        if Internal.foreign_timeout?(e)
+          # The caller's own enclosing Async timeout is not a transport failure.
+          interruption = e
+          raise
+        end
+
+        raise Error.new(:unavailable, Internal::ClientFailure.message("HTTP/1", e)), cause: e
       rescue Exception => e # rubocop:disable Lint/RescueException -- an ensure must not replace this interruption with a later one
         interruption = e
         raise
@@ -156,21 +186,6 @@ module ConnectRPC
         end
       end
 
-      def wait_event(event, expires)
-        loop do
-          return event.wait unless expires
-
-          remaining = expires - Internal.now
-          raise ::Async::TimeoutError if remaining <= 0
-
-          begin
-            return event.wait(timeout: [remaining, Internal::MAX_WAIT].min)
-          rescue ::Async::TimeoutError
-            raise if Internal.now >= expires
-          end
-        end
-      end
-
       def acquire(operation)
         loop do
           check_operation!(operation)
@@ -181,6 +196,7 @@ module ConnectRPC
           if (resource = @idle.pop)
             if resource.connection.viable?
               operation[:resource] = resource
+              operation[:reused] = true
               return resource
             end
             retire_idle(resource)
@@ -218,11 +234,11 @@ module ConnectRPC
             socket = resource.raw
             if @snapshot
               socket = resource.socket = @snapshot.socket(resource.raw)
-              socket.hostname = @origin.hostname
+              socket.hostname = Internal::TLS.server_name(@origin.hostname)
               socket.connect
               socket.post_connection_check(@origin.hostname)
               unless [nil, "http/1.1"].include?(socket.alpn_protocol)
-                raise OpenSSL::SSL::SSLError, "HTTP/1.1 ALPN is required"
+                raise Internal::ALPNError, "HTTP/1.1 ALPN is required"
               end
             end
             resource.socket = socket
@@ -445,7 +461,8 @@ module ConnectRPC
 
           accepted = true
         rescue Exception => e # rubocop:disable Lint/RescueException -- no exit may bypass final joins and disposition
-          if e.is_a?(StandardError)
+          # A caller's own Async timeout is an interruption, not a cleanup failure.
+          if e.is_a?(StandardError) && !Internal.foreign_timeout?(e)
             operation[:cleanup_error] ||= e
             operation.fetch(:request).lifecycle&.record_failure(e)
           else
@@ -533,7 +550,7 @@ module ConnectRPC
       def check_cleanup!(operation)
         return unless operation[:cleanup_error]
 
-        raise Error.new(:unavailable, "HTTP/1 transport cleanup failed"), cause: nil
+        raise Error.new(:unavailable, "HTTP/1 transport cleanup failed"), cause: operation[:cleanup_error]
       end
 
       # IO#close can suspend, and its caller may be interrupted repeatedly.
@@ -629,10 +646,11 @@ module ConnectRPC
       def parse_origin(value)
         uri = URI(value)
         unless %w[http https].include?(uri.scheme) && uri.host && !uri.userinfo && !uri.query && !uri.fragment &&
-               uri.path.empty?
+               ["", "/"].include?(uri.path)
           raise ArgumentError, "Origin must contain only an HTTP(S) scheme, host and port"
         end
 
+        uri.path = ""
         uri.freeze
       end
 
