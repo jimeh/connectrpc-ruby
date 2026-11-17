@@ -710,16 +710,15 @@ RSpec.shared_examples "HTTP/2 server keepalive" do
           release = hold_post_delivery(fixture)
           closing = task.async { fixture.host.close(grace: 5) }
           wait_until(task, "cutoff GOAWAY") { client.wire.goaways.size == 2 }
-          gate = hold_frames(fixture.resource, 7)
           4.times { |index| send_ping(client, format("strike%02d", index)) }
-          gate.started.dequeue
+          # The last strike's ACK shows the reader decided the violation. Its
+          # 1 s EOF bound runs on the fake clock, which never advances.
+          wait_until(task, "last strike ACK") { client.wire.acks.include?("strike03") }
           AsyncHelpers::INTERNAL.raw_close(client.raw)
           wait_until(task, "server reader ended") { fixture.resource.connection.reader_task.finished? }
           release.enqueue(true)
           expect(closing.wait).to be(false)
           expect(fixture.resource).to be_finished
-        ensure
-          gate&.release&.enqueue(true)
         end
       end
     end
