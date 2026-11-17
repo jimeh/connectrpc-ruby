@@ -197,7 +197,8 @@ set `max_concurrent_streams` lower explicitly.
   which on Linux can be a third of the buffer, up to about 1 MiB with the
   default 4 MiB maximum. So a peer that keeps reading, but too slowly to drain
   that much within the bound, is also aborted. Unlike grpc-go's
-  `TCP_USER_TIMEOUT`, which fires only when no sent data is acknowledged, the
+  `TCP_USER_TIMEOUT`, which fires when sent data stays unacknowledged, or unsent
+  behind a zero window, for that long, so that any progress resets it, this
   bound is not reset by partial progress. Raise the keepalive `timeout` for
   clients that read large responses over slow links. Application work under the
   guard, such as closing a HEAD response's body, does not count as a frame
