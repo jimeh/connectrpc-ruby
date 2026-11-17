@@ -4,10 +4,11 @@ require "English"
 
 module ConnectRPC
   module Falcon
-    class RackGuard
-      class Unsupported < StandardError; end
-      private_constant :Unsupported
+    # An application tried to take over the socket or switch protocols.
+    class Unsupported < StandardError; end
+    private_constant :Unsupported
 
+    class RackGuard
       class Request < SimpleDelegator
         def initialize(request, reject)
           super(request)
@@ -16,6 +17,17 @@ module ConnectRPC
 
         def hijack? = false
         def hijack! = @reject.call
+
+        # A 101 interim response would switch protocols before the returned
+        # status is checked. Other interim responses, such as 100 and 103, pass.
+        def send_interim_response(status, headers = nil)
+          @reject.call if Integer(status, exception: false) == 101
+          # Upstream's HTTP/1 writer cannot take nil headers.
+          __getobj__.interim_response&.call(status, headers || {})
+        end
+
+        def write_interim_response(status, headers = nil) = send_interim_response(status, headers)
+        def interim_response = ->(status, headers = nil) { send_interim_response(status, headers) }
       end
       private_constant :Request
 
@@ -150,7 +162,7 @@ module ConnectRPC
 
       def call(request, lifecycle: nil, publication: nil, resource: nil)
         request.scheme ||= @scheme
-        if request.method == "CONNECT" || request.protocol || request.headers["upgrade"]
+        if switch_requested?(request)
           lifecycle&.host_rejected!
           return ::Protocol::HTTP::Response[501, {}, nil]
         end
@@ -170,6 +182,18 @@ module ConnectRPC
         end
         response.body = CloseOnce.new(response.body) if response.body
         response
+      end
+
+      private
+
+      # An HTTP/1 Upgrade header (async-http moves it to request.protocol) is
+      # only an offer, which this listener ignores. CONNECT, HTTP/2 extended
+      # CONNECT's :protocol and an HTTP/2 upgrade field demand a tunnel.
+      def switch_requested?(request)
+        return true if request.method == ::Protocol::HTTP::Methods::CONNECT
+        return false if request.version&.start_with?("HTTP/1")
+
+        !!(request.protocol || request.headers["upgrade"])
       end
     end
     private_constant :ListenerApplication

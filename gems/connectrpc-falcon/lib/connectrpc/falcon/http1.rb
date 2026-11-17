@@ -75,6 +75,33 @@ module ConnectRPC
         request
       end
 
+      # This listener never switches protocols, so an Upgrade offer is ignored
+      # (RFC 9110 section 7.8). Upstream reads an offering request's body to
+      # connection close; frame it normally instead so the response can be
+      # sent. The connection still closes afterwards: a proxy that tunnels on
+      # the client's offer alone would forward later bytes uninspected.
+      def read_request_body(method, headers)
+        return super if method == ::Protocol::HTTP::Methods::CONNECT || !headers[::Protocol::HTTP1::UPGRADE]
+
+        @persistent = false
+        read_body(headers)
+      end
+
+      # Neither status writer may emit 101, whichever route reaches it.
+      # RackGuard turns the raise into 501; earlier listener checks keep the
+      # server's own 101 responses from getting here.
+      def write_response(version, status, headers, reason = nil)
+        raise Unsupported, "Protocol switching is unsupported" if Integer(status, exception: false) == 101
+
+        super
+      end
+
+      def write_interim_response(version, status, headers, reason = nil)
+        raise Unsupported, "Protocol switching is unsupported" if Integer(status, exception: false) == 101
+
+        super
+      end
+
       def each(...)
         super
       rescue Exception => e # rubocop:disable Lint/RescueException -- cancellation also ends the exchange

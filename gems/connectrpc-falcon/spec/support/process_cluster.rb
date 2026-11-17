@@ -26,7 +26,7 @@ module FalconProcessFixtures
     end
 
     def close(**options)
-      emit(:closing)
+      emit(:closing, grace: options[:grace])
       result = super
       emit(:closed, result: result, connections: @metrics.metric(:connections_active).value,
                     requests: @metrics.metric(:requests_active).value)

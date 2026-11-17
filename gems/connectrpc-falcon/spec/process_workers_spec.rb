@@ -133,7 +133,7 @@ RSpec.describe "Real Falcon process-worker lifecycle" do
     end
   end
 
-  def configuration(writer, make_core:, provider: nil, rack: nil, prepare: nil, count: 2, **options)
+  def configuration(writer, make_core:, provider: nil, rack: nil, prepare: nil, count: 2, close_grace: nil, **options)
     Async::Service::Configuration.build do
       service "connectrpc-process-spec" do
         include ConnectRPC::Falcon::Environment
@@ -157,6 +157,7 @@ RSpec.describe "Real Falcon process-worker lifecycle" do
         tls_provider { provider }
         rack_app { rack }
         server_options options
+        connectrpc_close_grace close_grace if close_grace
       end
     end
   end
@@ -374,7 +375,7 @@ RSpec.describe "Real Falcon process-worker lifecycle" do
           File.write(block_refresh, "yes")
           cluster.event(:refresh_blocked)
           cluster.stop
-          cluster.event(:closing)
+          expect(cluster.event(:closing).fetch("grace")).to eq(5)
           File.write(release, "yes")
           expect(response_task.wait.values_at(0, 2)).to eq([200, "x" * 2_000_000])
           cluster.event(:closed)
@@ -388,6 +389,44 @@ RSpec.describe "Real Falcon process-worker lifecycle" do
       end
     end
   end
+
+  it "bounds a managed stop by connectrpc_close_grace while a Rack response stays open" do
+    reactor do
+      reader, writer = IO.pipe
+      writer = FalconProcessFixtures::FalconEventWriter.new(writer)
+      writer.sync = true
+      rack = lambda do |_env|
+        body = Class.new(Protocol::HTTP::Body::Readable) do
+          define_method(:read) do
+            next "first" unless @sent
+
+            writer.puts(JSON.generate(kind: :response_held, pid: Process.pid))
+            Async::Condition.new.wait
+          ensure
+            @sent = true
+          end
+        end.new
+        [200, { "content-type" => "text/plain" }, body]
+      end
+      config = configuration(writer, make_core: -> { server }, rack: rack, count: 1, close_grace: 0.2)
+      cluster = FalconProcessFixtures::FalconProcessCluster.new(config, reader, writer)
+      cluster.event(:running)
+      peer = ConnectH1Wire.new("http://127.0.0.1:#{cluster.service.port}")
+      peer.write("GET /held HTTP/1.1\r\nHost: localhost\r\nAccept-Encoding: identity\r\n\r\n")
+      expect(peer.head.first).to eq(200)
+      expect(peer.chunk).to eq("first")
+      cluster.event(:response_held)
+      cluster.stop
+      expect(cluster.event(:closing).fetch("grace")).to eq(0.2)
+      # The default 5 second grace would outlast the 5 second event deadline.
+      expect(cluster.event(:closed).values_at("result", "requests", "connections")).to eq([false, 0, 0])
+      expect(cluster.events.map { |event| event["kind"] }).not_to include("unhandled")
+    ensure
+      peer&.close
+      cluster&.close
+    end
+  end
+
   it "fails initial loading before accepts and leaves default worker restart diagnostics sanitized" do
     reactor do |task|
       Dir.mktmpdir("connectrpc-falcon-startup-") do |directory|

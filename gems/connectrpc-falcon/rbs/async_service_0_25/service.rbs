@@ -23,6 +23,8 @@ module Async
                         | () { () [self: ConnectRPC::Falcon::Environment] -> (ConnectRPC::Async::_TLSProvider | ^() -> ConnectRPC::Async::tls_snapshot)? } -> void
         def server_options: (ConnectRPC::Falcon::server_options) -> void
                           | () { () [self: ConnectRPC::Falcon::Environment] -> ConnectRPC::Falcon::server_options } -> void
+        def connectrpc_close_grace: (Numeric) -> void
+                                  | () { () [self: ConnectRPC::Falcon::Environment] -> Numeric } -> void
       end
     end
   end

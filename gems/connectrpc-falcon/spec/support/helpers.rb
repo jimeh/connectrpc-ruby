@@ -11,6 +11,20 @@ module FalconHelpers
     bound&.close
   end
 
+  # Prior-knowledge h2c; `protocol` sends a `:protocol` pseudo-header.
+  def h2(origin, route = "/", headers: {}, method: "GET", protocol: nil)
+    uri = URI(origin)
+    raw = IO::Endpoint.tcp(uri.hostname, uri.port).connect
+    connection = Async::HTTP::Protocol::HTTP2.client(raw)
+    request = Protocol::HTTP::Request[method, route, headers, nil, scheme: uri.scheme, authority: uri.authority,
+                                                                   protocol: protocol]
+    response = connection.call(request)
+    [response.status, response.headers.to_h, response.read]
+  ensure
+    connection&.close
+    AsyncHelpers::INTERNAL.raw_close(raw) if raw
+  end
+
   def http1(origin, route = "/", headers: {}, body: "", method: "GET", context: nil)
     uri = URI(origin)
     raw = IO::Endpoint.tcp(uri.hostname, uri.port).connect

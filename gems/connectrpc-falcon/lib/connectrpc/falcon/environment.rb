@@ -3,11 +3,22 @@
 module ConnectRPC
   module Falcon
     class Service < ::Falcon::Service::Server
+      def start
+        unless @evaluator.endpoint.is_a?(Endpoint)
+          raise ArgumentError, "#{name} endpoint is not a ConnectRPC::Falcon::Endpoint; " \
+                               "include ConnectRPC::Falcon::Environment after Falcon's environments"
+        end
+
+        super
+      end
+
       def run(_instance, evaluator, listener)
         # This enclosing task's ensure executes on Falcon's ordinary managed
         # Interrupt route before its children are cancelled by the container.
         ready = ::Async::Queue.new
         ::Async::Task.current.async do |task|
+          grace = ConnectRPC::Async.const_get(:Internal).seconds(evaluator.connectrpc_close_grace,
+                                                                 "connectrpc_close_grace", zero: true)
           server = evaluator.make_server(listener.endpoint)
           server.run
           ready.enqueue([server, nil])
@@ -27,7 +38,7 @@ module ConnectRPC
           if failure && !managed_stop?(failure)
             server&.abort
           else
-            server&.close
+            server&.close(grace: grace)
           end
         end
         server, error = ready.dequeue
@@ -55,10 +66,12 @@ module ConnectRPC
 
       def service_class = Service
       def endpoint = Endpoint.parse(url, **endpoint_options)
-      def rack_app = nil
+      # Keeps a Falcon Rack facet's config.ru application when included after it.
+      def rack_app = defined?(super) ? super : nil
       def tls = nil
       def tls_provider = nil
       def server_options = {}
+      def connectrpc_close_grace = 5
 
       def connectrpc_server
         raise NotImplementedError, "Define the worker-local connectrpc_server"
