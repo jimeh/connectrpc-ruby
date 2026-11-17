@@ -532,11 +532,11 @@ module ConnectRPC
         # header block leaves them unset, or raises.
         def receive_initial_headers(headers, end_stream)
           result = super
-          @enqueued = true if @request&.headers
+          @request_enqueued = true if @request&.headers
           result
         end
 
-        def enqueued? = !!@enqueued
+        def enqueued? = !!@request_enqueued
 
         def detach_cancellation
           @cancellation_source = nil
@@ -688,7 +688,10 @@ module ConnectRPC
         # open, such as a refused stream's trailers, are decoded and dropped;
         # its DATA keeps upstream's connection flow control and is ignored.
         # An accepted stream that host admission cannot take is refused the
-        # same way once upstream has enqueued its request.
+        # same way once upstream has enqueued its request. Such a stream
+        # leaves `streams` at once, so it counts toward the stream limit
+        # until its reset is written, as a client that honours the limit
+        # counts it until the reset arrives.
         def receive_headers(frame)
           stream_id = frame.stream_id
           return super if streams.key?(stream_id) || !valid_remote_stream_id?(stream_id)
@@ -699,7 +702,7 @@ module ConnectRPC
           end
 
           upkeep = self.upkeep
-          unless upkeep && (upkeep.refuse?(stream_id) || (stream_limit && streams.size >= stream_limit))
+          unless upkeep && (upkeep.refuse?(stream_id) || (stream_limit && streams_toward_limit >= stream_limit))
             super
             return admit(streams[stream_id], upkeep)
           end
@@ -817,7 +820,15 @@ module ConnectRPC
           return if admission.send(:reserve_admission, stream)
 
           request = stream.request
-          admission.send(:refuse_admission, request, upkeep.reset(stream, ::Protocol::HTTP2::Error::REFUSED_STREAM))
+          written = upkeep.reset(stream, ::Protocol::HTTP2::Error::REFUSED_STREAM)
+          (@refusals ||= []) << written
+          admission.send(:refuse_admission, request, written)
+        end
+
+        # Open streams plus streams refused at HEADERS whose reset is unwritten.
+        def streams_toward_limit
+          @refusals&.reject!(&:resolved?)
+          streams.size + (@refusals&.size || 0)
         end
 
         # A refusal is delivered once its reset is written; returns the

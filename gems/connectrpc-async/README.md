@@ -164,14 +164,17 @@ set `max_concurrent_streams` lower explicitly.
   over their limits. An admitted stream takes its request slot at that point,
   so streams whose HEADERS arrive together take free slots in order and one
   free slot admits exactly one of them. A slot taken this way is released if
-  the peer resets the stream before its handler starts. The server still
+  the peer resets the stream before its handler starts; that stream is then
+  neither processed nor counted as a refusal. The server still
   decodes a refused stream's header block and ignores its later frames, and
   the connection returns credit for any DATA the client already sent, so the
   connection and its other streams see no error. Metrics and traces record a
   refusal for full host admission or an abort once as `admission_rejected`,
   without an HTTP status; its delivery completes once the reset is written. A
   stream over the connection's limit is refused the same way and is not
-  observed.
+  observed. A stream refused for full host admission counts toward that limit
+  until its reset is written, so a client that ignores the limit cannot keep
+  more observed refusals waiting on one connection than the limit allows.
 - Since 0.3.0, `request_body_timeout` bounds how long a handler waits for
   request body bytes on an admitted HTTP/2 stream, like nginx's
   `client_body_timeout`. Each wait starts again when body bytes arrive; empty or
