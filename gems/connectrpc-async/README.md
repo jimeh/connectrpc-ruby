@@ -118,13 +118,14 @@ as the defaults do, so that one connection cannot take every request slot. When
 set `max_concurrent_streams` lower explicitly.
 
 - A stream over its connection's limit, or one that arrives while host
-  admission is full, is reset with `RST_STREAM(REFUSED_STREAM)`. That tells the
-  client the request was not processed and is safe to retry. The handler is not
-  called. The server still decodes the stream's header block and ignores its
-  later frames, so the connection and its other streams see no error. Metrics
-  and traces record a refusal for full host admission as `admission_rejected`,
-  without an HTTP status. A stream over the connection's limit is refused
-  before dispatch and is not observed.
+  admission is full or the host is aborting, is reset with
+  `RST_STREAM(REFUSED_STREAM)`. That tells the client the request was not
+  processed and is safe to retry. The handler is not called. The server still
+  decodes the stream's header block and ignores its later frames, so the
+  connection and its other streams see no error. Metrics and traces record a
+  refusal for full host admission or an abort as `admission_rejected`, without
+  an HTTP status. A stream over the connection's limit is refused before
+  dispatch and is not observed.
 - Since 0.2.2, `request_body_timeout` bounds how long a handler waits for
   request body bytes on an admitted HTTP/2 stream, like nginx's
   `client_body_timeout`. Each wait starts again when body bytes arrive; empty or
