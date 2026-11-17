@@ -1308,7 +1308,7 @@
     "ConnectRPC::Client#request_headers": {"kind":"method","visibility":"private","parameters":"metadata, deadline, get: false","classification":"internal"},
     "ConnectRPC::Client#response_body": {"kind":"method","visibility":"private","parameters":"response, headers, deadline, lifecycle = nil","classification":"internal"},
     "ConnectRPC::Client#response_encoding!": {"kind":"method","visibility":"private","parameters":"headers","classification":"internal"},
-    "ConnectRPC::Client#validate_response!": {"kind":"method","visibility":"private","parameters":"status, headers, body","classification":"internal"}
+    "ConnectRPC::Client#validate_response!": {"kind":"method","visibility":"private","parameters":"status, headers, body, cause = nil","classification":"internal"}
   },
   "lib/connectrpc/compression.rb": {
     "ConnectRPC::Compression#append": {"kind":"method","visibility":"private","parameters":"chunk","classification":"internal"},
@@ -1786,6 +1786,8 @@
     "ConnectRPC::Protocol.wire_error_fields": {"kind":"method","visibility":"public","parameters":"object, fallback:","classification":"internal"},
     "ConnectRPC::Response": {"kind":"Struct","visibility":"public","members":["message","metadata","trailers"],"options":["keyword_init: true"],"classification":"supported"},
     "ConnectRPC::TransportRequest": {"kind":"Struct","visibility":"public","members":["url","http_method","headers","body","response_limit","deadline","lifecycle","cancellation"],"options":["keyword_init: true"],"classification":"supported"},
+    "ConnectRPC::TransportResponse#cause": {"kind":"attribute","visibility":"public","classification":"supported"},
+    "ConnectRPC::TransportResponse#cause=": {"kind":"attribute","visibility":"public","classification":"supported"},
     "ConnectRPC::TransportResponse": {"kind":"Struct","visibility":"public","members":["status","headers","body"],"options":["keyword_init: true"],"classification":"supported"}
   },
   "lib/connectrpc/server.rb": {

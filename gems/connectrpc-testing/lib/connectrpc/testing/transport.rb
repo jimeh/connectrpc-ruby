@@ -22,12 +22,9 @@ module ConnectRPC
         response = dispatch(request, ->(error) { unexpected = error })
         check_active!(request)
         Protocol.check_size!(response.body, request.response_limit)
-        # gRPC-Web reports its status inside a 200 body, which stays the caller's to decode.
-        return response unless unexpected && response.status != 200
-
-        # Raise the error the client would decode, keeping the in-process exception as its cause.
-        raise Protocol.parse_error(response.status, Protocol.headers(response.headers), response.body),
-              cause: unexpected
+        # The client raises its decoded error with this cause; it is never encoded.
+        response.cause = unexpected if unexpected
+        response
       end
 
       def check_active!(request)

@@ -215,7 +215,9 @@ Bindings implement `encode(message, type:, codec:)` and
 `decode(bytes, type:, codec:)`, raising `ConnectRPC::CodecError` for codec
 failures. Transports implement `call(TransportRequest)` and return a
 `TransportResponse`. Their fields and responsibilities are documented in
-[design](design.md). Neither seam requires Google or Rack types.
+[design](design.md). Neither seam requires Google or Rack types. Since 0.3.0,
+an in-process transport can set `TransportResponse#cause` on an error response;
+the client raises its decoded error with that exception as the `cause`.
 
 ## Use unary GET
 
@@ -360,8 +362,9 @@ Hosts add their own reporting:
 
 - Since 0.3.0, [connectrpc-rack](../gems/connectrpc-rack/README.md) also writes
   each unexpected exception with its backtrace to `env["rack.errors"]`.
-- Since 0.3.0, [connectrpc-testing](../gems/connectrpc-testing/README.md) raises
-  the decoded `internal` error with the original exception as its `cause`.
+- Since 0.3.0, [connectrpc-testing](../gems/connectrpc-testing/README.md)
+  records the original exception as `TransportResponse#cause`, and the client
+  raises its decoded `internal` error with that `cause`.
 - [connectrpc-on-rails](../gems/connectrpc-on-rails/README.md) builds its own
   Server per request. Handler exceptions follow Rails: `rescue_from`, the
   controller logger and `Rails.error`. Unexpected exceptions outside the action,

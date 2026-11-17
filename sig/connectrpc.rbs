@@ -454,6 +454,8 @@ module ConnectRPC
     def headers=: (headers?) -> headers?
     def body: () -> String?
     def body=: (String?) -> String?
+    def cause: () -> StandardError?
+    def cause=: (StandardError?) -> StandardError?
     def []: (:status | "status" | 0 | -3) -> Integer?
       | (:headers | "headers" | 1 | -2) -> headers?
       | (:body | "body" | 2 | -1) -> String?
@@ -476,6 +478,8 @@ module ConnectRPC
 
   end
 
+  # cause is an in-process exception behind an error response. It is never sent
+  # and is not a record member. The client raises its decoded error with it.
   class TransportResponse
     def self.new: (status: Integer, headers: headers, body: String) -> TransportResponse
       | ({ status: Integer, headers: headers, body: String }) -> TransportResponse
@@ -488,6 +492,7 @@ module ConnectRPC
     attr_accessor status: Integer
     attr_accessor headers: headers
     attr_accessor body: String
+    attr_accessor cause: StandardError?
     def []: (:status | "status" | 0 | -3) -> Integer
       | (:headers | "headers" | 1 | -2) -> headers
       | (:body | "body" | 2 | -1) -> String
