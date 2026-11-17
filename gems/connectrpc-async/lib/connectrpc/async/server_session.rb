@@ -68,6 +68,9 @@ module ConnectRPC
                                     on_error: on_tls_error, alpn_protocols: alpn_protocols)
         @retirement_floor = 0
         @admitted = {}
+        # HTTP/2 streams whose admission slot was taken while their HEADERS
+        # were read, until their dispatch reaches the admission point.
+        @reserved = {}
         @h1_wire = {}
         @identities = {}
         install_owner_guard
@@ -320,6 +323,7 @@ module ConnectRPC
         resource.connection = connection
         connection.resource = resource
         connection.stream_limit = @max_concurrent_streams
+        connection.admission = self
         connection.receive_windows(stream: @stream_receive_window, connection: @connection_receive_window)
         connection.read_connection_preface(Internal.settings(@max_requests,
                                                              max_concurrent_streams: @max_concurrent_streams,
@@ -376,14 +380,17 @@ module ConnectRPC
             resource.exchange = exchange
           end
         end
-        @admitted.delete_if { |stream, completed| completed && stream.respond_to?(:closed?) && stream.closed? }
+        prune_admissions
         http2 = request.respond_to?(:stream)
         key = http2 ? request.stream : request
-        # An HTTP/2 stream on a draining connection was opened before its
-        # cutoff, so only full admission or an abort refuses it, with
+        # A stream reserved while its HEADERS were read already holds its
+        # slot. An HTTP/2 stream on a draining connection was opened before
+        # its cutoff, so only full admission or an abort refuses it, with
         # REFUSED_STREAM. Aborting starts no more application work.
-        if @admitted.size >= @max_requests || @aborting || resource.finished? ||
+        reserved = http2 && @reserved.delete(key)
+        if (!reserved && @admitted.size >= @max_requests) || @aborting || resource.finished? ||
            (!http2 && (@state != :running || resource.draining))
+          @admitted.delete(key) if reserved
           exchange&.decision = :admission_rejected
           @on_request_rejected&.call
           return Internal::ServerConnection::REFUSAL if http2
@@ -501,6 +508,53 @@ module ConnectRPC
         publication&.complete(error)
       end
 
+      # Called by the connection reader while a new stream's HEADERS are
+      # read, without yielding. Takes a host admission slot for the stream
+      # unless none is free, so a burst of HEADERS read together cannot
+      # overcommit before any of them dispatches.
+      def reserve_admission(stream)
+        prune_admissions
+        return false if @aborting || stream.connection.resource&.finished? || @admitted.size >= @max_requests
+
+        @admitted[stream] = false
+        @reserved[stream] = true
+      end
+
+      # Observes a stream refused at HEADERS once, like a refusal at
+      # dispatch, but in a task of its own: the reader never waits for or
+      # fails on it, and retiring the connection does not drop it. Delivery
+      # completes once the reset is written. The lifecycle never activates.
+      def refuse_admission(request, written)
+        return if @lifetime.finished?
+
+        @lifetime.async(finished: false) do
+          lifecycle = @lifecycle_factory&.call(request)
+          if lifecycle
+            exchange = Internal::Exchange.new(lifecycle)
+            exchange.decision = :admission_rejected
+          end
+          @on_request_rejected&.call
+          delivered = written.wait
+        rescue StandardError
+          nil
+        ensure
+          exchange&.finish(delivered)
+        end
+      end
+
+      # Capacity is only consulted here, so pruning is as prompt as a close
+      # hook. A reservation ends with its stream or connection; an admitted
+      # stream ends once its processor completed and its stream closed.
+      def prune_admissions
+        @admitted.delete_if { |stream, completed| completed && stream.respond_to?(:closed?) && stream.closed? }
+        @reserved.delete_if do |stream, _|
+          next false unless stream.closed? || stream.connection.retiring?
+
+          @admitted.delete(stream)
+          true
+        end
+      end
+
       def complete_admission(key, processor: false, wire: false)
         # An absent admission is terminal. Late or duplicate events cannot
         # recreate either side of the processor/wire join.
@@ -543,6 +597,7 @@ module ConnectRPC
         @resources.each { |resource| resource.draining = true }
         drained = drain_resources(@resources, expires, reason: "graceful_stop")
         @admitted.clear
+        @reserved.clear
         @h1_wire.clear
         decide_close_outcome(drained)
       end

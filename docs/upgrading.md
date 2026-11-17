@@ -68,11 +68,10 @@ These affect native HTTP/2 connections of the Async `Transport`,
   64 KiB, so all streams on a connection shared 64 KiB per round trip. Stream
   windows and the per-stream ingress bound stay at 64 KiB, so each connection's
   retention ceiling is unchanged. A server can now reach that ceiling in one
-  round trip, including on streams it then refuses because host admission is
-  full. Pass `connection_receive_window: 65_536` to keep the old connection
-  window, or raise `stream_receive_window` for faster large bodies over
-  high-latency links. See
-  [flow-control windows](../gems/connectrpc-async/README.md#flow-control-windows).
+  round trip on the streams it admits. Pass `connection_receive_window: 65_536`
+  to keep the old connection window, or raise `stream_receive_window` for faster
+  large bodies over high-latency links. See [flow-control
+  windows](../gems/connectrpc-async/README.md#flow-control-windows).
 
 These affect `connectrpc-otel` spans and trace propagation.
 
@@ -160,6 +159,14 @@ and [Accept errors](../gems/connectrpc-async/README.md#accept-errors).
   large responses over slow links. With nil, a control frame such as a PING
   ACK queued behind the stalled write still ends the connection after the
   keepalive `timeout`.
+- An HTTP/2 stream that arrives while `max_requests` admission is full is
+  refused with `RST_STREAM(REFUSED_STREAM)` while its HEADERS are read, before
+  any of its DATA, instead of after its request was queued for dispatch. Its
+  request body is never buffered, and an admitted stream holds its slot from
+  its HEADERS. Each refusal is still observed once as `admission_rejected`
+  without an HTTP status, and Falcon still counts it in `requests_total`, but
+  its handle is created after the refusal. See
+  [Stream admission](../gems/connectrpc-async/README.md#stream-admission).
 
 These affect `connectrpc-sentry` client propagation. See
 [Propagation](../gems/connectrpc-sentry/README.md#propagation).
