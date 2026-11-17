@@ -11,7 +11,8 @@ module ConnectRPC
       private_constant :ACCEPT_RETRY_DELAYS, :ACCEPT_RETRY_ERRORS
 
       # The Host owns no tunnels or socket handoff, so its fallback receives no
-      # CONNECT or extended CONNECT request and cannot switch protocols.
+      # CONNECT request and cannot switch protocols. Plain CONNECT has no path
+      # and fails in core routing before reaching this guard.
       class FallbackGuard
         def initialize(fallback)
           @fallback = fallback
@@ -21,9 +22,13 @@ module ConnectRPC
           return ::Protocol::HTTP::Response[501, {}, nil] if request.method == "CONNECT" || request.protocol
 
           response = @fallback.call(request)
-          return response unless response && (response.status == 101 || response.protocol)
+          return response unless response
 
-          response.close
+          # The fallback contract requires only status, headers and body.
+          switching = response.status == 101 || (response.respond_to?(:protocol) && response.protocol)
+          return response unless switching
+
+          response.body&.close
           ::Protocol::HTTP::Response[501, {}, nil]
         end
       end

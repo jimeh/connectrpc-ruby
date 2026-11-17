@@ -35,9 +35,10 @@ RSpec.describe "Host native fallback" do
       expect(get(connection, host, "/metrics")).to eq([200, "fallback /metrics"])
       expect(get(connection, host, "/some/page?q=1&r=two", method: "DELETE"))
         .to eq([200, "fallback /some/page?q=1&r=two"])
-      # A registered service prefix stays with core, including unknown methods.
+      # A registered service prefix stays with core, including unknown methods:
+      # core rejects the missing content type instead of the fallback's 200.
       status, = get(connection, host, "/example.v1.EchoService/Unknown", method: "POST")
-      expect(status).not_to eq(200)
+      expect(status).to eq(415)
       expect(seen).to eq([%w[GET /metrics], ["DELETE", "/some/page?q=1&r=two"]])
     ensure
       connection&.close
@@ -74,26 +75,41 @@ RSpec.describe "Host native fallback" do
     end
   end
 
-  # protocol-http2 requests have no :path for plain CONNECT, and core
-  # routing needs a path, so the guard is exercised directly here.
-  it "guards plain CONNECT and protocol-switching fallback responses" do
-    switching = Protocol::HTTP::Response[101, {}, nil]
-    upgraded = Protocol::HTTP::Response[200, {}, ["body"]]
-    upgraded.protocol = "websocket"
-    responses = [switching, upgraded]
-    calls = []
-    guard = ConnectRPC::Async::Host.const_get(:FallbackGuard).new(lambda { |request|
-      calls << request.path
-      responses.shift
-    })
-    connect = Protocol::HTTP::Request["CONNECT", nil, authority: "example.test:443"]
-    expect(guard.call(connect).status).to eq(501)
-    expect(calls).to be_empty
-    body = upgraded.body
-    expect([guard.call(Protocol::HTTP::Request["GET", "/a"]).status,
-            guard.call(Protocol::HTTP::Request["GET", "/b"]).status]).to eq([501, 501])
-    expect(calls).to eq(%w[/a /b])
-    expect(body).to be_empty
+  # Plain CONNECT (RFC 9113 8.5) carries no :path, so core routing fails its
+  # stream before the fallback, with or without one, as before fallbacks existed.
+  it "never passes plain CONNECT to the fallback and keeps serving siblings" do
+    reactor do
+      seen = []
+      host = ConnectRPC::Async::Host.new(server: server, fallback: recording_fallback(seen)).start
+      raw, connection = h2c(host)
+      connect = Protocol::HTTP::Request["CONNECT", nil, authority: "example.test:443"]
+      expect { connection.call(connect) }.to raise_error(Protocol::HTTP::RemoteError)
+      expect(get(connection, host, "/after")).to eq([200, "fallback /after"])
+      expect(seen).to eq([%w[GET /after]])
+    ensure
+      connection&.close
+      AsyncHelpers::INTERNAL.raw_close(raw) if raw
+      host&.close(grace: 0)
+    end
+  end
+
+  it "replaces protocol-switching fallback responses with 501 and closes them" do
+    reactor do
+      switching = Protocol::HTTP::Response[101, {}, nil]
+      upgraded = Protocol::HTTP::Response[200, {}, ["body"]]
+      upgraded.protocol = "websocket"
+      body = upgraded.body
+      responses = [switching, upgraded]
+      host = ConnectRPC::Async::Host.new(server: server, fallback: ->(_request) { responses.shift }).start
+      raw, connection = h2c(host)
+      expect([get(connection, host, "/a"), get(connection, host, "/b")]).to eq([[501, nil], [501, nil]])
+      expect(responses).to be_empty
+      expect(body).to be_empty
+    ensure
+      connection&.close
+      AsyncHelpers::INTERNAL.raw_close(raw) if raw
+      host&.close(grace: 0)
+    end
   end
 
   it "fails only a raising fallback request and keeps serving siblings" do

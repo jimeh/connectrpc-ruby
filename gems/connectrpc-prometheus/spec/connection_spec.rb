@@ -42,6 +42,8 @@ RSpec.describe "Async client connection metrics" do
       expect(value(:grpc_client_connection_state_changes_total, transport: "refused", state: "connecting")).to eq(1)
       expect(state("refused", "transient_failure")).to eq(1)
       expect(%w[idle connecting ready closing closed].map { |name| state("refused", name) }).to all(eq(0))
+      # The fail-fast call stopped waiting when its attempt failed.
+      expect(value(:grpc_client_pending_calls, transport: "refused")).to eq(0)
     ensure
       transport&.close(grace: 0)
       reserved&.close

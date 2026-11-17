@@ -113,10 +113,11 @@ unrelated paths get a bare 404. A non-callable fallback raises `ArgumentError`.
 
 Fallback requests share the Host's request admission (`max_requests`, bare 503
 when full) and connection lifetime. An exception from the fallback fails only
-its own stream. The Host owns no tunnels or socket handoff: a `CONNECT` or
-extended CONNECT (`:protocol`) request gets a bare 501 without calling the
-fallback, and a fallback response with status 101 or a `protocol` is closed and
-replaced by 501.
+its own stream. The Host owns no tunnels or socket handoff, so no `CONNECT`
+request reaches the fallback. An extended CONNECT (`:protocol`) request gets a
+bare 501. A plain CONNECT has no `:path`, so the Host resets its stream, with or
+without a fallback, as before. A fallback response with status 101 or a
+`protocol` is closed and replaced by 501.
 
 The fallback inherits the Host's HTTP/2-only listener, so it serves only
 HTTP/2 clients: h2c with prior knowledge, or TLS with ALPN `h2`. For example,
