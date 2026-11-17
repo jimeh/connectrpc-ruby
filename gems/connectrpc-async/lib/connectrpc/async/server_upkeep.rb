@@ -13,10 +13,10 @@ module ConnectRPC
       # keeps its own bound: a control frame waiting behind it fails the
       # connection no earlier than that write's deadline. The frames queued
       # behind a frame written late that way waited for the same write, so
-      # their deadlines count again from when it was written. At most MAX_PENDING frames wait; a
-      # peer that outruns the writer, such as a PING flood with enforcement
-      # off, fails the connection rather than growing the queue or blocking
-      # the reader.
+      # their deadlines count again from when it was written. At most
+      # MAX_PENDING frames wait; a peer that outruns the writer, such as a
+      # PING flood with enforcement off, fails the connection rather than
+      # growing the queue or blocking the reader.
       class ControlWriter
         MAX_PENDING = 1024
 
@@ -70,10 +70,11 @@ module ConnectRPC
 
         # Earlier frames meet earlier deadlines, so time spent queued behind
         # them is already within this frame's bound. A frame written past its
-        # deadline could only have waited for a timed write, so `run` restarts
-        # the deadlines of the frames behind it from that write. Both watchdogs stop
-        # before the guard is released, because release hands control to the
-        # next waiter before this task resumes.
+        # deadline waited for a timed write, or its own bounded write crossed
+        # the deadline; either way the frames behind it waited too, so `run`
+        # restarts their deadlines from that write. Both watchdogs stop before
+        # the guard is released, because release hands control to the next
+        # waiter before this task resumes.
         def deliver(frame, deadline)
           connection = @resource.connection
           queued = watchdog(deadline - @clock.now, "HTTP/2 control frame was not written in time", behind: @writes)

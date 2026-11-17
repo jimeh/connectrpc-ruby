@@ -1122,8 +1122,16 @@ RSpec.shared_examples "HTTP/2 server keepalive" do
           gate = hold_frames(fixture.resource, Protocol::HTTP2::DataFrame::TYPE)
           fixture.log[:feeds]["sibling"].enqueue("two")
           gate.started.dequeue
-          send_ping(client, "bdp00001")
-          send_ping(client, "bdp00002")
+          # Both PINGs in one write, so both ACKs queue at the same instant.
+          client.connection.write_frames do |framer|
+            %w[bdp00001 bdp00002].each do |payload|
+              frame = Protocol::HTTP2::PingFrame.new
+              frame.pack(payload)
+              framer.write_frame(frame)
+            end
+          end
+          queue = fixture.resource.upkeep.instance_variable_get(:@writer).instance_variable_get(:@queue)
+          wait_until(task, "the second ACK queued behind the first") { queue.size == 1 }
           await_due(task, fixture.clock, 20)
           fixture.clock.advance(20)
           wait_until(task, "the control deadline waits for the write bound") { due_at(fixture.clock, 60) == 2 }

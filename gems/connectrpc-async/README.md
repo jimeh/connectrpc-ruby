@@ -187,10 +187,10 @@ set `max_concurrent_streams` lower explicitly.
   connection, once it holds the connection's frame guard. The default is 60
   seconds, independent of keepalive. This covers response HEADERS, DATA,
   trailers and END_STREAM, resets and control frames, for every RPC shape and
-  whatever `response_body_timeout` is. A peer that stops reading its
-  socket fills the server's send buffer and stalls the write; the connection is
-  then aborted raw socket first, which cancels its handlers and releases all of
-  its slots. The bound applies to each frame or header block, not to a whole
+  whatever `response_body_timeout` is. A peer that stops reading its socket
+  fills the server's send buffer and stalls the write; the connection is then
+  aborted raw socket first, which cancels its handlers and releases all of its
+  slots. The bound applies to each frame or header block, not to a whole
   response, and steady progress within one write does not extend it. A write
   finishes when the kernel accepts its bytes. Once the socket's send buffer is
   full, the kernel accepts more only after the peer has drained part of it,
@@ -199,17 +199,18 @@ set `max_concurrent_streams` lower explicitly.
   that much within the bound, is also aborted. Unlike grpc-go's
   `TCP_USER_TIMEOUT`, which fires when sent data stays unacknowledged, or unsent
   behind a zero window, for that long, so that any progress resets it, this
-  bound is not reset by partial progress. Control frames queued behind a
-  stalled write, such as the ACKs of a client's BDP or keepalive PINGs or a
-  drain's GOAWAY and PING, wait for that write's bound instead of failing the
-  connection at the keepalive `timeout` first, and their deadlines count again
-  once it finishes. A control frame can therefore wait for several frame writes
-  in turn, each within its own bound, while the peer keeps reading. Raise `frame_write_timeout` for clients that read large
-  responses over slow links. nil turns the bound off; a control frame queued
-  behind a stalled write then still ends the connection after the keepalive
-  `timeout`, or 20 seconds without keepalive. Otherwise the value is finite
-  positive seconds. Application work under the guard, such as closing a HEAD
-  response's body, does not count as a frame write.
+  bound is not reset by partial progress. Control frames queued behind a stalled
+  write, such as the ACKs of a client's BDP or keepalive PINGs or a drain's
+  GOAWAY and PING, wait for that write's bound instead of failing the connection
+  at the keepalive `timeout` first, and their deadlines count again once it
+  finishes. A control frame can therefore wait for several frame writes in turn,
+  each within its own bound, while the peer keeps reading. Raise
+  `frame_write_timeout` for clients that read large responses over slow links.
+  nil turns the bound off; a control frame queued behind a stalled write then
+  still ends the connection after the keepalive `timeout`, or 20 seconds without
+  keepalive. Otherwise the value is finite positive seconds. Application work
+  under the guard, such as closing a HEAD response's body, does not count as a
+  frame write.
 
 These two response bounds go beyond grpc-go and Go's `golang.org/x/net/http2`,
 which have no equivalent. grpc-go waits for flow-control credit without a bound
@@ -403,16 +404,16 @@ nonnegative or nil and requires `max_connection_age`.
 - **Control frames.** Every HTTP/2 connection writes its GOAWAYs, drain PINGs
   and stream resets, and with keepalive its PING ACKs too, through a
   per-connection control writer, so the reader never blocks writing its own
-  replies. The reader can still stall at its next buffer
-  refill, which flushes pending output, behind an outbound write that does not
-  finish. Each control frame must be written within `timeout` seconds of being
-  queued, including any wait behind another stream's stuck frame, and its own
-  write within the 100 ms cleanup allowance; otherwise the connection is
-  aborted. Since 0.3.0, a stuck frame write that `frame_write_timeout` bounds
-  is the exception: control frames waiting behind it wait for its bound, and
-  their deadlines count again from when it finishes. At most 1024 control frames wait; a peer that outruns the writer,
-  such as a PING flood with `min_time: nil`, fails the connection. Server
-  PINGs, age grace and close also bound a stuck connection. The
+  replies. The reader can still stall at its next buffer refill, which flushes
+  pending output, behind an outbound write that does not finish. Each control
+  frame must be written within `timeout` seconds of being queued, including any
+  wait behind another stream's stuck frame, and its own write within the 100 ms
+  cleanup allowance; otherwise the connection is aborted. Since 0.3.0, a stuck
+  frame write that `frame_write_timeout` bounds is the exception: control frames
+  waiting behind it wait for its bound, and their deadlines count again from
+  when it finishes. At most 1024 control frames wait; a peer that outruns the
+  writer, such as a PING flood with `min_time: nil`, fails the connection.
+  Server PINGs, age grace and close also bound a stuck connection. The
   `too_many_pings` GOAWAY is stricter: it must be written within 100 ms of the
   third strike, or the connection is aborted. Without keepalive, the reader
   answers client PINGs itself, and control frames use the 20-second default
