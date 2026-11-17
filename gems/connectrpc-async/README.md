@@ -603,7 +603,10 @@ nil or finite positive seconds, `keepalive` is nil or a `Keepalive`, and
   waiting call can open a replacement while it drains; GOAWAY alone never
   dials, and replacement is not a failure for backoff. Otherwise it keeps its
   slot until its streams finish, and joins the set when a member retires. The
-  client never has more than `connection_limit + max_draining` sockets open.
+  client never has more than `connection_limit + max_draining` live sockets.
+  A retiring connection's socket is shut down at once and stops counting; its
+  descriptor closes once the connection's tasks finish, which can include a
+  call that is resending on a replacement connection.
 - `drain_timeout` closes any graceful GOAWAY connection, in the set or not,
   that still has streams after that many seconds; those streams fail with
   `unavailable` and are not resent. `close` cancels drain timers, and its own

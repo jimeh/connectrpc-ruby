@@ -1288,9 +1288,6 @@ module ConnectRPC
           Internal.raw_close(@raw)
           @retirement_completed = true
           changed
-          # The client manager reserves a removed connection's slot until its
-          # descriptor is closed.
-          unusable
         ensure
           # An interrupted retirement still releases the descriptor, although
           # a fiber still blocked on raw may then get a late close interrupt.

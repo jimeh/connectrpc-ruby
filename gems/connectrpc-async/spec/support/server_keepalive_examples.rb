@@ -549,13 +549,20 @@ RSpec.shared_examples "HTTP/2 server keepalive" do
           keeper = fixture.client.raw.dup
           resource = fixture.resource
           raw = resource.raw
-          # The discard read lingers after its EOF, so retirement reaches its
-          # closes first. No close may reach raw while the read is on it.
+          # After its EOF, the discard read stays on raw until retirement has
+          # joined every member and waits on the resource, or until a close
+          # reaches raw. No close may reach raw while the read is on it.
           discarding_at_close = []
+          gate = nil
           allow(raw).to receive(:readpartial).and_wrap_original do |read, *args|
             read.call(*args)
           rescue EOFError
-            3.times { Async::Task.current.yield }
+            members = resource.instance_variable_get(:@retirement_members)
+            wait_until(Async::Task.current, "retirement joined its members") do
+              gate = :closed unless discarding_at_close.empty?
+              gate ||= :joined if !members.empty? && members.keys.all?(&:finished?) && resource.progress.waiting?
+              gate
+            end
             raise
           end
           allow(raw).to receive(:close).and_wrap_original do |close|
@@ -571,6 +578,7 @@ RSpec.shared_examples "HTTP/2 server keepalive" do
           expect(closing.wait).to be(false)
           expect(retired?(resource)).to be(true)
           expect(raw).to be_closed
+          expect(gate).to eq(:joined)
           expect(discarding_at_close).not_to be_empty
           expect(discarding_at_close).to all(be(false))
         ensure

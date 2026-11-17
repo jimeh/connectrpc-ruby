@@ -86,7 +86,10 @@ These affect native HTTP/2 connections of the Async `Transport`,
   it closed the descriptor first, so a peer saw a reset whenever unread input
   remained. It now sees end of stream first. On Ruby 4 the old close could
   raise a stray `IOError: stream closed in another thread` into a server
-  connection's reader task.
+  connection's reader task. The client's `connection_limit + max_draining`
+  bound counts live sockets: a retiring socket stops counting once it is shut
+  down, so its descriptor can stay open beside a replacement until the
+  retiring connection's tasks finish.
 
 These affect `connectrpc-otel` spans and trace propagation.
 

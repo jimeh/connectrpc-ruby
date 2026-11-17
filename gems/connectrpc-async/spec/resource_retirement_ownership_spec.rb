@@ -398,13 +398,9 @@ RSpec.describe "Retirement lifecycle coordinators" do
       port = bound.sockets.first.local_address.ip_port
       boundary = Async::Queue.new
       release = Async::Queue.new
-      peers = nil
-      # Each peer must already read end of stream, not just carry a flag.
       session = ConnectRPC::Async::ServerSession.new(application: ConnectRPC::Async::Application.new(server: server),
                                                      stop_accepting: lambda {
-                                                       boundary.enqueue(peers.map do |peer|
-                                                         peer.read_nonblock(1, exception: false)
-                                                       end)
+                                                       boundary.enqueue(true)
                                                        release.dequeue
                                                        bound.close
                                                      }).start
@@ -415,7 +411,12 @@ RSpec.describe "Retirement lifecycle coordinators" do
       end
       resources = session.instance_variable_get(:@resources).dup
       aborter = task.async(finished: false) { session.abort }
-      expect(boundary.dequeue).to eq([nil, nil])
+      boundary.dequeue
+      # While listener cleanup is held, each peer reads end of stream; the
+      # server descriptors stay open until retirement.
+      wait_until(task, "both peers read end of stream") do
+        peers.all? { |peer| peer.read_nonblock(1, exception: false).nil? }
+      end
       expect(resources.map(&:raw)).to all(satisfy { |raw| !raw.closed? })
       expect(aborter).not_to be_finished
       expect(session.instance_variable_get(:@state)).to eq(:closing)
@@ -435,36 +436,48 @@ RSpec.describe "Retirement lifecycle coordinators" do
     end
   end
 
-  it "closes accepted raw peers that never served when listener cleanup fails" do
-    reactor do |task|
-      bound = IO::Endpoint.tcp("127.0.0.1", 0).bound
-      port = bound.sockets.first.local_address.ip_port
-      failure = RuntimeError.new("listener cleanup failed")
-      session = ConnectRPC::Async::ServerSession.new(application: ConnectRPC::Async::Application.new(server: server),
-                                                     stop_accepting: -> { raise failure }).start
-      peers = 2.times.map do
-        peer = IO::Endpoint.tcp("127.0.0.1", port).connect
-        raw, = bound.sockets.first.accept
-        session.accept(raw)
-        peer
+  [false, true].each do |resource_fails|
+    it "closes accepted raw peers that never served when listener cleanup fails" \
+       "#{' and the first resource abort raises' if resource_fails}" do
+      reactor do |task|
+        bound = IO::Endpoint.tcp("127.0.0.1", 0).bound
+        port = bound.sockets.first.local_address.ip_port
+        failure = RuntimeError.new("listener cleanup failed")
+        session = ConnectRPC::Async::ServerSession.new(application: ConnectRPC::Async::Application.new(server: server),
+                                                       stop_accepting: -> { raise failure }).start
+        peers = 2.times.map do
+          peer = IO::Endpoint.tcp("127.0.0.1", port).connect
+          raw, = bound.sockets.first.accept
+          session.accept(raw)
+          peer
+        end
+        resources = session.instance_variable_get(:@resources).dup
+        if resource_fails
+          allow(resources.first).to receive(:abort).and_wrap_original do |abort|
+            abort.call
+            raise "first resource abort failed"
+          end
+        end
+        # The listener failure is raised once every resource has retired.
+        expect { session.abort }.to raise_error(equal(failure))
+        expect(resources).to all(satisfy { |resource| retirement_complete?(resource) })
+        expect(resources.map(&:raw)).to all(be_closed)
+        wait_until(task, "both peers read end of stream") do
+          peers.all? { |peer| peer.read_nonblock(1, exception: false).nil? }
+        end
+        # The owner guard reports the same cleanup failure when it ends.
+        guard = session.instance_variable_get(:@lifetime)
+        reported = task.async do
+          guard.wait
+        rescue RuntimeError => e
+          e
+        end
+        guard.cancel
+        expect(reported.wait).to equal(failure)
+      ensure
+        peers&.each { |raw| AsyncHelpers::INTERNAL.raw_close(raw) }
+        bound&.close
       end
-      resources = session.instance_variable_get(:@resources).dup
-      expect { session.abort }.to raise_error(equal(failure))
-      expect(resources).to all(satisfy { |resource| retirement_complete?(resource) })
-      expect(resources.map(&:raw)).to all(be_closed)
-      expect(peers.map { |peer| peer.read_nonblock(1, exception: false) }).to eq([nil, nil])
-      # The owner guard reports the same cleanup failure when it ends.
-      guard = session.instance_variable_get(:@lifetime)
-      reported = task.async do
-        guard.wait
-      rescue RuntimeError => e
-        e
-      end
-      guard.cancel
-      expect(reported.wait).to equal(failure)
-    ensure
-      peers&.each { |raw| AsyncHelpers::INTERNAL.raw_close(raw) }
-      bound&.close
     end
   end
 end

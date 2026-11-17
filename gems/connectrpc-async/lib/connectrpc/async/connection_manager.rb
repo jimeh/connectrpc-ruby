@@ -8,12 +8,12 @@ module ConnectRPC
       # published state. Attempts run under the transport lifetime, outside any
       # RPC task or lifecycle; waiting calls only observe them.
       #
-      # Open sockets never exceed `connection_limit + max_draining`: the
+      # Live sockets never exceed `connection_limit + max_draining`: the
       # active cap counts accounted connections outside the draining set, the
-      # attempt in progress and removed connections whose raw socket is still
-      # open; the draining set holds at most `max_draining` connections.
-      # Retirement shuts a socket down at once but closes it only after the
-      # connection's tasks have joined.
+      # attempt in progress and removed connections whose raw socket has not
+      # yet failed; the draining set holds at most `max_draining` connections.
+      # A failed socket is shut down in both directions; retirement closes its
+      # descriptor once the connection's tasks have joined.
       class ConnectionManager
         FULL = "HTTP/2 transport admission is full"
         CLOSING = "HTTP/2 transport is closing"
@@ -157,7 +157,7 @@ module ConnectRPC
 
         # Removes the slot from accounting and wakes waiters before the
         # potentially blocking close joins the connection's retirement. The
-        # slot stays reserved until retirement has closed its raw socket.
+        # slot stays reserved until the close has failed its raw socket.
         def retire(connection)
           return unless @connections.key?(connection)
 
@@ -229,16 +229,15 @@ module ConnectRPC
           @progress.signal
         end
 
-        # Called on GOAWAY, on resource abort and when retirement completes. A
-        # removed connection's reservation ends once retirement has closed its
-        # socket.
+        # Called on GOAWAY and on resource abort, which fails raw TCP first. A
+        # removed connection's reservation ends once its socket has failed.
         def connection_unusable(resource)
           calm(resource)
           connection = resource.connection
           return unless connection
 
           if @reserved.key?(connection)
-            return unless resource.send(:retirement_completed?)
+            return unless resource.finished?
 
             @reserved.delete(connection)
             return reconcile
@@ -272,14 +271,14 @@ module ConnectRPC
         end
 
         # Every removal from accounting ends draining membership and the drain
-        # timer, and reserves the slot until the raw socket is closed. Outside
+        # timer, and reserves the slot until the raw socket fails. Outside
         # transport close, it is the one place a ready connection is reported
         # closed, with the first reason its resource recorded.
         def remove(connection)
           @connections.delete(connection)
           @draining.delete(connection)
           Internal.cancel(@drain_timers.delete(connection))
-          @reserved[connection] = true unless connection.resource.send(:retirement_completed?)
+          @reserved[connection] = true unless connection.resource.finished?
           emit(:connection_closed, outcome: connection.resource.close_reason) unless @closing
         end
 

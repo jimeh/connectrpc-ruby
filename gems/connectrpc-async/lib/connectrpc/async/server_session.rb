@@ -648,21 +648,22 @@ module ConnectRPC
       end
 
       def retire_session
-        # Listener cleanup and a Ruby 4 close can both yield. Shut every peer
-        # down first, which never yields.
+        # Listener cleanup and a Ruby 4 close can both yield. Fail every peer
+        # before crossing either: an H2 shutdown never yields, so H2 peers
+        # fail before HTTP/1 retirement closes its raw sockets.
         h2, http1 = @resources.partition { |resource| resource.is_a?(Internal::Resource) }
         h2.each { |resource| resource.send(:fail_raw) }
-        http1.each { |resource| shutdown_raw(resource.raw) }
-        # HTTP/1 retirement still expects its raw socket closed first. Each
-        # close can yield, so it follows every shutdown.
-        http1.each { |resource| Internal.raw_close(resource.raw) } # rubocop:disable Style/CombinableLoops
-        begin
-          stop_accepting
-        ensure
-          # Retirement closes each H2 descriptor, even after a listener
-          # cleanup failure.
-          @resources.each(&:abort)
+        http1.each { |resource| Internal.raw_close(resource.raw) }
+        # Only retirement closes an H2 descriptor, so every resource retires
+        # even when listener cleanup or another resource fails; the first
+        # failure is raised afterwards.
+        failure = retain_failure { stop_accepting }
+        @resources.each do |resource|
+          error = retain_failure { resource.abort }
+          failure ||= error
         end
+        raise failure if failure
+
         @admitted.clear
         @h1_wire.clear
         @tls.close
@@ -670,10 +671,11 @@ module ConnectRPC
         Internal.cancel(@lifetime)
       end
 
-      def shutdown_raw(raw)
-        raw.shutdown(Socket::SHUT_RDWR) if raw && !raw.closed?
-      rescue IOError, SystemCallError
+      def retain_failure
+        yield
         nil
+      rescue Exception => e # rubocop:disable Lint/RescueException -- an interruption is re-raised once every peer retires
+        e
       end
     end
   end
