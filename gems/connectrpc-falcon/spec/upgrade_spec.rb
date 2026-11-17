@@ -90,11 +90,14 @@ RSpec.describe "Falcon HTTP/1.1 Upgrade offers" do
         when "/send-interim" then request.send_interim_response(101, switch)
         when "/write-interim" then request.write_interim_response(101, switch)
         when "/interim-callback" then request.interim_response.call(101, switch)
+        when "/string-interim" then request.send_interim_response("101", switch)
+        when "/connection-interim" then request.connection.write_interim_response(request.version, 101, switch)
         end
         [200, { "content-type" => "text/plain" }, ["accepted"]]
       end
       falcon(rack_app: rack) do |_host, origin|
-        routes = %w[/protocol /101 /send-interim /write-interim /interim-callback]
+        routes = %w[/protocol /101 /send-interim /write-interim /interim-callback /string-interim
+                    /connection-interim]
         routes.each do |route|
           request = "POST #{route} HTTP/1.1\r\nHost: localhost\r\nContent-Length: 5\r\n#{websocket_offer}\r\nhello"
           expect(offered(origin, request).values_at(0, 2)).to eq([501, true]), route

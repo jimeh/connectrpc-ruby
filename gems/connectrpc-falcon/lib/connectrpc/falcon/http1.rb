@@ -87,6 +87,14 @@ module ConnectRPC
         read_body(headers)
       end
 
+      # RackGuard turns this into 501. Checking at the writer also covers code
+      # that reaches the connection directly instead of the guarded request.
+      def write_interim_response(version, status, headers, reason = nil)
+        raise Unsupported, "Protocol switching is unsupported" if Integer(status, exception: false) == 101
+
+        super
+      end
+
       def each(...)
         super
       rescue Exception => e # rubocop:disable Lint/RescueException -- cancellation also ends the exchange

@@ -4,10 +4,11 @@ require "English"
 
 module ConnectRPC
   module Falcon
-    class RackGuard
-      class Unsupported < StandardError; end
-      private_constant :Unsupported
+    # An application tried to take over the socket or switch protocols.
+    class Unsupported < StandardError; end
+    private_constant :Unsupported
 
+    class RackGuard
       class Request < SimpleDelegator
         def initialize(request, reject)
           super(request)
@@ -19,13 +20,13 @@ module ConnectRPC
 
         # A 101 interim response would switch protocols before the returned
         # status is checked. Other interim responses, such as 100 and 103, pass.
-        def send_interim_response(status, headers)
-          @reject.call if status == 101
+        def send_interim_response(status, headers = nil)
+          @reject.call if Integer(status, exception: false) == 101
           __getobj__.interim_response&.call(status, headers)
         end
 
         def write_interim_response(status, headers = nil) = send_interim_response(status, headers)
-        def interim_response = ->(status, headers) { send_interim_response(status, headers) }
+        def interim_response = ->(status, headers = nil) { send_interim_response(status, headers) }
       end
       private_constant :Request
 
