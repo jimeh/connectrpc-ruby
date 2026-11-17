@@ -1,7 +1,7 @@
 # frozen_string_literal: true
 
 RSpec.describe "gRPC HTTP/2 frame evidence" do
-  def with_grpc_peer(responder)
+  def with_grpc_peer(responder, **transport_options)
     reactor do |task|
       bound = IO::Endpoint.tcp("127.0.0.1", 0).bound
       listener = bound.sockets.first
@@ -16,7 +16,7 @@ RSpec.describe "gRPC HTTP/2 frame evidence" do
         AsyncHelpers::INTERNAL.raw_close(raw)
       end
       origin = "http://127.0.0.1:#{listener.local_address.ip_port}"
-      transport = ConnectRPC::Async::Transport.new(origin: origin)
+      transport = ConnectRPC::Async::Transport.new(origin: origin, **transport_options)
       declaration = ConnectRPC::BidiStreamMethod.new(service: "wire.GRPC", name: "Chat",
                                                      request_type: AsyncHelpers::MESSAGE,
                                                      response_type: AsyncHelpers::MESSAGE)
@@ -188,7 +188,9 @@ RSpec.describe "gRPC HTTP/2 frame evidence" do
       headers = Protocol::HTTP::Headers.new([%w[content-type text/html]])
       incoming.send_response(Protocol::HTTP::Response[503, headers, RejectedMediaBody.new(headers, total, outcome)])
     end
-    with_grpc_peer(responder) do |core, declaration, transport|
+    # Unread bytes keep their credit, so the peer can send at most the drain
+    # plus one client stream window; 64 KiB keeps that far below EOF.
+    with_grpc_peer(responder, stream_receive_window: 65_536) do |core, declaration, transport|
       failure = begin
         core.bidi_stream(declaration) do |duplex|
           duplex.close_send

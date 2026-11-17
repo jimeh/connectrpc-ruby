@@ -350,8 +350,9 @@ including a failure after dispatch started but before the stream opened.
 Each direction retains at most one queued 16,384-byte output fragment and one
 writer-owned in-flight fragment. One current encoded and decoded message,
 5-byte prefix and at most one 16 KiB input remainder are separate allocations.
-Native ingress retains at most one stream receive window, 65,536 bytes by
-default in at most five entries, with chunks at most 16,384 bytes; see
+Native ingress retains at most one stream receive window, with chunks at most
+16,384 bytes: by default 65,536 bytes in at most five entries on a server and
+4 MiB on an Async HTTP/2 client; see
 [flow-control windows](../gems/connectrpc-async/README.md#flow-control-windows). Stream credit follows consumption/discard; connection credit
 allows healthy siblings/control traffic to advance. These are payload accounting
 bounds, not RSS, CPU, HPACK, socket/TLS, caller retention or native codec guarantees.

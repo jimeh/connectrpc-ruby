@@ -53,7 +53,8 @@ RSpec.shared_examples "native streaming bounds and cancellation" do |protocol = 
         end
         bus = ConnectRPC::Instrumentation.new(subscribers: [subscriber])
         host, origin, listener = build_stream_host(streaming_server(handlers, instrumentation: bus), nil, "http")
-        transport = ConnectRPC::Async::Transport.new(origin: origin)
+        # Responses saturate a 64 KiB client window, as requests do the host default.
+        transport = ConnectRPC::Async::Transport.new(origin: origin, stream_receive_window: 65_536)
         core = ConnectRPC::Client.new(base_url: origin, transport: transport, protocol: protocol,
                                       instrumentation: bus, binding: ConnectRPC::Bindings::GoogleProtobuf.new)
         source = ConnectRPC::CancellationSource.new

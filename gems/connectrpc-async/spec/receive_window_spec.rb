@@ -159,6 +159,42 @@ RSpec.describe "HTTP/2 receive windows" do
     peer&.stop
   end
 
+  it "defaults client stream windows to 4 MiB and keeps the host's at 64 KiB" do
+    calls = {
+      "Transport" => lambda do |origin|
+        reactor do
+          transport = ConnectRPC::Async::Transport.new(origin: origin)
+          client(transport, origin).echo(AsyncHelpers::MESSAGE.new(name: "w")).message.name
+        ensure
+          transport&.close(grace: 0)
+        end
+      end,
+      "ThreadedTransport" => lambda do |origin|
+        transport = threaded(origin: origin)
+        client(transport, origin).echo(AsyncHelpers::MESSAGE.new(name: "w")).message.name
+      ensure
+        transport&.close(grace: 0)
+      end
+    }
+    calls.each do |name, call|
+      observed = Thread::Queue.new
+      hosts = []
+      peer = threaded_host(server: server(echo: lambda { |message, _context|
+        connection = host_session(hosts.first).instance_variable_get(:@resources).first.connection
+        # The client's advertised window and the host's own, as sent.
+        observed << [connection.remote_settings.initial_window_size,
+                     connection.local_settings.pending.initial_window_size]
+        message
+      }))
+      hosts << peer.peer
+      origin = "http://127.0.0.1:#{peer.peer.port}"
+      expect(call.call(origin)).to eq("w")
+      expect(pop_within(observed, "the host's view of the #{name} windows")).to eq([4_194_304, 65_536]), name
+    ensure
+      peer&.stop
+    end
+  end
+
   it "validates both windows on every client and server constructor" do
     reactor do
       constructors = {

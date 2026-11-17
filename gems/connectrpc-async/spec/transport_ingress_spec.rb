@@ -34,7 +34,8 @@ RSpec.describe "Transport native response ingress" do
         connection&.close
       end
       origin = "http://127.0.0.1:#{listener.local_address.ip_port}"
-      transport = ConnectRPC::Async::Transport.new(origin: origin)
+      # The peer fills a 64 KiB window and refills it as credit returns.
+      transport = ConnectRPC::Async::Transport.new(origin: origin, stream_receive_window: 65_536)
       # Gate only the application boundary. The real Ingress#read, windows,
       # Transport read loop, pool and cleanup all execute unchanged.
       transport.define_singleton_method(:read_body) do |response, outgoing|
