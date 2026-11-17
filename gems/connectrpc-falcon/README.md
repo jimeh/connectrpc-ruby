@@ -104,8 +104,8 @@ Include `ConnectRPC::Falcon::Environment` in each service:
 - `tls` or `tls_provider` supplies the TLS source; see [TLS lifecycle](#tls-lifecycle).
 - `server_options` supplies shared limits and host options such as `cache:`
   and `keepalive:`.
-- `connectrpc_close_grace` sets the managed worker stop grace in seconds
-  (default 5); see [Shutdown](#shutdown).
+- Since 0.2.2, `connectrpc_close_grace` sets the managed worker stop grace in
+  seconds (default 5); see [Shutdown](#shutdown).
 - `url` describes the listener.
 
 When combining Falcon environments, include them first and
@@ -306,10 +306,11 @@ boundary uses raw-first abort and offers no response-delivery guarantee.
 HTTP response completion is separate from TLS `close_notify`; orderly TLS
 shutdown is not promised.
 
-Managed worker stop uses the service's `connectrpc_close_grace` (default 5
-seconds). Keep it below the Falcon container's graceful stop timeout, after
-which the container kills workers. `falcon host` uses async-container's default
-of 10 seconds, which `ASYNC_CONTAINER_GRACEFUL_STOP` overrides.
+Since 0.2.2, managed worker stop uses the service's `connectrpc_close_grace`
+(default 5 seconds). Keep it below the Falcon container's graceful stop
+timeout, after which the container kills workers. `falcon host` uses
+async-container's default of 10 seconds, which `ASYNC_CONTAINER_GRACEFUL_STOP`
+overrides.
 
 ### Close results
 
