@@ -797,6 +797,51 @@ RSpec.shared_examples "HTTP/2 server keepalive" do
           release.enqueue(true)
           expect(closing.wait).to be(true)
           expect(fixture.log[:completions].map(&:delivery)).to eq([:completed])
+        ensure
+          failing&.resolve(true)
+          release&.enqueue(true)
+        end
+      end
+    end
+
+    # Writing the final GOAWAY marks the connection finishing while the peer
+    # is still there. A control frame write that fails then still fails the
+    # connection raw-first, rather than leaving it to the drain's grace. The
+    # final GOAWAY is held before it takes the frame guard, and a duplicate of
+    # the client's socket keeps the peer from closing after a half-close.
+    it "fails the connection raw-first when a control frame write fails while a live peer awaits the final GOAWAY" do
+      reactor do |task|
+        with_keepalive_host(task, keepalive: server_keepalive(time: nil)) do |fixture|
+          kept = fixture.client.raw.dup
+          resource = fixture.resource
+          connection = resource.connection
+          finishing = Async::Promise.new
+          final = Async::Promise.new
+          connection.define_singleton_method(:send_goaway) do |*arguments|
+            finishing.resolve(true)
+            final.wait
+            super(*arguments)
+          end
+          release = hold_post_delivery(fixture)
+          closing = task.async { fixture.host.close(grace: 5) }
+          wait_until(task, "cutoff GOAWAY") { fixture.client.wire.goaways.size == 2 }
+          release.enqueue(true)
+          finishing.wait
+          expect(resource).to be_finishing
+          connection.define_singleton_method(:write_frame) do |frame|
+            raise Errno::EPIPE if frame.type == Protocol::HTTP2::ResetStreamFrame::TYPE
+
+            super(frame)
+          end
+          written = resource.upkeep.refuse(99)
+          expect(written.wait).to be(false)
+          wait_until(task, "connection retired") { retired?(resource) }
+          expect(fixture.client.wire.goaways.size).to eq(2)
+          closing.wait
+        ensure
+          final&.resolve(true)
+          release&.enqueue(true)
+          kept&.close
         end
       end
     end

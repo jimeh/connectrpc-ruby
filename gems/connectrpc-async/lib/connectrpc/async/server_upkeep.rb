@@ -76,10 +76,10 @@ module ConnectRPC
 
         private
 
-        # Once the connection is finishing, its drain or quiesce ends it within
-        # their own bounds, so a failed write stops only this writer. After the
-        # peer left during a drain, a frame write already due can still run
-        # and fail before this task sees its cancellation.
+        # Once the peer left a drain, the drain alone ends the connection, so a
+        # failed write stops only this writer. Such a write can still run: a
+        # writer already due to run sees the departure's cancellation only
+        # after it.
         def run
           written = nil
           loop do
@@ -92,7 +92,7 @@ module ConnectRPC
             written.resolve(true)
           end
         rescue StandardError => e
-          @resource.abort(e) unless @resource.finishing?
+          @resource.abort(e) unless @resource.peer_departed?
         ensure
           written&.resolve(false)
           @queue.dequeue.last.resolve(false) until @queue.empty?

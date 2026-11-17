@@ -978,6 +978,10 @@ module ConnectRPC
 
         def finished? = @aborted
         def finishing? = @finishing
+
+        # Whether the peer left a drain once its streams closed, so the drain
+        # alone ends the connection.
+        def peer_departed? = !!@peer_departed
         def unusable = @on_unusable&.call(self)
 
         # Whether the drain, not an abort, ends the connection after the
