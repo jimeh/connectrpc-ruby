@@ -202,7 +202,7 @@ module ConnectRPC
           if @defer_close
             @resource&.changed
           elsif @resource && @reader_task&.current? && @resource.outlives_peer?(error)
-            @resource.peer_left
+            @resource.peer_departed!
           elsif @resource
             @resource.abort(error)
           else
@@ -933,12 +933,14 @@ module ConnectRPC
         def unusable = @on_unusable&.call(self)
 
         # Whether the drain, not an abort, ends the connection after the
-        # reader ended with `error`. While a drain waits for its accepted work
-        # and every stream has closed, a peer that leaves, by its GOAWAY, an
-        # EOF or a reset, lost nothing: the work left is local, such as a
-        # stream worker's cleanup and observers.
+        # reader ended with `error`. Once a drain has started, and until it
+        # writes its final GOAWAY, a peer that leaves after every stream has
+        # closed, by its GOAWAY, an EOF or a reset, lost nothing: the work left
+        # is local, such as a stream worker's cleanup and observers. A
+        # too_many_pings decision keeps its own bound instead.
         def outlives_peer?(error)
-          return false unless @awaiting_work && !@finishing && !@aborted && @connection.streams.empty?
+          return false unless @drain_running && !@finishing && !@aborted && @connection.streams.empty?
+          return false if @upkeep&.violated?
 
           case error
           when nil then @connection.goaway_received?
@@ -949,10 +951,12 @@ module ConnectRPC
 
         # Nothing more reaches the peer, so upkeep and control writers stop,
         # and the drain ends the connection once the remaining work finishes
-        # within its grace.
-        def peer_left
-          @peer_left = @finishing = true
-          [*@maintenance, *@controls].each { |task| task.cancel unless task.current? || task.finished? }
+        # within its grace. Each task is cancelled once, so a frame write in
+        # progress finishes; only raw-first retirement forces one.
+        def peer_departed!
+          @peer_departed = @finishing = true
+          tasks = @maintenance_stopped ? @controls : [*@maintenance, *@controls]
+          tasks.each { |task| task.cancel unless task.current? || task.finished? }
           changed
         end
 
@@ -1000,15 +1004,15 @@ module ConnectRPC
             return true
           end
           @drain_task = ::Async::Task.new(parent, finished: false) do
-            @awaiting_work = true
+            @drain_running = true
             @upkeep&.drain(reason)&.wait
             next !@abort_during_drain if @aborted
 
-            stop_maintenance
+            stop_maintenance unless @peer_departed
             @progress.wait until empty?
             next !@abort_during_drain if @aborted
             # The peer is gone, so nothing more is sent.
-            next @drained = true if @peer_left
+            next @drained = true if @peer_departed
 
             finish_drain { @connection.send_goaway }
           rescue EOFError, *PEER_LEFT
@@ -1081,7 +1085,10 @@ module ConnectRPC
 
         # Graceful close and drain stop upkeep before waiting for emptiness. A
         # keepalive writer still waiting for the guard stops at once.
-        def stop_maintenance = stop_tasks(@maintenance)
+        def stop_maintenance
+          @maintenance_stopped = true
+          stop_tasks(@maintenance)
+        end
 
         # Control frames queued after the final GOAWAY are dropped.
         def stop_control = stop_tasks(@controls)

@@ -656,6 +656,73 @@ RSpec.shared_examples "HTTP/2 server keepalive" do
         end
       end
     end
+
+    # Holds a completed call's stream worker at the start of its post-delivery
+    # work, after its stream has closed.
+    def hold_post_delivery(fixture)
+      held = Async::Queue.new
+      release = Async::Queue.new
+      allow(fixture.resource.connection).to receive(:finish_request).and_wrap_original do |original, *args, **options|
+        held.enqueue(true)
+        release.dequeue
+      ensure
+        original.call(*args, **options)
+      end
+      expect(unary(fixture, "done")).to eq([200, encoded("done")])
+      held.dequeue
+      release
+    end
+
+    def send_goaway(client)
+      frame = Protocol::HTTP2::GoawayFrame.new
+      frame.pack(0, KeepaliveClient::NO_ERROR, "")
+      client.connection.write_frame(frame)
+    end
+
+    it "lets a drain finish post-delivery work when the peer's GOAWAY precedes the cutoff" do
+      reactor do |task|
+        with_keepalive_host(task, keepalive: server_keepalive(time: nil)) do |fixture|
+          client = fixture.client
+          # Without the drain PING's ACK, the cutoff waits for the 5 s fallback
+          # on the fake clock, which never advances.
+          client.wire.ack_pings = false
+          release = hold_post_delivery(fixture)
+          closing = task.async { fixture.host.close(grace: 5) }
+          # The drain PING is written and the cutoff waits for its ACK.
+          await_due(task, fixture.clock, 5)
+          send_goaway(client)
+          wait_until(task, "server reader ended") { fixture.resource.connection.reader_task.finished? }
+          expect(fixture.resource).not_to be_finished
+          release.enqueue(true)
+          expect(closing.wait).to be(true)
+          expect(fixture.log[:completions].map(&:delivery)).to eq([:completed])
+          expect(client.wire.goaways).to eq([[KeepaliveClient::MAX_STREAM_ID, KeepaliveClient::NO_ERROR,
+                                              "graceful_stop"]])
+          expect(fixture.clock.now).to eq(0)
+        end
+      end
+    end
+
+    it "keeps a too_many_pings decision ahead of a peer that leaves while a drain waits for its work" do
+      reactor do |task|
+        with_keepalive_host(task, keepalive: server_keepalive(time: nil)) do |fixture|
+          client = fixture.client
+          release = hold_post_delivery(fixture)
+          closing = task.async { fixture.host.close(grace: 5) }
+          wait_until(task, "cutoff GOAWAY") { client.wire.goaways.size == 2 }
+          gate = hold_frames(fixture.resource, 7)
+          4.times { |index| send_ping(client, format("strike%02d", index)) }
+          gate.started.dequeue
+          AsyncHelpers::INTERNAL.raw_close(client.raw)
+          wait_until(task, "server reader ended") { fixture.resource.connection.reader_task.finished? }
+          release.enqueue(true)
+          expect(closing.wait).to be(false)
+          expect(fixture.resource).to be_finished
+        ensure
+          gate&.release&.enqueue(true)
+        end
+      end
+    end
   end
 
   describe "stream admission" do

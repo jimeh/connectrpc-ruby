@@ -122,7 +122,10 @@ RSpec.shared_examples "HTTP/2 wire drain ownership" do
     reactor do |task|
       held_drain_call(task, finished: -> { Async::Condition.new.wait }) do |held|
         record = held.fetch(:record)
-        closing = task.async { held.fetch(:host).close(grace: 0.5) }
+        # Host close measures its grace in wall-clock time. The grace must
+        # outlast the drain PING round trip, the response and the client's
+        # retirement before the reader sees the peer leave.
+        closing = task.async { held.fetch(:host).close(grace: 2) }
         wait_until(task, "client GOAWAY") { held.fetch(:peer).goaway_received? }
         held.fetch(:release).enqueue(true)
         expect(held.fetch(:call).wait.message.name).to eq("held")
