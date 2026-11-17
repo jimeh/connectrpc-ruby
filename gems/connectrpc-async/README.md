@@ -206,9 +206,20 @@ set `max_concurrent_streams` lower explicitly.
   responses over slow links. nil turns the bound off; a control frame queued
   behind a stalled write then still ends the connection after the keepalive
   `timeout`, or 20 seconds without keepalive. Otherwise the value is finite
-  positive seconds. Application work under the
-  guard, such as closing a HEAD response's body, does not count as a frame
-  write.
+  positive seconds. Application work under the guard, such as closing a HEAD
+  response's body, does not count as a frame write.
+
+These two response bounds go beyond grpc-go and Go's `golang.org/x/net/http2`,
+which have no equivalent. grpc-go waits for flow-control credit without a bound
+and leaves dead peers to keepalive and `TCP_USER_TIMEOUT`; x/net/http2 also has
+no credit bound, and its `WriteByteTimeout` is off by default. This package has
+them because it owns its HTTP/2 server layer on top of async-http, where a frame
+write that defers cancellation can only be ended by failing its connection, and
+because a stuck connection costs more in a Ruby process. One process serves all
+of a worker's connections within a fixed `max_requests`, so slots, fibers and
+buffered bodies that a non-reading peer holds come out of the capacity every
+other client shares. Both defaults are a generous 60 seconds so that slow but
+live peers are rarely cut off, and nil turns either bound off.
 
 These limits do not bound every way to hold a slot:
 
