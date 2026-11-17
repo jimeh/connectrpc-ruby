@@ -86,7 +86,7 @@ and every other task under that owner have finished, so the owner can finish.
 A live task under the owner keeps the transport open. Applications own the
 Async reactor, authorization and lifecycle. Using an object from the wrong
 reactor, thread or state raises `ConnectRPC::Async::LifecycleError`. Since
-0.2.2, that constant is public, so applications can rescue it by name.
+0.3.0, that constant is public, so applications can rescue it by name.
 
 ## Host
 

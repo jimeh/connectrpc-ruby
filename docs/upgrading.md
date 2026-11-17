@@ -5,6 +5,37 @@ every ConnectRPC gem to the same version, as the
 [support policy](support.md#match-the-connectrpc-package-versions) requires.
 The [changelog](../CHANGELOG.md) lists every change.
 
+## 0.3.0
+
+### Behavior changes
+
+These affect the Async HTTP/2 and HTTP/1 client transports and the core
+`Net::HTTP` transport. Error codes are unchanged.
+
+- An enclosing Async `with_timeout` around a client call or stream operation
+  now ends it with that same `Async::TimeoutError`. Before 0.3.0 the call ran
+  on under its RPC deadline, or failed as `unavailable` with a nil deadline.
+  Rescue `Async::TimeoutError` where you previously rescued
+  `ConnectRPC::Error` for this case. An expired RPC deadline or cancellation
+  still raises `deadline_exceeded` or `canceled`.
+- Client transport failures that a fixed phrase can classify now append it
+  to the message, such as `HTTP/2 transport failed: connection refused` or
+  `HTTP transport failed: TLS verification failed`. They also keep the
+  original exception as `cause`, where 0.2.0 set it to nil. Code that matches
+  the exact message should match its prefix instead. Codec, compression and
+  metadata errors still have no `cause`.
+- Admission failures say `... transport admission is closed` once a transport
+  is closing and `... transport admission is full` at its count or byte limit,
+  instead of `... admission is closed or full`.
+- An invalid Async client TLS input raises `ArgumentError` naming it, such as
+  `Invalid TLS client configuration: ca_file`.
+- An Async client transport that is never closed is aborted once its owner
+  task's block and every other task under that owner have finished. Before
+  0.3.0 it kept the owner, and with it `Sync`, from finishing. Close
+  transports explicitly for a graceful drain.
+- `HTTP1Transport` sends a unary GET once more when its reused keep-alive
+  connection closed before any response head arrived.
+
 ## 0.2.0
 
 ### Breaking change: read-only transport cancellation
