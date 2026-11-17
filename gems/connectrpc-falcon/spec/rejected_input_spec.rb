@@ -273,7 +273,7 @@ RSpec.describe "Falcon rejected Web HTTP/1 input" do
             # processor itself captures its resource and starts observation.
             events[:processing] = lambda do
               resource = host.instance_variable_get(:@session).instance_variable_get(:@resources).find(&:active)
-              trace.enable
+              trace.enable if resource
             end
             # This peer establishes wire progress before we observe its cleanup.
             started = Process.clock_gettime(Process::CLOCK_MONOTONIC)

@@ -76,8 +76,11 @@ RSpec.shared_examples "native streaming bounds and cancellation" do |protocol = 
           end
         rescue ConnectRPC::Error => e
           e
+        ensure
+          entered.enqueue(:ended)
         end
-        entered.dequeue
+        raise "The call ended before its stream was established: #{call.wait.inspect}" if entered.dequeue == :ended
+
         resources = transport.instance_variable_get(:@resources)
         expect(resources.size).to eq(1)
         client_resource = resources.first
@@ -210,12 +213,23 @@ RSpec.shared_examples "native streaming bounds and cancellation" do |protocol = 
             reader.receive
           end
         rescue ConnectRPC::Error => e
-          progress.enqueue(e)
           e
+        ensure
+          progress.enqueue(:ended)
         end
-        expect(progress.dequeue).to be(true), "the call ended before its receive blocked"
+        raise "The call ended before its receive blocked: #{call.wait.inspect}" unless progress.dequeue == true
+
         entered.dequeue
+        resources = transport.instance_variable_get(:@resources)
+        expect(resources.size).to eq(1)
+        client_resource = resources.first
+        outgoing = transport.instance_variable_get(:@calls).keys.first.fetch(:request)
+        # An unexpired deadline here proves the second receive started first,
+        # so it blocks on the held handler instead of failing its entry check.
+        expect(outgoing.deadline).not_to be_expired if reason == :deadline
         expect(core.client_stream(cs) { nil }.message.name).to eq("healthy")
+        expect(call).not_to be_finished
+        expect(outgoing.deadline).not_to be_expired if reason == :deadline
         source.cancel if reason == :token
         error = call.wait
         expect(error.code).to eq(reason == :token ? "canceled" : "deadline_exceeded")
@@ -227,7 +241,7 @@ RSpec.shared_examples "native streaming bounds and cancellation" do |protocol = 
         end
         release.enqueue(true)
         expect(core.client_stream(cs) { nil }.message.name).to eq("healthy")
-        expect(transport.instance_variable_get(:@resources).size).to eq(1)
+        expect(transport.instance_variable_get(:@resources)).to eq([client_resource])
         expect(transport.instance_variable_get(:@calls)).to be_empty
       ensure
         release&.enqueue(true)
