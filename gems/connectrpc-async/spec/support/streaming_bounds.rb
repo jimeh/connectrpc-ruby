@@ -223,12 +223,15 @@ RSpec.shared_examples "native streaming bounds and cancellation" do |protocol = 
         resources = transport.instance_variable_get(:@resources)
         expect(resources.size).to eq(1)
         client_resource = resources.first
-        outgoing = transport.instance_variable_get(:@calls).keys.first.fetch(:request)
+        outgoing = transport.instance_variable_get(:@calls).keys.first&.fetch(:request)
+        raise "The call ended after its first message: #{call.wait.inspect}" if outgoing.nil? || call.finished?
+
         # An unexpired deadline here proves the second receive started first,
         # so it blocks on the held handler instead of failing its entry check.
         expect(outgoing.deadline).not_to be_expired if reason == :deadline
         expect(core.client_stream(cs) { nil }.message.name).to eq("healthy")
-        expect(call).not_to be_finished
+        raise "The call ended during the sibling RPC: #{call.wait.inspect}" if call.finished?
+
         expect(outgoing.deadline).not_to be_expired if reason == :deadline
         source.cancel if reason == :token
         error = call.wait
