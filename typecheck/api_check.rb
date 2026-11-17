@@ -11,9 +11,9 @@ module APICheck
   # typed consumers add core's explicit bridge beside it.
   PROTOBUF_BRIDGE = "rbs/google_protobuf_4_36"
   # Signature manifests list only stdlib libraries, because rbs collection
-  # locks every manifest dependency as stdlib. Consumers name each connectrpc
-  # library whose declarations an optional package's signatures reference.
-  REQUIRED_LIBRARIES = { "on-rails" => %w[connectrpc-rack], "falcon" => %w[connectrpc-async] }.freeze
+  # locks every manifest dependency as stdlib. Consumers name core and each
+  # other connectrpc library whose declarations a package's signatures reference.
+  REQUIRED_LIBRARIES = { "falcon" => %w[connectrpc-async] }.freeze
 
   def self.libraries(name) = ["connectrpc", *REQUIRED_LIBRARIES.fetch(name, []), "connectrpc-#{name}"]
 

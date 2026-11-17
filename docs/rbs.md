@@ -208,14 +208,13 @@ target :app do
 end
 ```
 
-Name `library "connectrpc"` beside every optional library. Rails signatures
-also need `library "connectrpc-rack"`, and Falcon signatures need
-`library "connectrpc-async"`. Package manifests list only the standard
+Name `library "connectrpc"` beside every optional library. Falcon signatures
+also need `library "connectrpc-async"`. Package manifests list only the standard
 libraries their signatures use, because `rbs collection` locks every manifest
-dependency as a standard library; a gem name there would make Steep fail to
-load the whole environment. Projects that use `rbs collection` lock each
-installed connectrpc package from `Gemfile.lock` as a gem, in any Gemfile order,
-and the `library` lines above remain valid alongside the collection.
+dependency as a standard library; a gem name there would make Steep fail to load
+the whole environment. Projects that use `rbs collection` lock each installed
+connectrpc package from `Gemfile.lock` as a gem, in any Gemfile order, and the
+`library` lines above remain valid alongside the collection.
 
 Core declares no Google runtime or optional hosting/tracing namespace and has no
 runtime tool dependencies. Its GoogleProtobuf binding class signature is
