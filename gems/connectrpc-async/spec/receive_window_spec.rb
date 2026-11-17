@@ -235,10 +235,14 @@ RSpec.describe "HTTP/2 receive windows" do
         expect(wire[:goaway]).to be_nil
       end
     ensure
-      transport&.close(grace: 0)
-      peer&.stop
-      peer&.wait
-      bound&.close
+      begin
+        transport&.close(grace: 0)
+        peer&.stop
+        peer&.wait
+      ensure
+        # A failed peer re-raises from wait; the listener still closes.
+        bound&.close
+      end
     end
   end
 
