@@ -32,6 +32,20 @@ RSpec.describe ConnectRPC::Client do
     described_class.new(base_url: "http://example.invalid/prefix/", binding: binding, transport: transport, **)
   end
 
+  it "raises a decoded error response with the transport's in-process cause and ignores it on success" do
+    failure = RuntimeError.new("handler bug")
+    failed = ConnectRPC::TransportResponse.new(status: 500, headers: { "content-type" => ["application/json"] },
+                                               body: '{"code":"internal","message":"Internal error"}')
+    failed.cause = failure
+    failing = described_class.new(base_url: "http://example.invalid", binding: binding, transport: ->(_) { failed })
+    expect { failing.call(method, "hello") }
+      .to raise_error(ConnectRPC::Error) do |error|
+        expect([error.code, error.message, error.cause]).to eq(["internal", "Internal error", failure])
+      end
+    reply.cause = failure
+    expect(client.call(method, "hello").message).to eq("hello")
+  end
+
   it "uses a real custom binding/transport contract with prefixes, metadata and the shared budget" do
     captured = nil
     transport = lambda do |request|

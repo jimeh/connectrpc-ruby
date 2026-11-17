@@ -18,6 +18,10 @@ ConnectRPC::Response.new({}).trailers&.to_h
 ConnectRPC::Response[message: nil, metadata: nil].metadata&.to_h
 ConnectRPC::TransportResponse[status: 200].body&.bytesize
 ConnectRPC::TransportResponse.new({ status: 200, headers: {}, body: "bytes" })[:body].bytesize
+failed = ConnectRPC::TransportResponse.new(status: 500, headers: {}, body: "")
+failed.cause = RuntimeError.new("local")
+failed.cause&.message
+ConnectRPC::TransportResponse[].cause&.full_message
 ConnectRPC::TransportRequest.new.http_method&.upcase
 ConnectRPC::TransportRequest[{ body: "bytes", deadline: nil }][:body]&.bytesize
 ConnectRPC::TransportRequest[].url&.host

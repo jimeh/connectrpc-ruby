@@ -3,11 +3,12 @@
 module ConnectRPC
   module GRPCWeb
     class ServerState
-      attr_reader :headers, :publish, :lifecycle, :cancellation, :representation, :path
+      attr_reader :headers, :publish, :lifecycle, :cancellation, :representation, :path, :on_error
       attr_accessor :context, :session, :error, :published, :head_attempted
 
-      def initialize(path:, headers:, representation:, publish:, lifecycle:, cancellation:)
+      def initialize(path:, headers:, representation:, publish:, lifecycle:, cancellation:, on_error: nil)
         @path = path
+        @on_error = on_error
         @headers = headers
         @representation = representation
         @publish = publish
@@ -22,7 +23,7 @@ module ConnectRPC
     # HTTP-version-neutral publication. Hosts stage finish's terminal until the
     # original application task has completed all outer cleanup successfully.
     def call_grpc_web(path:, http_method:, headers:, input:, output:, publish:, capabilities: [:unary], # rubocop:disable Metrics/AbcSize, Metrics/CyclomaticComplexity, Metrics/MethodLength, Metrics/PerceivedComplexity
-                      lifecycle: nil, cancellation: nil)
+                      lifecycle: nil, cancellation: nil, on_error: nil)
       # @type var owned: bool?
       owned = nil
       # @type var error: Exception?
@@ -43,7 +44,8 @@ module ConnectRPC
         request = GRPCWeb.media(Protocol.single(values, "content-type")) #: GRPCWeb::representation
         representation = GRPCWeb.representation(values, request) #: GRPCWeb::representation
         state = GRPCWeb::ServerState.new(path: path, headers: values, representation: representation,
-                                         publish: publish, lifecycle: lifecycle, cancellation: cancellation)
+                                         publish: publish, lifecycle: lifecycle, cancellation: cancellation,
+                                         on_error: on_error)
         process_grpc_web(state, input, output, request, capabilities)
         nil
       end
@@ -78,14 +80,14 @@ module ConnectRPC
       bare(406, fields, cancellation: cancellation)
     end
 
-    def call_grpc_web_unary(path, http_method, headers, input, lifecycle, cancellation) # rubocop:disable Metrics/MethodLength, Metrics/ParameterLists
+    def call_grpc_web_unary(path, http_method, headers, input, lifecycle, cancellation, on_error) # rubocop:disable Metrics/MethodLength, Metrics/ParameterLists
       # Separately padded writes can expand every raw byte by four. The bounded
       # aggregate includes one data prefix and the separately staged terminal.
       output = GRPCWeb::Aggregate.new(4 * (5 + @response_wire_limit + 5 + @grpc_status_wire_limit))
       head = nil #: StreamHead?
       response = call_grpc_web(path: path, http_method: http_method, headers: headers,
                                input: GRPCWeb::PortableInput.new(input), output: output,
-                               lifecycle: lifecycle, cancellation: cancellation,
+                               lifecycle: lifecycle, cancellation: cancellation, on_error: on_error,
                                publish: ->(published) { head = published })
       return response if response
 

@@ -9,6 +9,13 @@ module ConnectRPC
   TransportResponse = Struct.new(:status, :headers, :body, keyword_init: true)
   Response = Struct.new(:message, :metadata, :trailers, keyword_init: true)
 
+  class TransportResponse
+    # An optional in-process exception behind an error response. It is never
+    # sent and is not a record member; the client raises its decoded error with
+    # it as the cause.
+    attr_accessor :cause
+  end
+
   module Protocol # rubocop:disable Metrics/ModuleLength
     DEFAULT_LIMIT = 4 * 1024 * 1024
     CONTENT_TYPES = { proto: "application/proto", json: "application/json" }.freeze

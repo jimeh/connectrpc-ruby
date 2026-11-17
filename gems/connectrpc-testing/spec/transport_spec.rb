@@ -345,6 +345,67 @@ RSpec.describe ConnectRPC::Testing::Transport do
     expect(response.headers["x-leading"]).to eq(["one", "two,three"])
   end
 
+  context "when a handler raises an unexpected exception" do
+    let(:failure) { RuntimeError.new("handler bug") }
+    let(:reports) { [] }
+
+    before do
+      allow(handler).to receive(:call) do |_message, context|
+        context.response_metadata["x-leading"] = ["kept"]
+        raise failure
+      end
+      server_options[:on_error] = ->(error) { reports << error }
+    end
+
+    it "returns the error response with the exception as its cause" do
+      response = transport.call(request(body: type.encode(type.new(name: "boom"))))
+      expect(JSON.parse(response.body)).to include("code" => "internal", "message" => "Internal error")
+      expect([response.status, response.cause]).to eq([500, failure])
+      expect(reports).to eq([failure])
+    end
+
+    it "lets the client raise the decoded error with that cause and keep its response facts" do
+      outcomes = []
+      subscriber = Object.new
+      subscriber.define_singleton_method(:start) do |call|
+        observer = Object.new
+        observer.define_singleton_method(:processing_finished) { |outcome| outcomes << [call.role, outcome] }
+        observer
+      end
+      generated = client(instrumentation: ConnectRPC::Instrumentation.new(subscribers: [subscriber]))
+      expect { generated.echo(type.new(name: "boom")) }.to raise_error(ConnectRPC::Error) do |error|
+        expect([error.code, error.message, error.metadata["x-leading"]]).to eq(["internal", "Internal error", ["kept"]])
+        expect(error.cause).to be(failure)
+      end
+      client_outcome = outcomes.find { |role, _| role == :client }.last
+      expect([client_outcome.code, client_outcome.http_status]).to eq(["internal", 500])
+      expect(client_outcome.response_bytes).to be_positive
+    end
+
+    it "applies the client's decoded response limit before the cause" do
+      generated = client(response_limit: 1, response_wire_limit: 4096)
+      expect { generated.echo(type.new(name: "boom")) }.to raise_error(ConnectRPC::Error) do |error|
+        expect([error.code, error.message]).to eq(["resource_exhausted", "Message exceeds byte limit"])
+      end
+    end
+  end
+
+  it "returns manual gRPC-Web responses for unexpected handler exceptions" do
+    rpc = ConnectRPC::Method.new(service: "testing.Web", name: "Call", request_type: type, response_type: type)
+    reports = []
+    web = ConnectRPC::Server.new(services: [ConnectRPC::Service.new(name: rpc.service, methods: [rpc])],
+                                 binding: binding, status_codec: binding, protocol: %i[connect grpc_web],
+                                 handlers: { rpc.path => ->(*) { raise "handler bug" } },
+                                 on_error: ->(error) { reports << error.message })
+    outgoing = request(url: URI("https://example.invalid#{rpc.path}"),
+                       headers: { "content-type" => ["application/grpc-web"] }, body: [0, 0].pack("CN"))
+    response = described_class.new(server: web).call(outgoing)
+    expect(response.status).to eq(200)
+    expect(response.body).to include("grpc-status: 13\r\n")
+    expect(response.cause&.message).to eq("handler bug")
+    expect(reports).to eq(["handler bug"])
+  end
+
   it "preserves frozen malformed caller input on core failure" do
     headers = { "content-type" => ["application/proto"].freeze,
                 "content-length" => ["2"].freeze }.freeze

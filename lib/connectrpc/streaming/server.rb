@@ -120,6 +120,7 @@ module ConnectRPC
       state.lifecycle&.record_failure(e)
       safe = e.is_a?(Error) ? e : Error.new(:internal, "Internal error")
       state.error = terminal_error(safe, state.context, state.cancellation)
+      report_stream_error(e, safe, state)
     end
   end
 end

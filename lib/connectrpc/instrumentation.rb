@@ -73,6 +73,9 @@ module ConnectRPC
       empty.freeze
     end
 
+    # A Handle has no internal synchronization. Hosts call one handle from one
+    # thread or fiber at a time; moving a call to another thread needs an
+    # ordering hand-off such as a Queue or Mutex. The first finish wins.
     class Handle # rubocop:disable Metrics/ClassLength
       attr_reader :outcome
       attr_accessor :request_bytes, :request_metadata, :code, :normalized_error

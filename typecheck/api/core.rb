@@ -31,6 +31,12 @@ ConnectRPC::Server.new(services: [], binding: binding, invoker: lambda { |rpc, r
   rpc.path
   request
 })
+reporting = ConnectRPC::Server.new(services: [service], binding: binding, on_error: lambda { |failure|
+  failure.full_message(highlight: false)
+  nil
+})
+reporting.call(path: method.path, http_method: "POST", headers: {}, input: nil,
+               on_error: ->(failure) { failure.backtrace&.first }).status.succ
 handle = server.start_call(path: method.path, headers: {})
 if handle
   handle.activate { "value" }.size

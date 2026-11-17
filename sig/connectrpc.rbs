@@ -145,6 +145,11 @@ module ConnectRPC
     def call: (StandardError) -> void
   end
 
+  # Receives each unexpected exception a Server turns into a generic internal error.
+  interface _ServerErrorHandler
+    def call: (StandardError) -> void
+  end
+
   interface _ObserverAttach
     def attach: () -> Object?
   end
@@ -189,11 +194,11 @@ module ConnectRPC
   class Server
     # Generated .handlers checks each concrete callable before this heterogeneous
     # registration map erases its individual request/response associations.
-    def initialize: (services: Array[Service], binding: _Binding, ?handlers: Hash[String, registered_handler], ?invoker: (^(Method[untyped, untyped], untyped, Context) -> untyped | _Invoker)?, ?request_limit: Integer, ?response_limit: Integer, ?request_wire_limit: Integer, ?response_wire_limit: Integer, ?protocol: server_protocol_selection, ?mode: :unary, ?encoding: :identity | :gzip, ?instrumentation: Instrumentation?, ?get_query_limit: Integer?, ?terminal_wire_limit: Integer, ?terminal_limit: Integer, ?status_codec: _GRPCStatusCodec?, ?grpc_status_wire_limit: Integer, ?grpc_status_limit: Integer, ?cors: GRPCWebCORS?, ?interceptors: Array[server_interceptor]) -> void
+    def initialize: (services: Array[Service], binding: _Binding, ?handlers: Hash[String, registered_handler], ?invoker: (^(Method[untyped, untyped], untyped, Context) -> untyped | _Invoker)?, ?request_limit: Integer, ?response_limit: Integer, ?request_wire_limit: Integer, ?response_wire_limit: Integer, ?protocol: server_protocol_selection, ?mode: :unary, ?encoding: :identity | :gzip, ?instrumentation: Instrumentation?, ?get_query_limit: Integer?, ?terminal_wire_limit: Integer, ?terminal_limit: Integer, ?status_codec: _GRPCStatusCodec?, ?grpc_status_wire_limit: Integer, ?grpc_status_limit: Integer, ?cors: GRPCWebCORS?, ?interceptors: Array[server_interceptor], ?on_error: (^(StandardError) -> void | _ServerErrorHandler)?) -> void
     attr_reader services: Array[Service]
     def handles?: (String path) -> bool
     def start_call: (path: String, headers: headers, ?http_method: String) -> Instrumentation::Handle?
-    def call: (path: String, http_method: String, headers: headers, input: _Input?, ?query: String, ?lifecycle: Instrumentation::Handle?, ?cancellation: _Cancellation?) -> TransportResponse
+    def call: (path: String, http_method: String, headers: headers, input: _Input?, ?query: String, ?lifecycle: Instrumentation::Handle?, ?cancellation: _Cancellation?, ?on_error: (^(StandardError) -> void | _ServerErrorHandler)?) -> TransportResponse
   end
 
   # Interceptor misuse raised by core: a continuation called twice, late or off
@@ -449,6 +454,8 @@ module ConnectRPC
     def headers=: (headers?) -> headers?
     def body: () -> String?
     def body=: (String?) -> String?
+    def cause: () -> StandardError?
+    def cause=: (StandardError?) -> StandardError?
     def []: (:status | "status" | 0 | -3) -> Integer?
       | (:headers | "headers" | 1 | -2) -> headers?
       | (:body | "body" | 2 | -1) -> String?
@@ -471,6 +478,8 @@ module ConnectRPC
 
   end
 
+  # cause is an in-process exception behind an error response. It is never sent
+  # and is not a record member. The client raises its decoded error with it.
   class TransportResponse
     def self.new: (status: Integer, headers: headers, body: String) -> TransportResponse
       | ({ status: Integer, headers: headers, body: String }) -> TransportResponse
@@ -483,6 +492,7 @@ module ConnectRPC
     attr_accessor status: Integer
     attr_accessor headers: headers
     attr_accessor body: String
+    attr_accessor cause: StandardError?
     def []: (:status | "status" | 0 | -3) -> Integer
       | (:headers | "headers" | 1 | -2) -> headers
       | (:body | "body" | 2 | -1) -> String
@@ -855,7 +865,8 @@ module ConnectRPC
     def abort: () -> nil
   end
   class Server
-    def call_grpc_web: (path: String, http_method: String, headers: headers, input: _StreamingInput, output: _GRPCWebOutput, publish: _PublishStreamHead | ^(StreamHead) -> void, ?capabilities: Array[grpc_web_cardinality], ?lifecycle: Instrumentation::Handle?, ?cancellation: _Cancellation?) -> TransportResponse?
+    # on_error is the host's per-call reporter, run after the Server's own.
+    def call_grpc_web: (path: String, http_method: String, headers: headers, input: _StreamingInput, output: _GRPCWebOutput, publish: _PublishStreamHead | ^(StreamHead) -> void, ?capabilities: Array[grpc_web_cardinality], ?lifecycle: Instrumentation::Handle?, ?cancellation: _Cancellation?, ?on_error: (^(StandardError) -> void | _ServerErrorHandler)?) -> TransportResponse?
     def cors_response: (path: String, http_method: String, headers: headers, ?response: TransportResponse?) -> TransportResponse?
   end
 end
