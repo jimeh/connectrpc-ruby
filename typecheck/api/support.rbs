@@ -239,6 +239,9 @@ class APIConnectionEvent
   def previous_state: () -> Symbol?
   def outcome: () -> Symbol?
   def duration: () -> Numeric?
+  def active: () -> Integer
+  def draining: () -> Integer
+  def pending_calls: () -> Integer
 end
 class APIMessageObserver
   def initialize: () -> void

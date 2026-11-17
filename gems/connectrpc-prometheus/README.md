@@ -97,11 +97,27 @@ any other exporter over the same registry.
   `connect_instrumentation` method, separately from `connect_limits`.
 - **Falcon** (`connectrpc-falcon`): serve the exporter through the `rack_app`
   fallback. RPC traffic bypasses it; the fallback receives `/metrics`.
-- **Async standalone `Host`**: `Host` has no fallback application. Run a separate
-  metrics listener on its own port in the same process, for example a small
-  Rack server with the exporter, or `Async::HTTP::Server` serving
-  `Prometheus::Client::Formats::Text.marshal(registry)`. Adding a `fallback:` to
-  `Host` is a possible follow-up, not part of this package.
+- **Async standalone `Host`**: pass a native Protocol::HTTP exporter as the
+  Host's `fallback:`. RPC traffic bypasses it; it receives every other path.
+
+  ```ruby
+  require "prometheus/client/formats/text"
+
+  registry = Prometheus::Client.registry
+  exporter = lambda do |request|
+    next Protocol::HTTP::Response[404, {}, nil] unless request.path == "/metrics"
+
+    Protocol::HTTP::Response[200, { "content-type" => Prometheus::Client::Formats::Text::CONTENT_TYPE },
+                             [Prometheus::Client::Formats::Text.marshal(registry)]]
+  end
+  host = ConnectRPC::Async::Host.new(server: connect_server, tls: tls, fallback: exporter).start
+  ```
+
+  The Host serves HTTP/2 only. Prometheus scrapes a TLS Host over h2 because
+  its `enable_http2` scrape option defaults to true. A cleartext h2c Host is not
+  scrapeable by HTTP/1.1 clients, including Prometheus, so those need a separate
+  metrics listener on its own port (for example a small Rack server with the
+  exporter) or Falcon, which serves HTTP/1.1 and HTTP/2 through `rack_app`.
 
 ## Multi-process
 
@@ -121,10 +137,12 @@ write per observation, so do not use it otherwise.
   same store and construct `Metrics` per worker after fork, consistent with the
   worker-local `prepare!`. Serve the exporter through the `rack_app` fallback.
 
-Under `DirectFileStore`, the connection state gauge is declared with
-`aggregation: :sum`, so each state sums to the number of workers in it. The
-default store rejects store settings, so other stores get none. Dead workers
-keep their last counter and gauge values until the directory is cleared.
+Under `DirectFileStore`, the connection gauges are declared with
+`aggregation: :sum`: each state of the state gauge sums to the number of
+workers in it, and the connection and pending-call gauges sum the workers'
+counts. The default store rejects store settings, so other stores get none.
+Dead workers keep their last counter and gauge values until the directory is
+cleared.
 
 Build connection observers per worker after fork. An observer built in the Puma
 or Unicorn master before fork, including one passed to a `ThreadedTransport`
@@ -150,6 +168,8 @@ Base labels `B` are `grpc_type`, `grpc_service`, `grpc_method` and
 | `grpc_client_connection_state_changes_total` | counter | `transport`, `state` | Async state change |
 | `grpc_client_connection_state` | gauge | `transport`, `state` | 1 for the current state, starts `idle` |
 | `grpc_client_admission_rejected_total` | counter | `transport` | Async admission rejection |
+| `grpc_client_connections` | gauge | `transport`, `state` | current connections; `state` is `active` or `draining`, starts 0 |
+| `grpc_client_pending_calls` | gauge | `transport` | current calls waiting for a connection, starts 0 |
 
 Classification at finish, with `code` from the outcome's code or its normalized
 error's code:
@@ -174,6 +194,14 @@ histogram; average messages per stream is `msg_*_total / handled_total`.
 - `grpc_code` uses Go `codes.Code` strings (`OK`, `Canceled`, `InvalidArgument`,
   ..., `Unauthenticated`); anything else is `Unknown`.
 - There are no peer, address, path, metadata or error-text labels.
+- `grpc_client_connections{state="active"}` counts connections that accept new
+  calls; `state="draining"` counts connections that no longer do (after a
+  GOAWAY, or failed while calls unwind) until their last call ends. Their sum is
+  the transport's open accounted connections. `grpc_client_pending_calls`
+  counts calls waiting to acquire a connection; calls that find spare capacity
+  never appear in it. Both return to 0 after the transport closes. There is no
+  pending-bytes gauge. `HTTP1Transport` and server hosts publish no connection
+  gauges.
 - Message sizes are encoded payload bytes as framed: after compression,
   excluding the 5-byte envelope prefix, end-stream and trailer frames, gRPC-Web
   text base64 and GET query expansion. Receive counts after a successful decode.

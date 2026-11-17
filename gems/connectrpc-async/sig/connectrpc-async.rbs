@@ -29,11 +29,13 @@ module ConnectRPC
       def headers: () -> _Headers
       def body: () -> _Body?
     end
+    # async-http closes a bodyless response after sending it.
     interface _Response
       def status: () -> Integer
       def headers: () -> _Headers
       def body: () -> _Body?
       def body=: (_Body?) -> _Body?
+      def close: (?Exception?) -> void
     end
     interface _Application
       def call: (_Request, ?lifecycle: Instrumentation::Handle?) -> _Response?
@@ -90,7 +92,7 @@ module ConnectRPC
       def hash: () -> Integer
     end
     class Host
-      def initialize: (server: Server, ?host: String, ?port: Integer, ?tls: tls?, ?tls_provider: (_TLSProvider | ^() -> tls_snapshot)?, ?max_connections: Integer, ?max_requests: Integer, ?handshake_timeout: Numeric, ?idle_timeout: Numeric?, ?refresh_interval: Numeric, ?refresh_jitter: Numeric, ?refresh_timeout: Numeric, ?on_tls_error: (_TLSErrorHandler | ^(tls_event) -> void)?, ?keepalive: ServerKeepalive?) -> void
+      def initialize: (server: Server, ?host: String, ?port: Integer, ?tls: tls?, ?tls_provider: (_TLSProvider | ^() -> tls_snapshot)?, ?max_connections: Integer, ?max_requests: Integer, ?handshake_timeout: Numeric, ?idle_timeout: Numeric?, ?refresh_interval: Numeric, ?refresh_jitter: Numeric, ?refresh_timeout: Numeric, ?on_tls_error: (_TLSErrorHandler | ^(tls_event) -> void)?, ?keepalive: ServerKeepalive?, ?fallback: (_Application | ^(_Request) -> _Response?)?) -> void
       attr_reader port: Integer?
       attr_reader addresses: Array[Addrinfo]
       def start: () -> self
@@ -106,7 +108,7 @@ module ConnectRPC
     type connection_state = :idle | :connecting | :ready | :transient_failure | :closing | :closed
     # Attempt outcomes, then connection_closed reasons (:closed is shared).
     type connection_outcome = :ready | :refused | :timeout | :tls | :protocol | :closed | :other | :keepalive_timeout | :drain_timeout | :goaway
-    type connection_event_type = :state_changed | :attempt_finished | :admission_rejected | :connection_closed
+    type connection_event_type = :state_changed | :attempt_finished | :admission_rejected | :connection_closed | :counts_changed
     class Backoff
       def initialize: (?base: Numeric, ?multiplier: Numeric, ?jitter: Numeric, ?max: Numeric) -> void
       attr_reader base: Numeric

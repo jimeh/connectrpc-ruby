@@ -16,6 +16,7 @@
   "otel": "Ruby::ArgumentTypeMismatch",
   "invoker": "Ruby::NoMethod",
   "falcon_fallback": "Ruby::ArgumentTypeMismatch",
+  "host_fallback": "Ruby::ArgumentTypeMismatch",
   "falcon_dsl": "Ruby::ArgumentTypeMismatch",
   "struct_pair": "Ruby::NoMethod",
   "native_headers": "Ruby::NoMethod",

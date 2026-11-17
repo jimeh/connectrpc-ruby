@@ -46,6 +46,9 @@ application = ConnectRPC::Async::Application.new(server: server)
 request = APIRequest.new
 native_response = application.call(request)
 native_response&.body&.read
+fallback_host = ConnectRPC::Async::Host.new(server: server, fallback: ->(incoming) { application.call(incoming) })
+fallback_host.start.port&.succ
+ConnectRPC::Async::Host.new(server: server, fallback: application)
 session = ConnectRPC::Async::ServerSession.new(
   application: application, lifecycle_factory: ->(incoming) { application.start_call(incoming) },
   stop_accepting: -> {}, keepalive: nil

@@ -122,6 +122,9 @@ RSpec.describe "Shared HTTP/2 connection attempts" do
       end)
       expect(transport.call(request("#{origin}/immediate")).body).to eq("/immediate")
       expect(attempt_outcomes(events)).to eq([:ready])
+      # The initiator's published pending call ends with its acquisition.
+      expect(events.last.type).to eq(:counts_changed)
+      expect([events.last.active, events.last.draining, events.last.pending_calls]).to eq([1, 0, 0])
       expect(peer.accepted).to eq(1)
     ensure
       transport&.close(grace: 0)

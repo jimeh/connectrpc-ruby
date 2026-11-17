@@ -65,6 +65,23 @@ RSpec.describe "Prometheus exposition" do
     expect(text).to include("# TYPE grpc_client_connection_state gauge")
   end
 
+  it "exports connection count gauges with help, labels and initial zero samples" do
+    metrics.connection_observer(transport: "billing")
+    text = exposition
+    expect(section(text, "grpc_client_connections")).to eq(
+      ["# TYPE grpc_client_connections gauge",
+       "# HELP grpc_client_connections Current client connections by state: active accepts new calls; draining " \
+       "no longer does and closes when its calls end.",
+       'grpc_client_connections{transport="billing",state="active"} 0.0',
+       'grpc_client_connections{transport="billing",state="draining"} 0.0']
+    )
+    expect(section(text, "grpc_client_pending_calls")).to eq(
+      ["# TYPE grpc_client_pending_calls gauge",
+       "# HELP grpc_client_pending_calls Current client calls waiting for a connection.",
+       'grpc_client_pending_calls{transport="billing"} 0.0']
+    )
+  end
+
   it "swaps only the prefix with a namespace and rejects a second registration on one registry" do
     custom = ConnectRPC::Prometheus::Metrics.new(registry: registry, namespace: "rpc", size_buckets: [10, 100])
     call_echo(ConnectRPC::Instrumentation.new(subscribers: [custom.subscriber]))

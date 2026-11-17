@@ -87,7 +87,7 @@ reactor, authorization and lifecycle.
 
 `Host.new(server:, host: "127.0.0.1", port: 0, tls: nil, max_connections: 128,
 max_requests: 128, handshake_timeout: 10, idle_timeout: 60,
-keepalive: ServerKeepalive.new)` returns a host.
+keepalive: ServerKeepalive.new, fallback: nil)` returns a host.
 
 - `start` binds/listens before returning self; `port` and `addresses` expose the
   actual binding.
@@ -99,8 +99,46 @@ keepalive: ServerKeepalive.new)` returns a host.
   finished, or from its start, and then drains the connection gracefully; see
   [Server keepalive](#server-keepalive). PINGs do not extend it. Nil disables it.
 
-The Host serves HTTP/2 only. There is no HTTP/1 fallback or automatic replay.
+The Host serves HTTP/2 only. There is no HTTP/1 listener or automatic replay.
 For TLS options, see [TLS and client authentication](#tls-and-client-authentication).
+
+### Fallback application
+
+`fallback:` takes a native Protocol::HTTP callable, `call(request)` returning a
+`Protocol::HTTP::Response`, like [Application](#application)'s fallback. It is
+not a Rack app. Core keeps whole registered service prefixes, including unknown
+methods under them, so RPC traffic never reaches the fallback; every other
+request goes to it with its method, path and query intact. Without `fallback:`,
+unrelated paths get a bare 404. A non-callable fallback raises `ArgumentError`.
+
+Fallback requests share the Host's request admission (`max_requests`, bare 503
+when full) and connection lifetime. An exception from the fallback fails only
+its own stream. The Host owns no tunnels or socket handoff, so no `CONNECT`
+request reaches the fallback. An extended CONNECT (`:protocol`) request gets a
+bare 501. A plain CONNECT has no `:path`, so the Host resets its stream, with or
+without a fallback, as before. A fallback response with status 101 or a
+`protocol` is closed and replaced by 501.
+
+The fallback inherits the Host's HTTP/2-only listener, so it serves only
+HTTP/2 clients: h2c with prior knowledge, or TLS with ALPN `h2`. For example,
+one Host can serve RPCs and Prometheus metrics:
+
+```ruby
+require "prometheus/client/formats/text"
+
+metrics_app = lambda do |request|
+  next Protocol::HTTP::Response[404, {}, nil] unless request.path == "/metrics"
+
+  Protocol::HTTP::Response[200, { "content-type" => Prometheus::Client::Formats::Text::CONTENT_TYPE },
+                           [Prometheus::Client::Formats::Text.marshal(Prometheus::Client.registry)]]
+end
+host = ConnectRPC::Async::Host.new(server: server, tls: tls, fallback: metrics_app).start
+```
+
+Prometheus scrapes a TLS Host over h2. A cleartext h2c Host is not reachable by
+HTTP/1.1 clients, so those still need a separate listener or the
+[Falcon package](../connectrpc-falcon/README.md), which serves HTTP/1.1 and
+HTTP/2.
 
 ### Supervise with `wait`
 
@@ -432,18 +470,37 @@ servers do not answer it with `too_many_pings`.
 ### Observing connections
 
 - `connection_observer` receives frozen `ConnectionEvent` values with `type`
-  (`:state_changed`, `:attempt_finished`, `:admission_rejected` or
-  `:connection_closed`), `state`, `previous_state`, `outcome`, `duration` in
-  monotonic seconds, and the counts `active`, `draining`, `pending_calls` and
-  `pending_bytes`. An `:attempt_finished` outcome is `:ready`, `:refused`,
-  `:timeout`, `:tls`, `:protocol`, `:closed` or `:other`.
+  (`:state_changed`, `:attempt_finished`, `:admission_rejected`,
+  `:connection_closed` or `:counts_changed`), `state`, `previous_state`,
+  `outcome`, `duration` in monotonic seconds, and the counts `active`,
+  `draining`, `pending_calls` and `pending_bytes`. An `:attempt_finished`
+  outcome is `:ready`, `:refused`, `:timeout`, `:tls`, `:protocol`, `:closed` or
+  `:other`. Observers that switch on `type` should ignore types they do not
+  know.
+- Every event carries the counts at the time it was published. `active` counts
+  accounted connections that accept new calls. `draining` counts accounted
+  connections that no longer accept new calls (after a GOAWAY, or failed or
+  aborted while their calls unwind) until their last call ends. Neither counts
+  a removed socket that is still closing. `pending_calls` counts calls waiting
+  to acquire a connection, and `pending_bytes` the request bytes reserved by
+  admitted calls.
+- `:counts_changed` is emitted when `active`, `draining` or `pending_calls`
+  differs from the last published event's counts without another event
+  reporting it: a call starts or stops waiting, or a connection drains or is
+  removed. A call that finds spare capacity emits nothing. `pending_bytes`
+  changes with every call and never triggers it. After transport close and its
+  cleanup, the last event carries zero `active`, `draining` and
+  `pending_calls`; a connection whose call is still unwinding at close
+  publishes its removal when the call ends. A `ThreadedTransport` owner
+  publishes from its reactor, so a stalled owner publishes nothing until it
+  runs again; a replacement owner starts from zero counts.
 - `:connection_closed` is emitted exactly once when a ready connection leaves
   the manager, which for a connection with calls in progress is when its last
   call ends. Its `outcome` is the first recorded reason: `:keepalive_timeout`,
   `:drain_timeout`, `:goaway` (the peer's GOAWAY ended it, gracefully or with an
   error) or `:closed` (EOF, a protocol or I/O error, or a local abort). Its
   `duration` is nil. Transport `close` emits none for the connections it
-  closes. Metrics observers ignore it. Events carry
+  closes. Metrics observers read only its counts. Events carry
   no addresses, certificates, payloads, URLs or exception text. The observer
   runs synchronously on the owner reactor after the manager's bookkeeping and
   must return quickly. Its `StandardError`s are ignored. Calling `call`,
