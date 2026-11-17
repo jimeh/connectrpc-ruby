@@ -67,7 +67,7 @@ module ConnectRPC
         if parent && parent.timestamp.nil?
           span = Support.annotate(parent.start_child(op: "rpc.client", description: rpc.name, origin: ORIGIN), rpc)
         end
-        inject(call, span) if propagate?(call) && !Support.http_patch?(call)
+        inject(call, span) if propagate?(call) && !Support.patch_propagates?(call)
         span && Child.new(rpc, span, scope, @guard, capture: false, nested: false)
       end
 
@@ -128,10 +128,23 @@ module ConnectRPC
           "#{scheme}://#{host}#{call.url_path}"
         end
 
-        # Once applied, Sentry's :http patch propagates on the core Net::HTTP
-        # transport itself and prepends its baggage to ours, duplicating it.
-        def http_patch?(call)
-          transport = call.transport_class
+        # Once applied, Sentry's :http patch propagates on the core Net::HTTP transport
+        # itself and prepends its baggage to ours. Its own checks are mirrored so exactly
+        # one of the two injects: it skips the DSN's host, and it matches targets against
+        # the URL it rebuilds from the request path, escaping it again (%20 becomes %2520).
+        def patch_propagates?(call)
+          return false unless net_http_patched?(call.transport_class)
+
+          configuration = ::Sentry.configuration
+          dsn = configuration.dsn
+          url = url(call)
+          return false if url.nil? || (dsn && dsn.host == call.server_address)
+
+          patched = ::URI::RFC2396_PARSER.escape(url)
+          configuration.trace_propagation_targets.any? { |target| patched.match?(target) }
+        end
+
+        def net_http_patched?(transport)
           return false unless transport.is_a?(Class) && defined?(::ConnectRPC::Transports::NetHTTP) &&
                               transport <= ::ConnectRPC::Transports::NetHTTP
           return false unless defined?(::Sentry::Net::HTTP)

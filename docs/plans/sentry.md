@@ -101,7 +101,7 @@ copying every attribute of the RPC scope (`update_from_scope`, `rack_env`,
   [#128](https://github.com/jimeh/connectrpc-ruby/issues/128): `Call` now carries
   `url_scheme`, `url_path` and `transport_class`, targets match Sentry's
   `scheme://host/path` URL form, and clients on the core `NetHTTP` transport
-  leave propagation to an applied `:http` patch.
+  leave propagation to an applied `:http` patch whenever it will propagate.
 - Known core limit (#73, not this PR): `Client#injected_metadata`
   replaces caller `baggage` metadata with injected values via `Hash#merge`,
   for OTel too.

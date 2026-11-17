@@ -1195,8 +1195,9 @@
     "ConnectRPC::Sentry::Subscriber::Support#annotate": {"kind":"method","visibility":"public","parameters":"span, rpc","classification":"internal"},
     "ConnectRPC::Sentry::Subscriber::Support#copy_scope": {"kind":"method","visibility":"public","parameters":"target, source","classification":"internal"},
     "ConnectRPC::Sentry::Subscriber::Support#finish_transaction": {"kind":"method","visibility":"public","parameters":"transaction, source, name: nil","classification":"internal"},
-    "ConnectRPC::Sentry::Subscriber::Support#http_patch?": {"kind":"method","visibility":"public","parameters":"call","classification":"internal"},
     "ConnectRPC::Sentry::Subscriber::Support#inert?": {"kind":"method","visibility":"public","parameters":"configuration","classification":"internal"},
+    "ConnectRPC::Sentry::Subscriber::Support#net_http_patched?": {"kind":"method","visibility":"public","parameters":"transport","classification":"internal"},
+    "ConnectRPC::Sentry::Subscriber::Support#patch_propagates?": {"kind":"method","visibility":"public","parameters":"call","classification":"internal"},
     "ConnectRPC::Sentry::Subscriber::Support#status": {"kind":"method","visibility":"public","parameters":"code","classification":"internal"},
     "ConnectRPC::Sentry::Subscriber::Support#unexpected?": {"kind":"method","visibility":"public","parameters":"outcome","classification":"internal"},
     "ConnectRPC::Sentry::Subscriber::Support#url": {"kind":"method","visibility":"public","parameters":"call","classification":"internal"}

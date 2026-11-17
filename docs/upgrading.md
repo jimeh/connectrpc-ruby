@@ -143,10 +143,11 @@ These affect `connectrpc-sentry` client propagation. See
   naming a port such as `"api.internal:8443"` no longer match; use
   `%r{\Ahttps?://api\.internal/}` or a plain host substring instead.
 - On the core `NetHTTP` transport with Sentry's default `:http` patch applied,
-  the subscriber no longer injects, so requests carry one set of `sentry-*`
-  baggage members instead of two. `sentry-trace` now names the patch's
-  `http.client` span, a child of the `rpc.client` span, and Sentry baggage
-  comes before caller baggage instead of after it.
+  the subscriber no longer injects when the patch propagates the request, so
+  requests carry one set of `sentry-*` baggage members instead of two. The
+  duplicate set after caller baggage is gone. `sentry-trace` and the leading
+  Sentry baggage already came from the patch's `http.client` span, a child of
+  the `rpc.client` span.
 
 ## 0.2.0
 

@@ -2,6 +2,7 @@
 
 require "connectrpc/otel"
 require "open3"
+require "connectrpc/transports/net_http"
 require_relative "support/net_http_peer"
 
 RSpec.describe "Trace propagation" do
@@ -221,6 +222,42 @@ RSpec.describe "Trace propagation" do
         expect(baggage_keys(headers).count("sentry-trace_id")).to eq(1)
       end
 
+      # The patch rebuilds the URL from the request path and escapes it again, so an
+      # encoded base path matches different targets there than in the subscriber.
+      { %r{\Ahttp://127\.0\.0\.1/a%20b/} => "rpc.client", %r{/a%2520b/} => "http.client" }.each do |target, op|
+        it "sends one set of Sentry headers from the #{op} span for an escaped base path and #{target.inspect}" do
+          sentry(trace_propagation_targets: [target])
+          caller = start_caller
+          headers = net_http_headers(bus, path: "/a%20b/")
+          caller.finish
+          parent = transactions.first.spans.find { |span| span[:op] == op }
+          expect(headers["sentry-trace"]).to eq(["#{caller.trace_id}-#{parent[:span_id]}-1"])
+          expect(baggage_keys(headers).count("sentry-trace_id")).to eq(1)
+        end
+      end
+
+      # The patch skips requests to the DSN's host, so the subscriber injects there.
+      it "injects on a NetHTTP subclass only for the DSN host, which the patch skips" do
+        capturing = Class.new(ConnectRPC::Transports::NetHTTP) do
+          attr_reader :headers
+
+          def call(request)
+            @headers = request.headers
+            ConnectRPC::TransportResponse.new(status: 200, headers: { "content-type" => ["application/proto"] },
+                                              body: Example::V1::EchoMessage.new.to_proto)
+          end
+        end
+        traces = %w[https://sentry.invalid https://example.invalid].to_h do |base_url|
+          transport = capturing.new
+          core = ConnectRPC::Client.new(base_url: base_url, binding: ConnectRPC::Bindings::GoogleProtobuf.new,
+                                        transport: transport, instrumentation: bus)
+          ECHO::Client.new(client: core).echo(MESSAGE.new(name: "outgoing"))
+          [base_url, transport.headers["sentry-trace"]]
+        end
+        expect(traces.fetch("https://sentry.invalid")).not_to be_nil
+        expect(traces.fetch("https://example.invalid")).to be_nil
+      end
+
       # A patch, once prepended, cannot be removed, so the unpatched case runs in a fresh process.
       it "injects itself when the :http patch is disabled" do
         script = <<~RUBY
@@ -248,9 +285,9 @@ RSpec.describe "Trace propagation" do
           puts JSON.generate(trace_id: caller.trace_id, headers: headers, keys: baggage_keys(headers))
         RUBY
         fixtures = File.join(ROOT, "spec/fixtures/generation/echo")
-        output, status = Open3.capture2e(RbConfig.ruby, "-I", fixtures, "-e", script)
-        expect(status).to be_success, output
-        result = JSON.parse(output.lines.last)
+        output, errors, status = Open3.capture3(RbConfig.ruby, "-I", fixtures, "-e", script)
+        expect(status).to be_success, errors
+        result = JSON.parse(output)
         expect(result.dig("headers", "sentry-trace")).to match([start_with("#{result.fetch('trace_id')}-")])
         expect(result.fetch("keys").count("sentry-trace_id")).to eq(1)
       end

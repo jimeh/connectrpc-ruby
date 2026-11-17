@@ -7,7 +7,7 @@ module NetHTTPPeer
   include SocketPeer
 
   # Returns the request headers the peer received, by lowercase name.
-  def net_http_headers(instrumentation, metadata: {})
+  def net_http_headers(instrumentation, metadata: {}, path: "")
     received = nil
     reply = Example::V1::EchoMessage.new(name: "outgoing").to_proto
     handler = lambda do |socket|
@@ -16,7 +16,7 @@ module NetHTTPPeer
                    "content-length: #{reply.bytesize}\r\nconnection: close\r\n\r\n#{reply}")
     end
     with_peer(handler) do |url, _listener|
-      core = ConnectRPC::Client.new(base_url: url, binding: ConnectRPC::Bindings::GoogleProtobuf.new,
+      core = ConnectRPC::Client.new(base_url: url + path, binding: ConnectRPC::Bindings::GoogleProtobuf.new,
                                     instrumentation: instrumentation)
       typed = Example::V1::EchoService::Client.new(client: core)
       typed.echo(Example::V1::EchoMessage.new(name: "outgoing"), metadata: metadata, timeout: 5)

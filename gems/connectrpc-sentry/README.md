@@ -204,15 +204,18 @@ Sentry baggage is prepended to `baggage` staged by earlier subscribers. Core
 keeps caller `baggage` metadata passed to the RPC ahead of the injected values.
 
 Sentry's `:http` patch, on by default in `config.enabled_patches`, already
-propagates on every `Net::HTTP` request. Since 0.3.0, when that patch has been
-applied, clients on the core `ConnectRPC::Transports::NetHTTP` transport (or a
-subclass) leave propagation to it instead of injecting a second set of `sentry-*`
-baggage members. The patch's `http.client` span is a child of the `rpc.client`
-span, so `sentry-trace` names the `http.client` span, and the patch prepends
-Sentry baggage to the whole `baggage` header, ahead of caller and other
-subscribers' values. The patch applies the same `propagate_traces` and target
-rules to the same URL. Other transports, including the Async ones and wrappers
-around `NetHTTP`, are always injected by this subscriber.
+propagates on `Net::HTTP` requests. Since 0.3.0, when that patch has been applied
+and will propagate a call on the core `ConnectRPC::Transports::NetHTTP` transport
+(or a subclass), this subscriber leaves propagation to it instead of injecting a
+second set of `sentry-*` baggage members. The patch's `http.client` span is a
+child of the `rpc.client` span, so `sentry-trace` names the `http.client` span,
+and the patch prepends Sentry baggage to the whole `baggage` header, ahead of
+caller and other subscribers' values. The subscriber still injects when the
+patch will not: for requests to the DSN's host, which the patch skips, and when
+only the URL above matches a target. The patch escapes a percent-encoded base
+path again, so it sees `/a%2520b/` where the URL above has `/a%20b/`. Other
+transports, including the Async ones and wrappers around `NetHTTP`, are always
+injected by this subscriber.
 
 ## OpenTelemetry and OTLP
 
