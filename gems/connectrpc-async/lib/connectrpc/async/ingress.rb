@@ -112,7 +112,8 @@ module ConnectRPC
           timer
         end
 
-        # Never yields, so the waiting read cannot cancel it part way.
+        # Records the timeout before resetting the stream, so the read raises
+        # RequestBodyTimeout whatever the reset's close does.
         def stalled
           stream = @stream
           return unless stream

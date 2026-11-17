@@ -313,8 +313,10 @@ module ConnectRPC
         http2 = request.respond_to?(:stream)
         key = http2 ? request.stream : request
         # An HTTP/2 stream on a draining connection was opened before its
-        # cutoff, so only full admission refuses it, with REFUSED_STREAM.
-        if @admitted.size >= @max_requests || (!http2 && (@state != :running || resource.draining))
+        # cutoff, so only full admission or an abort refuses it, with
+        # REFUSED_STREAM. Aborting starts no more application work.
+        if @admitted.size >= @max_requests || @aborting || resource.finished? ||
+           (!http2 && (@state != :running || resource.draining))
           exchange&.decision = :admission_rejected
           @on_request_rejected&.call
           return Internal::ServerConnection::REFUSAL if http2
