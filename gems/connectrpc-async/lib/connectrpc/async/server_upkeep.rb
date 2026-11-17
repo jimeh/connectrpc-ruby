@@ -31,6 +31,8 @@ module ConnectRPC
           @timeout = timeout
           @writes = writes
           @queue = ::Async::Queue.new
+          # The queued frames' deadlines, oldest first.
+          @queued = []
           @resumed = nil
           @stall = WriteWatchdog.new(resource, clock: clock, timeout: CLEANUP_SECONDS,
                                                message: "HTTP/2 control frame write stalled")
@@ -64,7 +66,9 @@ module ConnectRPC
             written.resolve(false)
             @resource.abort(IOError.new("HTTP/2 control frames outran their writer"))
           else
-            @queue.enqueue([frame, @clock.now + @timeout, written])
+            deadline = @clock.now + @timeout
+            @queue.enqueue([frame, deadline, written])
+            @queued << deadline
           end
           written
         end
@@ -75,6 +79,7 @@ module ConnectRPC
           written = nil
           loop do
             frame, deadline, written = @queue.dequeue
+            @queued.shift
             deadline = [deadline, @resumed + @timeout].max if @resumed
             deliver(frame, deadline)
             now = @clock.now
@@ -86,6 +91,7 @@ module ConnectRPC
         ensure
           written&.resolve(false)
           @queue.dequeue.last.resolve(false) until @queue.empty?
+          @queued.clear
         end
 
         # Earlier frames meet earlier deadlines, so time spent queued behind
@@ -145,20 +151,20 @@ module ConnectRPC
 
         # Sleeps up to `seconds` and returns whether the frame `serial` is
         # still being delivered. Writing that frame cannot cut a sleep short,
-        # so each step lasts at most the smaller of `timeout` and the write
-        # bound, which never passes the next frame's first check:
-        # - a frame written before its deadline leaves the next frame a
-        #   deadline at least as late, while steps end by the earlier one;
+        # so no step passes the next frame's first check:
+        # - a queued frame's deadline still ahead caps the step, and a frame
+        #   queued during the step has a deadline at least `timeout` away;
         # - a frame written past its deadline restarts the next one's deadline
         #   `timeout` after that write;
-        # - a frame written exactly at its deadline can leave the next one
-        #   already expired. `deliver` fails it at once unless it waits for a
-        #   timed write, which started after that write, so its bound ends at
-        #   least the write bound later.
+        # - a next frame already past its deadline when dequeued fails at once
+        #   in `deliver`, unless it waits for a timed write. That write started
+        #   after this frame was written, so the step, at most the write bound,
+        #   ends by that write's deadline.
         def undelivered_after?(serial, seconds)
           due = @clock.now + seconds
-          while (left = due - @clock.now).positive?
-            @clock.sleep([left, @step].min)
+          while (left = due - (now = @clock.now)).positive?
+            queued = @queued.find { |queued_deadline| queued_deadline > now }
+            @clock.sleep([left, @step, queued && (queued - now)].compact.min)
             return false unless delivering?(serial)
           end
           delivering?(serial)

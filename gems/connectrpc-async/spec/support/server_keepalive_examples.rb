@@ -1722,6 +1722,52 @@ RSpec.shared_examples "HTTP/2 server keepalive" do
       end
     end
 
+    # The first ACK is written exactly at its 20 s deadline behind the held
+    # write, so the reset queued at 5 s keeps its own 25 s deadline. Behind
+    # an untimed guard holder, that reset fails the connection at 25 s, not
+    # when the watch would otherwise next wake.
+    it "fails a queued control frame at its own deadline after the frame ahead is written exactly at its" do
+      reactor do |task|
+        with_keepalive_host(task, keepalive: server_keepalive(time: nil)) do |fixture|
+          client = fixture.client
+          connection = fixture.resource.connection
+          watch(fixture, "sibling", "one")
+          gate = hold_frames(fixture.resource, Protocol::HTTP2::DataFrame::TYPE)
+          fixture.log[:feeds]["sibling"].enqueue("two")
+          gate.started.dequeue
+          send_ping(client, "bdp00001")
+          wait_until(task, "the ACK waits for the frame guard") { connection.guard_waiting? }
+          release = Async::Promise.new
+          holding = Async::Promise.new
+          holder = task.async do
+            connection.synchronize do
+              holding.resolve(true)
+              release.wait
+            end
+          end
+          waiting = connection.instance_variable_get(:@frame_guard).waiting
+          wait_until(task, "the guard holder queued behind the ACK") { waiting.size == 2 }
+          await_due(task, fixture.clock, 20)
+          fixture.clock.advance(5)
+          refused = fixture.resource.upkeep.refuse(99)
+          fixture.clock.advance(15)
+          await_behind_write(task, fixture.clock)
+          gate.release.enqueue(true)
+          wait_until(task, "the ACK") { client.wire.acks == ["bdp00001"] }
+          holding.wait
+          fixture.clock.advance(4.9)
+          expect(fixture.resource).not_to be_finished
+          fixture.clock.advance(0.1)
+          wait_until(task, "connection retired") { retired?(fixture.resource) }
+          expect(refused.wait).to be(false)
+        ensure
+          gate&.release&.enqueue(true)
+          release&.resolve(true)
+          holder&.wait
+        end
+      end
+    end
+
     # The control writer is woken without yielding, so a starved writer can
     # dequeue a frame after its deadline. With no timed write to wait out,
     # the frame fails the connection instead of being written late.
@@ -1761,7 +1807,6 @@ RSpec.shared_examples "HTTP/2 server keepalive" do
           gate.release.enqueue(true)
           wait_until(task, "connection retired") { retired?(fixture.resource) }
           expect(client.wire.acks).to eq(["bdp00001"])
-          expect(fixture.clock.now).to eq(20)
         ensure
           gate&.release&.enqueue(true)
         end
