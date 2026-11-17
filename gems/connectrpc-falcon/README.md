@@ -436,8 +436,11 @@ Since 0.3.0, native HTTP/2 responses are bounded in the same way as on the Async
 with `CANCEL` a unary, client-streaming or Rack fallback response that waits
 that long for flow-control credit; server-streaming and bidi responses are
 exempt. Each frame write must finish within `frame_write_timeout:` (default 60
-seconds, nil turns it off), or the connection is aborted. Neither bound applies
-to HTTP/1 connections.
+seconds, nil turns it off), or the connection is aborted. While it is on, each
+HTTP/2 socket gets `TCP_NOTSENT_LOWAT` on Linux and macOS, so a slow reader
+that keeps making progress stays within it; see
+[Stream admission](../connectrpc-async/README.md#stream-admission). Neither
+bound applies to HTTP/1 connections.
 
 `falcon:interop:grpc` also runs a grpc-go bidi stream through an age drain on
 two real workers over TLS.

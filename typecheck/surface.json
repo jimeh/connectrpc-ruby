@@ -574,6 +574,7 @@
     "ConnectRPC::Async::Internal::ServerUpkeep#write_finished": {"kind":"method","visibility":"public","parameters":"","classification":"internal"},
     "ConnectRPC::Async::Internal::ServerUpkeep#write_reset": {"kind":"method","visibility":"private","parameters":"stream_id, code","classification":"internal"},
     "ConnectRPC::Async::Internal::ServerUpkeep#write_started": {"kind":"method","visibility":"public","parameters":"","classification":"internal"},
+    "ConnectRPC::Async::Internal::WriteWatchdog.track_progress": {"kind":"method","visibility":"public","parameters":"raw","classification":"internal"},
     "ConnectRPC::Async::Internal::WriteWatchdog#initialize": {"kind":"method","visibility":"public","parameters":"resource, clock:, timeout:, message: \"HTTP/2 frame write did not finish in time\"","classification":"internal"},
     "ConnectRPC::Async::Internal::WriteWatchdog#remaining": {"kind":"method","visibility":"public","parameters":"","classification":"internal"},
     "ConnectRPC::Async::Internal::WriteWatchdog#run": {"kind":"method","visibility":"private","parameters":"","classification":"internal"},

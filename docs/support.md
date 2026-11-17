@@ -457,9 +457,12 @@ nginx's `send_timeout`. Each HTTP/2 frame write must finish within
 `frame_write_timeout` (default 60 seconds), or the connection is aborted. That
 second bound applies to every RPC shape, and control frames queued behind a
 stalled write wait for it rather than for the keepalive timeout. It is a
-deadline for each write, which a slow peer can miss while still reading,
-because a write blocked on a full send buffer waits for the peer to drain part
-of it. grpc-go has no flow-control
+deadline for each write. While it is on, Linux and macOS HTTP/2 sockets get
+`TCP_NOTSENT_LOWAT` set to 128 KiB, so a write blocked on a full send buffer
+needs only about 80 KB of peer progress. On other platforms such a write waits
+for the peer to drain a large part of the buffer, which a slow peer can miss
+while still reading. Neither grpc-go nor Go's net/http sets
+`TCP_NOTSENT_LOWAT`. grpc-go has no flow-control
 wait bound, but sets `TCP_USER_TIMEOUT` to its keepalive timeout, so the kernel
 fails a connection whose sent data stays unacknowledged, or unsent behind a zero
 window, that long; a peer that keeps reading slowly resets it. Go's

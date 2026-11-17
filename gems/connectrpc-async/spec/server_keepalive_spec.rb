@@ -63,6 +63,21 @@ RSpec.describe ConnectRPC::Async::ServerKeepalive do
   end
 end
 
+RSpec.describe "HTTP/2 frame write progress" do
+  # A Falcon listener on a UNIX endpoint, or a socket retired meanwhile,
+  # keeps serving without the limit.
+  it "leaves a socket that rejects TCP_NOTSENT_LOWAT unchanged" do
+    watchdog = AsyncHelpers::INTERNAL::WriteWatchdog
+    left, right = UNIXSocket.pair
+    expect(watchdog.track_progress(left)).to be(false)
+    left.close
+    expect(watchdog.track_progress(left)).to be(false)
+  ensure
+    right&.close
+    left&.close
+  end
+end
+
 RSpec.describe "Async Host server keepalive" do
   def keepalive_host(**) = ConnectRPC::Async::Host.new(**).start
   def keepalive_session(host) = host_session(host)

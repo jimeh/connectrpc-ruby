@@ -2121,6 +2121,92 @@ RSpec.shared_examples "HTTP/2 server keepalive" do
         end
       end
     end
+
+    def write_watchdog = AsyncHelpers::INTERNAL::WriteWatchdog
+
+    def unsent_limit(socket, option = write_watchdog::NOTSENT_LOWAT)
+      socket.getsockopt(Socket::IPPROTO_TCP, option).int
+    end
+
+    # Reads and discards `bytes` from the client's socket.
+    def drain_socket(raw, bytes)
+      bytes -= raw.readpartial(65_536).bytesize while bytes.positive?
+    end
+
+    it "limits the unsent bytes of an HTTP/2 socket while frame_write_timeout is on" do
+      skip "no TCP_NOTSENT_LOWAT on this platform" unless write_watchdog::NOTSENT_LOWAT
+
+      reactor do |task|
+        with_keepalive_host(task, keepalive: nil) do |fixture|
+          expect(unsent_limit(fixture.resource.raw)).to eq(131_072)
+        end
+      end
+    end
+
+    it "keeps the default unsent bytes with frame_write_timeout: nil" do
+      skip "no TCP_NOTSENT_LOWAT on this platform" unless write_watchdog::NOTSENT_LOWAT
+
+      reactor do |task|
+        with_keepalive_host(task, keepalive: nil, frame_write_timeout: nil) do |fixture|
+          expect(unsent_limit(fixture.resource.raw)).to eq(unsent_limit(fixture.client.raw))
+        end
+      end
+    end
+
+    it "serves without the unsent byte limit on a platform that lacks TCP_NOTSENT_LOWAT" do
+      default = Socket.new(:INET, :STREAM)
+      option = write_watchdog::NOTSENT_LOWAT
+      stub_const("#{write_watchdog.name}::NOTSENT_LOWAT", nil)
+      reactor do |task|
+        with_keepalive_host(task, keepalive: nil) do |fixture|
+          expect(unsent_limit(fixture.resource.raw, option)).to eq(unsent_limit(default, option)) if option
+          expect(unary(fixture, "unlimited")).to eq([200, encoded("unlimited")])
+        end
+      end
+    ensure
+      default&.close
+    end
+
+    # The peer keeps reading, far slower than the server writes. Each blocked
+    # frame write finishes once the peer has read about the unsent byte limit,
+    # so every write stays within the bound although the response outlasts
+    # it. Without the limit, a write blocked on the full send buffer needs
+    # the peer to read about 950 KB first.
+    it "keeps a connection whose peer reads a flooding server stream slowly" do
+      skip "no TCP_NOTSENT_LOWAT on this platform" unless write_watchdog::NOTSENT_LOWAT
+
+      reactor do |task|
+        client_options = { read: false, receive_buffer: 4096, settings: open_window }
+        with_keepalive_host(task, keepalive: nil, max_requests: 1, client_options: client_options) do |fixture|
+          client = fixture.client
+          raw_window_update(client, 0, KeepaliveClient::MAXIMUM_WINDOW - 65_535)
+          probe = WriteProbe.new(fixture.resource.socket)
+          fixture.resource.connection.stream.instance_variable_set(:@io, probe)
+          chunk = "f" * 65_536
+          256.times { fixture.log[:feeds]["flood"].enqueue(chunk) }
+          start_call(client, watch_method.path, "flood", content_type: "application/connect+proto")
+          wait_until(task, "a server frame write blocked on the socket", within: 10) { probe.writing? }
+          4.times do
+            fixture.clock.advance(50)
+            written = probe.written
+            drain_socket(client.raw, 256 * 1024)
+            wait_until(task, "a blocked frame write finished after the peer read 256 KiB", within: 10) do
+              probe.written > written && probe.writing?
+            end
+          end
+          expect(fixture.resource).not_to be_finished
+
+          # Once the peer stops reading, the write blocked since now still
+          # fails the connection at its bound.
+          blocked_at = fixture.clock.now
+          fixture.clock.advance(59.9)
+          await_due(task, fixture.clock, blocked_at + 60)
+          expect(fixture.resource).not_to be_finished
+          fixture.clock.advance(0.1)
+          wait_until(task, "connection retired") { retired?(fixture.resource) }
+        end
+      end
+    end
   end
 
   describe "graceful close" do

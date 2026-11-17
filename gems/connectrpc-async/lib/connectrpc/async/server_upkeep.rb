@@ -195,8 +195,40 @@ module ConnectRPC
       # by failing the connection raw-first. The bound applies to each frame
       # or header block, not to a whole response, and continuous progress
       # within one frame does not extend it.
+      #
+      # A write blocked on a full send buffer finishes only once the kernel
+      # takes the rest of its bytes. By default the peer must first drain a
+      # large part of the buffer, about 950 KB on Linux loopback with the
+      # default 4 MiB `tcp_wmem` maximum, so a slow but live reader could miss
+      # the bound. `track_progress` caps the socket's unsent bytes at
+      # UNSENT_BYTES, so such a write finishes after about 80 KB of peer
+      # progress, and the bound tracks that progress instead.
       class WriteWatchdog
+        # TCP_NOTSENT_LOWAT, which Ruby's Socket does not define: 25 in
+        # Linux's <linux/tcp.h> and 0x201 in XNU's <netinet/tcp.h>. Other
+        # platforms have no such option and keep the default behaviour.
+        NOTSENT_LOWAT = if defined?(::Socket::TCP_NOTSENT_LOWAT) then ::Socket::TCP_NOTSENT_LOWAT
+                        elsif RUBY_PLATFORM.include?("linux") then 25
+                        elsif RUBY_PLATFORM.include?("darwin") then 0x201
+                        end
+        # A smaller cap wakes a blocked writer more often: on a
+        # bandwidth-limited link 16 KiB measurably cut throughput and raised
+        # CPU use, while 128 KiB stayed close to no cap.
+        UNSENT_BYTES = 131_072
+
         attr_reader :timeout
+
+        # Sets TCP_NOTSENT_LOWAT on the accepted socket `raw` and returns
+        # whether it was set. A platform or socket without the option keeps
+        # its default behaviour.
+        def self.track_progress(raw)
+          return false unless NOTSENT_LOWAT && raw.respond_to?(:setsockopt)
+
+          raw.setsockopt(::Socket::IPPROTO_TCP, NOTSENT_LOWAT, UNSENT_BYTES)
+          true
+        rescue SystemCallError, IOError
+          false
+        end
 
         def initialize(resource, clock:, timeout:, message: "HTTP/2 frame write did not finish in time")
           @resource = resource
@@ -331,7 +363,10 @@ module ConnectRPC
         # draining meanwhile, after its upkeep was stopped, gets no more.
         def start
           @writer.start(@parent)
-          @watchdog.start(@parent) if @watchdog && !@resource.finished?
+          if @watchdog && !@resource.finished?
+            WriteWatchdog.track_progress(@resource.raw)
+            @watchdog.start(@parent)
+          end
           if (time = @keepalive&.time) && upkeep?
             @resource.keep_alive(@parent, clock: @clock, time: time, timeout: @keepalive.timeout, always: true)
           end

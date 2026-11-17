@@ -161,12 +161,16 @@ and [Accept errors](../gems/connectrpc-async/README.md#accept-errors).
   [Stream admission](../gems/connectrpc-async/README.md#stream-admission).
 - An HTTP/2 connection whose single frame write does not finish within 60
   seconds is aborted, failing all of its streams. This catches peers that stop
-  reading their socket, for every RPC shape. A write blocked on a full send
-  buffer finishes only once the peer has drained part of that buffer, so raise
-  the bound with the new `frame_write_timeout:` option for clients that read
-  large responses over slow links. With nil, a control frame such as a PING
-  ACK queued behind the stalled write still ends the connection after the
-  keepalive `timeout`.
+  reading their socket, for every RPC shape. While the bound is on, HTTP/2
+  sockets on Linux and macOS get `TCP_NOTSENT_LOWAT` set to 128 KiB, so a
+  write blocked on a full send buffer finishes after about 80 KB of peer
+  progress and a slow reader that keeps reading stays connected. On other
+  platforms such a write waits for the peer to drain a large part of the
+  buffer, about 950 KB on Linux defaults, so raise the bound with the new
+  `frame_write_timeout:` option for clients that read large responses over
+  slow links. With nil, the socket keeps its default unsent buffer, and a
+  control frame such as a PING ACK queued behind the stalled write still ends
+  the connection after the keepalive `timeout`.
 - An HTTP/2 stream that arrives while `max_requests` admission is full is
   refused with `RST_STREAM(REFUSED_STREAM)` while its HEADERS are read, before
   any of its DATA, instead of after its request was queued for dispatch. Its
