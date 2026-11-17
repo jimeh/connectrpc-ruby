@@ -3,25 +3,47 @@
 module ConnectRPC
   module Async
     # Strict HTTP/2 listener composing the same worker session as other hosts.
+    # An optional native fallback serves requests outside registered services.
     class Host
       ACCEPT_RETRY_DELAYS = [0.05, 0.1, 0.2, 0.4, 0.5].freeze
       ACCEPT_RETRY_ERRORS = [Errno::EMFILE, Errno::ENFILE, Errno::ENOBUFS, Errno::ENOMEM,
                              Errno::ECONNABORTED, Errno::EINTR].freeze
       private_constant :ACCEPT_RETRY_DELAYS, :ACCEPT_RETRY_ERRORS
 
+      # The Host owns no tunnels or socket handoff, so its fallback receives no
+      # CONNECT or extended CONNECT request and cannot switch protocols.
+      class FallbackGuard
+        def initialize(fallback)
+          @fallback = fallback
+        end
+
+        def call(request)
+          return ::Protocol::HTTP::Response[501, {}, nil] if request.method == "CONNECT" || request.protocol
+
+          response = @fallback.call(request)
+          return response unless response && (response.status == 101 || response.protocol)
+
+          response.close
+          ::Protocol::HTTP::Response[501, {}, nil]
+        end
+      end
+      private_constant :FallbackGuard
+
       attr_reader :port, :addresses
 
       def initialize(server:, host: "127.0.0.1", port: 0, tls: nil, tls_provider: nil,
                      max_connections: 128, max_requests: 128, handshake_timeout: 10, idle_timeout: 60,
                      refresh_interval: 60, refresh_jitter: 0.1, refresh_timeout: 10, on_tls_error: nil,
-                     keepalive: ServerKeepalive.new)
+                     keepalive: ServerKeepalive.new, fallback: nil)
         @host = host
         @requested_port = port
         @addresses = [].freeze
         @owner = ::Async::Task.current?
         @listeners = []
         @completion = ::Async::Promise.new
-        application = Application.new(server: server)
+        # Application validates the server and a non-callable fallback.
+        fallback = FallbackGuard.new(fallback) if fallback.respond_to?(:call)
+        application = Application.new(server: server, fallback: fallback)
         @session = build_session(
           application: application, lifecycle_factory: application.method(:start_call),
           tls: tls, tls_provider: tls_provider,

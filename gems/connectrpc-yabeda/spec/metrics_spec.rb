@@ -9,6 +9,24 @@ RSpec.describe ConnectRPC::Yabeda::Metrics do
   def bus(metrics) = ConnectRPC::Instrumentation.new(subscribers: [metrics.subscriber], on_error: ->(e) { errors << e })
   def metric(name) = Yabeda.metrics.fetch(name)
 
+  let(:event_type) do
+    Data.define(:type, :state, :previous_state, :outcome, :duration, :active, :draining, :pending_calls)
+  end
+
+  def event(type, state:, previous_state: nil, outcome: nil, duration: nil, counts: [0, 0, 0])
+    active, draining, pending_calls = counts
+    event_type.new(type: type, state: state, previous_state: previous_state, outcome: outcome, duration: duration,
+                   active: active, draining: draining, pending_calls: pending_calls)
+  end
+
+  # Active, draining and pending calls for one transport.
+  def counts(transport)
+    connections = adapter.gauges.fetch(metric("grpc_client_connections"))
+    [connections.fetch({ transport: transport, state: "active" }),
+     connections.fetch({ transport: transport, state: "draining" }),
+     adapter.gauges.fetch(metric("grpc_client_pending_calls")).fetch({ transport: transport })]
+  end
+
   it "declares before Yabeda.configure! and records server and client values" do
     metrics = described_class.new
     expect(Yabeda.metrics).to be_empty
@@ -48,11 +66,11 @@ RSpec.describe ConnectRPC::Yabeda::Metrics do
     metrics = described_class.new
     Yabeda.configure!
     observer = metrics.connection_observer(transport: "billing")
-    event = Data.define(:type, :state, :previous_state, :outcome, :duration)
-    observer.call(event.new(type: :state_changed, state: :connecting, previous_state: :idle, outcome: nil,
-                            duration: nil))
-    observer.call(event.new(type: :attempt_finished, state: :ready, previous_state: nil, outcome: :ready,
-                            duration: 0.5))
+    expect(counts("billing")).to eq([0, 0, 0])
+    observer.call(event(:state_changed, state: :connecting, previous_state: :idle, counts: [0, 0, 1]))
+    observer.call(event(:attempt_finished, state: :ready, outcome: :ready, duration: 0.5, counts: [1, 0, 1]))
+    observer.call(event(:counts_changed, state: :ready, counts: [1, 1, 0]))
+    expect(counts("billing")).to eq([1, 1, 0])
     gauge = adapter.gauges.fetch(metric("grpc_client_connection_state"))
     expect(gauge.fetch({ transport: "billing", state: "connecting" })).to eq(1)
     expect(gauge.fetch({ transport: "billing", state: "idle" })).to eq(0)
@@ -73,13 +91,26 @@ RSpec.describe ConnectRPC::Yabeda::Metrics do
     gauge = adapter.gauges.fetch(metric("grpc_client_connection_state"))
     expect(gauge.fetch({ transport: "early", state: "idle" })).to eq(1)
     expect(gauge.fetch({ transport: "early", state: "ready" })).to eq(0)
-    event = Data.define(:type, :state, :previous_state, :outcome, :duration)
-    observer.call(event.new(type: :state_changed, state: :connecting, previous_state: :idle, outcome: nil,
-                            duration: nil))
+    expect(counts("early")).to eq([0, 0, 0])
+    observer.call(event(:state_changed, state: :connecting, previous_state: :idle))
     expect(gauge.fetch({ transport: "early", state: "connecting" })).to eq(1)
     expect(gauge.fetch({ transport: "early", state: "idle" })).to eq(0)
     expect(adapter.counters.fetch(metric("grpc_client_connection_state_changes_total"))
                   .fetch({ transport: "early", state: "connecting" })).to eq(1)
+  end
+
+  it "publishes counts recorded before Yabeda.configure! on collect" do
+    metrics = described_class.new
+    observer = metrics.connection_observer(transport: "early")
+    # Recording raises before configure! (Async swallows it); the observer keeps the event's values.
+    expect { observer.call(event(:state_changed, state: :ready, previous_state: :connecting, counts: [2, 1, 3])) }
+      .to raise_error(KeyError)
+    expect { observer.call(event(:counts_changed, state: :ready, counts: [3, 1, 2])) }.to raise_error(KeyError)
+    Yabeda.configure!
+    Yabeda.collect!
+    expect(counts("early")).to eq([3, 1, 2])
+    expect(adapter.gauges.fetch(metric("grpc_client_connection_state")).fetch({ transport: "early", state: "ready" }))
+      .to eq(1)
   end
 
   it "produces yabeda-prometheus names equal to the shared definitions" do
@@ -95,7 +126,8 @@ RSpec.describe ConnectRPC::Yabeda::Metrics do
     end
     expect(exported.keys).to match_array(expected.keys)
     expect(expected.keys).to include("grpc_server_handling_seconds", "grpc_client_msg_received_bytes",
-                                     "grpc_server_handled_total", "grpc_client_connection_state")
+                                     "grpc_server_handled_total", "grpc_client_connection_state",
+                                     "grpc_client_connections", "grpc_client_pending_calls")
     exported.each do |name, declared|
       instrument = expected.fetch(name)
       expect(declared.comment).to eq(instrument.help)

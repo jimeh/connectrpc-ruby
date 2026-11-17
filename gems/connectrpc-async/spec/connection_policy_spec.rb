@@ -124,12 +124,18 @@ RSpec.describe "HTTP/2 Transport connection options and observation" do
       expect(events.map { |event| event.to_h.keys }.uniq).to eq(
         [%i[type state previous_state outcome duration active draining pending_calls pending_bytes]]
       )
+      # The waiting call leaves before its lease, and close's drain removes
+      # the connection before the closed state.
       expect(events.map { |event| [event.type, event.previous_state, event.state, event.outcome] }).to eq(
         [[:state_changed, :idle, :connecting, nil], [:state_changed, :connecting, :ready, nil],
-         [:attempt_finished, nil, :ready, :ready], [:state_changed, :ready, :closing, nil],
+         [:attempt_finished, nil, :ready, :ready], [:counts_changed, nil, :ready, nil],
+         [:state_changed, :ready, :closing, nil], [:counts_changed, nil, :closing, nil],
          [:state_changed, :closing, :closed, nil]]
       )
       expect(states).to eq(events.map(&:state))
+      expect(events.map { |event| [event.active, event.draining, event.pending_calls] }).to eq(
+        [[0, 0, 1], [1, 0, 1], [1, 0, 1], [1, 0, 0], [1, 0, 0], [0, 0, 0], [0, 0, 0]]
+      )
       ready = events[2]
       expect([ready.active, ready.draining, ready.pending_calls, ready.pending_bytes]).to eq([1, 0, 1, 4])
       expect(ready.duration).to be >= 0

@@ -302,6 +302,9 @@ class APIConnectionEvent
   def previous_state = :connecting
   def outcome = nil
   def duration = nil
+  def active = 1
+  def draining = 0
+  def pending_calls = 0
 end
 
 class APIMessageObserver

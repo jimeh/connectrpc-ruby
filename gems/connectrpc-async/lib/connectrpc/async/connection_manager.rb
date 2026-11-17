@@ -62,6 +62,8 @@ module ConnectRPC
           @state = :idle
           @closing = false
           @dispatching = nil
+          # Active, draining and pending calls as the last emitted event carried them.
+          @published_counts = [0, 0, 0]
           @clock = MonotonicClock
           @random = ::Random
           # Raised for later connections when a peer reports too many PINGs.
@@ -96,13 +98,20 @@ module ConnectRPC
           @pending_bytes -= bytes
         end
 
+        # A published count change can yield to the observer, so every pass
+        # that publishes rechecks availability before waiting or leasing: a
+        # wakeup during the publication is not lost, and no lease is held
+        # across it. A published waiter leaves before its lease is taken.
         def acquire(wait_for_ready: @policy.wait_for_ready)
           waiter = Waiter.new(wait_for_ready, nil)
-          @waiters[waiter] = true
           loop do
+            @waiters[waiter] = true
             raise Error.new(:unavailable, CLOSING), cause: nil if @closing
 
             if (connection = available)
+              @waiters.delete(waiter)
+              next if @published_counts.last != @waiters.size && publish_counts
+
               @connections[connection] += 1
               return connection
             end
@@ -119,10 +128,13 @@ module ConnectRPC
               waiter.joined = attempt unless wait_for_ready
               next
             end
+            next if publish_counts
+
             @progress.wait
           end
         ensure
-          @waiters.delete(waiter)
+          # Only exits without a lease still hold the waiter.
+          publish_counts if @waiters.delete(waiter)
         end
 
         # Exactly-once lease release. A connection that stopped accepting
@@ -178,6 +190,7 @@ module ConnectRPC
           close
           @connections.select { |_, usage| usage.zero? }.each_key { |connection| remove(connection) }
           publish(:closed)
+          publish_counts
         end
 
         private
@@ -210,6 +223,7 @@ module ConnectRPC
             start_attempt if !@attempt && !@retry_at && slot_free? && demand? && !available
             publish(current_state)
           end
+          publish_counts
           @progress.signal
         end
 
@@ -443,15 +457,29 @@ module ConnectRPC
           emit(:state_changed, previous_state: previous)
         end
 
+        # Emits counts_changed when active, draining or pending calls differ
+        # from the last emitted event's, and returns whether it emitted.
+        # Pending bytes change with every call and never trigger it.
+        def publish_counts # rubocop:disable Naming/PredicateMethod -- publishes, then reports whether it did
+          return false unless @observer && counts != @published_counts
+
+          emit(:counts_changed)
+          true
+        end
+
+        def counts
+          usable = @connections.each_key.count { |connection| usable?(connection) }
+          [usable, @connections.size - usable, @waiters.size]
+        end
+
         # Observers run synchronously after bookkeeping and must return quickly.
         def emit(type, previous_state: nil, outcome: nil, duration: nil)
           return unless @observer
 
+          active, draining, pending_calls = @published_counts = counts
           event = ConnectionEvent.new(
             type: type, state: @state, previous_state: previous_state, outcome: outcome, duration: duration,
-            active: @connections.each_key.count { |connection| usable?(connection) },
-            draining: @connections.each_key.count { |connection| !usable?(connection) },
-            pending_calls: @waiters.size, pending_bytes: @pending_bytes
+            active: active, draining: draining, pending_calls: pending_calls, pending_bytes: @pending_bytes
           )
           dispatching = @dispatching
           @dispatching = Fiber.current

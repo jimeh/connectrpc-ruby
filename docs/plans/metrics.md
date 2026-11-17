@@ -277,3 +277,21 @@ Residual: Rails metrics rely on Rack-path coverage plus docs; no Rails spec.
 3. `rpc_protocol` always on, with the narrowed compatibility promise.
 4. `prometheus-client >= 5.0, < 6`.
 5. Async standalone Host: documented separate metrics listener; no Host API change.
+
+## Follow-up (#70)
+
+Implemented after this plan, superseding the non-goals and settled question 5
+for these two items:
+
+- Async client connection gauges: the Async connection manager publishes a
+  `:counts_changed` event when `active`, `draining` or `pending_calls` changes
+  without another event, and the shared `ConnectionObserver` records
+  `<namespace>_client_connections{transport,state}` (`state` is `active` or
+  `draining`) and `<namespace>_client_pending_calls{transport}` from the counts
+  on every event. `pending_bytes` changes do not publish and have no gauge.
+  Scope is `Transport` and `ThreadedTransport`; servers and `HTTP1Transport`
+  publish none.
+- Async standalone Host fallback: `Host.new(server:, fallback:)` routes every
+  non-RPC request to a native Protocol::HTTP callable, guarded against CONNECT
+  and protocol switches. The Host stays HTTP/2 only, so cleartext h2c Hosts
+  still need a separate metrics listener for HTTP/1.1 scrapers.

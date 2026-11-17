@@ -193,7 +193,8 @@ RSpec.describe "Backend-neutral metrics" do
         "grpc_client_msg_sent_bytes" => :histogram,
         "grpc_client_connection_attempts_total" => :counter, "grpc_client_connection_attempt_seconds" => :histogram,
         "grpc_client_connection_state_changes_total" => :counter, "grpc_client_connection_state" => :gauge,
-        "grpc_client_admission_rejected_total" => :counter
+        "grpc_client_admission_rejected_total" => :counter, "grpc_client_connections" => :gauge,
+        "grpc_client_pending_calls" => :gauge
       )
       definitions.instruments.each do |key, instrument|
         expect(key.to_s).to eq([instrument.name, instrument.unit].compact.join("_"))
@@ -206,6 +207,8 @@ RSpec.describe "Backend-neutral metrics" do
       expect(definitions.fetch(:server_handled_total).labels).to eq(
         %i[grpc_type grpc_service grpc_method rpc_protocol grpc_code]
       )
+      expect(definitions.fetch(:client_connections).labels).to eq(%i[transport state])
+      expect(definitions.fetch(:client_pending_calls).labels).to eq(%i[transport])
     end
 
     it "swaps only the prefix and accepts custom buckets" do
@@ -227,10 +230,14 @@ RSpec.describe "Backend-neutral metrics" do
   end
 
   describe ConnectRPC::Metrics::ConnectionObserver do
-    let(:event_type) { Data.define(:type, :state, :previous_state, :outcome, :duration) }
+    let(:event_type) do
+      Data.define(:type, :state, :previous_state, :outcome, :duration, :active, :draining, :pending_calls)
+    end
 
-    def event(type, state: :idle, previous_state: nil, outcome: nil, duration: nil)
-      event_type.new(type: type, state: state, previous_state: previous_state, outcome: outcome, duration: duration)
+    def event(type, state: :idle, previous_state: nil, outcome: nil, duration: nil, counts: [0, 0, 0])
+      active, draining, pending_calls = counts
+      event_type.new(type: type, state: state, previous_state: previous_state, outcome: outcome, duration: duration,
+                     active: active, draining: draining, pending_calls: pending_calls)
     end
 
     def observer(name = "billing") = described_class.new(recorder: recorder, definitions: definitions, transport: name)
@@ -242,6 +249,16 @@ RSpec.describe "Backend-neutral metrics" do
       end
     end
 
+    # The last value set for each count series.
+    def count_gauges
+      recorder.calls.each_with_object({}) do |(op, key, labels, value), gauge|
+        next unless op == :set
+
+        gauge[labels.fetch(:state)] = value if key == :client_connections
+        gauge["pending_calls"] = value if key == :client_pending_calls
+      end
+    end
+
     it "publishes state gauges on request and maps state, attempt and admission events" do
       observer = self.observer
       expect(recorder.calls).to be_empty
@@ -249,7 +266,9 @@ RSpec.describe "Backend-neutral metrics" do
       initial = recorder.calls.dup
       expect(initial).to eq(%w[idle connecting ready transient_failure closing closed].map do |state|
         [:set, :client_connection_state, { transport: "billing", state: state }, state == "idle" ? 1 : 0]
-      end)
+      end + [[:set, :client_connections, { transport: "billing", state: "active" }, 0],
+             [:set, :client_connections, { transport: "billing", state: "draining" }, 0],
+             [:set, :client_pending_calls, { transport: "billing" }, 0]])
       recorder.calls.clear
       observer.call(event(:state_changed, state: :connecting, previous_state: :idle))
       observer.call(event(:attempt_finished, state: :connecting, outcome: :refused, duration: 0.25))
@@ -265,12 +284,32 @@ RSpec.describe "Backend-neutral metrics" do
       )
     end
 
-    it "records nothing for connection_closed events" do
+    it "records nothing for connection_closed events with unchanged counts" do
       observer = self.observer
       %i[keepalive_timeout drain_timeout goaway closed].each do |reason|
         observer.call(event(:connection_closed, state: :ready, outcome: reason))
       end
       expect(recorder.calls).to be_empty
+    end
+
+    it "sets only changed count series from events of every type" do
+      observer = self.observer
+      observer.call(event(:state_changed, state: :connecting, previous_state: :idle, counts: [0, 0, 1]))
+      observer.call(event(:counts_changed, state: :ready, counts: [1, 0, 1]))
+      observer.call(event(:counts_changed, state: :ready, counts: [1, 0, 0]))
+      observer.call(event(:attempt_finished, state: :ready, outcome: :ready, duration: 0.1, counts: [1, 0, 0]))
+      observer.call(event(:connection_closed, state: :ready, outcome: :goaway, counts: [1, 1, 0]))
+      observer.call(event(:unknown_future_type, state: :ready, counts: [1, 0, 0]))
+      expect(recorder.calls.select { |_, key| %i[client_connections client_pending_calls].include?(key) }).to eq(
+        [[:set, :client_pending_calls, { transport: "billing" }, 1],
+         [:set, :client_connections, { transport: "billing", state: "active" }, 1],
+         [:set, :client_pending_calls, { transport: "billing" }, 0],
+         [:set, :client_connections, { transport: "billing", state: "draining" }, 1],
+         [:set, :client_connections, { transport: "billing", state: "draining" }, 0]]
+      )
+      recorder.calls.clear
+      observer.publish_state
+      expect(count_gauges).to eq("active" => 1, "draining" => 0, "pending_calls" => 0)
     end
 
     it "zeros its own last published state, not the event's previous state" do
@@ -293,12 +332,13 @@ RSpec.describe "Backend-neutral metrics" do
         gated.define_singleton_method(op) { |*args| ready ? sink.public_send(op, *args) : raise(KeyError, "missing") }
       end
       observer = described_class.new(recorder: gated, definitions: definitions, transport: "billing")
-      expect { observer.call(event(:state_changed, state: :ready, previous_state: :connecting)) }
+      expect { observer.call(event(:state_changed, state: :ready, previous_state: :connecting, counts: [2, 1, 3])) }
         .to raise_error(KeyError)
       ready = true
       observer.publish_state
       expect(state_gauge.select { |_, value| value == 1 }).to eq("ready" => 1)
       expect(state_gauge.size).to eq(6)
+      expect(count_gauges).to eq("active" => 2, "draining" => 1, "pending_calls" => 3)
     end
 
     ["", "Billing", "a-b", "x" * 65, :billing, nil].each do |name|

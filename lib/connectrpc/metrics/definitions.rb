@@ -11,7 +11,7 @@ module ConnectRPC
     CONNECTION_STATES = %i[idle connecting ready transient_failure closing closed].freeze
 
     # The fixed metric set. Names and labels follow go-grpc-middleware providers/prometheus.
-    class Definitions
+    class Definitions # rubocop:disable Metrics/ClassLength -- one declarative list of the fixed metric set
       NAMESPACE = /\A[a-z_][a-z0-9_]*\z/
       DURATION_BUCKETS = [0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10].freeze
       SIZE_BUCKETS = [64, 256, 1024, 4096, 16_384, 65_536, 262_144, 1_048_576, 4_194_304].freeze
@@ -113,7 +113,11 @@ module ConnectRPC
           gauge(:client, "connection_state", %i[transport state],
                 "Current client connection state: 1 for the current state, 0 otherwise."),
           counter(:client, "admission_rejected_total", %i[transport],
-                  "Total number of client calls rejected by connection admission.")
+                  "Total number of client calls rejected by connection admission."),
+          gauge(:client, "connections", %i[transport state],
+                "Current client connections by state: active accepts new calls; draining no longer does and " \
+                "closes when its calls end."),
+          gauge(:client, "pending_calls", %i[transport], "Current client calls waiting for a connection.")
         ]
       end
 

@@ -23,6 +23,7 @@ transport = ConnectRPC::Async::Transport.new(
     # @type var outcome: ConnectRPC::Async::connection_outcome?
     outcome = event.outcome
     outcome == :keepalive_timeout if event.type == :connection_closed
+    event.pending_calls.zero? if event.type == :counts_changed
     event.previous_state&.to_s
     event.duration&.round
     (event.active + event.draining + event.pending_calls + event.pending_bytes).succ

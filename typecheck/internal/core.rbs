@@ -369,10 +369,13 @@ module ConnectRPC
       @labels: labels
       @keys: Hash[Symbol, Symbol]
       @state: Symbol
+      @counts: Hash[Symbol, Integer]
       @mutex: Thread::Mutex
       def self.transport!: (untyped) -> String
       private
-      def state_changed: (Symbol) -> void
+      def observe: (_ConnectionEvent) -> void
+      def record_state: (Symbol, Symbol) -> void
+      def record_counts: (Hash[Symbol, Integer], Hash[Symbol, Integer]?) -> void
       def attempt_finished: (Symbol?, Numeric?) -> void
       def set_state: (Symbol, Integer) -> void
       def state_labels: (Symbol) -> labels
