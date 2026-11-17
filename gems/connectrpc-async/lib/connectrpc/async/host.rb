@@ -38,7 +38,8 @@ module ConnectRPC
                      max_connections: 1024, max_requests: 128, handshake_timeout: 10, idle_timeout: 60,
                      refresh_interval: 60, refresh_jitter: 0.1, refresh_timeout: 10, on_tls_error: nil,
                      keepalive: ServerKeepalive.new, fallback: nil, max_concurrent_streams: 100,
-                     request_body_timeout: 60, stream_receive_window: 65_536,
+                     request_body_timeout: 60, response_body_timeout: 60, frame_write_timeout: 60,
+                     stream_receive_window: 65_536,
                      connection_receive_window: 16_777_216)
         @host = host
         @requested_port = port
@@ -57,7 +58,9 @@ module ConnectRPC
           refresh_interval: refresh_interval, refresh_jitter: refresh_jitter,
           refresh_timeout: refresh_timeout, on_tls_error: on_tls_error, stop_accepting: method(:stop_accepting),
           keepalive: keepalive, max_concurrent_streams: max_concurrent_streams,
-          request_body_timeout: request_body_timeout, stream_receive_window: stream_receive_window,
+          request_body_timeout: request_body_timeout, response_body_timeout: response_body_timeout,
+          frame_write_timeout: frame_write_timeout,
+          stream_receive_window: stream_receive_window,
           connection_receive_window: connection_receive_window
         )
       end

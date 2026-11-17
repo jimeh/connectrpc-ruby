@@ -28,7 +28,9 @@ module ConnectRPC
         H2 = "Async::HTTP::Protocol::HTTP2"
         CONNECTION_HOOKS = [
           ["async-http", :read_in_background, :public, "(parent: ?)", "#{H2}::Connection"],
-          ["async-http", :synchronize, :public, "(&)", "#{H2}::Connection"]
+          ["async-http", :synchronize, :public, "(&)", "#{H2}::Connection"],
+          ["async-http", :write_frame, :public, "(_)", "#{H2}::Connection"],
+          ["async-http", :write_frames, :public, "()", "#{H2}::Connection"]
         ].freeze
         STREAM_HOOKS = [
           ["async-http", :prepare_input, :public, "(_)", "#{H2}::Stream"],
@@ -44,6 +46,8 @@ module ConnectRPC
           ["async-http", "#{H2}::Output", :start, :public, "(parent: ?)", "#{H2}::Output"],
           ["async-http", "#{H2}::Output", :stream, :private, "(_)", "#{H2}::Output"],
           ["async-http", "#{H2}::Output", :passthrough, :private, "(_)", "#{H2}::Output"],
+          ["async-http", "#{H2}::Output", :write, :public, "(_)", "#{H2}::Output"],
+          ["async-http", "#{H2}::Output", :send_data, :private, "(_, _, _)", "#{H2}::Output"],
           *%w[Client Server].flat_map { |side| CONNECTION_HOOKS.map { |gem, *hook| [gem, "#{H2}::#{side}", *hook] } },
           ["async-http", "#{H2}::Client", :close, :public, "(_ = ?)", "#{H2}::Connection"],
           ["async-http", "#{H2}::Server", :close, :public, "(_ = ?)", "#{H2}::Server"],

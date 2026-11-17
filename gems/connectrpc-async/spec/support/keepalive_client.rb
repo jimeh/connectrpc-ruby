@@ -3,10 +3,12 @@
 require "protocol/http/body/buffered"
 
 # A raw h2c client for server keepalive specs. It records the server's
-# SETTINGS, PINGs, ACKs, GOAWAYs, resets and DATA frames. It acknowledges server
+# SETTINGS, PINGs, ACKs, GOAWAYs, resets, HEADERS and DATA frames. It acknowledges server
 # PINGs only while `ack_pings` is set, and records a GOAWAY without applying
 # it, so it can keep opening streams like a peer that raced the GOAWAY. With
 # `ack_settings: false` it neither applies nor acknowledges server SETTINGS.
+# `settings` override the client's advertised SETTINGS, and with
+# `read: false` the client reads only the server's first SETTINGS frame.
 module KeepaliveClient
   DRAIN_PING = [1, 6, 1, 8, 0, 3, 3, 9].pack("C*")
   MAX_STREAM_ID = 0x7fff_ffff
@@ -14,10 +16,12 @@ module KeepaliveClient
   ENHANCE_YOUR_CALM = Protocol::HTTP2::Error::ENHANCE_YOUR_CALM
   REFUSED_STREAM = Protocol::HTTP2::Error::REFUSED_STREAM
   CANCEL = Protocol::HTTP2::Error::CANCEL
+  INITIAL_WINDOW_SIZE = Protocol::HTTP2::Settings::INITIAL_WINDOW_SIZE
+  MAXIMUM_WINDOW = Protocol::HTTP2::MAXIMUM_ALLOWED_WINDOW_SIZE
 
   class Wire
     # `sequence` orders the ACKs and GOAWAYs as they arrived.
-    attr_reader :settings, :pings, :acks, :goaways, :resets, :data, :sequence
+    attr_reader :settings, :pings, :acks, :goaways, :resets, :headers, :data, :data_bytes, :sequence
     attr_accessor :ack_pings
 
     def initialize
@@ -26,20 +30,32 @@ module KeepaliveClient
       @acks = []
       @goaways = []
       @resets = {}
+      @headers = Hash.new(0)
       @data = Hash.new(0)
+      @data_bytes = Hash.new(0)
       @sequence = []
       @ack_pings = true
     end
 
     def record(frame)
+      return record_stream(frame) unless frame.connection?
+
       case frame
       when Protocol::HTTP2::SettingsFrame then @settings << frame.unpack unless frame.acknowledgement?
       when Protocol::HTTP2::PingFrame then record_ping(frame)
       when Protocol::HTTP2::GoawayFrame
         @goaways << frame.unpack
         @sequence << [:goaway, *frame.unpack]
+      end
+    end
+
+    def record_stream(frame)
+      case frame
       when Protocol::HTTP2::ResetStreamFrame then @resets[frame.stream_id] = frame.unpack
-      when Protocol::HTTP2::DataFrame then @data[frame.stream_id] += 1
+      when Protocol::HTTP2::HeadersFrame then @headers[frame.stream_id] += 1
+      when Protocol::HTTP2::DataFrame
+        @data[frame.stream_id] += 1
+        @data_bytes[frame.stream_id] += frame.length
       end
     end
 
@@ -52,12 +68,13 @@ module KeepaliveClient
   Fixture = Struct.new(:host, :clock, :client, :resource, :log)
 
   Client = Struct.new(:connection, :wire, :raw, :reader) do
-    def eof? = reader.finished?
+    def eof? = !!reader&.finished?
   end
 
   # With a `tls` context the client negotiates h2 over TLS; `raw` stays TCP.
-  def keepalive_client(task, port, tls: nil, ack_settings: true)
-    raw = IO::Endpoint.tcp("127.0.0.1", port).connect
+  # A positive `receive_buffer` sets SO_RCVBUF before connecting.
+  def keepalive_client(task, port, tls: nil, ack_settings: true, settings: {}, read: true, receive_buffer: nil)
+    raw = keepalive_socket(port, receive_buffer)
     socket = raw
     if tls
       socket = OpenSSL::SSL::SSLSocket.new(raw, tls)
@@ -77,9 +94,18 @@ module KeepaliveClient
     unless ack_settings
       connection.define_singleton_method(:receive_settings) { |frame| super(frame) if frame.acknowledgement? }
     end
-    connection.send_connection_preface(AsyncHelpers::INTERNAL.settings(128))
-    reader = connection.read_in_background(parent: task)
+    connection.send_connection_preface(AsyncHelpers::INTERNAL.settings(128).merge(settings))
+    reader = connection.read_in_background(parent: task) if read
     Client.new(connection, wire, raw, reader)
+  end
+
+  def keepalive_socket(port, receive_buffer)
+    return IO::Endpoint.tcp("127.0.0.1", port).connect unless receive_buffer
+
+    socket = Socket.new(:INET, :STREAM)
+    socket.setsockopt(Socket::SOL_SOCKET, Socket::SO_RCVBUF, receive_buffer)
+    socket.connect(Socket.sockaddr_in(port, "127.0.0.1"))
+    socket
   end
 
   def close_keepalive_client(client)
@@ -122,6 +148,12 @@ module KeepaliveClient
   def raw_data(client, stream_id, bytes, end_stream: false)
     frame = Protocol::HTTP2::DataFrame.new(stream_id, end_stream ? Protocol::HTTP2::END_STREAM : 0)
     frame.pack(bytes)
+    client.connection.write_frame(frame)
+  end
+
+  def raw_window_update(client, stream_id, amount)
+    frame = Protocol::HTTP2::WindowUpdateFrame.new(stream_id)
+    frame.pack(amount)
     client.connection.write_frame(frame)
   end
 

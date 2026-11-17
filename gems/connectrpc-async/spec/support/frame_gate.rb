@@ -8,9 +8,11 @@ class FrameGate < SimpleDelegator
 
   # With `whole`, the held write first reaches the socket in full, so the
   # peer can answer the frame while its writer is still inside the write.
-  def initialize(socket, frame_type: nil, stream_id: nil, whole: false)
+  # `flags` holds only frames carrying every given flag bit.
+  def initialize(socket, frame_type: nil, stream_id: nil, flags: nil, whole: false)
     super(socket)
     @whole = whole
+    @flags = flags
     @started = Async::Queue.new
     @release = Async::Queue.new
     @armed = false
@@ -38,7 +40,7 @@ class FrameGate < SimpleDelegator
   private
 
   def matches?(bytes)
-    (!@frame_type || bytes.getbyte(3) == @frame_type) &&
+    (!@frame_type || bytes.getbyte(3) == @frame_type) && (!@flags || bytes.getbyte(4).allbits?(@flags)) &&
       (!@stream_id || (bytes.byteslice(5, 4).unpack1("N") & 0x7fff_ffff) == @stream_id)
   end
 end

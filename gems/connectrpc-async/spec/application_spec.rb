@@ -52,6 +52,24 @@ RSpec.describe "Native Protocol::HTTP application" do
     end
   end
 
+  it "classifies server-streaming and bidi routes, whose responses may wait for credit, as output streams" do
+    expected = { ServerStreamMethod: true, BidiStreamMethod: true, ClientStreamMethod: false, Method: false }
+    methods = expected.keys.map do |type|
+      ConnectRPC.const_get(type).new(service: "test.Routes", name: type.to_s, request_type: AsyncHelpers::MESSAGE,
+                                     response_type: AsyncHelpers::MESSAGE)
+    end
+    routes = ConnectRPC::Server.new(services: [ConnectRPC::Service.new(name: "test.Routes", methods: methods)],
+                                    binding: ConnectRPC::Bindings::GoogleProtobuf.new,
+                                    handlers: methods.to_h { |declaration| [declaration.path, ->(*) {}] })
+    application = ConnectRPC::Async::Application.new(server: routes)
+    methods.zip(expected.values) do |declaration, output_stream|
+      request = Protocol::HTTP::Request["POST", "#{declaration.path}?q=1",
+                                        { "content-type" => "application/connect+proto" }]
+      expect(application.send(:output_stream_route?, request)).to be(output_stream), declaration.path
+    end
+    expect(application.send(:output_stream_route?, Protocol::HTTP::Request["GET", "/other"])).to be(false)
+  end
+
   it "validates its server and optional fallback" do
     expect { ConnectRPC::Async::Application.new(server: Object.new) }.to raise_error(ArgumentError)
     expect { ConnectRPC::Async::Application.new(server: server, fallback: Object.new) }.to raise_error(ArgumentError)

@@ -100,7 +100,7 @@ module ConnectRPC
       end
 
       # Version-coupled wrappers around the selected stack, not a frame codec.
-      module Connection
+      module Connection # rubocop:disable Metrics/ModuleLength
         include Liveness
         include ReceiveWindows
 
@@ -147,11 +147,11 @@ module ConnectRPC
         # Acquire while cancellable. Once a frame starts, encode/flush/state
         # must finish together; a second cancellation is reserved for raw abort.
         def write_frame(frame)
-          synchronize { ::Async::Task.current.defer_cancel { super } }
+          synchronize { ::Async::Task.current.defer_cancel { timed_write { super } } }
         end
 
         def write_frames(&)
-          synchronize { ::Async::Task.current.defer_cancel { super(&) } }
+          synchronize { ::Async::Task.current.defer_cancel { timed_write { super(&) } } }
         end
 
         # Mirror async-http 0.105.0 and Async 2.46's eager Task#async, publishing
@@ -222,6 +222,23 @@ module ConnectRPC
 
         # Only server connections have a request queue.
         def close_requests = nil
+
+        # Server upkeep times each outermost frame write, from holding the
+        # guard to its flush, so its watchdog never counts guard waits or
+        # application cleanup that runs under the guard.
+        def timed_write
+          upkeep = @resource&.upkeep
+          return yield if @timing || !upkeep
+
+          @timing = true
+          upkeep.write_started
+          begin
+            yield
+          ensure
+            upkeep.write_finished
+            @timing = false
+          end
+        end
       end
 
       class GRPCHeaderError < ::Protocol::HTTP2::HeaderError
@@ -230,6 +247,10 @@ module ConnectRPC
           @code = code
         end
       end
+
+      # A server response body waited longer than response_body_timeout for
+      # flow-control credit.
+      class ResponseBodyTimeout < IOError; end
 
       # Publish ownership before the pinned output's eager first body read.
       class Output < ::Async::HTTP::Protocol::HTTP2::Output
@@ -241,6 +262,62 @@ module ConnectRPC
           yield task
           task.run
           task
+        end
+
+        # Bounds each wait for flow-control credit to `seconds` on `clock`.
+        # Only credit ends a wait, so a wakeup that leaves the window empty
+        # does not restart it. On expiry the stream is reset with CANCEL
+        # and the write raises ResponseBodyTimeout.
+        def bound_progress(clock, seconds)
+          @progress_clock = clock
+          @progress_seconds = seconds
+        end
+
+        # async-http 0.105.0's loop, with its credit wait bounded.
+        def write(chunk)
+          until chunk.empty?
+            stream = @stream or raise IOError, "HTTP/2 stream is closed!"
+            maximum_size = stream.available_frame_size
+            maximum_size = await_credit(stream) if maximum_size <= 0
+            break unless (chunk = send_data(stream, chunk, maximum_size))
+          end
+        end
+
+        private
+
+        def await_credit(stream)
+          @stalled = false
+          timer = credit_timer if @progress_seconds
+          maximum_size = @guard.synchronize do
+            size = stream.available_frame_size
+            until size.positive? || @stalled
+              @window_updated.wait(@guard)
+              stream = @stream or raise IOError, "HTTP/2 stream is closed!"
+              size = stream.available_frame_size
+            end
+            size
+          end
+          return maximum_size if maximum_size.positive?
+
+          stream.output_stalled
+          @stream = nil
+          raise ResponseBodyTimeout, "HTTP/2 response body received no flow-control credit within response_body_timeout"
+        ensure
+          Internal.cancel(timer)
+        end
+
+        # Lives only inside one credit wait. It only wakes the waiting
+        # output, which resets its own stream, so it never stops a task.
+        def credit_timer
+          timer = ::Async::Task.new(::Async::Task.current, finished: false) do
+            @progress_clock.sleep(@progress_seconds)
+            @guard.synchronize do
+              @stalled = true
+              @window_updated.broadcast
+            end
+          end
+          timer.run
+          timer
         end
       end
 
@@ -429,6 +506,7 @@ module ConnectRPC
           return body.close if closed?
 
           @output = Output.new(self, body, trailer)
+          @output.bound_progress(*@output_bound) if @output_bound
           @output.start do |task|
             connection.output_started(task)
             yield task if block_given?
@@ -459,6 +537,19 @@ module ConnectRPC
         # The handler waited too long for request body progress. The control
         # writer sends CANCEL and the stream closes without yielding.
         def input_stalled
+          connection.upkeep&.reset(self, ::Protocol::HTTP2::Error::CANCEL) unless closed?
+        end
+
+        # Bounds each wait of the response body for flow-control credit.
+        def bound_output(clock, seconds)
+          @output_bound = [clock, seconds]
+        end
+
+        # Called by the output task itself, whose response waited too long
+        # for credit. Detaching the output first keeps the close from
+        # stopping that task; the control writer sends CANCEL.
+        def output_stalled
+          @output = nil
           connection.upkeep&.reset(self, ::Protocol::HTTP2::Error::CANCEL) unless closed?
         end
 

@@ -9,18 +9,24 @@ module ConnectRPC
       # in order. Each must be written within `timeout` of being queued,
       # including any wait behind another writer's frame, and its own write,
       # once it holds the frame guard, within the cleanup allowance. Otherwise
-      # the connection fails raw-first. At most MAX_PENDING frames wait; a
-      # peer that outruns the writer, such as a PING flood with enforcement
-      # off, fails the connection rather than growing the queue or blocking
-      # the reader.
+      # the connection fails raw-first. A frame write that `writes` times
+      # keeps its own bound: a control frame waiting behind it fails the
+      # connection no earlier than that write's deadline. The frames queued
+      # behind a frame written late that way waited for the same write, so
+      # their deadlines count again from when it was written. At most
+      # MAX_PENDING frames wait; a peer that outruns the writer, such as a
+      # PING flood with enforcement off, fails the connection rather than
+      # growing the queue or blocking the reader.
       class ControlWriter
         MAX_PENDING = 1024
 
-        def initialize(resource, clock:, timeout:)
+        def initialize(resource, clock:, timeout:, writes: nil)
           @resource = resource
           @clock = clock
           @timeout = timeout
+          @writes = writes
           @queue = ::Async::Queue.new
+          @resumed = nil
         end
 
         def start(parent)
@@ -49,7 +55,10 @@ module ConnectRPC
           written = nil
           loop do
             frame, deadline, written = @queue.dequeue
+            deadline = [deadline, @resumed + @timeout].max if @resumed
             deliver(frame, deadline)
+            now = @clock.now
+            @resumed = now if now > deadline
             written.resolve(true)
           end
         rescue StandardError => e
@@ -60,12 +69,15 @@ module ConnectRPC
         end
 
         # Earlier frames meet earlier deadlines, so time spent queued behind
-        # them is already within this frame's bound. Both watchdogs stop
-        # before the guard is released, because release hands control to the
-        # next waiter before this task resumes.
+        # them is already within this frame's bound. A frame written past its
+        # deadline waited for a timed write, or its own bounded write crossed
+        # the deadline; either way the frames behind it waited too, so `run`
+        # restarts their deadlines from that write. Both watchdogs stop before
+        # the guard is released, because release hands control to the next
+        # waiter before this task resumes.
         def deliver(frame, deadline)
           connection = @resource.connection
-          queued = watchdog(deadline - @clock.now, "HTTP/2 control frame was not written in time")
+          queued = watchdog(deadline - @clock.now, "HTTP/2 control frame was not written in time", behind: @writes)
           connection.synchronize do
             stalled = watchdog(CLEANUP_SECONDS, "HTTP/2 control frame write stalled")
             begin
@@ -79,13 +91,73 @@ module ConnectRPC
           Internal.cancel(queued)
         end
 
-        def watchdog(seconds, message)
+        # With `behind`, an expired deadline first waits out a frame write
+        # that `behind` still times, since that write has its own bound.
+        def watchdog(seconds, message, behind: nil)
           timer = ::Async::Task.new(::Async::Task.current, finished: false) do
             @clock.sleep(seconds) if seconds.positive?
+            while (remaining = behind&.remaining)&.positive?
+              @clock.sleep(remaining)
+            end
             @resource.abort(IOError.new(message))
           end
           timer.run
           timer
+        end
+      end
+
+      # Bounds each frame write of one server connection, from holding the
+      # frame guard until its flush finishes, to `timeout`. A frame write
+      # defers cancellation, so a peer that stops reading can only be ended
+      # by failing the connection raw-first. The bound applies to each frame
+      # or header block, not to a whole response, and continuous progress
+      # within one frame does not extend it.
+      class WriteWatchdog
+        def initialize(resource, clock:, timeout:)
+          @resource = resource
+          @clock = clock
+          @timeout = timeout
+          @started = ::Async::Condition.new
+          @serial = 0
+          @started_at = nil
+        end
+
+        # A control task: it outlives drains until the final GOAWAY is
+        # written, and retirement captures and joins it.
+        def start(parent)
+          task = ::Async::Task.new(parent, finished: false) { run }
+          @resource.maintain(task, control: true)
+          task.run
+          task
+        end
+
+        # Called for every frame write; neither yields.
+        def write_started
+          @serial += 1
+          @started_at = @clock.now
+          @started.signal
+        end
+
+        def write_finished
+          @started_at = nil
+        end
+
+        # Seconds left before the frame write in progress, if any, misses its
+        # bound.
+        def remaining = @started_at && (@started_at + @timeout - @clock.now)
+
+        private
+
+        def run
+          loop do
+            @started.wait until @started_at
+            serial = @serial
+            remaining = @started_at + @timeout - @clock.now
+            @clock.sleep(remaining) if remaining.positive?
+            next unless @started_at && @serial == serial
+
+            break @resource.abort(IOError.new("HTTP/2 frame write did not finish in time"))
+          end
         end
       end
 
@@ -124,9 +196,9 @@ module ConnectRPC
       end
 
       # Server-side upkeep of one HTTP/2 connection: its control frames and
-      # stream refusals, answering and policing client PINGs, server keepalive
-      # PINGs, and the graceful idle, age and close drains. Every timer uses
-      # the session's clock.
+      # stream refusals, the frame write bound, answering and policing client
+      # PINGs, server keepalive PINGs, and the graceful idle, age and close
+      # drains. Every timer uses the session's clock.
       #
       # A drain mirrors grpc-go: a heads-up GOAWAY(2^31-1) and a drain PING,
       # then, on that PING's ACK or after 5 seconds, a cutoff GOAWAY naming the
@@ -139,20 +211,22 @@ module ConnectRPC
         MAX_STREAM_ID = 0x7fff_ffff
         ACK_SECONDS = 5
         EOF_SECONDS = 1
-        # ServerKeepalive's default timeout, bounding control frames when only
-        # idle_timeout drains the connection.
+        # ServerKeepalive's default timeout, bounding control frames without
+        # server keepalive.
         CONTROL_SECONDS = 20
 
         attr_reader :cutoff
 
-        def initialize(resource, parent:, clock:, random:, keepalive:, idle_timeout:)
+        def initialize(resource, parent:, clock:, random:, keepalive:, idle_timeout:, write_timeout: nil)
           @resource = resource
           @parent = parent
           @clock = clock
           @random = random
           @keepalive = keepalive
           @idle_timeout = idle_timeout
-          @writer = ControlWriter.new(resource, clock: clock, timeout: keepalive&.timeout || CONTROL_SECONDS)
+          @watchdog = WriteWatchdog.new(resource, clock: clock, timeout: write_timeout) if write_timeout
+          @writer = ControlWriter.new(resource, clock: clock, timeout: keepalive&.timeout || CONTROL_SECONDS,
+                                                writes: @watchdog)
           if keepalive&.min_time
             @strikes = PingStrikes.new(clock: clock, min_time: keepalive.min_time,
                                        permit_without_calls: keepalive.permit_without_calls)
@@ -171,6 +245,7 @@ module ConnectRPC
         # draining meanwhile, after its upkeep was stopped, gets no more.
         def start
           @writer.start(@parent)
+          @watchdog.start(@parent) if @watchdog && !@resource.finished?
           if (time = @keepalive&.time) && upkeep?
             @resource.keep_alive(@parent, clock: @clock, time: time, timeout: @keepalive.timeout, always: true)
           end
@@ -196,6 +271,9 @@ module ConnectRPC
         end
 
         def stream_written = @strikes&.reset
+
+        def write_started = @watchdog&.write_started
+        def write_finished = @watchdog&.write_finished
 
         # Idle time counts from when the last stream and handler finished, not
         # from other frames, so PINGs cannot extend it.

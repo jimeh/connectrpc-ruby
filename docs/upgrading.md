@@ -146,6 +146,20 @@ and [Accept errors](../gems/connectrpc-async/README.md#accept-errors).
   `close_on_exec: false` to `Endpoint#bound` to keep the old behavior.
 - `Host.new(port: 0)` binds every resolved address on one port, so
   `host.port` is the port of every entry in `host.addresses`.
+- A unary, client-streaming or fallback HTTP/2 response that waits 60 seconds
+  for flow-control credit is reset with `RST_STREAM(CANCEL)` and its admission
+  slot is released. Before 0.3.0 it waited until a deadline or `close`. Raise
+  or disable the bound with the new `response_body_timeout:` option (nil turns
+  it off). Server-streaming and bidi responses are not affected. See
+  [Stream admission](../gems/connectrpc-async/README.md#stream-admission).
+- An HTTP/2 connection whose single frame write does not finish within 60
+  seconds is aborted, failing all of its streams. This catches peers that stop
+  reading their socket, for every RPC shape. A write blocked on a full send
+  buffer finishes only once the peer has drained part of that buffer, so raise
+  the bound with the new `frame_write_timeout:` option for clients that read
+  large responses over slow links. With nil, a control frame such as a PING
+  ACK queued behind the stalled write still ends the connection after the
+  keepalive `timeout`.
 
 These affect `connectrpc-sentry` client propagation. See
 [Propagation](../gems/connectrpc-sentry/README.md#propagation).

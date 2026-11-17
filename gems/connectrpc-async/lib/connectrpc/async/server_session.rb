@@ -18,6 +18,7 @@ module ConnectRPC
                      refresh_timeout: 10, on_tls_error: nil, alpn_protocols: ["h2"], http1: nil, stop_accepting: nil,
                      on_request_rejected: nil, lifecycle_factory: nil, keepalive: ServerKeepalive.new,
                      max_concurrent_streams: 100, request_body_timeout: 60,
+                     response_body_timeout: 60, frame_write_timeout: 60,
                      stream_receive_window: 65_536,
                      connection_receive_window: 16_777_216)
         initialize_affinity
@@ -49,6 +50,12 @@ module ConnectRPC
         @connection_receive_window = Internal.receive_window(connection_receive_window, "connection_receive_window")
         unless request_body_timeout.nil?
           @request_body_timeout = Internal.seconds(request_body_timeout, "request_body_timeout")
+        end
+        unless response_body_timeout.nil?
+          @response_body_timeout = Internal.seconds(response_body_timeout, "response_body_timeout")
+        end
+        unless frame_write_timeout.nil?
+          @frame_write_timeout = Internal.seconds(frame_write_timeout, "frame_write_timeout")
         end
         @handshake_timeout = Internal.seconds(handshake_timeout, "handshake_timeout")
         @idle_timeout = Internal.seconds(idle_timeout, "idle_timeout") unless idle_timeout.nil?
@@ -326,7 +333,8 @@ module ConnectRPC
       # enforcement and the age limit.
       def keep_up(resource)
         upkeep = Internal::ServerUpkeep.new(resource, parent: @lifetime, clock: @clock, random: @random,
-                                                      keepalive: @keepalive, idle_timeout: @idle_timeout)
+                                                      keepalive: @keepalive, idle_timeout: @idle_timeout,
+                                                      write_timeout: @frame_write_timeout)
         # A drain that starts while the upkeep's tasks start keeps its frames
         # queued for the writer. The reader starts later.
         resource.upkeep = upkeep
@@ -390,7 +398,10 @@ module ConnectRPC
 
         @admitted[key] = false
         begin
-          bound_input(request) if http2
+          if http2
+            bound_input(request)
+            bound_output(request)
+          end
           retirement&.on_close do
             complete_admission(key, wire: true)
             resource.changed
@@ -470,6 +481,17 @@ module ConnectRPC
                   @application.send(:input_stream_route?, request)
 
         request.stream.bound_input(@clock, @request_body_timeout)
+      end
+
+      # Server-streaming and bidi responses may wait for credit while their
+      # consumer applies backpressure; every other admitted HTTP/2 response
+      # must receive flow-control credit within the bound.
+      def bound_output(request)
+        return unless @response_body_timeout
+        return if @application.respond_to?(:output_stream_route?, true) &&
+                  @application.send(:output_stream_route?, request)
+
+        request.stream.bound_output(@clock, @response_body_timeout)
       end
 
       def complete_processor(publication, task, key, resource, error)

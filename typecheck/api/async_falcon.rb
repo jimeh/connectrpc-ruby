@@ -14,7 +14,9 @@ server_keepalive.permit_without_calls.to_s
 host = ConnectRPC::Async::Host.new(server: server, tls_provider: provider, on_tls_error: APIReporter.new,
                                    idle_timeout: nil, refresh_jitter: 0.1, keepalive: server_keepalive,
                                    max_concurrent_streams: 64, request_body_timeout: 30,
-                                   stream_receive_window: 1_048_576, connection_receive_window: 33_554_432)
+                                   response_body_timeout: 45, frame_write_timeout: 90,
+                                   stream_receive_window: 1_048_576,
+                                   connection_receive_window: 33_554_432)
 host.start.port&.succ
 host.addresses.each(&:ip_port)
 host.refresh_tls&.succ
@@ -55,7 +57,8 @@ ConnectRPC::Async::Host.new(server: server, fallback: application)
 session = ConnectRPC::Async::ServerSession.new(
   application: application, lifecycle_factory: ->(incoming) { application.start_call(incoming) },
   stop_accepting: -> {}, keepalive: nil, max_concurrent_streams: 100, request_body_timeout: nil,
-  stream_receive_window: 65_536, connection_receive_window: 16_777_216
+  response_body_timeout: nil, frame_write_timeout: nil, stream_receive_window: 65_536,
+  connection_receive_window: 16_777_216
 )
 session.start.schedule { application.call(request) }.wait
 session.tls_status[:generation]&.succ
@@ -88,7 +91,9 @@ falcon = ConnectRPC::Falcon::Server.new(
   server: server, endpoint: endpoint, tls_provider: provider, rack_app: rack_app, cache: true,
   on_tls_error: ->(event) { event[:status][:category]&.to_s },
   keepalive: ConnectRPC::Async::ServerKeepalive.new(time: nil, max_connection_age: 3600),
-  max_concurrent_streams: 32, request_body_timeout: 15.5, stream_receive_window: 1_048_576,
+  max_concurrent_streams: 32, request_body_timeout: 15.5, response_body_timeout: 30.5,
+  frame_write_timeout: 45.5,
+  stream_receive_window: 1_048_576,
   connection_receive_window: 16_777_216
 )
 falcon.run.wait

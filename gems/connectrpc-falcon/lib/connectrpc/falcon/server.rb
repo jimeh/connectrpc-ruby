@@ -8,7 +8,8 @@ module ConnectRPC
                      handshake_timeout: 10, idle_timeout: 60, refresh_interval: 60,
                      refresh_jitter: 0.1, refresh_timeout: 10, on_tls_error: nil,
                      keepalive: ::ConnectRPC::Async::ServerKeepalive.new, max_concurrent_streams: 100,
-                     request_body_timeout: 60, stream_receive_window: 65_536,
+                     request_body_timeout: 60, response_body_timeout: 60, frame_write_timeout: 60,
+                     stream_receive_window: 65_536,
                      connection_receive_window: 16_777_216)
         raise ArgumentError, "cache must be true or false" unless [true, false].include?(cache)
 
@@ -40,7 +41,9 @@ module ConnectRPC
           alpn_protocols: %w[h2 http/1.1], http1: HTTP1Resource.method(:new),
           stop_accepting: method(:stop_accepting), on_request_rejected: -> { @request_total.increment },
           keepalive: keepalive, max_concurrent_streams: max_concurrent_streams,
-          request_body_timeout: request_body_timeout, stream_receive_window: stream_receive_window,
+          request_body_timeout: request_body_timeout, response_body_timeout: response_body_timeout,
+          frame_write_timeout: frame_write_timeout,
+          stream_receive_window: stream_receive_window,
           connection_receive_window: connection_receive_window
         )
         # Preserve parent-bound descriptors while installing a worker-local
@@ -75,7 +78,8 @@ module ConnectRPC
       def publication?(request) = @listener_application.send(:publication?, request)
       def http1_streaming_route?(request) = @listener_application.send(:http1_streaming_route?, request)
       def input_stream_route?(request) = @native_application.send(:input_stream_route?, request)
-      private :publication?, :http1_streaming_route?, :input_stream_route?
+      def output_stream_route?(request) = @native_application.send(:output_stream_route?, request)
+      private :publication?, :http1_streaming_route?, :input_stream_route?, :output_stream_route?
       def admission_response(request) = @listener_application.admission_response(request)
 
       def call_with_publication(request, publication:, lifecycle: nil, resource: nil)

@@ -428,11 +428,12 @@ Since 0.3.0, the same hosts stop accepting while a worker holds
 backlog or reach a sibling Falcon worker instead of being reset, and resource
 accept errors such as `EMFILE` retry with a warning and a delay capped at 1
 second instead of stopping the listener. An identity that expires while
-published keeps being served and is reported once as `:expired`. Two ways to
-hold a slot remain: idle client-streaming and bidi calls are unbounded by design,
-as in grpc-go and connect-go, and peers that stop reading responses are not yet
-bounded ([#131](https://github.com/jimeh/connectrpc-ruby/issues/131)). Per-client
-connection limits belong in a proxy. The
+published keeps being served and is reported once as `:expired`. Some ways to
+hold a slot remain by design, as in grpc-go and connect-go: idle client-streaming
+and bidi calls, server-streaming and bidi responses whose peer keeps the
+connection healthy but grants no flow-control credit, and a peer that grants a
+little credit just within each `response_body_timeout`. Per-client connection
+limits belong in a proxy. The
 [Async guide](../gems/connectrpc-async/README.md#connection-capacity) owns these
 policies.
 
@@ -445,6 +446,26 @@ cost of memory; see
 [flow-control windows](../gems/connectrpc-async/README.md#flow-control-windows).
 For Rails and Rack hosts the proxy owns these windows, for example Envoy's
 `initial_stream_window_size` and `initial_connection_window_size`.
+
+Since 0.3.0, the Async `Host` and Falcon's native HTTP/2 listener also bound
+peers that stop reading responses. A unary, client-streaming or fallback
+response that waits `response_body_timeout`
+(default 60 seconds) for flow-control credit is reset with `CANCEL`, like
+nginx's `send_timeout`. Each HTTP/2 frame write must finish within
+`frame_write_timeout` (default 60 seconds), or the connection is aborted. That
+second bound applies to every RPC shape, and control frames queued behind a
+stalled write wait for it rather than for the keepalive timeout. It is a
+deadline for each write, which a slow peer can miss while still reading,
+because a write blocked on a full send buffer waits for the peer to drain part
+of it. grpc-go has no flow-control
+wait bound, but sets `TCP_USER_TIMEOUT` to its keepalive timeout, so the kernel
+fails a connection whose sent data stays unacknowledged, or unsent behind a zero
+window, that long; a peer that keeps reading slowly resets it. Go's
+`golang.org/x/net/http2` server has no credit bound either; its
+`WriteByteTimeout` is off by default, and `http.Server.WriteTimeout` limits the
+whole response of every stream shape, which is why streaming servers leave it
+off. See [Stream
+admission](../gems/connectrpc-async/README.md#stream-admission).
 
 `async:interop:keepalive` checks client keepalive, PING enforcement, BDP PINGs
 and the age drain between the pinned grpc-go peer and the Async `Transport` and
