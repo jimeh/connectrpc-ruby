@@ -89,9 +89,9 @@ for auth, CSRF and trace request headers.
 Owned OPTIONS preflight returns empty 204 or 403 before RPC observation, body
 reads, binding or application callbacks. Requested method must be POST and
 requested names must be allowed. Max-Age defaults to zero, so browsers
-preflight every call; `max_age:` accepts an Integer from 0 to 86,400 seconds.
-Actual Web requests without Origin are allowed; disallowed or ambiguous origins
-receive 403 before input.
+preflight every call. Since 0.2.2, `max_age:` accepts an Integer from 0 to
+86,400 seconds. Actual Web requests without Origin are allowed; disallowed or
+ambiguous origins receive 403 before input.
 Allowed-origin policy also decorates RPC errors, negotiation failures and native
 admission 503. Vary merges Origin, Accept and preflight controls without replacing
 application cache, cookie or security fields. Conflicting application
