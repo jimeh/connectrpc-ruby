@@ -1,5 +1,7 @@
 # frozen_string_literal: true
 
+require_relative "support/keepalive_client"
+
 RSpec.describe "Host native fallback" do
   def recording_fallback(seen)
     lambda do |request|
@@ -161,5 +163,78 @@ RSpec.describe "Host native fallback" do
   it "rejects a non-callable fallback at construction" do
     expect { ConnectRPC::Async::Host.new(server: server, fallback: 42) }
       .to raise_error(ArgumentError, "fallback must be callable")
+  end
+
+  describe "response write progress" do
+    include KeepaliveClient
+
+    def with_fallback_host(task, fallback, **client_options)
+      host = ConnectRPC::Async::Host.new(server: server, fallback: fallback, idle_timeout: nil,
+                                         keepalive: ConnectRPC::Async::ServerKeepalive.new(time: nil)).start
+      clock = ConnectionPeer::FakeClock.new
+      host_session(host).instance_variable_set(:@clock, clock)
+      client = keepalive_client(task, host.port, **client_options)
+      resource = nil
+      wait_until(task, "server connection upkeep") do
+        resource = host_session(host).instance_variable_get(:@resources).first
+        resource if resource&.upkeep && resource.connection&.reader_task
+      end
+      yield client, clock, resource
+    ensure
+      close_keepalive_client(client)
+      host&.close(grace: 0)
+    end
+
+    def page_request(client, method)
+      stream = client.connection.next_stream_id
+      raw_headers(client, stream, [[":method", method], [":scheme", "http"], [":authority", "127.0.0.1"],
+                                   [":path", "/page"]], end_stream: true)
+      stream
+    end
+
+    it "resets a fallback response that waits 60 s for credit with CANCEL" do
+      reactor do |task|
+        fallback = ->(_) { Protocol::HTTP::Response[200, {}, ["fallback page"]] }
+        settings = { KeepaliveClient::INITIAL_WINDOW_SIZE => 0 }
+        with_fallback_host(task, fallback, settings: settings) do |client, clock, resource|
+          stream = page_request(client, "GET")
+          wait_until(task, "response HEADERS") { client.wire.headers[stream].positive? }
+          ping_through(task, client, "credit00")
+          expect(clock.sleepers.select { |sleeper| sleeper.seconds == 60 }.map(&:due)).to eq([60])
+          clock.advance(59)
+          ping_through(task, client, "credit59")
+          expect(client.wire.resets).to eq({})
+          clock.advance(1)
+          wait_until(task, "CANCEL") { client.wire.resets[stream] == KeepaliveClient::CANCEL }
+          expect(resource).not_to be_finished
+        end
+      end
+    end
+
+    # A HEAD response closes its body while it holds the frame guard. That
+    # is application cleanup, not a frame write, so it is never aborted.
+    it "lets a HEAD response's body close outlast the frame write bound" do
+      reactor do |task|
+        closing = Async::Promise.new
+        release = Async::Promise.new
+        body = Protocol::HTTP::Body::Buffered.wrap(["unused"])
+        body.define_singleton_method(:close) do |error = nil|
+          closing.resolve(true)
+          release.wait
+          super(error)
+        end
+        with_fallback_host(task, ->(_) { Protocol::HTTP::Response[200, {}, body] }) do |client, clock, resource|
+          stream = page_request(client, "HEAD")
+          closing.wait
+          clock.advance(30)
+          release.resolve(true)
+          wait_until(task, "HEAD response HEADERS") { client.wire.headers[stream].positive? }
+          ping_through(task, client, "after030")
+          expect(resource).not_to be_finished
+        ensure
+          release.resolve(true)
+        end
+      end
+    end
   end
 end

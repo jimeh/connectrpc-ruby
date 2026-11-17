@@ -29,21 +29,26 @@ RSpec.describe ConnectRPC::Async::ServerKeepalive do
     end
   end
 
-  it "validates the per-connection stream limit and request body timeout" do
+  it "validates the per-connection stream limit and request and response body timeouts" do
     reactor do
       session = ->(**options) { ConnectRPC::Async::ServerSession.new(application: ->(_) {}, **options) }
       [0, -1, 1.5, "2", nil, 0x1_0000_0000].each do |value|
         expect { session.call(max_concurrent_streams: value) }
           .to raise_error(ArgumentError, "max_concurrent_streams must be an integer from 1 to 4294967295")
       end
-      [0, -1, Float::INFINITY, "60"].each do |value|
-        expect { session.call(request_body_timeout: value) }
-          .to raise_error(ArgumentError, "request_body_timeout must be finite positive seconds")
+      %w[request_body_timeout response_body_timeout].each do |option|
+        [0, -1, Float::INFINITY, "60"].each do |value|
+          expect { session.call(option.to_sym => value) }
+            .to raise_error(ArgumentError, "#{option} must be finite positive seconds")
+        end
       end
       [session.call(max_concurrent_streams: 1), session.call(max_concurrent_streams: 0xffff_ffff),
-       session.call(request_body_timeout: nil), session.call(request_body_timeout: 0.5)].each(&:abort)
+       session.call(request_body_timeout: nil), session.call(request_body_timeout: 0.5),
+       session.call(response_body_timeout: nil), session.call(response_body_timeout: 0.5)].each(&:abort)
       expect { ConnectRPC::Async::Host.new(server: server, max_concurrent_streams: 0) }
         .to raise_error(ArgumentError, /max_concurrent_streams/)
+      expect { ConnectRPC::Async::Host.new(server: server, response_body_timeout: 0) }
+        .to raise_error(ArgumentError, /response_body_timeout/)
     end
   end
 

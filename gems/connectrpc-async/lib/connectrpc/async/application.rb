@@ -62,7 +62,16 @@ module ConnectRPC
         declaration.is_a?(ClientStreamMethod) || declaration.is_a?(BidiStreamMethod)
       end
 
-      private :publication?, :http1_streaming_route?, :input_stream_route?
+      # Server-streaming and bidi routes, whose responses may wait for credit.
+      def output_stream_route?(request)
+        path = request.path&.split("?", 2)&.first
+        return false unless path && @server.handles?(path)
+
+        declaration = @server.instance_variable_get(:@methods)[path]
+        declaration.is_a?(ServerStreamMethod) || declaration.is_a?(BidiStreamMethod)
+      end
+
+      private :publication?, :http1_streaming_route?, :input_stream_route?, :output_stream_route?
 
       def admission_response(request)
         path = request.path&.split("?", 2)&.first

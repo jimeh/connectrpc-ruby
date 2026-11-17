@@ -4,6 +4,7 @@ require "English"
 require_relative "connection_peer"
 require_relative "frame_gate"
 require_relative "keepalive_client"
+require_relative "write_probe"
 
 # Server keepalive, PING enforcement and graceful idle/age drains over a real
 # server connection. The including group defines `keepalive_host(**options)`,
@@ -30,7 +31,8 @@ RSpec.shared_examples "HTTP/2 server keepalive" do
 
   # Unary calls are logged and those named hold* wait for their release.
   # Watch streams every name the example feeds until it feeds nil. Collect
-  # logs its start and joins every name it receives.
+  # logs its start and joins every name it receives. Every completion is
+  # logged. Connect and gRPC are served.
   def keepalive_server(log)
     echo = lambda do |message, _context|
       log[:invoked] << message.name
@@ -56,15 +58,24 @@ RSpec.shared_examples "HTTP/2 server keepalive" do
     services = [AsyncHelpers::ECHO::SERVICE,
                 ConnectRPC::Service.new(name: "test.Keepalive", methods: [watch_method, collect_method])]
     ConnectRPC::Server.new(services: services, binding: ConnectRPC::Bindings::GoogleProtobuf.new,
-                           handlers: handlers.merge(watch_method.path => watch, collect_method.path => collect))
+                           handlers: handlers.merge(watch_method.path => watch, collect_method.path => collect),
+                           protocol: %i[connect grpc], instrumentation: completion_log(log[:completions]))
+  end
+
+  def completion_log(completions)
+    observer = Object.new
+    observer.define_singleton_method(:finished) { |completion| completions << completion }
+    subscriber = Object.new
+    subscriber.define_singleton_method(:start) { |_call| observer }
+    ConnectRPC::Instrumentation.new(subscribers: [subscriber])
   end
 
   def keepalive_log
     queues = -> { Hash.new { |hash, key| hash[key] = Async::Queue.new } }
-    { invoked: [], finished: [], holds: queues.call, feeds: queues.call }
+    { invoked: [], finished: [], completions: [], holds: queues.call, feeds: queues.call }
   end
 
-  def with_keepalive_host(task, keepalive:, idle_timeout: nil, tls: false, **)
+  def with_keepalive_host(task, keepalive:, idle_timeout: nil, tls: false, client_options: {}, **)
     log = keepalive_log
     host = keepalive_host(server: keepalive_server(log), idle_timeout: idle_timeout, keepalive: keepalive,
                           tls: tls ? host_tls : nil, **)
@@ -72,7 +83,7 @@ RSpec.shared_examples "HTTP/2 server keepalive" do
     clock = ConnectionPeer::FakeClock.new
     session.instance_variable_set(:@clock, clock)
     session.instance_variable_set(:@random, ConnectionPeer::SequenceRandom.new(0.5))
-    client = keepalive_client(task, host.port, tls: tls ? client_tls : nil)
+    client = keepalive_client(task, host.port, tls: tls ? client_tls : nil, **client_options)
     resource = nil
     wait_until(task, "server connection upkeep") { resource = served_resource(session) }
     yield KeepaliveClient::Fixture.new(host, clock, client, resource, log)
@@ -109,8 +120,8 @@ RSpec.shared_examples "HTTP/2 server keepalive" do
     received
   end
 
-  def hold_frames(resource, frame_type)
-    gate = FrameGate.new(resource.socket, frame_type: frame_type)
+  def hold_frames(resource, frame_type, **)
+    gate = FrameGate.new(resource.socket, frame_type: frame_type, **)
     resource.connection.stream.instance_variable_set(:@io, gate)
     gate.armed = true
     gate
@@ -491,14 +502,21 @@ RSpec.shared_examples "HTTP/2 server keepalive" do
       end
     end
 
-    it "aborts within the keepalive timeout when a drain GOAWAY waits behind a held frame" do
+    # A guard holder that writes no frame, such as a HEAD response closing
+    # its body, is not bounded by the frame write watchdog.
+    it "aborts within the keepalive timeout when a drain GOAWAY waits behind a held guard" do
       reactor do |task|
         with_keepalive_host(task, keepalive: server_keepalive(time: nil, min_time: nil,
                                                               max_connection_age: 100)) do |fixture|
-          watch(fixture, "sibling", "one")
-          gate = hold_frames(fixture.resource, Protocol::HTTP2::DataFrame::TYPE)
-          fixture.log[:feeds]["sibling"].enqueue("two")
-          gate.started.dequeue
+          release = Async::Promise.new
+          holding = Async::Promise.new
+          holder = task.async do
+            fixture.resource.connection.synchronize do
+              holding.resolve(true)
+              release.wait
+            end
+          end
+          holding.wait
           await_due(task, fixture.clock, 100)
           fixture.clock.advance(100)
           # Without server PINGs or age grace, only the control frame bound,
@@ -513,7 +531,8 @@ RSpec.shared_examples "HTTP/2 server keepalive" do
           wait_until(task, "connection retired") { retired?(fixture.resource) }
           expect(fixture.client.wire.goaways).to eq([])
         ensure
-          gate&.release&.enqueue(true)
+          release&.resolve(true)
+          holder&.wait
         end
       end
     end
@@ -525,11 +544,13 @@ RSpec.shared_examples "HTTP/2 server keepalive" do
           client = fixture.client
           client.wire.ack_pings = false
           watch(fixture, "sibling", "one")
+          # The held frame starts late enough to finish within its write bound.
+          fixture.clock.advance(90)
           gate = hold_frames(fixture.resource, Protocol::HTTP2::DataFrame::TYPE)
           fixture.log[:feeds]["sibling"].enqueue("two")
           gate.started.dequeue
           await_due(task, fixture.clock, 100)
-          fixture.clock.advance(100)
+          fixture.clock.advance(10)
           wait_until(task, "heads-up GOAWAY waits for the frame guard") do
             fixture.resource.connection.guard_waiting?
           end
@@ -846,6 +867,288 @@ RSpec.shared_examples "HTTP/2 server keepalive" do
           response = call.wait
           expect(response.status).to eq(200)
           expect(read_until(response, encoded("idle"))).to include(encoded("idle"))
+        end
+      end
+    end
+  end
+
+  describe "response write progress" do
+    def zero_window = { KeepaliveClient::INITIAL_WINDOW_SIZE => 0 }
+    def open_window = { KeepaliveClient::INITIAL_WINDOW_SIZE => KeepaliveClient::MAXIMUM_WINDOW }
+
+    # Due times of pending response credit waits; other timers also sleep.
+    def credit_waits(fixture) = fixture.clock.sleepers.select { |sleeper| sleeper.seconds == 60 }.map(&:due)
+
+    # A whole request written frame by frame; returns its stream id.
+    def start_call(client, path, name, content_type: "application/proto")
+      bytes = encoded(name)
+      bytes = [0, bytes.bytesize].pack("CN") + bytes unless content_type == "application/proto"
+      headers = request_headers(path).map { |key, value| [key, key == "content-type" ? content_type : value] }
+      headers << %w[te trailers] if content_type.start_with?("application/grpc")
+      id = client.connection.next_stream_id
+      raw_headers(client, id, headers)
+      raw_data(client, id, bytes, end_stream: true)
+      id
+    end
+
+    # The response HEADERS arrived and the server applied every earlier frame.
+    def await_headers(task, client, stream, payload)
+      wait_until(task, "response HEADERS on #{stream}") { client.wire.headers[stream].positive? }
+      ping_through(task, client, payload)
+    end
+
+    it "resets a unary response that waits 60 s for credit with CANCEL and frees its slot" do
+      reactor do |task|
+        with_keepalive_host(task, keepalive: server_keepalive(time: nil), max_requests: 1,
+                                  client_options: { settings: zero_window }) do |fixture|
+          client = fixture.client
+          stalled = start_call(client, echo_path, "stalled")
+          await_headers(task, client, stalled, "credit00")
+          expect(credit_waits(fixture)).to eq([60])
+          fixture.clock.advance(59)
+          ping_through(task, client, "credit59")
+          expect(client.wire.resets).to eq({})
+          fixture.clock.advance(1)
+          wait_until(task, "CANCEL; resets #{client.wire.resets}") do
+            client.wire.resets[stalled] == KeepaliveClient::CANCEL
+          end
+          expect(client.wire.data[stalled]).to eq(0)
+          wait_until(task, "stalled exchange finished") { fixture.log[:completions].size == 1 }
+          completion = fixture.log[:completions].first
+          expect([completion.delivery, completion.error.class.name])
+            .to eq([:aborted, "ConnectRPC::Async::Internal::ResponseBodyTimeout"])
+          # With max_requests: 1, the later call shows the slot was released.
+          later = start_call(client, echo_path, "later")
+          await_headers(task, client, later, "later000")
+          raw_window_update(client, later, 1024)
+          wait_until(task, "later response DATA") { client.wire.data_bytes[later] == encoded("later").bytesize }
+          expect(fixture.log[:invoked]).to eq(%w[stalled later])
+          expect(client.wire.resets).to eq(stalled => KeepaliveClient::CANCEL)
+          expect(client.wire.goaways).to eq([])
+        end
+      end
+    end
+
+    it "restarts the bound when credit arrives, not on a wakeup without credit" do
+      reactor do |task|
+        with_keepalive_host(task, keepalive: server_keepalive(time: nil),
+                                  client_options: { settings: zero_window }) do |fixture|
+          client = fixture.client
+          stream = start_call(client, echo_path, "slow")
+          await_headers(task, client, stream, "credit00")
+          expect(credit_waits(fixture)).to eq([60])
+          fixture.clock.advance(20)
+          # Connection credit wakes the waiting output; the stream has none.
+          raw_window_update(client, 0, 1024)
+          ping_through(task, client, "conn0020")
+          expect(credit_waits(fixture)).to eq([60])
+          fixture.clock.advance(10)
+          raw_window_update(client, stream, 1)
+          wait_until(task, "one byte of DATA") { client.wire.data_bytes[stream] == 1 }
+          wait_until(task, "the first credit wait ended") { credit_waits(fixture) == [90] }
+          fixture.clock.advance(59)
+          ping_through(task, client, "credit89")
+          expect(client.wire.resets).to eq({})
+          fixture.clock.advance(1)
+          wait_until(task, "CANCEL") { client.wire.resets[stream] == KeepaliveClient::CANCEL }
+        end
+      end
+    end
+
+    it "bounds a response that waits for connection credit while its stream has credit" do
+      reactor do |task|
+        with_keepalive_host(task, keepalive: server_keepalive(time: nil),
+                                  client_options: { settings: open_window }) do |fixture|
+          client = fixture.client
+          client.connection.define_singleton_method(:request_window_update) { nil }
+          ping_through(task, client, "settings")
+          name = "c" * 70_000
+          call = task.async { client.connection.call(connect_request(echo_path, name)) }
+          response = call.wait
+          stream = response.stream.id
+          wait_until(task, "the connection window spent") { client.wire.data_bytes[stream] == 65_535 }
+          ping_through(task, client, "spent000")
+          expect(credit_waits(fixture)).to eq([60])
+          fixture.clock.advance(60)
+          wait_until(task, "CANCEL") { client.wire.resets[stream] == KeepaliveClient::CANCEL }
+        end
+      end
+    end
+
+    it "ends a credit wait when the peer resets the stream" do
+      reactor do |task|
+        with_keepalive_host(task, keepalive: server_keepalive(time: nil),
+                                  client_options: { settings: zero_window }) do |fixture|
+          client = fixture.client
+          stream = start_call(client, echo_path, "reset")
+          await_headers(task, client, stream, "credit00")
+          expect(credit_waits(fixture)).to eq([60])
+          raw_reset(client, stream)
+          wait_until(task, "credit wait ended") { credit_waits(fixture).empty? }
+          wait_until(task, "stream closed") { fixture.resource.connection.streams.empty? }
+          expect(client.wire.resets).to eq({})
+        end
+      end
+    end
+
+    it "bounds a client-streaming response" do
+      reactor do |task|
+        with_keepalive_host(task, keepalive: server_keepalive(time: nil),
+                                  client_options: { settings: zero_window }) do |fixture|
+          client = fixture.client
+          stream = start_call(client, collect_method.path, "one", content_type: "application/connect+proto")
+          await_headers(task, client, stream, "credit00")
+          expect(credit_waits(fixture)).to eq([60])
+          fixture.clock.advance(60)
+          wait_until(task, "CANCEL") { client.wire.resets[stream] == KeepaliveClient::CANCEL }
+        end
+      end
+    end
+
+    # A subscriber may apply backpressure indefinitely; deadlines, age and
+    # close still end it.
+    it "lets a server stream wait for credit past the bound" do
+      reactor do |task|
+        with_keepalive_host(task, keepalive: server_keepalive(time: nil),
+                                  client_options: { settings: zero_window }) do |fixture|
+          client = fixture.client
+          fixture.log[:feeds]["watch"].enqueue("first")
+          stream = start_call(client, watch_method.path, "watch", content_type: "application/connect+proto")
+          await_headers(task, client, stream, "credit00")
+          fixture.clock.advance(61)
+          ping_through(task, client, "credit61")
+          expect(client.wire.resets).to eq({})
+          expect(credit_waits(fixture)).to eq([])
+          raw_window_update(client, stream, 1024)
+          wait_until(task, "streamed DATA") { client.wire.data_bytes[stream].positive? }
+        end
+      end
+    end
+
+    it "leaves credit waits unbounded with response_body_timeout: nil" do
+      reactor do |task|
+        with_keepalive_host(task, keepalive: server_keepalive(time: nil), response_body_timeout: nil,
+                                  client_options: { settings: zero_window }) do |fixture|
+          client = fixture.client
+          stream = start_call(client, echo_path, "unbounded")
+          await_headers(task, client, stream, "credit00")
+          expect(credit_waits(fixture)).to eq([])
+          fixture.clock.advance(120)
+          ping_through(task, client, "credt120")
+          expect(client.wire.resets).to eq({})
+          raw_window_update(client, stream, 1024)
+          wait_until(task, "response DATA") { client.wire.data_bytes[stream] == encoded("unbounded").bytesize }
+        end
+      end
+    end
+
+    # The bound is the keepalive timeout, or 20 s without keepalive, and
+    # applies to each frame write rather than to the whole response.
+    headers = Protocol::HTTP2::HeadersFrame::TYPE
+    data = Protocol::HTTP2::DataFrame::TYPE
+    end_stream = Protocol::HTTP2::END_STREAM
+    [
+      { label: "initial HEADERS", keepalive: { time: nil }, bound: 20, frame: [headers] },
+      { label: "DATA", keepalive: { time: nil, timeout: 7 }, bound: 7, frame: [data] },
+      { label: "DATA without keepalive", keepalive: nil, bound: 20, frame: [data] },
+      { label: "DATA over TLS", keepalive: { time: nil }, bound: 20, frame: [data], tls: true },
+      { label: "END_STREAM DATA", keepalive: { time: nil }, bound: 20, frame: [data, end_stream] },
+      { label: "gRPC trailers", keepalive: { time: nil }, bound: 20, frame: [headers, end_stream],
+        content_type: "application/grpc" }
+    ].each do |row|
+      bound = row[:bound]
+      it "aborts the connection when the held #{row[:label]} write does not finish within #{bound} s" do
+        reactor do |task|
+          keepalive = row[:keepalive] && server_keepalive(**row[:keepalive])
+          with_keepalive_host(task, keepalive: keepalive, tls: row.fetch(:tls, false)) do |fixture|
+            frame_type, flags = row[:frame]
+            gate = hold_frames(fixture.resource, frame_type, flags: flags)
+            start_call(fixture.client, echo_path, "held", content_type: row.fetch(:content_type, "application/proto"))
+            gate.started.dequeue
+            fixture.clock.advance(bound - 0.1)
+            await_due(task, fixture.clock, bound)
+            expect(fixture.resource).not_to be_finished
+            fixture.clock.advance(0.1)
+            wait_until(task, "connection retired") { retired?(fixture.resource) }
+            wait_until(task, "client EOF") { fixture.client.eof? }
+          ensure
+            gate&.release&.enqueue(true)
+          end
+        end
+      end
+    end
+
+    it "lets a slow reader take up to the bound for each frame of one response" do
+      reactor do |task|
+        with_keepalive_host(task, keepalive: server_keepalive(time: nil)) do |fixture|
+          gate = hold_frames(fixture.resource, Protocol::HTTP2::DataFrame::TYPE)
+          name = "s" * 40_000
+          call = task.async { unary(fixture, name) }
+          3.times do |index|
+            gate.started.dequeue
+            fixture.clock.advance(19.9)
+            await_due(task, fixture.clock, (19.9 * index) + 20)
+            expect(fixture.resource).not_to be_finished
+            gate.armed = true if index < 2
+            gate.release.enqueue(true)
+          end
+          expect(call.wait).to eq([200, encoded(name)])
+          expect(fixture.resource).not_to be_finished
+        ensure
+          gate&.release&.enqueue(true)
+        end
+      end
+    end
+
+    it "aborts a graceful drain whose stream frame write stalls past the bound" do
+      reactor do |task|
+        with_keepalive_host(task, keepalive: server_keepalive(time: nil)) do |fixture|
+          watch(fixture, "sibling", "one")
+          gate = hold_frames(fixture.resource, Protocol::HTTP2::DataFrame::TYPE)
+          fixture.log[:feeds]["sibling"].enqueue("two")
+          gate.started.dequeue
+          fixture.clock.advance(10)
+          # The heads-up GOAWAY's own deadline, 20 s from now, comes later.
+          closing = task.async { fixture.host.close(grace: 5) }
+          wait_until(task, "heads-up GOAWAY waits for the frame guard") do
+            fixture.resource.connection.guard_waiting?
+          end
+          fixture.clock.advance(9.9)
+          await_due(task, fixture.clock, 20)
+          expect(fixture.resource).not_to be_finished
+          fixture.clock.advance(0.1)
+          wait_until(task, "connection retired") { retired?(fixture.resource) }
+          expect(closing.wait).to be(false)
+        ensure
+          gate&.release&.enqueue(true)
+        end
+      end
+    end
+
+    # The peer stays connected but never reads, so the server's socket send
+    # buffer fills while a server stream with ample credit keeps writing.
+    it "retires a connection whose peer stops reading a flooding server stream" do
+      reactor do |task|
+        client_options = { read: false, receive_buffer: 4096, settings: open_window }
+        with_keepalive_host(task, keepalive: nil, max_requests: 1, client_options: client_options) do |fixture|
+          client = fixture.client
+          raw_window_update(client, 0, KeepaliveClient::MAXIMUM_WINDOW - 65_535)
+          probe = WriteProbe.new(fixture.resource.socket)
+          fixture.resource.connection.stream.instance_variable_set(:@io, probe)
+          chunk = "f" * 65_536
+          256.times { fixture.log[:feeds]["flood"].enqueue(chunk) }
+          start_call(client, watch_method.path, "flood", content_type: "application/connect+proto")
+          wait_until(task, "a server frame write blocked on the socket", within: 10) { probe.writing? }
+          fixture.clock.advance(19.9)
+          await_due(task, fixture.clock, 20)
+          expect(fixture.resource).not_to be_finished
+          fixture.clock.advance(0.1)
+          wait_until(task, "connection retired") { retired?(fixture.resource) }
+          other = keepalive_client(task, fixture.host.port)
+          response = other.connection.call(connect_request(echo_path, "after"))
+          expect([response.status, response.read]).to eq([200, encoded("after")])
+        ensure
+          close_keepalive_client(other)
         end
       end
     end

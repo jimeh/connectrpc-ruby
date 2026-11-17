@@ -92,11 +92,12 @@ reactor, thread or state raises `ConnectRPC::Async::LifecycleError`. Since
 
 `Host.new(server:, host: "127.0.0.1", port: 0, tls: nil, tls_provider: nil,
 max_connections: 1024, max_requests: 128, max_concurrent_streams: 100,
-request_body_timeout: 60, handshake_timeout: 10, idle_timeout: 60,
-refresh_interval: 60, refresh_jitter: 0.1, refresh_timeout: 10,
-on_tls_error: nil, keepalive: ServerKeepalive.new, fallback: nil,
-stream_receive_window: 65_536, connection_receive_window: 16_777_216)` returns
-a host. `fallback:`, `max_concurrent_streams:`, `request_body_timeout:`,
+request_body_timeout: 60, response_body_timeout: 60, handshake_timeout: 10,
+idle_timeout: 60, refresh_interval: 60, refresh_jitter: 0.1,
+refresh_timeout: 10, on_tls_error: nil, keepalive: ServerKeepalive.new,
+fallback: nil, stream_receive_window: 65_536,
+connection_receive_window: 16_777_216)` returns a host. `fallback:`,
+`max_concurrent_streams:`, `request_body_timeout:`, `response_body_timeout:`,
 `stream_receive_window:` and `connection_receive_window:` are available since
 0.3.0. The receive windows size request uploads; see
 [Flow-control windows](#flow-control-windows).
@@ -171,6 +172,29 @@ set `max_concurrent_streams` lower explicitly.
   stream's admission slot is released. Client-streaming and bidi RPCs are
   exempt, since they may idle between messages; keepalive and deadlines bound
   them. The value is finite positive seconds; nil turns the bound off.
+- Since 0.3.0, `response_body_timeout` bounds each wait of a response body on an
+  admitted HTTP/2 stream for flow-control credit, like nginx's `send_timeout`.
+  A wait starts when the stream's or the connection's window is used up and
+  ends when credit for this stream arrives; a WINDOW_UPDATE that leaves the
+  stream without credit does not restart it. When a wait exceeds the bound, the
+  server resets the stream with `RST_STREAM(CANCEL)`, the call finishes as not
+  delivered, and the stream's admission slot is released. The connection and
+  its other streams continue. Unary and client-streaming RPCs and fallback
+  responses are bounded. Server-streaming and bidi RPCs are exempt, since their
+  consumers may apply backpressure for as long as they need. The value is
+  finite positive seconds; nil turns the bound off.
+- Since 0.3.0, each frame write on an HTTP/2 connection must finish within the
+  keepalive `timeout` (20 seconds by default), or 20 seconds without keepalive,
+  once it holds the connection's frame guard. This covers response HEADERS,
+  DATA, trailers and END_STREAM, resets and control frames, for every RPC
+  shape and whatever `response_body_timeout` is. A peer that stops reading its
+  socket fills the server's send buffer and stalls the write; the connection is
+  then aborted raw socket first, which cancels its handlers and releases all of
+  its slots. The bound applies to each frame or header block, and a DATA frame
+  is at most the peer's `SETTINGS_MAX_FRAME_SIZE`, 16 KiB with common clients.
+  It does not cover a whole response, and steady progress within one frame does
+  not extend it. Application work under the guard, such as closing a HEAD
+  response's body, does not count as a frame write.
 
 These limits do not bound every way to hold a slot:
 
@@ -182,10 +206,12 @@ These limits do not bound every way to hold a slot:
   `max_concurrent_streams` limits how many streams a connection has, not how
   long they last, so by default a responsive peer can hold these slots
   indefinitely.
-- A peer that stops reading responses is not yet bounded. Its stream slot
-  waits for flow-control credit until a deadline or `close` ends it; keepalive
-  does not, because the peer can keep answering PINGs. A response write bound
-  is tracked by [#131](https://github.com/jimeh/connectrpc-ruby/issues/131).
+- Server-streaming and bidi responses may wait for flow-control credit
+  indefinitely. A peer that keeps reading frames such as PINGs but never
+  grants the stream window holds its slot until a call deadline,
+  `max_connection_age` with `max_connection_age_grace`, or `close` ends the
+  call. Keepalive does not, because the peer keeps answering PINGs. A peer that
+  stops reading its socket altogether hits the frame write bound instead.
 
 ### Fallback application
 
@@ -358,6 +384,9 @@ nonnegative or nil and requires `max_connection_age`.
   third strike, or the connection is aborted. Without keepalive, the reader
   answers client PINGs itself, and control frames use the 20-second default
   `timeout`.
+- **Frame writes.** Since 0.3.0, `timeout` also bounds each frame write once it
+  holds the frame guard, as described in [Stream
+  admission](#stream-admission).
 
 Idle and age expiry, session `close` and `drain_tls` drain a connection in
 three steps, as grpc-go does:
@@ -1086,9 +1115,11 @@ wakes waiting calls before joining its connection close.
 The session forwards TLS lifecycle/identity operations, bounded `close` and
 raw-first `abort` for listener/setup failure. Its `keepalive:` (default
 `ServerKeepalive.new`), graceful `idle_timeout`, `max_concurrent_streams:`,
-`request_body_timeout:` and the [receive windows](#flow-control-windows) apply
-to HTTP/2 resources only; see [Stream admission](#stream-admission). An application other than `Application` gets the
-request body bound on every HTTP/2 request. Falcon's HTTP/1 resource keeps
+`request_body_timeout:`, `response_body_timeout:` (since 0.3.0), the frame
+write bound and the [receive windows](#flow-control-windows) apply to HTTP/2
+resources only; see [Stream admission](#stream-admission). An application other
+than `Application` gets the request and response body bounds on every HTTP/2
+request. Falcon's HTTP/1 resource keeps
 closing idle connections, has no keepalive, and answers a request with a bare
 503 when admission is full or the session is closing. The optional
 `stop_accepting:` callback runs after affinity/grace validation, before refresh

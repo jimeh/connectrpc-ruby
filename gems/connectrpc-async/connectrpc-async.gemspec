@@ -23,8 +23,9 @@ Gem::Specification.new do |spec|
   spec.require_paths = ["lib"]
   local_requirement = "~> #{spec.version.to_s.split('.').first(2).join('.')}.0"
   # Patch pins (~> x.y.z), see docs/development.md#gem-dependency-constraints and issue #68:
-  # - async-http: Output#start, read_in_background and Server#each copies and Stream ivar roles
-  #   replace eager-start and ownership semantics that the boot check cannot prove.
+  # - async-http: Output#start, Output#write, read_in_background and Server#each copies and Stream
+  #   and Output ivar roles replace eager-start, ownership and credit-wait semantics that the boot
+  #   check cannot prove.
   # - protocol-http2: receive-window enforcement and credit-before-WINDOW_UPDATE ordering replace
   #   its flow-control accounting.
   # Guarded coupling: async's task finalization is probed at require by

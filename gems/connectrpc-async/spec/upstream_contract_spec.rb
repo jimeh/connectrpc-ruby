@@ -269,6 +269,23 @@ RSpec.describe "connectrpc-async upstream contract" do
       end
     end
 
+    it "lets upstream Output#window_updated wake our Output#write copy through @guard and @window_updated" do
+      reactor do |task|
+        size = 0
+        sent = []
+        stream = Object.new
+        stream.define_singleton_method(:available_frame_size) { size }
+        stream.define_singleton_method(:send_data) { |chunk, maximum_size:| sent << [chunk, maximum_size] }
+        output = AsyncHelpers::INTERNAL::Output.new(stream, Protocol::HTTP::Body::Writable.new)
+        writer = task.async { output.write("credit") }
+        expect(writer).to be_alive
+        size = 4
+        output.window_updated(4)
+        writer.wait
+        expect(sent).to eq([["cred", 4], ["it", 4]])
+      end
+    end
+
     it "routes every frame write through our guard and never acquires async-http's @write_frame_guard" do
       upstream = {}.compare_by_identity
       owned = {}.compare_by_identity
