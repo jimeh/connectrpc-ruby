@@ -781,13 +781,15 @@ own retires. It is non-gating and belongs to no `test` or `verify` task:
 ```sh
 mise run async:soak     # Async H2 Transport, ThreadedTransport and Host
 mise run falcon:soak    # Falcon HTTP/2 and HTTP/1.1 (HTTP1Transport, Net::HTTP)
-mise run soak           # both, Async first
+mise run soak           # both, Async then Falcon
 ```
 
-[`scripts/soak.rb`](../scripts/soak.rb) runs `scripts/run.rb soak` for the
-package in its own process group. That runs RSpec over `soak/**/*_soak.rb` with
-`soak/.rspec`, which loads `soak/soak_helper.rb` instead of `spec_helper`, so
-SimpleCov never starts. The scenarios (churn, GOAWAY drains, stream retirement,
+[`scripts/soak.rb`](../scripts/soak.rb) runs `scripts/run.rb soak` for each
+named package in turn, each in its own process group. A failed package does not
+stop the next one, and the script exits non-zero if any package failed.
+`scripts/run.rb soak` runs RSpec over `soak/**/*_soak.rb` with `soak/.rspec`,
+which loads `soak/soak_helper.rb` instead of `spec_helper`, so SimpleCov never
+starts. The scenarios (churn, GOAWAY drains, stream retirement,
 stuck frames, slow peers, peer failure, TLS rotation, shutdown, keepalive and
 refusal) and their invariants are specified in the
 [campaign plan](plans/lifecycle-campaign.md). Shared HTTP/2 scenarios live in
@@ -801,8 +803,10 @@ threads, `/dev/fd` entries and unfinished Async tasks (harness, peer and
 ThreadedTransport owner reactors) are identical, at most three. Every measured
 round must then settle its owned objects (client and server resources retired,
 owner threads joined, registries and shared cancellation listeners empty) and
-return exactly to that sample. Admission, byte, socket and stream-buffer peaks
-are sampled under established load against their configured caps, and a handler
+return exactly to that sample. Every call without its own cancellation source
+carries the campaign's shared, never-cancelled token, also when it is expected
+to fail. Admission, byte, socket, server connection and stream-buffer peaks are
+sampled under established load against their configured caps, and a handler
 ledger proves at-most-once execution. There are no tolerance bands. RSS and GC
 live slots are reported, never asserted.
 
@@ -829,9 +833,13 @@ first failure of an intermittent result and its report; do not replace it with a
 later pass.
 
 `spec/soak_harness_spec.rb` runs in `async:test`. It plants a leaked descriptor,
-thread, Async task, cancellation registration, unretired resource, open
-round-scoped client, transient socket-cap overshoot and over-cap retained stream
-bytes in small real campaigns and requires each to fail at its intended check.
+thread, Async task, cancellation registration, unretired resource (also one
+that only looks superseded), open round-scoped client, replaced reused
+connection, duplicate handler execution, transient socket-cap overshoot,
+over-cap retained stream bytes and a leak in every warmup in small real
+campaigns, and requires each to fail at its intended check. Only the poll that
+detects a planted leak is shortened. Another control requires teardown to run
+every cleanup after a failing one and report the first error.
 
 ## Official browser development
 

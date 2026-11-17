@@ -24,7 +24,7 @@ RSpec.describe "Falcon HTTP/1.1 lifecycle campaign" do
       peer = c.peer_thread("falcon servers")
       tcp = c.server(peer, kind: :falcon, connections: -> { 1 })
       tls = c.server(peer, kind: :falcon, mode: :tls, connections: -> { 0 })
-      persistent = c.http1(tcp.origin, label: "persistent http1", persistent: true)
+      persistent = c.http1(tcp.origin, label: "persistent http1", persistent: true, reuse: true)
       net = Soak::Topology::Clients.new(ConnectRPC::Transports::NetHTTP.new, tcp.origin)
       shapes = Soak::Builders::H1_SHAPES
       c.run do

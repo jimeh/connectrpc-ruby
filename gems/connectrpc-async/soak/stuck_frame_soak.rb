@@ -17,7 +17,7 @@ RSpec.describe "Async Transport lifecycle campaign: stuck-frame fallback" do
         c.ledger.await_entered([sibling_id])
         resource = Soak::Sampler.live_resources(clients.transport).first
         gate = Soak::Sampler.install_gate(resource, FrameGate.new(resource.socket, frame_type: 0))
-        source = ConnectRPC::CancellationSource.new
+        source = c.call_source("blocked call source")
         blocked_id = c.ledger.next_id("blocked")
         blocked = c.task.async do
           c.perform(clients, :unary, id: blocked_id, size: 500_000, timeout: nil, cancellation: source.token,
@@ -39,7 +39,7 @@ RSpec.describe "Async Transport lifecycle campaign: stuck-frame fallback" do
   it "4b peer reset while output is blocked: the lease is released and keepalive retires the connection" do
     campaign("4b-reset-blocked-output/raw-peer", workload: "4 KB stream DATA gated, peer RST, rerouted sibling",
                                                  concurrency: 2, payload_sizes: [4_096],
-                                                 keepalive: { time: 0.2, timeout: 0.2 }) do |c|
+                                                 keepalive: { time: 0.2, timeout: Soak::TIMER_HEADROOM }) do |c|
       bound = IO::Endpoint.tcp("127.0.0.1", 0).bound
       c.cleanup { bound.close }
       reset = Async::Queue.new
@@ -57,7 +57,8 @@ RSpec.describe "Async Transport lifecycle campaign: stuck-frame fallback" do
       c.cleanup { peer.stop }
       origin = "http://127.0.0.1:#{bound.sockets.first.local_address.ip_port}"
       events = []
-      keepalive = ConnectRPC::Async::Keepalive.new(time: 0.2, timeout: 0.2)
+      # Healthy connections must answer PINGs in time through a stalled scheduler.
+      keepalive = ConnectRPC::Async::Keepalive.new(time: 0.2, timeout: Soak::TIMER_HEADROOM)
       clients = c.transport(origin, label: "persistent keepalive transport", persistent: true, connections: 1,
                                     connection_policy: ConnectRPC::Async::ConnectionPolicy.new(keepalive: keepalive),
                                     connection_observer: ->(event) { events << event })
@@ -65,7 +66,9 @@ RSpec.describe "Async Transport lifecycle campaign: stuck-frame fallback" do
       # A unary call through the raw peer, recorded in the ledger.
       unary = lambda do |path|
         id = c.ledger.next_id(path.delete("/"))
-        body = transport.call(request("#{origin}#{path}", headers: { Soak::Ledger::ID => [id] })).body
+        call = request("#{origin}#{path}", headers: { Soak::Ledger::ID => [id] })
+        call.cancellation = c.shared_source.token
+        body = transport.call(call).body
         c.ledger.outcome(id, :ok)
         body
       end
@@ -74,30 +77,36 @@ RSpec.describe "Async Transport lifecycle campaign: stuck-frame fallback" do
         resource = Soak::Sampler.live_resources(transport).first
         gate = Soak::Sampler.install_gate(resource, FrameGate.new(resource.socket, frame_type: 0))
         proceed = Async::Queue.new
+        stream_request = ConnectRPC::StreamRequest.new(url: URI("#{origin}/stream"), http_method: "POST", headers: {},
+                                                       cancellation: c.shared_source.token)
         call = c.task.async do
-          transport.open_stream(ConnectRPC::StreamRequest.new(url: URI("#{origin}/stream"), http_method: "POST",
-                                                              headers: {})) do |exchange|
+          transport.open_stream(stream_request) do |exchange|
             exchange.write("x" * 4_096)
             proceed.dequeue
           end
         end
         gate.started.dequeue
         stream = Soak::Sampler.client_streams(transport).first
+        resets = Soak::Sampler.watch_resets(stream)
         reset.enqueue(true)
         Soak.poll("peer reset observed while DATA is held") { stream.closed? }
         proceed.enqueue(true)
         call.wait
         # The peer reset the stream unprocessed; the exchange itself ended normally.
-        c.ledger.outcome(c.ledger.next_id("reset-stream"), :reset_by_peer, expect: [:reset_by_peer])
+        code = resets.pop(timeout: 0)
+        name = Protocol::HTTP2::Error.constants.find { |constant| Protocol::HTTP2::Error.const_get(constant) == code }
+        c.ledger.outcome(c.ledger.next_id("reset-stream"), "RST_STREAM #{name || code.inspect}",
+                         expect: ["RST_STREAM CANCEL"])
         expect([resource.connection.streams.size, Soak::Sampler.usage(transport), resource.finished?])
           .to eq([0, 0, false])
-        closed_before = events.count { |event| event.type == :connection_closed }
+        closed = -> { events.select { |event| event.type == :connection_closed }.map(&:outcome) }
+        closed_before = closed.call.size
         sibling = c.task.async { unary.call("/after") }
         Soak.poll("keepalive retirement of the blocked connection") { resource.finished? }
         expect(sibling.wait).to eq("/after")
         expect(gate).not_to be_written
-        expect(events.select { |event| event.type == :connection_closed }.drop(closed_before).map(&:outcome))
-          .to eq([:keepalive_timeout])
+        Soak.poll("the blocked connection's connection_closed event") { closed.call.size > closed_before }
+        expect(closed.call.drop(closed_before)).to eq([:keepalive_timeout])
         expect(unary.call("/next")).to eq("/next")
       ensure
         gate&.release&.enqueue(true)

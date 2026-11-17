@@ -8,12 +8,13 @@ RSpec.describe "Async lifecycle campaign: keepalive" do
   it "9a client keepalive: a black-holed connection retires with keepalive_timeout and the client reconnects" do
     campaign("9a-client-keepalive/host", workload: "held unary through a relay, black hole, x7 shapes after",
                                          concurrency: 1, payload_sizes: [16],
-                                         keepalive: { time: 0.2, timeout: 0.2 }) do |c|
+                                         keepalive: { time: 0.2, timeout: Soak::TIMER_HEADROOM }) do |c|
       peer = c.peer_thread("host")
       server = c.server(peer, connections: -> { 1 })
       relay = c.relay(server.port)
       events = []
-      keepalive = ConnectRPC::Async::Keepalive.new(time: 0.2, timeout: 0.2)
+      # Healthy connections must answer PINGs in time through a stalled scheduler.
+      keepalive = ConnectRPC::Async::Keepalive.new(time: 0.2, timeout: Soak::TIMER_HEADROOM)
       clients = c.transport("http://127.0.0.1:#{relay.port}", label: "persistent keepalive transport",
                                                               persistent: true, connections: 1,
                                                               connection_policy: ConnectRPC::Async::ConnectionPolicy
@@ -29,6 +30,7 @@ RSpec.describe "Async lifecycle campaign: keepalive" do
         c.ledger.await_entered([id])
         relay.blackhole!
         held.wait
+        Soak.poll("the black-holed connection's connection_closed event") { closed_outcomes(events).size > before }
         expect(closed_outcomes(events).drop(before)).to eq([:keepalive_timeout])
         Soak.poll("black-holed call's handler end") { c.ledger.ended(id) }
         Soak::Builders::H2_SHAPES.each { |shape| c.perform(clients, shape) }

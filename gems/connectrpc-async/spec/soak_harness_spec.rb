@@ -18,11 +18,16 @@ RSpec.describe "Lifecycle campaign harness" do
     end
   end
 
-  # Runs a campaign with short poll bounds on its own reactor; `release`
-  # undoes the planted leak on that reactor before it exits.
-  def control(name, release: -> {}, &)
+  # Bounds only the poll that must detect a control's planted leak; the other
+  # polls keep their normal bounds, and legitimate cleanup settles before the
+  # leak is observed, so a slow runner cannot fail a control at another check.
+  def short = 0.5
+
+  # Runs a campaign on its own reactor; `release` undoes the planted leak on
+  # that reactor before it exits.
+  def control(name, settle: Soak::SETTLE_SECONDS, global: Soak::GLOBAL_SECONDS, release: -> {}, &)
     Sync do |task|
-      Soak::Campaign.new(name, task: task, settle: 0.5, global: 0.5).conduct(&)
+      Soak::Campaign.new(name, task: task, settle: settle, global: global).conduct(&)
     ensure
       release.call
     end
@@ -43,7 +48,7 @@ RSpec.describe "Lifecycle campaign harness" do
 
   it "detects a descriptor leaked in a measured round" do
     pipes = []
-    expect { control("leaked fd") { |c| c.run { pipes << IO.pipe if measured?(c) } } }
+    expect { control("leaked fd", global: short) { |c| c.run { pipes << IO.pipe if measured?(c) } } }
       .to raise_error(Soak::Failure, /global counts differ from the warmup baseline: \{fds: /)
   ensure
     pipes.flatten.each(&:close)
@@ -52,7 +57,9 @@ RSpec.describe "Lifecycle campaign harness" do
   it "detects a thread leaked in a measured round" do
     gate = Thread::Queue.new
     threads = []
-    expect { control("leaked thread") { |c| c.run { threads << Thread.new { gate.pop } if measured?(c) } } }
+    expect do
+      control("leaked thread", global: short) { |c| c.run { threads << Thread.new { gate.pop } if measured?(c) } }
+    end
       .to raise_error(Soak::Failure, /global counts differ from the warmup baseline: \{threads: /)
   ensure
     gate.close
@@ -63,7 +70,7 @@ RSpec.describe "Lifecycle campaign harness" do
     tasks = []
     condition = Async::Condition.new
     expect do
-      control("leaked task", release: -> { tasks.each(&:stop) }) do |c|
+      control("leaked task", global: short, release: -> { tasks.each(&:stop) }) do |c|
         c.run { tasks << c.task.async { condition.wait } if measured?(c) }
       end
     end.to raise_error(Soak::Failure, /global counts differ from the warmup baseline: \{harness_tasks: /)
@@ -71,7 +78,7 @@ RSpec.describe "Lifecycle campaign harness" do
 
   it "detects a cancellation listener left registered on a shared source" do
     expect do
-      control("leaked registration") do |c|
+      control("leaked registration", settle: short) do |c|
         source = c.shared_source
         c.run { source.token.on_cancel { nil } if measured?(c) }
       end
@@ -81,7 +88,7 @@ RSpec.describe "Lifecycle campaign harness" do
   it "detects an unretired resource that no tracked client or server owns" do
     leaked = nil
     expect do
-      control("unretired resource", release: -> { leaked&.close(grace: 0) }) do |c|
+      control("unretired resource", settle: short, release: -> { leaked&.close(grace: 0) }) do |c|
         server = c.server(c.peer_thread("host"))
         c.run do
           next unless measured?(c)
@@ -95,12 +102,13 @@ RSpec.describe "Lifecycle campaign harness" do
 
   it "detects a round-scoped client left open at the end of its round" do
     expect do
-      control("open round client") do |c|
+      control("open round client", settle: short) do |c|
         server = c.server(c.peer_thread("host"))
         c.run do
           clients = c.transport(server.origin, label: "forgotten transport")
           c.perform(clients, :unary)
           clients.transport.close(grace: 1) unless measured?(c)
+          c.settle!("legitimate retirement", timeout: Soak::SETTLE_SECONDS)
         end
       end
     end.to raise_error(Soak::Failure, /forgotten transport still open at the end of its round/)
@@ -162,5 +170,81 @@ RSpec.describe "Lifecycle campaign harness" do
         end
       end
     end.to raise_error(Soak::Failure, /client stream retained bytes peaked at \d+, above its cap 16384/)
+  end
+
+  it "detects a reused persistent connection replaced by another" do
+    expect do
+      control("reuse identity", settle: short) do |c|
+        server = c.server(c.peer_thread("host"))
+        relay = c.relay(server.port)
+        clients = c.transport("http://127.0.0.1:#{relay.port}", label: "persistent transport", persistent: true,
+                                                                reuse: true)
+        transport = clients.transport
+        c.run do
+          if measured?(c)
+            relay.reset!
+            Soak.poll("the reset connection to leave the transport") { Soak::Sampler.live_connections(transport).empty? }
+          end
+          c.perform(clients, :unary)
+          Soak.settle("the transport's own state", timeout: Soak::SETTLE_SECONDS) do
+            Soak::Sampler.transport_problems(transport, "persistent transport")
+          end
+        end
+      end
+    end.to raise_error(Soak::Failure, /persistent transport connections changed from \[\d+\] to \[\d+\]/)
+  end
+
+  # An H2 resource with no connection, a closed raw socket and no tracked
+  # tasks, as a superseded one looks, still owns a running task and never
+  # completed retirement. Created in setup, its task joins the baseline.
+  it "detects an unretired resource that only looks superseded" do
+    owner = nil
+    expect do
+      control("looks superseded", settle: short, release: -> { Soak.stop(owner) }) do |c|
+        condition = Async::Condition.new
+        owner = c.task.async { condition.wait }
+        raw = Socket.pair(:UNIX, :STREAM).each(&:close).first
+        resource = Soak::Sampler::INTERNAL::Resource.new(progress: Async::Condition.new)
+        resource.raw = raw
+        resource.task = owner
+        c.run { nil }
+      end
+    end.to raise_error(Soak::Failure, /unretired ConnectRPC::Async::Internal::Resource \d+ owned by no live client/)
+  end
+
+  it "detects a logical call that a handler executed twice" do
+    expect do
+      control("duplicate execution") do |c|
+        server = c.server(c.peer_thread("host"))
+        clients = c.transport(server.origin, label: "persistent transport", persistent: true)
+        c.run do
+          id = c.ledger.next_id("call")
+          c.perform(clients, :unary, id: id)
+          c.perform(clients, :unary, id: id) if measured?(c)
+        end
+      end
+    end.to raise_error(Soak::Failure, /round 0 invariants:\n  call-\d+ executed 2 times/)
+  end
+
+  it "fails warmup as unstable when every round leaks" do
+    pipes = []
+    expect { control("unstable") { |c| c.run { pipes << IO.pipe } } }
+      .to raise_error(Soak::Unstable, /unstable did not stabilize in 3 warmups: \{.*fds: \d+.*\} then \{.*fds: \d+/)
+  ensure
+    pipes.flatten.each(&:close)
+  end
+
+  it "runs every cleanup after a failing one and reports the first error" do
+    ran = []
+    expect do
+      control("failing cleanup") do |c|
+        c.cleanup(:stop) { ran << :stop }
+        c.cleanup { ran << :close }
+        c.cleanup { raise "later close failure" }
+        c.cleanup { raise "first close failure" }
+        c.run { nil }
+      end
+    end.to raise_error(RuntimeError, "first close failure")
+    expect(ran).to eq(%i[close stop])
   end
 end

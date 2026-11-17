@@ -68,19 +68,14 @@ RSpec.shared_examples "soak churn and reuse" do |kind|
         tls: c.server(peer, kind: kind, mode: :tls, connections: -> { 0 }),
         mtls: c.server(peer, kind: kind, mode: :mtls, connections: -> { 0 })
       }
-      shared = c.shared_source
       reused = c.transport(servers[:h2c].origin, label: "persistent transport", persistent: true, reuse: true)
       reused_threaded = c.threaded(servers[:h2c].origin, label: "persistent threaded", persistent: true,
                                                          reuse: true)
       c.run do
-        calls = Soak::Builders::H2_SHAPES.map do |shape|
-          -> { c.perform(reused, shape, cancellation: shared.token) }
-        end
-        calls << -> { c.perform(reused, :unary, size: 16_384, cancellation: shared.token) }
+        calls = Soak::Builders::H2_SHAPES.map { |shape| -> { c.perform(reused, shape) } }
+        calls << -> { c.perform(reused, :unary, size: 16_384) }
         c.concurrently(*calls)
-        c.on_threads(*Soak::Builders::THREADED_SHAPES.map do |shape|
-          -> { c.perform(reused_threaded, shape, cancellation: shared.token) }
-        end)
+        c.on_threads(*Soak::Builders::THREADED_SHAPES.map { |shape| -> { c.perform(reused_threaded, shape) } })
         servers.each do |mode, server|
           clients = c.transport(server.origin, mode: mode, label: "round transport #{mode}")
           Soak::Builders::H2_SHAPES.each { |shape| c.perform(clients, shape) }

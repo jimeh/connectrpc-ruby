@@ -31,11 +31,8 @@ module Soak
       pairs.each { |pair| [pair.client, pair.server].each { |socket| rst(socket) } }
     end
 
-    # Connections whose pumps still run.
-    def pairs
-      @pairs.reject! { |pair| pair.pumps.all?(&:finished?) }
-      @pairs
-    end
+    # Connections whose pumps still run. `@pairs` keeps every accepted pair.
+    def pairs = @pairs.reject { |pair| pair.pumps.all?(&:finished?) }
 
     def close
       Soak.stop(@acceptor)
@@ -46,13 +43,15 @@ module Soak
 
     def closed? = @listener.closed?
 
-    # Only a closed relay owes anything: its acceptor, listener and pumps stopped.
+    # Only a closed relay owes anything: its acceptor, listener and pumps
+    # stopped. Every pair it ever accepted counts, including those whose pumps
+    # finished, which #pairs omits.
     def problems(label)
       return [] unless closed?
 
       problems = []
       problems << "#{label} acceptor running" unless @acceptor.finished?
-      pairs.each_with_index do |pair, index|
+      @pairs.each_with_index do |pair, index|
         problems << "#{label} pair #{index} open" unless pair.client.closed? && pair.server.closed?
       end
       problems

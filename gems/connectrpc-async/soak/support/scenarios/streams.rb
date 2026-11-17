@@ -55,6 +55,18 @@ module Soak
       end
       campaign.peaks.observe("client stream retained bytes", last[:retained], cap: WINDOW)
     end
+
+    # Waits, within the held call's deadline, until a server stream retains a
+    # full receive window of unread input, then records the ingress peak.
+    def await_ingress(campaign, server)
+      retained = Soak.poll("a full server ingress window", timeout: TIMER_HEADROOM) do
+        bytes = server.run { |host| Sampler.server_ingress(host) }
+        bytes == WINDOW ? bytes : nil
+      end
+      campaign.peaks.observe("server ingress retained bytes", retained, cap: WINDOW)
+    rescue Failure => e
+      raise Failure, "#{e.message}; the server stream never retained a full window"
+    end
   end
 end
 
@@ -67,30 +79,28 @@ RSpec.shared_examples "soak stream retirement" do |kind|
              payload_sizes: [16, Soak::Topology::FLOOD_MESSAGE]) do |c|
       peer = c.peer_thread("#{kind} server")
       server = c.server(peer, kind: kind, connections: -> { 2 })
-      shared = c.shared_source
       clients = c.transport(server.origin, label: "persistent transport", persistent: true, reuse: true,
                                            connections: 1)
       threaded = c.threaded(server.origin, label: "persistent threaded", persistent: true, reuse: true)
       bodies = Soak::StreamSteps.watch_outputs(self)
       c.run do
-        c.perform(clients, :unary, cancellation: shared.token)
+        c.perform(clients, :unary)
         endings = { token: ["canceled"], deadline: ["deadline_exceeded"], complete: [:ok] }
         ends = [*endings.keys, endings.keys.sample(random: c.random)]
+        # Only token victims get their own source; the others carry the shared token.
         victims = ends.each_with_index.map do |ending, index|
-          [c.ledger.next_id("victim"), ending, ConnectRPC::CancellationSource.new,
+          [c.ledger.next_id("victim"), ending, ending == :token ? c.call_source("token victim source") : nil,
            index.even? ? :server_stream : :grpc_server_stream]
         end
         calls = victims.map do |id, ending, source, shape|
           c.task.async do
-            c.perform(clients, shape, id: id, action: "hold", timeout: ending == :deadline ? 0.3 : nil,
-                                      cancellation: ending == :complete ? shared.token : source.token,
-                                      expect: endings.fetch(ending))
+            c.perform(clients, shape, id: id, action: "hold",
+                                      timeout: ending == :deadline ? Soak::TIMER_HEADROOM : nil,
+                                      cancellation: source&.token, expect: endings.fetch(ending))
           end
         end
         c.ledger.await_entered(victims.map(&:first))
-        c.concurrently(*Soak::Builders::H2_SHAPES.map do |shape|
-          -> { c.perform(clients, shape, cancellation: shared.token) }
-        end)
+        c.concurrently(*Soak::Builders::H2_SHAPES.map { |shape| -> { c.perform(clients, shape) } })
         victims.each do |id, ending, source|
           ending == :token ? source.cancel : (ending == :complete && c.gates.open(id))
         end
@@ -101,13 +111,13 @@ RSpec.shared_examples "soak stream retirement" do |kind|
           expect(allowed).to include(reason)
         end
 
-        flood_source = ConnectRPC::CancellationSource.new
+        flood_source = c.call_source("flood source")
         flood_id = c.ledger.next_id("flood")
         protocol = %i[connect grpc].sample(random: c.random)
         flood, resume = Soak::StreamSteps.flood(c, clients, id: flood_id, protocol: protocol,
                                                             cancellation: flood_source.token, expect: ["canceled"])
         Soak::StreamSteps.await_saturation(c, clients.transport)
-        c.perform(clients, :unary, cancellation: shared.token)
+        c.perform(clients, :unary)
         flood_source.cancel
         resume.resolve(true)
         flood.wait
@@ -122,14 +132,16 @@ RSpec.shared_examples "soak stream retirement" do |kind|
 
             # Timeout interrupts with an exception outside StandardError and
             # converts it at its own boundary, so the outcome is recorded here.
-            Timeout.timeout(0.5) { c.perform(threaded, :unary, id: ids[how], action: "hold", expect: [outcome]) }
+            Timeout.timeout(Soak::TIMER_HEADROOM) do
+              c.perform(threaded, :unary, id: ids[how], action: "hold", expect: [outcome])
+            end
           rescue Timeout::Error => e
             c.ledger.outcome(ids[how], e.class.name, expect: [outcome])
           end
           [how, caller]
         end
         c.ledger.await_entered(ids.values)
-        c.on_threads(-> { c.perform(threaded, :unary, cancellation: shared.token) })
+        c.on_threads(-> { c.perform(threaded, :unary) })
         threads[:raise].raise(Soak::StreamSteps::Interrupted, "interrupted")
         threads[:kill].kill
         threads.each_value { |thread| raise Soak::Failure, "Interrupted caller did not exit" unless thread.join(10) }
@@ -145,7 +157,7 @@ RSpec.shared_examples "soak stream retirement" do |kind|
   it "5 slow peers: non-consuming reader, non-reading TCP client and unread uploads stay bounded (#{kind})" do
     campaign("5-slow-peers/#{kind}",
              workload: "paused flood reader with sibling, raw non-reading h2c client vs close(grace: 0.3), " \
-                       "ignored 4 MB upload with 0.3 s deadline", concurrency: 4,
+                       "ignored 4 MB upload with #{Soak::TIMER_HEADROOM} s deadline", concurrency: 4,
              payload_sizes: [16, Soak::Topology::FLOOD_MESSAGE]) do |c|
       peer = c.peer_thread("#{kind} servers")
       server = c.server(peer, kind: kind, connections: -> { 1 })
@@ -161,10 +173,15 @@ RSpec.shared_examples "soak stream retirement" do |kind|
         paused.wait
 
         upload = c.ledger.next_id("ignored-upload")
-        c.perform(clients, :client_stream, id: upload, action: "ignore", timeout: 0.3,
-                                           expect: ["deadline_exceeded"]) do |writer|
-          20.times { writer.send_message(Soak::Topology.message(Soak::Topology::FLOOD_MESSAGE)) }
+        ignored = c.task.async do
+          c.perform(clients, :client_stream, id: upload, action: "ignore", timeout: Soak::TIMER_HEADROOM,
+                                             expect: ["deadline_exceeded"]) do |writer|
+            20.times { writer.send_message(Soak::Topology.message(Soak::Topology::FLOOD_MESSAGE)) }
+          end
         end
+        c.ledger.await_entered([upload])
+        Soak::StreamSteps.await_ingress(c, server)
+        ignored.wait
         expect(%i[canceled deadline_exceeded]).to include(Soak.poll("ignored upload end") { c.ledger.ended(upload) })
         c.perform(clients, :unary)
 

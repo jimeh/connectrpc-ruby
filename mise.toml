@@ -1024,9 +1024,9 @@ depends = ["falcon:setup"]
 run = "mise exec -- ruby scripts/soak.rb falcon"
 
 [tasks.soak]
-description = "Run both lifecycle campaigns, Async then Falcon (non-gating)"
+description = "Run both lifecycle campaigns, Async then Falcon even if Async fails (non-gating)"
 depends = ["async:setup", "falcon:setup"]
-run = ["mise exec -- ruby scripts/soak.rb async", "mise exec -- ruby scripts/soak.rb falcon"]
+run = "mise exec -- ruby scripts/soak.rb async falcon"
 
 # Release preparation never tags, creates a GitHub release, or publishes gems.
 [tasks."release:check"]

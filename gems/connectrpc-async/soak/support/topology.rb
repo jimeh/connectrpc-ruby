@@ -290,9 +290,9 @@ module Soak
       Topology::Clients.new(created, origin)
     end
 
-    def http1(origin, mode: :tcp, label: "http1", persistent: false, **)
+    def http1(origin, mode: :tcp, label: "http1", persistent: false, reuse: false, **)
       created = ConnectRPC::Async::HTTP1Transport.new(origin: origin, **Topology.client_tls(mode), **)
-      track(:http1, created, label, round: !persistent)
+      track(:http1, created, label, reuse: reuse, round: !persistent)
       cleanup { created.close(grace: 0) } if persistent
       Topology::Clients.new(created, origin)
     end
@@ -304,22 +304,23 @@ module Soak
       created
     end
 
-    # A never-cancelled source shared by non-cancelled calls; its listeners
-    # must all unregister by the end of each round.
-    def shared_source(label = "shared cancellation source")
-      track(:source, ConnectRPC::CancellationSource.new, label)
+    # A per-call source for a call the scenario may cancel. Until cancelled,
+    # its listeners must all unregister by the end of its round.
+    def call_source(label = "per-call cancellation source")
+      track(:source, ConnectRPC::CancellationSource.new, label, round: true)
     end
 
     # Performs one logical call and records its outcome against an allowlist.
-    # A block replaces the default stream body; it receives the reader,
-    # writer or duplex.
+    # A call without its own `cancellation` carries the campaign's shared
+    # token, also when it is expected to fail. A block replaces the default
+    # stream body; it receives the reader, writer or duplex.
     def perform(clients, shape, id: ledger.next_id(shape.to_s), action: nil, size: 16, count: 3, timeout: 30,
                 cancellation: nil, expect: [:ok], metadata: {}, &body)
       headers = ledger.metadata(id, **metadata)
       headers[Topology::OP] = action if action
       headers[Topology::COUNT] = count.to_s
       headers[Topology::SIZE] = size.to_s
-      options = { metadata: headers, timeout: timeout, cancellation: cancellation }
+      options = { metadata: headers, timeout: timeout, cancellation: cancellation || shared_source.token }
       invoke(clients, shape, Topology.message(size), options, body)
       ledger.outcome(id, :ok, expect: expect)
     rescue ConnectRPC::Error => e

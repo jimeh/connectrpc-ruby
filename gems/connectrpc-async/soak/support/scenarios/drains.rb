@@ -1,16 +1,53 @@
 # frozen_string_literal: true
 
+module Soak
+  # Server connection admission demanded above `max_connections`.
+  module ConnectionAdmission
+    MAX_CONNECTIONS = 4
+
+    module_function
+
+    # Holds one call on each of MAX_CONNECTIONS fresh transports, so every
+    # admitted connection stays accounted (also once its age drain starts),
+    # then requires one more transport's call to be refused at admission.
+    def saturate(campaign, server)
+      Soak.poll("earlier server connections to retire before saturation") do
+        server.run { |host| Sampler.session_live(host).empty? }
+      end
+      transports = Array.new(MAX_CONNECTIONS + 1) do |index|
+        campaign.transport(server.origin, label: "round saturating transport #{index}")
+      end
+      ids = Array.new(MAX_CONNECTIONS) { campaign.ledger.next_id("held-connection") }
+      held = ids.each_with_index.map do |id, index|
+        campaign.task.async { campaign.perform(transports[index], :unary, id: id, action: "hold", timeout: nil) }
+      end
+      campaign.ledger.await_entered(ids)
+      refused = campaign.ledger.next_id("refused-connection")
+      campaign.perform(transports.last, :unary, id: refused, expect: ["unavailable"])
+      ids.each { |id| campaign.gates.open(id) }
+      held.each(&:wait)
+      transports.each do |clients|
+        raise Failure, "A saturating transport did not close gracefully" unless clients.transport.close(grace: 2)
+      end
+    end
+  end
+end
+
 # Scenario 2 against an HTTP/2 server kind (:host or :falcon): graceful
 # GOAWAY drains, each synchronized on the client's observed connection events.
 RSpec.shared_examples "soak goaway drains" do |kind|
   def closed_outcomes(events) = events.select { |event| event.type == :connection_closed }.map(&:outcome)
 
   it "2a age drain: keeps every call successful while max_connection_age drains connections under load (#{kind})" do
-    campaign("2a-age-drain/#{kind}", workload: "Transport unary/stream batches across age drains",
-                                     concurrency: 6, payload_sizes: [16, 4_096], max_connection_age: 0.3) do |c|
+    cap = Soak::ConnectionAdmission::MAX_CONNECTIONS
+    campaign("2a-age-drain/#{kind}", workload: "Transport unary/stream batches across age drains, then " \
+                                               "#{cap + 1} held connections against max_connections #{cap}",
+                                     concurrency: 6, payload_sizes: [16, 4_096], max_connection_age: 0.3,
+                                     max_connections: cap) do |c|
       peer = c.peer_thread("#{kind} server")
       keepalive = ConnectRPC::Async::ServerKeepalive.new(max_connection_age: 0.3, max_connection_age_grace: 5)
-      server = c.server(peer, kind: kind, keepalive: keepalive, max_connections: 4, connections: -> { 0 })
+      server = c.server(peer, kind: kind, keepalive: keepalive, max_connections: cap, connections: -> { 0 })
+      admissions = server.run { |host| Soak::Sampler::AdmissionMeter.new(host) }
       events = []
       clients = c.transport(server.origin, label: "persistent transport", persistent: true, connections: 0,
                                            connection_observer: ->(event) { events << event })
@@ -26,19 +63,21 @@ RSpec.shared_examples "soak goaway drains" do |kind|
           end
 
           c.concurrently(*shapes.map { |shape| -> { c.perform(clients, shape, size: shape == :unary ? 4_096 : 16) } })
-          c.peaks.observe("server connections", server.run { |host| Soak::Sampler.session_live(host).size }, cap: 4)
         end
         c.peaks.observe("client sockets", meter.peak, cap: 2)
         expect(closed_outcomes(events).uniq).to eq([:goaway])
+        Soak::ConnectionAdmission.saturate(c, server)
+        c.peaks.observe("server connections", server.run { admissions.peak }, cap: cap)
       end
     end
   end
 
   it "2b idle drain: a persistent client reconnects after each server idle drain (#{kind})" do
+    # The idle timer must not expire between two of the sequential calls.
     campaign("2b-idle-drain/#{kind}", workload: "Transport x7 shapes, then idle drain", concurrency: 1,
-                                      payload_sizes: [16], idle_timeout: 0.3) do |c|
+                                      payload_sizes: [16], idle_timeout: Soak::TIMER_HEADROOM) do |c|
       peer = c.peer_thread("#{kind} server")
-      server = c.server(peer, kind: kind, idle_timeout: 0.3, connections: -> { 0 })
+      server = c.server(peer, kind: kind, idle_timeout: Soak::TIMER_HEADROOM, connections: -> { 0 })
       events = []
       clients = c.transport(server.origin, label: "persistent transport", persistent: true, connections: 0,
                                            connection_observer: ->(event) { events << event })

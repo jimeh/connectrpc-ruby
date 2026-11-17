@@ -61,25 +61,37 @@ module Soak
 
     # Resource creation, observed without changing any library class.
 
-    def resource_classes
-      classes = [INTERNAL::Resource]
-      classes << ConnectRPC::Falcon.const_get(:HTTP1Resource) if defined?(ConnectRPC::Falcon)
-      classes
-    end
+    def falcon_http1 = (ConnectRPC::Falcon.const_get(:HTTP1Resource) if defined?(ConnectRPC::Falcon))
+    def resource_classes = [INTERNAL::Resource, falcon_http1].compact
+
+    # An owned resource has retired only once its own retirement completed.
+    def retired?(resource) = resource.send(:retirement_completed?)
 
     # Falcon's session replaces the H2 resource it accepted with an HTTP/1
-    # resource that owns the same raw socket; the original never retires itself.
-    def retired?(resource)
-      return true if resource.send(:retirement_completed?)
+    # resource that takes over the same raw socket; the original never retires
+    # itself. True when `other` is that replacement.
+    def replacement?(resource, other)
+      http1 = falcon_http1
+      return false unless http1 && resource.is_a?(INTERNAL::Resource) && other.is_a?(http1)
 
-      resource.is_a?(INTERNAL::Resource) && resource.connection.nil? && resource.raw&.closed? &&
-        resource.tasks.all?(&:finished?)
+      resource.connection.nil? && !resource.raw.nil? && other.raw.equal?(resource.raw)
     end
 
-    # An accepted H2 resource whose raw socket a live HTTP/1 replacement owns.
-    def superseded?(resource, owned)
-      resource.is_a?(INTERNAL::Resource) && resource.connection.nil? &&
-        owned.any? { |other| !other.equal?(resource) && other.raw.equal?(resource.raw) }
+    # A superseded H2 resource has retired once the raw socket its replacement
+    # took over is closed and every task it owns finished.
+    def superseded_problems(resource)
+      problems = []
+      problems << "raw socket open" unless resource.raw.closed?
+      running = h2_owned_tasks(resource).count { |task| !task.finished? }
+      problems << "#{running} running tasks" unless running.zero?
+      problems
+    end
+
+    # Every task an H2 resource owns: its owner task, tracked tasks, upkeep,
+    # control writers, cleanup and drain.
+    def h2_owned_tasks(resource)
+      [resource.task, *resource.tasks, *ivar(resource, :@maintenance), *ivar(resource, :@controls),
+       ivar(resource, :@cleanup), ivar(resource, :@drain_task)].compact
     end
 
     # HTTP/2 resources (client and server).
@@ -106,8 +118,7 @@ module Soak
       problems << "#{label} reader running" if connection&.reader_task && !connection.reader_task.finished?
       problems << "#{label} writers registered" if connection && !connection.writers.empty?
       problems << "#{label} output unfinished" if connection&.outputs_pending?
-      tasks = [*resource.tasks, *ivar(resource, :@maintenance), *ivar(resource, :@controls), ivar(resource, :@cleanup),
-               ivar(resource, :@drain_task)].compact
+      tasks = h2_owned_tasks(resource)
       problems << "#{label} has #{tasks.count { |task| !task.finished? }} running tasks" unless tasks.all?(&:finished?)
       problems
     end
@@ -344,6 +355,43 @@ module Soak
     end
 
     def tls_attempt?(server) = !ivar(tls_configuration(server), :@attempt).nil?
+
+    # The most input bytes any live HTTP/2 server stream retains unread.
+    def server_ingress(server)
+      session_live(server).select { |resource| resource.is_a?(INTERNAL::Resource) && resource.connection }
+                          .flat_map { |resource| resource.connection.streams.values }
+                          .map { |stream| stream_retained(stream) }.max || 0
+    end
+
+    # High-water mark of a server session's accounted connections, observed
+    # after every accept, so admission above `max_connections` cannot hide
+    # between samples. Create and read it on the server's peer.
+    class AdmissionMeter
+      attr_reader :peak
+
+      def initialize(server)
+        @server = server
+        @peak = 0
+        meter = self
+        Sampler.session(server).define_singleton_method(:accept) do |raw|
+          super(raw).tap { meter.observe }
+        end
+      end
+
+      def observe
+        @peak = [@peak, Sampler.session_live(@server).size].max
+      end
+    end
+
+    # RST_STREAM codes a client stream receives from now on.
+    def watch_resets(stream)
+      codes = Thread::Queue.new
+      stream.define_singleton_method(:receive_reset_stream) do |frame|
+        codes << frame.unpack
+        super(frame)
+      end
+      codes
+    end
 
     # Cancellation: listeners still registered on a shared source.
     def registrations(source) = ivar(ivar(source, :@signal), :@registrations).size

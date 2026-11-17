@@ -6,9 +6,10 @@ RSpec.shared_examples "soak server keepalive" do |kind|
      "(#{kind})" do
     campaign("9b-server-keepalive/#{kind}", workload: "raw h2c client ignoring PINGs with a held call, sibling " \
                                                       "Transport x7 shapes", concurrency: 2, payload_sizes: [16],
-                                            keepalive: { time: 0.2, timeout: 0.2 }) do |c|
+                                            keepalive: { time: 0.2, timeout: Soak::TIMER_HEADROOM }) do |c|
       peer = c.peer_thread("#{kind} server")
-      keepalive = ConnectRPC::Async::ServerKeepalive.new(time: 0.2, timeout: 0.2)
+      # The ACKing client must keep its connection through a stalled scheduler.
+      keepalive = ConnectRPC::Async::ServerKeepalive.new(time: 0.2, timeout: Soak::TIMER_HEADROOM)
       server = c.server(peer, kind: kind, keepalive: keepalive, connections: -> { 1 })
       clients = c.transport(server.origin, label: "persistent ACKing transport", persistent: true, reuse: true,
                                            connections: 1)

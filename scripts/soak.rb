@@ -5,12 +5,14 @@ require "json"
 require "rbconfig"
 require "time"
 
-# Supervises one package's long-running lifecycle campaign (`async` or
-# `falcon`) as a child process in its own process group. At the run deadline
-# it sends TERM, whose trap in the child records thread backtraces, Async task
-# trees and descriptor targets; after the cleanup budget it kills the group.
-# It then renders the Markdown summary from the campaign's JSON lines, so a
-# hung or killed run still gets one. Extra arguments go to RSpec.
+# Supervises each named package's long-running lifecycle campaign (`async`,
+# `falcon` or both, in order) as a child process in its own process group. At
+# the run deadline it sends TERM, whose trap in the child records thread
+# backtraces, Async task trees and descriptor targets; after the cleanup
+# budget it kills the group. It then renders the Markdown summary from the
+# campaign's JSON lines, so a hung or killed run still gets one. A failed
+# package does not stop the next; the exit status is non-zero if any failed.
+# Arguments after the package names go to RSpec for every package.
 module Soak
   module Supervisor
     ROOT = File.expand_path("..", __dir__)
@@ -26,18 +28,31 @@ module Soak
     def monotonic = Process.clock_gettime(Process::CLOCK_MONOTONIC)
     def setting(name, default) = Float(ENV.fetch("CONNECTRPC_SOAK_#{name}", default))
 
-    def main(package = nil, *arguments)
-      abort "Usage: ruby scripts/soak.rb #{PACKAGES.join('|')} [rspec arguments]" unless PACKAGES.include?(package)
+    def main(*arguments)
+      packages = arguments.take_while { |argument| PACKAGES.include?(argument) }
+      if packages.empty? || packages.uniq.size != packages.size
+        abort "Usage: ruby scripts/soak.rb #{PACKAGES.join('|')}... [rspec arguments]"
+      end
 
-      directory = prepare(package)
       settings = self.settings
-      outcome = supervise(package, directory, settings, arguments)
-      record(directory, type: "supervisor", package: package, **settings, **outcome.fields)
-      puts "Lifecycle campaign #{outcome.status}; report #{Summary.new(directory).write}"
-      exit(outcome.status == "passed" ? 0 : 1)
+      statuses = packages.to_h do |package|
+        [package, run(package, settings, arguments.drop(packages.size))]
+      end
+      puts "Lifecycle campaigns: #{statuses.map { |package, status| "#{package} #{status}" }.join(', ')}" \
+        if packages.size > 1
+      exit(statuses.values.all?("passed") ? 0 : 1)
     end
 
-    # The run deadline and cleanup budget in seconds, and the seed every child uses.
+    def run(package, settings, arguments)
+      directory = prepare(package)
+      outcome = supervise(package, directory, settings, arguments)
+      record(directory, type: "supervisor", package: package, **settings, **outcome.fields)
+      puts "Lifecycle campaign #{package} #{outcome.status}; report #{Summary.new(directory).write}"
+      outcome.status
+    end
+
+    # The run deadline and cleanup budget in seconds, and the seed every child
+    # uses. Each package gets its own run deadline.
     def settings
       seed = Integer(ENV.fetch("CONNECTRPC_SOAK_SEED") { Random.new_seed % (2**31) })
       { deadline: setting("DEADLINE", 900), cleanup: setting("CLEANUP", 60), seed: seed }

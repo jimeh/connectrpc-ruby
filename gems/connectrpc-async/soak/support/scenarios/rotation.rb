@@ -71,7 +71,8 @@ RSpec.shared_examples "soak tls rotation" do |kind|
                                              outlives_round: true)
         id = c.ledger.next_id("identity")
         seen = current.core.call(Soak::Topology::ECHO::ECHO, Soak::Topology.message(1),
-                                 metadata: c.ledger.metadata(id, Soak::Topology::OP => "identity"))
+                                 metadata: c.ledger.metadata(id, Soak::Topology::OP => "identity"),
+                                 cancellation: c.shared_source.token)
         c.ledger.outcome(id, :ok)
         expect(seen.message.name).to eq(client_serial.to_s)
         leaf = Soak::Sampler.client_peer_serial(Soak::Sampler.live_resources(current.transport).first)

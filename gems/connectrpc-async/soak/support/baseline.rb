@@ -10,6 +10,10 @@ module Soak
 
   SETTLE_SECONDS = 15
   GLOBAL_SECONDS = 5
+  # Seconds a timer leaves when a scenario's success path must beat it (a
+  # peer answering PINGs, a handler entered before its deadline), so that a
+  # stalled scheduler does not read as the failure under test.
+  TIMER_HEADROOM = 2
 
   class << self
     def rounds = Integer(ENV.fetch("CONNECTRPC_SOAK_ROUNDS", "5"))
@@ -90,6 +94,7 @@ module Soak
     def initialize
       @lock = Mutex.new
       @created = []
+      @replacements = {}.compare_by_identity
       created = @created
       lock = @lock
       @traces = Sampler.resource_classes.map do |klass|
@@ -102,14 +107,44 @@ module Soak
     def size = @lock.synchronize { @created.size }
 
     # Unretired resources outside every live owner's accounted set. Retired
-    # resources are dropped once observed.
+    # resources are dropped once observed. A superseded H2 resource counts as
+    # owned while its replacement is, and as retired only per
+    # Sampler.superseded_problems.
     def problems(owned)
       unretired = @lock.synchronize do
-        @created.reject! { |resource| Sampler.retired?(resource) }
+        pair_replacements
+        @created.reject! { |resource| retired?(resource).tap { |retired| @replacements.delete(resource) if retired } }
         @created.dup
       end
-      stray = unretired.reject { |resource| owned.include?(resource) || Sampler.superseded?(resource, owned) }
-      stray.map { |resource| "unretired #{resource.class} #{resource.object_id} owned by no live client or server" }
+      stray = unretired.reject { |resource| owned.include?(resource) || owned.include?(@replacements[resource]) }
+      stray.map do |resource|
+        problem = "unretired #{resource.class} #{resource.object_id} owned by no live client or server"
+        replacement = @replacements[resource]
+        next problem unless replacement
+
+        "#{problem} (superseded by #{replacement.class} #{replacement.object_id}; " \
+          "#{Sampler.superseded_problems(resource).join(', ')})"
+      end
+    end
+
+    private
+
+    # Records each accepted H2 resource's HTTP/1 replacement while both are
+    # still registered: the replacement stays registered until a poll sees it
+    # retired, and this runs before that poll prunes it.
+    def pair_replacements
+      @created.each do |resource|
+        next if @replacements.key?(resource)
+
+        replacement = @created.find { |other| Sampler.replacement?(resource, other) }
+        @replacements[resource] = replacement if replacement
+      end
+    end
+
+    def retired?(resource)
+      return true if Sampler.retired?(resource)
+
+      @replacements.key?(resource) && Sampler.superseded_problems(resource).empty?
     end
   end
 
@@ -141,8 +176,9 @@ module Soak
 
     def entries(kind) = @entries.select { |entry| entry.kind == kind }
 
-    # Problems of every entry. A closed entry with none has retired and is
-    # dropped. At the end of a round, round-scoped entries must be closed.
+    # Problems of every entry, then of every registered resource. A closed
+    # entry with none has retired and is dropped. At the end of a round,
+    # round-scoped entries must be closed.
     def problems(registry, round_end: false)
       owned = []
       problems = []
@@ -154,15 +190,17 @@ module Soak
         problems.concat(list)
         @entries.delete(entry) if list.empty? && closed?(entry)
       end
-      problems.concat(registry.problems(owned)) if problems.empty?
-      problems
+      problems.concat(registry.problems(owned))
     end
 
+    # A round-scoped cancellation source has nothing to close: it retires once
+    # its registrations are empty. The campaign's shared source never retires.
     def closed?(entry)
       case entry.kind
       when :transport, :http1, :threaded then Sampler.ivar(entry.object, :@state) == :closed
       when :server, :io, :relay then entry.object.closed?
       when :thread then !entry.object.alive?
+      when :source then entry.options[:round] == true
       else false
       end
     end
@@ -181,7 +219,7 @@ module Soak
       case entry.kind
       when :transport then check_transport(entry)
       when :threaded then check_threaded(entry)
-      when :http1 then [Sampler.http1_problems(object, label), []]
+      when :http1 then check_http1(entry)
       when :server then object.problems(label, connections: entry.options[:connections]&.call)
       when :relay then [object.problems(label), []]
       when :source
@@ -214,6 +252,13 @@ module Soak
       [problems, live]
     end
 
+    def check_http1(entry)
+      transport = entry.object
+      problems = Sampler.http1_problems(transport, entry.label)
+      problems.concat(reuse_problems(entry, Sampler.http1_idle_identity(transport))) if problems.empty?
+      [problems, []]
+    end
+
     # A reused persistent client keeps the identical connection across rounds.
     def reuse_problems(entry, identity)
       return [] unless entry.options[:reuse] && !closed?(entry)
@@ -230,7 +275,10 @@ module Soak
   class Campaign # rubocop:disable Metrics/ClassLength -- one scenario's whole measured lifecycle
     WARMUPS = 3
 
-    attr_reader :name, :task, :ledger, :gates, :random, :tracker, :peaks, :info, :round_phase
+    # `shared_source` is a never-cancelled source that every call without its
+    # own cancellation carries; its listeners must all unregister by the end
+    # of each round.
+    attr_reader :name, :task, :ledger, :gates, :random, :tracker, :peaks, :info, :round_phase, :shared_source
 
     # `settle` and `global` bound the polls for owned objects and for global
     # counts; the harness controls shorten them.
@@ -244,6 +292,7 @@ module Soak
       @gates = Gates.new
       @random = Random.new(Soak.seed ^ Zlib.crc32(name))
       @tracker = Tracker.new
+      @shared_source = track(:source, ConnectRPC::CancellationSource.new, "shared cancellation source")
       @peaks = Peaks.new
       @registry = ResourceRegistry.new
       @cleanups = { close: [], stop: [] }
@@ -304,8 +353,11 @@ module Soak
         peer_tasks: peer_tasks, owner_tasks: @tracker.owner_tasks }
     end
 
-    def settle!(message = "owned objects of #{name}", round_end: false)
-      Soak.settle(message, timeout: @settle_seconds) { @tracker.problems(@registry, round_end: round_end) }
+    # `timeout` overrides the campaign's settle bound, so a harness control can
+    # let legitimate cleanup settle under the normal bound before it plants a
+    # leak that its short bound then reports.
+    def settle!(message = "owned objects of #{name}", round_end: false, timeout: @settle_seconds)
+      Soak.settle(message, timeout: timeout) { @tracker.problems(@registry, round_end: round_end) }
     end
 
     private
@@ -374,14 +426,14 @@ module Soak
 
     # Closes everything, checks that every owned object retired, force-closes
     # whatever a failed round left open (so the reactor can exit), then stops
-    # peers.
+    # peers. Every step runs whatever an earlier one raised; the first error
+    # wins.
     def teardown
-      failure = nil
-      @cleanups[:close].reverse_each { |block| failure ||= attempt(&block) }
-      failure ||= attempt { settle!("retirement of every owned object of #{name}", round_end: true) }
+      errors = @cleanups[:close].reverse.map { |block| attempt(&block) }
+      errors << attempt { settle!("retirement of every owned object of #{name}", round_end: true) }
       @tracker.leftovers.each { |object| attempt { Tracker.force_close(object) } }
-      @cleanups[:stop].reverse_each { |block| failure ||= attempt(&block) }
-      failure
+      errors.concat(@cleanups[:stop].reverse.map { |block| attempt(&block) })
+      errors.compact.first
     end
 
     def attempt
