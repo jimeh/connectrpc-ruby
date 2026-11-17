@@ -172,6 +172,39 @@ RSpec.describe "Lifecycle campaign harness" do
     end.to raise_error(Soak::Failure, /client stream retained bytes peaked at \d+, above its cap 16384/)
   end
 
+  it "detects ingress growth past a full window after the stream saturated" do
+    expect do
+      control("ingress overshoot") do |c|
+        server = c.server(c.peer_thread("host"))
+        c.ingress_meter
+        c.run do
+          clients = c.transport(server.origin, label: "round transport")
+          source = c.call_source("flood source")
+          resume = Async::Promise.new
+          call = c.task.async do
+            c.perform(clients, :server_stream, action: "flood", count: 20, cancellation: source.token,
+                                               expect: ["canceled"]) do |reader|
+              reader.receive
+              resume.wait
+              reader.each { nil }
+            end
+          end
+          stream = Soak.poll("a saturated flood stream") do
+            candidate = Soak::Sampler.client_streams(clients.transport).first
+            candidate if candidate && Soak::Sampler.stream_window(candidate).last.zero?
+          end
+          # The one way a queue grows, one byte past a full window.
+          stream.instance_variable_get(:@input).instance_variable_get(:@queue).push("x") if measured?(c)
+          c.peaks.observe("ingress retained bytes per stream", c.ingress_meter.peak, cap: 65_536)
+          source.cancel
+          resume.resolve(true)
+          call.wait
+          clients.transport.close(grace: 1)
+        end
+      end
+    end.to raise_error(Soak::Failure, /ingress retained bytes per stream peaked at 65537, above its cap 65536/)
+  end
+
   it "detects a reused persistent connection replaced by another" do
     expect do
       control("reuse identity", settle: short) do |c|

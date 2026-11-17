@@ -47,7 +47,7 @@ RSpec.describe "Falcon HTTP/1.1 lifecycle campaign" do
                                           concurrency: 2, payload_sizes: [16, Soak::Topology::FLOOD_MESSAGE]) do |c|
       peer = c.peer_thread("falcon servers")
       server = c.server(peer, kind: :falcon, connections: -> { 1 })
-      clients = c.http1(server.origin, label: "persistent http1", persistent: true)
+      clients = c.http1(server.origin, label: "persistent http1", persistent: true, reuse: true)
       c.run do
         c.perform(clients, :unary)
         withheld = c.ledger.next_id("withheld-upload")

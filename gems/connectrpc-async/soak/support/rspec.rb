@@ -21,6 +21,8 @@ module Soak
         config.include KeepaliveClient
         config.include Example
         config.disable_monkey_patching!
+        # A filter that matches nothing must not report a passing campaign.
+        config.fail_if_no_examples = true
         config.order = :random
         config.seed = Soak.seed
         # A regular expression matched against example descriptions.

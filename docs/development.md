@@ -813,7 +813,7 @@ live slots are reported, never asserted.
 | Variable | Default | Meaning |
 | --- | --- | --- |
 | `CONNECTRPC_SOAK_ROUNDS` | 5 | Measured rounds per scenario |
-| `CONNECTRPC_SOAK_DEADLINE` | 900 | Run deadline in seconds |
+| `CONNECTRPC_SOAK_DEADLINE` | 900 | Run deadline in seconds; raise it for runs well above the default rounds (CI uses 2,700 for 50) |
 | `CONNECTRPC_SOAK_CLEANUP` | 60 | Seconds after the deadline before the process group is killed |
 | `CONNECTRPC_SOAK_SEED` | random | Seed for scenario choices and RSpec order; always recorded |
 | `CONNECTRPC_SOAK_ONLY` | none | Ruby regular expression matched against example descriptions |
@@ -836,7 +836,8 @@ later pass.
 thread, Async task, cancellation registration, unretired resource (also one
 that only looks superseded), open round-scoped client, replaced reused
 connection, duplicate handler execution, transient socket-cap overshoot,
-over-cap retained stream bytes and a leak in every warmup in small real
+over-cap retained stream bytes, ingress growth after a saturated window and a
+leak in every warmup in small real
 campaigns, and requires each to fail at its intended check. Only the poll that
 detects a planted leak is shortened. Another control requires teardown to run
 every cleanup after a failing one and report the first error.

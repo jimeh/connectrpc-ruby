@@ -46,7 +46,8 @@ RSpec.describe "Async lifecycle campaign: keepalive" do
       peer = c.peer_thread("host")
       server = c.server(peer, keepalive: ConnectRPC::Async::ServerKeepalive.new(min_time: 1),
                               connections: -> { 0 })
-      keepalive = ConnectRPC::Async::Keepalive.new(time: 0.1, timeout: 1, permit_without_calls: true)
+      keepalive = ConnectRPC::Async::Keepalive.new(time: 0.1, timeout: Soak::TIMER_HEADROOM,
+                                                   permit_without_calls: true)
       c.run do
         events = []
         clients = c.transport(server.origin, label: "round eager transport",

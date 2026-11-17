@@ -42,30 +42,37 @@ module Soak
       [call, resume]
     end
 
-    def await_saturation(campaign, transport)
+    # Waits until the transport's only stream holds a full receive window and
+    # no credit. The peak itself comes from the campaign's ingress meter.
+    def await_saturation(transport)
       last = nil
-      begin
-        Soak.poll("a saturated flood stream") do
-          stream = Sampler.client_streams(transport).first
-          last = stream && { retained: Sampler.stream_retained(stream), credit: Sampler.stream_window(stream).last }
-          last && last[:retained] == WINDOW && last[:credit].zero?
-        end
-      rescue Failure
-        raise Failure, "Flood stream never reached a full window with no receive credit; last state: #{last.inspect}"
+      Soak.poll("a saturated flood stream") do
+        stream = Sampler.client_streams(transport).first
+        last = stream && { retained: Sampler.stream_retained(stream), credit: Sampler.stream_window(stream).last }
+        last && last[:retained] == WINDOW && last[:credit].zero?
       end
-      campaign.peaks.observe("client stream retained bytes", last[:retained], cap: WINDOW)
+    rescue Failure
+      raise Failure, "Flood stream never reached a full window with no receive credit; last state: #{last.inspect}"
     end
 
     # Waits, within the held call's deadline, until a server stream retains a
-    # full receive window of unread input, then records the ingress peak.
-    def await_ingress(campaign, server)
-      retained = Soak.poll("a full server ingress window", timeout: TIMER_HEADROOM) do
-        bytes = server.run { |host| Sampler.server_ingress(host) }
-        bytes == WINDOW ? bytes : nil
+    # full receive window of unread input and has no receive credit left.
+    def await_ingress(server)
+      last = nil
+      Soak.poll("a saturated server ingress stream", timeout: TIMER_HEADROOM) do
+        last = server.run { |host| Sampler.server_ingress(host) }
+        last && last[:retained] == WINDOW && last[:credit].zero?
       end
-      campaign.peaks.observe("server ingress retained bytes", retained, cap: WINDOW)
-    rescue Failure => e
-      raise Failure, "#{e.message}; the server stream never retained a full window"
+    rescue Failure
+      raise Failure, "The server stream never retained a full window with no receive credit; last state: " \
+                     "#{last.inspect}"
+    end
+
+    # Records the high-water mark of every ingress queue, taken after every
+    # push since the campaign began, so growth after saturation also counts.
+    # Call it once a held stream has ended.
+    def record_ingress(campaign)
+      campaign.peaks.observe("ingress retained bytes per stream", campaign.ingress_meter.peak, cap: WINDOW)
     end
   end
 end
@@ -83,6 +90,7 @@ RSpec.shared_examples "soak stream retirement" do |kind|
                                            connections: 1)
       threaded = c.threaded(server.origin, label: "persistent threaded", persistent: true, reuse: true)
       bodies = Soak::StreamSteps.watch_outputs(self)
+      c.ingress_meter
       c.run do
         c.perform(clients, :unary)
         endings = { token: ["canceled"], deadline: ["deadline_exceeded"], complete: [:ok] }
@@ -116,11 +124,12 @@ RSpec.shared_examples "soak stream retirement" do |kind|
         protocol = %i[connect grpc].sample(random: c.random)
         flood, resume = Soak::StreamSteps.flood(c, clients, id: flood_id, protocol: protocol,
                                                             cancellation: flood_source.token, expect: ["canceled"])
-        Soak::StreamSteps.await_saturation(c, clients.transport)
+        Soak::StreamSteps.await_saturation(clients.transport)
         c.perform(clients, :unary)
         flood_source.cancel
         resume.resolve(true)
         flood.wait
+        Soak::StreamSteps.record_ingress(c)
         expect(Soak.poll("server-side end of the flood") { c.ledger.ended(flood_id) }).to eq(:canceled)
         c.peaks.observe("output queued bytes", Soak::StreamSteps.output_peak(bodies), cap: Soak::StreamSteps::OUTPUT_CAP)
 
@@ -163,14 +172,16 @@ RSpec.shared_examples "soak stream retirement" do |kind|
       server = c.server(peer, kind: kind, connections: -> { 1 })
       clients = c.transport(server.origin, label: "persistent transport", persistent: true, reuse: true,
                                            connections: 1)
+      c.ingress_meter
       c.run do
         id = c.ledger.next_id("paused")
         paused, resume = Soak::StreamSteps.flood(c, clients, id: id, protocol: :connect, cancellation: nil,
                                                              expect: [:ok])
-        Soak::StreamSteps.await_saturation(c, clients.transport)
+        Soak::StreamSteps.await_saturation(clients.transport)
         Soak::Builders::H2_SHAPES.each { |shape| c.perform(clients, shape) }
         resume.resolve(true)
         paused.wait
+        Soak::StreamSteps.record_ingress(c)
 
         upload = c.ledger.next_id("ignored-upload")
         ignored = c.task.async do
@@ -180,8 +191,9 @@ RSpec.shared_examples "soak stream retirement" do |kind|
           end
         end
         c.ledger.await_entered([upload])
-        Soak::StreamSteps.await_ingress(c, server)
+        Soak::StreamSteps.await_ingress(server)
         ignored.wait
+        Soak::StreamSteps.record_ingress(c)
         expect(%i[canceled deadline_exceeded]).to include(Soak.poll("ignored upload end") { c.ledger.ended(upload) })
         c.perform(clients, :unary)
 

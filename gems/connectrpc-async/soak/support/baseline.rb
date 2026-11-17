@@ -315,6 +315,11 @@ module Soak
 
     def track(kind, object, label, **) = @tracker.add(kind, object, label, **)
 
+    # One ingress high-water meter per campaign, stopped with the peers.
+    def ingress_meter
+      @ingress_meter ||= Sampler::IngressMeter.new.tap { |meter| cleanup(:stop) { meter.stop } }
+    end
+
     # Runs the scenario body (setup, then #run), and always tears down and
     # reports, re-raising the first failure.
     def conduct

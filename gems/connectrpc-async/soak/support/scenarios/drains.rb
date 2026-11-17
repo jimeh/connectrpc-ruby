@@ -24,6 +24,8 @@ module Soak
       campaign.ledger.await_entered(ids)
       refused = campaign.ledger.next_id("refused-connection")
       campaign.perform(transports.last, :unary, id: refused, expect: ["unavailable"])
+      raise Failure, "The refused connection's call reached a handler" unless campaign.ledger.entries(refused).zero?
+
       ids.each { |id| campaign.gates.open(id) }
       held.each(&:wait)
       transports.each do |clients|

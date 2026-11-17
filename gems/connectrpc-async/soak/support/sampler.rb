@@ -357,10 +357,37 @@ module Soak
     def tls_attempt?(server) = !ivar(tls_configuration(server), :@attempt).nil?
 
     # The most input bytes any live HTTP/2 server stream retains unread.
+    # The live server stream retaining the most unread input, with its
+    # remaining receive credit, or nil when no stream exists.
     def server_ingress(server)
       session_live(server).select { |resource| resource.is_a?(INTERNAL::Resource) && resource.connection }
                           .flat_map { |resource| resource.connection.streams.values }
-                          .map { |stream| stream_retained(stream) }.max || 0
+                          .map { |stream| { retained: stream_retained(stream), credit: stream_window(stream).last } }
+                          .max_by { |state| state[:retained] }
+    end
+
+    # High-water mark of the payload bytes any one HTTP/2 ingress queue
+    # (client response or server request input) retains, observed after every
+    # push, which is the only way a queue grows. Covers every thread.
+    class IngressMeter
+      def initialize
+        @lock = Mutex.new
+        @peak = 0
+        lock = @lock
+        meter = self
+        @trace = TracePoint.new(:return) do |event|
+          bytes = event.self.instance_variable_get(:@chunks).sum(&:bytesize)
+          lock.synchronize { meter.raise_peak(bytes) }
+        end
+        @trace.enable(target: INTERNAL::IngressQueue.instance_method(:push))
+      end
+
+      def peak = @lock.synchronize { @peak }
+      def stop = @trace.disable
+
+      def raise_peak(bytes)
+        @peak = bytes if bytes > @peak
+      end
     end
 
     # High-water mark of a server session's accounted connections, observed
