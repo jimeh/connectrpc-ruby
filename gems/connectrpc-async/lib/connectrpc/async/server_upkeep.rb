@@ -123,15 +123,17 @@ module ConnectRPC
         end
       end
 
-      # Server-side upkeep of one HTTP/2 connection: answering and policing
-      # client PINGs, server keepalive PINGs, and the graceful idle and age
-      # drains. Every timer uses the session's clock.
+      # Server-side upkeep of one HTTP/2 connection: its control frames and
+      # stream refusals, answering and policing client PINGs, server keepalive
+      # PINGs, and the graceful idle, age and close drains. Every timer uses
+      # the session's clock.
       #
       # A drain mirrors grpc-go: a heads-up GOAWAY(2^31-1) and a drain PING,
       # then, on that PING's ACK or after 5 seconds, a cutoff GOAWAY naming the
       # highest stream seen. Streams opened after the cutoff are refused with
       # REFUSED_STREAM; earlier ones dispatch normally. When the accepted work
       # finishes, the connection half-closes and discards input until EOF.
+      # Session close and TLS retirement take over once the cutoff is written.
       class ServerUpkeep
         DRAIN_PING = [1, 6, 1, 8, 0, 3, 3, 9].pack("C*").freeze
         MAX_STREAM_ID = 0x7fff_ffff
@@ -157,6 +159,9 @@ module ConnectRPC
           end
           @idle_since = clock.now
           @cutoff = nil
+          # Resolves true once a cutoff GOAWAY is written, by a drain or a
+          # too_many_pings decision, or false if neither can write one.
+          @cutoff_written = ::Async::Promise.new
           @drain = nil
           @acknowledged = nil
           @violated = false
@@ -198,27 +203,39 @@ module ConnectRPC
 
         def refuse?(stream_id) = !@cutoff.nil? && stream_id > @cutoff
 
-        # The stream already decoded its header block; only its reset is sent.
-        def refuse(stream)
-          frame = ::Protocol::HTTP2::ResetStreamFrame.new(stream.id)
-          frame.pack(::Protocol::HTTP2::Error::REFUSED_STREAM)
-          @writer.write(frame)
-          stream.close!(::Protocol::HTTP2::Error::REFUSED_STREAM)
+        # The reader already decoded the refused stream's header block, and
+        # created no stream for it; only its reset is sent.
+        def refuse(stream_id) = write_reset(stream_id, ::Protocol::HTTP2::Error::REFUSED_STREAM)
+
+        # Resets an open stream without yielding: the stream closes at once
+        # and its reset is queued. The promise resolves once it is written.
+        def reset(stream, code)
+          written = write_reset(stream.id, code)
+          stream.close!(code)
+          written
         end
 
+        # Starts a drain unless one is running or the connection is already
+        # ending. Returns the cutoff promise; a drain that cannot start leaves
+        # it to a running drain or too_many_pings decision, or resolves false.
         def drain(reason)
-          return if @drain || @violated || @resource.finished? || @resource.finishing?
-
-          @drain = maintain { run_drain(reason) }
+          unless @drain || @violated
+            if @resource.finished? || @resource.finishing?
+              @cutoff_written.resolve(false)
+            else
+              @drain = maintain { run_drain(reason) }
+            end
+          end
+          @cutoff_written
         end
 
         private
 
         def upkeep? = !@resource.finished? && !@resource.finishing? && !@resource.draining
 
-        def maintain(&block)
+        def maintain(supervisor: false, &block)
           task = ::Async::Task.new(@parent, finished: false) { |current| block.call(current) }
-          @resource.maintain(task)
+          @resource.maintain(task, supervisor: supervisor)
           task.run
           task
         end
@@ -270,27 +287,34 @@ module ConnectRPC
           acknowledged.wait
           Internal.cancel(timer)
           @cutoff ||= @resource.connection.remote_stream_id
-          return unless @writer.write(goaway(@cutoff, ::Protocol::HTTP2::Error::NO_ERROR, reason)).wait
+          written = @writer.write(goaway(@cutoff, ::Protocol::HTTP2::Error::NO_ERROR, reason)).wait
+          @cutoff_written.resolve(written)
+          return unless written
 
           @resource.progress.wait until @resource.empty?
           @resource.quiesce(@parent, clock: @clock, within: EOF_SECONDS)
         ensure
           Internal.cancel(timer)
+          @cutoff_written.resolve(false)
         end
 
         # Like grpc-go, the GOAWAY ends the connection even while streams run.
         # It must be written within the cleanup allowance of this decision.
+        # Its supervisor keeps that bound and the EOF bound below even when a
+        # session drain takes over and stops ordinary upkeep.
         def violate
           @violated = true
           @cutoff ||= @resource.connection.remote_stream_id
           written = @writer.write(goaway(@cutoff, ::Protocol::HTTP2::Error::ENHANCE_YOUR_CALM, "too_many_pings"))
-          maintain do |task|
+          maintain(supervisor: true) do |task|
             timer = ::Async::Task.new(task, finished: false) do
               @clock.sleep(CLEANUP_SECONDS)
               @resource.abort(IOError.new("HTTP/2 too_many_pings GOAWAY was not written"))
             end
             timer.run
-            next unless written.wait
+            sent = written.wait
+            @cutoff_written.resolve(sent)
+            next unless sent
 
             Internal.cancel(timer)
             next if @resource.quiesce(@parent, clock: @clock, within: EOF_SECONDS)
@@ -301,7 +325,14 @@ module ConnectRPC
             @resource.abort(IOError.new("HTTP/2 connection ended after too_many_pings"))
           ensure
             Internal.cancel(timer)
+            @cutoff_written.resolve(false)
           end
+        end
+
+        def write_reset(stream_id, code)
+          frame = ::Protocol::HTTP2::ResetStreamFrame.new(stream_id)
+          frame.pack(code)
+          @writer.write(frame)
         end
 
         def goaway(last_stream_id, code, debug)

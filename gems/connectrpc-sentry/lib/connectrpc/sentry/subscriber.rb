@@ -270,6 +270,10 @@ module ConnectRPC
             span.set_status("unknown_error")
           elsif code.nil? && completion.http_status
             span.set_http_status(completion.http_status)
+          elsif code.nil? && completion.decision == :admission_rejected
+            # An HTTP/2 admission refusal is a REFUSED_STREAM reset with no
+            # HTTP status; clients see it as unavailable.
+            span.set_status("unavailable")
           elsif span.status.nil?
             span.set_status("unknown_error") unless completion.decision == :processed
           end

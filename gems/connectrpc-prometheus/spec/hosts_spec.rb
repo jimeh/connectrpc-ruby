@@ -49,7 +49,11 @@ RSpec.describe "Host completion classification" do
       host = ConnectRPC::Async::Host.new(server: target, max_requests: 1).start
       origin = "http://127.0.0.1:#{host.port}"
       transport = ConnectRPC::Async::Transport.new(origin: origin)
-      second_transport = ConnectRPC::Async::Transport.new(origin: origin)
+      # The host refuses the stream with REFUSED_STREAM; without the default
+      # resend, one refused stream is one admission rejection.
+      second_transport = ConnectRPC::Async::Transport.new(
+        origin: origin, connection_policy: ConnectRPC::Async::ConnectionPolicy.new(retry_refused: false)
+      )
       second = client(second_transport, origin)
       second.echo(AsyncHelpers::MESSAGE.new(name: "warmup"))
       active = task.async { client(transport, origin).echo(AsyncHelpers::MESSAGE.new(name: "admitted"), timeout: nil) }

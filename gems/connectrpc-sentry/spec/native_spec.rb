@@ -114,7 +114,12 @@ RSpec.describe "Native Async and Falcon hosts" do
       end
       native(echo_server(instrumentation: instrumentation, echo: handler), max_requests: 1) do |_host, origin|
         typed, transport = typed_client(origin, nil)
-        other, other_transport = typed_client(origin, nil)
+        # The host refuses the stream with REFUSED_STREAM; without the default
+        # resend, one refused stream is one admission rejection.
+        other_transport = ConnectRPC::Async::Transport.new(
+          origin: origin, connection_policy: ConnectRPC::Async::ConnectionPolicy.new(retry_refused: false)
+        )
+        other = client(other_transport, origin)
         other.echo(MESSAGE.new(name: "warmup"))
         wait_until(task, "warmup transaction") { rpc_transactions.size == 1 }
         active = task.async { typed.echo(MESSAGE.new(name: "admitted"), timeout: nil) }
@@ -125,8 +130,9 @@ RSpec.describe "Native Async and Falcon hosts" do
         rejected = rpc_transactions.last
         expect(trace_of(rejected)).to include(status: "unavailable")
         expect(trace_of(rejected)[:data]).to include("connectrpc.processing.state" => "not_started",
-                                                     "connectrpc.decision" => "admission_rejected",
-                                                     "http.response.status_code" => 503)
+                                                     "connectrpc.decision" => "admission_rejected")
+        # A refusal is a stream reset, not an HTTP response.
+        expect(trace_of(rejected)[:data]).not_to have_key("http.response.status_code")
         expect(trace_of(rejected)[:data]).not_to have_key("rpc.response.status_code")
         expect(rejected.tags).to be_empty
         release.enqueue(true)

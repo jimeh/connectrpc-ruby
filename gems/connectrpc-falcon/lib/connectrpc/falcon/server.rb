@@ -7,7 +7,8 @@ module ConnectRPC
                      utilization_registry: nil, max_connections: 128, max_requests: 128,
                      handshake_timeout: 10, idle_timeout: 60, refresh_interval: 60,
                      refresh_jitter: 0.1, refresh_timeout: 10, on_tls_error: nil,
-                     keepalive: ::ConnectRPC::Async::ServerKeepalive.new)
+                     keepalive: ::ConnectRPC::Async::ServerKeepalive.new, max_concurrent_streams: 100,
+                     request_body_timeout: 60)
         raise ArgumentError, "cache must be true or false" unless [true, false].include?(cache)
 
         configured = if endpoint.is_a?(::IO::Endpoint::BoundEndpoint)
@@ -20,7 +21,7 @@ module ConnectRPC
         end
 
         fallback = ::Falcon::Server.rack_middleware(RackGuard.new(rack_app), cache: cache) unless rack_app.nil?
-        application = ::ConnectRPC::Async::Application.new(server: server, fallback: fallback)
+        application = @native_application = ::ConnectRPC::Async::Application.new(server: server, fallback: fallback)
         listener_application = ListenerApplication.new(application, configured.scheme)
         @listener_application = listener_application
         utilization_registry ||= ::Async::Utilization::Registry.new
@@ -37,7 +38,8 @@ module ConnectRPC
           refresh_timeout: refresh_timeout, on_tls_error: on_tls_error,
           alpn_protocols: %w[h2 http/1.1], http1: HTTP1Resource.method(:new),
           stop_accepting: method(:stop_accepting), on_request_rejected: -> { @request_total.increment },
-          keepalive: keepalive
+          keepalive: keepalive, max_concurrent_streams: max_concurrent_streams,
+          request_body_timeout: request_body_timeout
         )
         # Preserve parent-bound descriptors while installing a worker-local
         # accept wrapper through IO::Endpoint's supported wrapper option.
@@ -70,7 +72,8 @@ module ConnectRPC
 
       def publication?(request) = @listener_application.send(:publication?, request)
       def http1_streaming_route?(request) = @listener_application.send(:http1_streaming_route?, request)
-      private :publication?, :http1_streaming_route?
+      def input_stream_route?(request) = @native_application.send(:input_stream_route?, request)
+      private :publication?, :http1_streaming_route?, :input_stream_route?
       def admission_response(request) = @listener_application.admission_response(request)
 
       def call_with_publication(request, publication:, lifecycle: nil, resource: nil)

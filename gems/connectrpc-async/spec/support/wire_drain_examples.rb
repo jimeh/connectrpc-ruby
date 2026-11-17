@@ -1,7 +1,7 @@
 # frozen_string_literal: true
 
 RSpec.shared_examples "HTTP/2 wire drain ownership" do
-  it "waits after handler return for the last DATA frame, while later old streams get 503" do
+  it "waits after handler return for the last DATA frame, while later old streams are still served" do
     reactor do |task|
       handler_done = Async::Queue.new
       host = wire_host(server: server(echo: lambda { |message, _|
@@ -26,13 +26,15 @@ RSpec.shared_examples "HTTP/2 wire drain ownership" do
         drain = task.async { host.drain_tls(grace: 1) }
         wait_until(task, "draining after handler") { record.draining }
         expect(drain).not_to be_finished
-        denied = task.async do
+        # The heads-up GOAWAY waits behind the held frame, so this stream
+        # opens before the cutoff and is dispatched, not refused with 503.
+        later = task.async do
           transport.call(request("#{origin}#{AsyncHelpers::ECHO::ECHO.path}",
                                  headers: { "content-type" => ["application/proto"] }))
         end
         gate.release.enqueue(true)
         expect(response.wait.message).to eq(message)
-        expect(denied.wait.status).to eq(503)
+        expect(later.wait.status).to eq(200)
         expect(drain.wait).to be(true)
         expect(record.raw).to be_closed
       ensure

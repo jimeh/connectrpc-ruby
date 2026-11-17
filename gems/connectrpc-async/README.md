@@ -86,16 +86,18 @@ reactor, authorization and lifecycle.
 ## Host
 
 `Host.new(server:, host: "127.0.0.1", port: 0, tls: nil, tls_provider: nil,
-max_connections: 128, max_requests: 128, handshake_timeout: 10,
-idle_timeout: 60, refresh_interval: 60, refresh_jitter: 0.1,
-refresh_timeout: 10, on_tls_error: nil, keepalive: ServerKeepalive.new,
-fallback: nil)` returns a host. `fallback:` is available since 0.2.2.
+max_connections: 128, max_requests: 128, max_concurrent_streams: 100,
+request_body_timeout: 60, handshake_timeout: 10, idle_timeout: 60,
+refresh_interval: 60, refresh_jitter: 0.1, refresh_timeout: 10,
+on_tls_error: nil, keepalive: ServerKeepalive.new, fallback: nil)` returns a
+host. `fallback:`, `max_concurrent_streams:` and `request_body_timeout:` are
+available since 0.2.2.
 
 - `start` binds/listens before returning self; `port` and `addresses` expose the
   actual binding.
 - States are new/running/closing/closed; hosts cannot restart.
-- Connection admission happens before TLS/preface. Request admission fails with
-  bare 503.
+- Connection admission happens before TLS/preface. Request admission is
+  described in [Stream admission](#stream-admission).
 - Setup has one combined cooperative timeout.
 - `idle_timeout` counts from when a connection's last stream and handler
   finished, or from its start, and then drains the connection gracefully; see
@@ -103,6 +105,39 @@ fallback: nil)` returns a host. `fallback:` is available since 0.2.2.
 
 The Host serves HTTP/2 only. There is no HTTP/1 listener or automatic replay.
 For TLS options, see [TLS and client authentication](#tls-and-client-authentication).
+
+### Stream admission
+
+`max_requests` caps the requests admitted across the whole host. Since 0.2.2,
+each HTTP/2 connection advertises the smaller of `max_concurrent_streams`, an
+integer from 1 to 2^32-1, and `max_requests` as its
+`SETTINGS_MAX_CONCURRENT_STREAMS`, and enforces it whether or not the client has
+acknowledged its SETTINGS. Keep `max_concurrent_streams` below `max_requests`,
+as the defaults do, so that one connection cannot take every request slot. When
+`max_requests` is 100 or less, the default per-connection limit equals it, so
+set `max_concurrent_streams` lower explicitly.
+
+- A stream over its connection's limit, or one that arrives while host
+  admission is full or the host is aborting, is reset with
+  `RST_STREAM(REFUSED_STREAM)`. That tells the client the request was not
+  processed and is safe to retry. The handler is not called. The server still
+  decodes the stream's header block and ignores its later frames, so the
+  connection and its other streams see no error. Metrics and traces record a
+  refusal for full host admission or an abort as `admission_rejected`, without
+  an HTTP status. A stream over the connection's limit is refused before
+  dispatch and is not observed.
+- Since 0.2.2, `request_body_timeout` bounds how long a handler waits for
+  request body bytes on an admitted HTTP/2 stream, like nginx's
+  `client_body_timeout`. Each wait starts again when body bytes arrive; empty or
+  padding-only DATA frames do not count. When a wait exceeds it, the server
+  resets the stream with `RST_STREAM(CANCEL)`, the handler's read fails, and the
+  stream's admission slot is released. Client-streaming and bidi RPCs are
+  exempt, since they may idle between messages; keepalive and deadlines bound
+  them. The value is finite positive seconds; nil turns the bound off.
+
+These limits do not bound every way to hold a slot. Client-streaming and bidi
+calls that stay idle, and peers that stop reading responses, keep their slots
+until a deadline, keepalive failure or `close` ends them.
 
 ### Fallback application
 
@@ -115,12 +150,12 @@ methods under them, so RPC traffic never reaches the fallback; every other
 request goes to it with its method, path and query intact. Without `fallback:`,
 unrelated paths get a bare 404. A non-callable fallback raises `ArgumentError`.
 
-Fallback requests share the Host's request admission (`max_requests`, bare 503
-when full) and connection lifetime. An exception from the fallback fails only
-its own stream. The Host owns no tunnels or socket handoff, so no `CONNECT`
-request reaches the fallback. An extended CONNECT (`:protocol`) request gets a
-bare 501. A plain CONNECT has no `:path`, so the Host resets its stream, with or
-without a fallback. A fallback response with status 101 or a
+Fallback requests share the Host's [stream admission](#stream-admission),
+including the request body bound, and connection lifetime. An exception from the
+fallback fails only its own stream. The Host owns no tunnels or socket handoff,
+so no `CONNECT` request reaches the fallback. An extended CONNECT (`:protocol`)
+request gets a bare 501. A plain CONNECT has no `:path`, so the Host resets its
+stream, with or without a fallback. A fallback response with status 101 or a
 `protocol` is closed and replaced by 501.
 
 The fallback inherits the Host's HTTP/2-only listener, so it serves only
@@ -252,9 +287,10 @@ nonnegative or nil and requires `max_connection_age`.
 - **Connection age.** After `max_connection_age` seconds, +/-10% jitter, the
   connection drains gracefully. `max_connection_age_grace` seconds after age
   expiry, whatever the drain's progress, it is aborted; nil waits indefinitely.
-- **Control frames.** With keepalive, PING ACKs, GOAWAYs, drain PINGs and
-  refusals are written by a per-connection control writer, so the reader never
-  blocks writing its own replies. The reader can still stall at its next buffer
+- **Control frames.** Every HTTP/2 connection writes its GOAWAYs, drain PINGs
+  and stream resets, and with keepalive its PING ACKs too, through a
+  per-connection control writer, so the reader never blocks writing its own
+  replies. The reader can still stall at its next buffer
   refill, which flushes pending output, behind an outbound write that does not
   finish. Each control frame must be written within `timeout` seconds of being
   queued, including any wait behind another stream's stuck frame, and its own
@@ -264,13 +300,15 @@ nonnegative or nil and requires `max_connection_age`.
   PINGs, age grace and close also bound a stuck connection. The
   `too_many_pings` GOAWAY is stricter: it must be written within 100 ms of the
   third strike, or the connection is aborted. Without keepalive, the reader
-  answers client PINGs itself, and idle drain frames use the
-  20-second default `timeout`.
+  answers client PINGs itself, and control frames use the 20-second default
+  `timeout`.
 
-Idle and age expiry drain a connection in three steps, as grpc-go does:
+Idle and age expiry, session `close` and `drain_tls` drain a connection in
+three steps, as grpc-go does:
 
-1. A GOAWAY with last stream 2^31-1 and debug data `max_idle` or `max_age`,
-   followed by a PING. Requests keep dispatching normally.
+1. A GOAWAY with last stream 2^31-1 and debug data `max_idle`, `max_age`,
+   `graceful_stop` (close) or `tls_rotation` (`drain_tls`), followed by a PING.
+   Requests keep dispatching normally.
 2. When that PING's ACK arrives, or after 5 seconds, the highest stream received
    becomes the cutoff and a second GOAWAY names it. A stream the client opens
    after the cutoff is still decoded, including HPACK, CONTINUATION and
@@ -279,9 +317,14 @@ Idle and age expiry drain a connection in three steps, as grpc-go does:
 3. When the accepted streams and their handlers finish, the server half-closes
    and discards input until EOF, for up to 1 second, then closes.
 
-Session `close` and `drain_tls` take over a drain in progress. They keep its
-cutoff, never raising it, and their own grace bounds the rest. Every write in
-these steps follows the control frame rules above.
+Session `close` and `drain_tls` start this drain at once on every ready HTTP/2
+connection, or take over one in progress, keeping its debug data and cutoff and
+never raising the cutoff. Once the cutoff GOAWAY is written, they wait for the
+accepted streams, send a final GOAWAY naming the cutoff, half-close and wait for
+EOF, all within their own grace. A peer that closes or resets the connection
+after its streams finished, as the GOAWAY asks, counts as drained. A
+`too_many_pings` decision keeps its own 1-second EOF bound during a takeover.
+Every write in these steps follows the control frame rules above.
 
 Rails and Rack hosts cannot offer any of this; see
 [support](../../docs/support.md#http2-keepalive-and-connection-age).
@@ -740,9 +783,13 @@ Existing H2, NetHTTP and Falcon server inventories remain separate.
 
 ## Close and cleanup
 
-Both `Host` and `Transport` provide `close(grace: 5)`: stop admission, await
-handlers/calls and complete wire streams, send GOAWAY when empty, then
-half-close and await EOF. External callers receive true when drained, false
+Both `Host` and `Transport` provide `close(grace: 5)`. `Host` stops accepting
+connections and drains each HTTP/2 connection with the two-phase GOAWAY in
+[Server keepalive](#server-keepalive): streams opened before the cutoff are
+still served, then handlers and wire streams complete, a final GOAWAY follows,
+and the connection half-closes and awaits EOF. `Transport` stops admission,
+awaits calls and complete wire streams, sends GOAWAY when empty, then
+half-closes and awaits EOF. External callers receive true when drained, false
 after forced teardown. Grace is finite and nonnegative; zero aborts.
 Repeated/concurrent calls share the first outcome.
 
@@ -871,8 +918,10 @@ OP_NO_TICKET and SESSION_CACHE_OFF. Reuse is disabled; this does not claim that
 OpenSSL emits zero TLS 1.3 tickets. Replace a transport to change client identity.
 
 `host.drain_tls(grace: 5)` captures the current generation cutoff and retires
-only older accepted connections, including pending handshakes. Old later streams
-receive 503 while admitted streams finish. Pending handshakes abort immediately.
+only older accepted connections, including pending handshakes. Old connections
+get the two-phase GOAWAY drain with debug data `tls_rotation`: streams opened
+before its cutoff are served, later ones are refused with `REFUSED_STREAM`, and
+admitted streams finish. Pending handshakes abort immediately.
 A persistent retirement floor prevents old pending sockets from becoming live.
 The listener and current/newer generations survive concurrent reloads/drains.
 Close supersedes drains. Renewal alone does not instantly revoke existing peers.
@@ -931,13 +980,17 @@ wakes waiting calls before joining its connection close.
 
 The session forwards TLS lifecycle/identity operations, bounded `close` and
 raw-first `abort` for listener/setup failure. Its `keepalive:` (default
-`ServerKeepalive.new`) and graceful `idle_timeout` apply to HTTP/2 resources
-only; Falcon's HTTP/1 resource keeps closing idle connections and has no
-keepalive. The optional `stop_accepting:`
-callback runs after affinity/grace validation, before refresh stops and
-connection drain begins. Its one HTTP/1 construction hook is for the optional
-Falcon-local resource; HTTP/2 resources do not pretend to implement HTTP/1. The
-standalone Host keeps its strict h2 listener and composes the shared session.
+`ServerKeepalive.new`), graceful `idle_timeout`, `max_concurrent_streams:` and
+`request_body_timeout:` apply to HTTP/2 resources only; see [Stream
+admission](#stream-admission). An application other than `Application` gets the
+request body bound on every HTTP/2 request. Falcon's HTTP/1 resource keeps
+closing idle connections, has no keepalive, and answers a request with a bare
+503 when admission is full or the session is closing. The optional
+`stop_accepting:` callback runs after affinity/grace validation, before refresh
+stops and connection drain begins. Its one HTTP/1 construction hook is for the
+optional Falcon-local resource; HTTP/2 resources do not pretend to implement
+HTTP/1. The standalone Host keeps its strict h2 listener and composes the shared
+session.
 
 The shared session's private resource completion and lifetime-anchor operations
 are source-coupled to Falcon's local HTTP/1 resource. Use matched Async/Falcon

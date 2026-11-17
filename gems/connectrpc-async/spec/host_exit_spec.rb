@@ -49,10 +49,10 @@ RSpec.describe ConnectRPC::Async::Host, "exit ownership" do
       hold_start_return(session, scheduled, release_start)
       expiries = []
       original = session.method(:drain_resources)
-      session.define_singleton_method(:drain_resources) do |peers, expires|
+      session.define_singleton_method(:drain_resources) do |peers, expires, **options|
         expiries << expires
         draining.enqueue(expires)
-        original.call(peers, expires)
+        original.call(peers, expires, **options)
       end
       starter = task.async(finished: false) do
         host.start

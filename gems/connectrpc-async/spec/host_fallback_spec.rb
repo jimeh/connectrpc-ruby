@@ -147,7 +147,7 @@ RSpec.describe "Host native fallback" do
       second_raw, second = h2c(host)
       held = task.async { get(first, host, "/held") }
       entered.dequeue
-      expect(get(second, host, "/rejected")).to eq([503, nil])
+      expect { get(second, host, "/rejected") }.to raise_error(Protocol::HTTP::RefusedError)
       release.enqueue(true)
       expect(held.wait).to eq([200, "held"])
     ensure

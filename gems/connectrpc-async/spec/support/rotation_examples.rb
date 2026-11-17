@@ -134,7 +134,8 @@ RSpec.shared_examples "HTTP/2 TLS retirement and session isolation" do
     end
   end
 
-  it "captures a cutoff, retires pending old handshakes, rejects old later streams and preserves newer generations" do
+  it "captures a cutoff, retires pending old handshakes, moves old later calls off with GOAWAY and preserves " \
+     "newer generations" do
     reactor do |task|
       entered = Async::Queue.new
       release = Async::Queue.new
@@ -159,9 +160,11 @@ RSpec.shared_examples "HTTP/2 TLS retirement and session isolation" do
         drain = task.async { host.drain_tls(grace: 1) }
         wait_until(task, "old generation draining") { pending_record.raw.closed? }
         expect(pending.read(1)).to be_nil
+        # Before the cutoff the old connection still serves a later stream;
+        # after the heads-up GOAWAY the client opens a new connection.
         response = old.call(request("#{origin}#{AsyncHelpers::ECHO::ECHO.path}",
                                     headers: { "content-type" => ["application/proto"] }))
-        expect(response.status).to eq(503)
+        expect(response.status).to eq(200)
         host.reload_tls(**host_tls)
         latest = ConnectRPC::Async::Transport.new(origin: origin, ca_file: ca_file)
         expect(client(latest, origin).echo(AsyncHelpers::MESSAGE.new(name: "latest")).message.name).to eq("latest")
