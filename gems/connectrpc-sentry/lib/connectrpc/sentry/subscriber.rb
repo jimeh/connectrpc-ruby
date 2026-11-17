@@ -67,7 +67,7 @@ module ConnectRPC
         if parent && parent.timestamp.nil?
           span = Support.annotate(parent.start_child(op: "rpc.client", description: rpc.name, origin: ORIGIN), rpc)
         end
-        inject(call, span) if propagate?(call)
+        inject(call, span) if propagate?(call) && !Support.http_patch?(call)
         span && Child.new(rpc, span, scope, @guard, capture: false, nested: false)
       end
 
@@ -78,16 +78,13 @@ module ConnectRPC
           "baggage" => (baggage.join(",") if baggage && !baggage.empty?) }.compact
       end
 
-      # Call has no URL, so targets match the host and host:port.
+      # Targets match the URL form Sentry's own HTTP integrations use.
       def propagate?(call)
         configuration = ::Sentry.configuration
-        return false unless configuration.propagate_traces
+        url = Support.url(call)
+        return false unless url && configuration.propagate_traces
 
-        host = call.server_address.to_s
-        candidates = [host, ("#{host}:#{call.server_port}" if call.server_address && call.server_port)].compact
-        configuration.trace_propagation_targets.any? do |target|
-          candidates.any? { |candidate| candidate.match?(target) }
-        end
+        configuration.trace_propagation_targets.any? { |target| url.match?(target) }
       end
 
       # Earlier subscribers' staged baggage stays after Sentry's entries.
@@ -119,6 +116,28 @@ module ConnectRPC
         end
 
         def status(code) = STATUS.fetch(code, code)
+
+        # Sentry's Net::HTTP, Faraday and Excon integrations match scheme://host/path:
+        # no port, no query, and IPv6 hosts in brackets.
+        def url(call)
+          scheme = call.url_scheme
+          address = call.server_address
+          return unless scheme && address
+
+          host = address.include?(":") ? "[#{address}]" : address
+          "#{scheme}://#{host}#{call.url_path}"
+        end
+
+        # Once applied, Sentry's :http patch propagates on the core Net::HTTP
+        # transport itself and prepends its baggage to ours, duplicating it.
+        def http_patch?(call)
+          transport = call.transport_class
+          return false unless transport.is_a?(Class) && defined?(::ConnectRPC::Transports::NetHTTP) &&
+                              transport <= ::ConnectRPC::Transports::NetHTTP
+          return false unless defined?(::Sentry::Net::HTTP)
+
+          ::Net::HTTP.ancestors.include?(::Sentry::Net::HTTP)
+        end
 
         def annotate(span, rpc)
           rpc.data.each { |key, value| span.set_data(key, value) }

@@ -4,7 +4,8 @@ module ConnectRPC
   # Synchronous, fixed per-RPC callbacks. Subscribers never own the application yield.
   class Instrumentation
     # The fixed call contract names its declared RPC method explicitly.
-    Call = Data.define(:role, :protocol, :method, :server_address, :server_port, :carrier) # rubocop:disable Lint/DataDefineOverride
+    Call = Data.define(:role, :protocol, :method, :server_address, :server_port, :carrier, # rubocop:disable Lint/DataDefineOverride
+                       :url_scheme, :url_path, :transport_class)
     Outcome = Data.define(:code, :http_status, :error, :normalized_error, :duration,
                           :request_bytes, :response_bytes, :request_metadata, :response_metadata)
     Completion = Data.define(:outcome, :processing_state, :decision, :delivery, :error, :http_status, :duration)
@@ -28,15 +29,25 @@ module ConnectRPC
       private_class_method :callback
     end
 
+    class Call
+      # Client request facts added in 0.3.0 are optional, so earlier constructions keep working.
+      def initialize(role:, protocol:, method:, server_address:, server_port:, carrier:,
+                     url_scheme: nil, url_path: nil, transport_class: nil)
+        super
+      end
+    end
+
     def initialize(subscribers:, on_error: nil)
       @subscribers = subscribers.dup.freeze
       @on_error = on_error
     end
 
     # Internal constructor shared by client processing and the server hosting SPI.
-    def start(owner:, role:, method:, carrier:, server_address: nil, server_port: nil, path: nil, protocol: :connect)
-      call = Call.new(role: role, protocol: protocol, method: method,
-                      server_address: server_address, server_port: server_port, carrier: carrier)
+    def start(owner:, role:, method:, carrier:, server_address: nil, server_port: nil, path: nil, protocol: :connect,
+              url_scheme: nil, url_path: nil, transport_class: nil)
+      call = Call.new(role: role, protocol: protocol, method: method, server_address: server_address,
+                      server_port: server_port, carrier: carrier, url_scheme: url_scheme, url_path: url_path,
+                      transport_class: transport_class)
       observers = @subscribers.filter_map { |subscriber| safely { subscriber.start(call) } }
       Handle.new(self, owner, path, observers)
     end

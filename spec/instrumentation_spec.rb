@@ -381,6 +381,46 @@ RSpec.describe "RPC lifecycle instrumentation" do
     end
   end
 
+  it "reports client request URL and transport facts without the GET query" do
+    query = ConnectRPC::Method.new(service: "test.Echo", name: "Get", request_type: String, response_type: String,
+                                   idempotency: :no_side_effects)
+    sent = nil
+    transport = lambda do |request|
+      sent = request.url
+      ConnectRPC::TransportResponse.new(status: 200, headers: { "content-type" => ["application/proto"] }, body: "ok")
+    end
+    caller = ConnectRPC::Client.new(base_url: "https://example.test:8443/prefix/", binding: binding,
+                                    transport: transport, use_get: true, instrumentation: bus)
+    caller.call(query, "request")
+    call = events.assoc(:start).last
+    expect(sent.query).not_to be_nil
+    expect(call).to have_attributes(server_address: "example.test", server_port: 8443, url_scheme: "https",
+                                    url_path: "/prefix/test.Echo/Get", transport_class: Proc)
+    expect(call.url_path).to eq(sent.path)
+  end
+
+  it "reports client request facts for streams, none for servers, and nil facts for earlier constructions" do
+    stream = ConnectRPC::ServerStreamMethod.new(service: "test.Echo", name: "Watch", request_type: String,
+                                                response_type: String)
+    transport = Class.new do
+      def call(_) = raise("unused")
+      def streaming_capabilities = [:server_stream]
+      def open_stream(_) = raise(ConnectRPC::Error.new(:unavailable, "closed"))
+    end.new
+    caller = ConnectRPC::Client.new(base_url: "http://example.test", binding: binding, transport: transport,
+                                    instrumentation: bus)
+    expect { caller.server_stream(stream, "request") { nil } }.to raise_error(ConnectRPC::Error)
+    expect(events.assoc(:start).last).to have_attributes(url_scheme: "http", url_path: "/test.Echo/Watch",
+                                                         transport_class: transport.class)
+    events.clear
+    server.start_call(path: rpc.path, headers: {}).finish(delivery: :completed)
+    expect(events.assoc(:start).last).to have_attributes(url_scheme: nil, url_path: nil, transport_class: nil)
+    earlier = [ConnectRPC::Instrumentation::Call.new(:client, :connect, nil, nil, nil, {}),
+               ConnectRPC::Instrumentation::Call.new(role: :client, protocol: :connect, method: nil,
+                                                     server_address: nil, server_port: nil, carrier: {})]
+    earlier.each { |call| expect([call.url_scheme, call.url_path, call.transport_class]).to eq([nil, nil, nil]) }
+  end
+
   it "transactionally rolls back invalid propagation while preserving caller metadata" do
     injector = Object.new
     injector.define_singleton_method(:start) do |call|

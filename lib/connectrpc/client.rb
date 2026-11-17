@@ -148,8 +148,7 @@ module ConnectRPC
       injection = {}
       instrumentation = @instrumentation #: Instrumentation
       lifecycle = instrumentation.start(owner: self, role: :client, method: method.is_a?(Method) ? method : nil,
-                                        carrier: injection, server_address: @base_url.hostname.freeze,
-                                        server_port: @base_url.port)
+                                        carrier: injection, **request_facts(method))
       lifecycle.begin_processing(self)
       # @type var response: TransportResponse?
       response = nil
@@ -223,8 +222,7 @@ module ConnectRPC
       body = compress_request(body, deadline, lifecycle) if @encoding == :gzip
       Protocol.check_size!(body, @request_wire_limit)
       url = @base_url.dup
-      base_path = @base_url.path #: String
-      url.path = base_path.delete_suffix("/") + method.path
+      url.path = request_path(method)
       get = @use_get && method.idempotency == :no_side_effects
       lifecycle.request_bytes = body.bytesize if lifecycle && get
       GetQuery.build(url, body, codec: @codec, encoding: @encoding, limit: @get_url_limit, deadline: deadline) if get
@@ -232,6 +230,18 @@ module ConnectRPC
       TransportRequest.new(url: url, http_method: get ? "GET" : "POST",
                            headers: request_headers(metadata, nil, get: get), body: get ? "" : body,
                            response_limit: @response_wire_limit, deadline: nil)
+    end
+
+    def request_path(method)
+      base_path = @base_url.path #: String
+      base_path.delete_suffix("/") + method.path
+    end
+
+    # Client endpoint facts for instrumentation; never the query, which can carry a GET message.
+    def request_facts(method)
+      transport = @transport #: (_Transport | _StreamingTransport | _GRPCTransport) & _TransportClassProbe
+      { server_address: @base_url.hostname.freeze, server_port: @base_url.port, url_scheme: @base_url.scheme.freeze,
+        url_path: request_path(method).freeze, transport_class: transport.class }
     end
 
     def request_headers(metadata, deadline, get: false)

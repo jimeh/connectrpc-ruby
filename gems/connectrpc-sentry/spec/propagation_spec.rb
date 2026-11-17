@@ -1,6 +1,8 @@
 # frozen_string_literal: true
 
 require "connectrpc/otel"
+require "open3"
+require_relative "support/net_http_peer"
 
 RSpec.describe "Trace propagation" do
   def upstream_trace = "771a43a4192642f0b136d5159a501700"
@@ -25,6 +27,20 @@ RSpec.describe "Trace propagation" do
                                                                       base_url: base_url)
     typed.echo(MESSAGE.new(name: "outgoing"), metadata: metadata)
     seen
+  end
+
+  # Records the headers a client sends, for base URLs no in-process server routes.
+  def sent_headers(instrumentation, base_url:)
+    headers = nil
+    transport = lambda do |request|
+      headers = request.headers
+      ConnectRPC::TransportResponse.new(status: 200, headers: { "content-type" => ["application/proto"] },
+                                        body: MESSAGE.new.to_proto)
+    end
+    core = ConnectRPC::Client.new(base_url: base_url, binding: ConnectRPC::Bindings::GoogleProtobuf.new,
+                                  transport: transport, instrumentation: instrumentation)
+    ECHO::Client.new(client: core).echo(MESSAGE.new(name: "outgoing"))
+    headers
   end
 
   describe "incoming" do
@@ -152,11 +168,14 @@ RSpec.describe "Trace propagation" do
       expect(outgoing(bus)).to eq("sentry-trace" => nil, "baggage" => nil)
     end
 
+    # Sentry's HTTP integrations match targets against scheme://host/path, without port or query.
     {
-      ["example.invalid"] => true, [/\Aexample\.invalid:443\z/] => true, ["other.invalid"] => false,
-      [%r{\Ahttps://example\.invalid}] => false
+      ["https://example.invalid"] => true, [%r{\Ahttps://example\.invalid/}] => true,
+      ["example.invalid"] => true, [%r{/example\.v1\.EchoService/Echo\z}] => true,
+      ["other.invalid"] => false, [%r{\Ahttp://example\.invalid}] => false, [/\Aexample\.invalid/] => false,
+      [/:443/] => false
     }.each do |targets, propagated|
-      it "#{propagated ? 'propagates' : 'does not propagate'} to host targets #{targets.inspect}" do
+      it "#{propagated ? 'propagates' : 'does not propagate'} to URL targets #{targets.inspect}" do
         sentry(trace_propagation_targets: targets)
         caller = start_caller
         seen = outgoing(bus)
@@ -166,9 +185,75 @@ RSpec.describe "Trace propagation" do
       end
     end
 
-    it "matches host:port for an explicit port" do
-      sentry(trace_propagation_targets: ["example.invalid:8443"])
-      expect(outgoing(bus, base_url: "https://example.invalid:8443").fetch("sentry-trace")).not_to be_nil
+    {
+      "https://example.invalid:8443/api/" => "https://example.invalid/api/example.v1.EchoService/Echo",
+      "http://[::1]:8080" => "http://[::1]/example.v1.EchoService/Echo"
+    }.each do |base_url, url|
+      it "matches #{base_url} as #{url}" do
+        sentry(trace_propagation_targets: [/\A#{Regexp.escape(url)}\z/])
+        expect(sent_headers(bus, base_url: base_url)["sentry-trace"]).not_to be_nil
+      end
+    end
+
+    context "on the core Net::HTTP transport" do
+      include NetHTTPPeer
+
+      # Sentry.init applies the default :http patch in this process, and it stays prepended.
+      it "leaves propagation to Sentry's applied :http patch, so one set of Sentry baggage is sent" do
+        expect(Net::HTTP.ancestors).to include(Sentry::Net::HTTP)
+        caller = start_caller
+        headers = net_http_headers(bus, metadata: { "baggage" => ["caller=1"] })
+        caller.finish
+        spans = transactions.first.spans
+        client = spans.find { |span| span[:op] == "rpc.client" }
+        http = spans.find { |span| span[:op] == "http.client" }
+        expect(http[:parent_span_id]).to eq(client[:span_id])
+        expect(headers["sentry-trace"]).to eq(["#{caller.trace_id}-#{http[:span_id]}-1"])
+        keys = baggage_keys(headers)
+        expect(keys.grep(/\Asentry-/)).to eq(keys.grep(/\Asentry-/).uniq)
+        expect(keys).to include("sentry-trace_id", "caller")
+      end
+
+      it "leaves the scope propagation context to the patch without a span" do
+        context = Sentry.get_current_scope.propagation_context
+        headers = net_http_headers(bus)
+        expect(headers["sentry-trace"]).to eq(["#{context.trace_id}-#{context.span_id}"])
+        expect(baggage_keys(headers).count("sentry-trace_id")).to eq(1)
+      end
+
+      # A patch, once prepended, cannot be removed, so the unpatched case runs in a fresh process.
+      it "injects itself when the :http patch is disabled" do
+        script = <<~RUBY
+          require "connectrpc/sentry"
+          require "connectrpc/bindings/google_protobuf"
+          require "echo_connect"
+          require "json"
+          require #{File.expand_path('support/net_http_peer', __dir__).dump}
+          Sentry.init do |config|
+            config.dsn = #{SentryHelpers::DSN.dump}
+            config.transport.transport_class = Sentry::DummyTransport
+            config.background_worker_threads = 0
+            config.auto_session_tracking = false
+            config.send_client_reports = false
+            config.sdk_logger = Sentry::Logger.new(File::NULL)
+            config.traces_sample_rate = 1.0
+            config.enabled_patches = []
+          end
+          abort "Net::HTTP is patched" if Net::HTTP.ancestors.include?(Sentry::Net::HTTP)
+          caller = Sentry.start_transaction(name: "caller", op: "test")
+          Sentry.get_current_scope.set_span(caller)
+          instrumentation = ConnectRPC::Instrumentation.new(subscribers: [ConnectRPC::Sentry::Subscriber.new])
+          extend NetHTTPPeer
+          headers = net_http_headers(instrumentation)
+          puts JSON.generate(trace_id: caller.trace_id, headers: headers, keys: baggage_keys(headers))
+        RUBY
+        fixtures = File.join(ROOT, "spec/fixtures/generation/echo")
+        output, status = Open3.capture2e(RbConfig.ruby, "-I", fixtures, "-e", script)
+        expect(status).to be_success, output
+        result = JSON.parse(output.lines.last)
+        expect(result.dig("headers", "sentry-trace")).to match([start_with("#{result.fetch('trace_id')}-")])
+        expect(result.fetch("keys").count("sentry-trace_id")).to eq(1)
+      end
     end
 
     context "with the real OpenTelemetry subscriber" do

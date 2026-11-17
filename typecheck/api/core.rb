@@ -61,6 +61,16 @@ call.method&.path
 call.protocol.to_s
 call.server_address&.size
 call.server_port&.succ
+call.url_scheme&.upcase
+call.url_path&.size
+call.transport_class&.name
+facts = ConnectRPC::Instrumentation::Call.new(
+  role: :client, protocol: :connect, method: method, server_address: "example.invalid", server_port: 443,
+  carrier: {}, url_scheme: "https", url_path: "/demo.Service/Call", transport_class: ConnectRPC::Transports::NetHTTP
+)
+facts.transport_class&.name
+ConnectRPC::Instrumentation::Call.new(:client, :connect, method, nil, nil, {}, "https", "/demo.Service/Call",
+                                      ConnectRPC::Transports::NetHTTP).url_path&.size
 outcome = ConnectRPC::Instrumentation::Outcome.new(
   code: "OK", http_status: 200, error: nil, normalized_error: nil, duration: 0.1,
   request_bytes: 1, response_bytes: 2, request_metadata: {}, response_metadata: {}
