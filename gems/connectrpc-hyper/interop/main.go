@@ -2,8 +2,8 @@
 //
 // It starts grpc-go (h2c, TLS, mTLS, keepalive, idle, max-age and a
 // restartable listener), connect-go (HTTP/1.1 + h2c, TLS, mTLS and an
-// HTTP/1.1-only TLS listener) and a programmable raw HTTP/2 server on
-// 127.0.0.1, prints one JSON line of origins, then one "EVENT ..." line per
+// HTTP/1.1-only TLS listener), a programmable raw HTTP/2 server and an HTTP
+// proxy (CONNECT and absolute-form forwarding) on 127.0.0.1, prints one JSON line of origins, then one "EVENT ..." line per
 // observable server-side event. stdin carries control commands, one per line;
 // the process exits when stdin closes. Nothing listens beyond loopback.
 package main
@@ -219,6 +219,7 @@ func main() {
 		"raw_noack":      serveRaw("rawnoack", rawOptions{ack: false}),
 		"raw_mcs1":       serveRaw("rawmcs1", rawOptions{ack: true, maxStreams: 1}),
 		"grpc_restart":   "http://" + restart.address,
+		"proxy":          serveProxy(),
 		// Server PINGs every 100 ms; the connection closes when an ACK does not
 		// arrive within 100 ms.
 		"grpc_keepalive": serveGRPCWith("ka", true, grpc.KeepaliveParams(keepalive.ServerParameters{

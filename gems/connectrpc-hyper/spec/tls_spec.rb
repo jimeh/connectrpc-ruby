@@ -1,5 +1,7 @@
 # frozen_string_literal: true
 
+require "pathname"
+
 RSpec.describe "TLS parity" do
   def authority(name = "parity CA") = credentials(name, authority: true)
 
@@ -175,6 +177,94 @@ RSpec.describe "TLS parity" do
       transport = hyper(ca_file: ca_file(root.first))
       expect { client(peer["grpc_h2c"], transport: transport).unary(MSG.new, timeout: 5) }
         .to raise_error(ArgumentError, "TLS options require an HTTPS origin")
+    end
+  end
+
+  # NetHTTP's ClientTLS is private, so both transports are constructed with the
+  # same options. rustls-only rejections (Ed448 above) are documented apart.
+  describe "parity with core NetHTTP" do
+    let(:root) { authority }
+    let(:identity) { credentials("client", issuer: root, usage: "clientAuth") }
+
+    before { require "connectrpc/transports/net_http" }
+
+    def outcome(transport, **)
+      transport.new(**)
+      :ok
+    rescue StandardError => e
+      [e.class, e.message, e.cause]
+    end
+
+    def file(name, data)
+      path = File.join(@directory ||= Dir.mktmpdir("connectrpc-hyper-parity-"), name)
+      File.binwrite(path, data)
+      path
+    end
+
+    # A TRUSTED CERTIFICATE block: the certificate followed by X509_CERT_AUX
+    # trust settings, as `openssl x509 -trustout` writes it.
+    def trusted(certificate)
+      trust = OpenSSL::ASN1::Sequence([OpenSSL::ASN1::Sequence([OpenSSL::ASN1::ObjectId("serverAuth")])])
+      body = [certificate.to_der + trust.to_der].pack("m").scan(/.{1,64}/).join("\n")
+      "-----BEGIN TRUSTED CERTIFICATE-----\n#{body}\n-----END TRUSTED CERTIFICATE-----\n"
+    end
+
+    def crl(certificate, key)
+      list = OpenSSL::X509::CRL.new
+      list.version = 1
+      list.issuer = certificate.subject
+      list.last_update = Time.now
+      list.next_update = Time.now + 60
+      list.sign(key, "SHA256")
+      list.to_pem
+    end
+
+    it "raises the same errors for the same inputs" do
+      pem = root.first.to_pem
+      chain = [identity.first.to_pem]
+      key = identity.last.private_to_pem
+      expired = credentials("client", issuer: root, usage: "clientAuth", not_after: Time.now - 1)
+      encrypted = identity.last.private_to_pem(OpenSSL::Cipher.new("aes-128-cbc"), "secret")
+      cases = [
+        { ca_file: file("ca.pem", pem) }, { ca_file: file("ca.der", root.first.to_der) },
+        { ca_file: file("crl.pem", crl(*root)) }, { ca_file: file("trusted.pem", trusted(root.first)) },
+        { ca_file: file("mixed.pem", "junk\n#{pem}#{key}#{crl(*root)}") }, { ca_file: file("key.pem", key) },
+        { ca_file: file("empty.pem", "") }, { ca_file: file("corrupt.pem", pem.sub(/[A-Za-z]{10}/, "!" * 10)) },
+        { ca_file: Pathname(file("path.pem", pem)) }, { ca_file: File.join(Dir.tmpdir, "missing-ca.pem") },
+        { ca_file: Dir.tmpdir }, { ca_file: 42 }, { ca_file: false },
+        { certificate_chain: chain, private_key: key }, { certificate_chain: chain + [pem], private_key: key },
+        { certificate_chain: chain.first, private_key: key }, { certificate_chain: [], private_key: key },
+        { certificate_chain: [42], private_key: key },
+        { certificate_chain: ["#{chain.first}#{pem}"], private_key: key },
+        { certificate_chain: [expired.first.to_pem], private_key: expired.last.private_to_pem },
+        { certificate_chain: chain, private_key: encrypted }, { certificate_chain: chain, private_key: nil },
+        { certificate_chain: nil, private_key: key }, { certificate_chain: false, private_key: false },
+        { certificate_chain: chain, private_key: OpenSSL::PKey::EC.generate("prime256v1").private_to_pem },
+        { certificate_chain: chain, private_key: identity.last.to_der },
+        { certificate_chain: chain + [authority("unrelated").first.to_pem], private_key: key },
+        { ca_file: 42, certificate_chain: [], private_key: nil }
+      ]
+      outcomes = cases.map do |options|
+        expected = outcome(ConnectRPC::Transports::NetHTTP, **options)
+        expect(outcome(ConnectRPC::Hyper::Transport, **options)).to eq(expected), options.inspect
+        expected
+      end
+      # The table covers both acceptance and every named input.
+      expect(outcomes.map { |result| result == :ok ? :ok : result[1] }.uniq).to contain_exactly(
+        :ok, "Invalid TLS client configuration: ca_file", "Invalid TLS client configuration: certificate_chain",
+        "Invalid TLS client configuration: private_key"
+      )
+    end
+
+    it "rejects TLS options on an http:// request with NetHTTP's error" do
+      request = ConnectRPC::TransportRequest.new(url: URI("http://127.0.0.1:1/svc/Method"), http_method: "POST",
+                                                 headers: {}, body: "", response_limit: 1024)
+      errors = [ConnectRPC::Transports::NetHTTP, ConnectRPC::Hyper::Transport].map do |transport|
+        transport.new(ca_file: false).call(request)
+      rescue ArgumentError => e
+        [e.class, e.message]
+      end
+      expect(errors).to eq([[ArgumentError, "TLS options require an HTTPS origin"]] * 2)
     end
   end
 end

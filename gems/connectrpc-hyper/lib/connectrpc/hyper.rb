@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "connectrpc"
+require "connectrpc/proxy"
 require_relative "hyper/version"
 begin
   # Platform gems ship one extension per Ruby minor.

@@ -23,7 +23,7 @@ use magnus::{
 };
 
 use crate::call::CallState;
-use crate::conn::{Origin, Settings};
+use crate::conn::{Origin, Settings, proxy};
 use crate::failure::Failure;
 use crate::gvl::{Signal, Waits, drive, drive_uninterruptible};
 use crate::pool::{Config, DriverCore, RequestSpec, TimeoutHeader};
@@ -109,6 +109,41 @@ fn timeout_header(kind: Option<magnus::Symbol>) -> Result<Option<TimeoutHeader>,
     })
 }
 
+/// A proxy endpoint Ruby resolved: [host, port, Proxy-Authorization or nil].
+type ProxyArg = Option<(String, u16, Option<RString>)>;
+
+fn proxy_route(
+    ruby: &Ruby,
+    proxy: ProxyArg,
+    https: bool,
+    http2: bool,
+) -> Result<Option<proxy::Route>, Error> {
+    let Some((host, port, authorization)) = proxy else {
+        return Ok(None);
+    };
+    let authorization = authorization
+        .map(|value| {
+            // SAFETY: the slice is copied before any Ruby code can run.
+            http::HeaderValue::from_bytes(unsafe { value.as_slice() })
+                .map(|mut value| {
+                    value.set_sensitive(true);
+                    value
+                })
+                .map_err(|_| arg_error(ruby, "Invalid proxy configuration"))
+        })
+        .transpose()?;
+    Ok(Some(proxy::Route {
+        host: host
+            .trim_start_matches('[')
+            .trim_end_matches(']')
+            .to_ascii_lowercase(),
+        port,
+        authorization,
+        mode: proxy::mode(https, http2),
+    }))
+}
+
+#[allow(clippy::too_many_arguments)]
 fn request_spec(
     ruby: &Ruby,
     method: &str,
@@ -116,11 +151,14 @@ fn request_spec(
     pairs: RArray,
     kind: Option<magnus::Symbol>,
     grpc: bool,
+    proxy: ProxyArg,
+    http2: bool,
 ) -> Result<RequestSpec, Error> {
     let uri: http::Uri = url
         .parse()
         .map_err(|_| arg_error(ruby, "Invalid request URL"))?;
-    let origin = Origin::parse(&uri).map_err(|_| arg_error(ruby, "Invalid request URL"))?;
+    let mut origin = Origin::parse(&uri).map_err(|_| arg_error(ruby, "Invalid request URL"))?;
+    origin.proxy = proxy_route(ruby, proxy, origin.https, http2)?;
     let method = http::Method::from_bytes(method.as_bytes())
         .map_err(|_| arg_error(ruby, "Invalid request method"))?;
     Ok(RequestSpec {
@@ -169,6 +207,7 @@ impl Driver {
         roots: RArray,
         chain: Option<RArray>,
         key: Option<RString>,
+        tunnel: (f64, usize),
     ) -> Result<Self, Error> {
         let ders = |list: RArray| -> Result<Vec<Vec<u8>>, Error> {
             (0..list.len())
@@ -195,6 +234,10 @@ impl Driver {
                         while_idle,
                     )
                 }),
+                tunnel: proxy::Limits {
+                    timeout: Duration::from_secs_f64(tunnel.0),
+                    max_head: tunnel.1,
+                },
             },
             tls,
         };
@@ -228,9 +271,11 @@ impl Driver {
         kind: Option<magnus::Symbol>,
         timeout: Option<f64>,
         cancel: &Cancel,
+        proxy: ProxyArg,
     ) -> Result<RArray, Error> {
         let core = rb_self.owned(ruby)?.clone();
-        let spec = request_spec(ruby, &method, &url, pairs, kind, false)?;
+        let http2 = core.config.settings.http2;
+        let spec = request_spec(ruby, &method, &url, pairs, kind, false, proxy, http2)?;
         let payload = payload.map(bytes);
         let deadline = instant(timeout);
         let inflight = core
@@ -269,9 +314,11 @@ impl Driver {
         grpc: bool,
         require_h2: bool,
         cancel: &Cancel,
+        proxy: ProxyArg,
     ) -> Result<Call, Error> {
         let core = rb_self.owned(ruby)?.clone();
-        let spec = request_spec(ruby, "POST", &url, pairs, kind, grpc)?;
+        let http2 = core.config.settings.http2;
+        let spec = request_spec(ruby, "POST", &url, pairs, kind, grpc, proxy, http2)?;
         let inflight = core
             .admit()
             .map_err(|failure| failure_error(ruby, failure))?;
@@ -515,9 +562,9 @@ fn init(ruby: &Ruby) -> Result<(), Error> {
     cancel.define_method("fire", method!(Cancel::fire, 0))?;
 
     let driver: RClass = native.define_class("Driver", ruby.class_object())?;
-    driver.define_singleton_method("new", function!(Driver::new, 8))?;
-    driver.define_method("unary", method!(Driver::unary, 8))?;
-    driver.define_method("open", method!(Driver::open, 7))?;
+    driver.define_singleton_method("new", function!(Driver::new, 9))?;
+    driver.define_method("unary", method!(Driver::unary, 9))?;
+    driver.define_method("open", method!(Driver::open, 8))?;
     driver.define_method("close", method!(Driver::close, 1))?;
     driver.define_method("opened", method!(Driver::opened, 0))?;
     driver.define_method("stats", method!(Driver::stats, 0))?;

@@ -5,7 +5,7 @@ require "securerandom"
 
 module ConnectRPC
   module Hyper
-    # Validates TLS client inputs as core NetHTTP's ClientTLS does (PR #159):
+    # Validates TLS client inputs as core NetHTTP's private ClientTLS does:
     # an appended `ca_file`, a `certificate_chain` Array of PEM strings (leaf
     # first) and a `private_key` PEM string. Rust receives DER.
     module TLS
@@ -14,6 +14,9 @@ module ConnectRPC
         \A-----BEGIN\ (RSA\ PRIVATE\ KEY|EC\ PRIVATE\ KEY|PRIVATE\ KEY)-----
         \s+[A-Za-z0-9+/=\s]+-----END\ \1-----\z
       }x
+      CERTIFICATE_BLOCK = /
+        -----BEGIN\ (?:X509\ |TRUSTED\ )?CERTIFICATE-----.*?-----END\ (?:X509\ |TRUSTED\ )?CERTIFICATE-----
+      /mx
 
       # Names the input that failed validation, never its value.
       class InvalidInput < ArgumentError
@@ -70,20 +73,22 @@ module ConnectRPC
         [certificates, key]
       end
 
+      # NetHTTP's check: the file must load into an OpenSSL store. The
+      # certificates OpenSSL would trust are appended (trust settings of a
+      # TRUSTED CERTIFICATE block are not kept); CRLs and keys are skipped.
       def self.ca_file(path)
         input(:ca_file) do
-          raise ArgumentError unless path.is_a?(String) || path.respond_to?(:to_path)
-
-          certificates = OpenSSL::X509::Certificate.load(File.binread(path))
-          raise ArgumentError if certificates.empty?
-
-          certificates.map(&:to_der)
+          OpenSSL::X509::Store.new.add_file(path)
+          File.binread(path).scan(CERTIFICATE_BLOCK).map do |block|
+            OpenSSL::X509::Certificate.new(block.gsub(/(BEGIN|END) (?:X509 |TRUSTED )/, '\1 ')).to_der
+          end
         end
       end
 
-      # [chain DERs, key PKCS#8 DER], or [nil, nil] without an identity.
+      # [chain DERs, key PKCS#8 DER], or [nil, nil] without an identity. As in
+      # NetHTTP, a false option counts as given but adds nothing.
       def self.client_identity(chain, pem)
-        return [nil, nil] if chain.nil? && pem.nil?
+        return [nil, nil] unless chain || pem
 
         certificates, key = identity(chain, pem)
         [certificates.map(&:to_der), key.private_to_der]
@@ -94,7 +99,7 @@ module ConnectRPC
       def self.inputs(ca_file:, certificate_chain:, private_key:)
         return if [ca_file, certificate_chain, private_key].all?(&:nil?)
 
-        [ca_file.nil? ? [] : self.ca_file(ca_file), *client_identity(certificate_chain, private_key)]
+        [ca_file ? self.ca_file(ca_file) : [], *client_identity(certificate_chain, private_key)]
       rescue InvalidInput => e
         raise ArgumentError, "Invalid TLS client configuration: #{e.input}", cause: nil
       rescue StandardError

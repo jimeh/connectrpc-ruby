@@ -1,6 +1,6 @@
 # cargo-deny policy for the connectrpc-hyper native graph: permissive licenses
-# only, crates.io only, and RustSec advisories (unmaintained and yanked
-# crates included) fail the check.
+# only, crates.io only, no proxy-reading crates or features, and RustSec
+# advisories (unmaintained and yanked crates included) fail the check.
 
 [graph]
 all-features = false
@@ -25,6 +25,17 @@ allow = [
 [bans]
 multiple-versions = "warn"
 wildcards = "deny"
+# Ruby resolves proxies through core's ConnectRPC::Proxy and passes only the
+# endpoint: nothing in the native graph may read proxy settings from the
+# environment or the operating system.
+deny = [
+  { crate = "system-configuration", reason = "reads macOS proxy settings" },
+  { crate = "windows-registry", reason = "reads Windows proxy settings" },
+]
+
+[[bans.features]]
+crate = "hyper-util"
+deny = ["client-proxy", "client-proxy-system", "full"]
 
 [sources]
 unknown-registry = "deny"

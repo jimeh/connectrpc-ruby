@@ -8,6 +8,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/json"
 	"encoding/pem"
 	"errors"
 	"fmt"
@@ -181,6 +182,14 @@ func bidiBehaviour(ctx context.Context, tag string, recv func() (*pb.Message, er
 	}
 }
 
+// emitUserAgent reports the user-agent fields a request carried, in order,
+// as a JSON array.
+func emitUserAgent(tag string, values []string) {
+	encoded, err := json.Marshal(append([]string{}, values...))
+	must(err)
+	emit("%s user-agent %s", tag, encoded)
+}
+
 // ---------- grpc-go ----------
 
 type grpcPeer struct {
@@ -194,6 +203,10 @@ func (p *grpcPeer) Unary(ctx context.Context, request *pb.Message) (*pb.Message,
 		must(grpc.SetHeader(ctx, metadata.Pairs("x-head", "ready")))
 	}
 	must(grpc.SetTrailer(ctx, metadata.Pairs("x-tail", "done")))
+	if request.Value == "user-agent" {
+		md, _ := metadata.FromIncomingContext(ctx)
+		emitUserAgent(p.tag, md.Get("user-agent"))
+	}
 	return unaryBehaviour(ctx, p.tag, request)
 }
 
@@ -251,6 +264,9 @@ func connectMux(tag string) *http.ServeMux {
 	mux := http.NewServeMux()
 	mux.Handle(procedurePrefix+"Unary", connect.NewUnaryHandler(procedurePrefix+"Unary",
 		func(ctx context.Context, request *connect.Request[pb.Message]) (*connect.Response[pb.Message], error) {
+			if request.Msg.Value == "user-agent" {
+				emitUserAgent(tag, request.Header().Values("User-Agent"))
+			}
 			reply, err := unaryBehaviour(ctx, tag, request.Msg)
 			if err != nil {
 				return nil, toConnect(err)

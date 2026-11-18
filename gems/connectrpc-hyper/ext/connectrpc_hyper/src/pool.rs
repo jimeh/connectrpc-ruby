@@ -231,12 +231,30 @@ impl RequestSpec {
         builder = if h2 {
             builder.uri(self.uri.clone())
         } else {
-            let target = self.uri.path_and_query().map_or("/", |p| p.as_str());
             let authority = self
                 .uri
                 .authority()
                 .map_or(self.origin.host.as_str(), |a| a.as_str());
-            builder.uri(target).header(http::header::HOST, authority)
+            // A forwarding proxy takes the absolute form and its credentials;
+            // an origin, direct or through a tunnel, takes the origin form.
+            let builder = match self
+                .origin
+                .proxy
+                .as_ref()
+                .filter(|_| self.origin.forwarded())
+            {
+                Some(route) => {
+                    let builder = builder.uri(self.uri.clone());
+                    match &route.authorization {
+                        Some(value) => {
+                            builder.header(http::header::PROXY_AUTHORIZATION, value.clone())
+                        }
+                        None => builder,
+                    }
+                }
+                None => builder.uri(self.uri.path_and_query().map_or("/", |p| p.as_str())),
+            };
+            builder.header(http::header::HOST, authority)
         };
         let mut request = builder
             .body(body)

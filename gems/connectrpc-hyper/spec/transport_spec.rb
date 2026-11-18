@@ -30,7 +30,7 @@ RSpec.describe ConnectRPC::Hyper::Transport do
     expect(runtime).to be_between(2, 3)
     expect(added).to eq(runtime)
     expect(output.lines.last.chomp).to eq("#<ConnectRPC::Hyper::Transport connections=pooled http2=true tls=true " \
-                                          "state=open>")
+                                          "proxy=environment state=open>")
     expect(output).not_to include(peer.certs)
   end
 

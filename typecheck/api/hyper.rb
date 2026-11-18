@@ -2,9 +2,12 @@
 
 transport = ConnectRPC::Hyper::Transport.new(
   connections: :per_call, idle_timeout: nil, keepalive: ConnectRPC::Keepalive.new(time: 60), http2: false,
-  connect_timeout: 5, ca_file: "ca.pem", certificate_chain: ["-----BEGIN CERTIFICATE-----"], private_key: "key"
+  connect_timeout: 5, ca_file: "ca.pem", certificate_chain: ["-----BEGIN CERTIFICATE-----"], private_key: "key",
+  proxy: "http://proxy.invalid:3128"
 )
 pooled = ConnectRPC::Hyper::Transport.new
+[ConnectRPC::Hyper::Transport.new(proxy: URI("http://user:secret@proxy.invalid:3128")),
+ ConnectRPC::Hyper::Transport.new(proxy: nil), ConnectRPC::Hyper::Transport.new(proxy: :environment)].size
 pooled.inspect.size
 transport.streaming_capabilities.include?(:bidi_stream)
 pooled.grpc_capabilities.include?(:unary)

@@ -4,9 +4,11 @@ module ConnectRPC
 
     # Since 0.3.0. A reactor-free client transport for core's unary,
     # streaming and native gRPC SPIs. Construction validates options and
-    # starts no thread or socket.
+    # starts no thread or socket. `proxy:` takes :environment (the default,
+    # snapshotted at construction), an http:// proxy String or URI, or nil
+    # for direct connections.
     class Transport
-      def initialize: (?connections: :pooled | :per_call, ?idle_timeout: Numeric?, ?keepalive: Keepalive?, ?http2: bool, ?connect_timeout: Numeric?, ?ca_file: (String | _ToPath)?, ?certificate_chain: Array[String]?, ?private_key: String?) -> void
+      def initialize: (?connections: :pooled | :per_call, ?idle_timeout: Numeric?, ?keepalive: Keepalive?, ?http2: bool, ?connect_timeout: Numeric?, ?ca_file: String?, ?certificate_chain: Array[String]?, ?private_key: String?, ?proxy: :environment | String | URI::Generic | nil) -> void
       def inspect: () -> String
       def call: (TransportRequest) -> TransportResponse
       def streaming_capabilities: () -> Array[streaming_cardinality]

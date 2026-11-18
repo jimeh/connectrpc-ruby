@@ -13,11 +13,20 @@ module ConnectRPC
       GRPC = %i[unary server_stream client_stream bidi_stream].freeze
       NO_GRPC = [].freeze
       CONNECTIONS = %i[pooled per_call].freeze
-      private_constant :STREAMING, :HTTP1_STREAMING, :GRPC, :NO_GRPC, :CONNECTIONS
+      # Go net/http bounds a proxy CONNECT exchange by one minute and its
+      # response head by MaxResponseHeaderBytes' default, as core NetHTTP does.
+      TUNNEL_TIMEOUT = 60
+      MAX_TUNNEL_HEAD = 10 * 1024 * 1024
+      UNUSABLE_PROXY = { cgi: :proxy_cgi, invalid_address: :proxy_address }.freeze
+      private_constant :STREAMING, :HTTP1_STREAMING, :GRPC, :NO_GRPC, :CONNECTIONS, :TUNNEL_TIMEOUT,
+                       :MAX_TUNNEL_HEAD, :UNUSABLE_PROXY
 
-      # rubocop:disable-next Metrics/MethodLength
+      # proxy: :environment snapshots HTTP_PROXY, HTTPS_PROXY and NO_PROXY now
+      # (Go net/http rules, through core's ConnectRPC::Proxy). A String or URI
+      # proxies every request; nil connects directly. Only http:// proxies.
+      # rubocop:disable-next Metrics/MethodLength, Metrics/AbcSize
       def initialize(connections: :pooled, idle_timeout: 1800, keepalive: nil, http2: true, connect_timeout: 20,
-                     ca_file: nil, certificate_chain: nil, private_key: nil)
+                     ca_file: nil, certificate_chain: nil, private_key: nil, proxy: :environment)
         raise ArgumentError, "connections must be :pooled or :per_call" unless CONNECTIONS.include?(connections)
         raise ArgumentError, "keepalive must be a Keepalive or nil" unless keepalive.nil? || keepalive.is_a?(Keepalive)
         raise ArgumentError, "http2 must be true or false" unless [true, false].include?(http2)
@@ -28,6 +37,7 @@ module ConnectRPC
         @keepalive = keepalive
         @http2 = http2
         @tls = TLS.inputs(ca_file: ca_file, certificate_chain: certificate_chain, private_key: private_key)
+        @proxy = proxy_resolver(proxy)
         @lock = Mutex.new
         @closed = ConditionVariable.new
         @state = :open
@@ -36,26 +46,31 @@ module ConnectRPC
         build_driver
       end
 
+      # Never shows proxy URLs, credentials or TLS material.
       def inspect
-        "#<#{self.class} connections=#{@connections} http2=#{@http2} tls=#{!@tls.nil?} state=#{state}>"
+        "#<#{self.class} connections=#{@connections} http2=#{@http2} tls=#{!@tls.nil?} proxy=#{proxy_mode} " \
+          "state=#{state}>"
       end
 
       def streaming_capabilities = @http2 ? STREAMING : HTTP1_STREAMING
       def grpc_capabilities = @http2 ? GRPC : NO_GRPC
 
       def call(request)
+        check_origin!(request.url)
         CallCancellation.with_request(request) { |outgoing| perform_call(outgoing) }
       end
 
       def open_stream(request, &)
         raise ArgumentError, "A streaming block is required" unless block_given?
 
+        check_origin!(request.url)
         CallCancellation.with_request(request) { |outgoing| perform_stream(outgoing, grpc: false, &) }
       end
 
       def open_grpc_stream(request, &)
         raise ArgumentError, "A gRPC block is required" unless block_given?
 
+        check_origin!(request.url)
         CallCancellation.with_request(request) { |outgoing| perform_stream(outgoing, grpc: true, &) }
       end
 
@@ -73,6 +88,21 @@ module ConnectRPC
       end
 
       private
+
+      # Core NetHTTP's validation: an explicit proxy must be http://.
+      def proxy_resolver(option)
+        resolver = Proxy.resolver(option)
+        fixed = resolver.is_a?(Proxy::Static) ? resolver.endpoint : nil
+        raise ArgumentError, "Unsupported proxy scheme", cause: nil if fixed && fixed.scheme != "http"
+
+        resolver
+      end
+
+      def proxy_mode
+        return "environment" unless @proxy.is_a?(Proxy::Static)
+
+        @proxy.endpoint ? "explicit" : "direct"
+      end
 
       def optional_seconds(value, name)
         return if value.nil?
@@ -129,16 +159,22 @@ module ConnectRPC
       end
 
       def build_driver
-        keepalive = @keepalive && [@keepalive.time.to_f, @keepalive.timeout.to_f, @keepalive.permit_without_calls]
         roots, chain, key = @tls
         @driver = Native::Driver.new(@connections == :pooled, @http2, @idle_timeout&.to_f, @connect_timeout&.to_f,
-                                     keepalive, roots || [], chain, key)
+                                     native_keepalive, roots || [], chain, key, tunnel_limits)
         @driver_pid = Process.pid
       rescue Native::Failure => e
         raise unless e.kind == :tls_config
 
         raise ArgumentError, "Invalid TLS client configuration: #{e.message}", cause: nil
       end
+
+      def native_keepalive
+        @keepalive && [@keepalive.time.to_f, @keepalive.timeout.to_f, @keepalive.permit_without_calls]
+      end
+
+      # [CONNECT exchange seconds, response head bytes].
+      def tunnel_limits = [TUNNEL_TIMEOUT.to_f, MAX_TUNNEL_HEAD]
 
       def check_request!(request)
         request.cancellation ? request.cancellation.check! : request.deadline&.check!
@@ -148,6 +184,22 @@ module ConnectRPC
         return if url.scheme == "https" || @tls.nil?
 
         raise ArgumentError, "TLS options require an HTTPS origin"
+      end
+
+      # [host, port, Proxy-Authorization or nil] for the request's proxy, or
+      # nil for a direct connection. An unusable environment proxy fails the
+      # call before any socket opens; it never falls back to a direct one.
+      def proxy_route(url)
+        endpoint = begin
+          @proxy.for(url)
+        rescue Proxy::Unusable => e
+          raise Errors.proxy(UNUSABLE_PROXY.fetch(e.reason)), cause: nil
+        end
+        return unless endpoint
+        raise Errors.proxy(:proxy_scheme), cause: nil unless endpoint.scheme == "http"
+
+        credentials = "Basic #{["#{endpoint.user}:#{endpoint.password}"].pack('m0')}" if endpoint.user
+        [endpoint.host, endpoint.port, credentials]
       end
 
       def fields(headers)
@@ -167,21 +219,20 @@ module ConnectRPC
       end
 
       def perform_call(request) # rubocop:disable Metrics/AbcSize, Metrics/MethodLength
-        check_origin!(request.url)
         check_request!(request)
         native = driver
         with_cancel(request) do |cancel|
           status, headers, body = Errors.native(request, grpc: false) do
             native.unary(request.http_method, request.url.to_s, fields(request.headers),
                          request.http_method == "GET" ? nil : request.body, request.response_limit,
-                         request.deadline ? :connect : nil, request.deadline&.remaining, cancel)
+                         request.deadline ? :connect : nil, request.deadline&.remaining, cancel,
+                         proxy_route(request.url))
           end
           TransportResponse.new(status: status, headers: headers, body: body)
         end
       end
 
       def perform_stream(request, grpc:) # rubocop:disable Metrics/AbcSize, Metrics/MethodLength
-        check_origin!(request.url)
         check_request!(request)
         native = driver
         with_cancel(request) do |cancel|
@@ -191,7 +242,7 @@ module ConnectRPC
               native.open(request.url.to_s, fields(request.headers), (if request.deadline
                                                                         grpc ? :grpc : :connect
                                                                       end),
-                          request.deadline&.remaining, grpc, @http2, cancel)
+                          request.deadline&.remaining, grpc, @http2, cancel, proxy_route(request.url))
             end
             yield Exchange.new(call, request, grpc: grpc)
           ensure
