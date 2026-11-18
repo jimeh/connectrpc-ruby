@@ -284,8 +284,12 @@ transport = ConnectRPC::Transports::NetHTTP.new(
   NFKC-normalized, lowercased, given ASCII dots for ideographic full stops and
   converted to Punycode, so a Unicode entry matches its `xn--` host name, and
   an IPv4-mapped range such as `::ffff:10.0.0.0/120` also matches IPv4 hosts.
-  UTS #46 validity checks and its other mappings are not applied. A value with
-  invalid bytes is treated as unparseable.
+  UTS #46's other validity checks and mappings are not applied. A name that
+  Go's IDNA would reject, because it has invalid bytes or maps to anything but
+  letters, digits, hyphens and dots (a fullwidth at sign, slash or colon, for
+  example), never matches as a `NO_PROXY` entry. As an environment proxy host
+  it fails the call rather than going direct; as an explicit proxy it raises
+  `ArgumentError`.
 - A String or URI proxies every request, including loopback and `NO_PROXY`
   hosts. A String without a scheme is read as `http://value`. `proxy: nil`
   always connects directly.

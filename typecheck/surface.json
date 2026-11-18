@@ -1935,6 +1935,7 @@
     "ConnectRPC::Proxy::Environment#inspect": {"kind":"method","visibility":"public","parameters":"","classification":"internal"},
     "ConnectRPC::Proxy::Environment#ip_match?": {"kind":"method","visibility":"private","parameters":"matcher, address, port","classification":"internal"},
     "ConnectRPC::Proxy::Environment#no_proxy": {"kind":"method","visibility":"private","parameters":"value","classification":"internal"},
+    "ConnectRPC::Proxy::Environment#proxy": {"kind":"method","visibility":"private","parameters":"value","classification":"internal"},
     "ConnectRPC::Proxy::Environment#use_proxy?": {"kind":"method","visibility":"private","parameters":"url, scheme","classification":"internal"},
     "ConnectRPC::Proxy::Environment#value": {"kind":"method","visibility":"private","parameters":"env, *names","classification":"internal"},
     "ConnectRPC::Proxy::Punycode.adapt": {"kind":"method","visibility":"public","parameters":"delta, points, first","classification":"internal"},

@@ -21,6 +21,7 @@ module ConnectRPC
     AUTHORITY = %r{\A([A-Za-z][A-Za-z0-9+.-]*://)([^/?#]*)(.*)\z}m
     PROXY_PORTS = { "http" => 80, "https" => 443, "socks5" => 1080, "socks5h" => 1080 }.freeze
     TARGET_PORTS = { "http" => 80, "https" => 443 }.freeze
+    LDH_HOST = /\A[a-z0-9.-]+\z/
 
     # A proxy that this call must not use. The reason is a fixed symbol and the
     # message never includes the proxy value.
@@ -56,6 +57,9 @@ module ConnectRPC
     # Go retries a value without a scheme or host as http://value. A value
     # that still fails to parse is unusable.
     def self.parse(value)
+      value = utf8(value)
+      return unless value
+
       uri = uri(value)
       return uri unless uri.nil? || uri.scheme.nil? || uri.host.to_s.empty?
 
@@ -64,37 +68,41 @@ module ConnectRPC
 
     # Go url.Parse splits userinfo at the last "@" (go.dev/issue/22655) and
     # accepts a Unicode host, which Go's transport dials in ASCII form. Ruby's
-    # URI accepts neither, so encode both before parsing.
+    # URI accepts neither, so encode both before parsing. The authority is
+    # split before the host is mapped, and a mapped host has no delimiters.
     def self.uri(value)
-      value = utf8(value)
-      return unless value
-
       if (match = AUTHORITY.match(value))
         userinfo, at, host_port = match[2].to_s.rpartition("@")
         host, colon, port = host_port.partition(":")
-        value = "#{match[1]}#{userinfo.gsub('@', '%40')}#{at}#{ascii_host(host)}#{colon}#{port}#{match[3]}"
+        host = ascii_host(host)
+        return unless host
+
+        value = "#{match[1]}#{userinfo.gsub('@', '%40')}#{at}#{host}#{colon}#{port}#{match[3]}"
       end
       URI.parse(value)
     rescue URI::InvalidURIError
       nil
     end
 
-    # A valid UTF-8 copy, or nil. Go handles bytes, so an invalidly encoded
-    # value is unparseable here rather than an exception.
+    # A valid UTF-8 copy of the value's bytes, or nil. Go handles bytes in any
+    # encoding, so an invalidly encoded value is unparseable, not an exception.
     def self.utf8(value)
-      value = value.to_s.dup.force_encoding(Encoding::UTF_8)
+      value = value.to_s.b.force_encoding(Encoding::UTF_8)
       value if value.valid_encoding?
     end
 
     # Maps a non-ASCII host as Go's idna.Lookup.ToASCII does for ordinary
     # names: NFKC, lowercase, ideographic full stops as dots, then Punycode
-    # for each non-ASCII label. UTS #46 validity checks and its other
-    # mappings are not applied.
+    # for each non-ASCII label. Nil when the result is not a letter, digit,
+    # hyphen and dot name, which Go's STD3 rules reject, so a mapping never
+    # yields a delimiter such as "@", "/" or ":". UTS #46's other validity
+    # checks and mappings are not applied.
     def self.ascii_host(host)
       return host if host.ascii_only?
 
-      mapped = host.unicode_normalize(:nfkc).downcase.tr("\u3002", ".")
-      mapped.split(".", -1).map { |label| label.ascii_only? ? label : "xn--#{Punycode.encode(label)}" }.join(".")
+      labels = host.unicode_normalize(:nfkc).downcase.tr("\u3002", ".").split(".", -1)
+      mapped = labels.map { |label| label.ascii_only? ? label : "xn--#{Punycode.encode(label)}" }.join(".")
+      mapped if LDH_HOST.match?(mapped)
     end
 
     # Nil unless the URL names a scheme, a host and any port in 1..65535. A
@@ -222,8 +230,8 @@ module ConnectRPC
 
     class Environment
       def initialize(env)
-        @http = value(env, "HTTP_PROXY", "http_proxy")
-        @https = value(env, "HTTPS_PROXY", "https_proxy")
+        @http = proxy(value(env, "HTTP_PROXY", "http_proxy"))
+        @https = proxy(value(env, "HTTPS_PROXY", "https_proxy"))
         @cgi = !env.fetch("REQUEST_METHOD", nil).to_s.empty?
         @all = false
         @ip_matchers = []
@@ -241,15 +249,26 @@ module ConnectRPC
       def for(url)
         scheme = url.scheme.to_s.downcase
         proxy = { "https" => @https, "http" => @http }[scheme]
-        uri = proxy && Proxy.parse(proxy)
-        return unless uri
+        return unless proxy
         raise Unusable.new(:cgi) if scheme == "http" && @cgi # rubocop:disable Style/RaiseArgs
         return unless use_proxy?(url, scheme)
+        raise Unusable.new(:invalid_address) unless proxy.is_a?(Endpoint) # rubocop:disable Style/RaiseArgs
 
-        Proxy.endpoint(uri) || raise(Unusable.new(:invalid_address)) # rubocop:disable Style/RaiseArgs
+        proxy
       end
 
       private
+
+      # Parses a value once, as Go does: an Endpoint, :unusable for a value Go
+      # would parse but not dial, or nil for none. Go's url.Parse accepts any
+      # non-ASCII bytes in a host and its dial then fails, so such a value is
+      # unusable rather than ignored.
+      def proxy(value)
+        uri = value && Proxy.parse(value)
+        return Proxy.endpoint(uri) || :unusable if uri
+
+        :unusable if value && !value.b.ascii_only?
+      end
 
       def value(env, *names)
         names.each do |name|
@@ -287,10 +306,11 @@ module ConnectRPC
       end
 
       def no_proxy(value) # rubocop:disable Metrics/MethodLength, Metrics/AbcSize, Metrics/CyclomaticComplexity, Metrics/PerceivedComplexity
-        # Invalid bytes cannot match an ASCII host; the other entries still apply.
-        value.to_s.dup.force_encoding(Encoding::UTF_8).scrub.split(",").each do |entry|
-          entry = entry.strip.downcase
-          next if entry.empty?
+        # Go keeps an entry with invalid bytes or an unmappable name as written,
+        # so it never matches an ASCII host; drop it and keep the others.
+        value.to_s.b.split(",").each do |raw|
+          entry = Proxy.utf8(raw)&.strip&.downcase
+          next if entry.nil? || entry.empty?
 
           if entry == "*"
             @all = true
@@ -314,7 +334,8 @@ module ConnectRPC
           host = host[1..].to_s if host.start_with?("*.")
           exact = !host.start_with?(".")
           host = ".#{host}" if exact
-          @domain_matchers << [Proxy.ascii_host(host).freeze, port.to_s.freeze, exact]
+          host = Proxy.ascii_host(host)
+          @domain_matchers << [host.freeze, port.to_s.freeze, exact] if host
         end
         nil
       end

@@ -145,22 +145,56 @@ RSpec.describe ConnectRPC::Proxy do
     end
   end
 
-  describe "invalidly encoded values" do
-    invalid = "http://pr\xFFoxy:3128"
-
-    it "ignores an unparseable environment proxy instead of raising" do
-      expect(resolve({ "HTTPS_PROXY" => invalid, "NO_PROXY" => "*" }, "https://example.com")).to be_nil
-      expect(resolve({ "HTTPS_PROXY" => invalid }, "https://example.com")).to be_nil
+  # Go 1.27.3 parses each of these, keeps the host as written, fails
+  # idna.Lookup.ToASCII (STD3 rules or invalid UTF-8) and then fails the dial.
+  # It never connects to another host or port, and never goes direct unless
+  # NO_PROXY or a loopback target says so.
+  describe "proxy hosts that Go's IDNA rejects" do
+    [
+      "http://proxy\uFF20evil.test:3128", "proxy\uFF20evil.test:3128", "http://relay.test\uFF0Fedge:3128",
+      "http://proxy\uFF1A9999", "http://proxy\uFF03x:3128", "http://pro\u3000xy:3128",
+      "http://pro\uFF3Fxy.test:3128", "http://b\u00FCcher.pro_xy:3128", "http://pr\xFFoxy:3128"
+    ].each do |value|
+      it "fails #{value.inspect} from the environment and rejects it explicitly" do
+        expect { resolve({ "HTTPS_PROXY" => value }, "https://example.com") }
+          .to raise_error(described_class::Unusable) { |error| expect(error.reason).to eq(:invalid_address) }
+        expect(resolve({ "HTTPS_PROXY" => value, "NO_PROXY" => "example.com" }, "https://example.com")).to be_nil
+        expect(resolve({ "HTTPS_PROXY" => value }, "https://localhost")).to be_nil
+        expect { resolve({ "HTTP_PROXY" => value, "REQUEST_METHOD" => "GET", "NO_PROXY" => "*" }) }
+          .to raise_error(described_class::Unusable) { |error| expect(error.reason).to eq(:cgi) }
+        expect { described_class.resolver(value) }.to raise_error(ArgumentError, "Invalid proxy configuration")
+      end
     end
 
-    it "rejects an explicit proxy with the fixed configuration error" do
-      expect { described_class.resolver(invalid) }.to raise_error(ArgumentError, "Invalid proxy configuration")
+    it "keeps an ASCII host as written, as Go skips IDNA for it" do
+      expect(resolve({ "HTTPS_PROXY" => "http://pro_xy.test:3128" }, "https://example.com"))
+        .to eq(["http", "pro_xy.test", 3128])
     end
 
-    it "keeps the valid NO_PROXY entries next to an invalid one" do
-      env = { "HTTPS_PROXY" => "proxy", "NO_PROXY" => "bad\xFF.test, good.test" }
-      expect(resolve(env, "https://good.test")).to be_nil
-      expect(resolve(env, "https://other.test")).to eq(["http", "proxy", 80])
+    it "accepts values in any encoding without raising" do
+      utf16 = "\xFF".dup.force_encoding(Encoding::UTF_16LE)
+      [utf16, utf16.dup.freeze, "proxy.test".encode(Encoding::UTF_16LE)].each do |value|
+        expect { described_class.resolver(value) }.to raise_error(ArgumentError, "Invalid proxy configuration")
+      end
+      expect { resolve({ "HTTPS_PROXY" => utf16 }, "https://example.com") }.to raise_error(described_class::Unusable)
+      expect(resolve({ "HTTPS_PROXY" => "proxy", "NO_PROXY" => utf16 }, "https://example.com"))
+        .to eq(["http", "proxy", 80])
+    end
+  end
+
+  # Go keeps such an entry as written, so it never matches an ASCII host.
+  describe "NO_PROXY entries that Go's IDNA rejects" do
+    {
+      "bad\xFF.test, good.test" => { "good.test" => false, "xn--bad-7t7s.test" => true, "other.test" => true },
+      "bad\uFF20.test, good.test" => { "good.test" => false, "bad.test" => true },
+      "b\u00FCcher.pro_xy, pro_xy.test" => { "pro_xy.test" => false, "a.xn--bcher-kva.pro_xy" => true }
+    }.each do |no_proxy, targets|
+      targets.each do |target, proxied|
+        it "#{proxied ? 'proxies' : 'bypasses'} #{target} with NO_PROXY=#{no_proxy.inspect}" do
+          env = { "HTTPS_PROXY" => "proxy", "NO_PROXY" => no_proxy }
+          expect(resolve(env, "https://#{target}").nil?).to be(!proxied)
+        end
+      end
     end
   end
 

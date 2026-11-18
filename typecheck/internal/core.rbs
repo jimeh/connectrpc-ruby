@@ -530,6 +530,7 @@ module ConnectRPC
     AUTHORITY: Regexp
     PROXY_PORTS: Hash[String, Integer]
     TARGET_PORTS: Hash[String, Integer]
+    LDH_HOST: Regexp
     class Endpoint
       def initialize: (scheme: String, host: String, port: Integer?, user: String?, password: String?) -> void
       attr_reader scheme: String
@@ -550,7 +551,7 @@ module ConnectRPC
     def self.parse: (String) -> URI::Generic?
     def self.uri: (String) -> URI::Generic?
     def self.utf8: (untyped) -> String?
-    def self.ascii_host: (String) -> String
+    def self.ascii_host: (String) -> String?
     def self.endpoint: (URI::Generic) -> Endpoint?
     def self.split_host_port: (String) -> [String, String]?
     def self.ip: (String) -> IPAddr?
@@ -573,8 +574,8 @@ module ConnectRPC
       def inspect: () -> String
     end
     class Environment
-      @http: String?
-      @https: String?
+      @http: Endpoint | Symbol | nil
+      @https: Endpoint | Symbol | nil
       @cgi: bool
       @all: bool
       @ip_matchers: Array[ip_matcher]
@@ -583,6 +584,7 @@ module ConnectRPC
       def inspect: () -> String
       def for: (URI::Generic) -> Endpoint?
       private
+      def proxy: (String?) -> (Endpoint | Symbol | nil)
       def value: (_Environment, *String) -> String?
       def use_proxy?: (URI::Generic, String) -> bool
       def ip_match?: (ip_matcher, IPAddr, String) -> bool

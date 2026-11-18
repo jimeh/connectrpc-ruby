@@ -282,6 +282,8 @@ RSpec.describe "NetHTTP proxies" do
       "an unsupported scheme" => [{ "HTTPS_PROXY" => "socks5://127.0.0.1:1080" }, "https", "unsupported proxy scheme"],
       "an https proxy" => [{ "HTTPS_PROXY" => "https://127.0.0.1:1080" }, "https", "unsupported proxy scheme"],
       "an invalid port" => [{ "HTTPS_PROXY" => "http://127.0.0.1:0" }, "https", "invalid proxy address"],
+      "a host Go's IDNA rejects" => [{ "HTTPS_PROXY" => "http://proxy\uFF20127.0.0.1:9" }, "https",
+                                     "invalid proxy address"],
       "a CGI request" => [{ "HTTP_PROXY" => "http://127.0.0.1:9", "REQUEST_METHOD" => "POST" }, "http",
                           "proxy refused in CGI environment"]
     }.each do |label, (env, scheme, reason)|
