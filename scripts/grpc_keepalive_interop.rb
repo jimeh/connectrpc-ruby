@@ -77,6 +77,22 @@ module KeepaliveInterop
   class << self
     attr_accessor :sink
 
+    # The longest run of consecutive `frames` each closer than `below`
+    # seconds to the one before it, as [frames in the run, smallest gap].
+    # PING enforcement strikes every PING in such a run after the first
+    # unless a HEADERS or DATA write forgave it.
+    def close_run(frames, below)
+      gaps = frames.each_cons(2).map { |earlier, later| later.at - earlier.at }
+      run = longest = gaps.empty? ? frames.size : 1
+      gaps.each do |gap|
+        run = gap < below ? run + 1 : 1
+        longest = [longest, run].max
+      end
+      [longest, gaps.min]
+    end
+
+    def milliseconds(seconds) = seconds ? "#{(seconds * 1000).round(1)} ms" : "none"
+
     def record(framer, direction, frame)
       local, remote = (@endpoints ||= ObjectSpace::WeakMap.new)[framer] ||= endpoints(framer)
       type = TYPES.fetch(frame.type, "other")
@@ -290,23 +306,35 @@ module KeepaliveInterop
   # acknowledged, the host's own BDP PINGs are written and acknowledged, and
   # the host grows its stream window with SETTINGS. The host writes no GOAWAY;
   # the client's only GOAWAY is the NO_ERROR one grpc-go sends when it closes.
+  # At least four grpc-go BDP PINGs on one connection each follow the one
+  # before within the Host's default min_time, so its enforcement had to
+  # forgive them to avoid three strikes.
   module BDPEvidence
+    MIN_TIME = ConnectRPC::Async::ServerKeepalive.new.min_time
+
     def self.verify(wire, port, label)
       frames = wire.frames(local_port: port)
+      runs = wire.connections(local_port: port).map do |connection|
+        read = wire.frames(connection).select { |frame| frame.read? && frame.ping? && frame.bdp? }
+        KeepaliveInterop.close_run(read, MIN_TIME)
+      end
+      run, gap = runs.max_by(&:first) || [0, nil]
       peer_pings = frames.count { |frame| frame.read? && frame.ping? && frame.bdp? }
       peer_acked = frames.count { |frame| frame.write? && frame.ack? && frame.bdp? }
       own_pings = frames.count { |frame| frame.write? && frame.ping? && frame.bdp? }
       own_acked = frames.count { |frame| frame.read? && frame.ack? && frame.bdp? }
       growth = frames.filter_map { |frame| frame.write? && frame.growth }
       goaways = frames.select { |frame| frame.type == "goaway" && (frame.write? || frame.goaway[1] != 0) }
-      unless peer_pings.positive? && peer_acked == peer_pings && own_pings.positive? && own_acked.positive? &&
+      unless run >= 4 && peer_acked == peer_pings && own_pings.positive? && own_acked.positive? &&
              growth.any? { |window| window > 65_536 } && goaways.empty?
-        raise "#{label}: grpc-go BDP PINGs #{peer_pings}, acked #{peer_acked}; host BDP PINGs #{own_pings}, " \
-              "acked #{own_acked}; SETTINGS growth #{growth}; GOAWAY #{goaways.map(&:summary)}"
+        raise "#{label}: grpc-go BDP PINGs #{peer_pings}, acked #{peer_acked}, longest run on one connection " \
+              "under #{MIN_TIME}s #{run} (min gap #{KeepaliveInterop.milliseconds(gap)}); host BDP PINGs " \
+              "#{own_pings}, acked #{own_acked}; SETTINGS growth #{growth}; GOAWAY #{goaways.map(&:summary)}"
       end
 
-      "#{peer_pings} grpc-go BDP PINGs acked; host wrote #{own_pings} BDP PINGs (#{own_acked} acked) and grew " \
-        "its stream window #{growth.join(' -> ')}; no host or error GOAWAY"
+      "#{peer_pings} grpc-go BDP PINGs acked, #{run} in a row on one connection each under #{MIN_TIME}s apart " \
+        "(min gap #{KeepaliveInterop.milliseconds(gap)}); host wrote #{own_pings} BDP PINGs (#{own_acked} acked) " \
+        "and grew its stream window #{growth.join(' -> ')}; no host or error GOAWAY"
     end
   end
 
@@ -359,15 +387,24 @@ module KeepaliveInterop
     # The Ruby Transport's BDP PINGs against grpc-go's enforcement (MinTime
     # 1s, a strike for any closer PING not forgiven by a server HEADERS or
     # DATA write). Each BDP PING follows DATA read from the server, which
-    # forgives it. Starting at a 64 KiB stream window, three 1 MiB messages
+    # forgives it. At least four BDP PINGs in a row, each under 1s after the
+    # one before, would reach grpc-go's third strike without that
+    # forgiveness. Starting at a 64 KiB stream window, three 1 MiB messages
     # give the estimator room to grow it; DATA past 64 KiB between two stream
-    # WINDOW_UPDATEs shows grpc-go sending into the grown window.
+    # WINDOW_UPDATEs shows grpc-go sending into the grown window. The client
+    # reads nothing until then, so it returns no stream credit and only the
+    # SETTINGS growth can grant those bytes, however fast either side runs.
     def bdp_client(origin, port)
       seen = @wire.connections(remote_port: port)
       transport = ConnectRPC::Async::Transport.new(origin: origin, stream_receive_window: 65_536, **client_options)
       payload = "\xA5".b * (1 << 20)
       replies = []
       peer_client(origin, transport).server_stream(MESSAGE.new(value: "bdp", payload: payload)) do |reader|
+        connection = new_connection(port, seen)
+        spent = -> { credit_spent(@wire.frames(connection)) }
+        @wire.wait("#{@mode} grpc-go DATA past 64 KiB in the grown stream window", within: 10, state: spent) do
+          spent.call > 65_536
+        end
         reader.each { |message| replies << message }
       end
       unless replies.map(&:value) == ["bdp", "second", ""] && replies.all? { |reply| reply.payload == payload }
@@ -376,21 +413,25 @@ module KeepaliveInterop
 
       connection = new_connection(port, seen)
       frames = @wire.frames(connection)
-      pings = frames.count { |frame| frame.write? && frame.ping? && frame.bdp? }
+      bdp_pings = frames.select { |frame| frame.write? && frame.ping? && frame.bdp? }
+      pings = bdp_pings.size
+      run, gap = KeepaliveInterop.close_run(bdp_pings, 1)
       acked = frames.count { |frame| frame.read? && frame.ack? && frame.bdp? }
       growth = frames.filter_map { |frame| frame.write? && frame.growth }
       spent = credit_spent(frames)
       goaways = frames.select { |frame| frame.read? && frame.type == "goaway" }
       connections = @wire.connections(remote_port: port) - seen
-      unless pings >= 4 && acked.positive? && growth.any? { |window| window > 65_536 } && spent > 65_536 &&
-             goaways.empty? && connections == [connection]
-        raise "#{@mode}: Ruby BDP PINGs #{pings}, acked #{acked}, SETTINGS growth #{growth}, most DATA between " \
-              "stream WINDOW_UPDATEs #{spent}, GOAWAY #{goaways.map(&:summary)}, connections #{connections}"
+      unless pings >= 4 && run >= 4 && acked.positive? && growth.any? { |window| window > 65_536 } &&
+             spent > 65_536 && goaways.empty? && connections == [connection]
+        raise "#{@mode}: Ruby BDP PINGs #{pings}, longest run under 1s #{run} (min gap " \
+              "#{KeepaliveInterop.milliseconds(gap)}), acked #{acked}, SETTINGS growth #{growth}, most DATA " \
+              "between stream WINDOW_UPDATEs #{spent}, GOAWAY #{goaways.map(&:summary)}, connections #{connections}"
       end
 
-      puts "PASS Ruby Transport BDP -> grpc-go MinTime 1s #{@mode}: #{pings} BDP PINGs (#{acked} acked), stream " \
-           "window grown #{growth.join(' -> ')}, #{spent} DATA bytes between stream WINDOW_UPDATEs, no GOAWAY, " \
-           "3 MiB server stream on one connection"
+      puts "PASS Ruby Transport BDP -> grpc-go MinTime 1s #{@mode}: #{pings} BDP PINGs (#{acked} acked), #{run} " \
+           "in a row each under 1s apart (min gap #{KeepaliveInterop.milliseconds(gap)}), stream window grown " \
+           "#{growth.join(' -> ')}, #{spent} DATA bytes between stream WINDOW_UPDATEs, no GOAWAY, 3 MiB server " \
+           "stream on one connection"
     ensure
       transport&.close(grace: 0)
     end

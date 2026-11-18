@@ -119,7 +119,9 @@ These affect native HTTP/2 connections of the Async `Transport`,
   64 KiB, so all streams on a connection shared 64 KiB per round trip. Host
   stream windows still start at 64 KiB, and dynamic windows, below, grow them.
   A server can now fill the windows of the streams it admits in one round trip.
-  Pass `connection_receive_window: 65_536` to keep the old connection window.
+  Pass `connection_receive_window: 65_536` with `dynamic_receive_windows: false`
+  to keep the old connection window, since growth raises the connection window
+  whenever the estimate exceeds it.
 - `Transport` and `ThreadedTransport` advertise a 4 MiB stream window instead
   of 64 KiB, so one response stream is no longer limited to 64 KiB per round
   trip: a 3 MiB download over 50 ms of round-trip time takes about 0.13 s

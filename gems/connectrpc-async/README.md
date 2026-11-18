@@ -494,9 +494,12 @@ Rails and Rack hosts cannot offer any of this; see
 pinned grpc-go peer over h2c, TLS and mTLS. The Ruby client is checked against
 grpc-go PING enforcement, both compliant and over-eager with `too_many_pings`,
 and a `Transport` starting at a 64 KiB stream window downloads 3 MiB from it,
-sending BDP PINGs past the strike threshold and growing its window without a
-GOAWAY. grpc-go's documented client keepalive and its BDP PINGs are checked
-against the default `ServerKeepalive`, along with a raw PING flood and an age
+growing its window without a GOAWAY while it sends at least four BDP PINGs in
+a row, each less than grpc-go's 1-second `MinTime` after the one before, which
+would reach the third strike without forgiveness. grpc-go's documented client
+keepalive and its BDP PINGs, again at least four in a row on one connection
+within the 5-second `min_time`, are checked against the default
+`ServerKeepalive`, along with a raw PING flood and an age
 drain with a bidi stream in flight. During the grpc-go client's uploads the
 `Host` writes its own BDP PINGs, which the client acknowledges, and grows its
 stream window. It belongs to `async:verify`. grpc-go clients PING at most
@@ -1310,10 +1313,13 @@ Unlike grpc-go, an explicit `stream_receive_window` or
 defaults: the estimate starts at `stream_receive_window` and only grows. As in
 grpc-go, every received DATA frame counts toward a sample, including padding and
 DATA for refused or closed streams, so traffic the host rejects can raise the
-windows of the streams it admits, up to `max_receive_window`. A host queues its
-BDP frames on the [control writer](#server-keepalive); a client writes them from
-its reader only when no other frame write holds or waits for the connection,
-and otherwise skips that sample. Each takes effect when its frame is written:
+windows of the streams it admits, up to `max_receive_window`. The reader never
+writes BDP frames, so a frame write blocked by a full socket send buffer, such
+as during a large upload, never stops it reading. A host queues them on the
+[control writer](#server-keepalive). A client hands them to a writer task of
+its connection, which holds at most one BDP PING and the latest growth, and
+sends growth as soon as the ACK that measured it is read. Each takes effect
+when its frame is written:
 a grown window is applied to the streams just before its SETTINGS reaches the
 wire, so the peer can spend it at once, including on a stream opened before the
 peer acknowledges it.

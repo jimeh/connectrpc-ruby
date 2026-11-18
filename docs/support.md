@@ -442,10 +442,12 @@ Since 0.3.0, the Async hosts and HTTP/2 client transports take
 announced with a WINDOW_UPDATE right after SETTINGS). The stream window is also
 the per-stream ingress bound. It starts at 64 KiB on hosts and 4 MiB on
 `Transport` and `ThreadedTransport`, as in Go's net/http2 client. A stream moves
-at most one stream window per round trip, so by default both windows grow at
-run time from BDP PINGs, as grpc-go's do, up to `max_receive_window` (default
-16 MiB), which then bounds each stream's unread payload. `dynamic_receive_windows:
-false` keeps them static. See
+at most one stream window per round trip, so by default the stream windows
+grow at run time from BDP PINGs, as grpc-go's do, up to `max_receive_window`
+(default 16 MiB). The connection window grows only when the estimate exceeds
+`connection_receive_window`. With dynamic windows each stream's unread payload
+is bounded by the larger of `stream_receive_window` and `max_receive_window`.
+`dynamic_receive_windows: false` keeps both windows static. See
 [flow-control windows](../gems/connectrpc-async/README.md#flow-control-windows)
 for the memory ceilings.
 For Rails and Rack hosts the proxy owns these windows, for example Envoy's

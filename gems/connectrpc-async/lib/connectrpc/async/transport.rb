@@ -360,6 +360,7 @@ module ConnectRPC
           connection.grow_connection_window
         end
         resource.ready = true
+        connection.start_receive_window_writer(@lifetime)
         connection.read_in_background(parent: @lifetime)
         connection
       end

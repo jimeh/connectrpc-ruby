@@ -170,7 +170,9 @@ RSpec.describe "HTTP/2 dynamic receive windows" do
         body = exchange.instance_variable_get(:@operation).fetch(:response).stream.instance_variable_get(:@input)
         ingress_burst(connection, [stream.id, 65_536])
         await_growth(task, wire, [131_072])
-        # The reader writes them itself while the frame guard is free.
+        # The connection's writer task sends them. The reader reserved the
+        # probe's pending connection credit when the first DATA frame started
+        # the sample.
         expect(wire[:control].drop(1)).to eq([[:window_update, 16_777_216 - 65_535], [:window_update, 16_384],
                                               [:ping, bdp_ping], [:settings, [[window, 131_072]]]])
         ingress_burst(connection, [stream.id, 65_536])
@@ -181,6 +183,78 @@ RSpec.describe "HTTP/2 dynamic receive windows" do
         ingress_barrier(task, connection, wire)
         expect(wire[:resets]).to eq(stream.id => flow_control_error)
         expect(wire[:goaway]).to be_nil
+      end
+    ensure
+      begin
+        transport&.close(grace: 0)
+        peer&.stop
+        peer&.wait
+      ensure
+        bound&.close
+      end
+    end
+  end
+
+  it "keeps a Transport's reader applying frames while its BDP frame write is held, then publishes the growth" do
+    reactor do |task|
+      bound = IO::Endpoint.tcp("127.0.0.1", 0).bound
+      listener = bound.sockets.first
+      peers = Async::Queue.new
+      peer = task.async do
+        socket, = listener.accept
+        connection = Async::HTTP::Protocol::HTTP2::Server.new(IO::Stream(socket))
+        wire = observe_ingress_wire(connection)
+        connection.read_connection_preface(AsyncHelpers::INTERNAL.settings(128))
+        connection.read_in_background(parent: task)
+        2.times do
+          incoming = connection.requests.dequeue
+          incoming.stream.send_headers([[":status", "200"]])
+          peers.enqueue([connection, wire, incoming.stream])
+        end
+        Async::Promise.new.wait
+      ensure
+        AsyncHelpers::INTERNAL.raw_close(socket)
+        connection&.close
+      end
+      origin = "http://127.0.0.1:#{listener.local_address.ip_port}"
+      transport = ConnectRPC::Async::Transport.new(origin: origin, stream_receive_window: 65_536,
+                                                   max_receive_window: 131_072)
+      outgoing = ConnectRPC::StreamRequest.new(url: URI("#{origin}/stream"), http_method: "POST", headers: {})
+      backlog = lambda do |exchange|
+        response = exchange.instance_variable_get(:@operation).fetch(:response)
+        ingress_backlog(response.stream.instance_variable_get(:@input)).first
+      end
+      transport.open_stream(outgoing) do |first|
+        first.close_send
+        first.response_head
+        connection, wire, first_stream = peers.dequeue
+        transport.open_stream(outgoing) do |second|
+          second.close_send
+          second.response_head
+          _, _, second_stream = peers.dequeue
+          client = transport.instance_variable_get(:@resources).first.connection
+          bandwidth = client.instance_variable_get(:@bandwidth)
+          gate = hold_after_flush(client) { |frame| bdp_ping?(frame) }
+          ingress_burst(connection, [first_stream.id, 65_536])
+          # The BDP PING reached the peer, and its writer still holds the
+          # frame guard. The peer ACKs it and sends DATA on the sibling.
+          gate.started.dequeue
+          ingress_data(connection, second_stream.id, "b" * 16_384)
+          state = -> { [backlog.call(first), backlog.call(second), bandwidth.estimate] }
+          ingress_wait(task, "the reader to apply DATA and the ACK during the held write", state: state) do
+            state.call == [65_536, 16_384, 131_072]
+          end
+          # The growth waits for the writer; nothing is published yet.
+          expect([ingress_growth(wire), client.stream_receive_window]).to eq([[], 65_536])
+          gate.release.enqueue(true)
+          # The growth computed at the ACK goes out with no further DATA.
+          await_growth(task, wire, [131_072])
+          expect(client.stream_receive_window).to eq(131_072)
+          ingress_burst(connection, [first_stream.id, 65_536])
+          ingress_barrier(task, connection, wire)
+          expect(backlog.call(first)).to eq(131_072)
+          expect([wire[:resets], wire[:goaway], wire[:probes]]).to eq([{}, nil, [bdp_ping]])
+        end
       end
     ensure
       begin
