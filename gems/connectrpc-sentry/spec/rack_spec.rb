@@ -113,7 +113,8 @@ RSpec.describe "Rack hosting" do
       nested = transactions.first.spans.find { |span| span[:op] == "rpc.server" }
       expect(nested[:data]).to include("rpc.status_code" => "OK", "http.response.status_code" => 200,
                                        "connectrpc.delivery" => "aborted")
-      expect(nested[:data]).to include("connectrpc.processing.duration")
+      expect(nested[:data]).to include("connectrpc.processing.duration", "connectrpc.request.wire_bytes",
+                                       "connectrpc.response.wire_bytes")
       expect(nested[:status]).to eq("unknown_error")
     end
   end

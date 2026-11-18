@@ -66,11 +66,11 @@ queries that read these attributes:
 | `rpc.response.metadata.<key>` (gRPC, gRPC-Web) | `rpc.response.header.<key>` |
 
 Status code values keep their casing: `OK` on success, lower-case Connect error
-codes and upper-case gRPC codes, including `CANCELLED`. Every protocol now uses the same metadata
-prefixes. Response headers and response trailers are separate: a name listed
-in `response_metadata:` records only response headers, and the new
-`response_trailers:` keyword of `Subscriber.new` records trailers as
-`rpc.response.trailer.<key>`. Move trailer names, such as a Connect unary
+codes and upper-case gRPC codes, including `CANCELLED`. Every protocol now uses
+the same metadata prefixes. Response headers and response trailers are
+separate: a name listed in `response_metadata:` records only response headers,
+and the new `response_trailers:` keyword of `Subscriber.new` records trailers
+as `rpc.response.trailer.<key>`. Move trailer names, such as a Connect unary
 `trailer-x-tail` that `response_metadata: ["trailer-x-tail"]` could not
 select, to `response_trailers: ["x-tail"]`. Values under names ending in `-bin`
 are recorded as standard padded base64.
@@ -80,12 +80,13 @@ gives one explicitly, from the request's `Host` or HTTP/2 `:authority`. Rack
 and Rails pass `Host`, and the native Async and Falcon hosts pass the
 authority. See [semantic conventions and error status](../gems/connectrpc-otel/README.md#semantic-conventions-and-error-status).
 
-`connectrpc-sentry` span data uses the same names. Its `rpc.response.status_code`
-is now `rpc.status_code`, with the same casing. `rpc.server` spans and
-transactions carry `server.address` from the same request authority, and
-`server.port` when the request gives one. Update Sentry queries, dashboards and alerts that read the old name.
-Sentry records no RPC metadata, so the header and trailer changes do not apply
-to it. See [data and privacy](../gems/connectrpc-sentry/README.md#data-and-privacy).
+`connectrpc-sentry` span data uses the same names. Its
+`rpc.response.status_code` is now `rpc.status_code`, with the same casing.
+`rpc.server` spans and transactions carry `server.address` from the same
+request authority, and `server.port` when the request gives one. Update Sentry
+queries, dashboards and alerts that read the old name. Sentry records no RPC
+metadata, so the header and trailer changes do not apply to it. See
+[data and privacy](../gems/connectrpc-sentry/README.md#data-and-privacy).
 
 Lifecycle subscribers also see trailers separately. `Instrumentation::Outcome`
 has a `response_trailers` member with trailing metadata, without any
