@@ -209,6 +209,7 @@ module ConnectRPC
     def request_protocol: (headers, String) -> (:connect | :grpc | :grpc_web)
     AUTHORITY: Regexp
     def request_authority: (Array[String]?) -> [String?, Integer?]
+    def ipv6_address?: (String) -> bool
     def declarations: (Array[Service]) -> Hash[String, declaration]
     def invoke_handler: (Method[untyped, untyped], untyped, Context) -> untyped
     def dispatch: (String, headers, _Input?, codec, Context, ?lifecycle: Instrumentation::Handle?) -> TransportResponse

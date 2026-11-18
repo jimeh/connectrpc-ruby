@@ -139,7 +139,7 @@ module ConnectRPC
         codec: codec, wire_limit: @grpc_status_wire_limit, limit: @grpc_status_limit,
         on_error: ->(error) { state.lifecycle&.record_failure(error) }
       )
-      [fields, effective, emitted_trailers(trailers, state.error, effective)]
+      [fields, effective, emitted_fields(trailers, state.error, effective)]
     end
 
     def render_grpc_terminal(state, output)

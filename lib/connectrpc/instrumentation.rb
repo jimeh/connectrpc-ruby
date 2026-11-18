@@ -99,10 +99,11 @@ module ConnectRPC
 
     # Connect unary responses carry trailers as trailer-prefixed headers. Split
     # one snapshot into headers and prefix-stripped, validated trailing metadata.
+    # A trailer without values writes no header line, so it is omitted.
     def self.unary_carriers(headers)
       values = carrier(headers)
       [values.reject { |key, _| key.start_with?("trailer-") }.freeze,
-       carrier(Protocol.metadata(values, trailers: true))]
+       carrier(Protocol.metadata(values, trailers: true).to_h.reject { |_, entries| entries.empty? })]
     rescue StandardError
       empty = {} #: headers
       [empty.freeze, empty]

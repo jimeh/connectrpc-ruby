@@ -24,12 +24,13 @@ module ConnectRPC
 
       # async-http moves H1 Host and H2 :authority into request.authority. Core
       # reads the server address from host, a reserved name handlers never see.
-      # Copy, so the cached leading H1 carrier stays unchanged. Structural
-      # requests without an authority keep their headers.
+      # Copy, so the cached leading H1 carrier stays unchanged. Any supplied
+      # authority wins, including an empty one, which core records as no
+      # address. Structural requests without an authority keep their headers.
       def call_headers(request)
         headers = Internal.headers(request)
         authority = request.authority if request.respond_to?(:authority)
-        return headers unless authority.is_a?(String) && !authority.empty?
+        return headers unless authority.is_a?(String)
 
         headers.merge("host" => [authority.dup.freeze])
       end

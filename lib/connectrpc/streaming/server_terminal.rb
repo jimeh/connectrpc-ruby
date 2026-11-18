@@ -55,6 +55,12 @@ module ConnectRPC
       effective.equal?(error) ? trailers : Metadata.new
     end
 
+    # gRPC and gRPC-Web write one field line per value, so a name without
+    # values is not on their wire. Connect's JSON terminal keeps it.
+    def emitted_fields(trailers, error, effective)
+      emitted_trailers(trailers, error, effective).to_h.reject { |_, values| values.empty? }
+    end
+
     # Error metadata joins a head that is still unpublished. Once the head is
     # committed (frozen), it follows the response trailers in the terminal,
     # ahead of the error's own trailers, as connect-go places it.

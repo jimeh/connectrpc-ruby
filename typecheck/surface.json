@@ -1184,6 +1184,7 @@
     "ConnectRPC::OTel::Subscriber::Observer#fail_span": {"kind":"method","visibility":"private","parameters":"type","classification":"internal"},
     "ConnectRPC::OTel::Subscriber::Observer#finished": {"kind":"method","visibility":"public","parameters":"completion","classification":"internal"},
     "ConnectRPC::OTel::Subscriber::Observer#initialize": {"kind":"method","visibility":"public","parameters":"span, context, role, capture, protocol","classification":"internal"},
+    "ConnectRPC::OTel::Subscriber::Observer#padded_base64": {"kind":"method","visibility":"private","parameters":"part","classification":"internal"},
     "ConnectRPC::OTel::Subscriber::Observer#printable?": {"kind":"method","visibility":"private","parameters":"value","classification":"internal"},
     "ConnectRPC::OTel::Subscriber::Observer#processing_error": {"kind":"method","visibility":"private","parameters":"outcome","classification":"internal"},
     "ConnectRPC::OTel::Subscriber::Observer#processing_finished": {"kind":"method","visibility":"public","parameters":"outcome","classification":"internal"},
@@ -1903,6 +1904,7 @@
     "ConnectRPC::Server#initialize": {"kind":"method","visibility":"public","parameters":"services:, binding: nil, handlers: {}, invoker: nil, request_limit: Protocol::DEFAULT_LIMIT, response_limit: Protocol::DEFAULT_LIMIT, request_wire_limit: request_limit, response_wire_limit: response_limit, protocol: :connect, mode: :unary, encoding: :identity, instrumentation: nil, get_query_limit: nil, terminal_wire_limit: 65_536, terminal_limit: 65_536, status_codec: nil, grpc_status_wire_limit: 65_536, grpc_status_limit: 65_536, cors: nil, interceptors: [], on_error: nil","classification":"supported"},
     "ConnectRPC::Server#invoke_handler": {"kind":"method","visibility":"private","parameters":"method, request, context","classification":"internal"},
     "ConnectRPC::Server#invoke_unary": {"kind":"method","visibility":"private","parameters":"method, request, context, protocol","classification":"internal"},
+    "ConnectRPC::Server#ipv6_address?": {"kind":"method","visibility":"private","parameters":"text","classification":"internal"},
     "ConnectRPC::Server#process_call": {"kind":"method","visibility":"private","parameters":"path:, http_method:, headers:, input:, query:, lifecycle: nil, cancellation: nil, on_error: nil","classification":"internal"},
     "ConnectRPC::Server#process_get": {"kind":"method","visibility":"private","parameters":"path, headers, input, query, lifecycle, state","classification":"internal"},
     "ConnectRPC::Server#record_request_metadata": {"kind":"method","visibility":"private","parameters":"lifecycle, headers","classification":"internal"},
@@ -2056,6 +2058,7 @@
   "lib/connectrpc/streaming/server_terminal.rb": {
     "ConnectRPC::Server#append_metadata": {"kind":"method","visibility":"private","parameters":"target, source","classification":"internal"},
     "ConnectRPC::Server#emit_stream_terminal": {"kind":"method","visibility":"private","parameters":"bytes, output","classification":"internal"},
+    "ConnectRPC::Server#emitted_fields": {"kind":"method","visibility":"private","parameters":"trailers, error, effective","classification":"internal"},
     "ConnectRPC::Server#emitted_trailers": {"kind":"method","visibility":"private","parameters":"trailers, error, effective","classification":"internal"},
     "ConnectRPC::Server#fail_unpublished_head": {"kind":"method","visibility":"private","parameters":"state, protocol","classification":"internal"},
     "ConnectRPC::Server#grpc_head_failed?": {"kind":"method","visibility":"private","parameters":"state, context","classification":"internal"},

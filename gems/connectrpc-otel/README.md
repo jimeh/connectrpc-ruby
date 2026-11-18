@@ -97,9 +97,10 @@ URL. Since 0.3.0, SERVER spans carry `server.address` from the request's
 `Host` or HTTP/2 `:authority`, the address the client used rather than the
 listening socket, and `server.port` only when that authority states a port.
 Rack and Rails pass `Host`; the native Async and Falcon hosts pass the
-authority, which wins over an ordinary `host` field. A missing, repeated,
-over-255-byte or malformed value omits both. Like HTTP server conventions,
-the value is client-controlled, so its cardinality is too.
+authority, which wins over an ordinary `host` field. A missing, empty,
+repeated, over-255-byte, non-ASCII or malformed value, such as an invalid IPv6
+literal or hostname label, omits both and never fails the call. Like HTTP
+server conventions, the value is client-controlled, so its cardinality is too.
 
 ### Semantic conventions and error status
 
@@ -140,10 +141,11 @@ URLs/queries, certificate data or arbitrary metadata.
 ### Unknown methods and conformance limits
 
 Unknown methods use span name `connectrpc` and `rpc.method=_OTHER`. This adapter
-never records `rpc.method_original`, because the core call carries no request
-path. That attribute is conditionally required by v1.45.0 for unknown methods,
-so this is a specific conformance limitation. The adapter also records no
-`network.peer.*` attributes. gRPC lists `rpc.status_code` as Required, but a
+never records `rpc.method_original`: a server call carries no request path to
+take it from, and the adapter does not derive it from the `url_path` that client
+calls carry. That attribute is conditionally required by v1.45.0 for unknown
+methods, so this is a specific conformance limitation. The adapter also records
+no `network.peer.*` attributes. gRPC lists `rpc.status_code` as Required, but a
 span without a core RPC code, such as a preflight or admission rejection or an
 early escape, omits it rather than inventing one. `http.response.status_code`
 is supplemental transport evidence outside the RPC attribute tables. This is

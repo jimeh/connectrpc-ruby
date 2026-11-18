@@ -1,5 +1,7 @@
 # frozen_string_literal: true
 
+require "ipaddr"
+
 module ConnectRPC
   class Server # rubocop:disable Metrics/ClassLength
     attr_reader :services
@@ -107,23 +109,40 @@ module ConnectRPC
 
     private
 
-    AUTHORITY = /\A(?:\[(?<ipv6>[0-9A-Fa-f.]*:[0-9A-Fa-f.]*:[0-9A-Fa-f:.]*)\]|(?<name>[0-9A-Za-z._-]+))
-                 (?::(?<port>[0-9]{1,5}))?\z/x
+    # Hostname labels start and end with a letter, digit or underscore; IPv4
+    # dotted quads are valid names. The bracketed part is checked by IPAddr.
+    AUTHORITY = /\A(?:\[(?<ipv6>[0-9A-Fa-f:.]+)\]|
+                   (?<name>(?:[0-9A-Za-z_](?:[0-9A-Za-z_-]*[0-9A-Za-z_])?\.)*
+                           [0-9A-Za-z_](?:[0-9A-Za-z_-]*[0-9A-Za-z_])?\.?))
+                 (?::(?<port>[0-9]+))?\z/x
     private_constant :AUTHORITY
 
     # The address the client used, from a single host or :authority value:
-    # host, host:port, [v6] or [v6]:port. Anything else yields neither fact.
+    # host, host:port, [v6] or [v6]:port. Anything else, including a value that
+    # is not valid ASCII text, yields neither fact. Observation never raises.
     def request_authority(values)
       return [nil, nil] unless values && values.size == 1
 
       authority = values.fetch(0)
-      return [nil, nil] if authority.bytesize > 255
+      return [nil, nil] unless authority.is_a?(String) && authority.bytesize <= 255 &&
+                               authority.valid_encoding? && authority.ascii_only?
 
       match = AUTHORITY.match(authority)
-      port = match[:port]&.to_i if match
-      return [nil, nil] unless match && (port.nil? || port.between?(1, 65_535))
+      return [nil, nil] unless match
 
-      [(match[:ipv6] || match[:name] || "").dup.freeze, port]
+      port = match[:port]&.to_i
+      return [nil, nil] unless port.nil? || port.between?(1, 65_535)
+
+      ipv6 = match[:ipv6]
+      return [nil, nil] if ipv6 && !ipv6_address?(ipv6)
+
+      [(ipv6 || match[:name] || "").dup.freeze, port]
+    end
+
+    def ipv6_address?(text)
+      IPAddr.new(text).ipv6?
+    rescue ArgumentError
+      false
     end
 
     def request_protocol(headers, http_method)

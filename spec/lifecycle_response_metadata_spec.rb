@@ -96,6 +96,20 @@ RSpec.describe "Lifecycle response headers, trailers and server authority" do
       end
     end
 
+    it "omits a value-less trailer that no unary header line carries" do
+      rpc = declaration
+      handler = lambda do |message, context|
+        context.response_trailers["x-empty-list"] = []
+        context.response_trailers["x-blank"] = [""]
+        message
+      end
+      response = server(rpc, handler).call(path: rpc.path, http_method: "POST", input: StringIO.new("hi"),
+                                           headers: { "content-type" => ["application/proto"] })
+      # Hosts write one header line per value, so the empty list never reaches the wire.
+      expect(response.headers).to include("trailer-x-empty-list" => [], "trailer-x-blank" => [""])
+      expect(outcomes.last.response_trailers).to eq("x-blank" => [""])
+    end
+
     it "decodes mixed-case and repeated client trailers, dropping reserved and invalid names" do
       rpc = declaration
       headers = { "Content-Type" => ["application/json"], "X-Head" => ["h"], "Trailer-X-Tail" => ["a"],
@@ -179,7 +193,53 @@ RSpec.describe "Lifecycle response headers, trailers and server authority" do
         outcome = outcomes.last
         expect(outcome.response_metadata).to eq("x-head" => ["h"])
         expect(response.body.include?("x-tail: kept\r\n")).to be(!oversized)
+        expect(response.body).to include(oversized ? "grpc-status: 8\r\n" : "grpc-status: 0\r\n")
         expect(outcome.response_trailers).to eq(oversized ? {} : { "x-tail" => ["kept"] })
+      end
+    end
+
+    describe "value-less trailers" do
+      let(:rpc) { declaration }
+      let(:handler) do
+        lambda do |message, context|
+          context.response_trailers["x-empty-list"] = []
+          context.response_trailers["x-blank"] = [""]
+          message
+        end
+      end
+
+      it "observes only the gRPC trailer fields that carry a value" do
+        finished = []
+        server(rpc, handler, protocol: :grpc)
+          .call_grpc(path: rpc.path, http_method: "POST", headers: { "content-type" => ["application/grpc"] },
+                     input: input(frame("hi")), output: sink([], finished), publish: ->(_) {}, http2: true)
+        # A native host writes one field line per value.
+        wire = finished.last.reject { |key, values| values.empty? || key.start_with?("grpc-") }
+        expect(wire).to eq("x-blank" => [""])
+        expect(outcomes.last.response_trailers).to eq(wire)
+      end
+
+      it "observes only the gRPC-Web terminal lines that carry a value" do
+        response = server(rpc, handler, protocol: :grpc_web)
+                   .call(path: rpc.path, http_method: "POST", input: StringIO.new(frame("hi")),
+                         headers: { "content-type" => ["application/grpc-web+proto"] })
+        terminal = response.body.byteslice((frame("hi").bytesize + 5)..)
+        wire = terminal.split("\r\n").map { |line| line.split(": ", 2) }.reject { |key, _| key.start_with?("grpc-") }
+        expect(wire).to eq([["x-blank", ""]])
+        expect(outcomes.last.response_trailers).to eq("x-blank" => [""])
+      end
+
+      it "keeps a value-less trailer the Connect terminal JSON carries" do
+        stream = declaration(ConnectRPC::BidiStreamMethod)
+        written = []
+        apply = handler
+        server(stream, ->(_duplex, context) { apply.call(nil, context) })
+          .call_stream(path: stream.path, http_method: "POST",
+                       headers: { "content-type" => ["application/connect+proto"] }, input: input(""),
+                       output: sink(written, []), publish: ->(_) {}, http2: true)
+        terminal = JSON.parse(written.join.byteslice(5..))
+        expect(terminal).to eq("metadata" => { "x-empty-list" => [], "x-blank" => [""] })
+        expect(outcomes.last.response_trailers).to eq("x-empty-list" => [], "x-blank" => [""])
       end
     end
 
@@ -301,6 +361,8 @@ RSpec.describe "Lifecycle response headers, trailers and server authority" do
     {
       "example.com" => ["example.com", nil], "Example.com:8443" => ["Example.com", 8443],
       "10.1.2.80:1" => ["10.1.2.80", 1], "[::1]" => ["::1", nil], "[2001:db8::1]:65535" => ["2001:db8::1", 65_535],
+      "[::ffff:10.1.2.80]:80" => ["::ffff:10.1.2.80", 80], "valid.example:000443" => ["valid.example", 443],
+      "example.com." => ["example.com.", nil], "my_host-1.example" => ["my_host-1.example", nil],
       "a" * 255 => ["a" * 255, nil]
     }.each do |authority, expected|
       it "records #{authority[0, 40]} as #{expected.map { |fact| fact.to_s[0, 40] }.inspect}" do
@@ -309,8 +371,11 @@ RSpec.describe "Lifecycle response headers, trailers and server authority" do
     end
 
     ["", "a" * 256, "example.com:", "example.com:0", "example.com:65536", "example.com:123456", "exa mple.com",
-     "user@example.com", "example.com:80:90", "::1", "[::1", "[example.com]", "[:]"].each do |authority|
-      it "omits both facts for #{authority[0, 40].inspect}" do
+     "user@example.com", "example.com:80:90", "::1", "[::1", "[example.com]", "[:]", "[1:2:3]", "[:::::]",
+     "[:::]:443", "[12345::1]", "[fe80::1%eth0]", "[::1/64]", "[10.1.2.80]", "-", "..", ".", "a..b", "-a.example",
+     "a-.example", "example.com:0000", "example.com:#{'0' * 10}65536", "exämple.com", "bad\xff.example",
+     "bad\xff.example".b].each do |authority|
+      it "omits both facts for #{authority[0, 40].inspect} (#{authority.encoding})" do
         expect(facts(authority)).to eq([nil, nil])
       end
     end
@@ -319,6 +384,18 @@ RSpec.describe "Lifecycle response headers, trailers and server authority" do
       expect(facts("a.example", "b.example")).to eq([nil, nil])
       expect(facts).to eq([nil, nil])
       expect(facts("example.com:80", key: "Host")).to eq(["example.com", 80])
+    end
+
+    it "keeps an RPC with an invalid-encoding host successful while instrumented" do
+      response = nil
+      expect do
+        response = server(rpc, ->(message, _) { message })
+                   .call(path: rpc.path, http_method: "POST", input: StringIO.new("hi"),
+                         headers: { "content-type" => ["application/proto"], "host" => ["bad\xff.example:443"] })
+      end.not_to raise_error
+      expect([response.status, response.body]).to eq([200, "hi"])
+      expect(outcomes.last.code).to eq("OK")
+      expect([calls.last.server_address, calls.last.server_port]).to eq([nil, nil])
     end
   end
 end

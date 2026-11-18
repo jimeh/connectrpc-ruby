@@ -88,7 +88,7 @@ module ConnectRPC
     def publish_grpc_snapshot: (GRPCProtocol::ServerState, Metadata) -> nil
     def publish_grpc_head: (GRPCProtocol::ServerState) -> void
     def grpc_head: (Metadata, encoding) -> GRPCHead
-    def grpc_terminal_fields: (GRPCProtocol::ServerState, Context) -> [headers, Error?, Metadata]
+    def grpc_terminal_fields: (GRPCProtocol::ServerState, Context) -> [headers, Error?, headers]
     def render_grpc_terminal: (GRPCProtocol::ServerState, _GRPCOutput) -> void
   end
 end

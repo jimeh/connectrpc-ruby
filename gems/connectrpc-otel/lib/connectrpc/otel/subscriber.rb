@@ -229,17 +229,31 @@ module ConnectRPC
 
         # Core keeps binary metadata as its wire base64 text, possibly unpadded
         # or comma-joined. Record each value once as standard padded base64,
-        # omitting malformed values and any that would need truncation.
+        # omitting malformed values and any that would need truncation. Parts
+        # are split lazily and work stops at the eighth recorded entry.
         def binary_values(values)
-          parts = values.select { |value| printable?(value) }.flat_map do |value|
-            value.empty? ? [value] : value.split(",", -1)
+          recorded = []
+          values.each do |value|
+            next unless printable?(value)
+
+            (value.empty? ? [value] : value.enum_for(:split, ",", -1)).each do |part|
+              encoded = padded_base64(part.strip)
+              recorded << encoded if encoded
+              return recorded if recorded.size == 8
+            end
           end
-          parts.filter_map do |part|
-            encoded = [Metadata.decode_binary(part.strip)].pack("m0")
-            encoded if encoded.bytesize <= 256
-          rescue ArgumentError
-            nil
-          end.first(8)
+          recorded
+        end
+
+        # A part over 258 bytes has more than 256 without its padding, so its
+        # padded encoding cannot fit; skip it without decoding.
+        def padded_base64(part)
+          return if part.bytesize > 258
+
+          encoded = [Metadata.decode_binary(part)].pack("m0")
+          encoded if encoded.bytesize <= 256
+        rescue ArgumentError
+          nil
         end
 
         def printable?(value)

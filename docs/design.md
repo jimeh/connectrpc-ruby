@@ -582,10 +582,14 @@ propagation targets and recognize transports that its SDK already patches.
 These are nil on servers and default to nil for earlier `Call.new` callers.
 Since 0.3.0, server calls carry the address the client used, from a single
 `host` header value (Rack passes `Host`; the native Async and Falcon hosts pass
-the request authority, which wins over an ordinary `host` field): host names
-and bracketed IPv6 addresses (stored without brackets), with a port only when
-the authority states one between 1 and 65535. Repeated, empty, over-255-byte
-or otherwise invalid values yield neither fact.
+the request authority, which wins over an ordinary `host` field, even when
+empty): host names of dot-separated letter, digit, `_` and inner `-` labels
+(IPv4 addresses included, one trailing dot allowed) and bracketed IPv6
+addresses that `IPAddr` accepts, without a zone (stored without brackets),
+with a port only when the authority states one whose value is between 1 and
+65535. Repeated, empty, over-255-byte, non-ASCII, invalidly encoded or
+otherwise invalid values yield neither fact, and reading the authority never
+fails the call.
 The client starts before timeout/metadata validation and applies validated staged
 injection transactionally to copied metadata. An injected key replaces the
 caller's values, except `baggage`, which becomes the caller's values followed by
@@ -608,18 +612,21 @@ nil. Metadata snapshots retain repeated arrays.
 `Outcome#response_trailers` holds trailing metadata without any `trailer-`
 wire prefix; both are frozen snapshots and `Outcome.new` defaults trailers to
 empty. Connect unary splits its `trailer-*` headers into trailers, dropping
-reserved and invalid names. A server stream, gRPC or gRPC-Web outcome keeps
+reserved and invalid names and names without values, which write no header
+line. A server stream, gRPC or gRPC-Web outcome keeps
 `Context#response_metadata` at observation time as its headers (what the
-handler set for the head, published or attempted, without generated Web
-fields such as `vary` or CORS), and as trailers the application and error
-metadata that the emitted terminal carries. A terminal replaced for its byte
-limit or a status codec failure carries none, and a stream that fails before
-its terminal is serialized has none. Streaming clients, including gRPC unary,
-record only metadata the session already accepted, never reading at finish:
-the validated response head (empty when the head was rejected or not yet
-read, and for a gRPC trailers-only response) and the parsed terminal
-trailers, which stay recorded when a later count, tail or transport check
-fails.
+handler set for the head, published or attempted, without generated Web fields
+such as `vary` or CORS), and as trailers the application and error metadata
+that the rendered terminal carries; an error outcome is observed before its
+terminal is written. gRPC and gRPC-Web write one field line per value, so they
+omit a trailer name without values, which the Connect stream terminal JSON
+keeps. A terminal replaced for its byte limit or a status codec failure carries
+none, and a stream that fails before its terminal is serialized has none.
+Streaming clients, including gRPC unary, record only metadata the session
+already accepted, never reading at finish: the validated response head (empty
+when the head was rejected or not yet read, and for a gRPC trailers-only
+response) and the parsed terminal trailers, which stay recorded when a later
+count, tail or transport check fails.
 
 `Server#start_call(path:, headers:, http_method: "POST")` is the explicit host
 SPI. Hosts pass the actual method so Connect GET selection precedes subscriber

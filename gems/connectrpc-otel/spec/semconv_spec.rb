@@ -136,6 +136,21 @@ RSpec.describe "Semantic conventions 1.45.0 attributes" do
     ensure
       provider&.shutdown
     end
+
+    it "records no address for an empty authority, even beside an ordinary host header" do
+      provider, exporter, bus = tracing
+      application = ConnectRPC::Async::Application.new(server: server(instrumentation: bus, protocol: :grpc_web))
+      request = native_request("", "host" => "ordinary.example:8443")
+      lifecycle = application.start_call(request)
+      application.call(request, lifecycle: lifecycle)
+      lifecycle.finish(delivery: :completed)
+      application.call(native_request("", "host" => "ordinary.example:8443"))
+      spans = rpc_spans(exporter)
+      expect(spans.map { |span| span.attributes["rpc.status_code"] }).to eq(%w[OK OK])
+      spans.each { |span| expect(span.attributes.keys).not_to include("server.address", "server.port") }
+    ensure
+      provider&.shutdown
+    end
   end
 
   describe "binary metadata" do
@@ -179,6 +194,22 @@ RSpec.describe "Semantic conventions 1.45.0 attributes" do
       expected = recorded + many.first(4).map { |value| "#{value}==" }
       expect(span.attributes).to include("rpc.system.name" => "grpc", "rpc.response.header.x-data-bin" => expected,
                                          "rpc.response.trailer.x-data-bin" => expected)
+    ensure
+      provider&.shutdown
+    end
+
+    it "decodes no oversized part and stops at the eighth entry of a long coalesced header" do
+      provider, exporter, bus = tracing(response_metadata: ["x-data-bin"])
+      coalesced = (["A" * 400] + Array.new(1024, "AA")).join(",")
+      allow(ConnectRPC::Metadata).to receive(:decode_binary).and_call_original
+      handler = lambda do |request, context|
+        context.response_metadata["x-data-bin"] = [coalesced]
+        request
+      end
+      native_grpc(server(instrumentation: bus, protocol: :grpc, echo: handler), AsyncHelpers::ECHO::ECHO.path)
+      span = rpc_spans(exporter).first
+      expect(span.attributes["rpc.response.header.x-data-bin"]).to eq(Array.new(8, "AA=="))
+      expect(ConnectRPC::Metadata).to have_received(:decode_binary).exactly(8).times
     ensure
       provider&.shutdown
     end

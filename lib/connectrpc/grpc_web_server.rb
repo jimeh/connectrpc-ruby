@@ -200,7 +200,7 @@ module ConnectRPC
           state.lifecycle&.record_failure(error)
         }
       )
-      trailers = emitted_trailers(trailers, state.error, effective)
+      trailers = emitted_fields(trailers, state.error, effective)
       observe_stream_result(state, effective, trailers) if state.error
       publish_web_head(state)
       output.finish(terminal: bytes)
