@@ -200,6 +200,8 @@ RSpec.describe "PerCallTransport deadlines, cancellation and interrupts" do
           error = value_within(victim, "the caller interrupted in close")
           expect([error.class, error.message]).to eq([interrupt, "interrupt #{count - 1}"])
           expect_released(boundaries.take.first)
+          # The peer records the GOAWAY on its own reader, which can trail the call's return.
+          eventually("the peer to record the GOAWAY") { peer.peer.goaways.any? }
           expect(peer.peer.goaways.map { |_, _, code| code }).to eq([Protocol::HTTP2::Error::NO_ERROR])
         end
       ensure
@@ -489,6 +491,8 @@ RSpec.describe "PerCallTransport deadlines, cancellation and interrupts" do
             expect(task.children.to_a.reject(&:finished?)).to eq([])
           end
           expect_released(boundaries.take.first)
+          # The peer records the GOAWAY on its own reader, which can trail the call's return.
+          eventually("the peer to record the GOAWAY") { peer.peer.goaways.any? }
           expect(peer.peer.goaways.map { |_, _, code| code }).to eq([Protocol::HTTP2::Error::NO_ERROR])
         end
       ensure
