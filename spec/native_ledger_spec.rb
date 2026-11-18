@@ -41,11 +41,17 @@ RSpec.describe Conformance::NativeLedger do
     )
   end
 
-  it "names a server process that stopped without becoming ready" do
-    events = served + [{ "event" => "server_stopped", "pid" => 7 }, { "event" => "server_stopped", "pid" => 8 }]
-
-    expect { parse(events) }.to raise_error(
-      RuntimeError, "Conformance accounting: Native server lifetime mismatch: pid 8 stopped without becoming ready"
-    )
+  it "names a server process that stopped without becoming ready, or stopped twice" do
+    stop = ->(pid) { { "event" => "server_stopped", "pid" => pid } }
+    {
+      [stop[8]] => "pid 8 stopped without becoming ready",
+      served + [stop[7], stop[8]] => "pid 8 stopped without becoming ready",
+      served + [stop[7], stop[7]] => "pid 7 has 1 ready and 2 stopped events",
+      [] => "no server became ready"
+    }.each do |events, detail|
+      expect { parse(events) }.to raise_error(
+        RuntimeError, "Conformance accounting: Native server lifetime mismatch: #{detail}"
+      )
+    end
   end
 end

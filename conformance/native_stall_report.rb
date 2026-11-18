@@ -4,11 +4,10 @@ module Conformance
   # The runner kills a server adapter that has not exited 5s after SIGTERM,
   # which leaves no trace of where it stuck. Once armed by SIGTERM, this writes
   # the reactor thread's backtrace and every Async task's fiber backtrace to
-  # stderr if the adapter has not recorded server_stopped within GRACE.
+  # stderr if the adapter has not recorded server_stopped within GRACE. The
+  # reactor section comes last, so the scripts' stderr tail always keeps it.
   class NativeStallReport
     GRACE = 3
-    # Small enough that the reactor section survives the scripts' stderr tail
-    # with a few dozen live tasks.
     TASK_FRAMES = 8
 
     attr_writer :scheduler, :phase
@@ -31,13 +30,16 @@ module Conformance
     private
 
     def report(main)
-      out = "Native server adapter stalled #{GRACE}s after SIGTERM while #{@phase} (pid #{Process.pid})\n"
-      out << "Reactor thread (#{main.status}):\n"
+      out = "Native server adapter stalled #{GRACE}s after SIGTERM (pid #{Process.pid}); Async tasks:\n"
+      begin
+        tasks(@scheduler, 0, out) if @scheduler
+      rescue StandardError => e
+        out << "Task walk failed: #{e.class}: #{e.message}\n"
+      end
+      out << "Native server adapter stalled #{GRACE}s after SIGTERM while #{@phase} (pid #{Process.pid}); " \
+             "reactor thread (#{main.status}):\n"
       Array(main.backtrace).first(30).each { |line| out << "  #{line}\n" }
-      tasks(@scheduler, 0, out) if @scheduler
       out
-    rescue StandardError => e
-      "#{out}Stall report failed: #{e.class}: #{e.message}\n"
     end
 
     def tasks(node, depth, out)

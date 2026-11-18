@@ -27,9 +27,11 @@ RSpec.describe "conformance server adapter" do
   end
 
   # Ruby 4's IO#write can yield to the fiber scheduler of a non-blocking fiber
-  # while the writer holds the file lock. The stub yields the same way. The
-  # second writer is cancelled at once, as an unwinding observer's can be.
-  it "keeps a cancelled second writer's record while the first is inside its locked write" do
+  # while the writer holds the file lock. The stub yields the same way. A
+  # second writer that could start then would block the reactor in flock, or,
+  # waiting any other way, could be cancelled before recording, as an
+  # unwinding observer's can be.
+  it "completes a locked write before a second fiber can start or cancel its own" do
     reached = false
     allow(File).to receive(:open).and_wrap_original do |original, path, *arguments, &block|
       next original.call(path, *arguments, &block) unless path == @target
@@ -46,6 +48,7 @@ RSpec.describe "conformance server adapter" do
       end
     end
 
+    second = nil
     worker = Thread.new do
       Sync do |task|
         first = task.async { Conformance::Telemetry.record("first") }
@@ -59,6 +62,7 @@ RSpec.describe "conformance server adapter" do
 
     expect(joined).to equal(worker), "a second writer blocked the reactor holding the suspended first writer"
     expect(reached).to be(true)
+    expect(second).to be_completed
     expect(recorded.map { |event| event.fetch("event") }).to eq(%w[first second])
   end
 
@@ -91,13 +95,14 @@ RSpec.describe "conformance server adapter" do
                                                                            http_version: :HTTP_VERSION_2))
     input.rewind
 
-    worker = nil
+    worker = joined = nil
     expect do
       worker = Thread.new { Conformance::NativeServerAdapter.run(input, StringIO.new) }
-      worker.kill unless worker.join(10)
+      joined = worker.join(10)
+      worker.kill unless joined
     end.to output(/Native server close failed/).to_stderr
 
-    expect(worker.status).to be(false)
+    expect(joined).to equal(worker), "the adapter did not stop after SIGTERM"
     expect(recorded.map { |event| event.fetch("event") }).to eq(%w[server_ready server_close_failed server_stopped])
   end
 end

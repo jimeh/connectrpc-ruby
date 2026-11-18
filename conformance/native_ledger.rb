@@ -56,21 +56,31 @@ module Conformance
                                       "#{failure.fetch('error_class')}: #{failure.fetch('message')}")
       ready = server_pids(events, "server_ready")
       stopped = server_pids(events, "server_stopped")
-      verify(!ready.empty?, "Native server never became ready")
-      verify(ready.sort == stopped.sort, "Native server lifetime mismatch: #{unpaired_detail(events, ready, stopped)}")
+      verify(!ready.empty? && ready == stopped,
+             "Native server lifetime mismatch: #{unpaired_detail(events, ready, stopped)}")
     end
 
+    # Counts each event per pid, so a duplicate is a mismatch too.
     def server_pids(events, kind)
-      events.select { |event| event.fetch("event") == kind }.map { |event| event.fetch("pid") }
+      events.select { |event| event.fetch("event") == kind }.map { |event| event.fetch("pid") }.tally
     end
 
     def unpaired_detail(events, ready, stopped)
-      unstopped = (ready - stopped).map do |pid|
-        last = events.reverse_each.find { |event| event["pid"] == pid }
-        "pid #{pid} never stopped; last event #{last.fetch('event')} #{last['name']}".rstrip
-      end
-      unready = (stopped - ready).map { |pid| "pid #{pid} stopped without becoming ready" }
-      (unstopped + unready).join("; ")
+      return "no server became ready" if ready.empty? && stopped.empty?
+
+      (ready.keys | stopped.keys).filter_map do |pid|
+        readied = ready.fetch(pid, 0)
+        stops = stopped.fetch(pid, 0)
+        if readied.zero? then "pid #{pid} stopped without becoming ready"
+        elsif stops.zero? then never_stopped(events, pid)
+        elsif readied != stops then "pid #{pid} has #{readied} ready and #{stops} stopped events"
+        end
+      end.join("; ")
+    end
+
+    def never_stopped(events, pid)
+      last = events.reverse_each.find { |event| event["pid"] == pid }
+      "pid #{pid} never stopped; last event #{last.fetch('event')} #{last['name']}".rstrip
     end
 
     def validate_native_server_events!(events)
