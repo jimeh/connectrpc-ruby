@@ -193,51 +193,47 @@ module ConnectRPC
       # frame guard until its flush finishes, to `timeout`. A frame write
       # defers cancellation, so a peer that stops reading can only be ended
       # by failing the connection raw-first. The bound applies to each frame
-      # or header block, not to a whole response, and continuous progress
-      # within one frame does not extend it.
+      # or header block, not to a whole response.
       #
       # A write blocked on a full send buffer finishes only once the kernel
-      # takes the rest of its bytes. By default the peer must first drain a
-      # large part of the buffer, about 950 KB on Linux loopback with the
-      # default 4 MiB `tcp_wmem` maximum, so a slow but live reader could miss
-      # the bound. `track_progress` caps the socket's unsent bytes at
-      # UNSENT_BYTES, so such a write finishes after about 80 KB of peer
-      # progress, and the bound tracks that progress instead.
+      # takes the rest of its bytes, after the peer drained a large part of
+      # the buffer: about 950 KB on Linux with the default 4 MiB `tcp_wmem`
+      # maximum. A slow but live reader could miss a fixed deadline. With
+      # `progress`, on Linux, a write still in progress at its deadline is
+      # renewed for another `timeout` when the socket's TCP_INFO shows the
+      # peer acknowledged new data since the previous sample while unsent
+      # data was queued. The connection is aborted only once the peer made
+      # no such progress for a whole bound, like grpc-go's TCP_USER_TIMEOUT,
+      # which any progress resets. Elsewhere, or without a sample, each write
+      # keeps a fixed deadline.
+      #
+      # Samples are taken only by this task, when it first sees a write in
+      # progress and at that write's deadline, and by `remaining` once the
+      # deadline has passed. Starting or finishing a write never samples.
       class WriteWatchdog
-        # TCP_NOTSENT_LOWAT, which Ruby's Socket does not define: 25 in
-        # Linux's <linux/tcp.h> and 0x201 in XNU's <netinet/tcp.h>. Other
-        # platforms have no such option and keep the default behaviour.
-        NOTSENT_LOWAT = if defined?(::Socket::TCP_NOTSENT_LOWAT) then ::Socket::TCP_NOTSENT_LOWAT
-                        elsif RUBY_PLATFORM.include?("linux") then 25
-                        elsif RUBY_PLATFORM.include?("darwin") then 0x201
-                        end
-        # A smaller cap wakes a blocked writer more often: on a
-        # bandwidth-limited link 16 KiB measurably cut throughput and raised
-        # CPU use, while 128 KiB stayed close to no cap.
-        UNSENT_BYTES = 131_072
+        # Linux's struct tcp_info is read only on Linux: FreeBSD also defines
+        # TCP_INFO, with a different layout.
+        TCP_INFO = (::Socket::TCP_INFO if RUBY_PLATFORM.include?("linux") && defined?(::Socket::TCP_INFO))
+        # Offsets in <linux/tcp.h>'s struct tcp_info: tcpi_bytes_acked (u64,
+        # Linux 4.1+) and tcpi_notsent_bytes (u32, Linux 4.6+). Older kernels
+        # return a shorter struct, which gives no sample.
+        BYTES_ACKED_OFFSET = 120
+        NOTSENT_BYTES_OFFSET = 144
+        TCP_INFO_MINIMUM = NOTSENT_BYTES_OFFSET + 4
 
         attr_reader :timeout
 
-        # Sets TCP_NOTSENT_LOWAT on the accepted socket `raw` and returns
-        # whether it was set. A platform or socket without the option keeps
-        # its default behaviour.
-        def self.track_progress(raw)
-          return false unless NOTSENT_LOWAT && raw.respond_to?(:setsockopt)
-
-          raw.setsockopt(::Socket::IPPROTO_TCP, NOTSENT_LOWAT, UNSENT_BYTES)
-          true
-        rescue SystemCallError, IOError
-          false
-        end
-
-        def initialize(resource, clock:, timeout:, message: "HTTP/2 frame write did not finish in time")
+        def initialize(resource, clock:, timeout:, message: "HTTP/2 frame write did not finish in time",
+                       progress: false)
           @resource = resource
           @clock = clock
           @timeout = timeout
           @message = message
+          @progress = progress
           @started = ::Async::Condition.new
           @serial = 0
-          @started_at = nil
+          @deadline = nil
+          @acked = nil
         end
 
         # A control task: it outlives drains until the final GOAWAY is
@@ -249,33 +245,73 @@ module ConnectRPC
           task
         end
 
-        # Called for every frame write; neither yields.
+        # Called for every frame write; neither yields nor samples.
         def write_started
           @serial += 1
-          @started_at = @clock.now
+          @deadline = @clock.now + @timeout
           @started.signal
         end
 
         def write_finished
-          @started_at = nil
+          @deadline = nil
         end
 
         # Seconds left before the frame write in progress, if any, misses its
-        # bound.
-        def remaining = @started_at && (@started_at + @timeout - @clock.now)
+        # bound. A deadline that has passed is renewed first if the peer made
+        # progress; only the watchdog task aborts.
+        def remaining
+          return unless @deadline
+
+          left = @deadline - @clock.now
+          left.positive? ? left : renew - @clock.now
+        end
 
         private
 
         def run
+          armed = nil
           loop do
-            @started.wait until @started_at
-            serial = @serial
-            remaining = @started_at + @timeout - @clock.now
-            @clock.sleep(remaining) if remaining.positive?
-            next unless @started_at && @serial == serial
+            @started.wait until @deadline
+            unless armed == @serial
+              armed = @serial
+              @deadline = [@deadline, @clock.now + @timeout].max if progressed?
+            end
+            left = remaining
+            next @clock.sleep(left) if left.positive?
 
             break @resource.abort(IOError.new(@message))
           end
+        end
+
+        # Renews a passed deadline if the peer made progress; returns it.
+        def renew
+          @deadline = @clock.now + @timeout if progressed?
+          @deadline
+        end
+
+        # Whether the peer acknowledged new data since the previous sample
+        # while unsent data is queued, so the peer is what holds the write.
+        # Every sample becomes the next one's baseline.
+        def progressed?
+          return false unless @progress && (sample = tcp_info)
+
+          acked, unsent = sample
+          previous = @acked
+          @acked = acked
+          !previous.nil? && acked > previous && unsent.positive?
+        end
+
+        # [tcpi_bytes_acked, tcpi_notsent_bytes], or nil without a sample,
+        # such as on a closed or non-TCP socket.
+        def tcp_info
+          return unless TCP_INFO
+
+          data = @resource.raw.getsockopt(::Socket::IPPROTO_TCP, TCP_INFO).data
+          return if data.bytesize < TCP_INFO_MINIMUM
+
+          [data.unpack1("Q<", offset: BYTES_ACKED_OFFSET), data.unpack1("L<", offset: NOTSENT_BYTES_OFFSET)]
+        rescue SystemCallError, IOError
+          nil
         end
       end
 
@@ -342,7 +378,7 @@ module ConnectRPC
           @random = random
           @keepalive = keepalive
           @idle_timeout = idle_timeout
-          @watchdog = WriteWatchdog.new(resource, clock: clock, timeout: write_timeout) if write_timeout
+          @watchdog = WriteWatchdog.new(resource, clock: clock, timeout: write_timeout, progress: true) if write_timeout
           @writer = ControlWriter.new(resource, clock: clock, timeout: keepalive&.timeout || CONTROL_SECONDS,
                                                 writes: @watchdog)
           if keepalive&.min_time
@@ -363,10 +399,7 @@ module ConnectRPC
         # draining meanwhile, after its upkeep was stopped, gets no more.
         def start
           @writer.start(@parent)
-          if @watchdog && !@resource.finished?
-            WriteWatchdog.track_progress(@resource.raw)
-            @watchdog.start(@parent)
-          end
+          @watchdog.start(@parent) if @watchdog && !@resource.finished?
           if (time = @keepalive&.time) && upkeep?
             @resource.keep_alive(@parent, clock: @clock, time: time, timeout: @keepalive.timeout, always: true)
           end

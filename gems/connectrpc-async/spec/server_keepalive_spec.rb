@@ -63,18 +63,51 @@ RSpec.describe ConnectRPC::Async::ServerKeepalive do
   end
 end
 
-RSpec.describe "HTTP/2 frame write progress" do
-  # A Falcon listener on a UNIX endpoint, or a socket retired meanwhile,
-  # keeps serving without the limit.
-  it "leaves a socket that rejects TCP_NOTSENT_LOWAT unchanged" do
-    watchdog = AsyncHelpers::INTERNAL::WriteWatchdog
-    left, right = UNIXSocket.pair
-    expect(watchdog.track_progress(left)).to be(false)
-    left.close
-    expect(watchdog.track_progress(left)).to be(false)
-  ensure
-    right&.close
-    left&.close
+RSpec.describe "HTTP/2 frame write watchdog" do
+  let(:watchdog) { AsyncHelpers::INTERNAL::WriteWatchdog }
+  let(:clock) { Struct.new(:now).new(0.0) }
+
+  # A struct tcp_info with tcpi_bytes_acked and tcpi_notsent_bytes, or one
+  # cut short as from a kernel older than 4.6.
+  def tcp_info(acked, unsent, size: 248)
+    data = "\0".b * 248
+    data[120, 8] = [acked].pack("Q<")
+    data[144, 4] = [unsent].pack("L<")
+    Socket::Option.new(:INET, :TCP, 11, data.byteslice(0, size))
+  end
+
+  # The socket returns each sample once; one more read raises.
+  def resource(samples)
+    raw = Object.new
+    raw.define_singleton_method(:getsockopt) { |*| samples.shift.then { |sample| sample || raise("no sample left") } }
+    double("resource", raw: raw)
+  end
+
+  # A control frame's check can reach an overdue write before the watchdog
+  # task does. The resource double has no `abort`, so any abort raises.
+  it "renews an overdue write when the peer acknowledged data while unsent data was queued" do
+    stub_const("#{watchdog.name}::TCP_INFO", 11)
+    samples = [tcp_info(1000, 10), tcp_info(1000, 10), tcp_info(2000, 0), tcp_info(3000, 10, size: 144),
+               tcp_info(3000, 10)]
+    writes = watchdog.new(resource(samples), clock: clock, timeout: 60, progress: true)
+    writes.write_started
+    clock.now = 60.0
+    # The baseline, no new acks, acks without unsent data, then a short struct.
+    4.times { expect(writes.remaining).to eq(0) }
+    expect(writes.remaining).to eq(60)
+    clock.now = 90.0
+    expect(writes.remaining).to eq(30)
+    expect(samples).to eq([])
+    writes.write_finished
+    expect(writes.remaining).to be_nil
+  end
+
+  it "keeps a fixed deadline without progress" do
+    stub_const("#{watchdog.name}::TCP_INFO", 11)
+    writes = watchdog.new(resource([]), clock: clock, timeout: 60)
+    writes.write_started
+    clock.now = 61.0
+    expect(writes.remaining).to eq(-1)
   end
 end
 

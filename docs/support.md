@@ -451,21 +451,24 @@ For Rails and Rack hosts the proxy owns these windows, for example Envoy's
 
 Since 0.3.0, the Async `Host` and Falcon's native HTTP/2 listener also bound
 peers that stop reading responses. A unary, client-streaming or fallback
-response that waits `response_body_timeout`
-(default 60 seconds) for flow-control credit is reset with `CANCEL`, like
-nginx's `send_timeout`. Each HTTP/2 frame write must finish within
-`frame_write_timeout` (default 60 seconds), or the connection is aborted. That
-second bound applies to every RPC shape, and control frames queued behind a
-stalled write wait for it rather than for the keepalive timeout. It is a
-deadline for each write. While it is on, Linux and macOS HTTP/2 sockets get
-`TCP_NOTSENT_LOWAT` set to 128 KiB, so a write blocked on a full send buffer
-needs only about 80 KB of peer progress. On other platforms such a write waits
-for the peer to drain a large part of the buffer, which a slow peer can miss
-while still reading. Neither grpc-go nor Go's net/http sets
-`TCP_NOTSENT_LOWAT`. grpc-go has no flow-control
-wait bound, but sets `TCP_USER_TIMEOUT` to its keepalive timeout, so the kernel
-fails a connection whose sent data stays unacknowledged, or unsent behind a zero
-window, that long; a peer that keeps reading slowly resets it. Go's
+response that waits `response_body_timeout` (default 60 seconds) for
+flow-control credit is reset with `CANCEL`, like nginx's `send_timeout`. Each
+HTTP/2 frame write must finish within `frame_write_timeout` (default 60
+seconds), or the connection is aborted; nil turns it off. That second bound
+applies to every RPC shape, and control frames queued behind a stalled write
+wait for it rather than for the keepalive timeout. A write blocked on a full
+send buffer finishes only after the peer drains a large part of it, about 950 KB
+on Linux defaults. On Linux 4.6 and later, such a write is renewed for another
+bound whenever the socket's `TCP_INFO` shows that the peer acknowledged new data
+while unsent data was queued, so a peer that keeps reading, however slowly,
+stays connected, and one that stops is aborted one to two bounds after its last
+progress. On other platforms and older kernels each write keeps a fixed
+deadline, which a slow peer can miss while still reading; raise
+`frame_write_timeout` there for slow links. grpc-go has no flow-control wait
+bound and no frame write bound, but sets `TCP_USER_TIMEOUT` to its keepalive
+timeout, so the kernel fails a connection whose sent data stays unacknowledged,
+or unsent behind a zero window, that long; a peer that keeps reading slowly
+resets it. The Linux renewal applies the same idea, checked once per bound. Go's
 `golang.org/x/net/http2` server has no credit bound either; its
 `WriteByteTimeout` is off by default, and `http.Server.WriteTimeout` limits the
 whole response of every stream shape, which is why streaming servers leave it
