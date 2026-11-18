@@ -185,6 +185,25 @@ RSpec.describe ConnectRPC::Client do
       expect(opened.last.headers.fetch("connect-timeout-ms").first.to_i).to be_between(1, 2000)
     end
 
+    it "bounds a gRPC unary call's grpc-timeout by an earlier supplied deadline" do
+      seen = []
+      interceptor = Object.new
+      interceptor.define_singleton_method(:client_unary) do |call, &continuation|
+        seen << call.deadline
+        continuation.call
+      end
+      grpc = client(transport: stream_transport, protocol: :grpc, status_codec: status_codec,
+                    interceptors: [interceptor])
+      deadline = ConnectRPC::Deadline.new(2)
+      expect { grpc.call(method, "hello", deadline: deadline) }.to raise_error("stream opened")
+      expect(seen.size).to eq(1)
+      expect(seen.first).to equal(deadline)
+      expect(opened.last.deadline).to equal(deadline)
+      value, unit = opened.last.headers.fetch("grpc-timeout").first.match(/\A(\d+)([HMSmun])\z/).captures
+      seconds = value.to_i * { "H" => 3600, "M" => 60, "S" => 1, "m" => 1e-3, "u" => 1e-6, "n" => 1e-9 }.fetch(unit)
+      expect(seconds).to be_between(0, 2)
+    end
+
     it "rejects a non-Deadline deadline and non-finite timeouts before any work" do
       streaming = client(transport: stream_transport)
       upload = ConnectRPC::ClientStreamMethod.new(service: "test.Service", name: "Up", request_type: String,

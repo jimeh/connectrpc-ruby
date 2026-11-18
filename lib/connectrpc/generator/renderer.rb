@@ -114,7 +114,10 @@ module ConnectRPC
       end
 
       # Maps each RPC to the implementation's public method of the same snake
-      # case name; respond_to? decides presence, so private methods are missing.
+      # case name. respond_to? decides presence, so private methods are missing,
+      # and a method owned by a core ancestor is never bound. Class.ancestors
+      # covers Object's ancestors, including later framework additions, plus
+      # Module and Class, which only module implementations inherit from.
       def render_handlers_for(methods, depth)
         line(depth, "")
         line(depth, "def self.handlers_for(#{'_' if methods.empty?}impl, strict: false)")
@@ -125,7 +128,10 @@ module ConnectRPC
         else
           entries = methods.map { |_method, ruby| "#{ruby}: #{ruby.upcase}" }.join(", ")
           line(depth + 1, "rpcs = { #{entries} }")
-          line(depth + 1, "missing = rpcs.keys.reject { |name| impl.respond_to?(name) }")
+          line(depth + 1, "core = ::Class.ancestors")
+          line(depth + 1, "missing = rpcs.keys.reject do |name|")
+          line(depth + 2, "impl.respond_to?(name) && !core.include?(impl.public_method(name).owner)")
+          line(depth + 1, "end")
           line(depth + 1, "raise ::ArgumentError, \"Missing service methods: \#{missing.join(', ')}\" " \
                           "if strict && !missing.empty?")
           line(depth, "")

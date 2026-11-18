@@ -203,8 +203,9 @@ valid metadata/trailers; malformed gzip 200 is internal. Header rejection stays
 internal, local size excess stays resource_exhausted, and actual expiry stays
 deadline_exceeded. No generic error-body rescue changes those classifications.
 
-The default timeout is 30 seconds. Explicit `timeout: nil` means no logical
-client deadline, timeout header or expiry watchdog. Native operation waits still
+The default timeout is 30 seconds. Explicit `timeout: nil` removes only the
+relative budget; a call has no logical client deadline, timeout header or expiry
+watchdog only with both `timeout: nil` and no `deadline:`. Native operation waits still
 use the exact `9_999_999.999` second cap, returning `unavailable` on timeout.
 Sustained progress can outlast this per-operation cap. For finite positive
 timeouts, one monotonic client deadline begins before encoding. Remaining timeout milliseconds are
@@ -467,10 +468,13 @@ contain frozen RPC declaration constants, `SERVICE`, a `Client` initialized with
 `client:`, `.handlers` with required callable RPC keywords, and
 `.handlers_for(impl, strict: false)`, which maps each RPC path to
 `impl.public_method(name)` when `impl.respond_to?(name)` for the RPC's
-snake-case name and omits the rest (`strict: true` raises naming them). The
-generator's reserved RPC names keep `respond_to?` from matching inherited
-Object methods. Unary wrappers forward `call(METHOD, request, **options)`
-unchanged. Streaming wrappers forward the matching scoped operation, its
+snake-case name and omits the rest (`strict: true` raises naming them). A
+method whose owner is in `Class.ancestors` at lookup time also counts as
+missing. That set holds `Object`'s ancestors, including modules frameworks
+include later, plus `Module` and `Class`, which only module implementations
+inherit from. Inherited core and framework methods such as ActiveSupport's
+`Object#try` are therefore never bound. Unary wrappers forward
+`call(METHOD, request, **options)` unchanged. Streaming wrappers forward the matching scoped operation, its
 required block and all options. Partial handlers/custom invocation remain core
 Server features. The generated file requires the Google binding because its
 declarations already use Google message classes; no framework or transport

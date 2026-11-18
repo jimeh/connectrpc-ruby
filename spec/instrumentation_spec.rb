@@ -381,6 +381,17 @@ RSpec.describe "RPC lifecycle instrumentation" do
     end
   end
 
+  it "reports an expired explicit deadline as deadline_exceeded with no transport work" do
+    transport = ->(_) { raise "transport must not run" }
+    caller = ConnectRPC::Client.new(base_url: "https://example.test", binding: binding, transport: transport,
+                                    instrumentation: bus)
+    expect { caller.call(rpc, "hello", deadline: ConnectRPC::Deadline.new(0)) }
+      .to raise_error(ConnectRPC::Error) { |error| expect(error.code).to eq("deadline_exceeded") }
+    expect(events.first.first).to eq(:start)
+    expect(events.find { |event| event.first == :processing }.last.code).to eq("deadline_exceeded")
+    expect(events.count { |event| event.first == :finished }).to eq(1)
+  end
+
   it "reports client request URL and transport facts without the GET query" do
     query = ConnectRPC::Method.new(service: "test.Echo", name: "Get", request_type: String, response_type: String,
                                    idempotency: :no_side_effects)

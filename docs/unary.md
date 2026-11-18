@@ -107,11 +107,15 @@ server = ConnectRPC::Server.new(services: [service::SERVICE],
   the existing Server handler map directly for partial/custom registration.
 - Since 0.3.0, `handlers_for(impl, strict: false)` checks each RPC with
   `impl.respond_to?(name)`, so private methods count as missing and
-  `respond_to_missing?` is honored. It omits RPCs the object lacks, which the
-  Server's default invoker answers with `unimplemented`. `strict: true` raises
-  `ArgumentError` naming every missing method. It does not check arity. Server
-  streaming methods take `(request, writer, context)`, client streaming
-  `(reader, context)` and bidi `(duplex, context)`.
+  `respond_to_missing?` is honored. A method that `impl` only inherits from
+  `Object` (or, for a class or module, from `Class` or `Module`) also counts
+  as missing, including methods that frameworks such as ActiveSupport add
+  there. A module's own singleton methods (`def self.greet`) count. It omits
+  RPCs the object lacks, which the Server's default invoker answers with
+  `unimplemented`. `strict: true` raises `ArgumentError` naming every missing
+  method. It does not check arity. Server streaming methods take
+  `(request, writer, context)`, client streaming `(reader, context)` and bidi
+  `(duplex, context)`.
 
 ### Generate with Buf
 
@@ -417,9 +421,10 @@ HTTP input coalescing belong to the library and host.
 Client `timeout:` accepts finite real seconds, defaulting to 30. Since 0.3.0,
 zero and negative timeouts are already expired, as in grpc-go: the call fails
 locally with `deadline_exceeded` before the transport runs. Infinite, NaN and
-non-numeric timeouts raise `ArgumentError`. Explicit `timeout: nil` sends no
-timeout header and, without `deadline:`, creates no logical deadline or expiry
-watchdog.
+non-numeric timeouts raise `ArgumentError`. Explicit `timeout: nil` removes
+only the relative timeout budget. A call has no logical deadline, expiry
+watchdog or timeout header only when it passes `timeout: nil` and no
+`deadline:`.
 
 Since 0.3.0, every call, including the streaming calls and generated wrappers,
 also accepts `deadline:`, a `ConnectRPC::Deadline` or nil. The call uses the

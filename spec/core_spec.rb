@@ -120,11 +120,41 @@ RSpec.describe ConnectRPC::Deadline do
   end
 end
 
+RSpec.describe "ConnectRPC::Protocol.call_deadline" do
+  # Every monotonic read advances one second, so sampling both deadlines'
+  # remaining time at different instants would favour the one read last.
+  before do
+    ticks = 100.0
+    allow(Process).to receive(:clock_gettime).and_call_original
+    allow(Process).to receive(:clock_gettime).with(Process::CLOCK_MONOTONIC) { ticks += 1.0 }
+  end
+
+  it "compares absolute expiries of default-clock deadlines regardless of read order" do
+    supplied = ConnectRPC::Deadline.new(10.5) # expires 0.5 s before a 10 s budget created on the next read
+    expect(ConnectRPC::Protocol.call_deadline(10, supplied)).to equal(supplied)
+    tied = ConnectRPC::Deadline.new(11)
+    selected = ConnectRPC::Protocol.call_deadline(10, tied)
+    expect(selected).not_to equal(tied)
+    expect(selected).to be_a(ConnectRPC::Deadline)
+  end
+
+  it "falls back to remaining time for a deadline on a custom clock" do
+    custom = ConnectRPC::Deadline.new(5, clock: -> { 0.0 })
+    expect(ConnectRPC::Protocol.call_deadline(10, custom)).to equal(custom)
+    later = ConnectRPC::Deadline.new(20, clock: -> { 0.0 })
+    expect(ConnectRPC::Protocol.call_deadline(10, later)).not_to equal(later)
+  end
+end
+
 RSpec.describe "binding resolution without the Google binding loaded" do
   it "names the binding require for omitted Client, Server and ErrorDetail bindings" do
     code = <<~RUBY
       require "connectrpc"
       abort "binding preloaded" if defined?(ConnectRPC::Bindings::GoogleProtobuf) || defined?(Google::Protobuf)
+      # A top-level decoy must never stand in for the library's default binding.
+      module Bindings
+        class GoogleProtobuf; end
+      end
       rpc = ConnectRPC::Method.new(service: "x.S", name: "M", request_type: String, response_type: String)
       service = ConnectRPC::Service.new(name: rpc.service, rpcs: [rpc])
       explicit = Object.new
@@ -140,6 +170,10 @@ RSpec.describe "binding resolution without the Google binding loaded" do
       end
       ConnectRPC::Client.new(base_url: "http://example.invalid", binding: explicit)
       ConnectRPC::Server.new(services: [service], binding: explicit)
+      # Only nil selects the default; an explicit false is kept as given.
+      client = ConnectRPC::Client.new(base_url: "http://example.invalid", binding: false)
+      server = ConnectRPC::Server.new(services: [service], binding: false)
+      puts [client, server].map { |owner| owner.instance_variable_get(:@binding).inspect }.join(",")
       puts ConnectRPC::ErrorDetail.new(type: "x.T", value: "raw").decode(binding: explicit, type: String)
       abort "binding loaded" if defined?(Google::Protobuf)
     RUBY
@@ -147,6 +181,6 @@ RSpec.describe "binding resolution without the Google binding loaded" do
     expect(status.success?).to be(true), error
     lines = output.lines.map(&:chomp)
     expect(lines.first(3)).to all(include('require "connectrpc/bindings/google_protobuf"'))
-    expect(lines.last).to eq("raw")
+    expect(lines.last(2)).to eq(["false,false", "raw"])
   end
 end

@@ -31,10 +31,18 @@ module ConnectRPC
     private
     def safe_message: (String) -> String
   end
+  interface _IdentityProbe
+    def equal?: (untyped) -> bool
+  end
   class Deadline
+    MONOTONIC: ^() -> Float
     def self.expired: () -> Deadline
     @clock: ^() -> Numeric | _Clock
     @expires_at: Numeric
+    attr_reader clock: ^() -> Numeric | _Clock
+    attr_reader expires_at: Numeric
+    private
+    def earlier_than?: (Deadline other) -> bool
   end
   class Context
     @cancellation: CallCancellation

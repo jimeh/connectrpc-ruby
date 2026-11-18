@@ -108,8 +108,12 @@ Metrics/MethodLength:
     - conformance/**/*.rb
     - examples/localhost.rb
 
+# Generated handlers_for keeps its service-object lookup, including the
+# inherited-core-method owner check, in one readable method.
 Metrics/AbcSize:
   Exclude:
+    - examples/gen/**/*_connect.rb
+    - gems/connectrpc-health/lib/grpc/**/*_connect.rb
     - typecheck/source.rb
     - typecheck/capture.rb
     - typecheck/archive.rb

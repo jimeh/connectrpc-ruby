@@ -81,7 +81,10 @@ module Grpc
           raise ::ArgumentError, "strict must be true or false" unless [true, false].include?(strict)
 
           rpcs = { check: CHECK, list: LIST, watch: WATCH }
-          missing = rpcs.keys.reject { |name| impl.respond_to?(name) }
+          core = ::Class.ancestors
+          missing = rpcs.keys.reject do |name|
+            impl.respond_to?(name) && !core.include?(impl.public_method(name).owner)
+          end
           raise ::ArgumentError, "Missing service methods: #{missing.join(', ')}" if strict && !missing.empty?
 
           rpcs.except(*missing).to_h { |name, rpc| [rpc.path, impl.public_method(name)] }

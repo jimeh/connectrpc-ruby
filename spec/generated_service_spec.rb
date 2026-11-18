@@ -373,6 +373,55 @@ RSpec.describe "Generated service-object handlers" do
     expect(item.decode(response.body).name).to eq("dynamic d")
   end
 
+  describe "inherited core methods" do
+    # Stand-ins for public methods that frameworks such as ActiveSupport add
+    # to Object or Module; each is removed again after the example.
+    def stub_core(owner, name)
+      raise "#{owner}##{name} already exists" if owner.method_defined?(name) || owner.private_method_defined?(name)
+
+      owner.define_method(name) { |*| raise "inherited #{name} must not be bound" }
+      stubbed << [owner, name]
+    end
+
+    let(:stubbed) { [] }
+
+    after { stubbed.each { |owner, name| owner.send(:remove_method, name) } }
+
+    it "treats a method an object only inherits from Object as missing" do
+      stub_core(Object, :lookup)
+      impl = Object.new
+      impl.define_singleton_method(:watch) { |request, writer, _context| writer.send_message(request) }
+      expect(impl.respond_to?(:lookup)).to be(true)
+      handlers = mixed.handlers_for(impl)
+      expect(handlers.keys).to eq([mixed::WATCH.path])
+      response = mixed_server(handlers).call(path: mixed::LOOKUP.path, http_method: "POST",
+                                             headers: { "content-type" => ["application/proto"] },
+                                             input: StringIO.new(item.new(name: "a").to_proto))
+      expect([response.status, JSON.parse(response.body)["code"]]).to eq([501, "unimplemented"])
+      expect { mixed.handlers_for(impl, strict: true) }.to raise_error(ArgumentError) { |error|
+        expect(error.message).to include("lookup")
+        expect(error.message).not_to include("watch")
+      }
+    end
+
+    it "maps a Module's own singleton methods but not inherited Module or Class methods" do
+      stub_core(Module, :watch)
+      stub_core(Class, :collect)
+      item = self.item
+      service = Module.new do
+        define_singleton_method(:lookup) { |request, _context| item.new(name: "module #{request.name}") }
+      end
+      handlers = mixed.handlers_for(service)
+      expect(handlers.keys).to eq([mixed::LOOKUP.path])
+      response = mixed_server(handlers).call(path: mixed::LOOKUP.path, http_method: "POST",
+                                             headers: { "content-type" => ["application/proto"] },
+                                             input: StringIO.new(item.new(name: "m").to_proto))
+      expect(item.decode(response.body).name).to eq("module m")
+      expect(mixed.handlers_for(Class.new).keys).to be_empty
+      expect { mixed.handlers_for(Class.new, strict: true) }.to raise_error(ArgumentError, /watch, collect/)
+    end
+  end
+
   it "returns an empty map for an empty service" do
     expect(GenerationFixture::V1::EmptyService.handlers_for(Object.new)).to eq({})
     expect(GenerationFixture::V1::EmptyService.handlers_for(Object.new, strict: true)).to eq({})
