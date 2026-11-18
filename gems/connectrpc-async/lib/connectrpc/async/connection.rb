@@ -419,37 +419,46 @@ module ConnectRPC
 
         # Bounds each wait for flow-control credit to `seconds` on `clock`.
         # Only credit ends a wait, so a wakeup that leaves the window empty
-        # does not restart it. Credit that a sibling stream spends first
-        # starts a new wait. On expiry the stream is reset with CANCEL and
+        # does not restart it. On expiry the stream is reset with CANCEL and
         # the write raises ResponseBodyTimeout.
         def bound_progress(clock, seconds)
           @progress_clock = clock
           @progress_seconds = seconds
         end
 
-        # async-http 0.105.0's loop, with its credit wait bounded. The frame
-        # size is read again after every wait, with no yield before the
-        # frame consumes it: ending a wait can yield, and sibling streams
-        # woken by the same connection WINDOW_UPDATE can spend the shared
-        # credit meanwhile. Sending a stale size raises FlowControlError,
-        # which resets the stream with INTERNAL_ERROR.
+        # async-http 0.105.0's loop, with its credit wait bounded. One timer
+        # spans a wait until this output sends a frame. The frame size is
+        # read after the wait with no yield before the frame consumes it;
+        # only then is the timer cancelled, which yields. Otherwise sibling
+        # streams woken by the same connection WINDOW_UPDATE could spend the
+        # shared credit first, and the stale send would raise
+        # FlowControlError, resetting the stream with INTERNAL_ERROR.
         def write(chunk)
+          timer = nil
           until chunk.empty?
             stream = @stream or raise IOError, "HTTP/2 stream is closed!"
             maximum_size = stream.available_frame_size
-            next await_credit(stream) unless maximum_size.positive?
+            unless maximum_size.positive?
+              timer ||= credit_timer if @progress_seconds
+              next await_credit(stream)
+            end
 
-            break unless (chunk = send_data(stream, chunk, maximum_size))
+            chunk = send_data(stream, chunk, maximum_size)
+            if timer
+              Internal.cancel(timer)
+              timer = nil
+            end
+            break unless chunk
           end
+        ensure
+          Internal.cancel(timer)
         end
 
         private
 
-        # Returns once the stream has credit to send. Cancelling the timer
-        # yields to the event loop.
+        # Returns once the stream has credit to send, with no yield after
+        # reading it. Raises ResponseBodyTimeout once the wait's timer fires.
         def await_credit(stream)
-          @stalled = false
-          timer = credit_timer if @progress_seconds
           credited = @guard.synchronize do
             size = stream.available_frame_size
             until size.positive? || @stalled
@@ -464,13 +473,13 @@ module ConnectRPC
           stream.output_stalled
           @stream = nil
           raise ResponseBodyTimeout, "HTTP/2 response body received no flow-control credit within response_body_timeout"
-        ensure
-          Internal.cancel(timer)
         end
 
-        # Lives only inside one credit wait. It only wakes the waiting
-        # output, which resets its own stream, so it never stops a task.
+        # Lives only inside one credit wait, which write ends. It only wakes
+        # the waiting output, which resets its own stream, so it never stops
+        # a task.
         def credit_timer
+          @stalled = false
           timer = ::Async::Task.new(::Async::Task.current, finished: false) do
             @progress_clock.sleep(@progress_seconds)
             @guard.synchronize do

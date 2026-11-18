@@ -29,15 +29,19 @@ RSpec.describe "Falcon native HTTP/2 ordinary Rack request ingress" do
     end
   end
 
-  # The smallest windows the options accept: concurrent bodies in both
-  # directions wait on connection credit rather than stream credit.
-  it "serves concurrent native bodies at the smallest receive windows" do
-    reactor do |task|
-      size = 262_144
-      rack = lambda do |env|
-        [200, {}, [env.fetch("PATH_INFO") == "/download" ? "z" * size : env.fetch("rack.input").read.bytesize.to_s]]
-      end
-      [false, true].each do |dynamic|
+  # End-to-end coverage of the smallest windows the options accept through a
+  # real Transport: concurrent bodies in both directions wait on connection
+  # credit rather than stream credit. The raw-peer example in
+  # connectrpc-async's support/response_credit_examples.rb proves the
+  # shared-credit race.
+  [false, true].each do |dynamic|
+    growth = dynamic ? "dynamic" : "static"
+    it "serves concurrent native bodies at 65535-byte stream and connection windows, #{growth}" do
+      reactor do |task|
+        size = 262_144
+        rack = lambda do |env|
+          [200, {}, [env.fetch("PATH_INFO") == "/download" ? "z" * size : env.fetch("rack.input").read.bytesize.to_s]]
+        end
         windows = { stream_receive_window: 65_535, connection_receive_window: 65_535,
                     dynamic_receive_windows: dynamic }
         falcon(rack_app: rack, **windows) do |_host, origin|
@@ -46,7 +50,7 @@ RSpec.describe "Falcon native HTTP/2 ordinary Rack request ingress" do
                   Array.new(4) do
                     task.async { transport.call(request("#{origin}/upload", body: "u" * size)).body }
                   end
-          expect(calls.map(&:wait)).to eq(([size] * 4) + ([size.to_s] * 4)), windows.inspect
+          expect(calls.map(&:wait)).to eq(([size] * 4) + ([size.to_s] * 4))
         ensure
           calls&.each(&:stop)
           transport&.close(grace: 0)

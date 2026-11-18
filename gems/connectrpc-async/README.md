@@ -189,8 +189,7 @@ set `max_concurrent_streams` lower explicitly.
   admitted HTTP/2 stream for flow-control credit, like nginx's `send_timeout`.
   A wait starts when the stream's or the connection's window is used up and
   ends when credit for this stream arrives; a WINDOW_UPDATE that leaves the
-  stream without credit does not restart it. Connection credit that sibling
-  streams spend first starts a new wait. When a wait exceeds the bound, the
+  stream without credit does not restart it. When a wait exceeds the bound, the
   server resets the stream with `RST_STREAM(CANCEL)`, the call finishes as not
   delivered, and the stream's admission slot is released. The connection and
   its other streams continue. Unary and client-streaming RPCs and fallback

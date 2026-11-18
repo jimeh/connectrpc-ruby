@@ -138,16 +138,19 @@ RSpec.describe "HTTP/2 receive windows" do
     end
   end
 
-  # Each side's connection window is smaller than its peer's stream windows
-  # combined, so concurrent bodies in both directions wait on connection
-  # credit rather than stream credit.
-  it "serves concurrent bodies when the connection window binds before the stream windows" do
-    size = 262_144
-    app = lambda do |request|
-      upload = request.body&.join.to_s
-      Protocol::HTTP::Response[200, {}, [request.path == "/download" ? "z" * size : upload.bytesize.to_s]]
-    end
-    [[65_535, 65_535], [131_072, 65_535]].product([false, true]).each do |(stream, connection), dynamic|
+  # End-to-end coverage of the accepted window combinations through a real
+  # Transport. Each side's connection window is smaller than its peer's
+  # stream windows combined, so concurrent bodies in both directions wait on
+  # connection credit rather than stream credit. The raw-peer example in
+  # support/response_credit_examples.rb proves the shared-credit race.
+  [[65_535, 65_535], [131_072, 65_535]].product([false, true]).each do |(stream, connection), dynamic|
+    growth = dynamic ? "dynamic" : "static"
+    it "serves concurrent bodies at #{stream}-byte stream and #{connection}-byte connection windows, #{growth}" do
+      size = 262_144
+      app = lambda do |request|
+        upload = request.body&.join.to_s
+        Protocol::HTTP::Response[200, {}, [request.path == "/download" ? "z" * size : upload.bytesize.to_s]]
+      end
       windows = { stream_receive_window: stream, connection_receive_window: connection,
                   dynamic_receive_windows: dynamic }
       reactor do |task|
@@ -157,7 +160,7 @@ RSpec.describe "HTTP/2 receive windows" do
                   Array.new(4) do
                     task.async { transport.call(request("#{origin}/upload", body: "u" * size)).body }
                   end
-          expect(calls.map(&:wait)).to eq(([size] * 4) + ([size.to_s] * 4)), windows.inspect
+          expect(calls.map(&:wait)).to eq(([size] * 4) + ([size.to_s] * 4))
         ensure
           calls&.each(&:stop)
           transport&.close(grace: 0)
