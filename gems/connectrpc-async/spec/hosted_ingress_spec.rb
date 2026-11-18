@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require_relative "support/ingress_host_examples"
+require_relative "support/response_credit_examples"
 
 RSpec.describe "Standalone native request ingress" do
   def with_ingress_host(app, tls: nil, **)
@@ -18,4 +19,5 @@ RSpec.describe "Standalone native request ingress" do
   end
 
   include_examples "hosted HTTP/2 ingress backpressure"
+  include_examples "hosted HTTP/2 shared response credit"
 end
