@@ -805,8 +805,8 @@ module ConnectRPC
         end
 
         # Starts the task that writes receive-window frames, before the reader
-        # starts. The reader only records what to send, so a frame write that
-        # waits for the guard or the socket never stops it reading. The task
+        # starts. The reader only records what to send, so a BDP frame write
+        # that waits for the guard or the socket never stops it reading. The task
         # is a control task of the resource: retirement captures, cancels and
         # joins it, and a drain stops it once the final GOAWAY is written.
         def start_receive_window_writer(parent)

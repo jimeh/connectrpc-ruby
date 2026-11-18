@@ -1314,8 +1314,10 @@ defaults: the estimate starts at `stream_receive_window` and only grows. As in
 grpc-go, every received DATA frame counts toward a sample, including padding and
 DATA for refused or closed streams, so traffic the host rejects can raise the
 windows of the streams it admits, up to `max_receive_window`. The reader never
-writes BDP frames, so a frame write blocked by a full socket send buffer, such
-as during a large upload, never stops it reading. A host queues them on the
+writes BDP frames, so a BDP frame write blocked by a full socket send buffer,
+such as during a large upload, never stops it reading. protocol-http2 still
+writes connection WINDOW_UPDATEs and SETTINGS ACKs from the reader, as before
+0.3.0. A host queues BDP frames on the
 [control writer](#server-keepalive). A client hands them to a writer task of
 its connection, which holds at most one BDP PING and the latest growth, and
 sends growth as soon as the ACK that measured it is read. Each takes effect
