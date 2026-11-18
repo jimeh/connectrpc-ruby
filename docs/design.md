@@ -643,10 +643,11 @@ its callbacks is independent of the executing context. See the
 
 The Async package's independent `HTTP1Transport` uses exclusive reactor-owned
 leases for Connect unary, safe GET and SS/CS. Reservations precede yielding
-TCP/TLS setup; retiring resources count toward the cap until raw close and task
-joins finish. Idle reuse requires normal writer completion, full HTTP EOF,
-successful cleanup and native persistent/idle state. A nonblocking acquisition
-probe retires FIN or unsolicited data before dispatch. No failed call is replayed.
+TCP/TLS setup; retiring resources count toward the cap until their task joins
+and final raw close finish. Idle reuse requires normal writer completion, full
+HTTP EOF, successful cleanup and native persistent/idle state. A nonblocking
+acquisition probe retires FIN or unsolicited data before dispatch. No failed call
+is replayed.
 
 A private H1 stream separates response reads from output flushing and caps native
 body fragments at 16 KiB. Strict HTTP/1.1 status syntax preserves three-digit

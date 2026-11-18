@@ -335,20 +335,35 @@ module ConnectRPC
         raise Error.new(category), cause: nil
       end
 
+      # An interruption of the closing task cannot abandon the shutdown: every
+      # task is still cancelled and joined, and the first interruption is
+      # raised once the configuration is closed.
       def shutdown
         return if @state == :closed
 
         @state = :closing
-        Internal.cancel(@timer)
-        Internal.cancel(@expiry)
-        Internal.cancel(@attempt)
-        Internal.cancel(@callback)
-        Internal.join(@timer)
-        Internal.join(@expiry)
-        Internal.join(@callback)
-        Internal.join(@attempt)
+        tasks = [@timer, @expiry, @attempt, @callback]
+        failures = tasks.map { |task| Internal::Teardown.capture { Internal.cancel(task) } }
+        failures.concat(tasks.values_at(0, 1, 3, 2).map { |task| join_retaining(task) })
         @state = :closed
-        Internal.cancel(@lifetime)
+        failures << Internal::Teardown.capture { Internal.cancel(@lifetime) }
+        interruption = Internal::Teardown.first(failures)
+        raise interruption if interruption
+      end
+
+      # Waits until `task` finishes, retaining the first interruption of the
+      # waiter. The task's own failure is its owner's to report.
+      def join_retaining(task)
+        interruption = nil
+        begin
+          task.wait if task && !task.current?
+        rescue Exception => e # rubocop:disable Lint/RescueException -- an interrupted join keeps waiting for the task
+          unless task.failed? && task.result.equal?(e)
+            interruption ||= e
+            retry unless task.finished?
+          end
+        end
+        interruption
       end
     end
   end

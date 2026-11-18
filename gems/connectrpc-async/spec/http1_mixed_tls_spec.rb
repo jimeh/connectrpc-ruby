@@ -29,11 +29,17 @@ RSpec.describe "HTTP/1 canceled TLS setup beside active HTTP/2 TLS" do
       })
       host = ConnectRPC::Async::Host.new(server: implementation, tls: host_tls).start
       h2_origin = "https://localhost:#{host.port}"
-      ssl_errors = []
+      raised = []
+      h1_setup = nil
       # Observe original SSL exceptions without reading/clearing OpenSSL.errors.
+      # The canceled H1 setup's own handshake fails with EOF at its raw
+      # shutdown, which its waiting caller sees too; no other SSL error may
+      # be raised anywhere.
       trace = TracePoint.new(:raise) do |event|
         error = event.raised_exception
-        ssl_errors << [error.class.name, error.message, event.path, event.lineno] if error.is_a?(OpenSSL::SSL::SSLError)
+        if error.is_a?(OpenSSL::SSL::SSLError)
+          raised << [error, Async::Task.current?, [error.class.name, error.message, event.path, event.lineno]]
+        end
       end
       with_ca do |ca_file|
         h2 = ConnectRPC::Async::Transport.new(origin: h2_origin, ca_file: ca_file)
@@ -51,6 +57,7 @@ RSpec.describe "HTTP/1 canceled TLS setup beside active HTTP/2 TLS" do
           end
           stalled.wait
           h1_resource = h1.instance_variable_get(:@resources).first
+          h1_setup = h1_resource.setup
           expect(h1_resource.socket).to be_a(OpenSSL::SSL::SSLSocket)
           expect(active).not_to be_finished
           source.cancel
@@ -70,6 +77,8 @@ RSpec.describe "HTTP/1 canceled TLS setup beside active HTTP/2 TLS" do
           expect(seen).to eq(%w[active subsequent])
           expect(h2.instance_variable_get(:@resources)).to eq([h2_resource])
         end
+        setup_errors = raised.filter_map { |error, owner, _| error if owner.equal?(h1_setup) }
+        ssl_errors = raised.reject { |error, _, _| setup_errors.any? { |own| own.equal?(error) } }.map(&:last)
         warn "Mixed H1/H2 TLS Ruby #{RUBY_VERSION}: H2 active/subsequent on one h2 lease; " \
              "H1 closed/joined; original SSL exceptions=#{ssl_errors.inspect}"
         expect(ssl_errors).to be_empty
