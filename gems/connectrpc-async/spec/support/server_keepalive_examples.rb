@@ -539,6 +539,108 @@ RSpec.shared_examples "HTTP/2 server keepalive" do
       end
     end
 
+    # Retirement shuts raw TCP down before it closes it, so its own failure
+    # also ends the discard with EOF.
+    it "reports a drain joined in its final discard as not drained when its bound aborts it" do
+      reactor do |task|
+        with_keepalive_host(task, keepalive: server_keepalive(time: nil, min_time: nil,
+                                                              max_connection_age: 100)) do |fixture|
+          # A second descriptor keeps the socket open after the client closes.
+          keeper = fixture.client.raw.dup
+          resource = fixture.resource
+          raw = resource.raw
+          # After its EOF, the discard read stays on raw until retirement has
+          # joined every member and waits on the resource, or until a close
+          # reaches raw. No close may reach raw while the read is on it.
+          discarding_at_close = []
+          gate = nil
+          allow(raw).to receive(:readpartial).and_wrap_original do |read, *args|
+            read.call(*args)
+          rescue EOFError
+            members = resource.instance_variable_get(:@retirement_members)
+            wait_until(Async::Task.current, "retirement joined its members") do
+              gate = :closed unless discarding_at_close.empty?
+              gate ||= :joined if !members.empty? && members.keys.all?(&:finished?) && resource.progress.waiting?
+              gate
+            end
+            raise
+          end
+          allow(raw).to receive(:close).and_wrap_original do |close|
+            discarding_at_close << resource.instance_variable_get(:@discarding)
+            close.call
+          end
+          await_due(task, fixture.clock, 100)
+          fixture.clock.advance(100)
+          wait_until(task, "server half-close") { fixture.client.eof? }
+          closing = task.async { fixture.host.close(grace: 5) }
+          await_due(task, fixture.clock, 101)
+          fixture.clock.advance(1)
+          expect(closing.wait).to be(false)
+          expect(retired?(resource)).to be(true)
+          expect(raw).to be_closed
+          expect(gate).to eq(:joined)
+          expect(discarding_at_close).not_to be_empty
+          expect(discarding_at_close).to all(be(false))
+        ensure
+          keeper&.close
+        end
+      end
+    end
+
+    it "reports a session drain in its final discard as not drained when the connection aborts" do
+      reactor do |task|
+        with_keepalive_host(task, keepalive: server_keepalive(time: nil, min_time: nil)) do |fixture|
+          # A second descriptor keeps the socket open after the client closes.
+          keeper = fixture.client.raw.dup
+          resource = fixture.resource
+          closing = task.async { fixture.host.close(grace: 5) }
+          wait_until(task, "final discard") { resource.instance_variable_get(:@discarding) }
+          # The connection's own raw failure ends the discard with EOF; it is
+          # not the peer's close.
+          resource.abort
+          expect(closing.wait).to be(false)
+          expect(retired?(resource)).to be(true)
+          expect(resource.raw).to be_closed
+        ensure
+          keeper&.close
+        end
+      end
+    end
+
+    # Session retirement shuts raw TCP down before it aborts each resource, so
+    # a draining reader can see EOF first. That EOF is not the peer leaving.
+    it "does not read a session abort's raw failure in a drain as the peer leaving" do
+      reactor do |task|
+        with_keepalive_host(task, keepalive: server_keepalive(time: nil, min_time: nil)) do |fixture|
+          client = fixture.client
+          resource = fixture.resource
+          session = keepalive_session(fixture.host)
+          client.wire.ack_pings = false
+          closing = task.async { fixture.host.close(grace: 5) }
+          wait_until(task, "drain PING") { client.wire.pings == [KeepaliveClient::DRAIN_PING] }
+          held = Async::Queue.new
+          release = Async::Queue.new
+          allow(session).to receive(:stop_accepting).and_wrap_original do |stop|
+            held.enqueue(true)
+            release.dequeue
+            stop.call
+          end
+          aborter = task.async { session.abort }
+          held.dequeue
+          wait_until(task, "server reader saw EOF") { resource.connection.reader_task.finished? }
+          expect(resource.peer_departed?).to be(false)
+          expect(resource).to be_finished
+          release.enqueue(true)
+          aborter.wait
+          expect(resource.instance_variable_get(:@drain_task).wait).to be(false)
+          expect(closing.wait).to be(false)
+          expect(retired?(resource)).to be(true)
+        ensure
+          release&.enqueue(true)
+        end
+      end
+    end
+
     it "lets session close supersede a drain without raising its cutoff" do
       reactor do |task|
         with_keepalive_host(task, keepalive: server_keepalive(time: nil, min_time: nil,

@@ -147,7 +147,7 @@ The H2 `Transport` manages its own connections: shared attempts outside RPC
 lifecycles, capped jittered backoff, opt-in wait-for-ready, count and request-byte
 admission, rerouting only of calls that wrote nothing, replacement of a
 gracefully draining GOAWAY connection within `connection_limit + max_draining`
-sockets with an optional drain timeout, and one resend of a Connect unary call
+live sockets with an optional drain timeout, and one resend of a Connect unary call
 whose stream the server provably never processed. Native gRPC unary calls and
 streams are never resent.
 Each H1 connection has one exclusive lease through EOF and cleanup, so long

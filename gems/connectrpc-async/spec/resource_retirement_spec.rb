@@ -73,7 +73,7 @@ RSpec.describe "HTTP/2 resource retirement completion" do
         client_close = task.async(finished: false) { transport.close(grace: 0) }
         cleanup_entered.dequeue
         expect(retirement_callers.first).to equal(owned.fetch(:reader))
-        expect(resource.raw).to be_closed
+        expect(resource.send(:raw_failed?)).to be(true)
         expect(handler).not_to be_finished
 
         started = Async::Queue.new
