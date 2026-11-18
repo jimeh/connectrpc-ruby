@@ -20,24 +20,32 @@ RSpec.describe Conformance::NativeLedger do
      { "event" => "native_server_dispatch_enter", "pid" => 7, "id" => 1, "name" => name }]
   end
 
-  def parse(events)
-    described_class.new(direction: "server", selected: name).parse(raw, events, 0)
+  def parse(events, log = raw)
+    described_class.new(direction: "server", selected: name).parse(log, events, 0)
   end
 
-  it "reports the exception from a close that raised" do
+  it "reports the exception from a close that raised, ahead of runner output errors" do
     events = served + [{ "event" => "server_close_failed", "pid" => 7, "error_class" => "Async::Cancel",
                          "message" => "Cancelling task!" },
                        { "event" => "server_stopped", "pid" => 7 }]
+    message = "Conformance accounting: Native server close failed in pid 7: Async::Cancel: Cancelling task!"
 
-    expect { parse(events) }.to raise_error(
-      RuntimeError, "Conformance accounting: Native server close failed in pid 7: Async::Cancel: Cancelling task!"
-    )
+    expect { parse(events) }.to raise_error(RuntimeError, message)
+    expect { parse(events, "") }.to raise_error(RuntimeError, message)
   end
 
   it "names a server process that never stopped and its last recorded event" do
     expect { parse(served) }.to raise_error(
       RuntimeError, "Conformance accounting: Native server lifetime mismatch: pid 7 never stopped; " \
                     "last event native_server_dispatch_enter #{name}"
+    )
+  end
+
+  it "names a server process that stopped without becoming ready" do
+    events = served + [{ "event" => "server_stopped", "pid" => 7 }, { "event" => "server_stopped", "pid" => 8 }]
+
+    expect { parse(events) }.to raise_error(
+      RuntimeError, "Conformance accounting: Native server lifetime mismatch: pid 8 stopped without becoming ready"
     )
   end
 end

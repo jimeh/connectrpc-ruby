@@ -7,6 +7,9 @@ module Conformance
   # stderr if the adapter has not recorded server_stopped within GRACE.
   class NativeStallReport
     GRACE = 3
+    # Small enough that the reactor section survives the scripts' stderr tail
+    # with a few dozen live tasks.
+    TASK_FRAMES = 8
 
     attr_writer :scheduler, :phase
 
@@ -30,7 +33,7 @@ module Conformance
     def report(main)
       out = "Native server adapter stalled #{GRACE}s after SIGTERM while #{@phase} (pid #{Process.pid})\n"
       out << "Reactor thread (#{main.status}):\n"
-      Array(main.backtrace).first(40).each { |line| out << "  #{line}\n" }
+      Array(main.backtrace).first(30).each { |line| out << "  #{line}\n" }
       tasks(@scheduler, 0, out) if @scheduler
       out
     rescue StandardError => e
@@ -41,7 +44,8 @@ module Conformance
       node.children&.each do |task|
         out << "#{'  ' * depth}- #{task.status} #{task.annotation}\n"
         fiber = task.fiber
-        Array(fiber&.alive? ? fiber.backtrace : nil).first(20).each { |line| out << "#{'  ' * depth}    #{line}\n" }
+        frames = fiber&.alive? ? Array(fiber.backtrace).first(TASK_FRAMES) : []
+        frames.each { |line| out << "#{'  ' * depth}    #{line}\n" }
         tasks(task, depth + 1, out)
       end
     end

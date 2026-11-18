@@ -95,8 +95,8 @@ def report_adapter_stderr(artifacts)
   lines = File.exist?(path) ? File.readlines(path) : []
   return if lines.empty?
 
-  warn "Adapter stderr (last #{[lines.size, 200].min} of #{lines.size} lines, #{path}):"
-  warn lines.last(200).join
+  warn "Adapter stderr (last #{[lines.size, 400].min} of #{lines.size} lines, #{path}):"
+  warn lines.last(400).join
 end
 
 success = true

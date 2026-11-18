@@ -40,16 +40,16 @@ File.open(File.join(directory, "runner.log"), "w") do |log|
   end
 end
 puts raw
-events = File.readlines(environment.fetch("CONFORMANCE_TELEMETRY")).map { |line| JSON.parse(line) }
 begin
+  events = File.readlines(environment.fetch("CONFORMANCE_TELEMETRY")).map { |line| JSON.parse(line) }
   summary = ledger.parse(raw, events, process.exitstatus)
 rescue StandardError
   # CI keeps no artifacts, so a failed accounting shows the adapter's stderr.
   path = environment.fetch("CONFORMANCE_DIAGNOSTICS")
   lines = File.exist?(path) ? File.readlines(path) : []
   unless lines.empty?
-    warn "Adapter stderr (last #{[lines.size, 200].min} of #{lines.size} lines, #{path}):"
-    warn lines.last(200).join
+    warn "Adapter stderr (last #{[lines.size, 400].min} of #{lines.size} lines, #{path}):"
+    warn lines.last(400).join
   end
   raise
 end

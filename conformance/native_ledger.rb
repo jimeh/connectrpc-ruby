@@ -18,6 +18,13 @@ module Conformance
             inventory: inventory || INVENTORIES.fetch(profile))
     end
 
+    # A server that failed to close or never stopped also explains runner
+    # failures, so its telemetry is checked before the runner output.
+    def parse(raw, events, exit_code)
+      validate_native_server_stops!(events) if @direction == "server"
+      super
+    end
+
     private
 
     def runner_configuration_pattern
@@ -28,10 +35,7 @@ module Conformance
     def validate_events!(events)
       @cancel_stages = {}
       verify(events.none? { |event| event.fetch("event") == "adapter_error" }, "Native adapter error")
-      return validate_native_client_events!(events) if @direction == "client"
-
-      validate_native_server_stops!(events)
-      validate_native_server_events!(events)
+      @direction == "client" ? validate_native_client_events!(events) : validate_native_server_events!(events)
     end
 
     def validate_native_client_events!(events)
@@ -45,7 +49,7 @@ module Conformance
     end
 
     # The runner kills a server process that has not exited 5s after SIGTERM,
-    # which loses its adapter's stderr. Name what the telemetry still shows.
+    # before it can report anything more. Name what the telemetry still shows.
     def validate_native_server_stops!(events)
       failure = events.find { |event| event.fetch("event") == "server_close_failed" }
       verify(failure.nil?, failure && "Native server close failed in pid #{failure.fetch('pid')}: " \
@@ -53,22 +57,20 @@ module Conformance
       ready = server_pids(events, "server_ready")
       stopped = server_pids(events, "server_stopped")
       verify(!ready.empty?, "Native server never became ready")
-      unstopped = ready - stopped
-      verify(unstopped.empty? && ready.sort == stopped.sort,
-             "Native server lifetime mismatch: #{unstopped_detail(events, unstopped)}")
+      verify(ready.sort == stopped.sort, "Native server lifetime mismatch: #{unpaired_detail(events, ready, stopped)}")
     end
 
     def server_pids(events, kind)
       events.select { |event| event.fetch("event") == kind }.map { |event| event.fetch("pid") }
     end
 
-    def unstopped_detail(events, pids)
-      return "unpaired stop events" if pids.empty?
-
-      pids.map do |pid|
+    def unpaired_detail(events, ready, stopped)
+      unstopped = (ready - stopped).map do |pid|
         last = events.reverse_each.find { |event| event["pid"] == pid }
         "pid #{pid} never stopped; last event #{last.fetch('event')} #{last['name']}".rstrip
-      end.join("; ")
+      end
+      unready = (stopped - ready).map { |pid| "pid #{pid} stopped without becoming ready" }
+      (unstopped + unready).join("; ")
     end
 
     def validate_native_server_events!(events)
