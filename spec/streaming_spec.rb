@@ -67,7 +67,7 @@ RSpec.describe "Connect streaming framing and scope" do
     methods = [unary, *[ConnectRPC::ServerStreamMethod, ConnectRPC::ClientStreamMethod, ConnectRPC::BidiStreamMethod]
       .each_with_index.map { |type, index| type.new(**method_options, name: "Run#{index}") }]
     expect(methods.drop(1)).to all(satisfy { |method| !method.is_a?(ConnectRPC::Method) })
-    expect(ConnectRPC::Service.new(name: unary.service, methods: methods).methods).to eq(methods)
+    expect(ConnectRPC::Service.new(name: unary.service, rpcs: methods).rpcs).to eq(methods)
   end
 
   it "rejects all streaming declarations at the shared unary server seam before binding or input" do
@@ -77,7 +77,7 @@ RSpec.describe "Connect streaming framing and scope" do
     expect(incoming).not_to receive(:read)
     [ConnectRPC::ServerStreamMethod, ConnectRPC::ClientStreamMethod, ConnectRPC::BidiStreamMethod].each do |type|
       rpc = declaration(type)
-      target = ConnectRPC::Server.new(services: [ConnectRPC::Service.new(name: rpc.service, methods: [rpc])],
+      target = ConnectRPC::Server.new(services: [ConnectRPC::Service.new(name: rpc.service, rpcs: [rpc])],
                                       binding: binding, handlers: { rpc.path => ->(*) { raise "handler invoked" } })
       { "application/connect+proto" => 415, "application/proto" => 501 }.each do |media, status|
         response = target.call(path: rpc.path, http_method: "POST", headers: { "content-type" => [media] },

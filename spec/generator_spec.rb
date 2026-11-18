@@ -31,7 +31,15 @@ RSpec.describe "Service generation" do
     content = response.file.first.content
     expect(content).to include('require "sample_pb"', "module EchoService", "GET_HTTP = ::ConnectRPC::Method.new",
                                "def get_http(request, **options)", "@client.call(GET_HTTP, request, **options)",
-                               "def self.handlers(get_http:)", "SERVICE = ::ConnectRPC::Service.new")
+                               "def self.handlers(get_http:)", "SERVICE = ::ConnectRPC::Service.new",
+                               'name: "generation.v1.EchoService", rpcs: [GET_HTTP]',
+                               "def self.handlers_for(impl, strict: false)",
+                               "rpcs = { get_http: GET_HTTP }",
+                               "core = ::Class.ancestors",
+                               "[name, method] if method && !core.include?(method.owner)")
+    requires = %(require "connectrpc"\nrequire "connectrpc/bindings/google_protobuf"\nrequire "sample_pb")
+    expect(content).to include(requires)
+    expect(content).not_to include("methods: [")
     expect(response.supported_features).to eq(1)
   end
 
@@ -127,7 +135,8 @@ RSpec.describe "Service generation" do
     request = request_for(rpcs: [])
     response = generate(request)
     expect(response.error).to eq("")
-    expect(response.file.first.content).to include("methods: []", "def self.handlers\n", "{}")
+    expect(response.file.first.content).to include("rpcs: []", "def self.handlers\n", "{}",
+                                                   "def self.handlers_for(_impl, strict: false)")
     request.proto_file.first.service.clear
     expect(generate(request).file).to be_empty
   end

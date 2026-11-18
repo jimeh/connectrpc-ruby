@@ -4,6 +4,7 @@
 # source: echo.proto
 
 require "connectrpc"
+require "connectrpc/bindings/google_protobuf"
 require "echo_pb"
 
 module Example
@@ -37,7 +38,7 @@ module Example
       )
 
       SERVICE = ::ConnectRPC::Service.new(
-        name: "example.v1.EchoService", methods: [ECHO, FAIL]
+        name: "example.v1.EchoService", rpcs: [ECHO, FAIL]
       )
 
       class Client
@@ -59,6 +60,21 @@ module Example
         raise ::ArgumentError, "fail must respond to call" unless fail.respond_to?(:call)
 
         { ECHO.path => echo, FAIL.path => fail }
+      end
+
+      def self.handlers_for(impl, strict: false)
+        raise ::ArgumentError, "strict must be true or false" unless [true, false].include?(strict)
+
+        rpcs = { echo: ECHO, fail: FAIL }
+        core = ::Class.ancestors
+        found = rpcs.keys.filter_map do |name|
+          method = impl.public_method(name) if impl.respond_to?(name)
+          [name, method] if method && !core.include?(method.owner)
+        end.to_h
+        missing = rpcs.keys - found.keys
+        raise ::ArgumentError, "Missing service methods: #{missing.join(', ')}" if strict && !missing.empty?
+
+        found.to_h { |name, method| [rpcs.fetch(name).path, method] }
       end
     end
   end

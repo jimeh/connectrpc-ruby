@@ -47,13 +47,11 @@ fixture. Replace it with your own generated service:
 
 ```ruby
 require "connectrpc/testing"
-require "connectrpc/bindings/google_protobuf" # application's optional binding
-require "echo_connect" # application's generated messages and service
+require "echo_connect" # application's generated messages, service and binding
 
 service = Example::V1::EchoService
-binding = ConnectRPC::Bindings::GoogleProtobuf.new
 server = ConnectRPC::Server.new(
-  services: [service::SERVICE], binding: binding,
+  services: [service::SERVICE],
   handlers: service.handlers(
     echo: ->(request, context) {
       context.response_trailers.add("x-tested", "yes")
@@ -65,9 +63,7 @@ server = ConnectRPC::Server.new(
   )
 )
 transport = ConnectRPC::Testing::Transport.new(server: server)
-core = ConnectRPC::Client.new(
-  base_url: "https://in-process.invalid", binding: binding, transport: transport
-)
+core = ConnectRPC::Client.new(base_url: "https://in-process.invalid", transport: transport)
 client = service::Client.new(client: core)
 response = client.echo(Example::V1::EchoMessage.new(name: "hello"), timeout: nil)
 raise "Unexpected response" unless response.message.name == "hello"
@@ -116,16 +112,16 @@ from the remaining budget. Core reconstructs its cooperative server deadline
 from rounded/clamped wire milliseconds. The original deadline remains
 authoritative and expiry takes precedence over the response wire cap.
 
-The Client's omitted timeout remains 30 seconds; `timeout: nil` adds no deadline
-or timeout header. A low-level request with nil deadline can still explicitly
+The Client's omitted timeout remains 30 seconds; `timeout: nil` without
+`deadline:` adds no deadline or timeout header. A low-level request with nil deadline can still explicitly
 supply a core timeout header.
 
 ### Explicit unary cancellation
 
 Pass `cancellation: source.token` to core or generated client calls, where
 `source = ConnectRPC::CancellationSource.new`. The source is permanent and
-shareable; only `source.cancel` initiates cancellation. `timeout: nil` keeps no
-RPC deadline or wire timeout. Context offers cooperative `cancelled?`,
+shareable; only `source.cancel` initiates cancellation. `timeout: nil` without
+`deadline:` keeps no RPC deadline or wire timeout. Context offers cooperative `cancelled?`,
 `cancellation_reason` and `check!`. See the
 [unary guide](../../docs/unary.md#cancellation) for listener, arbitration and
 registration lifetime rules.

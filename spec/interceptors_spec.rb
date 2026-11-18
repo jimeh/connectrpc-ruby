@@ -8,7 +8,7 @@ RSpec.describe "Unary interceptors" do
     ConnectRPC::Method.new(service: "intercept.Test", name: "Call", request_type: String, response_type: String,
                            idempotency: :no_side_effects)
   end
-  let(:service) { ConnectRPC::Service.new(name: rpc.service, methods: [rpc]) }
+  let(:service) { ConnectRPC::Service.new(name: rpc.service, rpcs: [rpc]) }
   let(:binding) do
     Class.new do
       def encode(message, type:, codec:)

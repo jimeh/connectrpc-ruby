@@ -7,7 +7,7 @@ RSpec.describe "Span lifetime, promotion and finish scope" do
   end
 
   def stream_server(instrumentation, &handler)
-    ConnectRPC::Server.new(services: [ConnectRPC::Service.new(name: "trace.Streams", methods: [stream_method])],
+    ConnectRPC::Server.new(services: [ConnectRPC::Service.new(name: "trace.Streams", rpcs: [stream_method])],
                            handlers: { stream_method.path => handler }, instrumentation: instrumentation,
                            binding: ConnectRPC::Bindings::GoogleProtobuf.new)
   end

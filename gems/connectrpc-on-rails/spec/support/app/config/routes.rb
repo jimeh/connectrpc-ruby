@@ -9,6 +9,7 @@ Rails.application.routes.draw do
   end
   match "/base/example.v1.EchoService(/*rpc)", to: "base_echo#connect", via: :all, format: false
   match "/rate/example.v1.EchoService(/*rpc)", to: "rate#connect", via: :all, format: false
+  match "/default/example.v1.EchoService(/*rpc)", to: "default_binding#connect", via: :all, format: false
   match "/rescue/example.v1.EchoService(/*rpc)", to: "rescue_echo#connect", via: :all, format: false
   scope "/intercepted" do
     match "/example.v1.EchoService(/*rpc)", to: "intercepted_echo#connect", via: :all, format: false

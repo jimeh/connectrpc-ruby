@@ -30,17 +30,18 @@ reports the `Interrupt`:
 $LOAD_PATH.unshift(File.expand_path("lib", __dir__))
 require "async"
 require "connectrpc/async"
-require "connectrpc/bindings/google_protobuf"
 require "greet/v1/greet_connect"
 
-service = Greet::V1::GreetService
-greet = lambda do |request, _context|
-  Greet::V1::GreetResponse.new(greeting: "Hello, #{request.name}!")
+class Greeter
+  def greet(request, _context)
+    Greet::V1::GreetResponse.new(greeting: "Hello, #{request.name}!")
+  end
 end
+
+service = Greet::V1::GreetService
 server = ConnectRPC::Server.new(
   services: [service::SERVICE],
-  binding: ConnectRPC::Bindings::GoogleProtobuf.new,
-  handlers: service.handlers(greet: greet),
+  handlers: service.handlers_for(Greeter.new, strict: true),
   protocol: :auto
 )
 
@@ -60,13 +61,11 @@ worker, call without a reactor:
 ```ruby
 $LOAD_PATH.unshift(File.expand_path("lib", __dir__))
 require "connectrpc/async"
-require "connectrpc/bindings/google_protobuf"
 require "greet/v1/greet_connect"
 
 transport = ConnectRPC::Async::ThreadedTransport.new(origin: "http://127.0.0.1:8080")
 core = ConnectRPC::Client.new(
   base_url: "http://127.0.0.1:8080",
-  binding: ConnectRPC::Bindings::GoogleProtobuf.new,
   transport: transport,
   protocol: :grpc
 )
@@ -78,6 +77,10 @@ ensure
   transport.close
 end
 ```
+
+The generated file loads the Google protobuf binding, so neither side passes
+`binding:`, and the binding also serves as the gRPC status codec. Since 0.3.0,
+`handlers_for` maps each RPC to the object's method of the same snake-case name.
 
 Code that already runs in a reactor task can use `ConnectRPC::Async::Transport`
 with the same options instead. Other gRPC clients, such as grpc-go, can call

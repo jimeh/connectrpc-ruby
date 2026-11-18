@@ -7,6 +7,6 @@ require_relative "../demo/cli"
 require_relative "../demo/calls"
 
 options = DemoExample::CLI.parse("nethttp", ARGV)
-client = ConnectRPC::Client.new(base_url: options.url, binding: ConnectRPC::Bindings::GoogleProtobuf.new,
+client = ConnectRPC::Client.new(base_url: options.url,
                                 codec: options.codec, use_get: options.get, encoding: options.encoding)
 exit DemoExample::Calls.run(Demo::V1::DemoService::Client.new(client: client), options)

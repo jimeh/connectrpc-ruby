@@ -31,7 +31,7 @@ module Conformance
         raise "Unsupported native client instruction"
       end
 
-      NATIVE_SERVICE.methods.find { |method| method.name == request["method"] } || raise("Unknown native method")
+      NATIVE_SERVICE.rpcs.find { |method| method.name == request["method"] } || raise("Unknown native method")
     end
 
     def native_transport_options(request, directory)

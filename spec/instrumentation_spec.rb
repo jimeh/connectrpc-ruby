@@ -220,7 +220,7 @@ RSpec.describe "RPC lifecycle instrumentation" do
   end
 
   def server(**, &handler)
-    ConnectRPC::Server.new(services: [ConnectRPC::Service.new(name: rpc.service, methods: [rpc])], binding: binding,
+    ConnectRPC::Server.new(services: [ConnectRPC::Service.new(name: rpc.service, rpcs: [rpc])], binding: binding,
                            handlers: { rpc.path => handler || ->(message, _context) { message } },
                            instrumentation: bus, **)
   end
@@ -372,13 +372,24 @@ RSpec.describe "RPC lifecycle instrumentation" do
     transport = ->(_) { raise "transport must not run" }
     caller = ConnectRPC::Client.new(base_url: "https://example.test", binding: binding, transport: transport,
                                     instrumentation: bus)
-    [{ timeout: 0 }, { metadata: { "content-type" => "reserved" } }].each do |options|
+    [{ timeout: Float::NAN }, { metadata: { "content-type" => "reserved" } }].each do |options|
       events.clear
       expect { caller.call(rpc, "hello", **options) }.to raise_error(ArgumentError)
       expect(events.first.first).to eq(:start)
       expect(events.count { |event| event.first == :finished }).to eq(1)
       expect(events.find { |event| event.first == :processing }.last.error).to be_a(ArgumentError)
     end
+  end
+
+  it "reports an expired explicit deadline as deadline_exceeded with no transport work" do
+    transport = ->(_) { raise "transport must not run" }
+    caller = ConnectRPC::Client.new(base_url: "https://example.test", binding: binding, transport: transport,
+                                    instrumentation: bus)
+    expect { caller.call(rpc, "hello", deadline: ConnectRPC::Deadline.new(0)) }
+      .to raise_error(ConnectRPC::Error) { |error| expect(error.code).to eq("deadline_exceeded") }
+    expect(events.first.first).to eq(:start)
+    expect(events.find { |event| event.first == :processing }.last.code).to eq("deadline_exceeded")
+    expect(events.count { |event| event.first == :finished }).to eq(1)
   end
 
   it "reports client request URL and transport facts without the GET query" do
@@ -506,7 +517,7 @@ RSpec.describe "RPC lifecycle instrumentation" do
       gzip = { "content-type" => ["application/proto"], "content-encoding" => ["gzip"] }
       safe = ConnectRPC::Method.new(service: rpc.service, name: "Safe", request_type: String, response_type: String,
                                     idempotency: :no_side_effects)
-      get = ConnectRPC::Server.new(services: [ConnectRPC::Service.new(name: rpc.service, methods: [safe])],
+      get = ConnectRPC::Server.new(services: [ConnectRPC::Service.new(name: rpc.service, rpcs: [safe])],
                                    binding: binding, handlers: { safe.path => ->(message, _) { message } },
                                    instrumentation: bus)
       decode = -> { dispatch(server(binding: failing_binding(:decode, codec_failure))) }
@@ -587,7 +598,7 @@ RSpec.describe "RPC lifecycle instrumentation" do
     reports = []
     configured = ConnectRPC::Instrumentation.new(subscribers: [mutator, subscriber], on_error: ->(e) { reports << e })
     caller = ConnectRPC::Client.new(base_url: "https://example.test", binding: binding, instrumentation: configured)
-    expect { caller.call(rpc, "request", timeout: 0) }.to raise_error(ArgumentError)
+    expect { caller.call(rpc, "request", timeout: Float::NAN) }.to raise_error(ArgumentError)
     outcome = events.find { |event| event.first == :processing }.last
     expect(outcome.response_metadata).to eq({})
     expect(outcome.response_metadata).to be_frozen

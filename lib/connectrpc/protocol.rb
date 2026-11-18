@@ -32,6 +32,31 @@ module ConnectRPC
       codec
     end
 
+    # Core never loads a binding; an omitted one uses the Google binding only
+    # once the application or a generated service file has required it.
+    def self.binding!(binding)
+      case binding
+      when nil
+        return ::ConnectRPC::Bindings::GoogleProtobuf.new if defined?(::ConnectRPC::Bindings::GoogleProtobuf)
+
+        raise ArgumentError,
+              'binding: is required unless require "connectrpc/bindings/google_protobuf" has loaded the default binding'
+      else
+        binding
+      end
+    end
+
+    # The earlier of the call's timeout and a supplied deadline, chosen once at
+    # call setup. A supplied deadline that is strictly earlier is used as-is;
+    # on a tie the timeout budget wins.
+    def self.call_deadline(timeout, deadline)
+      budget = Deadline.new(timeout) unless timeout.nil?
+      return deadline if budget.nil?
+      return budget if deadline.nil?
+
+      deadline.__send__(:earlier_than?, budget) ? deadline : budget
+    end
+
     def self.profile!(protocol, mode, encoding, server: false)
       valid = server ? valid_server_protocol?(protocol) : %i[connect grpc].include?(protocol)
       return if valid &&

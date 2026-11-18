@@ -10,7 +10,7 @@ RSpec.describe "Streaming SDK context and native completion" do
   end
 
   def target(handlers, instrumentation:, binding: ConnectRPC::Bindings::GoogleProtobuf.new)
-    ConnectRPC::Server.new(services: [ConnectRPC::Service.new(name: "trace.Streams", methods: methods)],
+    ConnectRPC::Server.new(services: [ConnectRPC::Service.new(name: "trace.Streams", rpcs: methods)],
                            handlers: handlers, binding: binding, instrumentation: instrumentation)
   end
 

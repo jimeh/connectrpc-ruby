@@ -31,7 +31,7 @@ RSpec.describe "OpenTelemetry with stream interceptors over the Async host" do
   # Runs one Watch over real h2c and waits for both spans.
   def run_watch(handler, server_interceptors: [], client_interceptors: [])
     reactor do |task|
-      target = ConnectRPC::Server.new(services: [ConnectRPC::Service.new(name: "trace.Streams", methods: [watch])],
+      target = ConnectRPC::Server.new(services: [ConnectRPC::Service.new(name: "trace.Streams", rpcs: [watch])],
                                       handlers: { watch.path => handler }, instrumentation: bus,
                                       binding: ConnectRPC::Bindings::GoogleProtobuf.new,
                                       interceptors: server_interceptors)

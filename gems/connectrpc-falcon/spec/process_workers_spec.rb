@@ -23,7 +23,7 @@ RSpec.describe "Real Falcon process-worker lifecycle" do
                                                            response_type: AsyncHelpers::MESSAGE)
           make_core = lambda do
             ConnectRPC::Server.new(
-              services: [ConnectRPC::Service.new(name: declaration.service, methods: [declaration])],
+              services: [ConnectRPC::Service.new(name: declaration.service, rpcs: [declaration])],
               binding: ConnectRPC::Bindings::GoogleProtobuf.new, protocol: :grpc_web,
               handlers: { declaration.path => lambda { |message, output, context|
                 begin
@@ -87,7 +87,7 @@ RSpec.describe "Real Falcon process-worker lifecycle" do
                                                          response_type: AsyncHelpers::MESSAGE)
         make_core = lambda do
           ConnectRPC::Server.new(
-            services: [ConnectRPC::Service.new(name: declaration.service, methods: [declaration])],
+            services: [ConnectRPC::Service.new(name: declaration.service, rpcs: [declaration])],
             binding: ConnectRPC::Bindings::GoogleProtobuf.new,
             handlers: { declaration.path => ->(*) { AsyncHelpers::MESSAGE.new(name: "early") } }
           )

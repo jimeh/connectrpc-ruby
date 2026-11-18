@@ -4,6 +4,7 @@
 # source: peer.proto
 
 require "connectrpc"
+require "connectrpc/bindings/google_protobuf"
 require "peer_pb"
 
 module Connectrpc
@@ -57,7 +58,7 @@ module Connectrpc
         )
 
         SERVICE = ::ConnectRPC::Service.new(
-          name: "connectrpc.grpcinterop.v1.Peer", methods: [UNARY, SERVER_STREAM, CLIENT_STREAM, BIDI]
+          name: "connectrpc.grpcinterop.v1.Peer", rpcs: [UNARY, SERVER_STREAM, CLIENT_STREAM, BIDI]
         )
 
         class Client
@@ -89,6 +90,21 @@ module Connectrpc
           raise ::ArgumentError, "bidi must respond to call" unless bidi.respond_to?(:call)
 
           { UNARY.path => unary, SERVER_STREAM.path => server_stream, CLIENT_STREAM.path => client_stream, BIDI.path => bidi }
+        end
+
+        def self.handlers_for(impl, strict: false)
+          raise ::ArgumentError, "strict must be true or false" unless [true, false].include?(strict)
+
+          rpcs = { unary: UNARY, server_stream: SERVER_STREAM, client_stream: CLIENT_STREAM, bidi: BIDI }
+          core = ::Class.ancestors
+          found = rpcs.keys.filter_map do |name|
+            method = impl.public_method(name) if impl.respond_to?(name)
+            [name, method] if method && !core.include?(method.owner)
+          end.to_h
+          missing = rpcs.keys - found.keys
+          raise ::ArgumentError, "Missing service methods: #{missing.join(', ')}" if strict && !missing.empty?
+
+          found.to_h { |name, method| [rpcs.fetch(name).path, method] }
         end
       end
     end

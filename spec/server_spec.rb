@@ -125,7 +125,7 @@ RSpec.describe "Nil server responses" do
   end
   let(:server) do
     require "connectrpc/bindings/google_protobuf"
-    ConnectRPC::Server.new(services: [ConnectRPC::Service.new(name: "nil.Test", methods: declarations.values)],
+    ConnectRPC::Server.new(services: [ConnectRPC::Service.new(name: "nil.Test", rpcs: declarations.values)],
                            binding: binding, protocol: %i[connect grpc grpc_web],
                            status_codec: ConnectRPC::Bindings::GoogleProtobuf.new,
                            handlers: declarations.to_h { |kind, rpc| [rpc.path, handlers.fetch(kind)] })

@@ -12,7 +12,7 @@ RSpec.describe "bounded unary gzip" do
   include SocketPeer
 
   let(:rpc) { ConnectRPC::Method.new(service: "test.Gzip", name: "Echo", request_type: String, response_type: String) }
-  let(:service) { ConnectRPC::Service.new(name: rpc.service, methods: [rpc]) }
+  let(:service) { ConnectRPC::Service.new(name: rpc.service, rpcs: [rpc]) }
   let(:binding) do
     Class.new do
       def encode(message, **) = message

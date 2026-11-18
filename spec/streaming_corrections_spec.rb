@@ -172,7 +172,7 @@ RSpec.describe "Streaming exception ownership and completion" do
       escaped = nil
       trace = nil
       method = rpc(:bidi_stream)
-      target = ConnectRPC::Server.new(services: [ConnectRPC::Service.new(name: method.service, methods: [method])],
+      target = ConnectRPC::Server.new(services: [ConnectRPC::Service.new(name: method.service, rpcs: [method])],
                                       binding: binding, instrumentation: bus,
                                       handlers: { method.path => lambda { |duplex, _|
                                         duplex.each do |_|
@@ -418,7 +418,7 @@ RSpec.describe "Streaming exception ownership and completion" do
 
   it "retains malformed request gzip before invalid_argument mapping" do
     method = rpc(:bidi_stream)
-    target = ConnectRPC::Server.new(services: [ConnectRPC::Service.new(name: method.service, methods: [method])],
+    target = ConnectRPC::Server.new(services: [ConnectRPC::Service.new(name: method.service, rpcs: [method])],
                                     binding: binding, instrumentation: bus, encoding: :gzip,
                                     handlers: { method.path => ->(duplex, _) { duplex.receive } })
     input = StringIO.new(frame("malformed", 1))
@@ -485,7 +485,7 @@ RSpec.describe "Connect single-request stream cardinality" do
     end
     method = ConnectRPC::ServerStreamMethod.new(service: "cardinality.Streams", name: "Call",
                                                 request_type: String, response_type: String)
-    target = ConnectRPC::Server.new(services: [ConnectRPC::Service.new(name: method.service, methods: [method])],
+    target = ConnectRPC::Server.new(services: [ConnectRPC::Service.new(name: method.service, rpcs: [method])],
                                     binding: binding,
                                     handlers: { method.path => ->(request, _writer, _) { seen << request } })
     input = StringIO.new(body)

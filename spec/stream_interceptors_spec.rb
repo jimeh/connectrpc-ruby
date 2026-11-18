@@ -202,7 +202,7 @@ RSpec.describe "Stream interceptors" do
 
   def stream_server(interceptors, shape, handler)
     method = rpc(shape)
-    ConnectRPC::Server.new(services: [ConnectRPC::Service.new(name: method.service, methods: [method])],
+    ConnectRPC::Server.new(services: [ConnectRPC::Service.new(name: method.service, rpcs: [method])],
                            binding: binding, handlers: { method.path => handler }, instrumentation: bus,
                            interceptors: interceptors, protocol: %i[connect grpc grpc_web],
                            status_codec: status_codec)

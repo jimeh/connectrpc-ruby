@@ -35,7 +35,7 @@ RSpec.describe "Backend-neutral metrics" do
   let(:base) { { grpc_type: "unary", grpc_service: "metrics.v1.Echo", grpc_method: "Say", rpc_protocol: "connect" } }
 
   def server(handler = ->(message, _) { message }, **)
-    ConnectRPC::Server.new(services: [ConnectRPC::Service.new(name: rpc.service, methods: [rpc])], binding: binding,
+    ConnectRPC::Server.new(services: [ConnectRPC::Service.new(name: rpc.service, rpcs: [rpc])], binding: binding,
                            handlers: { rpc.path => handler }, instrumentation: bus, **)
   end
 

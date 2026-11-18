@@ -107,7 +107,7 @@ Dir.mktmpdir("falcon-installed-tls-") do |directory|
   method = ConnectRPC::Method.new(service: "demo.EchoService", name: "Echo",
                                   request_type: Google::Protobuf::StringValue,
                                   response_type: Google::Protobuf::StringValue)
-  definition = ConnectRPC::Service.new(name: "demo.EchoService", methods: [method])
+  definition = ConnectRPC::Service.new(name: "demo.EchoService", rpcs: [method])
   implementation = ConnectRPC::Server.new(services: [definition], encoding: :gzip,
                                           binding: ConnectRPC::Bindings::GoogleProtobuf.new,
                                           handlers: { method.path => ->(message, _context) { message } })

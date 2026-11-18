@@ -10,12 +10,13 @@ require "generation/google_ruby_connect"
 require "generation/builtin_root_connect"
 require "generation/builtin_direct_connect"
 require "generation_empty_connect"
-require "connectrpc/bindings/google_protobuf"
 require_relative "localhost"
+
+# Generated files load the Google binding, so every binding: below is omitted.
+abort "Generated files did not load the Google binding" unless defined?(ConnectRPC::Bindings::GoogleProtobuf)
 
 service = GenerationFixture::V1::EchoService
 type = GenerationFixture::V1::Message
-binding = ConnectRPC::Bindings::GoogleProtobuf.new
 handler = lambda do |request, context|
   context.response_metadata.add("x-generated", "yes")
   context.response_trailers.add("x-tail", "yes")
@@ -51,11 +52,11 @@ handlers.merge!(mapped_service.handlers(echo: handler))
 builtin.each_key { |builtin_service| handlers.merge!(builtin_service.handlers(echo: handler)) }
 services = [service::SERVICE, google_service::SERVICE, mapped_service::SERVICE,
             *builtin.keys.map { |entry| entry::SERVICE }]
-server = ConnectRPC::Server.new(services: services, binding: binding, handlers: handlers)
+server = ConnectRPC::Server.new(services: services, handlers: handlers)
 host = EchoExample::Localhost.new(ConnectRPC::Rack.new(server: server))
 begin
   %i[proto json].each do |codec|
-    client = service::Client.new(client: ConnectRPC::Client.new(base_url: host.url, binding: binding, codec: codec))
+    client = service::Client.new(client: ConnectRPC::Client.new(base_url: host.url, codec: codec))
     [type.new, type.new(count: 0)].each do |message|
       response = client.echo(message, timeout: 2)
       abort "Optional presence lost" unless response.message.has_count? == message.has_count?
@@ -69,8 +70,7 @@ begin
     rescue ConnectRPC::Error => e
       abort "Generated code/message mismatch" unless e.code == "invalid_argument" && e.message == "generated error"
       abort "Generated error detail mismatch" unless e.details.one? &&
-                                                     e.details.first.decode(binding: binding,
-                                                                            type: type) == type.new(count: 42)
+                                                     e.details.first.decode(type: type) == type.new(count: 42)
       unless e.metadata["x-error"] == ["yes"] && e.trailers["x-end"] == ["yes"]
         abort "Generated error metadata/trailers lost"
       end
@@ -78,8 +78,7 @@ begin
     nested = GenerationFixture::Types::Outer_name::PB__value.new(count: 0)
     abort "Public import/nested class mismatch" unless client.get_http(nested, timeout: 2).message == nested
     puts "Generated #{codec}: success/error/details/metadata/trailers/presence/nesting passed (Ruby #{RUBY_VERSION})"
-    google_client = google_service::Client.new(client: ConnectRPC::Client.new(base_url: host.url, binding: binding,
-                                                                              codec: codec))
+    google_client = google_service::Client.new(client: ConnectRPC::Client.new(base_url: host.url, codec: codec))
     timestamp = Google::Protobuf::Timestamp.new(seconds: 123, nanos: 456)
     google_message = google_type.new(time: timestamp)
     google_response = google_client.echo(google_message, timeout: 2).message
@@ -88,16 +87,14 @@ begin
     time_response = google_client.time(timestamp, timeout: 2).message
     abort "WKT typed round trip mismatch" unless time_response.instance_of?(Google::Protobuf::Timestamp) &&
                                                  time_response == timestamp
-    mapped_client = mapped_service::Client.new(client: ConnectRPC::Client.new(base_url: host.url, binding: binding,
-                                                                              codec: codec))
+    mapped_client = mapped_service::Client.new(client: ConnectRPC::Client.new(base_url: host.url, codec: codec))
     mapped_message = mapped_type.new(value: Google::Protobuf::Empty.new)
     mapped_response = mapped_client.echo(mapped_message, timeout: 2).message
     abort "Mapped Google round trip mismatch" unless mapped_response.instance_of?(mapped_type) &&
                                                      mapped_response == mapped_message
     puts "Google #{codec}: package/ruby_package/WKT exact class identity and typed calls passed (Ruby #{RUBY_VERSION})"
     builtin.each do |builtin_service, builtin_type|
-      builtin_client = builtin_service::Client.new(client: ConnectRPC::Client.new(base_url: host.url, binding: binding,
-                                                                                  codec: codec))
+      builtin_client = builtin_service::Client.new(client: ConnectRPC::Client.new(base_url: host.url, codec: codec))
       builtin_message = builtin_type.new(count: 7)
       builtin_response = builtin_client.echo(builtin_message, timeout: 2).message
       abort "Builtin module round trip mismatch" unless builtin_response.instance_of?(builtin_type) &&
@@ -108,7 +105,8 @@ begin
   end
   abort "Proto2 service type mismatch" unless GenerationFixture::Types::LegacyService::LEGACY_GET.request_type ==
                                               GenerationFixture::Types::Outer_name::PB__value
-  abort "Empty service mismatch" unless GenerationFixture::V1::EmptyService.handlers.empty?
+  abort "Empty service mismatch" unless GenerationFixture::V1::EmptyService.handlers.empty? &&
+                                        GenerationFixture::V1::EmptyService.handlers_for(Object.new).empty?
   abort "Empty package naming mismatch" unless PB__generation_service::CALL.request_type == Generation_message
   abort "Dot package naming mismatch" unless GenerationFixture::DottedName::Service_name::GET_FOO.name == "Get_Foo"
 ensure

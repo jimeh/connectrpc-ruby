@@ -4,10 +4,14 @@ module ConnectRPC
   class Deadline
     # Bound native time conversions without shortening the logical deadline.
     MAX_NATIVE_WAIT = 9_999_999.999
+    # Deadlines on this shared default clock compare by absolute expiry.
+    MONOTONIC = -> { Process.clock_gettime(Process::CLOCK_MONOTONIC) }
+    private_constant :MONOTONIC
 
-    def initialize(timeout, clock: -> { Process.clock_gettime(Process::CLOCK_MONOTONIC) })
-      unless timeout.is_a?(Numeric) && timeout.real? && timeout.finite? && timeout.positive?
-        raise ArgumentError, "Timeout must be finite positive seconds"
+    def initialize(timeout, clock: MONOTONIC)
+      # Zero and negative budgets are already expired, as in grpc-go.
+      unless timeout.is_a?(Numeric) && timeout.real? && timeout.finite?
+        raise ArgumentError, "Timeout must be finite real seconds"
       end
 
       @clock = clock
@@ -16,8 +20,8 @@ module ConnectRPC
 
     def self.expired
       deadline = allocate
-      deadline.instance_variable_set(:@clock, -> { Process.clock_gettime(Process::CLOCK_MONOTONIC) })
-      deadline.instance_variable_set(:@expires_at, Process.clock_gettime(Process::CLOCK_MONOTONIC))
+      deadline.instance_variable_set(:@clock, MONOTONIC)
+      deadline.instance_variable_set(:@expires_at, MONOTONIC.call)
       deadline
     end
     private_class_method :expired
@@ -41,6 +45,23 @@ module ConnectRPC
     def timeout_ms
       check!
       [remaining * 1000, 9_999_999_999].min.ceil.clamp(1, 9_999_999_999).to_s
+    end
+
+    protected
+
+    attr_reader :clock, :expires_at
+
+    private
+
+    # Whether this deadline expires strictly before other. A shared clock
+    # compares absolute expiries, so no gap between clock reads can reorder
+    # them. Distinct clocks can only compare remaining time, which can be off
+    # by the gap between the two reads.
+    def earlier_than?(other)
+      shared = clock #: (^() -> Numeric | _Clock) & _IdentityProbe
+      return expires_at < other.expires_at if shared.equal?(other.clock)
+
+      remaining < other.remaining
     end
   end
 

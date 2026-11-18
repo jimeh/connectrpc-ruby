@@ -9,22 +9,22 @@ cs = ConnectRPC::ClientStreamMethod.new(service: "typed.Streams", name: "Collect
 # @type var bidi: ConnectRPC::BidiStreamMethod[String, String]
 bidi = ConnectRPC::BidiStreamMethod.new(service: "typed.Streams", name: "Chat", request_type: String,
                                         response_type: String)
-ConnectRPC::Service.new(name: "typed.Streams", methods: [ss, cs, bidi])
+ConnectRPC::Service.new(name: "typed.Streams", rpcs: [ss, cs, bidi])
 transport = APIStreamingTransport.new
 # @type var custom: ConnectRPC::_StreamingTransport
 custom = transport
 core = ConnectRPC::Client.new(base_url: "https://typed.invalid", binding: APIBinding.new, transport: custom,
                               terminal_wire_limit: 65_536, terminal_limit: 65_536, use_get: true)
-core.server_stream(ss, "request", timeout: nil) do |reader|
+core.server_stream(ss, "request", timeout: nil, deadline: ConnectRPC::Deadline.new(5)) do |reader|
   reader.headers.to_h
   reader.each(&:upcase)
   reader.trailers&.to_h
 end
-core.client_stream(cs, timeout: nil) do |writer|
+core.client_stream(cs, timeout: nil, deadline: nil) do |writer|
   writer.send_message("request")
   writer.close_send
 end.message.upcase
-core.bidi_stream(bidi) do |duplex|
+core.bidi_stream(bidi, deadline: ConnectRPC::Deadline.new(0)) do |duplex|
   duplex.send_message("request")
   duplex.close_send
   duplex.each(&:upcase)

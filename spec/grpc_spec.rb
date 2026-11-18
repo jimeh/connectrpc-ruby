@@ -66,7 +66,7 @@ RSpec.describe "Native gRPC protocol" do
     ["", "1s", "123456789S", "-1S"].each do |value|
       expect_code(:internal) { grpc.request_deadline({ "grpc-timeout" => [value] }) }
     end
-    expect { ConnectRPC::Deadline.new(0) }.to raise_error(ArgumentError)
+    expect(ConnectRPC::Deadline.new(0)).to be_expired
   end
 end
 
@@ -350,7 +350,7 @@ RSpec.describe "gRPC public callers and status codec" do
     expect(reported.map(&:class)).to eq([NoMethodError])
 
     method = rpc
-    target = ConnectRPC::Server.new(services: [ConnectRPC::Service.new(name: method.service, methods: [method])],
+    target = ConnectRPC::Server.new(services: [ConnectRPC::Service.new(name: method.service, rpcs: [method])],
                                     binding: binding, status_codec: codec, protocol: :grpc,
                                     handlers: { method.path => ->(*) { raise detailed } })
     finished = []
@@ -368,7 +368,7 @@ RSpec.describe "gRPC public callers and status codec" do
   it "uses a unary custom invoker without handler entries and passes ordinary Context" do
     method = rpc
     contexts = []
-    target = ConnectRPC::Server.new(services: [ConnectRPC::Service.new(name: method.service, methods: [method])],
+    target = ConnectRPC::Server.new(services: [ConnectRPC::Service.new(name: method.service, rpcs: [method])],
                                     binding: binding, status_codec: status_codec, protocol: :grpc,
                                     invoker: lambda { |declaration, message, context|
                                       expect(declaration).to equal(method)
@@ -513,7 +513,7 @@ RSpec.describe "gRPC complete response publication budget" do
       base = { ":status" => ["200"], "content-type" => ["application/grpc+proto"],
                "grpc-accept-encoding" => ["identity"] }
       size = ConnectRPC.const_get(:GRPCProtocol).field_size(base)
-      target = ConnectRPC::Server.new(services: [ConnectRPC::Service.new(name: method.service, methods: [method])],
+      target = ConnectRPC::Server.new(services: [ConnectRPC::Service.new(name: method.service, rpcs: [method])],
                                       binding: binding, protocol: :grpc,
                                       handlers: { method.path => lambda { |message, context|
                                         context.response_metadata["x-pad"] = ["x" * (65_536 + delta - size - 37)]

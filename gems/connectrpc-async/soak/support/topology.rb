@@ -12,7 +12,7 @@ module Soak
       type.new(service: "soak.v1.Streams", name: type.name.split("::").last, request_type: MESSAGE,
                response_type: MESSAGE)
     end
-    STREAMS = ConnectRPC::Service.new(name: "soak.v1.Streams", methods: [SS, CS, BIDI])
+    STREAMS = ConnectRPC::Service.new(name: "soak.v1.Streams", rpcs: [SS, CS, BIDI])
     OP = "x-soak-op"
     COUNT = "x-soak-count"
     SIZE = "x-soak-size"

@@ -16,14 +16,30 @@ protobuf classes. The public require is `connectrpc`, and the Ruby namespace is
 
 `Method` holds validated service/method names, request/response binding types,
 `cardinality: :unary`, `idempotency: :unknown` (or `:no_side_effects` / `:idempotent`),
-and a case-sensitive path. Only `:no_side_effects` admits GET. `Service` validates its method
-set. Streaming uses invariant sibling declarations, keeping unary Method
+and a case-sensitive path. Only `:no_side_effects` admits GET. `Service` validates its
+declaration set, exposed as `rpcs` so that `Object#methods` keeps its reflection
+meaning. Streaming uses invariant sibling declarations, keeping unary Method
 assignability intact. Generated service glue reuses these objects.
+
+`ConnectRPC::Method` keeps its name. Inside `module ConnectRPC`, including
+library code and application code nested in that namespace, a bare `Method`
+resolves to the library class; write `::Method` for Ruby's bound-method class.
 The [streaming guide](streaming.md) owns its scoped APIs, publication/completion
 boundaries, finite transport SPI and absolute recovery/tail policies.
 
 `Client` owns request encoding, protocol headers, response validation, errors,
 metadata, byte limits and the deadline. Base URL path prefixes are retained.
+Each call selects one effective deadline at setup, the earlier of
+`Deadline.new(timeout)` on the shared monotonic clock and an explicit
+`deadline:`, reusing the supplied object when it is strictly earlier. Deadlines
+on that clock compare absolute expiries. A `deadline:` built on a custom
+`clock:` is compared with the call's timeout by remaining time at call setup,
+so the choice can be off by the time between those two clock reads; deadlines
+on the default clock compare exactly. The selected deadline drives local
+cancellation, the wire timeout and interceptor-visible facts. A zero or negative budget is already expired and
+fails before transport dispatch. Deadlines never propagate implicitly through
+thread or fiber storage: storage copied into a lazily created pool thread would
+leak one request's deadline into later jobs.
 A binding provides `encode(message, type:, codec:)` and
 `decode(bytes, type:, codec:)`. Custom bindings raise `CodecError` for invalid
 messages. The optional Google binding delegates binary and
@@ -56,7 +72,11 @@ Applications add `gem "connectrpc-rack", "~> 0.2.0"` while keeping the require
 and `ConnectRPC::Rack` API unchanged. Core has no middleware file or runtime
 dependencies; requiring middleware without its package raises an ordinary
 `LoadError`. Google loads only through `connectrpc/bindings/google_protobuf`;
-its missing/incompatible dependency diagnostic remains useful. The middleware
+its missing/incompatible dependency diagnostic remains useful. An omitted or nil
+`binding:` on Client, Server and `ErrorDetail#decode` resolves to a new Google
+binding only when that file is already loaded; otherwise the constructor raises
+`ArgumentError` naming the require. Core never requires it on the caller's
+behalf. The middleware
 retains its own Rack version activation diagnostic.
 
 A default invoker calls the registered plain handler with `(request, context)`.
@@ -187,8 +207,9 @@ valid metadata/trailers; malformed gzip 200 is internal. Header rejection stays
 internal, local size excess stays resource_exhausted, and actual expiry stays
 deadline_exceeded. No generic error-body rescue changes those classifications.
 
-The default timeout is 30 seconds. Explicit `timeout: nil` means no logical
-client deadline, timeout header or expiry watchdog. Native operation waits still
+The default timeout is 30 seconds. Explicit `timeout: nil` removes only the
+relative budget; a call has no logical client deadline, timeout header or expiry
+watchdog only with both `timeout: nil` and no `deadline:`. Native operation waits still
 use the exact `9_999_999.999` second cap, returning `unavailable` on timeout.
 Sustained progress can outlast this per-operation cap. For finite positive
 timeouts, one monotonic client deadline begins before encoding. Remaining timeout milliseconds are
@@ -444,14 +465,26 @@ return `CodeGeneratorResponse.error`, no partial files and exit zero. Unexpected
 implementation exceptions remain visible. Only `FEATURE_PROTO3_OPTIONAL` is
 advertised; editions are unsupported.
 
-Each service-bearing target emits `_connect.rb`, requiring core, its official
-`_pb.rb` and any additionally referenced message files. Imported streaming
+Each service-bearing target emits `_connect.rb`, requiring core, the Google
+binding, its official `_pb.rb` and any additionally referenced message files. Imported streaming
 services are not targets. Generated modules
 contain frozen RPC declaration constants, `SERVICE`, a `Client` initialized with
-`client:`, and `.handlers` with required callable RPC keywords. Unary wrappers forward `call(METHOD, request, **options)` unchanged. Streaming
-wrappers forward the matching scoped operation, its required block and all options.
-Partial handlers/custom invocation remain core Server features. No framework,
-transport configuration or binding auto-require is added.
+`client:`, `.handlers` with required callable RPC keywords, and
+`.handlers_for(impl, strict: false)`, which maps each RPC path to
+`impl.public_method(name)` when `impl.respond_to?(name)` for the RPC's
+snake-case name and omits the rest (`strict: true` raises naming them). A
+method whose owner is in `Class.ancestors` at lookup time also counts as
+missing. That set holds `Object`'s ancestors, including modules frameworks
+include or prepend later, plus `Module` and `Class`, which only module
+implementations inherit from. Inherited core and framework methods such as
+ActiveSupport's `Object#try` are therefore never bound. A handler module that
+is also mixed into `Object`, `Module` or `Class` counts as a core method and is
+not bound. Unary wrappers forward
+`call(METHOD, request, **options)` unchanged. Streaming wrappers forward the matching scoped operation, its
+required block and all options. Partial handlers/custom invocation remain core
+Server features. The generated file requires the Google binding because its
+declarations already use Google message classes; no framework or transport
+configuration is added.
 Optional [RBS signatures](rbs.md) preserve these runtime boundaries and require
 `rbs=true` for service signature generation.
 Concrete types come from the official generated descriptor pool, preserving

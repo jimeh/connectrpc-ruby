@@ -230,7 +230,7 @@ RSpec.describe ConnectRPC::OTel::Subscriber do
   it "observes client validation/encoding failures and bare server preflight with bounded attributes" do
     typed = client(ConnectRPC::Testing::Transport.new(server: server(instrumentation: bus)),
                    "https://in-process.invalid", instrumentation: bus)
-    [{ timeout: 0 }, { metadata: { "content-type" => "reserved" } }].each do |options|
+    [{ timeout: Float::NAN }, { metadata: { "content-type" => "reserved" } }].each do |options|
       expect { typed.echo(message, **options) }.to raise_error(ArgumentError)
     end
     expect { typed.echo("wrong type") }.to raise_error(ConnectRPC::Error)

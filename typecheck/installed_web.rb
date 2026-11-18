@@ -4,7 +4,7 @@
 codec = ConnectRPC::Bindings::GoogleProtobuf.new
 declaration = ConnectRPC::Method.new(service: "installed.Web", name: "Call", request_type: String,
                                      response_type: String)
-target = ConnectRPC::Server.new(services: [ConnectRPC::Service.new(name: declaration.service, methods: [declaration])],
+target = ConnectRPC::Server.new(services: [ConnectRPC::Service.new(name: declaration.service, rpcs: [declaration])],
                                 binding: InstalledBinding.new, status_codec: codec, protocol: %i[connect grpc_web],
                                 handlers: { declaration.path => ->(message, _) { message } })
 wire = "#{[0, 9].pack('CN')}installed"

@@ -4,6 +4,7 @@
 # source: generation_empty.proto
 
 require "connectrpc"
+require "connectrpc/bindings/google_protobuf"
 require "generation_empty_pb"
 
 module PB__generation_service
@@ -24,7 +25,7 @@ module PB__generation_service
   )
 
   SERVICE = ::ConnectRPC::Service.new(
-    name: "_generation_service", methods: [CALL]
+    name: "_generation_service", rpcs: [CALL]
   )
 
   class Client
@@ -41,5 +42,20 @@ module PB__generation_service
     raise ::ArgumentError, "call must respond to call" unless call.respond_to?(:call)
 
     { CALL.path => call }
+  end
+
+  def self.handlers_for(impl, strict: false)
+    raise ::ArgumentError, "strict must be true or false" unless [true, false].include?(strict)
+
+    rpcs = { call: CALL }
+    core = ::Class.ancestors
+    found = rpcs.keys.filter_map do |name|
+      method = impl.public_method(name) if impl.respond_to?(name)
+      [name, method] if method && !core.include?(method.owner)
+    end.to_h
+    missing = rpcs.keys - found.keys
+    raise ::ArgumentError, "Missing service methods: #{missing.join(', ')}" if strict && !missing.empty?
+
+    found.to_h { |name, method| [rpcs.fetch(name).path, method] }
   end
 end

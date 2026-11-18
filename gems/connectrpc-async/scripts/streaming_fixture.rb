@@ -8,7 +8,7 @@ module StreamingInterop
              ConnectRPC::Method].zip(%w[SS CS Bidi Control]).map do |type, name|
     type.new(service: "interop.Streams", name: name, request_type: MESSAGE, response_type: MESSAGE)
   end.freeze
-  SERVICE = ConnectRPC::Service.new(name: "interop.Streams", methods: METHODS)
+  SERVICE = ConnectRPC::Service.new(name: "interop.Streams", rpcs: METHODS)
   BINDING = ConnectRPC::Bindings::GoogleProtobuf.new
 
   def self.check(condition, message)

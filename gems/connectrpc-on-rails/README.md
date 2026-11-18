@@ -72,7 +72,6 @@ For the repository's generated `Example::V1::EchoService` fixture:
 
 ```ruby
 require "connectrpc/on_rails"
-require "connectrpc/bindings/google_protobuf"
 require "echo_connect"
 
 class EchoController < ActionController::API
@@ -81,7 +80,6 @@ class EchoController < ActionController::API
   private
 
   def connect_service = Example::V1::EchoService::SERVICE
-  def connect_binding = ConnectRPC::Bindings::GoogleProtobuf.new
   def connect_handlers
     Example::V1::EchoService.handlers(echo: method(:rpc_echo), fail: method(:rpc_fail))
   end
@@ -126,7 +124,7 @@ before controller dispatch, so path acceptance differs from a direct Rack mount.
 
 ## Controller hooks
 
-Only `connect` is an action supplied by the concern. Keep the three required
+Only `connect` is an action supplied by the concern. Keep the two required
 configuration hooks and typed handlers private, using prefixed handler names to
 avoid controller/Kernel method collisions. Handlers return typed messages.
 There is no render helper or routing DSL.
@@ -134,7 +132,7 @@ There is no render helper or routing DSL.
 | Private hook | Required | Purpose |
 | --- | --- | --- |
 | `connect_service` | Yes | The generated `SERVICE` this controller serves |
-| `connect_binding` | Yes | The message binding, such as `ConnectRPC::Bindings::GoogleProtobuf.new` |
+| `connect_binding` | No | The message binding. Since 0.3.0 the default nil uses the Google protobuf binding that the generated file loads; override it for a custom binding |
 | `connect_handlers` | Yes | The handler map, usually from the generated `handlers(...)` |
 | `connect_limits` | No | Core limit and encoding keywords |
 | `connect_instrumentation` | No | A `ConnectRPC::Instrumentation`, default nil; see [RPC observation](#rpc-observation) |

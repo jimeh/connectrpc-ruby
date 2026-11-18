@@ -56,7 +56,7 @@ RSpec.shared_examples "HTTP/2 server keepalive" do
     end
     handlers = AsyncHelpers::ECHO.handlers(echo: echo, fail: ->(message, _context) { message })
     services = [AsyncHelpers::ECHO::SERVICE,
-                ConnectRPC::Service.new(name: "test.Keepalive", methods: [watch_method, collect_method])]
+                ConnectRPC::Service.new(name: "test.Keepalive", rpcs: [watch_method, collect_method])]
     ConnectRPC::Server.new(services: services, binding: ConnectRPC::Bindings::GoogleProtobuf.new,
                            handlers: handlers.merge(watch_method.path => watch, collect_method.path => collect),
                            protocol: %i[connect grpc], instrumentation: completion_log(log[:completions]))

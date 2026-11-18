@@ -15,7 +15,7 @@ options = DemoExample::CLI.parse("async-threaded", ARGV)
 tls = options.mtls? ? DemoExample::MTLS.client_tls : {}
 # Build one transport at boot and share it. Its owner thread and connection start on the first call.
 transport = ConnectRPC::Async::ThreadedTransport.new(origin: options.origin, **tls)
-client = ConnectRPC::Client.new(base_url: options.url, binding: ConnectRPC::Bindings::GoogleProtobuf.new,
+client = ConnectRPC::Client.new(base_url: options.url,
                                 transport: transport, protocol: options.protocol, codec: options.codec,
                                 use_get: options.get, encoding: options.encoding)
 begin

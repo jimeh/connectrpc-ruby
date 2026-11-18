@@ -99,7 +99,7 @@ RSpec.describe "Input reclaim inside the retirement window" do
       binding.define_singleton_method(:encode) { |message, **| message }
       binding.define_singleton_method(:decode) { |message, **| message }
       server = ConnectRPC::Server.new(
-        services: [ConnectRPC::Service.new(name: method.service, methods: [method])], binding: binding,
+        services: [ConnectRPC::Service.new(name: method.service, rpcs: [method])], binding: binding,
         handlers: { method.path => lambda { |duplex, _|
           entered.enqueue(true)
           wake.wait

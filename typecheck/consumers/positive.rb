@@ -48,6 +48,15 @@ response = generated.exchange(request, metadata: { "caller" => ["typecheck"] }, 
 response.message.count.succ
 response.message = RbsFixture::Messages::Envelope::Reply.new(count: 9)
 client.call(RbsFixture::Api::Echo::EXCHANGE, request).message.count.succ
+# Since 0.3.0: service-object handlers, the default binding and explicit deadlines.
+object_handlers = RbsFixture::Api::Echo.handlers_for(GoodHandler.new, strict: false)
+object_handlers.each_key(&:size)
+ConnectRPC::Server.new(services: [RbsFixture::Api::Echo::SERVICE], handlers: object_handlers)
+RbsFixture::Api::NoCalls.handlers_for(Object.new).size
+deadline = ConnectRPC::Deadline.new(0)
+generated.exchange(request, timeout: nil, deadline: deadline).message.count.succ
+client.call(RbsFixture::Api::Echo::EXCHANGE, request, deadline: ConnectRPC::Context.new.deadline)
+ConnectRPC::Client.new(base_url: "https://rbs.invalid", transport: LoopbackTransport.new(server))
 # Fully initialized mutable Struct construction is the documented typed subset.
 ConnectRPC::Response.new(message: response.message, metadata: ConnectRPC::Metadata.new, trailers: ConnectRPC::Metadata.new)
 RbsFixture::Api::NoCalls.handlers

@@ -108,8 +108,13 @@ Metrics/MethodLength:
     - conformance/**/*.rb
     - examples/localhost.rb
 
+# Generated handlers_for keeps its service-object lookup, including the
+# core-owner check and strict validation, in one readable method rather than
+# adding helper methods to every generated service module.
 Metrics/AbcSize:
   Exclude:
+    - examples/gen/**/*_connect.rb
+    - gems/connectrpc-health/lib/grpc/**/*_connect.rb
     - typecheck/source.rb
     - typecheck/capture.rb
     - typecheck/archive.rb
@@ -163,8 +168,12 @@ Metrics/ClassLength:
     - conformance/ledger.rb
     - lib/connectrpc/generator/schema.rb
 
+# Generated handlers_for keeps its lookup in one method (see Metrics/AbcSize).
 Metrics/CyclomaticComplexity:
   Exclude:
+    - examples/gen/**/*_connect.rb
+    - gems/connectrpc-health/lib/grpc/**/*_connect.rb
+    - spec/fixtures/generation/**/*_connect.rb
     - typecheck/source.rb
     - typecheck/capture.rb
     - typecheck/archive.rb
@@ -187,8 +196,12 @@ Metrics/CyclomaticComplexity:
     - conformance/client.rb
     - conformance/server.rb
 
+# Generated handlers_for keeps its lookup in one method (see Metrics/AbcSize).
 Metrics/PerceivedComplexity:
   Exclude:
+    - examples/gen/**/*_connect.rb
+    - gems/connectrpc-health/lib/grpc/**/*_connect.rb
+    - spec/fixtures/generation/**/*_connect.rb
     - typecheck/negative_check.rb
     - typecheck/source.rb
     - typecheck/capture.rb

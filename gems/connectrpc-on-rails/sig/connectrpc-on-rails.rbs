@@ -6,7 +6,8 @@ module ConnectRPC
       def connect: () -> String
       private
       def connect_service: () -> Service
-      def connect_binding: () -> _Binding
+      # Since 0.3.0, the default nil uses the loaded Google protobuf binding.
+      def connect_binding: () -> _Binding?
       def connect_handlers: () -> Hash[String, ^(untyped, Context) -> untyped | _Handler[untyped, untyped]]
       def connect_limits: () -> limits
       def connect_protocol: () -> server_protocol_selection

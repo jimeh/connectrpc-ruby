@@ -4,6 +4,7 @@
 # source: demo/v1/demo.proto
 
 require "connectrpc"
+require "connectrpc/bindings/google_protobuf"
 require "demo/v1/demo_pb"
 
 module Demo
@@ -57,7 +58,7 @@ module Demo
       )
 
       SERVICE = ::ConnectRPC::Service.new(
-        name: "demo.v1.DemoService", methods: [GREET, COUNTDOWN, COLLECT, CHAT]
+        name: "demo.v1.DemoService", rpcs: [GREET, COUNTDOWN, COLLECT, CHAT]
       )
 
       class Client
@@ -89,6 +90,21 @@ module Demo
         raise ::ArgumentError, "chat must respond to call" unless chat.respond_to?(:call)
 
         { GREET.path => greet, COUNTDOWN.path => countdown, COLLECT.path => collect, CHAT.path => chat }
+      end
+
+      def self.handlers_for(impl, strict: false)
+        raise ::ArgumentError, "strict must be true or false" unless [true, false].include?(strict)
+
+        rpcs = { greet: GREET, countdown: COUNTDOWN, collect: COLLECT, chat: CHAT }
+        core = ::Class.ancestors
+        found = rpcs.keys.filter_map do |name|
+          method = impl.public_method(name) if impl.respond_to?(name)
+          [name, method] if method && !core.include?(method.owner)
+        end.to_h
+        missing = rpcs.keys - found.keys
+        raise ::ArgumentError, "Missing service methods: #{missing.join(', ')}" if strict && !missing.empty?
+
+        found.to_h { |name, method| [rpcs.fetch(name).path, method] }
       end
     end
   end

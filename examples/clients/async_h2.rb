@@ -16,7 +16,7 @@ succeeded = Sync do
   # present the demo client certificate. Plaintext URLs take no TLS options.
   tls = options.mtls? ? DemoExample::MTLS.client_tls : {}
   transport = ConnectRPC::Async::Transport.new(origin: options.origin, **tls)
-  client = ConnectRPC::Client.new(base_url: options.url, binding: ConnectRPC::Bindings::GoogleProtobuf.new,
+  client = ConnectRPC::Client.new(base_url: options.url,
                                   transport: transport, protocol: options.protocol, codec: options.codec,
                                   use_get: options.get, encoding: options.encoding)
   DemoExample::Calls.run(Demo::V1::DemoService::Client.new(client: client), options)

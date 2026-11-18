@@ -72,9 +72,8 @@ service "connectrpc-echo" do
     method = ConnectRPC::Method.new(service: "demo.EchoService", name: "Echo",
                                     request_type: Google::Protobuf::StringValue,
                                     response_type: Google::Protobuf::StringValue, idempotency: :no_side_effects)
-    service = ConnectRPC::Service.new(name: "demo.EchoService", methods: [method])
-    ConnectRPC::Server.new(services: [service], binding: ConnectRPC::Bindings::GoogleProtobuf.new,
-                           handlers: { method.path => ->(message, _context) { message } })
+    service = ConnectRPC::Service.new(name: "demo.EchoService", rpcs: [method])
+    ConnectRPC::Server.new(services: [service], handlers: { method.path => ->(message, _context) { message } })
   end
 
   rack_app do
@@ -560,8 +559,8 @@ contract classifies the 100 ms allowance as a
 
 Pass `cancellation: source.token` to core or generated client calls, where
 `source = ConnectRPC::CancellationSource.new`. The source is permanent and
-shareable; only `source.cancel` initiates cancellation. `timeout: nil` keeps no
-RPC deadline or wire timeout. Context offers cooperative `cancelled?`,
+shareable; only `source.cancel` initiates cancellation. `timeout: nil` without
+`deadline:` keeps no RPC deadline or wire timeout. Context offers cooperative `cancelled?`,
 `cancellation_reason` and `check!`. See the
 [unary guide](../../docs/unary.md#cancellation) for listener, arbitration and
 registration lifetime rules.

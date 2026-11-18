@@ -20,7 +20,7 @@ RSpec.describe "Sentry capture with stream interceptors over the Async host" do
     sentry(isolation: :fiber)
     instrumentation = bus
     reactor do |task|
-      target = ConnectRPC::Server.new(services: [ConnectRPC::Service.new(name: "trace.Streams", methods: [watch])],
+      target = ConnectRPC::Server.new(services: [ConnectRPC::Service.new(name: "trace.Streams", rpcs: [watch])],
                                       handlers: { watch.path => ->(*) { raise "secret stream handler bug" } },
                                       instrumentation: instrumentation, interceptors: [translating(code)],
                                       binding: ConnectRPC::Bindings::GoogleProtobuf.new)

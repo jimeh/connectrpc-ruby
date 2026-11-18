@@ -8,13 +8,12 @@ message bindings, unary invokers and server-stream handlers remain protocol neut
 There is no Ruby gRPC-Web client or new runtime dependency.
 
 ```ruby
-binding = ConnectRPC::Bindings::GoogleProtobuf.new
 cors = ConnectRPC::GRPCWebCORS.new(
   origins: ["https://app.example"], credentials: true,
   request_headers: %w[authorization x-csrf-token], expose_headers: ["x-request-id"]
 )
 server = ConnectRPC::Server.new(
-  services: [service], handlers: handlers, binding: binding,
+  services: [service], handlers: handlers,
   protocol: %i[connect grpc grpc_web], cors: cors
 )
 ```

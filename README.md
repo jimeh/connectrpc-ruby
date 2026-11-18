@@ -100,20 +100,27 @@ verifies with protoc 36.2.
    ```ruby
    $LOAD_PATH.unshift(File.expand_path("lib", __dir__))
    require "connectrpc/rack"
-   require "connectrpc/bindings/google_protobuf"
    require "greet/v1/greet_connect"
 
-   service = Greet::V1::GreetService
-   greet = lambda do |request, _context|
-     Greet::V1::GreetResponse.new(greeting: "Hello, #{request.name}!")
+   class Greeter
+     def greet(request, _context)
+       Greet::V1::GreetResponse.new(greeting: "Hello, #{request.name}!")
+     end
    end
+
+   service = Greet::V1::GreetService
    server = ConnectRPC::Server.new(
      services: [service::SERVICE],
-     binding: ConnectRPC::Bindings::GoogleProtobuf.new,
-     handlers: service.handlers(greet: greet)
+     handlers: service.handlers_for(Greeter.new, strict: true)
    )
    run ConnectRPC::Rack.new(server: server)
    ```
+
+   Since 0.3.0, the generated file loads the Google protobuf binding, so the
+   Server and Client use it without a `binding:` argument, and
+   `handlers_for` maps each RPC to the object's method of the same snake-case
+   name. `service.handlers(greet: ->(request, context) { ... })` takes one
+   callable per RPC instead.
 
 5. Start the server:
 
@@ -136,13 +143,9 @@ verifies with protoc 36.2.
    ```ruby
    $LOAD_PATH.unshift(File.expand_path("lib", __dir__))
    require "connectrpc"
-   require "connectrpc/bindings/google_protobuf"
    require "greet/v1/greet_connect"
 
-   core = ConnectRPC::Client.new(
-     base_url: "http://127.0.0.1:9292",
-     binding: ConnectRPC::Bindings::GoogleProtobuf.new
-   )
+   core = ConnectRPC::Client.new(base_url: "http://127.0.0.1:9292")
    client = Greet::V1::GreetService::Client.new(client: core)
    response = client.greet(Greet::V1::GreetRequest.new(name: "Ruby"), timeout: 2)
    puts response.message.greeting # => Hello, Ruby!
@@ -150,7 +153,9 @@ verifies with protoc 36.2.
 
 The core client uses Net::HTTP and binary protobuf by default. Pass
 `codec: :json` for JSON, or `transport:` to use another transport. Each call
-accepts `metadata:`, `timeout:` (30 seconds by default) and `cancellation:`.
+accepts `metadata:`, `timeout:` (30 seconds by default), `deadline:` and
+`cancellation:`. Since 0.3.0, a handler that calls another service passes
+`deadline: context.deadline` so the downstream call ends no later than its own.
 Handlers raise `ConnectRPC::Error` to return a typed error code to the caller.
 
 Next steps:

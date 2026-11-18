@@ -2,29 +2,28 @@
 
 module ConnectRPC
   class Client
-    def server_stream(method, request, metadata: {}, timeout: 30, cancellation: nil, &block)
-      validate_stream_call!(method, ServerStreamMethod, cancellation, block)
-      stream_call(method, request, metadata, timeout, cancellation, &block)
+    def server_stream(method, request, metadata: {}, timeout: 30, deadline: nil, cancellation: nil, &block)
+      validate_stream_call!(method, ServerStreamMethod, deadline, cancellation, block)
+      stream_call(method, request, metadata, [timeout, deadline], cancellation, &block)
     end
 
-    def client_stream(method, metadata: {}, timeout: 30, cancellation: nil, &block)
-      validate_stream_call!(method, ClientStreamMethod, cancellation, block)
-      stream_call(method, nil, metadata, timeout, cancellation, &block)
+    def client_stream(method, metadata: {}, timeout: 30, deadline: nil, cancellation: nil, &block)
+      validate_stream_call!(method, ClientStreamMethod, deadline, cancellation, block)
+      stream_call(method, nil, metadata, [timeout, deadline], cancellation, &block)
     end
 
-    def bidi_stream(method, metadata: {}, timeout: 30, cancellation: nil, &block)
-      validate_stream_call!(method, BidiStreamMethod, cancellation, block)
-      stream_call(method, nil, metadata, timeout, cancellation, &block)
+    def bidi_stream(method, metadata: {}, timeout: 30, deadline: nil, cancellation: nil, &block)
+      validate_stream_call!(method, BidiStreamMethod, deadline, cancellation, block)
+      stream_call(method, nil, metadata, [timeout, deadline], cancellation, &block)
     end
 
     private
 
-    def validate_stream_call!(method, type, cancellation, block)
+    def validate_stream_call!(method, type, deadline, cancellation, block)
       raise ArgumentError, "Wrong streaming declaration" unless method.is_a?(type)
       raise ArgumentError, "A streaming block is required" unless block
-      unless cancellation.nil? || cancellation.is_a?(CancellationToken)
-        raise ArgumentError, "cancellation must be a CancellationToken or nil"
-      end
+
+      validate_call_options!(deadline, cancellation)
       return if stream_capability?(method)
 
       raise ArgumentError, "Transport does not support #{method.cardinality}"
@@ -48,22 +47,22 @@ module ConnectRPC
       transport.respond_to?(:streaming_capabilities) && transport.respond_to?(:open_stream)
     end
 
-    def stream_call(method, request, metadata, timeout, cancellation, &)
+    def stream_call(method, request, metadata, limit, cancellation, &)
       injection = {} #: headers
       lifecycle = @instrumentation&.start(owner: self, role: :client, method: method, carrier: injection,
                                           protocol: @protocol, **request_facts(method))
       lifecycle&.begin_processing(self)
       work = lambda do
-        run_stream(method, request, metadata, timeout: timeout, cancellation: cancellation,
+        run_stream(method, request, metadata, limit: limit, cancellation: cancellation,
                                               lifecycle: lifecycle, injection: injection, &)
       end
       lifecycle ? lifecycle.activate(&work) : work.call
     end
 
-    def run_stream(method, request, metadata, timeout:, cancellation:, lifecycle:, injection:, &) # rubocop:disable Metrics/MethodLength
+    def run_stream(method, request, metadata, limit:, cancellation:, lifecycle:, injection:, &) # rubocop:disable Metrics/MethodLength
       scope = Streaming::ClientScope.new(lifecycle)
       chain = method.is_a?(Method) ? @unary_interceptors : @stream_interceptors
-      scope.run(timeout, cancellation) do |state, deadline|
+      scope.run(limit, cancellation) do |state, deadline|
         if chain && method.is_a?(Method)
           intercept_grpc_unary(chain, method, request, metadata, scope, state, deadline, lifecycle, injection, &)
         elsif chain

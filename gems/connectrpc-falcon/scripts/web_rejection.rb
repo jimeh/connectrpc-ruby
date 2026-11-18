@@ -23,7 +23,7 @@ module FalconWebRejection
                                                 request_type: AsyncHelpers::MESSAGE,
                                                 response_type: AsyncHelpers::MESSAGE)
     server = ConnectRPC::Server.new(
-      services: [ConnectRPC::Service.new(name: stream.service, methods: [stream])],
+      services: [ConnectRPC::Service.new(name: stream.service, rpcs: [stream])],
       binding: ConnectRPC::Bindings::GoogleProtobuf.new, protocol: :grpc_web, request_limit: 100,
       handlers: { stream.path => ->(*) { raise "Oversized request reached handler" } }
     )

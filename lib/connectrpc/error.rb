@@ -15,8 +15,8 @@ module ConnectRPC
       freeze
     end
 
-    def decode(binding:, type:)
-      binding.decode(value, type: type, codec: :proto)
+    def decode(type:, binding: nil)
+      Protocol.binding!(binding).decode(value, type: type, codec: :proto)
     end
 
     def to_h

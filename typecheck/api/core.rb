@@ -3,10 +3,10 @@
 binding = APIBinding.new
 method = ConnectRPC::Method.new(service: "demo.Service", name: "Call", request_type: String, response_type: String,
                                 idempotency: :no_side_effects)
-service = ConnectRPC::Service.new(name: method.service, methods: [method])
+service = ConnectRPC::Service.new(name: method.service, rpcs: [method])
 method.idempotency.to_s
 ConnectRPC::Client.new(base_url: "https://example.invalid", binding: binding, use_get: true, get_url_limit: 8192)
-service.methods.each { |rpc| rpc.path.size }
+service.rpcs.each { |rpc| rpc.path.size }
 metadata = ConnectRPC::Metadata.new("x-example" => ["value"])
 metadata.add("x-example", "next").add_binary("x-token-bin", "bytes")
 metadata.binary("x-token-bin").each(&:bytesize)
@@ -16,6 +16,12 @@ ConnectRPC::Metadata.reserved?("connect-timeout-ms")
 ConnectRPC::Metadata.decode_binary(ConnectRPC::Metadata.encode_binary("bytes"))
 detail = ConnectRPC::ErrorDetail.new(type: "demo.Detail", value: "bytes")
 detail.decode(binding: binding, type: String)
+# Since 0.3.0, an omitted binding resolves to the loaded Google binding.
+detail.decode(type: String)
+ConnectRPC::Client.new(base_url: "https://example.invalid", binding: nil)
+ConnectRPC::Server.new(services: [service])
+ConnectRPC::Client.new(base_url: "https://example.invalid", binding: binding)
+                  .call(method, "request", timeout: nil, deadline: ConnectRPC::Deadline.new(-1)).message.size
 error = ConnectRPC::Error.new(:invalid_argument, "safe", details: [detail], metadata: metadata, trailers: {})
 error.to_h
 error.http_status.succ

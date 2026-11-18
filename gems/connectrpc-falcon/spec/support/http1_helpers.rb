@@ -12,7 +12,7 @@ module ConnectH1Helpers
   end
 
   def target(handlers, **)
-    ConnectRPC::Server.new(services: [ConnectRPC::Service.new(name: methods.first.service, methods: methods)],
+    ConnectRPC::Server.new(services: [ConnectRPC::Service.new(name: methods.first.service, rpcs: methods)],
                            binding: ConnectRPC::Bindings::GoogleProtobuf.new, handlers: handlers, **)
   end
 

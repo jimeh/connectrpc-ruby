@@ -95,7 +95,7 @@ end
 
 method = ConnectRPC::Method.new(service: "installed.Echo", name: "Call", request_type: String, response_type: String,
                                 idempotency: :no_side_effects)
-service = ConnectRPC::Service.new(name: method.service, methods: [method])
+service = ConnectRPC::Service.new(name: method.service, rpcs: [method])
 server = ConnectRPC::Server.new(services: [service], binding: InstalledBinding.new,
                                 handlers: { method.path => ->(message, _context) { message } })
 transport = ConnectRPC::Testing::Transport.new(server: server)

@@ -41,7 +41,7 @@ RSpec.describe ConnectRPC::Rack do
   it "rejects streaming media and declarations before reading Rack input or invoking binding or handlers" do
     rpc = ConnectRPC::ServerStreamMethod.new(service: "rack.Streams", name: "Watch",
                                              request_type: EchoExample::Message, response_type: EchoExample::Message)
-    target = ConnectRPC::Server.new(services: [ConnectRPC::Service.new(name: rpc.service, methods: [rpc])],
+    target = ConnectRPC::Server.new(services: [ConnectRPC::Service.new(name: rpc.service, rpcs: [rpc])],
                                     binding: binding, handlers: { rpc.path => ->(*) { raise "handler invoked" } })
     middleware = described_class.new(server: target)
     incoming = StringIO.new("must not read")

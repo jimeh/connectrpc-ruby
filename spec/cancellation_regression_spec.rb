@@ -25,7 +25,7 @@ RSpec.describe "Cancellation at exceptional processing boundaries" do
   end
 
   def server(**)
-    service = ConnectRPC::Service.new(name: rpc.service, methods: [rpc])
+    service = ConnectRPC::Service.new(name: rpc.service, rpcs: [rpc])
     ConnectRPC::Server.new(services: [service], binding: binding, instrumentation: instrumentation,
                            handlers: { rpc.path => ->(message, _) { message } }, **)
   end

@@ -18,7 +18,7 @@ RSpec.describe "gRPC-Web server" do
   end
 
   def server(declaration = method, **, &handler)
-    ConnectRPC::Server.new(services: [ConnectRPC::Service.new(name: declaration.service, methods: [declaration])],
+    ConnectRPC::Server.new(services: [ConnectRPC::Service.new(name: declaration.service, rpcs: [declaration])],
                            binding: binding, status_codec: status_codec, protocol: :grpc_web,
                            handlers: { declaration.path => handler || ->(message, _) { message } }, **)
   end

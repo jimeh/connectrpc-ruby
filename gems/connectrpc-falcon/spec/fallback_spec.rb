@@ -104,7 +104,7 @@ RSpec.describe "Falcon Rack/Rails fallback boundary" do
       rpc = ConnectRPC::ServerStreamMethod.new(service: "fallback.Streams", name: "Watch",
                                                request_type: AsyncHelpers::MESSAGE, response_type: AsyncHelpers::MESSAGE)
       binding = ConnectRPC::Bindings::GoogleProtobuf.new
-      target = ConnectRPC::Server.new(services: [ConnectRPC::Service.new(name: rpc.service, methods: [rpc])],
+      target = ConnectRPC::Server.new(services: [ConnectRPC::Service.new(name: rpc.service, rpcs: [rpc])],
                                       binding: binding, handlers: { rpc.path => ->(*) { raise "handler invoked" } })
       expect(binding).not_to receive(:encode)
       expect(binding).not_to receive(:decode)
