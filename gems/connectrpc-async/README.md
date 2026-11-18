@@ -1607,7 +1607,10 @@ handle in a separate task after the refusal. That handle is never activated and
 finishes once the reset is written, or as not delivered if the connection ends
 first. Shared H2 client connection attempts run outside every RPC lifecycle, so
 tracing never parents connection setup to the call that triggered it. Use the
-transport's `connection_observer` for connection events.
+transport's `connection_observer` for connection events. Since 0.3.0, the
+Application passes the request authority (HTTP/1 `Host` or HTTP/2
+`:authority`) to core as the reserved `host` field, so the server call records
+the address the client used; handler metadata never contains it.
 
 ## Static signatures
 

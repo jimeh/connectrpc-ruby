@@ -37,7 +37,7 @@ RSpec.describe "Streaming diagnostic privacy" do
       expect(spans.size).to eq(1)
       expect(Array(spans.first.events)).to be_empty
       expect(spans.first.attributes.to_s).not_to include(payload, outcomes.first.error.message)
-      expect(spans.first.attributes["rpc.response.status_code"]).to eq("internal")
+      expect(spans.first.attributes["rpc.status_code"]).to eq("internal")
       expect(current_span.context).not_to be_valid
     ensure
       provider&.shutdown

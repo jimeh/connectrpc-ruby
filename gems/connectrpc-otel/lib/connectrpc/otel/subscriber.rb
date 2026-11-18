@@ -4,7 +4,7 @@ require_relative "version"
 
 module ConnectRPC
   module OTel
-    SEMCONV_VERSION = "1.44.0"
+    SEMCONV_VERSION = "1.45.0"
 
     class Subscriber
       SERVER_ERRORS = %w[unknown deadline_exceeded unimplemented internal unavailable data_loss].freeze
@@ -13,12 +13,12 @@ module ConnectRPC
       # Without an explicit propagator, the global one is read at each use, so
       # SDK configuration after construction applies.
       def initialize(tracer_provider: OpenTelemetry.tracer_provider, propagator: nil,
-                     request_metadata: [], response_metadata: [])
+                     request_metadata: [], response_metadata: [], response_trailers: [])
         @tracer = tracer_provider.tracer("connectrpc-otel", VERSION,
                                          attributes: { "connectrpc.semconv.version" => SEMCONV_VERSION })
         @propagator = propagator
-        @request_metadata = allowlist(request_metadata)
-        @response_metadata = allowlist(response_metadata)
+        @capture = { request: allowlist(request_metadata), response: allowlist(response_metadata),
+                     trailer: allowlist(response_trailers) }.freeze
       end
 
       def start(call) # rubocop:disable Metrics/MethodLength, Metrics/AbcSize, Metrics/PerceivedComplexity
@@ -38,7 +38,7 @@ module ConnectRPC
         context = OpenTelemetry::Trace.context_with_span(span, parent_context: parent)
         begin
           inject(call.carrier, context) if call.role == :client
-          Observer.new(span, context, call.role, @request_metadata, @response_metadata, call.protocol)
+          Observer.new(span, context, call.role, @capture, call.protocol)
         rescue Exception # rubocop:disable Lint/RescueException -- release span and preserve fatal exceptions
           span.finish
           raise
@@ -81,8 +81,9 @@ module ConnectRPC
         result = { "rpc.system.name" => %i[grpc grpc_web].include?(call.protocol) ? "grpc" : "connectrpc",
                    "rpc.method" => call.method ? name : "_OTHER" }
         result["connectrpc.protocol"] = "grpc_web" if call.protocol == :grpc_web
-        if call.role == :client
-          result["server.address"] = call.server_address if call.server_address
+        # Clients use their endpoint; servers the request authority, port only when explicit.
+        if call.server_address
+          result["server.address"] = call.server_address
           result["server.port"] = call.server_port if call.server_port
         end
         result
@@ -121,40 +122,31 @@ module ConnectRPC
       private_constant :Getter
 
       class Observer
-        def initialize(span, context, role, request_keys, response_keys, protocol) # rubocop:disable Metrics/ParameterLists
+        def initialize(span, context, role, capture, protocol)
           @protocol = protocol
           @span = span
           @context = context
           @role = role
-          @request_keys = request_keys
-          @response_keys = response_keys
+          @capture = capture
+          @recorded = false
         end
 
         def attach = OpenTelemetry::Context.attach(@context)
         def detach(token) = OpenTelemetry::Context.detach(token)
 
-        def processing_finished(outcome) # rubocop:disable Metrics/AbcSize
-          @span.set_attribute("rpc.response.status_code", status_code(outcome.code)) if outcome.code
-          @span.set_attribute("http.response.status_code", outcome.http_status) if outcome.http_status
-          @span.set_attribute("connectrpc.processing.duration", outcome.duration)
-          @span.set_attribute("connectrpc.request.wire_bytes", outcome.request_bytes) if outcome.request_bytes
-          @span.set_attribute("connectrpc.response.wire_bytes", outcome.response_bytes) if outcome.response_bytes
-          capture("request", outcome.request_metadata, @request_keys)
-          capture("response", outcome.response_metadata, @response_keys)
-          error = processing_error(outcome)
-          fail_span(error) if error
-        end
+        def processing_finished(outcome) = record(outcome)
 
         def finished(completion) # rubocop:disable Metrics/MethodLength, Metrics/AbcSize, Metrics/CyclomaticComplexity, Metrics/PerceivedComplexity
+          # An earlier observer's fatal exit can skip processing_finished.
+          outcome = completion.outcome
+          record(outcome) if outcome
           @span.set_attribute("connectrpc.processing.state", completion.processing_state.to_s)
           @span.set_attribute("connectrpc.decision", completion.decision.to_s)
           @span.set_attribute("connectrpc.delivery", completion.delivery.to_s)
           @span.set_attribute("http.response.status_code", completion.http_status) if completion.http_status
           if completion.delivery == :aborted
             # A non-OK code keeps its role classification: a client cancellation
-            # aborts server delivery but is not a server error. Reapplied here
-            # because an earlier observer's fatal exit can skip processing_finished.
-            outcome = completion.outcome
+            # aborts server delivery but is not a server error.
             if outcome&.code && outcome.code != "OK"
               error = processing_error(outcome)
               fail_span(error) if error
@@ -169,6 +161,23 @@ module ConnectRPC
         end
 
         private
+
+        # Outcome facts are recorded once, by whichever callback arrives first.
+        def record(outcome) # rubocop:disable Metrics/AbcSize, Metrics/MethodLength
+          return if @recorded
+
+          @recorded = true
+          @span.set_attribute("rpc.status_code", status_code(outcome.code)) if outcome.code
+          @span.set_attribute("http.response.status_code", outcome.http_status) if outcome.http_status
+          @span.set_attribute("connectrpc.processing.duration", outcome.duration)
+          @span.set_attribute("connectrpc.request.wire_bytes", outcome.request_bytes) if outcome.request_bytes
+          @span.set_attribute("connectrpc.response.wire_bytes", outcome.response_bytes) if outcome.response_bytes
+          capture("rpc.request.header", outcome.request_metadata, @capture.fetch(:request))
+          capture("rpc.response.header", outcome.response_metadata, @capture.fetch(:response))
+          capture("rpc.response.trailer", outcome.response_trailers, @capture.fetch(:trailer))
+          error = processing_error(outcome)
+          fail_span(error) if error
+        end
 
         # Keep role-specific wire codes and independent operation failures in one table.
         # Status codes take the protocol's casing and other exceptions their class
@@ -202,17 +211,39 @@ module ConnectRPC
           code == "canceled" ? "CANCELLED" : code.upcase
         end
 
-        def capture(direction, metadata, keys) # rubocop:disable Metrics/CyclomaticComplexity, Metrics/PerceivedComplexity
+        def capture(prefix, metadata, keys)
           keys.each do |key|
             values = metadata[key]
             next unless values
 
-            values = values.first(8).filter_map do |value|
-              value.byteslice(0, 256) if value.is_a?(String) && value.ascii_only? && /\A[\x20-\x7e]*\z/.match?(value)
-            end
-            prefix = %i[grpc grpc_web].include?(@protocol) ? "rpc" : "connectrpc"
-            @span.set_attribute("#{prefix}.#{direction}.metadata.#{key}", values) unless values.empty?
+            values = key.end_with?("-bin") ? binary_values(values) : text_values(values)
+            @span.set_attribute("#{prefix}.#{key}", values) unless values.empty?
           end
+        end
+
+        def text_values(values)
+          values.first(8).filter_map do |value|
+            value.byteslice(0, 256) if printable?(value)
+          end
+        end
+
+        # Core keeps binary metadata as its wire base64 text, possibly unpadded
+        # or comma-joined. Record each value once as standard padded base64,
+        # omitting malformed values and any that would need truncation.
+        def binary_values(values)
+          parts = values.select { |value| printable?(value) }.flat_map do |value|
+            value.empty? ? [value] : value.split(",", -1)
+          end
+          parts.filter_map do |part|
+            encoded = [Metadata.decode_binary(part.strip)].pack("m0")
+            encoded if encoded.bytesize <= 256
+          rescue ArgumentError
+            nil
+          end.first(8)
+        end
+
+        def printable?(value)
+          value.is_a?(String) && value.ascii_only? && /\A[\x20-\x7e]*\z/.match?(value)
         end
       end
       private_constant :Observer

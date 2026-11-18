@@ -30,13 +30,21 @@ require_relative "../../connectrpc-async/spec/support/connection_peer"
 require_relative "../../connectrpc-falcon/spec/support/helpers"
 
 module TraceHelpers
-  def tracing(request_metadata: [], response_metadata: [], subscribers: [])
+  def tracing(request_metadata: [], response_metadata: [], response_trailers: [], subscribers: [], before: [])
     exporter = OpenTelemetry::SDK::Trace::Export::InMemorySpanExporter.new
     provider = OpenTelemetry::SDK::Trace::TracerProvider.new
     provider.add_span_processor(OpenTelemetry::SDK::Trace::Export::SimpleSpanProcessor.new(exporter))
     subscriber = ConnectRPC::OTel::Subscriber.new(tracer_provider: provider, request_metadata: request_metadata,
-                                                  response_metadata: response_metadata)
-    [provider, exporter, ConnectRPC::Instrumentation.new(subscribers: [subscriber, *subscribers])]
+                                                  response_metadata: response_metadata,
+                                                  response_trailers: response_trailers)
+    [provider, exporter, ConnectRPC::Instrumentation.new(subscribers: [*before, subscriber, *subscribers])]
+  end
+
+  # Attribute names that semantic conventions 1.45.0 replaced.
+  RETIRED_ATTRIBUTES = /\A(?:rpc\.response\.status_code\z|(?:rpc|connectrpc)\.(?:request|response)\.metadata\.)/
+
+  def expect_no_retired_attributes(spans)
+    spans.each { |span| expect(span.attributes.keys.grep(RETIRED_ATTRIBUTES)).to be_empty }
   end
 
   def rpc_spans(exporter)

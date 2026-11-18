@@ -133,25 +133,24 @@ module ConnectRPC
 
     def grpc_terminal_fields(state, context)
       codec = @status_codec #: _GRPCStatusCodec
-      GRPCProtocol.terminal(
-        state.error, stream_trailers(state.error, context),
-        codec: codec,
-        wire_limit: @grpc_status_wire_limit, limit: @grpc_status_limit,
-        on_error: lambda { |error|
-          state.lifecycle&.record_failure(error)
-        }
+      trailers = stream_trailers(state.error, context)
+      fields, effective = GRPCProtocol.terminal(
+        state.error, trailers,
+        codec: codec, wire_limit: @grpc_status_wire_limit, limit: @grpc_status_limit,
+        on_error: ->(error) { state.lifecycle&.record_failure(error) }
       )
+      [fields, effective, emitted_trailers(trailers, state.error, effective)]
     end
 
     def render_grpc_terminal(state, output)
       context = state.context ||= grpc_context(state, headers: {})
       fail_unpublished_head(state, "gRPC") if grpc_head_failed?(state, context)
-      fields, effective = grpc_terminal_fields(state, context)
-      observe_stream_result(state, effective) if state.error
+      fields, effective, trailers = grpc_terminal_fields(state, context)
+      observe_stream_result(state, effective, trailers) if state.error
       publish_grpc_head(state)
       output.finish(headers: fields)
       context.commit! unless state.error
-      observe_stream_result(state, effective) unless state.error
+      observe_stream_result(state, effective, trailers) unless state.error
     end
   end
 end

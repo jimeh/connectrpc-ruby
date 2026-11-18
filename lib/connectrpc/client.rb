@@ -175,10 +175,11 @@ module ConnectRPC
         error = e
         raise
       ensure
+        head, trailers = Instrumentation.unary_carriers(response ? response.headers : {})
         lifecycle.processing_finished(code: error.is_a?(Error) ? error.code : ("OK" if completed),
                                       error: error, normalized_error: error, http_status: response&.status,
                                       response_bytes: response&.body&.bytesize,
-                                      response_metadata: response ? Instrumentation.carrier(response.headers) : {})
+                                      response_metadata: head, response_trailers: trailers)
         lifecycle.finish(delivery: :unobserved)
       end
     end

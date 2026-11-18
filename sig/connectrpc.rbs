@@ -105,8 +105,9 @@ module ConnectRPC
     end
 
     class Outcome
-      def initialize: (code: String?, http_status: Integer?, error: Exception?, normalized_error: Exception?, duration: Float, request_bytes: Integer?, response_bytes: Integer?, request_metadata: headers, response_metadata: headers) -> void
-        | (String?, Integer?, Exception?, Exception?, Float, Integer?, Integer?, headers, headers) -> void
+      def self.new: (code: String?, http_status: Integer?, error: Exception?, normalized_error: Exception?, duration: Float, request_bytes: Integer?, response_bytes: Integer?, request_metadata: headers, response_metadata: headers, ?response_trailers: headers) -> instance
+        | (String?, Integer?, Exception?, Exception?, Float, Integer?, Integer?, headers, headers, ?headers) -> instance
+      def initialize: (code: String?, http_status: Integer?, error: Exception?, normalized_error: Exception?, duration: Float, request_bytes: Integer?, response_bytes: Integer?, request_metadata: headers, response_metadata: headers, ?response_trailers: headers) -> void
       attr_reader code: String?
       attr_reader http_status: Integer?
       attr_reader error: Exception?
@@ -115,7 +116,10 @@ module ConnectRPC
       attr_reader request_bytes: Integer?
       attr_reader response_bytes: Integer?
       attr_reader request_metadata: headers
+      # Response headers. Connect unary trailer-prefixed headers are trailers.
       attr_reader response_metadata: headers
+      # Since 0.3.0. Trailing metadata, without any trailer- wire prefix.
+      attr_reader response_trailers: headers
     end
 
     class Completion

@@ -44,7 +44,8 @@ require "connectrpc/otel"
 
 subscriber = ConnectRPC::OTel::Subscriber.new(
   tracer_provider: application_tracer_provider,
-  request_metadata: ["x-request-id"], response_metadata: ["x-region"]
+  request_metadata: ["x-request-id"], response_metadata: ["x-region"],
+  response_trailers: ["x-cache"]
 )
 instrumentation = ConnectRPC::Instrumentation.new(
   subscribers: [subscriber], on_error: ->(error) { application_logger.warn(error.class.name) }
@@ -55,8 +56,9 @@ instrumentation = ConnectRPC::Instrumentation.new(
 
 Every `Subscriber.new` keyword is optional. `tracer_provider:` defaults to
 `OpenTelemetry.tracer_provider`, `propagator:` to the application's global
-propagator described below, and `request_metadata:` and `response_metadata:`
-to capturing no metadata. For native Rails controllers, override the private
+propagator described below, and `request_metadata:` (request headers),
+`response_metadata:` (response headers) and, since 0.3.0,
+`response_trailers:` (response trailers) to capturing nothing. For native Rails controllers, override the private
 `connect_instrumentation` hook instead; see [host notes](#host-notes).
 
 `mise run otel:example` runs a generated caller with a real in-memory SDK
@@ -84,16 +86,34 @@ providers/propagators, or creates network clients.
 The adapter emits one CLIENT or SERVER span for each configured RPC side.
 Names for declared methods are `fully.qualified.Service/Method`.
 `rpc.system.name` is `connectrpc`, `rpc.method` is the same declared name,
-and `rpc.response.status_code` is `OK` for known success or the lower-case
+and `rpc.status_code` is `OK` for known success or the lower-case
 Connect error actually observed. Bare preflight/admission responses have no
 invented RPC code. Error rendering may replace an oversized error with
 `resource_exhausted`; an empty 429 has no server wire code, while clients use
 the existing HTTP fallback `unavailable`.
 
+CLIENT spans carry `server.address` and `server.port` from the client's base
+URL. Since 0.3.0, SERVER spans carry `server.address` from the request's
+`Host` or HTTP/2 `:authority`, the address the client used rather than the
+listening socket, and `server.port` only when that authority states a port.
+Rack and Rails pass `Host`; the native Async and Falcon hosts pass the
+authority, which wins over an ordinary `host` field. A missing, repeated,
+over-255-byte or malformed value omits both. Like HTTP server conventions,
+the value is client-controlled, so its cardinality is too.
+
 ### Semantic conventions and error status
 
-The baseline is [Connect semantic conventions v1.44.0](https://github.com/open-telemetry/semantic-conventions/blob/v1.44.0/docs/rpc/connect-rpc.md),
-which are Development.
+Since 0.3.0, the baseline is
+[Connect semantic conventions v1.45.0](https://github.com/open-telemetry/semantic-conventions/blob/v1.45.0/docs/rpc/connect-rpc.md)
+and, for gRPC and gRPC-Web,
+[gRPC semantic conventions v1.45.0](https://github.com/open-telemetry/semantic-conventions/blob/v1.45.0/docs/rpc/grpc.md).
+The adapter emits these names directly, with no older names alongside them
+and no `OTEL_SEMCONV_STABILITY_OPT_IN` mode; the
+[upgrade guide](../../docs/upgrading.md#breaking-change-opentelemetry-semantic-conventions-1450)
+maps the names that 0.2 emitted. Version 1.45.0 keeps the role policy below:
+it lists the same SERVER error codes and treats every non-OK CLIENT code as
+an error, and lets instrumentation use additional context, as the delivery
+rules below do.
 
 - CLIENT treats every non-OK Connect code as an error.
 - SERVER treats `unknown`, `deadline_exceeded`, `unimplemented`, `internal`,
@@ -117,22 +137,36 @@ which are Development.
 There are no automatic exception events, descriptions, stacks, payloads, raw
 URLs/queries, certificate data or arbitrary metadata.
 
-### Unknown methods
+### Unknown methods and conformance limits
 
 Unknown methods use span name `connectrpc` and `rpc.method=_OTHER`. This adapter
 never records `rpc.method_original`, because the core call carries no request
-path. That attribute is conditionally required by v1.44.0 for unknown methods,
-so this is a specific conformance limitation. This is not a claim of full
-semantic-convention compliance. Instrumentation scope `connectrpc-otel` identifies its package
-version and has `connectrpc.semconv.version=1.44.0`. API 1.11.1/SDK 1.13.1 support
-scope attributes, but no tracer schema URL; none is supplied.
+path. That attribute is conditionally required by v1.45.0 for unknown methods,
+so this is a specific conformance limitation. The adapter also records no
+`network.peer.*` attributes. gRPC lists `rpc.status_code` as Required, but a
+span without a core RPC code, such as a preflight or admission rejection or an
+early escape, omits it rather than inventing one. `http.response.status_code`
+is supplemental transport evidence outside the RPC attribute tables. This is
+not a claim of full semantic-convention compliance. Instrumentation scope
+`connectrpc-otel` identifies its package version and has
+`connectrpc.semconv.version=1.45.0`. API 1.11.1/SDK 1.13.1 support scope
+attributes, but no tracer schema URL; none is supplied.
 
 ### Metadata capture
 
-Metadata capture requires explicit names, at most 32 per direction, each at most
-128 bytes. Values retain repeated arrays, limited to eight printable ASCII
-entries of 256 bytes each, under `connectrpc.request.metadata.<name>` and
-`connectrpc.response.metadata.<name>`. No wildcards are accepted. Selecting
+Metadata capture requires explicit names, at most 32 per list, each at most
+128 bytes, and never a reserved name such as `content-type`, `grpc-*` or
+`trailer-*`. Every protocol records request headers as
+`rpc.request.header.<name>`, response headers as `rpc.response.header.<name>`
+and, since 0.3.0, response trailers as `rpc.response.trailer.<name>`.
+Response headers are the metadata sent before the response payload; trailers
+are the trailing metadata sent after it, named without the Connect unary
+`trailer-` wire prefix. Values retain repeated arrays, limited to eight
+printable ASCII entries of 256 bytes each. A name ending in `-bin` holds
+binary metadata, which core keeps as its base64 wire text: each value,
+including each comma-joined part, is decoded and recorded as standard padded
+base64, and a malformed or over-256-byte value is omitted rather than
+truncated. No wildcards are accepted. Selecting
 sensitive names is the application's responsibility. Baggage propagates when
 the propagator carries it, as the SDK default does, but is never captured as
 span attributes. Request injection is staged and validated before merging
@@ -219,14 +253,14 @@ RPC deadline and can reject otherwise valid late EOF or slow intermediaries.
 
 ## Native gRPC
 
-The actual protocol is fixed before subscriber start. gRPC uses the 1.44.0
-release-candidate conventions: `rpc.system.name=grpc`, uppercase
-`rpc.response.status_code` and code-based `error.type`, including `CANCELLED`.
-Only status codes are uppercased; local `error.type` classifications stay
-lower-case. Client and Server retain the role-specific error policy above.
-Allowlisted gRPC metadata uses `rpc.request.metadata.<key>` and
-`rpc.response.metadata.<key>`.
-Connect keeps its existing names and lower-case codes. Unknown gRPC methods use
+The actual protocol is fixed before subscriber start. gRPC uses the 1.45.0
+conventions: `rpc.system.name=grpc`, uppercase `rpc.status_code` and
+code-based `error.type`, including `CANCELLED`. Only status codes are
+uppercased; local `error.type` classifications stay lower-case. Client and
+Server retain the role-specific error policy above. Allowlisted gRPC metadata
+uses the same `rpc.request.header.<key>`, `rpc.response.header.<key>` and
+`rpc.response.trailer.<key>` names as Connect, whose status codes stay
+lower-case. Unknown gRPC methods use
 span name `grpc` and `rpc.method=_OTHER`, with the same explicit privacy limit.
 Processing and delivery remain independent; successful handler processing cannot
 prove terminal HEADERS delivery. SDK configuration remains application-owned.
@@ -234,7 +268,7 @@ prove terminal HEADERS delivery. SDK configuration remains application-owned.
 ## gRPC-Web
 
 Web calls have `Call.protocol=:grpc_web` before subscriber start. The project
-maps them to gRPC semconv 1.44.0 with `rpc.system.name=grpc` and bounded
+maps them to gRPC semconv 1.45.0 with `rpc.system.name=grpc` and bounded
 `connectrpc.protocol=grpc_web`. Status codes, metadata prefixes, error roles and
 original-task activation follow native gRPC. See the
 [Web guide](../../docs/grpc-web.md) for protocol, CORS, bounds and completion

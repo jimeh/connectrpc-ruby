@@ -40,7 +40,7 @@ module ConnectRPC
       def inject: (Hash[String, String | Array[String]], context: Object) -> void
     end
     class Subscriber
-      def initialize: (?tracer_provider: _TracerProvider, ?propagator: _Propagator?, ?request_metadata: Array[String], ?response_metadata: Array[String]) -> void
+      def initialize: (?tracer_provider: _TracerProvider, ?propagator: _Propagator?, ?request_metadata: Array[String], ?response_metadata: Array[String], ?response_trailers: Array[String]) -> void
       # The adapter's observer is private and discovered by the neutral lifecycle.
       def start: (Instrumentation::Call) -> Object?
     end

@@ -48,6 +48,47 @@ is Ruby's method list again and `Service.new(methods: ...)` raises
   `SERVICE.rpcs`.
 - Steep users: the signature changes the same way.
 
+### Breaking change: OpenTelemetry semantic conventions 1.45.0
+
+`connectrpc-otel` emits the
+[semantic conventions 1.45.0](https://github.com/open-telemetry/semantic-conventions/blob/v1.45.0/docs/rpc/README.md)
+RPC attributes directly. It does not emit the old names alongside the new ones
+and has no `OTEL_SEMCONV_STABILITY_OPT_IN` mode. The instrumentation scope's
+`connectrpc.semconv.version` is `1.45.0`. Update dashboards, alerts and
+queries that read these attributes:
+
+| Before 0.3.0 | 0.3.0 |
+| --- | --- |
+| `rpc.response.status_code` | `rpc.status_code` |
+| `connectrpc.request.metadata.<key>` (Connect) | `rpc.request.header.<key>` |
+| `rpc.request.metadata.<key>` (gRPC, gRPC-Web) | `rpc.request.header.<key>` |
+| `connectrpc.response.metadata.<key>` (Connect) | `rpc.response.header.<key>` |
+| `rpc.response.metadata.<key>` (gRPC, gRPC-Web) | `rpc.response.header.<key>` |
+
+Status code values keep their casing: lower-case Connect codes and upper-case
+gRPC codes, including `CANCELLED`. Every protocol now uses the same metadata
+prefixes. Response headers and response trailers are separate: a name listed
+in `response_metadata:` records only response headers, and the new
+`response_trailers:` keyword of `Subscriber.new` records trailers as
+`rpc.response.trailer.<key>`. Move trailer names, such as a Connect unary
+`trailer-x-tail` that `response_metadata: ["trailer-x-tail"]` could not
+select, to `response_trailers: ["x-tail"]`. Values under names ending in `-bin`
+are recorded as standard padded base64.
+
+SERVER spans now carry `server.address`, and `server.port` when the request
+gives one explicitly, from the request's `Host` or HTTP/2 `:authority`. Rack
+and Rails pass `Host`, and the native Async and Falcon hosts pass the
+authority. See [semantic conventions and error status](../gems/connectrpc-otel/README.md#semantic-conventions-and-error-status).
+
+Lifecycle subscribers also see trailers separately. `Instrumentation::Outcome`
+has a `response_trailers` member with trailing metadata, without any
+`trailer-` wire prefix, for every protocol and role. Connect unary
+`Outcome#response_metadata` no longer contains the `trailer-*` header names,
+and streaming client outcomes now carry the received response headers instead
+of an empty snapshot. `Outcome.new` callers that omit `response_trailers` keep
+working with an empty snapshot. See
+[RPC lifecycle observation](design.md#rpc-lifecycle-observation).
+
 ### New service and call options
 
 These are additive; existing code keeps working once the rename above is done.
@@ -179,7 +220,7 @@ These affect `connectrpc-otel` spans and trace propagation.
   [what the application owns](../gems/connectrpc-otel/README.md#what-the-application-owns).
 - An OpenTelemetry SERVER span whose response delivery aborted with a non-OK
   code now follows the server error policy, as a delivered response does. A
-  client cancellation leaves the span UNSET with `rpc.response.status_code`
+  client cancellation leaves the span UNSET with `rpc.status_code`
   `canceled` (`CANCELLED` for gRPC) and no `error.type`; it was ERROR with
   `error.type=delivery_aborted` (or `CANCELLED`). A Connect CLIENT span whose
   delivery aborted with a non-OK code reports that code as `error.type`

@@ -207,6 +207,8 @@ module ConnectRPC
     def get_headers: (headers, Hash[String, String]) -> headers
     def vary_get: (TransportResponse) -> void
     def request_protocol: (headers, String) -> (:connect | :grpc | :grpc_web)
+    AUTHORITY: Regexp
+    def request_authority: (Array[String]?) -> [String?, Integer?]
     def declarations: (Array[Service]) -> Hash[String, declaration]
     def invoke_handler: (Method[untyped, untyped], untyped, Context) -> untyped
     def dispatch: (String, headers, _Input?, codec, Context, ?lifecycle: Instrumentation::Handle?) -> TransportResponse
@@ -233,7 +235,9 @@ module ConnectRPC
     @on_error: (^(StandardError) -> void | _InstrumentationErrorHandler)?
     def start: (owner: Object, role: :client | :server, method: declaration?, carrier: Hash[String, String | Array[String]], ?server_address: String?, ?server_port: Integer?, ?path: String?, ?protocol: :connect | :grpc | :grpc_web, ?url_scheme: String?, ?url_path: String?, ?transport_class: Class?) -> Handle
     def safely: [T] () { () -> T } -> T?
+    EMPTY_HEADERS: headers
     def self.carrier: (headers | metadata_input) -> headers
+    def self.unary_carriers: (headers) -> [headers, headers]
     # Reflection is erased here only, before each capability enters Callbacks.
     class Callbacks
       def self.discover: (Object, Instrumentation) -> Callbacks
@@ -268,7 +272,7 @@ module ConnectRPC
       attr_accessor code: String?
       attr_accessor normalized_error: Exception?
       def begin_processing: (Object, ?String?) -> Float
-      def processing_finished: (code: String?, ?http_status: Integer?, ?normalized_error: Exception?, ?error: Exception?, ?response_bytes: Integer?, ?response_metadata: headers) -> nil
+      def processing_finished: (code: String?, ?http_status: Integer?, ?normalized_error: Exception?, ?error: Exception?, ?response_bytes: Integer?, ?response_metadata: headers | Metadata, ?response_trailers: headers | Metadata) -> nil
       def message_received: (Integer) -> nil
       def message_sent: (Integer) -> nil
       private

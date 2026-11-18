@@ -60,8 +60,10 @@ module ConnectRPC
       instrumentation = @instrumentation
       return unless instrumentation
 
+      carrier = Instrumentation.carrier(headers)
+      address, port = request_authority(carrier["host"])
       instrumentation.start(owner: self, path: path.dup.freeze, role: :server, method: @methods[path],
-                            carrier: Instrumentation.carrier(headers),
+                            carrier: carrier, server_address: address, server_port: port,
                             protocol: request_protocol(headers, http_method))
     end
 
@@ -104,6 +106,25 @@ module ConnectRPC
     end
 
     private
+
+    AUTHORITY = /\A(?:\[(?<ipv6>[0-9A-Fa-f.]*:[0-9A-Fa-f.]*:[0-9A-Fa-f:.]*)\]|(?<name>[0-9A-Za-z._-]+))
+                 (?::(?<port>[0-9]{1,5}))?\z/x
+    private_constant :AUTHORITY
+
+    # The address the client used, from a single host or :authority value:
+    # host, host:port, [v6] or [v6]:port. Anything else yields neither fact.
+    def request_authority(values)
+      return [nil, nil] unless values && values.size == 1
+
+      authority = values.fetch(0)
+      return [nil, nil] if authority.bytesize > 255
+
+      match = AUTHORITY.match(authority)
+      port = match[:port]&.to_i if match
+      return [nil, nil] unless match && (port.nil? || port.between?(1, 65_535))
+
+      [(match[:ipv6] || match[:name] || "").dup.freeze, port]
+    end
 
     def request_protocol(headers, http_method)
       # Query controls own Connect GET, including rejection before header work.
@@ -167,11 +188,12 @@ module ConnectRPC
       raise
     ensure
       if lifecycle && !lifecycle.outcome
+        head, trailers = Instrumentation.unary_carriers(response ? response.headers : {})
         lifecycle.processing_finished(code: response&.status == 200 && cleaned && !error ? "OK" : lifecycle.code,
                                       error: error,
                                       normalized_error: lifecycle.normalized_error,
                                       http_status: response&.status, response_bytes: response&.body&.bytesize,
-                                      response_metadata: response ? Instrumentation.carrier(response.headers) : {})
+                                      response_metadata: head, response_trailers: trailers)
       end
     end
 

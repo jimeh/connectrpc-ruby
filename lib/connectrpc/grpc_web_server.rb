@@ -191,19 +191,21 @@ module ConnectRPC
       context = state.context ||= web_context(state, headers: {})
       fail_unpublished_head(state, "gRPC-Web") if grpc_head_failed?(state, context)
       codec = @status_codec #: _GRPCStatusCodec
+      trailers = stream_trailers(state.error, context)
       bytes, effective = GRPCWeb.terminal(
-        state.error, stream_trailers(state.error, context),
+        state.error, trailers,
         codec: codec,
         wire_limit: @grpc_status_wire_limit, limit: @grpc_status_limit,
         on_error: lambda { |error|
           state.lifecycle&.record_failure(error)
         }
       )
-      observe_stream_result(state, effective) if state.error
+      trailers = emitted_trailers(trailers, state.error, effective)
+      observe_stream_result(state, effective, trailers) if state.error
       publish_web_head(state)
       output.finish(terminal: bytes)
       context.commit! unless state.error
-      observe_stream_result(state, effective) unless state.error
+      observe_stream_result(state, effective, trailers) unless state.error
     end
   end
 end
