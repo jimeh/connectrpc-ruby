@@ -91,7 +91,7 @@ RSpec.describe "OpenTelemetry with stream interceptors over the Async host" do
       expect(outcome.error).to equal(original)
       expect(outcome.normalized_error.message).to eq("Translated")
       expect(outcome.code).to eq(code.to_s)
-      expect(server_span.attributes["rpc.response.status_code"]).to eq(code.to_s)
+      expect(server_span.attributes["rpc.status_code"]).to eq(code.to_s)
       expect(server_span.status.code).to eq(status)
     end
   end

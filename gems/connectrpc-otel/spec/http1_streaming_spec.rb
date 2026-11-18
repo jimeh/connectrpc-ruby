@@ -76,7 +76,7 @@ RSpec.describe "Connect HTTP/1 original processor SDK ownership" do
         expect(span.hex_trace_id).to eq("1" * 32)
         expect(span.parent_span_id.unpack1("H*")).to eq("2" * 16)
         expect(span.attributes).to include("connectrpc.delivery" => "completed",
-                                           "connectrpc.request.metadata.x-t" => ["leading"])
+                                           "rpc.request.header.x-t" => ["leading"])
         expect(records.map(&:first)).to include(:decode, :encode, :handler, :handler_cleanup, :codec_cleanup,
                                                 :application_cleanup)
         expect(records.map { |entry| entry[1] }.uniq.size).to eq(1)

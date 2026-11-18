@@ -515,7 +515,8 @@ last sent cause no send; `max_watchers` bounds that cost.
 See the [health guide](../gems/connectrpc-health/README.md#watch-streams-the-server-cannot-see-end).
 
 OTel never records the convention's `rpc.method_original` attribute for unknown
-methods, because the core call carries no request path. This is a documented
+methods: a server call carries no request path, and the adapter does not derive
+the attribute from the `url_path` that client calls carry. This is a documented
 limitation, not full semantic-convention compliance. SDK/exporter ownership and
 blocking remain application responsibilities.
 

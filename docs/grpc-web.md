@@ -188,7 +188,7 @@ allowance is a provisional budget in the
 typed host SPI for early decisions and idempotent decoration, including admission
 503. Call it before lifecycle start for preflight or denied requests.
 
-The optional OTel adapter maps Web to the project's gRPC semconv 1.44 mapping,
+The optional OTel adapter maps Web to the project's gRPC semconv 1.45 mapping,
 with `rpc.system.name=grpc` and bounded `connectrpc.protocol=grpc_web`. Call.protocol
 is fixed before subscriber start. Processing, admission, delivery and original
 failures remain separate; SDK/exporter ownership and privacy are unchanged.

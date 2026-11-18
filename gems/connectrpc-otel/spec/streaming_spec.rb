@@ -28,7 +28,7 @@ RSpec.describe "Streaming SDK context and native completion" do
 
   %i[async falcon].each do |backend|
     it "retains #{backend} processor identity and SDK context through codecs/cleanup for all shapes under mTLS" do
-      provider, exporter, bus = tracing
+      provider, exporter, bus = tracing(response_metadata: ["x-early"], response_trailers: ["x-trailer"])
       reactor do |task|
         entered = Async::Queue.new
         release = Async::Queue.new
@@ -55,6 +55,7 @@ RSpec.describe "Streaming SDK context and native completion" do
             expect(current_span.context).not_to be_valid
           end.wait
           context.send_headers(metadata: { "x-early" => "yes" })
+          context.response_trailers["x-trailer"] = ["value"]
           entered.enqueue([processor, context])
           release.dequeue
           expect(context.cancellation_reason).to be_nil
@@ -118,6 +119,13 @@ RSpec.describe "Streaming SDK context and native completion" do
             expect(events.map(&:first)).to include(:handler, :handler_cleanup, :encode, :decode, :codec_cleanup)
           end
           expect(receivers.map { |span| span.attributes["connectrpc.delivery"] }).to eq(["completed"] * 3)
+          port = Integer(origin.split(":").last)
+          expect_no_retired_attributes(rpc_spans(exporter))
+          rpc_spans(exporter).each do |span|
+            expect(span.attributes).to include("rpc.status_code" => "OK", "rpc.response.header.x-early" => ["yes"],
+                                               "rpc.response.trailer.x-trailer" => ["value"],
+                                               "server.address" => "127.0.0.1", "server.port" => port)
+          end
           expect(rpc_spans(exporter).map { |span| Array(span.events).size }).to eq([0] * 6)
           transport.instance_variable_get(:@resources).each do |resource|
             stack = resource.connection.reader_task.fiber.opentelemetry_context
@@ -335,7 +343,7 @@ RSpec.describe "Streaming SDK context and native completion" do
             expect(source.token.reason).to be_nil
             release.enqueue(true)
             wait_until(task, "two canceled abandonment SDK spans") { rpc_spans(exporter).size == 2 }
-            codes = rpc_spans(exporter).map { |span| span.attributes["rpc.response.status_code"] }
+            codes = rpc_spans(exporter).map { |span| span.attributes["rpc.status_code"] }
             expect(codes).to eq(%w[canceled canceled])
             expect(rpc_spans(exporter).map { |span| span.attributes["connectrpc.delivery"] }).to eq(%w[aborted aborted])
             caller = rpc_spans(exporter).find { |span| span.kind == :client }
@@ -346,7 +354,7 @@ RSpec.describe "Streaming SDK context and native completion" do
               reader.each { |_| nil }
             end
             wait_until(task, "one healthy call reused the shared source") { rpc_spans(exporter).size == 4 }
-            expect(rpc_spans(exporter).count { |span| span.attributes["rpc.response.status_code"] == "OK" }).to eq(2)
+            expect(rpc_spans(exporter).count { |span| span.attributes["rpc.status_code"] == "OK" }).to eq(2)
           ensure
             transport&.close(grace: 0)
           end

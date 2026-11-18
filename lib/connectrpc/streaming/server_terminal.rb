@@ -7,15 +7,15 @@ module ConnectRPC
     def render_stream_terminal(state, output)
       context = state.context ||= streaming_context(state, headers: {})
       fail_unpublished_head(state, "Connect") if context.send(:head_failed?)
-      bytes, effective = stream_terminal_bytes(state, context)
+      bytes, effective, trailers = stream_terminal_bytes(state, context)
       handler_error = state.error
       # A peer reset may reject terminal delivery. Retain the handler failure
       # independently of that later delivery error.
-      observe_stream_result(state, effective) if handler_error
+      observe_stream_result(state, effective, trailers) if handler_error
       publish_stream_head(context, handler_error)
       emit_stream_terminal(bytes, output)
       context.commit! unless handler_error
-      observe_stream_result(state, effective) unless handler_error
+      observe_stream_result(state, effective, trailers) unless handler_error
     end
 
     # A failed head publication is not retried and a stream never finishes
@@ -44,7 +44,21 @@ module ConnectRPC
 
     def stream_terminal_bytes(state, context)
       trailers = stream_trailers(state.error, context)
-      Streaming.terminal_bytes(state.error, trailers, wire_limit: @terminal_wire_limit, limit: @terminal_limit)
+      bytes, effective = Streaming.terminal_bytes(state.error, trailers, wire_limit: @terminal_wire_limit,
+                                                                         limit: @terminal_limit)
+      [bytes, effective, emitted_trailers(trailers, state.error, effective)]
+    end
+
+    # Every replacement terminal (byte limit or status codec failure) carries
+    # a new error and none of the application trailers.
+    def emitted_trailers(trailers, error, effective)
+      effective.equal?(error) ? trailers : Metadata.new
+    end
+
+    # gRPC and gRPC-Web write one field line per value, so a name without
+    # values is not on their wire. Connect's JSON terminal keeps it.
+    def emitted_fields(trailers, error, effective)
+      emitted_trailers(trailers, error, effective).to_h.reject { |_, values| values.empty? }
     end
 
     # Error metadata joins a head that is still unpublished. Once the head is
@@ -72,11 +86,13 @@ module ConnectRPC
       framing.emit(bytes, terminal: true)
     end
 
-    def observe_stream_result(state, effective)
+    # Trailers are those the rendered terminal carries; none when no terminal is serialized.
+    def observe_stream_result(state, effective, trailers = Metadata.new)
       context = state.context #: StreamingContext
       state.lifecycle&.processing_finished(code: effective ? effective.code : "OK", error: state.error,
                                            normalized_error: effective, http_status: 200,
-                                           response_metadata: Instrumentation.carrier(context.response_metadata))
+                                           response_metadata: Instrumentation.carrier(context.response_metadata),
+                                           response_trailers: Instrumentation.carrier(trailers))
     end
 
     def streaming_context(state, headers: state.headers)

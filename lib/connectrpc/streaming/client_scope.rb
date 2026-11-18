@@ -4,6 +4,8 @@ module ConnectRPC
   module Streaming
     class ClientScope # rubocop:disable Metrics/ClassLength
       attr_accessor :completed, :abandoned, :independent_error, :failure, :result, :delivered_error
+      # The opened session; its cached response metadata feeds the outcome.
+      attr_writer :session
 
       def initialize(lifecycle)
         @lifecycle = lifecycle
@@ -171,10 +173,14 @@ module ConnectRPC
         delivered.equal?(error)
       end
 
+      # Only metadata the session already accepted: finishing never reads.
       def report_processing(lifecycle, error)
         normalized = normalized_error(error)
+        session = @session
         lifecycle.processing_finished(code: normalized&.code || ("OK" if success?(error)),
-                                      error: error, normalized_error: normalized)
+                                      error: error, normalized_error: normalized,
+                                      response_metadata: session&.cached_headers || Metadata.new,
+                                      response_trailers: session&.trailers || Metadata.new)
       end
 
       # An independent exception escaping the outermost interceptor sets the

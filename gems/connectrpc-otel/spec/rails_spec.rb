@@ -41,7 +41,7 @@ RSpec.describe "Native Rails RPC spans" do
       span = rpc_spans(recorded_exporter).last
       expect(seen.last.span_id).to eq(span.span_id)
       expected_code = { nil => "OK", "argument" => "invalid_argument", "bug" => "internal" }.fetch(scenario)
-      expect(span.attributes["rpc.response.status_code"]).to eq(expected_code)
+      expect(span.attributes["rpc.status_code"]).to eq(expected_code)
       expect(span.status.code).to eq(scenario == "bug" ? OpenTelemetry::Trace::Status::ERROR : OpenTelemetry::Trace::Status::UNSET)
       expect(Array(span.events)).to be_empty
       expect(span.attributes.to_s).not_to include("secret bug", "secret exception")
@@ -82,7 +82,7 @@ RSpec.describe "Native Rails RPC spans" do
     expect(spans.size).to eq(1)
     span = spans.first
     expect(span.attributes["connectrpc.protocol"]).to eq("grpc_web")
-    expect(span.attributes["rpc.response.status_code"]).to eq("OK")
+    expect(span.attributes["rpc.status_code"]).to eq("OK")
     expect(span.attributes["connectrpc.processing.state"]).to eq("finished")
     expect(span.attributes["connectrpc.delivery"]).to eq("aborted")
     expect(span.status.code).to eq(OpenTelemetry::Trace::Status::ERROR)
@@ -106,7 +106,7 @@ RSpec.describe "Native Rails RPC spans" do
     expect(result).to equal(value)
     spans = rpc_spans(exporter)
     expect(spans.size).to eq(1)
-    expect(spans.first.attributes).to include("rpc.response.status_code" => "OK",
+    expect(spans.first.attributes).to include("rpc.status_code" => "OK",
                                               "connectrpc.delivery" => "aborted", "error.type" => "delivery_aborted")
     expect(spans.first.status.code).to eq(OpenTelemetry::Trace::Status::ERROR)
     expect(current_span.context).not_to be_valid

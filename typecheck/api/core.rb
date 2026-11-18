@@ -89,6 +89,13 @@ outcome.request_bytes&.succ
 outcome.response_bytes&.succ
 outcome.request_metadata.each_value(&:size)
 outcome.response_metadata.each_value(&:size)
+outcome.response_trailers.each_value(&:size)
+ConnectRPC::Instrumentation::Outcome.new(
+  code: "OK", http_status: 200, error: nil, normalized_error: nil, duration: 0.1, request_bytes: 1,
+  response_bytes: 2, request_metadata: {}, response_metadata: {}, response_trailers: { "x-tail" => ["t"] }
+).response_trailers.fetch("x-tail", []).size
+ConnectRPC::Instrumentation::Outcome.new("OK", 200, nil, nil, 0.1, 1, 2, {}, {}).response_trailers.size
+ConnectRPC::Instrumentation::Outcome.new("OK", 200, nil, nil, 0.1, 1, 2, {}, {}, {}).response_trailers.size
 
 source = ConnectRPC::CancellationSource.new
 token = source.token

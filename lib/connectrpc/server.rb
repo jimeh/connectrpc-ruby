@@ -1,5 +1,7 @@
 # frozen_string_literal: true
 
+require "ipaddr"
+
 module ConnectRPC
   class Server # rubocop:disable Metrics/ClassLength
     attr_reader :services
@@ -60,8 +62,10 @@ module ConnectRPC
       instrumentation = @instrumentation
       return unless instrumentation
 
+      carrier = Instrumentation.carrier(headers)
+      address, port = request_authority(carrier["host"])
       instrumentation.start(owner: self, path: path.dup.freeze, role: :server, method: @methods[path],
-                            carrier: Instrumentation.carrier(headers),
+                            carrier: carrier, server_address: address, server_port: port,
                             protocol: request_protocol(headers, http_method))
     end
 
@@ -104,6 +108,42 @@ module ConnectRPC
     end
 
     private
+
+    # Hostname labels start and end with a letter, digit or underscore; IPv4
+    # dotted quads are valid names. The bracketed part is checked by IPAddr.
+    AUTHORITY = /\A(?:\[(?<ipv6>[0-9A-Fa-f:.]+)\]|
+                   (?<name>(?:[0-9A-Za-z_](?:[0-9A-Za-z_-]*[0-9A-Za-z_])?\.)*
+                           [0-9A-Za-z_](?:[0-9A-Za-z_-]*[0-9A-Za-z_])?\.?))
+                 (?::(?<port>[0-9]+))?\z/x
+    private_constant :AUTHORITY
+
+    # The address the client used, from a single host or :authority value:
+    # host, host:port, [v6] or [v6]:port. Anything else, including a value that
+    # is not valid ASCII text, yields neither fact. Observation never raises.
+    def request_authority(values)
+      return [nil, nil] unless values && values.size == 1
+
+      authority = values.fetch(0)
+      return [nil, nil] unless authority.is_a?(String) && authority.bytesize <= 255 &&
+                               authority.valid_encoding? && authority.ascii_only?
+
+      match = AUTHORITY.match(authority)
+      return [nil, nil] unless match
+
+      port = match[:port]&.to_i
+      return [nil, nil] unless port.nil? || port.between?(1, 65_535)
+
+      ipv6 = match[:ipv6]
+      return [nil, nil] if ipv6 && !ipv6_address?(ipv6)
+
+      [(ipv6 || match[:name] || "").dup.freeze, port]
+    end
+
+    def ipv6_address?(text)
+      IPAddr.new(text).ipv6?
+    rescue ArgumentError
+      false
+    end
 
     def request_protocol(headers, http_method)
       # Query controls own Connect GET, including rejection before header work.
@@ -167,11 +207,12 @@ module ConnectRPC
       raise
     ensure
       if lifecycle && !lifecycle.outcome
+        head, trailers = Instrumentation.unary_carriers(response ? response.headers : {})
         lifecycle.processing_finished(code: response&.status == 200 && cleaned && !error ? "OK" : lifecycle.code,
                                       error: error,
                                       normalized_error: lifecycle.normalized_error,
                                       http_status: response&.status, response_bytes: response&.body&.bytesize,
-                                      response_metadata: response ? Instrumentation.carrier(response.headers) : {})
+                                      response_metadata: head, response_trailers: trailers)
       end
     end
 
@@ -394,9 +435,17 @@ module ConnectRPC
     def response_headers(context, content_type)
       # @type var headers: headers
       headers = context ? context.response_metadata.to_h : {}
-      context&.response_trailers&.each { |key, values| headers["trailer-#{key}"] = values }
+      append_trailer_fields(headers, context.response_trailers) if context
       headers["accept-encoding"] = ["gzip, identity"] if @encoding == :gzip
       headers.merge("content-type" => [content_type])
+    end
+
+    # A trailer without values writes no field, as Go net/http does, whatever the host.
+    def append_trailer_fields(headers, trailers)
+      trailers.each do |key, values|
+        merged = (headers["trailer-#{key}"] || []) + values
+        headers["trailer-#{key}"] = merged unless merged.empty?
+      end
     end
 
     # Reporters run on the calling thread or fiber, inside the instrumented call
@@ -447,7 +496,7 @@ module ConnectRPC
                      end
       headers = response_headers(context, "application/json")
       error.metadata.each { |key, values| headers[key] = (headers[key] || []) + values }
-      error.trailers.each { |key, values| headers["trailer-#{key}"] = (headers["trailer-#{key}"] || []) + values }
+      append_trailer_fields(headers, error.trailers)
       response = TransportResponse.new(status: status, headers: headers, body: body)
       if lifecycle
         lifecycle.code = code
