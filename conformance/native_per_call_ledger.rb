@@ -13,13 +13,18 @@ module Conformance
 
     private
 
-    # Every inner transport closed and was released, with its owner thread
-    # exited or its scope task finished, before the call returned.
+    # Every inner transport closed and was released, with its owner threads
+    # exited or its scope task finished, before the call returned. A case that
+    # reached the transport built at least one inner, all on this path.
     def validate_client_lifetimes!(events)
       events.select { |event| event.fetch("event") == "native_closed_lifetime" }.each do |event|
         verify(event.fetch("released"), "Per-call owner or scope outlived the call")
         verify(event.fetch("raw_closed"), "Per-call raw socket leaked")
-        verify(event.fetch("paths") - [@path] == [], "Per-call ran on the wrong path")
+        if event.fetch("counts").dig("transport", "entries").to_i.positive?
+          verify(event.fetch("inners").positive? && event.fetch("paths") == [@path], "Per-call ran on the wrong path")
+        else
+          verify(event.fetch("inners").zero?, "Per-call inner built outside the transport")
+        end
       end
       NativeLifetimes.instance_method(:validate_client_lifetimes!).bind_call(self, events)
       validate_threads!(events)

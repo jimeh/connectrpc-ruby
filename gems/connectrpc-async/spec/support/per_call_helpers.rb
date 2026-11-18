@@ -48,11 +48,14 @@ module PerCallHelpers
 
     def dials_of(inner) = inner ? @lock.synchronize { (@dials[inner] || []).dup } : []
 
+    # Every engine the front started, including one a failed start replaced.
     # A front whose owner never started has no engine, owner or dials.
     def observe_threaded(point)
-      engine = point.binding.local_variable_get(:inner)&.instance_variable_get(:@engine)
-      owner = engine&.thread
-      sockets(dials_of(engine&.inner), owner).merge(path: :threaded, owner: owner, owner_alive: owner&.alive? == true)
+      engines = point.binding.local_variable_get(:inner)&.instance_variable_get(:@engines) || []
+      owners = engines.map(&:thread)
+      dials = engines.flat_map { |engine| dials_of(engine.inner) }
+      sockets(dials, owners.last).merge(path: :threaded, owner: owners.last, owners: owners,
+                                        owner_alive: owners.any?(&:alive?))
     end
 
     def observe_inline(point)
@@ -102,6 +105,69 @@ module PerCallHelpers
           super(*arguments) if peer.instance_variable_get(:@stopping)
         end
       end
+    end
+  end
+
+  # A raw peer that also records each RST_STREAM as [connection, stream id,
+  # error code].
+  class ResetRecordingServer < ConnectionPeer::RecordingServer
+    def resets = (@resets ||= [])
+
+    def record(index, frame)
+      resets << [index, frame.stream_id, frame.unpack] if frame.is_a?(Protocol::HTTP2::ResetStreamFrame)
+      super
+    end
+  end
+
+  def reset_recording_peer(&)
+    ThreadedHelpers::PeerThread.new do |task|
+      bound = IO::Endpoint.tcp("127.0.0.1", 0).bound
+      peer = ResetRecordingServer.new(task, bound.sockets.first, &)
+      peer.define_singleton_method(:port) { bound.sockets.first.local_address.ip_port }
+      [peer, lambda {
+        peer.stop
+        bound.close
+      }]
+    end
+  end
+
+  # A Host that never sends FIN: its accepted sockets ignore shutdown and
+  # close until the Host itself closes.
+  class FinWithholdingHost < ConnectRPC::Async::Host
+    class Session < ConnectRPC::Async::ServerSession
+      def initialize(held:, **)
+        @held = held
+        super(**)
+      end
+
+      def accept(raw)
+        @held << raw
+        raw.define_singleton_method(:shutdown) { |*| 0 }
+        raw.define_singleton_method(:close) { nil }
+        super
+      end
+    end
+
+    def initialize(**)
+      @held = []
+      super
+    end
+
+    def close(**)
+      super
+    ensure
+      @held.each { |raw| IO.instance_method(:close).bind_call(raw) }
+    end
+
+    private
+
+    def build_session(**) = Session.new(held: @held, **)
+  end
+
+  def withholding_host(server:)
+    ThreadedHelpers::PeerThread.new do
+      host = FinWithholdingHost.new(server: server).start
+      [host, -> { host.close(grace: 0) }]
     end
   end
 
