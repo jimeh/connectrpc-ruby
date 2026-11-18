@@ -13,8 +13,11 @@ module ConnectRPC
       class HTTP1Stream
         READ_SIZE = 16_384
 
-        def initialize(io)
+        # `resource`, when given, reports a local raw failure through
+        # `aborted?`; the descriptor stays open until its final close.
+        def initialize(io, resource = nil)
           @io = io
+          @resource = resource
           @finished = false
           @read_buffer = String.new(encoding: Encoding::BINARY)
           # Scratch destination for reads appended to a non-empty read buffer.
@@ -24,6 +27,7 @@ module ConnectRPC
         end
 
         def closed? = @io.closed?
+        def failed? = closed? || !!@resource&.aborted?
 
         # Like IO::Stream 0.14, the limit is compared with the separator's
         # start, so a returned line may exceed it by the separator.
@@ -88,12 +92,13 @@ module ConnectRPC
         end
 
         def close_read
-          # Destructive retirement closes raw IO before unfinished body cleanup.
-          @io.close_read unless closed?
+          # Destructive retirement fails raw IO before unfinished body cleanup
+          # and closes it only after every task has joined.
+          @io.close_read unless failed?
         end
 
         def viable?
-          return false if closed? || @finished || !@read_buffer.empty?
+          return false if failed? || @finished || !@read_buffer.empty?
 
           @io.read_nonblock(1, @input_buffer, exception: false) == :wait_readable
         rescue IOError, SystemCallError, OpenSSL::SSL::SSLError

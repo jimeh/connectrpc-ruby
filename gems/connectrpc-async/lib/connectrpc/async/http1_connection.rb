@@ -92,50 +92,43 @@ module ConnectRPC
 
         def finished? = !!@finished
         def finish! = @finished = true
+        def aborted? = !!@aborted
 
+        # Fails the connection at once without closing its descriptor. On
+        # Ruby 4, IO#close interrupts every fiber blocked on the socket, and
+        # Async raises that IOError into the fiber wherever it next suspends,
+        # even after it has left the read. A shutdown wakes those fibers, a
+        # pending TLS handshake included, with EOF or EPIPE instead. Setup can
+        # assign raw after an earlier abort, so every abort shuts down the raw
+        # socket it finds; it never yields.
         def abort
+          @aborted = true
           pending_tls = @socket.is_a?(OpenSSL::SSL::SSLSocket) && @connection.nil?
-          return if @raw.nil? || @raw.closed?
-
-          # Ruby 4 marks raw closed before waiting for blocked fibers, before
-          # closing the descriptor. Transfer descriptor ownership first so an
-          # interruption cannot strand it behind raw.closed?. Retain the same
-          # descriptor until every native waiter and lifecycle child has joined.
-          # This handle has no readers/writers and is never used for transport IO.
-          @raw_close_io ||= ::IO.for_fd(@raw.fileno)
-          @raw.autoclose = false
-          # Ruby 4 raw close can wait on SSL setup. Shutdown wakes it first.
-          @raw.shutdown(Socket::SHUT_RDWR)
+          @raw.shutdown(Socket::SHUT_RDWR) if @raw && !@raw.closed?
         rescue IOError, SystemCallError
           nil
         ensure
-          begin
-            Internal.raw_close(@raw)
-          ensure
-            # Ruby 4 raw close of pending SSL setup can leave its abandoned
-            # EOF in OpenSSL's thread-local queue, including on interruption.
-            # Drain only this destructive setup boundary before sibling TLS.
-            # The final post-join abort also drains a late native waiter EOF.
-            OpenSSL.errors if pending_tls
-          end
+          # A failed pending TLS setup can leave its abandoned EOF in
+          # OpenSSL's thread-local queue. Drain only this destructive setup
+          # boundary before a sibling's TLS.
+          OpenSSL.errors if pending_tls
         end
 
-        # Only the final owner calls this, after all accessing tasks have joined.
+        # Only the final owner calls this, after all accessing tasks have
+        # joined, so no fiber is still blocked on the descriptor it closes.
         def close
           interruption = nil
-          [@connection, @socket, @raw_close_io].each do |owned|
-            next unless owned
-            next if owned.equal?(@raw_close_io) && owned.closed?
+          [@connection, @socket, @raw].compact.uniq.each do |owned|
+            next if owned.equal?(@raw) && owned.closed?
 
             begin
               owned.close
             rescue Exception => e # rubocop:disable Lint/RescueException -- complete every close stage before propagating the first interruption
               interruption ||= e
               # Native wrappers can be interrupted before completing their own
-              # cleanup even when raw.closed? is true. Retry interruptions, but
-              # let ordinary wrapper failures proceed to the remaining stages.
-              retry if !e.is_a?(StandardError) && !owned.equal?(@raw_close_io)
-              retry if owned.equal?(@raw_close_io) && !owned.closed?
+              # cleanup. Retry interruptions, but let ordinary wrapper failures
+              # proceed to the remaining stages.
+              retry if !e.is_a?(StandardError) && !(owned.equal?(@raw) && owned.closed?)
             end
           end
           raise interruption if interruption

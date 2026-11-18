@@ -338,9 +338,10 @@ refresh, then perform bounded connection drain. HTTP/2 connections get the
 two-phase GOAWAY drain with debug data `graceful_stop` and keep serving streams
 opened before its cutoff; HTTP/1 requests that arrive during the drain get a
 bare 503. HTTP/1 completion includes fixed/chunked wire bytes and
-response-finished callbacks. On grace expiry, teardown closes raw TCP before
-cancelling owned work and buffered/TLS cleanup. Callback close is guarded
-against reentry. Fatal teardown or owner cancellation outside the managed stop
+response-finished callbacks. On grace expiry, teardown shuts raw TCP down
+before cancelling owned work, then performs buffered/TLS cleanup and closes the
+descriptor once that work has joined. Callback close is guarded against reentry.
+Fatal teardown or owner cancellation outside the managed stop
 boundary uses raw-first abort and offers no response-delivery guarantee.
 HTTP response completion is separate from TLS `close_notify`; orderly TLS
 shutdown is not promised.
@@ -388,7 +389,7 @@ already-decided outcome remains unchanged.
 Private task joins distinguish a resolved result from actual finalization. They
 block on required children and task-local progress/finalization notifications,
 retaining captured child identities through reparenting or transient changes.
-A scheduling opportunity after raw close establishes no completion boundary;
+A scheduling opportunity after raw failure establishes no completion boundary;
 all retained task joins still precede disposal and retirement publication.
 
 ### Limits of the grace period

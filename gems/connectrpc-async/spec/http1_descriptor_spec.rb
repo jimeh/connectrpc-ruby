@@ -168,8 +168,7 @@ RSpec.describe ConnectRPC::Async::HTTP1Transport, "descriptor lifetime" do
             original.call(io, events, *args)
           ensure
             # Keep the real SSL_connect frame until its readiness/cancellation
-            # unwind is released. Ruby 4's close interrupts the native wait
-            # before abort returns; that path stays natural.
+            # unwind is released.
             if native_wait.resolved? && native_wait.wait.equal?(Async::Task.current) && abort_returned.resolved?
               native_unwind.resolve(nil)
               begin
@@ -208,7 +207,10 @@ RSpec.describe ConnectRPC::Async::HTTP1Transport, "descriptor lifetime" do
         end
         closer = task.async(finished: false) { transport.close(grace: 0) }
         held = unwinding.wait
-        expect(resource.raw).to be_closed
+        # Abort shuts raw down without closing it: the final owner closes the
+        # descriptor once every task that may block on it has joined.
+        expect(resource).to be_aborted
+        expect(resource.raw).not_to be_closed
         expect_retained_shutdown(number)
         if RUBY_VERSION.start_with?("3.")
           native_unwind.wait
@@ -222,9 +224,8 @@ RSpec.describe ConnectRPC::Async::HTTP1Transport, "descriptor lifetime" do
         expect(transport.instance_variable_get(:@leases)).to include(resource)
         expect(transport.instance_variable_get(:@state)).to eq(:closing)
         puts "R5-RETAIN ruby=#{RUBY_VERSION} ordering=#{ordering} fd=#{number} native_ssl_wait=true " \
-             "raw_closed=true retained_shutdown=true setup_alive=#{setup.alive? == true}"
-        # Allocation while held cannot take this descriptor, even on Ruby 4
-        # where raw close may already have interrupted the native waiter.
+             "raw_closed=false retained_shutdown=true setup_alive=#{setup.alive? == true}"
+        # Allocation while held cannot take this descriptor: raw still owns it.
         other = Socket.new(Socket::AF_INET, Socket::SOCK_STREAM, 0)
         expect(other.fileno).not_to eq(number)
         AsyncHelpers::INTERNAL.raw_close(other)
@@ -345,7 +346,7 @@ RSpec.describe ConnectRPC::Async::HTTP1Transport, "descriptor lifetime" do
   end
 
   %i[active idle].each do |state|
-    %i[connection socket private_owner].each do |boundary|
+    %i[connection socket raw].each do |boundary|
       it "finishes #{state} disposition despite a final #{boundary} close error" do
         with_http1_peer(response: http1_wire, tls: true,
                         connection_limit: 1) do |transport, origin, _accepted, _requests, task|
@@ -372,7 +373,6 @@ RSpec.describe ConnectRPC::Async::HTTP1Transport, "descriptor lifetime" do
           prepared.wait
           resource = operation.fetch(:resource)
           number = resource.raw.fileno
-          owner = nil
           exited = Async::Promise.new
           allow(resource).to receive(:close).and_wrap_original do |original|
             original.call
@@ -393,18 +393,9 @@ RSpec.describe ConnectRPC::Async::HTTP1Transport, "descriptor lifetime" do
               original.call
             end
           end
-          if boundary == :private_owner
-            allow(IO).to receive(:for_fd).and_wrap_original do |original, *args, **options|
-              handle = original.call(*args, **options)
-              if args.first == number && options.empty?
-                owner = handle
-                install.call(handle)
-              end
-              handle
-            end
-          else
-            install.call(resource.public_send(boundary))
-          end
+          # Raw itself owns the descriptor until the final close; with
+          # sync_close, the TLS socket's close reaches it first.
+          install.call(resource.public_send(boundary))
           command.resolve(nil)
           if state == :idle
             caller.wait
@@ -429,8 +420,8 @@ RSpec.describe ConnectRPC::Async::HTTP1Transport, "descriptor lifetime" do
           AsyncHelpers::INTERNAL.join(closer)
           expect(observed).to equal(error)
           expect { descriptor_probe(number) }.to raise_error(Errno::EBADF)
-          expect(owner).to be_closed if owner
-          expect(releases).to eq(1) if boundary == :private_owner
+          expect(resource.raw).to be_closed
+          expect(releases).to eq(1) if boundary == :raw
           expect(resource).to be_finished
           expect(transport.instance_variable_get(:@leases)).to be_empty
         ensure
@@ -443,7 +434,7 @@ RSpec.describe ConnectRPC::Async::HTTP1Transport, "descriptor lifetime" do
     end
   end
 
-  %i[connection socket private_owner].each do |boundary|
+  %i[connection socket raw].each do |boundary|
     it "retains the original interruption across repeated final #{boundary} close interruption" do
       with_http1_peer(response: http1_wire, tls: true,
                       connection_limit: 1) do |transport, origin, _accepted, _requests, task|
@@ -492,15 +483,7 @@ RSpec.describe ConnectRPC::Async::HTTP1Transport, "descriptor lifetime" do
             original.call
           end
         end
-        if boundary == :private_owner
-          allow(IO).to receive(:for_fd).and_wrap_original do |original, *args, **options|
-            handle = original.call(*args, **options)
-            install.call(handle) if args.first == number && options.empty?
-            handle
-          end
-        else
-          install.call(resource.public_send(boundary))
-        end
+        install.call(resource.public_send(boundary))
         command.resolve(nil)
         wait_until(task, "final close attempted or disposition returned") { !closing.empty? || exited.resolved? }
         expect(closing).not_to be_empty

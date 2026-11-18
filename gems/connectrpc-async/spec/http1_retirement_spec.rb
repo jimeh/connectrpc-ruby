@@ -228,7 +228,10 @@ RSpec.describe ConnectRPC::Async::HTTP1Transport, "retirement boundaries" do
         end
         AsyncHelpers::INTERNAL.join(caller)
         interrupter.wait
-        expect(yielded).to eq(schedule != :native || RUBY_VERSION.start_with?("4."))
+        # Abort only shuts raw down. The final close runs after every task that
+        # read raw has joined, so even Ruby 4's close has no blocked fiber to
+        # wait for and yields only where the spec gates it.
+        expect(yielded).to eq(schedule != :native)
         expect(operation.fetch(:cleanup_owner)).to be_finished
         expect(operation).to include(cleanup_complete: true)
         expect(operation.fetch(:tasks).keys).to all(be_finished)
@@ -286,6 +289,7 @@ RSpec.describe ConnectRPC::Async::HTTP1Transport, "retirement boundaries" do
         cause = IOError.new("first raw boundary interruption")
         interruptions = []
         observed = nil
+        waiter_observed = nil
         target = nil
         trace = TracePoint.new(:raise) do |event|
           error = event.raised_exception
@@ -323,15 +327,35 @@ RSpec.describe ConnectRPC::Async::HTTP1Transport, "retirement boundaries" do
         command.resolve(nil)
         if boundary == :external_waiter
           detached.wait
+          waiter_cause = IOError.new("first external waiter interruption")
           aborter = task.async(finished: false) do
             exchange.abort
           rescue Async::Cancel => e
-            observed = e
+            waiter_observed = e
             raise
           end
+          # Abort only shuts raw down, so the external waiter's interruptions
+          # land in its wait for cleanup completion.
+          wait_until(task, "external waiter reached cleanup completion wait") do
+            aborter.backtrace&.any? { |frame| frame.include?("cleanup") }
+          end
+          expect(resource).to be_aborted
+          expect(resource.raw).not_to be_closed
+          aborter.cancel(cause: waiter_cause)
+          aborter.cancel(cause: IOError.new("later external waiter interruption"))
+          expect(aborter).not_to be_finished
+          expect(operation.fetch(:cleanup_done)).not_to be_resolved
         end
+        if boundary == :owner_ensure
+          wait_until(task, "owner joining cleanup after its expired budget") do
+            caller.backtrace&.any? { |frame| frame.include?("join_cleanup_task") }
+          end
+        end
+        # Only the final owner closes raw, once every worker, the detaching
+        # cleanup child included, has joined.
+        detach_release.resolve(nil)
         target = closing.wait
-        expect(target).to equal(boundary == :external_waiter ? aborter : caller)
+        expect(target).to equal(caller)
         expect(operation[:cleaned]).to be(true)
         target.cancel(cause: cause)
         target.cancel(cause: IOError.new("later raw boundary interruption"))
@@ -341,18 +365,11 @@ RSpec.describe ConnectRPC::Async::HTTP1Transport, "retirement boundaries" do
         expect(transport.instance_variable_get(:@leases)).to eq([resource])
         expect(transport.instance_variable_get(:@idle)).to be_empty
         release.resolve(nil)
-        if boundary == :external_waiter
-          wait_until(task, "external waiter reached cleanup completion wait") do
-            aborter.backtrace&.any? { |frame| frame.include?("cleanup") } && resource.raw.closed?
-          end
-          expect(aborter).not_to be_finished
-          expect(operation.fetch(:cleanup_done)).not_to be_resolved
-        end
-        detach_release.resolve(nil)
         AsyncHelpers::INTERNAL.join(caller)
         AsyncHelpers::INTERNAL.join(aborter)
         expect(observed).to equal(interruptions.first)
         expect(observed.cause).to equal(cause)
+        expect(waiter_observed.cause).to equal(waiter_cause) if aborter
         expect(target.status).to eq(:cancelled)
         expect(operation[:cleanup_complete]).to be(true)
         expect(operation.fetch(:cleanup_done)).to be_resolved
@@ -373,6 +390,75 @@ RSpec.describe ConnectRPC::Async::HTTP1Transport, "retirement boundaries" do
         detach_release&.resolve(nil)
         AsyncHelpers::INTERNAL.join(caller)
         AsyncHelpers::INTERNAL.join(aborter)
+      end
+    end
+  end
+
+  # Abort fails raw TCP without closing it. A reader blocked on the response
+  # wakes with end of stream rather than a close interrupt, the peer reads end
+  # of stream, and the descriptor stays open until the final owner's close.
+  [false, true].each do |tls|
+    it "fails a #{tls ? 'TLS' : 'TCP'} connection with a blocked reader and closes it only at final disposal" do
+      peer_eof = Async::Promise.new
+      # The peer never responds; it reads its raw socket, TLS records
+      # included, until end of stream.
+      peer = ->(_native, _socket, raw, *_) { peer_eof.resolve(raw.read) }
+      with_raw_http1(peer: peer, tls: tls, connection_limit: 1) do |transport, origin, _accepted, task|
+        detached = Async::Promise.new
+        release = Async::Promise.new
+        operation = nil
+        outgoing = stream_request(origin)
+        observer = Object.new
+        observer.define_singleton_method(:attach) { nil }
+        observer.define_singleton_method(:detach) do |_token|
+          next unless operation && operation[:cleanup_task].equal?(Async::Task.current)
+
+          detached.resolve(nil)
+          release.wait
+        end
+        subscriber = Object.new
+        subscriber.define_singleton_method(:start) { |_| observer }
+        outgoing.lifecycle = ConnectRPC::Instrumentation.new(subscribers: [subscriber])
+                                                        .start(owner: self, role: :client, method: nil, carrier: {})
+        reader_errors = []
+        reader = nil
+        trace = TracePoint.new(:raise) do |event|
+          reader_errors << event.raised_exception if reader && Async::Task.current?.equal?(reader)
+        end
+        trace.enable
+        caller = task.async(finished: false) do
+          transport.open_stream(outgoing) do |exchange|
+            exchange.close_send
+            operation = exchange.instance_variable_get(:@operation)
+            exchange.response_head
+          end
+        rescue ConnectRPC::Error => e
+          e
+        end
+        wait_until(task, "a worker blocked reading the response head") do
+          operation && (reader = operation.fetch(:tasks).keys.find do |worker|
+            worker.alive? && worker.backtrace&.any? { |frame| frame.include?("read_head") }
+          end)
+        end
+        resource = operation.fetch(:resource)
+        caller.cancel
+        detached.wait
+        expect(resource.raw).not_to be_closed
+        expect(resource).to be_aborted
+        expect(task.with_timeout(2) { peer_eof.wait }).to be_a(String)
+        expect(reader).to be_finished
+        expect(reader_errors.grep(IOError).grep_v(EOFError)).to be_empty
+        expect(operation.fetch(:cleanup_done)).not_to be_resolved
+        expect(transport.instance_variable_get(:@leases)).to eq([resource])
+        release.resolve(nil)
+        AsyncHelpers::INTERNAL.join(caller)
+        expect(resource).to be_finished
+        expect([resource.raw, resource.socket]).to all(be_closed)
+        expect(transport.instance_variable_get(:@leases)).to be_empty
+      ensure
+        trace&.disable
+        release&.resolve(nil)
+        AsyncHelpers::INTERNAL.join(caller)
       end
     end
   end

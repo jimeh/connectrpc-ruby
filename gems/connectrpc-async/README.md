@@ -940,8 +940,10 @@ lease waits count toward admission. Four long streams can occupy every default
 slot. Configure capacity or give waiters cancellation/deadlines; fairness is not
 promised. `close(grace: 5)` stops admission and drains admitted operations,
 including waiters, returning false on forced teardown. Owner exit aborts owned
-resources. Admission fails with `HTTP/1 transport admission is full` at
-`max_requests` and `HTTP/1 transport admission is closed` once closing. There
+resources. Forced teardown shuts a connection's raw TCP down at once and keeps
+its lease and descriptor until its tasks have joined. Admission fails with
+`HTTP/1 transport admission is full` at `max_requests` and
+`HTTP/1 transport admission is closed` once closing. There
 is no hidden thread, pipelining, replay or fallback, and one resend: a server
 may close an idle keep-alive connection while the next request crosses it, so
 a unary GET whose reused connection closed before any response head is sent

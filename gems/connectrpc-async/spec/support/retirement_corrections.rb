@@ -5,11 +5,9 @@ require_relative "retirement_helpers"
 RSpec.shared_examples "retirement close corrections" do |protocol|
   include RetirementHelpers
 
-  # H2 retirement shuts raw TCP down first and closes it once its tasks have
-  # joined; HTTP/1 retirement closes raw TCP first.
-  def raw_retired?(resource)
-    resource.respond_to?(:raw_failed?, true) ? resource.send(:raw_failed?) : resource.raw.closed?
-  end
+  # Retirement shuts raw TCP down first and closes it once its tasks have
+  # joined, for H2 and HTTP/1 alike.
+  def raw_retired?(resource) = resource.send(:raw_failed?)
 
   it "joins immediate #{protocol} cancellation finalization after promise resolution" do
     reactor do |task|
@@ -145,9 +143,9 @@ RSpec.shared_examples "retirement close corrections" do |protocol|
         trace.enable
         state.fetch(:commands).enqueue(->(_) { resource.abort })
         state.fetch(:gate).entered.dequeue
-        # An H2 descriptor stays open until every member that may block on it
+        # The descriptor stays open until every member that may block on it
         # has joined.
-        expect(hint_done.wait).to eq(raw_retired: true, raw_closed: protocol != :h2, handler_finished: false)
+        expect(hint_done.wait).to eq(raw_retired: true, raw_closed: false, handler_finished: false)
         expect(retirement_complete?(resource)).to be(false)
         expect(resource.instance_variable_get(:@cleanup)).not_to be_finished
         external = task.async(finished: false) { state.fetch(:session).abort }
@@ -168,15 +166,14 @@ RSpec.shared_examples "retirement close corrections" do |protocol|
     reactor do |task|
       with_retirement_connection(task, protocol: protocol) do |state|
         resource = state.fetch(:resource)
-        boundary = protocol == :h2 ? :shutdown : :close
-        allow(resource.raw).to receive(boundary).and_wrap_original do |original, *args|
+        allow(resource.raw).to receive(:shutdown).and_wrap_original do |original, *args|
           resource.abort
           original.call(*args)
         end
         aborter = task.async(finished: false) { resource.abort }
         state.fetch(:gate).entered.dequeue
         expect(raw_retired?(resource)).to be(true)
-        expect(resource.raw.closed?).to be(protocol != :h2)
+        expect(resource.raw).not_to be_closed
         expect(aborter).not_to be_finished
         state.fetch(:gate).release
         join_retirement_tasks(task, aborter, state.fetch(:handler))

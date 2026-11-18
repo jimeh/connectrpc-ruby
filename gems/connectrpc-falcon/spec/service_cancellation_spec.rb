@@ -29,10 +29,14 @@ RSpec.describe "Falcon service owner cancellation" do
         raw.write("GET /blocked HTTP/1.1\r\nHost: localhost\r\n\r\n")
         entered.dequeue
         session = host.instance_variable_get(:@session)
-        accepted_raw = session.instance_variable_get(:@resources).first.raw
+        resource = session.instance_variable_get(:@resources).first
+        accepted_raw = resource.raw
         owner.cancel(cause: cause)
-        expect(accepted_raw).to be_closed
+        # Raw TCP fails at once; the descriptor closes once retirement has
+        # joined the blocked handler.
+        expect(resource.send(:raw_failed?)).to be(true)
         task.with_timeout(1) { owner.wait }
+        expect(accepted_raw).to be_closed
         expect(host.tls_status[:state]).to eq(:closed)
         task.with_timeout(1) { cancelled.dequeue }
         expect(raw.read).to eq("")
