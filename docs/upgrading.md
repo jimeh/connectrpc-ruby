@@ -155,6 +155,15 @@ These affect native HTTP/2 connections of the Async `Transport`,
   ceiling. A proxy or peer that polices PINGs sees each BDP PING after DATA the
   other side wrote, which forgives it under grpc-go's rules. See
   [flow-control windows](../gems/connectrpc-async/README.md#flow-control-windows).
+- Flow-control credit returns once a quarter of a window is pending, as in
+  grpc-go, instead of half. A stream returns credit once the application has
+  consumed or discarded a quarter of its window, and a connection once a
+  quarter of its window has arrived. A stream whose reader keeps up therefore
+  keeps at least three quarters of its window in flight instead of half, and
+  each growth step doubles its window. With static 64 KiB windows, a 3 MiB
+  body over 50 ms of round-trip time takes about 2.6 s instead of 4.9 s. Each
+  side sends up to twice as many WINDOW_UPDATE frames. Window sizes and
+  retention bounds are unchanged.
 - Forced teardown (an abort, an expired grace, or a keepalive or
   write-progress failure) shuts raw TCP down in both directions at once and
   closes the descriptor after the connection's tasks have joined. Before 0.3.0

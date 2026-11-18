@@ -133,6 +133,15 @@ module ConnectRPC
           raise_stream_windows(@stream_receive_window) if @bandwidth
         end
 
+        # Returns connection credit once a quarter of the connection window
+        # has arrived, as grpc-go does (`trInFlow.onData`). protocol-http2
+        # waits for half, which leaves concurrent streams, or a stream window
+        # as large as the connection window, short of connection credit.
+        def request_window_update
+          wanted = local_window.wanted
+          send_window_update(wanted) if wanted.positive? && wanted >= receive_window_target / 4
+        end
+
         # Counts a received DATA frame of `bytes`, padding included.
         def sample_bandwidth(bytes)
           bandwidth = @bandwidth or return
@@ -147,6 +156,8 @@ module ConnectRPC
         end
 
         private
+
+        def receive_window_target = local_window.desired || local_window.capacity
 
         # The frames for growth to `window` and for a probe, each in grpc-go's
         # order: connection credit, then the SETTINGS or the PING.
@@ -623,11 +634,11 @@ module ConnectRPC
         end
 
         def request_window_update
-          return unless @reclaimed_input&.positive? && local_window.limited?
+          return unless credit_due?
 
           connection.synchronize do
             next if closed? || state == :half_closed_remote || connection.retiring?
-            next unless @reclaimed_input.positive? && local_window.limited?
+            next unless credit_due?
 
             ::Async::Task.current.defer_cancel do
               amount = @reclaimed_input
@@ -682,6 +693,21 @@ module ConnectRPC
             connection.output_started(task)
             yield task if block_given?
           end
+        end
+
+        private
+
+        # Stream credit returns once the application has consumed or
+        # discarded a quarter of the window, as grpc-go does (`inFlow.onRead`),
+        # so a stream whose reader keeps up has at least three quarters of its
+        # window in flight. protocol-http2 waits until half the window is
+        # unavailable, which keeps a lone stream's BDP samples near the
+        # two-thirds growth threshold. Credit cannot stall: a peer out of
+        # credit has a full window of bytes here, and every byte the
+        # application reads or discards counts.
+        def credit_due?
+          reclaimed = @reclaimed_input or return false
+          reclaimed.positive? && reclaimed >= local_window.capacity / 4
         end
       end
 
