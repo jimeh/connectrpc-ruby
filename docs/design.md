@@ -618,10 +618,12 @@ omits it too. A server stream, gRPC or gRPC-Web outcome keeps
 `Context#response_metadata` at observation time as its headers (what the
 handler set for the head, published or attempted, without generated Web fields
 such as `vary` or CORS), and as trailers the application and error metadata
-that the rendered terminal carries. A handler failure is observed before its
-terminal is written; a successful handler's outcome, including a terminal
-replaced for its byte limit, is observed after the terminal is handed to the
-output. gRPC and gRPC-Web write one field line per value, so they
+that the rendered terminal carries. When processing has already recorded a
+failure as terminal rendering begins, including one raised after the handler
+returned, such as a response over its limit, the outcome is observed before the
+head and terminal are written. Otherwise, including when rendering itself
+replaces the terminal for its byte limit, it is observed after the terminal is
+handed to the output. gRPC and gRPC-Web write one field line per value, so they
 omit a trailer name without values, which the Connect stream terminal JSON
 keeps. A terminal replaced for its byte limit or a status codec failure carries
 none, and a stream that fails before its terminal is serialized has none.
