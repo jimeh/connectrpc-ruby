@@ -274,9 +274,15 @@ transport = ConnectRPC::Transports::NetHTTP.new(
 - `proxy: :environment` reads `HTTPS_PROXY` for `https://` URLs, `HTTP_PROXY`
   for `http://` URLs and the `NO_PROXY` exceptions once, when the transport is
   constructed. As in Go's `net/http`, uppercase names win over lowercase ones,
-  a value without a scheme is read as `http://value`, an unparseable value is
-  ignored, and `localhost` and loopback addresses never use the environment
-  proxy.
+  a value without a scheme is read as `http://value`, and `localhost` and
+  loopback addresses never use the environment proxy.
+- Proxy values fail closed. Go ignores a few values it cannot parse and dials
+  some odd ones; here every non-empty value either names a proxy or fails the
+  calls that would use it with `invalid proxy address`, never connecting
+  directly. Spaces or control characters anywhere, percent escapes in the
+  host, an IPv6 zone, an invalid port and userinfo outside RFC 3986's
+  characters or escapes all fail this way. Anything after the host and port,
+  such as a path, is ignored.
 - `NO_PROXY` takes comma-separated entries: `*`, a domain (`example.com`
   matches the domain and its subdomains; `.example.com` and `*.example.com`
   match only subdomains), an IP address or a CIDR range, each with an optional
@@ -284,15 +290,25 @@ transport = ConnectRPC::Transports::NetHTTP.new(
   NFKC-normalized, lowercased, given ASCII dots for ideographic full stops and
   converted to Punycode, so a Unicode entry matches its `xn--` host name, and
   an IPv4-mapped range such as `::ffff:10.0.0.0/120` also matches IPv4 hosts.
-  UTS #46's other validity checks and mappings are not applied. A name that
+  UTS #46's other validity checks and mappings are not applied, and a name in
+  which NFKC produces a dot (U+2024 ONE DOT LEADER, for example) is rejected
+  rather than read as another domain. A name that
   Go's IDNA would reject, because it has invalid bytes or maps to anything but
   letters, digits, hyphens and dots (a fullwidth at sign, slash or colon, for
   example), never matches as a `NO_PROXY` entry. As an environment proxy host
   it fails the call rather than going direct; as an explicit proxy it raises
   `ArgumentError`.
+- Some `NO_PROXY` details differ from Go on purpose: the target's port is
+  compared as a number, so an entry for port `80` also matches a URL written
+  with `:080`, which Go compares as text; a CIDR prefix with leading zeros,
+  such as `/024`, is not recognized; entries are trimmed of ASCII whitespace
+  only; lowercasing uses Ruby's `downcase`, which differs from Go for the
+  Turkish dotted capital I; and `localhost` matches in any case, where Go
+  proxies `LOCALHOST`.
 - A String or URI proxies every request, including loopback and `NO_PROXY`
-  hosts. A String without a scheme is read as `http://value`. `proxy: nil`
-  always connects directly.
+  hosts. A String without a scheme is read as `http://value`. A value that is
+  not a valid proxy raises `ArgumentError` (`Invalid proxy configuration`),
+  with no `cause`. `proxy: nil` always connects directly.
 - Only `http://` proxies are supported. An `https://` URL tunnels through
   `CONNECT`, and TLS verifies the target host, not the proxy. An `http://` URL
   is sent to the proxy in absolute form. Proxy URL userinfo is percent-decoded

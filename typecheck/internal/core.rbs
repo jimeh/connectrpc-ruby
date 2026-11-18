@@ -527,10 +527,14 @@ module ConnectRPC
     type ip_matcher = [IPAddr, String, bool]
     type domain_matcher = [String, String, bool]
     type resolver = Static | Environment
-    AUTHORITY: Regexp
     PROXY_PORTS: Hash[String, Integer]
     TARGET_PORTS: Hash[String, Integer]
     LDH_HOST: Regexp
+    SCHEME: Regexp
+    USERINFO: Regexp
+    ASCII_HOST: Regexp
+    CONTROL: Regexp
+    FULL_STOPS: String
     class Endpoint
       def initialize: (scheme: String, host: String, port: Integer?, user: String?, password: String?) -> void
       attr_reader scheme: String
@@ -548,11 +552,12 @@ module ConnectRPC
     end
     def self.resolver: (:environment | String | URI::Generic | nil, ?_Environment) -> resolver
     def self.explicit: (String | URI::Generic) -> Endpoint
-    def self.parse: (String) -> URI::Generic?
-    def self.uri: (String) -> URI::Generic?
+    def self.parse: (String) -> Endpoint?
+    def self.credentials: (String) -> [String, String?]?
+    def self.decode: (String) -> String?
+    def self.host_port: (String, String) -> [String, Integer?]?
     def self.utf8: (untyped) -> String?
     def self.ascii_host: (String) -> String?
-    def self.endpoint: (URI::Generic) -> Endpoint?
     def self.split_host_port: (String) -> [String, String]?
     def self.ip: (String) -> IPAddr?
     module Punycode

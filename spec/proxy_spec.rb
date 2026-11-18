@@ -4,7 +4,8 @@ require "pp"
 require "connectrpc/proxy"
 
 # Cases ported from golang.org/x/net/http/httpproxy proxy_test.go, adjusted to
-# the Go 1.27 vendored precedence (uppercase variables first).
+# the Go 1.27 vendored precedence (uppercase variables first). Examples that
+# differ from Go on purpose say so.
 RSpec.describe ConnectRPC::Proxy do
   def resolve(env, url = "http://example.com")
     endpoint = described_class.resolver(:environment, env).for(URI(url))
@@ -69,7 +70,9 @@ RSpec.describe ConnectRPC::Proxy do
       "[fe80::424b:c8be:1643:a1b6]" => true, "barbaz.net" => true, "www.barbaz.net" => false,
       "foobar.com" => false, "www.foobar.com" => false, "WWW.FooBar.com" => false, "foofoobar.com" => true,
       "baz.com" => true, "localhost.net" => true, "local.localhost" => true, "barbarbaz.net" => true,
-      "wildcard.io" => true, "nested.wildcard.io" => false, "awildcard.io" => true, "LOCALHOST" => false
+      "wildcard.io" => true, "nested.wildcard.io" => false, "awildcard.io" => true,
+      # Deliberate difference: Go proxies LOCALHOST.
+      "LOCALHOST" => false
     }.each do |host, proxied|
       it "#{proxied ? 'proxies' : 'bypasses'} #{host}:80" do
         env = { "HTTP_PROXY" => "proxy", "NO_PROXY" => no_proxy }
@@ -80,7 +83,10 @@ RSpec.describe ConnectRPC::Proxy do
 
     it "ignores entries with an empty host and never matches domain entries to IP hosts" do
       expect(resolve({ "HTTP_PROXY" => "proxy", "NO_PROXY" => ":1, ,," })).to eq(["http", "proxy", 80])
-      expect(resolve({ "HTTP_PROXY" => "proxy", "NO_PROXY" => "1.2.3.4.example" }, "http://1.2.3.4")).not_to be_nil
+      # Both entries are suffixes of the target as text; Go 1.27.3 proxies it.
+      %w[.3.4 3.4].each do |entry|
+        expect(resolve({ "HTTP_PROXY" => "proxy", "NO_PROXY" => entry }, "http://1.2.3.4")).to eq(["http", "proxy", 80])
+      end
     end
 
     it "treats IP-shaped entries that do not parse as domains" do
@@ -187,7 +193,11 @@ RSpec.describe ConnectRPC::Proxy do
     {
       "bad\xFF.test, good.test" => { "good.test" => false, "xn--bad-7t7s.test" => true, "other.test" => true },
       "bad\uFF20.test, good.test" => { "good.test" => false, "bad.test" => true },
-      "b\u00FCcher.pro_xy, pro_xy.test" => { "pro_xy.test" => false, "a.xn--bcher-kva.pro_xy" => true }
+      "b\u00FCcher.pro_xy, pro_xy.test" => { "pro_xy.test" => false, "a.xn--bcher-kva.pro_xy" => true },
+      # NFKC maps U+2024 and U+FE52 to ".", which would name another domain.
+      "corp\u2024example.com, good.test" => { "good.test" => false, "corp.example.com" => true,
+                                              "www.corp.example.com" => true },
+      "example\uFE52com" => { "example.com" => true, "www.example.com" => true }
     }.each do |no_proxy, targets|
       targets.each do |target, proxied|
         it "#{proxied ? 'proxies' : 'bypasses'} #{target} with NO_PROXY=#{no_proxy.inspect}" do
@@ -222,10 +232,96 @@ RSpec.describe ConnectRPC::Proxy do
       expect { resolve(env.merge("NO_PROXY" => "")) }.to raise_error(described_class::Unusable)
     end
 
-    it "goes direct when the HTTP proxy value does not parse, and ignores CGI for explicit proxies" do
-      expect(resolve({ "HTTP_PROXY" => "http://[bad", "REQUEST_METHOD" => "GET" })).to be_nil
+    it "refuses any non-empty HTTP proxy value, even an invalid one, and ignores CGI for explicit proxies" do
+      # Go 1.27.3 also refuses http://[bad, which it parses with host "http:".
+      # Deliberate difference: it goes direct for u:p%zz, which it cannot parse.
+      ["http://[bad", "http://u:p%zz@proxy.test"].each do |value|
+        expect { resolve({ "HTTP_PROXY" => value, "REQUEST_METHOD" => "GET" }) }
+          .to raise_error(described_class::Unusable) { |error| expect(error.reason).to eq(:cgi) }
+      end
       expect(described_class.resolver("http://proxy.test:1", "REQUEST_METHOD" => "GET").for(URI("http://x")).host)
         .to eq("proxy.test")
+    end
+  end
+
+  # Every value either names a valid endpoint or fails closed. "Go" names what
+  # http.ProxyFromEnvironment and the transport's dial do in Go 1.27.3; rows
+  # where it differs are deliberate.
+  describe "proxy value parsing" do
+    invalid = {
+      "http://u:p w@proxy:3128" => "Go dials http:80",
+      "http://u:p\"w@proxy:3128" => "Go dials http:80",
+      "http://u:p|w@proxy:3128" => "Go dials http:80",
+      "http://u:p^w@proxy:3128" => "Go dials http:80",
+      "http://u:p{w}@proxy:3128" => "Go dials http:80",
+      "http://u:p<w>@proxy:3128" => "Go dials http:80",
+      "http://u:p\\w@proxy:3128" => "Go dials http:80",
+      "http://u:p`w@proxy:3128" => "Go dials http:80",
+      "http://u:p[w]@proxy:3128" => "Go dials http:80",
+      "http://proxy:3128 " => "Go dials http:80",
+      "http://proxy:3128 # comment" => "Go dials http:80",
+      "http://proxy.test:3128/a b" => "Go dials proxy.test:3128",
+      "http://proxy.test:3128/#a b" => "Go dials proxy.test:3128",
+      "http://[fe80::1%25eth0]:3128" => "Go dials the scoped address",
+      "http://[bad" => "Go dials http:80",
+      "https://proxy.test:bad" => "Go dials https:80",
+      "mailto:demo:synthetic-secret?broken" => "Go dials an empty host",
+      "http://b%C3%BCcher.test:3128" => "Go dials xn--bcher-kva.test:3128",
+      "http://%70roxy.test:3128" => "Go dials http:80",
+      "http://u:p%zz@proxy.test" => "Go goes direct",
+      "http://proxy\u2024corp.example:3128" => "Go's dial fails",
+      "http://proxy\uFE52corp.example:3128" => "Go's dial fails",
+      "http://proxy\u2488corp.example:3128" => "Go's dial fails",
+      "http://proxy\u33C2corp.example:3128" => "Go's dial fails",
+      "http://" => "Go dials http:80",
+      "http://proxy.test:3128:1" => "Go dials http:80"
+    }
+    invalid.each do |value, go|
+      it "fails #{value.inspect} closed (#{go})" do
+        expect { resolve({ "HTTPS_PROXY" => value }, "https://example.com") }
+          .to raise_error(described_class::Unusable) { |error| expect(error.reason).to eq(:invalid_address) }
+        expect(resolve({ "HTTPS_PROXY" => value, "NO_PROXY" => "example.com" }, "https://example.com")).to be_nil
+        expect { described_class.resolver(value) }.to raise_error(ArgumentError, "Invalid proxy configuration")
+      end
+    end
+
+    # [scheme, host, port, user, password], the same from the environment and
+    # explicitly. Go 1.27.3 resolves each to the same proxy.
+    {
+      "http://proxy.test:3128/a|b" => ["http", "proxy.test", 3128, nil, nil],
+      "http://proxy.test:3128/?%zz" => ["http", "proxy.test", 3128, nil, nil],
+      "http://proxy.test/\u00FC" => ["http", "proxy.test", 80, nil, nil],
+      "file://localhost" => ["file", "localhost", nil, nil, nil],
+      "mailto://proxy.test" => ["mailto", "proxy.test", nil, nil, nil],
+      "http://user@proxy.test" => ["http", "proxy.test", 80, "user", nil],
+      "http://:@proxy.test" => ["http", "proxy.test", 80, "", ""],
+      "http://[::1]:3128" => ["http", "::1", 3128, nil, nil],
+      "http://[::ffff:1.2.3.4]" => ["http", "::ffff:1.2.3.4", 80, nil, nil],
+      "proxy.test:3128/path" => ["http", "proxy.test", 3128, nil, nil],
+      # Go keeps the case as written; DNS ignores it.
+      "HTTP://Proxy.Test:08080" => ["http", "proxy.test", 8080, nil, nil]
+    }.each do |value, expected|
+      it "parses #{value.inspect} as #{expected.inspect}" do
+        from_env = described_class.resolver(:environment, "HTTPS_PROXY" => value).for(URI("https://x"))
+        explicit = described_class.resolver(value).for(URI("https://x"))
+        [from_env, explicit].each do |endpoint|
+          expect(endpoint.to_h.values_at(:scheme, :host, :port, :user, :password)).to eq(expected)
+        end
+      end
+    end
+
+    it "raises only the fixed ArgumentError, without the value or a cause, for invalid explicit values" do
+      values = invalid.keys + [
+        URI::HTTP.new("http", "user:hunter2%", "proxy.test", 3128, nil, "/", nil, nil, nil),
+        URI::HTTP.new("http", "user:hunter2 x", "proxy.test", 3128, nil, "/", nil, nil, nil),
+        URI::Generic.new("mailto", nil, nil, nil, nil, nil, "demo:hunter2?broken", nil, nil),
+        "http://user:hunter2@proxy.test".encode(Encoding::UTF_16LE)
+      ]
+      values.each do |value|
+        expect { described_class.resolver(value) }.to raise_error do |error|
+          expect([error.class, error.message, error.cause]).to eq([ArgumentError, "Invalid proxy configuration", nil])
+        end
+      end
     end
   end
 

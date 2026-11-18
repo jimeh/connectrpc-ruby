@@ -7,7 +7,7 @@ module ConnectRPC
   # Chooses the HTTP proxy for one request URL, or none. Environment rules
   # follow Go net/http (golang.org/x/net/http/httpproxy as vendored by Go 1.27).
   # Internal: transports decide which proxy schemes they can use.
-  module Proxy
+  module Proxy # rubocop:disable Metrics/ModuleLength
     # A proxy for one request. The user and password are percent-decoded.
     Endpoint = Data.define(:scheme, :host, :port, :user, :password)
 
@@ -18,10 +18,17 @@ module ConnectRPC
       def pretty_print(printer) = printer.text(inspect)
     end
 
-    AUTHORITY = %r{\A([A-Za-z][A-Za-z0-9+.-]*://)([^/?#]*)(.*)\z}m
     PROXY_PORTS = { "http" => 80, "https" => 443, "socks5" => 1080, "socks5h" => 1080 }.freeze
     TARGET_PORTS = { "http" => 80, "https" => 443 }.freeze
     LDH_HOST = /\A[a-z0-9.-]+\z/
+    SCHEME = /\A[A-Za-z][A-Za-z0-9+.-]*\z/
+    # RFC 3986 userinfo, plus the "@" that the last-"@" split leaves in it.
+    USERINFO = /\A(?:[A-Za-z0-9\-._~!$&'()*+,;=:@]|%\h\h)*\z/
+    ASCII_HOST = /\A[A-Za-z0-9._~-]+\z/
+    # ASCII control characters and whitespace, which a proxy value never needs.
+    CONTROL = /[\x00-\x20\x7F]/
+    # Go's IDNA maps these to "."; NFKC leaves U+3002 as it is.
+    FULL_STOPS = "\u3002\uFF0E\uFF61"
 
     # A proxy that this call must not use. The reason is a fixed symbol and the
     # message never includes the proxy value.
@@ -45,44 +52,87 @@ module ConnectRPC
       end
     end
 
+    # A URI's components are not trusted, as URI::HTTP.new skips their checks,
+    # so it is parsed as text; the host[:port] shorthand is for Strings only.
     def self.explicit(option)
-      uri = option.is_a?(String) ? parse(option) : option
-      endpoint = uri && endpoint(uri)
+      value = option.to_s
+      endpoint = parse(value) if option.is_a?(String) || value.include?("://")
       raise ArgumentError, "Invalid proxy configuration" unless endpoint
 
       endpoint
     end
     private_class_method :explicit
 
-    # Go retries a value without a scheme or host as http://value. A value
-    # that still fails to parse is unusable.
-    def self.parse(value)
+    # Parses scheme://userinfo@host:port[tail], or Go's host[:port] shorthand
+    # for http, into an Endpoint. Nil for anything else: unlike Go, which goes
+    # direct for some malformed values and dials odd ones, every value either
+    # names a valid endpoint or fails closed. The tail after the authority
+    # cannot change the endpoint and is ignored. Userinfo ends at the last "@"
+    # (go.dev/issue/22655) and the authority is split before a host is mapped.
+    def self.parse(value) # rubocop:disable Metrics/AbcSize, Metrics/CyclomaticComplexity, Metrics/MethodLength, Metrics/PerceivedComplexity
       value = utf8(value)
-      return unless value
+      return if value.nil? || CONTROL.match?(value)
 
-      uri = uri(value)
-      return uri unless uri.nil? || uri.scheme.nil? || uri.host.to_s.empty?
-
-      uri("http://#{value}") || uri
-    end
-
-    # Go url.Parse splits userinfo at the last "@" (go.dev/issue/22655) and
-    # accepts a Unicode host, which Go's transport dials in ASCII form. Ruby's
-    # URI accepts neither, so encode both before parsing. The authority is
-    # split before the host is mapped, and a mapped host has no delimiters.
-    def self.uri(value)
-      if (match = AUTHORITY.match(value))
-        userinfo, at, host_port = match[2].to_s.rpartition("@")
-        host, colon, port = host_port.partition(":")
-        host = ascii_host(host)
-        return unless host
-
-        value = "#{match[1]}#{userinfo.gsub('@', '%40')}#{at}#{host}#{colon}#{port}#{match[3]}"
+      scheme, separator, rest = value.partition("://")
+      if separator.empty?
+        scheme = "http"
+        rest = value
       end
-      URI.parse(value)
-    rescue URI::InvalidURIError
+      return unless SCHEME.match?(scheme)
+
+      scheme = scheme.downcase.freeze
+      userinfo, at, authority = rest[%r{\A[^/?#]*}].to_s.rpartition("@")
+      user, password = credentials(userinfo) unless at.empty?
+      return if !at.empty? && user.nil?
+
+      host, port = host_port(authority, scheme)
+      Endpoint.new(scheme: scheme, host: host, port: port, user: user, password: password) if host
+    rescue StandardError
       nil
     end
+
+    # [user, password] percent-decoded, never form-decoded; the password is
+    # nil without a ":". Nil for characters outside RFC 3986 userinfo, a stray
+    # "%" or invalid UTF-8.
+    def self.credentials(userinfo)
+      return unless USERINFO.match?(userinfo)
+
+      user, colon, password = userinfo.partition(":")
+      user = decode(user)
+      return [user, nil] if user && colon.empty?
+
+      password = decode(password)
+      [user, password] if user && password
+    end
+
+    def self.decode(part)
+      decoded = part.b.gsub(/%\h\h/) { |escape| escape.delete_prefix("%").hex.chr }.force_encoding(Encoding::UTF_8)
+      decoded.freeze if decoded.valid_encoding?
+    end
+
+    # [host, port] for a bracketed IPv6 address without a zone or a name, and
+    # an optional port in 1..65535, else nil. A missing port takes the scheme's
+    # default; a scheme without one keeps nil and transports reject it.
+    def self.host_port(value, scheme) # rubocop:disable Metrics/AbcSize, Metrics/CyclomaticComplexity, Metrics/MethodLength, Metrics/PerceivedComplexity
+      if value.start_with?("[")
+        address, close, port = value[1..].to_s.partition("]")
+        return unless !close.empty? && address.include?(":") && ip(address)
+        return unless port.empty? || port.start_with?(":")
+
+        host = address.downcase
+        port = port[1..].to_s
+      else
+        host, _, port = value.partition(":")
+        return if host.empty? || host.include?("%") || port.include?(":")
+
+        host = host.ascii_only? ? (host.downcase if ASCII_HOST.match?(host)) : ascii_host(host)
+        return unless host
+      end
+      return [host.freeze, PROXY_PORTS[scheme]] if port.empty?
+
+      [host.freeze, port.to_i] if /\A[0-9]+\z/.match?(port) && port.to_i.between?(1, 65_535)
+    end
+    private_class_method :credentials, :decode, :host_port
 
     # A valid UTF-8 copy of the value's bytes, or nil. Go handles bytes in any
     # encoding, so an invalidly encoded value is unparseable, not an exception.
@@ -92,34 +142,22 @@ module ConnectRPC
     end
 
     # Maps a non-ASCII host as Go's idna.Lookup.ToASCII does for ordinary
-    # names: NFKC, lowercase, ideographic full stops as dots, then Punycode
-    # for each non-ASCII label. Nil when the result is not a letter, digit,
-    # hyphen and dot name, which Go's STD3 rules reject, so a mapping never
-    # yields a delimiter such as "@", "/" or ":". UTS #46's other validity
-    # checks and mappings are not applied.
+    # names: ideographic full stops as dots, NFKC, lowercase, then Punycode
+    # for each non-ASCII label. Nil when NFKC adds a dot (U+2024 or U+2488,
+    # for example), which would name a different host, or when the result is
+    # not a letter, digit, hyphen and dot name, which Go's STD3 rules reject,
+    # so a mapping never yields a delimiter such as "@", "/" or ":". UTS #46's
+    # other validity checks and mappings are not applied.
     def self.ascii_host(host)
       return host if host.ascii_only?
 
-      labels = host.unicode_normalize(:nfkc).downcase.tr("\u3002", ".").split(".", -1)
+      dotted = host.tr(FULL_STOPS, ".")
+      normalized = dotted.unicode_normalize(:nfkc).downcase
+      return if normalized.count(".") > dotted.count(".")
+
+      labels = normalized.split(".", -1)
       mapped = labels.map { |label| label.ascii_only? ? label : "xn--#{Punycode.encode(label)}" }.join(".")
       mapped if LDH_HOST.match?(mapped)
-    end
-
-    # Nil unless the URL names a scheme, a host and any port in 1..65535. A
-    # scheme without a default port keeps a nil port; transports reject it.
-    def self.endpoint(uri) # rubocop:disable Metrics/AbcSize, Metrics/CyclomaticComplexity, Metrics/PerceivedComplexity
-      scheme = uri.scheme&.downcase
-      host = uri.hostname
-      return unless scheme && host && !host.empty?
-
-      port = uri.port || PROXY_PORTS[scheme]
-      return if port && !port.between?(1, 65_535)
-
-      user = uri.user
-      password = uri.password
-      Endpoint.new(scheme: scheme.freeze, host: host.dup.freeze, port: port,
-                   user: user && URI.decode_uri_component(user).freeze,
-                   password: password && URI.decode_uri_component(password).freeze)
     end
 
     # Go net.SplitHostPort, returning nil where Go returns an error.
@@ -259,15 +297,12 @@ module ConnectRPC
 
       private
 
-      # Parses a value once, as Go does: an Endpoint, :unusable for a value Go
-      # would parse but not dial, or nil for none. Go's url.Parse accepts any
-      # non-ASCII bytes in a host and its dial then fails, so such a value is
-      # unusable rather than ignored.
+      # Parses a value once, as Go does: an Endpoint, :unusable for any value
+      # that is not a valid endpoint, or nil for none.
       def proxy(value)
-        uri = value && Proxy.parse(value)
-        return Proxy.endpoint(uri) || :unusable if uri
+        return unless value
 
-        :unusable if value && !value.b.ascii_only?
+        Proxy.parse(value) || :unusable
       end
 
       def value(env, *names)

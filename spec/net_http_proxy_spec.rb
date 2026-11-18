@@ -275,6 +275,28 @@ RSpec.describe "NetHTTP proxies" do
         end
       end
     end
+
+    # Net::HTTP quotes a bad status line in its error message.
+    it "keeps a forward proxy's malformed status line out of errors and lifecycle failures" do
+      recorded = failures.new([])
+      proxy_url = nil
+      forward = lambda do |client|
+        read_request(client)
+        client.write("HTTX/1.1 200 #{proxy_url}\r\n\r\n")
+      end
+      with_peer(forward) do |url, listener|
+        proxy_url = url.sub("http://", "http://user:hunter2@")
+        request = transport_request("http://#{TLSPeer::TARGET}/svc")
+        request.lifecycle = recorded
+        error = failure(ConnectRPC::Transports::NetHTTP.new(proxy: proxy_url), request)
+        expect([error.code, error.message]).to eq(["unavailable", "HTTP transport failed: malformed response"])
+        expect(error.cause).to be_a(ConnectRPC::Transports::NetHTTP::ProxyFailure)
+        expect(recorded.errors.size).to eq(1)
+        texts = [error.cause.message, error.cause.inspect, *recorded.errors.flat_map { [it.message, it.inspect] }]
+        expect(texts.join).not_to include("hunter2", "user", URI(url).authority)
+        expect(listener.wait_readable(0)).to be_nil
+      end
+    end
   end
 
   describe "unusable environment proxies" do
@@ -284,6 +306,8 @@ RSpec.describe "NetHTTP proxies" do
       "an invalid port" => [{ "HTTPS_PROXY" => "http://127.0.0.1:0" }, "https", "invalid proxy address"],
       "a host Go's IDNA rejects" => [{ "HTTPS_PROXY" => "http://proxy\uFF20127.0.0.1:9" }, "https",
                                      "invalid proxy address"],
+      "a value with a trailing space" => [{ "HTTPS_PROXY" => "http://127.0.0.1:9 " }, "https", "invalid proxy address"],
+      "a mailto URL" => [{ "HTTPS_PROXY" => "mailto://proxy.test" }, "https", "unsupported proxy scheme"],
       "a CGI request" => [{ "HTTP_PROXY" => "http://127.0.0.1:9", "REQUEST_METHOD" => "POST" }, "http",
                           "proxy refused in CGI environment"]
     }.each do |label, (env, scheme, reason)|
@@ -310,6 +334,8 @@ RSpec.describe "NetHTTP proxies" do
       "socks5://user:secret@proxy.test:1080" => "Unsupported proxy scheme",
       "https://user:secret@proxy.test" => "Unsupported proxy scheme",
       "http://user:secret@proxy.test:99999" => "Invalid proxy configuration",
+      "mailto:demo:secret?broken" => "Invalid proxy configuration",
+      "file://localhost" => "Unsupported proxy scheme",
       URI("http://user:secret@:8080") => "Invalid proxy configuration",
       42 => "Invalid proxy configuration"
     }.each do |option, message|

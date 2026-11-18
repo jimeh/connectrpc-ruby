@@ -552,12 +552,14 @@ module ConnectRPC
       def perform_call(request) # rubocop:disable Metrics/MethodLength, Metrics/AbcSize
         deadline = request.deadline
         outgoing = prepare_request(request)
-        http = connection(request.url, deadline, proxy_for(request.url))
+        proxy = proxy_for(request.url)
+        http = connection(request.url, deadline, proxy)
         http.cancellation = request.cancellation
         with_connection(http, deadline, request.cancellation) { exchange(http, request, outgoing) }
       rescue Net::OpenTimeout, Net::ReadTimeout, Net::WriteTimeout,
              SocketError, IOError, SystemCallError, Net::HTTPBadResponse, Net::HTTPHeaderSyntaxError,
              OpenSSL::SSL::SSLError, ProxyFailure, Proxy::Unusable => e
+        e = forwarded_failure(e) if proxy && request.url.scheme == "http"
         request.lifecycle&.record_failure(e)
         check_request!(request)
         reason = failure_reason(e)
@@ -579,6 +581,16 @@ module ConnectRPC
           verification.any? { |text| error.message.include?(text) } ? "TLS verification failed" : "TLS error"
         when EOFError, Errno::ECONNRESET, Errno::EPIPE, Errno::ECONNABORTED then "connection closed"
         when Net::HTTPBadResponse, Net::HTTPHeaderSyntaxError then "malformed response"
+        end
+      end
+
+      # A forward proxy writes the response head of an http:// call, and the
+      # parser's messages quote it, so they may carry the proxy's URL or
+      # credentials.
+      def forwarded_failure(error)
+        case error
+        when Net::HTTPBadResponse, Net::HTTPHeaderSyntaxError then ProxyFailure.new("malformed response")
+        else error
         end
       end
 
