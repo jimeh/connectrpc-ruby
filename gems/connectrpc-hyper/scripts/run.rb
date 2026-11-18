@@ -2,6 +2,7 @@
 
 require "rbconfig"
 require_relative "../../../scripts/dependency_floors"
+require_relative "bindgen"
 
 root = File.expand_path("../../..", __dir__)
 package = File.join(root, "gems/connectrpc-hyper")
@@ -16,13 +17,7 @@ environment = {
   "CONNECTRPC_HYPER_LIB_DIR" => "lib/connectrpc/hyper/#{RUBY_VERSION[/\A\d+\.\d+/]}",
   "RB_SYS_CARGO_TARGET_DIR" => File.join(root, "vendor/hyper/target", RUBY_VERSION)
 }
-# Some distribution libclang packages omit clang's resource headers, which
-# rb-sys's bindgen needs; the C compiler's own include directory supplies them.
-if RbConfig::CONFIG["host_os"].include?("linux") && !ENV.key?("BINDGEN_EXTRA_CLANG_ARGS") &&
-   Dir.glob("/usr/lib/llvm-*/lib/clang/*/include/stddef.h").empty?
-  include_dir = IO.popen(%w[cc -print-file-name=include], err: File::NULL, &:read).to_s.strip
-  environment["BINDGEN_EXTRA_CLANG_ARGS"] = "-I#{include_dir}" if File.file?(File.join(include_dir, "stddef.h"))
-end
+environment.merge!(HyperBindgen.environment)
 abort "Preinstall Bundler 4.0.23" if Gem::Specification.find_all_by_name("bundler", "= 4.0.23").empty?
 command = ARGV.shift
 arguments = case command
@@ -31,12 +26,12 @@ arguments = case command
             when "floors" then ["exec", "ruby", File.join(root, "scripts/dependency_floors.rb")]
             when "test" then ["exec", "rspec", *ARGV]
             when "check" then ["exec", "ruby", "scripts/check.rb"]
-            when "build", "package", "interop" then ["exec", "ruby", "scripts/#{command}.rb", *ARGV]
-            else abort "Usage: run.rb install|setup|floors|test|check|build|package|interop"
+            when "build", "package", "interop", "cross" then ["exec", "ruby", "scripts/#{command}.rb", *ARGV]
+            else abort "Usage: run.rb install|setup|floors|test|check|build|package|interop|cross"
             end
 puts "Hyper package; Ruby #{RUBY_VERSION}; Bundler 4.0.23; Gemfile #{environment.fetch('BUNDLE_GEMFILE')}"
 $stdout.flush
-if command == "setup"
+if %w[setup cross].include?(command)
   system(environment, RbConfig.ruby, "-S", "bundle", "_4.0.23_", "install", chdir: package, exception: true)
 end
 exec(environment, RbConfig.ruby, "-S", "bundle", "_4.0.23_", *arguments, chdir: package)

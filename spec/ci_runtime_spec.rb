@@ -67,10 +67,13 @@ RSpec.describe "CI runtime boundary" do
     end
   end
 
-  def go_guard(mode, context_overrides = {}, directory: mode == "interop" ? "interop" : "browser/reference",
-               outside_cache: false)
-    module_dir = mode == "interop" ? "interop" : "browser/reference"
-    cache_dir = mode == "interop" ? "interop" : "browser/go"
+  def go_modes
+    { "interop" => %w[interop interop], "browser-reference" => %w[browser/reference browser/go],
+      "hyper" => %w[gems/connectrpc-hyper/interop hyper/go] }
+  end
+
+  def go_guard(mode, context_overrides = {}, directory: go_modes.fetch(mode).first, outside_cache: false)
+    module_dir, cache_dir = go_modes.fetch(mode)
     context = {
       "GOVERSION" => "go1.27.3", "GOROOT" => File.dirname(ruby),
       "GOMODCACHE" => File.join(root, "vendor", cache_dir, "mod"),
@@ -103,7 +106,7 @@ RSpec.describe "CI runtime boundary" do
     end
   end
 
-  %w[interop browser-reference].each do |mode|
+  %w[interop browser-reference hyper].each do |mode|
     it "validates the finite #{mode} Go module and cache context without changing runtime ownership" do
       output, error, status = go_guard(mode)
       expect(status.success?).to be(true), error
@@ -133,9 +136,14 @@ end
 
 RSpec.describe "CI check mapping" do
   let(:workflow) { YAML.load_file(File.expand_path("../.github/workflows/ci.yml", __dir__)) }
-  let(:jobs) { workflow.fetch("jobs") }
+  let(:all_jobs) { workflow.fetch("jobs") }
+  # The hyper transport's jobs, including cross-built artifacts and their
+  # dependent smoke and Windows jobs, have their own mapping below.
+  let(:hyper_jobs) { %w[hyper hyper_msrv hyper_cross hyper_smoke hyper_smoke_musl hyper_smoke_darwin hyper_windows] }
+  let(:jobs) { all_jobs.except(*hyper_jobs) }
 
   it "preserves all 28 existing checks and adds browser, metrics, health, Sentry and lowest-allowed leaves" do
+    expect(all_jobs.keys).to include(*hyper_jobs)
     core = %w[static specs package interop conformance]
     backend = %w[async_specs async_interop]
     falcon = %w[falcon_specs falcon_interop]
@@ -161,8 +169,8 @@ RSpec.describe "CI check mapping" do
     expect(count.call(metrics)).to eq(4)
     expect(count.call(["health"])).to eq(2)
     expect(count.call(["sentry"])).to eq(2)
-    expect(count.call(["floors"])).to eq(9)
-    expect(count.call(jobs.keys - ["examples"])).to eq(47)
+    expect(count.call(["floors"])).to eq(10)
+    expect(count.call(jobs.keys - ["examples"])).to eq(48)
     jobs.each_value { |job| expect(job).not_to have_key("needs") }
     jobs.except("static", "rails", "examples", "floors").each_value do |job|
       expect(job.dig("strategy", "fail-fast")).to be(false)
@@ -182,8 +190,9 @@ RSpec.describe "CI check mapping" do
     expect(commands.fetch("browser_grpc_web")[1]).to include("mise run async:conformance:web",
                                                              "mise run falcon:conformance:web",
                                                              "mise run rack:conformance:web")
-    expect(commands.fetch("rbs").first(3)).to eq(["mise run rbs:cache-platform", "mise run rbs:check",
-                                                  "mise run rbs:package"])
+    expect(commands.fetch("rbs").first).to include("libclang-dev")
+    expect(commands.fetch("rbs").drop(1).first(3)).to eq(["mise run rbs:cache-platform", "mise run rbs:check",
+                                                          "mise run rbs:package"])
   end
 
   it "runs daily and resolves fresh bundles without frozen mode" do
@@ -200,7 +209,7 @@ RSpec.describe "CI check mapping" do
     floors = jobs.fetch("floors")
     expect(floors.dig("strategy", "fail-fast")).to be(false)
     expect(floors.dig("strategy", "matrix", "leaf"))
-      .to eq(%w[async falcon rack rails otel prometheus yabeda health sentry])
+      .to eq(%w[async falcon rack rails otel prometheus yabeda health sentry hyper])
     expect(floors.fetch("env")).to include("CI_EXPECTED_RUBY_VERSION" => "3.4.12", "BUNDLE_COOLDOWN" => "3")
     ruby = floors.fetch("steps").find { |step| step.fetch("uses", "").start_with?("ruby/setup-ruby@") }
     expect(ruby.fetch("with")).to include("ruby-version" => "3.4.12", "bundler-cache" => false)
@@ -219,8 +228,8 @@ RSpec.describe "CI check mapping" do
     expect(tasks.fetch("floors:rails").fetch("env")).to include("RAILS_LANE=8.0")
   end
 
-  it "runs a floors leaf for every released package with third-party runtime dependencies" do
-    expected = ReleaseTrain::NAMES.reject { |name| DependencyFloors.floors([name]).empty? }.map do |name|
+  it "runs a floors leaf for every versioned package with third-party runtime dependencies" do
+    expected = ReleaseTrain::VERSIONED.reject { |name| DependencyFloors.floors([name]).empty? }.map do |name|
       name == "connectrpc-on-rails" ? "rails" : name.delete_prefix("connectrpc-")
     end
     expect(jobs.dig("floors", "strategy", "matrix", "leaf")).to match_array(expected)
@@ -323,7 +332,7 @@ RSpec.describe "CI check mapping" do
     expect(settings.fetch("path").lines.map(&:strip)).to eq(
       %w[vendor/bundle vendor/rbs/bundle vendor/rack/bundle vendor/testing/bundle
          vendor/async/bundle vendor/falcon/bundle vendor/otel/bundle vendor/prometheus/bundle
-         vendor/yabeda/bundle vendor/health/bundle vendor/sentry/bundle]
+         vendor/yabeda/bundle vendor/health/bundle vendor/sentry/bundle vendor/hyper/bundle]
     )
     expect(settings).not_to have_key("restore-keys")
     expect(settings.fetch("key")).to include("rbs-bundles-v1", "runner.os", "runner.arch",
@@ -444,7 +453,7 @@ RSpec.describe "Pins-lifted canary workflow" do
     expect(workflow.fetch("jobs").keys).to eq(["canary"])
     expect(job.fetch("timeout-minutes")).to be_between(1, 90)
     expect(job.dig("strategy", "fail-fast")).to be(false)
-    expect(job.dig("strategy", "matrix", "leaf")).to eq(%w[async falcon])
+    expect(job.dig("strategy", "matrix", "leaf")).to eq(%w[async falcon hyper])
     expect(job.fetch("env")).to eq("CI_EXPECTED_RUBY_VERSION" => "3.4.12", "BUNDLE_COOLDOWN" => "3")
     actions = ->(steps) { steps.filter_map { |step| step.slice("uses", "with") if step["uses"] } }
     expect(actions.call(job.fetch("steps"))).to eq(actions.call(ci.dig("jobs", "floors", "steps")))
@@ -455,8 +464,8 @@ RSpec.describe "Pins-lifted canary workflow" do
     expect(job.fetch("steps").last.fetch("run")).to include("git status --porcelain --untracked-files=all")
   end
 
-  it "maps each leaf to a fresh canary-mode task that never builds packages, and aggregates both" do
-    job.dig("strategy", "matrix", "leaf").each do |leaf|
+  it "maps each gem leaf to a fresh canary-mode task that never builds packages, and aggregates every leaf" do
+    (job.dig("strategy", "matrix", "leaf") - ["hyper"]).each do |leaf|
       task = tasks.fetch("canary:#{leaf}")
       expect(task.fetch("description")).to start_with("Non-gating pins-lifted canary")
       expect(task.fetch("depends")).to eq(["#{leaf}:tools"])
@@ -465,7 +474,107 @@ RSpec.describe "Pins-lifted canary workflow" do
       expect(task.fetch("run")).to eq(["rm -f gems/connectrpc-#{leaf}/Gemfile.canary.lock", "#{launcher} setup",
                                        "#{launcher} canary"])
     end
-    expect(tasks.fetch("canary").fetch("depends")).to contain_exactly("canary:async", "canary:falcon")
+    expect(tasks.fetch("canary").fetch("depends")).to contain_exactly("canary:async", "canary:falcon", "canary:hyper")
+  end
+
+  # The tracked tree must stay clean, so the crate update happens in a copy.
+  it "updates hyper's locked crates only in a temporary copy, then rebuilds and runs the specs" do
+    task = tasks.fetch("canary:hyper")
+    expect(task.fetch("description")).to start_with("Non-gating newest-crates canary")
+    expect(task.fetch("depends")).to eq(["hyper:tools", "hyper:peer"])
+    expect(task.fetch("tools")).to eq("rust" => "1.98.0")
+    expect(task.fetch("run")).to eq(["ruby gems/connectrpc-hyper/scripts/canary.rb"])
+    script = File.read(File.expand_path("../gems/connectrpc-hyper/scripts/canary.rb", __dir__))
+    expect(script).to include('File.join(root, "vendor/hyper/canary/tree")', '"cargo", "update"')
+    hyper_steps = job.fetch("steps").select { |step| step["if"] == "matrix.leaf == 'hyper'" }
+    expect(hyper_steps.map { |step| step["uses"]&.split("@")&.first || step.fetch("run")[/libclang-dev/] })
+      .to eq(%w[libclang-dev actions/setup-go])
+  end
+end
+
+RSpec.describe "Hyper CI mapping" do
+  let(:root) { File.expand_path("..", __dir__) }
+  let(:jobs) { YAML.load_file(File.join(root, ".github/workflows/ci.yml")).fetch("jobs") }
+  let(:commands) { jobs.transform_values { |job| job.fetch("steps").filter_map { |step| step["run"] } } }
+  let(:hyper_env) do
+    { "BUNDLE_GEMFILE" => "${{ github.workspace }}/gems/connectrpc-hyper/Gemfile",
+      "BUNDLE_PATH" => "${{ github.workspace }}/vendor/hyper/bundle",
+      "BUNDLE_USER_HOME" => "${{ github.workspace }}/vendor/hyper/bundler", "BUNDLE_COOLDOWN" => "3" }
+  end
+
+  def step(job, action) = jobs.fetch(job).fetch("steps").find { |entry| entry.fetch("uses", "").start_with?(action) }
+
+  it "verifies the gem on both Rubies with action-owned Go, libclang and the independent bundle" do
+    job = jobs.fetch("hyper")
+    expect(job.dig("strategy", "matrix", "ruby")).to eq(%w[3.4.12 4.0.9])
+    expect(job.fetch("env")).to include(hyper_env)
+    expect(job.fetch("env")).to include("GOMODCACHE" => "${{ github.workspace }}/vendor/hyper/go/mod",
+                                        "GOCACHE" => "${{ github.workspace }}/vendor/hyper/go/build")
+    expect(step("hyper", "actions/setup-go@").fetch("with"))
+      .to include("go-version" => "1.27.3", "cache-dependency-path" => "gems/connectrpc-hyper/interop/go.sum")
+    expect(commands.fetch("hyper").first).to include("libclang-dev")
+    expect(commands.fetch("hyper")[1]).to eq("mise run hyper:verify")
+    expect(commands.fetch("hyper_msrv")).to include("mise run hyper:msrv")
+    %w[floors rbs].each { |name| expect(commands.fetch(name).join("\n")).to include("libclang-dev") }
+  end
+
+  it "builds every Rakefile platform gem and the source gem, uploaded under one name each" do
+    require_relative "../gems/connectrpc-hyper/scripts/platforms"
+    job = jobs.fetch("hyper_cross")
+    expect(job.dig("strategy", "matrix", "platform")).to eq([*HyperPlatforms::NATIVE, "ruby"])
+    expect(job.fetch("env")).to include(hyper_env)
+    cross = job.fetch("steps").find { |entry| entry["run"] == "mise run hyper:cross" }
+    expect(cross.fetch("env")).to eq("PLATFORM" => "${{ matrix.platform }}")
+    upload = step("hyper_cross", "actions/upload-artifact@").fetch("with")
+    expect(upload).to include("name" => "connectrpc-hyper-${{ matrix.platform }}", "if-no-files-found" => "error")
+  end
+
+  it "smokes the Linux gems on their own architecture and libc, and macOS and Windows without gating" do
+    %w[hyper_smoke hyper_smoke_musl hyper_smoke_darwin hyper_windows].each do |name|
+      expect(jobs.fetch(name).fetch("needs")).to eq("hyper_cross")
+      download = step(name, "actions/download-artifact@")
+      expect(download.fetch("uses")).to eq("actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333")
+      expect(download.dig("with", "name")).to start_with("connectrpc-hyper-")
+      expect(commands.fetch(name).join("\n")).to include("scripts/install_smoke.rb")
+      expect(jobs.fetch(name).fetch("steps").last.fetch("run")).to include("git status --porcelain")
+    end
+    smoke = jobs.dig("hyper_smoke", "strategy", "matrix", "include").map do |entry|
+      entry.values_at("platform", "runner")
+    end
+    expect(smoke.tally).to eq(%w[x86_64-linux ubuntu-24.04] => 2, %w[aarch64-linux ubuntu-24.04-arm] => 2)
+    musl = jobs.dig("hyper_smoke_musl", "strategy", "matrix", "include").map do |entry|
+      entry.values_at("platform", "runner", "image")
+    end
+    expect(musl).to contain_exactly(%w[x86_64-linux-musl ubuntu-24.04 ruby:3.4-alpine],
+                                    %w[x86_64-linux-musl ubuntu-24.04 ruby:4.0-alpine],
+                                    %w[aarch64-linux-musl ubuntu-24.04-arm ruby:3.4-alpine],
+                                    %w[aarch64-linux-musl ubuntu-24.04-arm ruby:4.0-alpine])
+    %w[hyper_smoke_darwin hyper_windows].each do |name|
+      expect(jobs.fetch(name).fetch("continue-on-error")).to be(true)
+    end
+    %w[hyper hyper_msrv hyper_cross hyper_smoke hyper_smoke_musl].each do |name|
+      expect(jobs.fetch(name)).not_to have_key("continue-on-error")
+    end
+    expect(jobs.dig("hyper_smoke_darwin", "runs-on")).to eq("macos-15")
+    windows = commands.fetch("hyper_windows").join("\n")
+    expect(windows).to include("scripts/use_artifact.rb", "--tag \"~fork\"", "--tag \"~dns_shim\"",
+                               "--tag interop")
+  end
+
+  it "keeps the hyper tool and peer contexts aligned between local and CI tasks" do
+    local, ci = %w[hyper:tools hyper:peer].map do |name|
+      [nil, "ci"].map do |mode|
+        output, error, status = Open3.capture3({ "MISE_ENV" => mode }, "mise", "tasks", "info", name, "--json")
+        expect(status.success?).to be(true), error
+        JSON.parse(output)
+      end
+    end.transpose
+    local.zip(ci).each do |local_task, ci_task|
+      %w[tools env dir depends depends_post].each { |key| expect(ci_task.fetch(key)).to eq(local_task.fetch(key)) }
+    end
+    expect(ci.last.fetch("run").first).to eq("ruby {{config_root}}/scripts/ci_runtime.rb hyper")
+    expect(ci.last.fetch("run").drop(1)).to eq(local.last.fetch("run").drop(1))
+    expect(local.last.fetch("run").first).to eq("mise install --locked go@1.27.3")
   end
 end
 

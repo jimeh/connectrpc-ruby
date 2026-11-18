@@ -3,7 +3,8 @@ name: Pins-lifted canary
 # Non-gating: never runs on pull requests or pushes. Resolves the remaining
 # third-party patch pins at their newest releases and runs the Async and Falcon
 # upstream contract specs and suites, so an upstream release that breaks a
-# contract shows up here before anyone bumps a pin. See docs/ci.md.
+# contract shows up here before anyone bumps a pin. The hyper leaf does the same
+# for the committed Cargo.lock with `cargo update`. See docs/ci.md.
 on:
   schedule:
     - cron: "17 5 * * *"
@@ -32,7 +33,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        leaf: [async, falcon]
+        leaf: [async, falcon, hyper]
     env:
       CI_EXPECTED_RUBY_VERSION: "3.4.12"
       BUNDLE_COOLDOWN: "3"
@@ -40,6 +41,17 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      # The hyper leaf runs `cargo update` in a temporary copy, compiles with the
+      # pinned Rust from hyper:tools and builds the Go peer.
+      - name: Install libclang and a C compiler
+        if: matrix.leaf == 'hyper'
+        run: sudo apt-get update && sudo apt-get install --yes --no-install-recommends libclang-dev clang
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        if: matrix.leaf == 'hyper'
+        with:
+          go-version: "1.27.3"
+          check-latest: false
+          cache: false
       # The canary task generates its wrapper Gemfile, so it installs the bundle itself.
       - uses: ruby/setup-ruby@7f797815d8adceb1c412e7abefdd1ab4abc47a5f # v1.335.0
         with:

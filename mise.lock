@@ -102,6 +102,11 @@ checksum = "sha256:5e5d85ad93b0adcccbad47733680f4892bd0078e3342437f7babce01c1872
 url = "https://cache.ruby-lang.org/pub/ruby/3.4/ruby-3.4.12.tar.gz"
 
 [[tools.rust]]
+version = "1.85.0"
+backend = "core:rust"
+specifiers = ["1.85.0"]
+
+[[tools.rust]]
 version = "1.98.0"
 backend = "core:rust"
 specifiers = ["1.98.0"]

@@ -8,7 +8,11 @@ class ReleaseTrain
   NAMES = %w[connectrpc connectrpc-rack connectrpc-async connectrpc-testing connectrpc-otel
              connectrpc-on-rails connectrpc-falcon connectrpc-prometheus connectrpc-yabeda
              connectrpc-health connectrpc-sentry].freeze
-  VERSION_FILES = NAMES.to_h do |name|
+  # The published set above plus packages that follow the train's version but
+  # are not yet built or published by the candidate and publisher. Version
+  # files, version checks and the Release Please updater inventory use this set.
+  VERSIONED = (NAMES + %w[connectrpc-hyper]).freeze
+  VERSION_FILES = VERSIONED.to_h do |name|
     file = if name == "connectrpc"
              "lib/connectrpc/version.rb"
            else
@@ -20,7 +24,8 @@ class ReleaseTrain
               gems/connectrpc-on-rails/README.md gems/connectrpc-async/README.md gems/connectrpc-falcon/README.md
               gems/connectrpc-testing/README.md gems/connectrpc-otel/README.md
               gems/connectrpc-prometheus/README.md gems/connectrpc-yabeda/README.md
-              gems/connectrpc-health/README.md gems/connectrpc-sentry/README.md].freeze
+              gems/connectrpc-health/README.md gems/connectrpc-sentry/README.md
+              gems/connectrpc-hyper/README.md].freeze
   attr_reader :root
 
   def initialize(root = File.expand_path("..", __dir__))
@@ -43,13 +48,14 @@ class ReleaseTrain
   end
 
   def directory(name)
-    raise "Unknown release package #{name}" unless NAMES.include?(name)
+    raise "Unknown release package #{name}" unless VERSIONED.include?(name)
 
     name == "connectrpc" ? root : File.join(root, "gems", name)
   end
 
-  def specifications
-    NAMES.map do |name|
+  # Defaults to the published set, which the candidate and publisher build.
+  def specifications(names = NAMES)
+    names.map do |name|
       Dir.chdir(directory(name)) do
         spec = Gem::Specification.load(File.join(directory(name), "#{name}.gemspec"))
         raise "Cannot load #{name}.gemspec" unless spec
@@ -60,12 +66,12 @@ class ReleaseTrain
   end
 
   def check_versions! # rubocop:disable Metrics/AbcSize, Metrics/CyclomaticComplexity
-    specifications.each do |spec|
+    specifications(VERSIONED).each do |spec|
       raise "Version mismatch: #{spec.name} #{spec.version}, expected #{version}" unless spec.version.to_s == version
       raise "Push host changed: #{spec.name}" unless spec.metadata["allowed_push_host"] == "https://rubygems.org"
       raise "MFA requirement lost: #{spec.name}" unless spec.metadata["rubygems_mfa_required"] == "true"
 
-      spec.runtime_dependencies.select { |dep| NAMES.include?(dep.name) }.each do |dependency|
+      spec.runtime_dependencies.select { |dep| VERSIONED.include?(dep.name) }.each do |dependency|
         next if dependency.requirement.to_s == requirement
 
         raise "Local dependency policy changed: #{spec.name} -> #{dependency} (expected #{requirement})"

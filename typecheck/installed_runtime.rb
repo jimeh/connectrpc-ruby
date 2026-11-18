@@ -2,7 +2,7 @@
 
 libraries = %w[
   connectrpc/rack connectrpc/testing connectrpc/on_rails connectrpc/async connectrpc/falcon connectrpc/otel
-  connectrpc/prometheus connectrpc/yabeda connectrpc/health connectrpc/sentry
+  connectrpc/prometheus connectrpc/yabeda connectrpc/health connectrpc/sentry connectrpc/hyper
 ]
 libraries.reverse! if ARGV == ["reverse"]
 libraries.each { |name| require name }
@@ -18,7 +18,7 @@ versions = {
   "connectrpc-falcon" => ConnectRPC::Falcon::VERSION, "connectrpc-testing" => ConnectRPC::Testing::VERSION,
   "connectrpc-otel" => ConnectRPC::OTel::VERSION, "connectrpc-prometheus" => ConnectRPC::Prometheus::VERSION,
   "connectrpc-yabeda" => ConnectRPC::Yabeda::VERSION, "connectrpc-health" => ConnectRPC::Health::VERSION,
-  "connectrpc-sentry" => ConnectRPC::Sentry::VERSION
+  "connectrpc-sentry" => ConnectRPC::Sentry::VERSION, "connectrpc-hyper" => ConnectRPC::Hyper::VERSION
 }
 versions.each do |name, version|
   raise "Installed runtime version differs: #{name}" unless version == Gem.loaded_specs.fetch(name).version.to_s
@@ -192,14 +192,23 @@ Async do |task| # rubocop:disable Metrics/BlockLength
 
   release.enqueue(true)
   raise "Installed native pool reuse" unless native_client.call(method, "healthy").message == "healthy"
+
+  # The compiled hyper extension blocks its calling thread, so it calls the
+  # native host from another thread while this reactor joins it and serves.
+  hyper = ConnectRPC::Hyper::Transport.new
+  hyper_client = ConnectRPC::Client.new(base_url: origin, binding: InstalledBinding.new, transport: hyper)
+  replies = Thread.new { Array.new(2) { hyper_client.call(method, "hyper").message } }.value
+  raise "Installed hyper h2c calls failed" unless replies == %w[hyper hyper]
+  raise "Installed hyper close did not drain" unless Thread.new { hyper.close(grace: 2) }.value
 ensure
   release&.enqueue(true)
+  hyper&.close(grace: 0)
   native_transport&.close(grace: 0)
   host&.close(grace: 0)
   raise "Installed Host wait after close" unless host&.wait.nil?
 end.wait
 puts "Installed NetHTTP and native HTTP/2 cancellation: real request progress, " \
-     "foreign-thread source, socket/reset cleanup and pool reuse"
+     "foreign-thread source, socket/reset cleanup and pool reuse; hyper h2c calls from a thread"
 
 records = [ConnectRPC::Response.new, ConnectRPC::Response.new(message: "reply", metadata: ConnectRPC::Metadata.new,
                                                               trailers: ConnectRPC::Metadata.new),

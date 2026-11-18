@@ -3,7 +3,7 @@
 require_relative "harness"
 
 module APICheck
-  PACKAGES = %w[rack testing on-rails async falcon otel prometheus yabeda health sentry].freeze
+  PACKAGES = %w[rack testing on-rails async falcon otel prometheus yabeda health sentry hyper].freeze
   # Opt-in signature directories outside each package's discovered sig/.
   BRIDGES = { "on-rails" => "rbs/action_controller_8", "falcon" => "rbs/async_service_0_25",
               "health" => "rbs/grpc_health_v1" }.freeze
@@ -15,13 +15,10 @@ module APICheck
   # other connectrpc library whose declarations a package's signatures reference.
   REQUIRED_LIBRARIES = { "falcon" => %w[connectrpc-async] }.freeze
 
-  # Source-only until rbs:package provisions their native builds; values name each API consumer file.
-  SOURCE_PACKAGES = { "hyper" => "api/hyper.rb" }.freeze
-
   def self.libraries(name) = ["connectrpc", *REQUIRED_LIBRARIES.fetch(name, []), "connectrpc-#{name}"]
 
   def self.signature_directories(root)
-    [File.join(root, "sig"), *(PACKAGES + SOURCE_PACKAGES.keys).map { File.join(root, "gems/connectrpc-#{it}/sig") }]
+    [File.join(root, "sig"), *PACKAGES.map { File.join(root, "gems/connectrpc-#{it}/sig") }]
   end
 
   def self.bridge_paths(root:, installed:)
@@ -39,7 +36,6 @@ module APICheck
   def self.check(root:, working:, installed: false, tools: [RbConfig.ruby, "-S"])
     FileUtils.mkdir_p(working)
     FileUtils.cp_r(File.join(root, "typecheck/api"), working)
-    SOURCE_PACKAGES.each_value { |file| FileUtils.rm_f(File.join(working, file)) } if installed
     bridges = bridge_paths(root: root, installed: installed)
     configuration = if installed
                       (["connectrpc"] + PACKAGES.map do |name|

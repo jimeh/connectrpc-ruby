@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "rb_sys/extensiontask"
+require_relative "scripts/platforms"
 
 GEMSPEC = Gem::Specification.load(File.join(__dir__, "connectrpc-hyper.gemspec"))
 
@@ -12,6 +13,5 @@ RbSys::ExtensionTask.new("connectrpc_hyper", GEMSPEC) do |extension|
   extension.lib_dir = ENV.fetch("CONNECTRPC_HYPER_LIB_DIR", "lib/connectrpc/hyper")
   extension.ext_dir = "ext/connectrpc_hyper"
   extension.cross_compile = true
-  extension.cross_platform = %w[x86_64-linux aarch64-linux x86_64-linux-musl aarch64-linux-musl arm64-darwin
-                                x86_64-darwin x64-mingw-ucrt aarch64-mingw-ucrt]
+  extension.cross_platform = HyperPlatforms::NATIVE
 end

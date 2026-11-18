@@ -1,9 +1,12 @@
 # frozen_string_literal: true
 
+require "rubygems/package"
+require "tmpdir"
 require_relative "api_check"
 require_relative "archive"
 require_relative "collection"
 require_relative "../scripts/package_build"
+require_relative "../gems/connectrpc-hyper/scripts/bindgen"
 
 module InstalledAPI
   def self.archives(root:, output:)
@@ -36,12 +39,27 @@ module InstalledAPI
     caches.uniq { |file| File.basename(file) }
   end
 
+  # The hyper source gem compiles at install time. Its archived crate graph is
+  # fetched once, then the install builds offline with the active Rust.
+  def self.native_environment(root:, packages:)
+    archive, = packages.find { |_, spec| spec.name == "connectrpc-hyper" }
+    cargo_home = File.join(root, "vendor/hyper/cargo")
+    Dir.mktmpdir("connectrpc-rbs-hyper-") do |extracted|
+      Gem::Package.new(archive).extract_files(extracted)
+      RBSHarness.capture!(["cargo", "fetch", "--locked", "--manifest-path", File.join(extracted, "Cargo.toml")],
+                          working: extracted, environment: { "CARGO_HOME" => cargo_home })
+    end
+    { "CARGO_HOME" => cargo_home, "CARGO_NET_OFFLINE" => "true", "CARGO_TARGET_DIR" => nil,
+      "RB_SYS_CARGO_TARGET_DIR" => nil, "CONNECTRPC_HYPER_LIB_DIR" => nil, **HyperBindgen.environment }
+  end
+
   def self.check(root:, working:, output:)
     packages = archives(root: root, output: output)
     FileUtils.cp(cached_archives(root: root), working)
+    environment = native_environment(root: root, packages: packages)
     begin
       RBSHarness.capture!([RbConfig.ruby, "-S", "gem", "install", "--norc", "--local", "--no-document",
-                           *packages.map(&:first)], working: working)
+                           *packages.map(&:first)], working: working, environment: environment)
     rescue StandardError => e
       raise "Cannot resolve the installed runtime closure from cached archives: #{e.message}"
     end
@@ -99,7 +117,7 @@ module InstalledAPI
     %w[forward reverse].each do |order|
       puts RBSHarness.capture!([RbConfig.ruby, "installed_runtime.rb", order], working: working)
     end
-    puts "Eleven installed signature libraries discovered with their documented closures and in two orders; " \
+    puts "Twelve installed signature libraries discovered with their documented closures and in two orders; " \
          "API-only OTel closure"
   end
 end
