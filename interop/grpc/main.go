@@ -24,19 +24,37 @@ import (
 
 type peer struct{ pb.UnimplementedPeerServer }
 
+// trailersOnly is the request value for which Unary and ServerStream fail
+// before setting header metadata or sending a message, so grpc-go answers
+// with one HEADERS frame carrying END_STREAM. The "error" value sets header
+// metadata first, so grpc-go sends headers and trailers separately.
+const trailersOnly = "trailers-only"
+
+func richError() error {
+	rich, err := status.New(codes.NotFound, "rich peer error").WithDetails(&pb.Message{Value: "opaque", Payload: []byte{0, 255}})
+	if err != nil {
+		return err
+	}
+	return rich.Err()
+}
+
 func (*peer) Unary(ctx context.Context, request *pb.Message) (*pb.Message, error) {
+	if request.Value == trailersOnly {
+		grpc.SetTrailer(ctx, metadata.Pairs("x-tail", "done"))
+		return nil, richError()
+	}
 	grpc.SetHeader(ctx, metadata.Pairs("x-head", "ready"))
 	grpc.SetTrailer(ctx, metadata.Pairs("x-tail", "done"))
 	if request.Value == "error" {
-		rich, err := status.New(codes.NotFound, "rich peer error").WithDetails(&pb.Message{Value: "opaque", Payload: []byte{0, 255}})
-		if err != nil {
-			return nil, err
-		}
-		return nil, rich.Err()
+		return nil, richError()
 	}
 	return request, nil
 }
 func (*peer) ServerStream(request *pb.Message, stream grpc.ServerStreamingServer[pb.Message]) error {
+	if request.Value == trailersOnly {
+		stream.SetTrailer(metadata.Pairs("x-tail", "done"))
+		return richError()
+	}
 	if err := stream.SendHeader(metadata.Pairs("x-head", "ready")); err != nil {
 		return err
 	}
@@ -221,6 +239,7 @@ func main() {
 	origin := fmt.Sprintf("%s://%s", scheme, listener.Addr())
 	if command == "control" {
 		runClient(origin, mode, dir)
+		runTrailersOnly(origin, mode, dir)
 	} else {
 		fmt.Println(origin)
 		_, err = io.Copy(io.Discard, os.Stdin)

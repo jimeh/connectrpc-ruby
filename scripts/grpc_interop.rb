@@ -69,6 +69,36 @@ module GRPCInterop
       reader.each { |message| values << message.value }
     end
     raise "SS messages" unless values == ["first", "second", ""]
+
+    probe_errors(client)
+  end
+
+  # The peer's rich NotFound status after leading headers ("error"), and as
+  # trailers-only responses: one END_STREAM HEADERS frame, so the response
+  # metadata arrives as trailers and there is no leading metadata.
+  def self.probe_errors(client)
+    expect_rich_error("Unary headers-first error", "x-head" => ["ready"]) { client.unary(MESSAGE.new(value: "error")) }
+    expect_rich_error("Unary trailers-only error", {}) { client.unary(MESSAGE.new(value: "trailers-only")) }
+    expect_rich_error("SS trailers-only error", {}) do
+      client.server_stream(MESSAGE.new(value: "trailers-only")) do |reader|
+        received = []
+        reader.each { |message| received << message } # rubocop:disable Style/MapIntoArray -- block-only each.
+        raise "SS trailers-only messages #{received.size}"
+      end
+    end
+  end
+
+  def self.expect_rich_error(label, metadata) # rubocop:disable Metrics/AbcSize
+    yield
+    raise "#{label} succeeded"
+  rescue ConnectRPC::Error => e
+    details = e.details.map { |detail| [detail.type, detail.decode(type: MESSAGE, binding: BINDING)] }
+    leading = metadata.empty? ? e.metadata.to_h : e.metadata.to_h.slice(*metadata.keys)
+    observed = [e.code, e.message, details, leading, e.trailers["x-tail"]]
+    expected = ["not_found", "rich peer error",
+                [["connectrpc.grpcinterop.v1.Message", MESSAGE.new(value: "opaque", payload: "\0\xFF".b)]],
+                metadata, ["done"]]
+    raise "#{label}: #{observed.inspect}" unless observed == expected
   end
 
   # Both codings on their own plain threads through one ThreadedTransport.
@@ -118,7 +148,8 @@ Dir.mktmpdir("grpc-interop-", File.join(root, "vendor/grpc")) do |fixtures| # ru
             core = ConnectRPC::Client.new(base_url: origin, binding: GRPCInterop::BINDING, transport: transport,
                                           protocol: :grpc, encoding: coding)
             GRPCInterop.probe(GRPCInterop::PEER::Client.new(client: core))
-            puts "PASS Ruby->grpc-go #{mode}/#{coding} unary/server-stream/client-stream/bidi metadata/halfclose"
+            puts "PASS Ruby->grpc-go #{mode}/#{coding} unary/server-stream/client-stream/bidi metadata/halfclose, " \
+                 "headers-first and trailers-only rich errors"
           end
         ensure
           transport&.close(grace: 0)
@@ -126,7 +157,8 @@ Dir.mktmpdir("grpc-interop-", File.join(root, "vendor/grpc")) do |fixtures| # ru
         options = mode == "h2c" ? {} : { ca_file: File.join(fixtures, "ca.pem") }
         options.merge!(helpers.host_tls(identities.fetch("client")).except(:client_ca)) if mode == "mtls"
         GRPCInterop.threaded_probe(origin, options)
-        puts "PASS Ruby->grpc-go #{mode}/identity+gzip unary/server-stream through ThreadedTransport from plain threads"
+        puts "PASS Ruby->grpc-go #{mode}/identity+gzip unary/server-stream and rich errors (headers-first, " \
+             "trailers-only) through ThreadedTransport from plain threads"
       ensure
         input.close
         unless process.join(5)

@@ -1598,7 +1598,11 @@ Use `async:conformance:grpc` for exact official inventories and
 to the owning verify task. `async:interop:grpc` first reproduces the official Go
 and Ruby peer outputs through the Async bundle, the same check root
 `grpc:generation:check` runs through the core bundle. `grpc:status:check`
-reproduces private Any/Status descriptors.
+reproduces private Any/Status descriptors. Its `Transport` and
+`ThreadedTransport` clients decode the peer's rich status, typed details and
+metadata from a unary error sent after headers and from trailers-only unary
+and server-stream errors. A raw HTTP/2 client first checks that grpc-go sends
+each trailers-only error as one HEADERS frame with END_STREAM.
 
 ## gRPC-Web
 
