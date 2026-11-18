@@ -15,6 +15,8 @@ module ConnectRPC
 
   module GRPCProtocol # rubocop:disable Metrics/ModuleLength
     CONTENT_TYPE = "application/grpc+proto"
+    # Since 0.3.0, sent by gRPC clients unless metadata names a user-agent.
+    USER_AGENT = "grpc-ruby-connectrpc/#{VERSION} (ruby #{RUBY_VERSION})".freeze
     FIELD_LIMIT = 65_536
     UINT32_MAX = 4_294_967_295
     CODES = ["OK", *Error::HTTP_STATUS.keys].freeze

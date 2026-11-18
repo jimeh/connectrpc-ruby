@@ -52,6 +52,7 @@ module ConnectRPC
   end
   module Protocol
     DEFAULT_LIMIT: Integer
+    USER_AGENT: String
     CONTENT_TYPES: Hash[Symbol, String]
     type wire_error = { code: String, message: String, details: Array[ErrorDetail] }
     def self.limit!: (Integer) -> Integer
@@ -169,6 +170,7 @@ module ConnectRPC
     def request_path: (declaration) -> String
     def request_facts: (declaration) -> { server_address: String?, server_port: Integer?, url_scheme: String?, url_path: String, transport_class: Class }
     def request_headers: (Metadata, Deadline?, ?get: bool) -> headers
+    def default_user_agent: (headers, String) -> headers
     def compress_request: (String, _Check?, ?Instrumentation::Handle?) -> String
     def response_body: (TransportResponse, headers, _Check?, ?Instrumentation::Handle?) -> String
     def inflate_response: (String, Integer, _Check?, ?Instrumentation::Handle?) -> String
@@ -513,6 +515,91 @@ module ConnectRPC
       def record_misuse: (InterceptorStateError) -> nil
       def latch_foreign: () -> InterceptorStateError
       def raise_latched: () -> nil
+    end
+  end
+  module Proxy
+    interface _Environment
+      def fetch: (String, nil) -> String?
+    end
+    interface _PrettyPrinter
+      def text: (String) -> void
+    end
+    type ip_matcher = [IPAddr, String, bool]
+    type domain_matcher = [String, String, bool]
+    type resolver = Static | Environment
+    PROXY_PORTS: Hash[String, Integer]
+    TARGET_PORTS: Hash[String, Integer]
+    LDH_HOST: Regexp
+    SCHEME: Regexp
+    USERINFO: Regexp
+    ASCII_HOST: Regexp
+    CONTROL: Regexp
+    FULL_STOPS: String
+    RIGHT_TO_LEFT: String
+    UNMAPPED: Regexp
+    class Endpoint
+      def initialize: (scheme: String, host: String, port: Integer?, user: String?, password: String?) -> void
+      attr_reader scheme: String
+      attr_reader host: String
+      attr_reader port: Integer?
+      attr_reader user: String?
+      attr_reader password: String?
+      def inspect: () -> String
+      def to_s: () -> String
+      def pretty_print: (_PrettyPrinter) -> void
+    end
+    class Unusable < StandardError
+      attr_reader reason: Symbol
+      def initialize: (Symbol) -> void
+    end
+    def self.resolver: (:environment | String | URI::Generic | nil, ?_Environment) -> resolver
+    def self.explicit: (String | URI::Generic) -> Endpoint
+    def self.uri_endpoint: (URI::Generic) -> Endpoint?
+    def self.parse: (String) -> Endpoint?
+    def self.credentials: (String) -> [String, String?]?
+    def self.decode: (String) -> String?
+    def self.host_port: (String, String) -> [String, Integer?]?
+    def self.numeric_shorthand?: (String) -> bool
+    def self.utf8: (untyped) -> String?
+    def self.ascii_host: (String) -> String?
+    def self.split_host_port: (String) -> [String, String]?
+    def self.ip: (String) -> IPAddr?
+    module Punycode
+      BASE: Integer
+      T_MIN: Integer
+      T_MAX: Integer
+      SKEW: Integer
+      DAMP: Integer
+      def self.encode: (String) -> String
+      def self.digits: (Integer, Integer) -> String
+      def self.digit: (Integer) -> String
+      def self.adapt: (Integer, Integer, bool) -> Integer
+    end
+    class Static
+      @endpoint: Endpoint?
+      attr_reader endpoint: Endpoint?
+      def initialize: (Endpoint?) -> void
+      def for: (URI::Generic) -> Endpoint?
+      def inspect: () -> String
+    end
+    class Environment
+      @http: Endpoint | Symbol | nil
+      @https: Endpoint | Symbol | nil
+      @cgi: bool
+      @all: bool
+      @ip_matchers: Array[ip_matcher]
+      @domain_matchers: Array[domain_matcher]
+      def initialize: (_Environment) -> void
+      def inspect: () -> String
+      def for: (URI::Generic) -> Endpoint?
+      private
+      def proxy: (String?) -> (Endpoint | Symbol | nil)
+      def value: (_Environment, *String) -> String?
+      def use_proxy?: (URI::Generic, String) -> bool
+      def ip_match?: (ip_matcher, IPAddr, String) -> bool
+      def domain_match?: (domain_matcher, String, String) -> bool
+      def no_proxy: (String?) -> nil
+      def cidr: (String) -> IPAddr?
     end
   end
 end

@@ -18,6 +18,8 @@ module ConnectRPC
 
   module Protocol # rubocop:disable Metrics/ModuleLength
     DEFAULT_LIMIT = 4 * 1024 * 1024
+    # Since 0.3.0, sent by Connect clients unless metadata names a user-agent.
+    USER_AGENT = "connectrpc-ruby/#{VERSION} (ruby #{RUBY_VERSION})".freeze
     CONTENT_TYPES = { proto: "application/proto", json: "application/json" }.freeze
 
     def self.limit!(value)

@@ -9,6 +9,7 @@ module ConnectRPC
   end
   module GRPCProtocol
     CONTENT_TYPE: String
+    USER_AGENT: String
     FIELD_LIMIT: Integer
     UINT32_MAX: Integer
     CODES: Array[String]

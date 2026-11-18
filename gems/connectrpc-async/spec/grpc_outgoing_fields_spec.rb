@@ -73,7 +73,8 @@ RSpec.describe "Complete outgoing gRPC field blocks" do
                                     binding: ConnectRPC::Bindings::GoogleProtobuf.new)
       fields = [[":scheme", "http"], [":method", "POST"], [":path", AsyncHelpers::ECHO::ECHO.path],
                 [":authority", "127.0.0.1:#{host.port}"], ["content-type", "application/grpc+proto"],
-                ["te", "trailers"], ["grpc-accept-encoding", "identity"]]
+                ["te", "trailers"], ["grpc-accept-encoding", "identity"],
+                ["user-agent", "grpc-ruby-connectrpc/#{ConnectRPC::VERSION} (ruby #{RUBY_VERSION})"]]
       size = fields.sum { |key, value| key.bytesize + value.bytesize + 32 }
       resource = nil
       [0, 1].each do |delta|

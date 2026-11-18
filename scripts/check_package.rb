@@ -57,7 +57,7 @@ expected = %w[
   lib/connectrpc/server.rb lib/connectrpc/instrumentation.rb lib/connectrpc/interceptors.rb
   lib/connectrpc/metrics.rb lib/connectrpc/metrics/connection_observer.rb
   lib/connectrpc/metrics/definitions.rb lib/connectrpc/metrics/subscriber.rb
-  lib/connectrpc/bindings/google_protobuf.rb lib/connectrpc/transports/net_http.rb
+  lib/connectrpc/bindings/google_protobuf.rb lib/connectrpc/transports/net_http.rb lib/connectrpc/proxy.rb
 ].sort
 abort "Unexpected package files: #{package.contents.inspect}" unless package.contents.sort == expected
 abort "Runtime dependencies leaked into package" unless package.spec.runtime_dependencies.empty?

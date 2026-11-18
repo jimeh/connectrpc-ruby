@@ -191,7 +191,10 @@ module ConnectRPC
 
   module Transports
     class NetHTTP
-      def initialize: () -> void
+      # Since 0.3.0, custom trust, client certificates and http:// proxies.
+      # proxy: defaults to a snapshot of HTTP_PROXY, HTTPS_PROXY and NO_PROXY.
+      def initialize: (?ca_file: String?, ?certificate_chain: Array[String]?, ?private_key: String?, ?proxy: :environment | String | URI::Generic | nil) -> void
+      def inspect: () -> String
       def call: (TransportRequest) -> TransportResponse
     end
   end

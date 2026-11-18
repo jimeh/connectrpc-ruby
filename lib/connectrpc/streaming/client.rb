@@ -107,8 +107,8 @@ module ConnectRPC
                                     "connect-accept-encoding" => [@accept_encoding.join(", ")])
       headers["connect-content-encoding"] = ["gzip"] if @encoding == :gzip
       headers["connect-timeout-ms"] = [deadline.timeout_ms] if deadline
-      StreamRequest.new(url: url, http_method: "POST", headers: headers, deadline: deadline,
-                        cancellation: cancellation, lifecycle: lifecycle)
+      StreamRequest.new(url: url, http_method: "POST", headers: default_user_agent(headers, Protocol::USER_AGENT),
+                        deadline: deadline, cancellation: cancellation, lifecycle: lifecycle)
     end
   end
 end

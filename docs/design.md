@@ -216,9 +216,13 @@ timeouts, one monotonic client deadline begins before encoding. Remaining timeou
 rounded up and clamped to ten digits without extending actual expiry. NetHTTP
 recomputes the header at dispatch and checks the budget around connection,
 codec and body progress. Each call owns one connection; a finite deadline also owns one watchdog. The
-watchdog closes the owned raw socket on expiry, including during header
-trickle, stalled reads and blocked writes, and is joined on every exit.
-NetHTTP depends on the pinned stdlib BufferedIO socket layout for that close.
+watchdog starts before TCP connect and closes whichever raw socket the call
+currently owns on expiry, including during TCP connect, a proxy `CONNECT`
+exchange, the TLS handshake, header trickle, stalled reads and blocked writes,
+and is joined on every exit. NetHTTP's `Connection` overrides `Net::HTTP#connect`
+to own TCP, proxy `CONNECT` and TLS setup, so it no longer reads Net::HTTP's
+BufferedIO socket layout; Net::HTTP still writes the request and parses the
+response.
 Request preparation finishes before connecting, with an expiry check afterward.
 The connection checks expiry and recomputes the wire timeout immediately before
 dispatch, and rejects Net::HTTP's implicit reconnect of a closed socket. This
@@ -232,12 +236,27 @@ it after each capped wait and only closes the socket at actual expiry. Local
 huge-budget calls verify conversions on the exercised plain TCP paths, not an
 actual 115-day duration or runtime TLS behavior.
 
-DNS/native resolution may outlast the budget. Net::HTTP's internal connection
-implementation can itself use `Timeout.timeout` on Ruby 3.4; ConnectRPC never
-calls it or asynchronously interrupts application code. TLS handshake timeout
-uses the remaining budget after TCP/DNS. Peer/hostname verification stays on.
-There is no pooling, proxy-env routing, retries, redirect following, automatic
-decompression. NetHTTP constructs requests with the actual explicit accept
+DNS/native resolution may outlast the budget. Resolution passes the remaining
+budget to `Addrinfo.getaddrinfo`. Resolved addresses are dialed as Go's
+`net.Dialer` does: addresses of the first address's family are tried in order,
+each with an equal share of the remaining deadline but at least 2 seconds, and
+the other family starts 300 ms later, or at once if the first family fails. At
+most two nonblocking connects, one per family, are in flight in the calling
+thread, without `Timeout.timeout`; ConnectRPC never asynchronously interrupts
+application code. The first connection wins and every other attempt closes.
+TLS handshake timeout uses the remaining budget after TCP/DNS. Peer/hostname
+verification stays on (TLS 1.2 minimum, ALPN `http/1.1`, session cache off).
+Transports without TLS options share one default TLS context, built with the
+system trust store on first HTTPS use; a transport with TLS options builds its
+own at construction. Since 0.3.0,
+`ConnectRPC::Proxy` resolves the proxy for each URL, from a per-transport
+snapshot of the Go `net/http` proxy environment or an explicit `proxy:`. HTTPS
+targets tunnel with a transport-owned `CONNECT` exchange: its reply head is
+read with a 10 MiB bound and a 60 second cap, must be exactly status 200 with no
+trailing bytes, and only fixed phrases reach errors. HTTP targets use
+Net::HTTP's absolute-form proxy requests. There is no pooling, retries, redirect
+following or automatic decompression. The wire carries exactly the request's
+`user-agent` values. NetHTTP constructs requests with the actual explicit accept
 advertisement so the default HTTP gem never transparently inflates or rewrites
 content encoding/length; transports carry opaque encoded bytes.
 
@@ -292,10 +311,19 @@ Custom transports migrating from earlier releases receive the read-only view.
 Code that called `commit!` or `close` on `request.cancellation`, which was never
 part of the typed SPI, must stop; core completes the call itself.
 
-NetHTTP installs socket ownership before startup, attaches raw TCP at the TLS
-hook or after plain startup, and closes a newly exposed socket immediately if
-cancellation already won. TLS/read/write/header waits are interruptible; native
-DNS/TCP before exposure remains cooperative. Per-call retirement prevents late
+NetHTTP installs socket ownership before startup and attaches each raw socket
+when it is created, before its TCP connect starts. A socket created after
+cancellation or expiry won is closed immediately. While dialing, the owner
+holds at most two attempts, one per address family; once connected it holds
+exactly the call's one connection. Every attempt that does not become the
+connection is closed, including when an outer interruption such as
+`Thread#raise` lands mid-dial. Cancellation and expiry shut sockets down
+before closing them: on Linux that aborts a pending connect and wakes the
+dialer's `IO.select`, which a close from another thread alone does not. A
+socket that cannot shut down because it never started connecting is still
+closed. TCP connect, proxy `CONNECT`, TLS, read, write and
+header waits are interruptible; native DNS resolution remains cooperative.
+Per-call retirement prevents late
 callbacks from accessing completed/recycled resources. Nil deadlines have no
 watchdog or wire timeout; the exact independent native cap remains
 `9_999_999.999`. Retry/reconnect guards and TLS verification remain enabled.

@@ -123,7 +123,7 @@ a socket.
 | Endpoint | RPC shapes | HTTP and security evidence | Owning evidence |
 | --- | --- | --- | --- |
 | Host-neutral `Server#call` | U | Host-supplied HTTP state and bounded input | Core specs, `rbs:check` API callers and installed consumers |
-| Default NetHTTP client | U | H1 TCP; verified TLS in focused specs and installed consumers, outside the plaintext official profile. No client-certificate (mTLS) or custom trust configuration | `test:conformance`, `test:interop`, `test:interop:get`, core TLS/cancellation specs and `async:package` |
+| Default NetHTTP client | U | H1 TCP, one connection per call and no pooling; verified TLS, and since 0.3.0 custom trust (`ca_file:`), mTLS and `http://` proxies from the environment or `proxy:`, with `CONNECT` tunnels for HTTPS. TLS and proxies are qualified in focused specs, outside the plaintext official profile | `test:conformance`, `test:interop`, `test:interop:get`, core TLS/proxy/cancellation specs and `async:package` |
 | Rack middleware | U | Portable unary translation; official socket profile is H1 TCP via rackup/WEBrick. No portable TLS/mTLS qualification | `test:conformance`, `test:interop`, `rack:test`, `rack:package` |
 | Native Rails controller | U | Portable unary execution through explicit routes. No separate Rails TLS/mTLS qualification | `test:rails`, `check:package:rails`, `generation:check:rails`; no exact Rails conformance inventory |
 | Testing transport | U | In process; no HTTP socket or security negotiation | `testing:test`, `testing:package`; not independent interoperability evidence |
@@ -135,6 +135,12 @@ a socket.
 
 The standalone Async Host remains strict H2. Selecting `HTTP1Transport` for a
 client does not add H1 to that Host.
+
+NetHTTP is the dependency-free client: one Connect unary call per HTTP/1.1
+connection, from any thread. It verifies TLS and, since 0.3.0, takes a custom CA,
+a client certificate and HTTP proxies (see
+[NetHTTP TLS and proxies](unary.md#nethttp-tls-and-proxies)). It does not pool
+or reuse connections; the Async transports are the pooled and HTTP/2 options.
 
 Native clients require an application-owned Async reactor. Construction, I/O
 and close run on its reactor and thread; foreign-thread cancellation only
