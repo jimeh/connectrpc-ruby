@@ -2,6 +2,7 @@
 
 require "English"
 require_relative "connection_peer"
+require_relative "flush_hold"
 require_relative "frame_gate"
 require_relative "keepalive_client"
 require_relative "write_probe"
@@ -11,6 +12,7 @@ require_relative "write_probe"
 # returning a started host with `port` and `close`, and
 # `keepalive_session(host)`. Every server timer runs on an injected FakeClock.
 RSpec.shared_examples "HTTP/2 server keepalive" do
+  include FlushHold
   include KeepaliveClient
 
   def echo_path = AsyncHelpers::ECHO::ECHO.path
@@ -252,6 +254,51 @@ RSpec.shared_examples "HTTP/2 server keepalive" do
              [:goaway, 1, KeepaliveClient::ENHANCE_YOUR_CALM, "too_many_pings"]]
           )
           wait_until(task, "connection retired") { retired?(fixture.resource) }
+        end
+      end
+    end
+
+    # As in grpc-go's loopy writer, a DATA write forgives the next PING before
+    # the frame is encoded. A peer that answers DATA with a PING, as a BDP
+    # probe does, can be read before the DATA's writer returns; forgiveness
+    # after the write would leave all three PINGs here to strike.
+    it "forgives a PING the server reads while the DATA write that prompted it has not returned" do
+      reactor do |task|
+        with_keepalive_host(task, keepalive: server_keepalive(time: nil)) do |fixture|
+          client = fixture.client
+          connection = fixture.resource.connection
+          read = []
+          connection.define_singleton_method(:receive_ping) do |frame|
+            super(frame)
+            read << frame.unpack unless frame.acknowledgement?
+          end
+          response = watch(fixture, "sibling", "one")
+          # Spends the forgiveness the Watch's earlier writes left pending.
+          ping_through(task, client, "spent000")
+          frames = client.wire.data[1]
+          gate = hold_after_flush(connection) { |frame| frame.is_a?(Protocol::HTTP2::DataFrame) }
+          fixture.log[:feeds]["sibling"].enqueue("two")
+          gate.started.dequeue
+          # The message's first DATA frame is on the wire and its writer has
+          # not returned. The client reads it, then sends its PINGs.
+          wait_until(task, "the client to read the held DATA") { client.wire.data[1] > frames }
+          probes = Array.new(3) { |index| format("probe%03d", index) }
+          probes.each { |payload| send_ping(client, payload) }
+          wait_until(task, "the server to read every PING during the held write; read #{read}") do
+            read.include?(probes.last)
+          end
+          gate.release.enqueue(true)
+          # The control writer queued any too_many_pings GOAWAY behind the
+          # ACKs during the held write, ahead of the remaining messages.
+          fixture.log[:feeds]["sibling"].enqueue("three")
+          rest = task.async { read_until(response, "three") }
+          wait_until(task, "the next message or a GOAWAY") { client.wire.goaways.any? || rest.finished? }
+          expect(client.wire.goaways).to eq([])
+          expect(client.wire.acks).to eq(["spent000", *probes])
+          expect(rest.wait).to include("two", "three")
+          expect(unary(fixture, "after")).to eq([200, encoded("after")])
+        ensure
+          gate&.release&.enqueue(true)
         end
       end
     end

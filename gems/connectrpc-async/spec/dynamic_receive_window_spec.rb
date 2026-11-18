@@ -1,11 +1,13 @@
 # frozen_string_literal: true
 
+require_relative "support/flush_hold"
 require_relative "support/ingress_peer"
 
 # BDP-driven receive window growth over real connections. Raw protocol-http2
 # peers write DATA without flow-control bookkeeping, so each example states
 # the window it spends.
 RSpec.describe "HTTP/2 dynamic receive windows" do
+  include FlushHold
   include IngressPeer
 
   let(:bdp_ping) { AsyncHelpers::INTERNAL::BDPEstimator::PING }
@@ -35,28 +37,6 @@ RSpec.describe "HTTP/2 dynamic receive windows" do
 
   def await_growth(task, wire, windows)
     ingress_wait(task, "grown windows #{windows}", state: -> { wire }) { ingress_growth(wire) == windows }
-  end
-
-  # Holds the next frame the block selects once it is flushed, while its
-  # writer still holds the frame guard. The reader is not held: its next
-  # buffer refill finds no pending output to flush.
-  def hold_after_flush(connection, &select)
-    gate = Data.define(:started, :release).new(Async::Queue.new, Async::Queue.new)
-    framer = connection.framer
-    state = { armed: true, holding: false }
-    framer.define_singleton_method(:write_frame) do |frame|
-      state[:holding] = true if state[:armed] && select.call(frame)
-      super(frame)
-    end
-    framer.define_singleton_method(:flush) do
-      super()
-      next unless state[:holding]
-
-      state[:holding] = state[:armed] = false
-      gate.started.enqueue(true)
-      gate.release.dequeue
-    end
-    gate
   end
 
   def bdp_ping?(frame)
