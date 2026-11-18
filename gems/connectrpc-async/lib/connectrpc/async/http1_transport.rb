@@ -285,7 +285,7 @@ module ConnectRPC
             resource.socket = socket
             check_request!(request)
             check_operation!(operation)
-            resource.connection = Internal::HTTP1Connection.new(Internal::HTTP1Stream.new(socket))
+            resource.connection = Internal::HTTP1Connection.new(Internal::HTTP1Stream.new(socket, resource))
           end
         rescue StandardError => e
           request.lifecycle&.record_failure(e)

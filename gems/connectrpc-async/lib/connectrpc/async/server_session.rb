@@ -275,16 +275,26 @@ module ConnectRPC
         raise LifecycleError, "A running TLS host is required" unless @state == :running && tls_generation
       end
 
-      def serve(resource)
+      def serve(resource, &handoff)
         return if resource.finished?
 
         resource.task = ::Async::Task.current
         expires = Internal.now + @handshake_timeout
-        setup = resource.track(::Async::Task.new(::Async::Task.current, finished: false) { setup_connection(resource) })
+        # Setup hands an HTTP/1 replacement to this serve, the accepted handle
+        # and the session's mapping in one step, so a cancellation of this
+        # wait aborts whichever resource is mapped.
+        setup = resource.track(::Async::Task.new(::Async::Task.current, finished: false) do
+          setup_connection(resource) do |replacement|
+            resource = replacement
+            handoff&.call(replacement)
+          end
+        end)
         setup.run
-        resource = Internal.wait(setup, expires)
-        yield resource if block_given?
-        return if resource.draining || (tls_generation && resource.generation < @retirement_floor)
+        Internal.wait(setup, expires)
+        # A session abort or drain that started during setup ends serving here.
+        # Setup leaves the original resource mapped, without a connection,
+        # when it refused an HTTP/1 replacement.
+        return unless resource.connection && serving?(resource)
 
         resource.ready = true
         resource.changed
@@ -310,15 +320,20 @@ module ConnectRPC
         if @http1 && ((!resource.snapshot.tls? &&
                        @selector.protocol_for(stream) == ::Async::HTTP::Protocol::HTTP1) ||
                       (resource.snapshot.tls? && socket.alpn_protocol != "h2"))
-          return resource if resource.draining || (tls_generation && resource.generation < @retirement_floor)
+          return resource unless serving?(resource)
 
           replacement = @http1.call(stream, progress: @progress, generation: resource.generation)
+          # Session abort maps nothing new; it may have started while the
+          # callable ran.
+          return resource unless serving?(resource)
+
           replacement.send(:retirement_parent=, @lifetime)
           replacement.raw = resource.raw
           replacement.socket = socket
           replacement.snapshot = resource.snapshot
           replacement.task = resource.task
           @resources[@resources.index(resource)] = replacement
+          yield replacement
           return replacement
         end
         if resource.snapshot.tls? && socket.alpn_protocol != "h2"
@@ -337,6 +352,11 @@ module ConnectRPC
                                                              stream_window: @stream_receive_window))
         connection.grow_connection_window
         resource
+      end
+
+      def serving?(resource)
+        !@aborting && !resource.finished? && !resource.draining &&
+          !(tls_generation && resource.generation < @retirement_floor)
       end
 
       # Every HTTP/2 connection has upkeep for its control frames, refusals and
@@ -655,35 +675,33 @@ module ConnectRPC
       end
 
       def retire_session
-        # Every accepted peer fails before this cleanup can yield. An H2
-        # shutdown never yields; an HTTP/1 close (on Ruby 4) and listener
-        # cleanup can.
+        # Every accepted peer fails before this cleanup can yield. A raw
+        # shutdown never yields; listener cleanup and each resource's own
+        # retirement can. Only a resource's retirement closes its descriptor,
+        # once its tasks have left it, so a failure or interruption never skips
+        # a later step. Listeners prune @resources while a step yields, so each
+        # pass walks its own array.
         resources = @resources.dup
-        h2, http1 = resources.partition { |resource| resource.is_a?(Internal::Resource) }
-        h2.each { |resource| resource.send(:fail_raw) }
-        # Only retirement closes an H2 descriptor, so a failure or interruption
-        # never skips a later step. Listeners prune @resources while a step
-        # yields, so each pass walks its own array.
-        failures = http1.map { |resource| retain_failure { Internal.raw_close(resource.raw) } }
-        failures << retain_failure { stop_accepting }
-        failures.concat((resources | @resources).map { |resource| retain_failure { resource.abort } })
-        failures.compact!
-        # An interruption wins over an ordinary failure, as in CompletionJoin.
-        failure = failures.find { |error| !error.is_a?(StandardError) } || failures.first
-        raise failure if failure
-
+        resources.each { |resource| resource.send(:fail_raw) if resource.respond_to?(:fail_raw, true) }
+        failures = [Internal::Teardown.capture { stop_accepting }]
+        # Setup maps no HTTP/1 replacement once this abort has started, so
+        # these are every resource the session holds.
+        failures.concat((resources | @resources).map { |resource| Internal::Teardown.capture { resource.abort } })
+        # Every resource has run its retirement, and a retirement that failed
+        # has still failed and closed its raw socket. Nothing can retry it, so
+        # the session closes whatever failed, and then reports the first
+        # interruption, otherwise the first failure, as in CompletionJoin.
         @admitted.clear
         @h1_wire.clear
-        @tls.close
+        failures << Internal::Teardown.capture { @tls.close }
         finish_closed(@close_outcome)
-        Internal.cancel(@lifetime)
-      end
-
-      def retain_failure
-        yield
-        nil
-      rescue Exception => e # rubocop:disable Lint/RescueException -- an interruption is re-raised once every peer retires
-        e
+        failure = Internal::Teardown.first(failures)
+        # Cancelling the guard can stop this cleanup too, once its own
+        # cancellation made it non-transient. That stop never replaces the
+        # outcome above.
+        stopped = Internal::Teardown.capture { Internal.cancel(@lifetime) }
+        failure ||= stopped
+        raise failure if failure
       end
     end
   end

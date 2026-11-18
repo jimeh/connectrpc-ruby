@@ -61,6 +61,8 @@ module ConnectRPC
             [["protocol-http2", "#{H2}::#{side}", :update_local_settings, :public, "(_)", "Protocol::HTTP2::Connection"],
              ["protocol-http2", "#{H2}::#{side}", :consume_local_window, :public, "(_)",
               "Protocol::HTTP2::FlowControlled"],
+             ["protocol-http2", "#{H2}::#{side}", :request_window_update, :public, "()",
+              "Protocol::HTTP2::FlowControlled"],
              ["protocol-http2", "#{H2}::#{side}", :receive_ping, :public, "(_)", "Protocol::HTTP2::Connection"]]
           end,
           ["protocol-http2", "Protocol::HTTP2::PendingSettings", :append, :public, "(_)",

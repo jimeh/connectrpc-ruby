@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require_relative "completion_join"
+require_relative "teardown"
 
 module ConnectRPC
   module Async

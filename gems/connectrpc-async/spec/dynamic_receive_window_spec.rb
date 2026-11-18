@@ -490,6 +490,49 @@ RSpec.describe "HTTP/2 dynamic receive windows" do
     end
   end
 
+  it "doubles a lone upload's window from one sample when its reader keeps up, up to max_receive_window" do
+    reactor do |task|
+      read = 0
+      app = lambda do |request|
+        request.body.each { |chunk| read += chunk.bytesize }
+        Protocol::HTTP::Response[200, {}, ["ok"]]
+      end
+      # 196,608 is three 65,536-byte windows: the second doubling reaches it
+      # whichever quarter of the grown window is still unreturned.
+      window_host(app, max_receive_window: 196_608) do |host, origin|
+        with_ingress_client(task, origin, :h2c) do |connection, wire|
+          # A frozen estimator clock makes every sample's bandwidth equal, so
+          # growth depends only on sample sizes, not on loopback timing.
+          host_connection(host).instance_variable_get(:@bandwidth).instance_variable_set(:@clock,
+                                                                                         Struct.new(:now).new(0.0))
+          id = open_request(connection, origin, "/upload").stream.id
+          sent = 0
+          # One round trip: the peer spends `bytes` of stream credit in one
+          # flush, so they all reach the host before the ACK of the BDP PING
+          # they prompt, and the application reads them.
+          spend = lambda do |bytes|
+            ingress_burst(connection, [id, bytes])
+            sent += bytes
+            ingress_wait(task, "the application to read #{sent} bytes", state: -> { read }) { read == sent }
+            ingress_barrier(task, connection, wire)
+          end
+          credit = -> { (ingress_growth(wire).last || 65_536) + wire[:credit][id] - sent }
+          # Half a window is too small a sample to grow, but every byte read
+          # already returned: protocol-http2 alone would withhold all 32,768.
+          spend.call(32_768)
+          expect([credit.call, ingress_growth(wire)]).to eq([65_536, []])
+          spend.call(credit.call)
+          await_growth(task, wire, [131_072])
+          spend.call(credit.call)
+          await_growth(task, wire, [131_072, 196_608])
+          # At the ceiling, a full window starts no sample and resets nothing.
+          spend.call(credit.call)
+          expect([ingress_growth(wire), wire[:probes].size, wire[:resets]]).to eq([[131_072, 196_608], 3, {}])
+        end
+      end
+    end
+  end
+
   it "sends no BDP PINGs or SETTINGS when windows are static" do
     reactor do |task|
       entered = Async::Queue.new

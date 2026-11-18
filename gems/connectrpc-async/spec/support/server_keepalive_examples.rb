@@ -1475,9 +1475,10 @@ RSpec.shared_examples "HTTP/2 server keepalive" do
           expect(fixture.log[:completions]).to eq([])
           expect(received).to eq({})
           expect(connection.streams).to be_empty
-          # Connection credit for the ignored DATA returns once it crosses
-          # half of the 65,535-byte window.
-          expect(other.wire.credit[0]).to eq(40_000)
+          # Connection credit for the ignored DATA returns in quarters of the
+          # 65,535-byte window: once per 16,384-byte frame, while the last
+          # 7,232 bytes stay below a quarter.
+          expect(other.wire.credit[0]).to eq(32_768)
 
           release_gate(gate)
           wait_until(task, "refusal observed") { fixture.log[:completions].size == 1 }

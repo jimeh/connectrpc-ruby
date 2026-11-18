@@ -165,8 +165,8 @@ These affect native HTTP/2 connections of the Async `Transport`,
   whenever the estimate exceeds it.
 - `Transport` and `ThreadedTransport` advertise a 4 MiB stream window instead
   of 64 KiB, so one response stream is no longer limited to 64 KiB per round
-  trip: a 3 MiB download over 50 ms of round-trip time takes about 0.13 s
-  instead of 5 to 7 s. With static windows each call can retain up to 4 MiB of
+  trip: a 3 MiB download over 50 ms of round-trip time takes about 0.1 s
+  instead of 4 s. With static windows each call can retain up to 4 MiB of
   unread response payload, so a transport's ceiling grows from 8 MiB to
   512 MiB at the default `max_requests` of 128. Pass
   `stream_receive_window: 65_536` with `dynamic_receive_windows: false` to keep
@@ -175,7 +175,7 @@ These affect native HTTP/2 connections of the Async `Transport`,
   while DATA arrives, at most one per round trip, and raises its stream windows,
   and its connection window when needed, up to `max_receive_window` with
   SETTINGS and WINDOW_UPDATE frames. A 3 MiB upload to a default `Host` over
-  50 ms of round-trip time takes about 0.75 s instead of 5 s. A peer can now
+  50 ms of round-trip time takes about 0.5 s instead of 5 s. A peer can now
   drive a stream's unread retention up to `max_receive_window`, so the worst
   cases grow.
   - `Host`, `ServerSession` and the Falcon server default to a 1 MiB ceiling:
@@ -196,16 +196,38 @@ These affect native HTTP/2 connections of the Async `Transport`,
   ceiling. A proxy or peer that polices PINGs sees each BDP PING after DATA the
   other side wrote, which forgives it under grpc-go's rules. See
   [flow-control windows](../gems/connectrpc-async/README.md#flow-control-windows).
+- Flow-control credit returns once a quarter of a window is pending, as in
+  grpc-go, instead of half. A stream returns credit once the application has
+  consumed or discarded a quarter of its window, and a connection once a
+  quarter of its window has arrived. A stream whose reader keeps up therefore
+  holds back less than a quarter of its window instead of up to half, and in
+  the benchmark most growth steps now double its window, where more of them
+  grew it by less. With static 64 KiB windows, a 3 MiB body over 50 ms of
+  round-trip time takes about 2.5 s instead of 4.9 s. WINDOW_UPDATE frames
+  are more frequent, depending on frame size and how the application reads:
+  with 16 KiB DATA frames and a 64 KiB stream window read as it arrives, one
+  per frame instead of one per three. Window sizes and retention bounds are
+  unchanged.
 - Forced teardown (an abort, an expired grace, or a keepalive or
   write-progress failure) shuts raw TCP down in both directions at once and
-  closes the descriptor after the connection's tasks have joined. Before 0.3.0
-  it closed the descriptor first, so a peer saw a reset whenever unread input
-  remained. It now sees end of stream first. On Ruby 4 the old close could
-  raise a stray `IOError: stream closed in another thread` into a server
-  connection's reader task. The client's `connection_limit + max_draining`
-  bound counts live sockets: a retiring socket stops counting once it is shut
-  down, so its descriptor can stay open beside a replacement until the
-  retiring connection's tasks finish.
+  closes the descriptor after the connection's tasks have joined. This covers
+  HTTP/2 connections, Falcon's HTTP/1 connections and `HTTP1Transport`
+  connections. Before 0.3.0 it closed the descriptor first, so a peer saw a
+  reset whenever unread input remained. It now sees end of stream first. On
+  Ruby 4 the old close could raise a stray `IOError: stream closed in another
+  thread` into a task still reading the connection. The client's
+  `connection_limit + max_draining` bound counts live sockets: a retiring
+  socket stops counting once it is shut down, so its descriptor can stay open
+  beside a replacement until the retiring connection's tasks finish.
+  `HTTP1Transport` keeps a retiring connection's lease until its descriptor
+  closes, as before.
+- A server session whose listener cleanup or connection teardown raises during
+  `close` or `abort` (Host, Falcon server or `ServerSession`) still ends
+  closed, with its TLS provider refresh stopped, and then raises the first
+  failure. Previously it stayed closing, and the refresh timer kept running
+  until the owner task ended. A client `Transport` whose close grace expires,
+  or whose owner ends, retires every connection even when one connection's
+  teardown raises, closes, and then raises that failure.
 
 These affect `connectrpc-otel` spans and trace propagation.
 

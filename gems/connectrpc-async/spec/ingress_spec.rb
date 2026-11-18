@@ -62,8 +62,10 @@ RSpec.describe "Native HTTP/2 bounded ingress" do
           512.times { ingress_data(sender, outgoing.id, "", padding: 255) }
           ingress_barrier(task, sender, wire)
           expect(ingress_backlog(body)).to eq([0, 0])
-          expect(wire[:credit][outgoing.id]).to eq(33_024 * 3)
-          expect(incoming.local_window.available).to eq(65_536 + (33_024 * 3) - (512 * 256))
+          # Discarded padding returns in quarters of the 65,536-byte window,
+          # every 64 frames of 256 bytes.
+          expect(wire[:credit][outgoing.id]).to eq(16_384 * 8)
+          expect(incoming.local_window.available).to eq(65_536)
           ingress_data(sender, outgoing.id, "abc", padding: 7, finish: true)
           ingress_barrier(task, sender, wire)
           expect(body.length).to eq(3)
@@ -100,10 +102,10 @@ RSpec.describe "Native HTTP/2 bounded ingress" do
           outgoing, _incoming, body = ingress_stream(client_connection, server_connection, direction)
           sibling, _stream, sibling_body = ingress_stream(client_connection, server_connection, direction)
           # The pinned connection window starts at 65535. Withhold automatic
-          # connection replenishment through its native desired-capacity policy
-          # so this raw peer can exhaust it independently of either stream.
+          # connection replenishment so this raw peer can exhaust it
+          # independently of either stream.
           expect(receiver.local_window.available).to eq(65_535)
-          receiver.local_window.desired = 1
+          receiver.define_singleton_method(:request_window_update) { nil }
           3.times { ingress_data(sender, outgoing.id, "a" * 16_384) }
           ingress_data(sender, outgoing.id, "a" * 16_383)
           ingress_barrier(task, sender, wire)
@@ -130,9 +132,11 @@ RSpec.describe "Native HTTP/2 bounded ingress" do
           ingress_barrier(task, sender, wire)
           expect(ingress_backlog(body)).to eq([0, 0])
           expect(wire[:credit][outgoing.id]).to eq(65_536)
+          # Each discarded frame is a quarter of the window, so its credit
+          # returns at once.
           4.times { ingress_data(sender, outgoing.id, "b" * 16_384) }
           ingress_barrier(task, sender, wire)
-          expect(wire[:credit][outgoing.id]).to eq(114_688)
+          expect(wire[:credit][outgoing.id]).to eq(131_072)
           expect(incoming.state).to eq(:open)
           if direction == :request
             incoming.send_headers([[":status", "200"]], Protocol::HTTP2::END_STREAM)
@@ -272,6 +276,71 @@ RSpec.describe "Native HTTP/2 bounded ingress" do
           expect(token.reason).to be_nil if token
           expect(body.instance_variable_get(:@stream)).to be_nil
           expect(ingress_backlog(body)).to eq([0, 0])
+        end
+      end
+    end
+
+    it "returns #{direction} stream and connection credit once a quarter of each window is used" do
+      reactor do |task|
+        ingress_pair(task, direction) do |client_connection, server_connection, sender, receiver, wire|
+          outgoing, _incoming, body = ingress_stream(client_connection, server_connection, direction)
+          # Both windows are 65,536 bytes, so each quarter is 16,384, as in
+          # grpc-go. protocol-http2 alone waits for half of either. The
+          # connection window starts at 65,535, so its pending credit includes
+          # the byte that reaches 65,536.
+          expect(receiver.local_window.desired).to eq(65_536)
+          ingress_data(sender, outgoing.id, "a" * 16_383)
+          ingress_barrier(task, sender, wire)
+          expect(wire[:credit].slice(0, outgoing.id)).to eq(0 => 16_384)
+          expect(body.read).to eq("a" * 16_383)
+          ingress_barrier(task, sender, wire)
+          expect(wire[:credit].slice(0, outgoing.id)).to eq(0 => 16_384)
+          ingress_data(sender, outgoing.id, "b")
+          ingress_barrier(task, sender, wire)
+          expect(body.read).to eq("b")
+          ingress_barrier(task, sender, wire)
+          expect(wire[:credit].slice(0, outgoing.id)).to eq(0 => 16_384, outgoing.id => 16_384)
+        end
+      end
+    end
+
+    it "keeps applying #{direction} DATA while an application read waits for the guard to return credit" do
+      reactor do |task|
+        ingress_pair(task, direction) do |client_connection, server_connection, sender, receiver, wire|
+          outgoing, _incoming, body = ingress_stream(client_connection, server_connection, direction)
+          sibling, _stream, sibling_body = ingress_stream(client_connection, server_connection, direction)
+          ingress_data(sender, outgoing.id, "a" * 16_384)
+          ingress_barrier(task, sender, wire)
+          # Another writer holds the frame guard, so the read that consumes a
+          # quarter of the window waits for it to send that stream credit.
+          held = Async::Queue.new
+          release = Async::Promise.new
+          holder = task.async do
+            receiver.synchronize do
+              held.enqueue(true)
+              release.wait
+            end
+          end
+          held.dequeue
+          reading = task.async { body.read }
+          ingress_wait(task, "the read to wait for the frame guard", state: -> { receiver.guard_waiting? }) do
+            receiver.guard_waiting?
+          end
+          # DATA on the same stream owes no new credit, so the reader applies
+          # it and the sibling's without queueing behind that read.
+          ingress_data(sender, outgoing.id, "b")
+          ingress_data(sender, sibling.id, "c")
+          ingress_wait(task, "the reader to apply both frames", state: -> { ingress_backlog(sibling_body) }) do
+            ingress_backlog(sibling_body) == [1, 1]
+          end
+          expect(ingress_backlog(body)).to eq([1, 1])
+          release.resolve(true)
+          expect(reading.wait).to eq("a" * 16_384)
+          ingress_barrier(task, sender, wire)
+          expect(wire[:credit][outgoing.id]).to eq(16_384)
+        ensure
+          release&.resolve(true) unless release&.resolved?
+          holder&.wait
         end
       end
     end
