@@ -42,7 +42,7 @@ core_files = %w[
   lib/connectrpc/server.rb lib/connectrpc/instrumentation.rb lib/connectrpc/interceptors.rb
   lib/connectrpc/metrics.rb lib/connectrpc/metrics/connection_observer.rb
   lib/connectrpc/metrics/definitions.rb lib/connectrpc/metrics/subscriber.rb
-  lib/connectrpc/bindings/google_protobuf.rb lib/connectrpc/transports/net_http.rb
+  lib/connectrpc/bindings/google_protobuf.rb lib/connectrpc/transports/net_http.rb lib/connectrpc/proxy.rb
 ].sort
 abort "Core manifest changed" unless core.contents.sort == core_files.sort && core.spec.runtime_dependencies.empty?
 expected = %w[LICENSE README.md lib/connectrpc-on-rails.rb lib/connectrpc/on_rails.rb lib/connectrpc/on_rails/version.rb
