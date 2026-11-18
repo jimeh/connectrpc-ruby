@@ -56,6 +56,7 @@ expected = %w[LICENSE README.md lib/connectrpc/async.rb lib/connectrpc/async/ver
               lib/connectrpc/async/tls_configuration.rb lib/connectrpc/async/server_session.rb
               lib/connectrpc/async/host.rb lib/connectrpc/async/transport.rb
               lib/connectrpc/async/threaded_transport.rb lib/connectrpc/async/threaded_stream.rb
+              lib/connectrpc/async/per_call_transport.rb
               lib/connectrpc/async/http1_transport.rb lib/connectrpc/async/http1_exchange.rb
               lib/connectrpc/async/http1_connection.rb lib/connectrpc/async/http1_stream.rb
               lib/connectrpc/async/upstream_contract.rb].sort

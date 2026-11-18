@@ -136,6 +136,11 @@ These are additive; existing code keeps working once the rename above is done.
   needs a matching `connectrpc` and a prebuilt platform gem, or Rust 1.85+,
   libclang and a C compiler for the source gem. See the
   [package guide](../gems/connectrpc-hyper/README.md).
+- `ConnectRPC::Async::PerCallTransport` makes Connect and native gRPC unary
+  and server-streaming calls over one HTTP/2 connection per call. It takes no
+  origin, keeps no connection between calls and works from any thread or
+  inside a reactor. See
+  [one-off calls](../gems/connectrpc-async/README.md#one-off-calls).
 
 ### Behavior changes
 

@@ -240,7 +240,7 @@ are an explicit bridge described [below](#opt-in-framework-compatibility).
 | Rack | Middleware constructor/call and shared `_App`, `_Body`, `_CallableBody`, `_Stream`, env and response contracts |
 | Testing | In-process Transport constructor/call, reusable as the core transport |
 | Rails | Controller inclusion and `connect`; documented private overrides for service, binding, handlers, limits, instrumentation, interceptors and Web protocol/status/CORS; nullable request/context/method readers |
-| Async | Application/native HTTP capabilities, Host, Transport, HTTP1Transport, ServerSession/accepted handles, TLSConfiguration, complete static/provider record shapes, status/error callbacks, rotation/drain/identity |
+| Async | Application/native HTTP capabilities, Host, Transport, ThreadedTransport, PerCallTransport (since 0.3.0), HTTP1Transport, ServerSession/accepted handles, TLSConfiguration, complete static/provider record shapes, status/error callbacks, rotation/drain/identity |
 | Falcon | Endpoint's supported operations, Environment overrides and Server/native application/TLS lifecycle |
 | OTel | Subscriber configuration and narrow tracer-provider/tracer/span/propagator capabilities; SDK and context implementation remain application owned |
 | Prometheus | Metrics configuration, readers and `connection_observer`; narrow structural registry/metric capabilities for prometheus-client |

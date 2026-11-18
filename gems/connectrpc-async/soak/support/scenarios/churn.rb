@@ -60,7 +60,8 @@ end
 # Scenario 1 against an HTTP/2 server kind (:host or :falcon).
 RSpec.shared_examples "soak churn and reuse" do |kind|
   it "1 churn: reuses persistent connections and retires per-round clients over h2c, TLS and mTLS (#{kind})" do
-    campaign("1-churn/#{kind}", workload: "Transport x7 shapes, ThreadedTransport x5 shapes, h2c/TLS/mTLS",
+    campaign("1-churn/#{kind}", workload: "Transport x7 shapes, ThreadedTransport and PerCallTransport x5 shapes, " \
+                                          "h2c/TLS/mTLS",
                                 concurrency: 8, payload_sizes: [16, 16_384]) do |c|
       peer = c.peer_thread("#{kind} servers")
       servers = {
@@ -84,6 +85,13 @@ RSpec.shared_examples "soak churn and reuse" do |kind|
         threaded = c.threaded(servers[:mtls].origin, mode: :mtls, label: "round threaded mtls")
         c.on_threads(*Soak::Builders::THREADED_SHAPES.map { |shape| -> { c.perform(threaded, shape) } })
         expect(threaded.transport.close(grace: 2)).to be(true)
+        # Nothing to close: each call ends its own connection, owner thread and tasks.
+        servers.each do |mode, server|
+          per_call = ConnectRPC::Async::PerCallTransport.new(**Soak::Topology.client_tls(mode))
+          clients = Soak::Topology::Clients.new(per_call, server.origin)
+          c.on_threads(*Soak::Builders::THREADED_SHAPES.map { |shape| -> { c.perform(clients, shape) } })
+          Soak::Builders::THREADED_SHAPES.each { |shape| c.perform(clients, shape) }
+        end
         Soak::Saturation.admission(c, servers[:h2c])
       end
     end

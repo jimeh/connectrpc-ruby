@@ -81,14 +81,11 @@ module ConnectRPC
       private_constant :LifecycleProxy
 
       # The H2 Transport, given the front's compiled TLS snapshot so the owner
-      # never rereads TLS files.
+      # never rereads TLS files or builds another client context.
       class Inner < Transport
-        # Until Transport takes a snapshot, super builds and discards a default
-        # client context for HTTPS (system roots only); user TLS files are never
-        # reread.
         def initialize(snapshot:, **)
+          @compiled_snapshot = snapshot
           super(**)
-          @snapshot = snapshot
         end
 
         # Reports admission rejected by the front through the manager's observer.
@@ -99,6 +96,10 @@ module ConnectRPC
             nil
           end
         end
+
+        private
+
+        def client_snapshot(**) = @compiled_snapshot
       end
       private_constant :Inner
 
@@ -226,7 +227,7 @@ module ConnectRPC
 
         def run_reactor
           Sync do |task|
-            @inner = Inner.new(origin: @origin.to_s, snapshot: @snapshot, **@options)
+            @inner = @front.send(:build_inner, origin: @origin.to_s, snapshot: @snapshot, **@options)
             dispatch(task)
           ensure
             # The reactor returns only after every child finishes. Cancelling the
@@ -313,8 +314,7 @@ module ConnectRPC
         end
 
         if @origin.scheme == "https"
-          @snapshot = Internal::TLS.client(ca_file: ca_file, certificate_chain: certificate_chain,
-                                           private_key: private_key)
+          @snapshot = client_snapshot(ca_file: ca_file, certificate_chain: certificate_chain, private_key: private_key)
         end
         @max_bytes = connection_policy.max_pending_bytes
         @options = options.merge(connection_policy: connection_policy, connection_observer: connection_observer).freeze
@@ -458,6 +458,15 @@ module ConnectRPC
 
       def build_engine(admission)
         Engine.new(self, admission, origin: @origin, snapshot: @snapshot, options: @options).start
+      end
+
+      # Runs on the owner thread. A subclass may build the inner transport
+      # with extra private options.
+      def build_inner(**) = Inner.new(**)
+
+      # A subclass may supply an already compiled snapshot instead.
+      def client_snapshot(ca_file:, certificate_chain:, private_key:)
+        Internal::TLS.client(ca_file: ca_file, certificate_chain: certificate_chain, private_key: private_key)
       end
 
       def await(call, request)

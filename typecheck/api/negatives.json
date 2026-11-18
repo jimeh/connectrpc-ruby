@@ -54,6 +54,8 @@
   "grpc_web_output": "Ruby::ArgumentTypeMismatch",
   "connection_policy": "Ruby::ArgumentTypeMismatch",
   "threaded_stream": "Ruby::NoMethod",
+  "per_call_close": "Ruby::NoMethod",
+  "per_call_origin": "Ruby::UnexpectedKeywordArgument",
   "drain_policy": "Ruby::ArgumentTypeMismatch",
   "keepalive_policy": "Ruby::ArgumentTypeMismatch",
   "server_keepalive": "Ruby::ArgumentTypeMismatch",

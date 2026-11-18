@@ -181,4 +181,14 @@ module StreamingInterop
                              "threaded transport healthy after cancel")
     end
   end
+
+  # The same shapes through PerCallTransport, which runs from a plain thread
+  # or inside a reactor.
+  class PerCallClientProbe < ThreadedClientProbe
+    def run
+      server_stream
+      errors
+      cancellation
+    end
+  end
 end

@@ -115,6 +115,19 @@ module GRPCInterop
   ensure
     threaded&.close(grace: 0)
   end
+
+  # Both codings through one PerCallTransport: each on its own plain thread,
+  # then each inside a reactor task. Every call opens and closes its own
+  # connection to the request URL's origin.
+  def self.per_call_probe(origin, options, helpers)
+    per_call = ConnectRPC::Async::PerCallTransport.new(**options)
+    clients = %i[identity gzip].map do |coding|
+      PEER::Client.new(client: ConnectRPC::Client.new(base_url: origin, binding: BINDING, transport: per_call,
+                                                      protocol: :grpc, encoding: coding))
+    end
+    clients.map { |client| Thread.new { probe_unary_stream(client) } }.each(&:join)
+    helpers.reactor { |task| clients.map { |client| task.async { probe_unary_stream(client) } }.each(&:wait) }
+  end
 end
 
 helpers = Object.new.extend(AsyncHelpers)
@@ -159,6 +172,9 @@ Dir.mktmpdir("grpc-interop-", File.join(root, "vendor/grpc")) do |fixtures| # ru
         GRPCInterop.threaded_probe(origin, options)
         puts "PASS Ruby->grpc-go #{mode}/identity+gzip unary/server-stream and rich errors (headers-first, " \
              "trailers-only) through ThreadedTransport from plain threads"
+        GRPCInterop.per_call_probe(origin, options, helpers)
+        puts "PASS Ruby->grpc-go #{mode}/identity+gzip unary/server-stream and rich errors (headers-first, " \
+             "trailers-only) through PerCallTransport from plain threads and inside a reactor"
       ensure
         input.close
         unless process.join(5)
