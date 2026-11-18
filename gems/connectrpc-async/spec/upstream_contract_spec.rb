@@ -574,15 +574,18 @@ RSpec.describe "connectrpc-async upstream contract" do
       expect(connection.local_window.available).to eq(before + 100)
     end
 
-    it "protocol-http2 returns stream and connection credit only once half of each window is used " \
-       "(delete Stream#credit_due? and ReceiveWindows#request_window_update)" do
-      connection = Protocol::HTTP2::Client.new(framer.new)
+    it "protocol-http2 returns stream and connection credit only once more than half of each window is used " \
+       "(revisit ReceiveWindows#request_window_update and Stream#credit_due?)" do
+      written = []
+      connection = Protocol::HTTP2::Client.new(framer.new { |frame| written << [frame.stream_id, frame.unpack] })
       connection.local_window.desired = 65_535
-      windows = [connection.local_window, connection.create_stream.local_window]
-      windows.each { |window| window.consume(32_768) }
-      expect(windows.map(&:limited?)).to eq([false, false])
-      windows.each { |window| window.consume(1) }
-      expect(windows.map(&:limited?)).to eq([true, true])
+      flows = [connection, connection.create_stream]
+      flows.each { |flow| flow.local_window.consume(32_768) }
+      flows.each(&:request_window_update)
+      expect(written).to eq([])
+      flows.each { |flow| flow.local_window.consume(1) }
+      flows.each(&:request_window_update)
+      expect(written).to eq([[0, 32_769], [flows.last.id, 32_769]])
     end
 
     it "protocol-http2 update_local_settings retargets connection replenishment to the stream window " \

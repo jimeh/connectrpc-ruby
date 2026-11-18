@@ -304,6 +304,47 @@ RSpec.describe "Native HTTP/2 bounded ingress" do
       end
     end
 
+    it "keeps applying #{direction} DATA while an application read waits for the guard to return credit" do
+      reactor do |task|
+        ingress_pair(task, direction) do |client_connection, server_connection, sender, receiver, wire|
+          outgoing, _incoming, body = ingress_stream(client_connection, server_connection, direction)
+          sibling, _stream, sibling_body = ingress_stream(client_connection, server_connection, direction)
+          ingress_data(sender, outgoing.id, "a" * 16_384)
+          ingress_barrier(task, sender, wire)
+          # Another writer holds the frame guard, so the read that consumes a
+          # quarter of the window waits for it to send that stream credit.
+          held = Async::Queue.new
+          release = Async::Promise.new
+          holder = task.async do
+            receiver.synchronize do
+              held.enqueue(true)
+              release.wait
+            end
+          end
+          held.dequeue
+          reading = task.async { body.read }
+          ingress_wait(task, "the read to wait for the frame guard", state: -> { receiver.guard_waiting? }) do
+            receiver.guard_waiting?
+          end
+          # DATA on the same stream owes no new credit, so the reader applies
+          # it and the sibling's without queueing behind that read.
+          ingress_data(sender, outgoing.id, "b")
+          ingress_data(sender, sibling.id, "c")
+          ingress_wait(task, "the reader to apply both frames", state: -> { ingress_backlog(sibling_body) }) do
+            ingress_backlog(sibling_body) == [1, 1]
+          end
+          expect(ingress_backlog(body)).to eq([1, 1])
+          release.resolve(true)
+          expect(reading.wait).to eq("a" * 16_384)
+          ingress_barrier(task, sender, wire)
+          expect(wire[:credit][outgoing.id]).to eq(16_384)
+        ensure
+          release&.resolve(true) unless release&.resolved?
+          holder&.wait
+        end
+      end
+    end
+
     it "replenishes only consumed #{direction} bytes across repeated slow-reader rounds" do
       reactor do |task|
         ingress_pair(task, direction) do |client_connection, server_connection, sender, _receiver, wire|

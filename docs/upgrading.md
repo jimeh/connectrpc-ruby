@@ -134,7 +134,7 @@ These affect native HTTP/2 connections of the Async `Transport`,
   while DATA arrives, at most one per round trip, and raises its stream windows,
   and its connection window when needed, up to `max_receive_window` with
   SETTINGS and WINDOW_UPDATE frames. A 3 MiB upload to a default `Host` over
-  50 ms of round-trip time takes about 0.75 s instead of 5 s. A peer can now
+  50 ms of round-trip time takes about 0.64 s instead of 5 s. A peer can now
   drive a stream's unread retention up to `max_receive_window`, so the worst
   cases grow.
   - `Host`, `ServerSession` and the Falcon server default to a 1 MiB ceiling:
@@ -159,11 +159,14 @@ These affect native HTTP/2 connections of the Async `Transport`,
   grpc-go, instead of half. A stream returns credit once the application has
   consumed or discarded a quarter of its window, and a connection once a
   quarter of its window has arrived. A stream whose reader keeps up therefore
-  keeps at least three quarters of its window in flight instead of half, and
-  each growth step doubles its window. With static 64 KiB windows, a 3 MiB
-  body over 50 ms of round-trip time takes about 2.6 s instead of 4.9 s. Each
-  side sends up to twice as many WINDOW_UPDATE frames. Window sizes and
-  retention bounds are unchanged.
+  holds back less than a quarter of its window instead of up to half, and in
+  the benchmark most growth steps now double its window instead of growing it
+  1.3 to 1.6 times. With static 64 KiB windows, a 3 MiB body over 50 ms of
+  round-trip time takes about 2.6 s instead of 4.9 s. WINDOW_UPDATE frames
+  are more frequent, depending on frame size and how the application reads:
+  with 16 KiB DATA frames and a 64 KiB stream window read as it arrives, one
+  per frame instead of one per three. Window sizes and retention bounds are
+  unchanged.
 - Forced teardown (an abort, an expired grace, or a keepalive or
   write-progress failure) shuts raw TCP down in both directions at once and
   closes the descriptor after the connection's tasks have joined. Before 0.3.0

@@ -1274,8 +1274,8 @@ for a server. Each is an integer from 65,535, the HTTP/2 initial window, to
   application consumes or discards bytes, so a stream retains at most its
   window of unread payload bytes. Since 0.3.0, a stream returns credit once
   the application has consumed or discarded a quarter of its window, as
-  grpc-go does, so a stream whose reader keeps up has at least three quarters
-  of its window in flight. Earlier releases waited for half, protocol-http2's
+  grpc-go does, so a stream whose reader keeps up holds back less than a
+  quarter of its window. Earlier releases waited for half, protocol-http2's
   rule. A stream receives at most one window per round trip, so its download
   or upload rate is at most about the window divided by the round-trip time:
   64 KiB at 50 ms RTT is under 1.3 MiB/s, 4 MiB is about 80 MiB/s. Dynamic
@@ -1328,9 +1328,9 @@ grpc-go, every received DATA frame counts toward a sample, including padding and
 DATA for refused or closed streams, so traffic the host rejects can raise the
 windows of the streams it admits, up to `max_receive_window`. The reader never
 writes BDP frames, so a BDP frame write blocked by a full socket send buffer,
-such as during a large upload, never stops it reading. protocol-http2 still
-writes connection WINDOW_UPDATEs and SETTINGS ACKs from the reader, as before
-0.3.0. A host queues BDP frames on the
+such as during a large upload, never stops it reading. The reader still
+writes connection WINDOW_UPDATEs, through protocol-http2, and SETTINGS ACKs, as
+before 0.3.0. A host queues BDP frames on the
 [control writer](#server-keepalive). A client hands them to a writer task of
 its connection, which holds at most one BDP PING and the latest growth, and
 sends growth as soon as the ACK that measured it is read. Each takes effect
@@ -1399,7 +1399,7 @@ defaults, and `--static` turns dynamic windows off on both:
 
 | Windows (client stream / host stream / connection) | Download | 4 concurrent downloads | Upload |
 | --- | --- | --- | --- |
-| 64 KiB / 64 KiB / 64 KiB, static (`--static --stream 65536 --connection 65535`, the windows before 0.3.0) | 3.95 s | 13.23 s | 3.99 s |
+| 64 KiB / 64 KiB / 64 KiB, static (`--static --stream 65536 --connection 65535`, the windows before 0.3.0, with 0.3.0's credit return) | 3.95 s | 13.23 s | 3.99 s |
 | 64 KiB / 64 KiB / 16 MiB, static (`--static --stream 65536`) | 2.61 s | 2.60 s | 2.57 s |
 | 4 MiB / 64 KiB / 16 MiB, static (`--static`, the 0.3.0 windows without growth) | 0.12 s | 0.23 s | 2.55 s |
 | 1 MiB / 1 MiB / 16 MiB, static (`--static --stream 1048576`) | 0.31 s | 0.38 s | 0.26 s |
@@ -1416,16 +1416,18 @@ upload times differ only by run-to-run variation.
 Growth takes a few round trips: an upload starting at 64 KiB reaches the
 default 1 MiB host ceiling after four or five growth steps, about 0.5 s at
 50 ms RTT, which is why it trails a static 4 MiB host window. A step needs a
-sample of at least two thirds of the estimate. With credit returned at a
-quarter, a lone stream whose reader keeps up fills such samples, and each step
-doubles its window. The sample right after a step usually misses, because the
-peer can spend the grown window only once the SETTINGS reaches it, so a lone
-stream doubles about every other round trip, as in grpc-go. With
+sample of at least two thirds of the estimate, and sets the estimate to twice
+the sample, up to the ceiling. With credit returned at a quarter, a lone stream
+whose reader keeps up usually fills its window in a sample, so most steps in
+the benchmark double its window. The sample right after a step usually misses,
+because the peer can spend the grown window only once the SETTINGS reaches it,
+so a lone stream doubles about every other round trip, as in grpc-go. With
 protocol-http2's half rule, the samples reached between about half and four
 fifths of the estimate, and each step grew the window only 1.3 to 1.6 times.
 `--growth` traces this for one sustained download and one upload per run
 (16 MiB bodies by default): each stream window step, and each BDP sample as a
-share of the estimate. With `--growth --rtt 0.2 --size 67108864 --stream 65536
+share of the estimate; the first sample usually belongs to the warm-up call.
+With `--growth --rtt 0.2 --size 67108864 --stream 65536
 --max 16777216`, the download's window reached the 16 MiB ceiling after 3.6 s
 and the upload's after 2.9 s, against 4.7 s and 4.0 s with the half rule.
 

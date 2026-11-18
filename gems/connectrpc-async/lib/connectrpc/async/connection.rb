@@ -616,7 +616,10 @@ module ConnectRPC
           else
             discarded = frame.length
           end
-          reclaim_input(discarded)
+          # Receipt alone owes no stream credit, which counts only consumed or
+          # discarded bytes. Reclaiming nothing would still send credit an
+          # application read owes, and wait behind that read for the guard.
+          reclaim_input(discarded) if discarded.positive?
           data
         rescue ::Protocol::HTTP2::ProtocolError
           raise
