@@ -87,7 +87,7 @@ RSpec.describe "HTTP/2 GOAWAY draining and replacement" do
     end
   end
 
-  it "keeps a removed connection's slot reserved until its raw socket closes" do
+  it "keeps a removed connection's slot reserved until its raw socket fails" do
     reactor do |task|
       bound = IO::Endpoint.tcp("127.0.0.1", 0).bound
       peer = drain_peer(task, bound.sockets.first, holds, {})
@@ -99,7 +99,7 @@ RSpec.describe "HTTP/2 GOAWAY draining and replacement" do
       entered = Async::Queue.new
       gate = Async::Queue.new
       gated = false
-      # Hold the first abort before its raw close, after accounting removal.
+      # Hold the first abort before its raw failure, after accounting removal.
       resource.define_singleton_method(:abort) do |*args|
         unless gated
           gated = true
@@ -118,8 +118,11 @@ RSpec.describe "HTTP/2 GOAWAY draining and replacement" do
       expect(peer.accepted).to eq(1)
       gate.enqueue(true)
       expect(call.wait).to eq("/next")
-      expect(resource.raw).to be_closed
+      expect(resource.send(:raw_failed?)).to be(true)
       expect([peer.accepted, meter.peak]).to eq([2, 1])
+      # The descriptor closes once the old connection's retirement completes.
+      wait_until(task, "removed connection retired") { resource.send(:retirement_completed?) }
+      expect(resource.raw).to be_closed
       expect(lease_usage(transport)).to eq(0)
     ensure
       gate&.enqueue(true)

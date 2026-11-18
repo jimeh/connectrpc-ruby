@@ -648,15 +648,35 @@ module ConnectRPC
       end
 
       def retire_session
-        # Listener cleanup can yield. Fail every peer before crossing it.
-        @resources.each { |resource| Internal.raw_close(resource.raw) }
-        stop_accepting
-        @resources.each(&:abort)
+        # Every accepted peer fails before this cleanup can yield. An H2
+        # shutdown never yields; an HTTP/1 close (on Ruby 4) and listener
+        # cleanup can.
+        resources = @resources.dup
+        h2, http1 = resources.partition { |resource| resource.is_a?(Internal::Resource) }
+        h2.each { |resource| resource.send(:fail_raw) }
+        # Only retirement closes an H2 descriptor, so a failure or interruption
+        # never skips a later step. Listeners prune @resources while a step
+        # yields, so each pass walks its own array.
+        failures = http1.map { |resource| retain_failure { Internal.raw_close(resource.raw) } }
+        failures << retain_failure { stop_accepting }
+        failures.concat((resources | @resources).map { |resource| retain_failure { resource.abort } })
+        failures.compact!
+        # An interruption wins over an ordinary failure, as in CompletionJoin.
+        failure = failures.find { |error| !error.is_a?(StandardError) } || failures.first
+        raise failure if failure
+
         @admitted.clear
         @h1_wire.clear
         @tls.close
         finish_closed(@close_outcome)
         Internal.cancel(@lifetime)
+      end
+
+      def retain_failure
+        yield
+        nil
+      rescue Exception => e # rubocop:disable Lint/RescueException -- an interruption is re-raised once every peer retires
+        e
       end
     end
   end

@@ -522,7 +522,7 @@ RSpec.describe ConnectRPC::Async::Host do
       retained.concat(faults.tasks)
       fibers = retained.filter_map(&:fiber)
       expect(handler).not_to be_finished
-      expect(resources.map(&:raw)).to all(be_closed)
+      expect(resources).to all(satisfy { |resource| resource.send(:raw_failed?) })
       AsyncHelpers::INTERNAL.cancel(owner)
       expect(owner).to be_cancelled
       expect(waiter).not_to be_finished
