@@ -11,6 +11,11 @@ RSpec.describe "PerCallTransport connection close, close budget and outcome prec
 
   def no_error_goaway = [0, 0, Protocol::HTTP2::Error::NO_ERROR, ""]
 
+  # A raw peer's Connect unary proto reply for Mixed.Lookup.
+  def proto_reply(name)
+    Protocol::HTTP::Response[200, { "content-type" => "application/proto" }, [ThreadedStreamHelpers::ITEM.encode(item(name))]]
+  end
+
   # One call of the given kind through the public client, reduced to the
   # names it received.
   def near_deadline_call(kind, typed, timeout)
@@ -56,6 +61,71 @@ RSpec.describe "PerCallTransport connection close, close budget and outcome prec
       ensure
         peer&.stop
       end
+    end
+
+    # About 150 ms of the deadline remain when the reply leaves a peer that
+    # never sends FIN. The FIN wait takes all but the 100 ms reserve, so the
+    # call returns with the reserve, and no more, still on its deadline.
+    it "waits for FIN until one reserve before the deadline when 100 to 200 ms remain on the #{path} path" do
+      deadline = [nil]
+      left_at_reply = Thread::Queue.new
+      peer = withholding_peer do |incoming|
+        # Wall-clock positioning is the scenario: the reply leaves about 150 ms before the deadline.
+        sleep([deadline.first.remaining - 0.15, 0].max)
+        left_at_reply << deadline.first.remaining
+        incoming.send_response(proto_reply("u"))
+      end
+      typed = mixed_client(per_call, "http://127.0.0.1:#{peer.peer.port}")
+      with_boundaries do |boundaries|
+        result, left = on_path(path) do
+          deadline[0] = ConnectRPC::Deadline.new(0.5)
+          [typed.lookup(item("u"), deadline: deadline.first).message.name, deadline.first.remaining]
+        end
+        expect(result).to eq("u")
+        expect(pop_within(left_at_reply, "the reply")).to be_between(0.1, 0.2)
+        # A wait that ended any earlier or later would leave more or less than the reserve.
+        expect(left).to be_between(0.06, AsyncHelpers::INTERNAL::CLEANUP_SECONDS + 0.01)
+        expect_released(boundaries.take.first)
+        expect(peer.peer.goaways).to eq([no_error_goaway])
+      end
+    ensure
+      peer&.stop
+    end
+
+    # The deadline's clock runs at a twentieth of real time. A Connect server
+    # stream delivers four messages, each well inside the time its read still
+    # has, but the stream outlasts the deadline's remaining time at the call's
+    # start, as measured in real time, by more than one cleanup allowance. The
+    # call still has most of its time on its own clock, so the close follows
+    # that time: it stays graceful and joins the owner before the call returns.
+    it "closes gracefully and joins the call while a slow custom deadline clock has time left on the #{path} path" do
+      timeout = 0.2
+      peer = threaded_recording_peer do |incoming|
+        body = Protocol::HTTP::Body::Writable.new
+        incoming.send_response(Protocol::HTTP::Response[200, { "content-type" => "application/connect+proto" }, body])
+        4.times do |index|
+          # Wall-clock positioning is the scenario: together the gaps outlast the timeout in real time.
+          sleep(timeout / 2)
+          body.write(envelope(item("s#{index}")))
+        end
+        body.write([2, 2, "{}"].pack("CNa*"))
+        body.close_write
+      end
+      typed = mixed_client(per_call, "http://127.0.0.1:#{peer.peer.port}")
+      with_boundaries do |boundaries|
+        result = on_path(path) do
+          base = monotonic
+          deadline = ConnectRPC::Deadline.new(timeout, clock: -> { (monotonic - base) / 20 })
+          names = []
+          typed.watch(item("s"), deadline: deadline) { |reader| reader.each { |message| names << message.name } }
+          names
+        end
+        expect(result).to eq(%w[s0 s1 s2 s3])
+        expect_released(boundaries.take.first)
+        expect(peer.peer.goaways).to eq([no_error_goaway])
+      end
+    ensure
+      peer&.stop
     end
 
     it "closes a cooperative peer's connection with GOAWAY(NO_ERROR) and waits for its EOF on the #{path} path" do
