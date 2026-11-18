@@ -111,7 +111,7 @@ RSpec.describe "PerCallTransport tracing" do
                   end
       expect(per_call).to eq(reference)
       expect(per_call.map(&:last)).to eq([OpenTelemetry::Trace::Status::UNSET, OpenTelemetry::Trace::Status::ERROR])
-      expect(per_call.last[1]).to include("rpc.response.status_code" => "canceled")
+      expect(per_call.last[1]).to include("rpc.status_code" => "canceled")
     ensure
       gates&.fetch(:release, nil)&.<<(true)
       peer&.stop
