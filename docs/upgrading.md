@@ -165,14 +165,13 @@ and [Accept errors](../gems/connectrpc-async/README.md#accept-errors).
   blocked on a full send buffer is renewed for another 60 seconds while the peer
   keeps acknowledging data, so a slow reader whose TCP acknowledgements keep
   advancing stays connected, and one that stops is aborted 60 to 120 seconds
-  after its last progress. On
-  other platforms and older kernels each write keeps a fixed deadline, and a
-  blocked write waits for the peer to drain a large part of the send buffer,
-  about 950 KB on Linux defaults, so raise the bound with the new
-  `frame_write_timeout:` option for clients that read large responses over slow
-  links. With nil the bound is off, and a control frame such as a PING ACK
-  queued behind the stalled write still ends the connection after the keepalive
-  `timeout`.
+  after the later of its last progress and the blocked write's start. On other
+  platforms and older kernels each write keeps a fixed deadline, and a blocked
+  write waits for the peer to drain a large part of the send buffer, about 950
+  KB on Linux defaults, so raise the bound with the new `frame_write_timeout:`
+  option for clients that read large responses over slow links. With nil the
+  bound is off, and a control frame such as a PING ACK queued behind the stalled
+  write still ends the connection after the keepalive `timeout`.
 - An HTTP/2 stream that arrives while `max_requests` admission is full is
   refused with `RST_STREAM(REFUSED_STREAM)` while its HEADERS are read, before
   any of its DATA, instead of after its request was queued for dispatch. Its
