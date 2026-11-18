@@ -1284,8 +1284,10 @@ for a server. Each is an integer from 65,535, the HTTP/2 initial window, to
   net/http2 does. Connection credit returns as DATA arrives rather than when it
   is read, so unread bytes never exceed the stream windows. The connection
   window instead limits how fast those windows can fill: before 0.3.0, one
-  round trip delivered at most 64 KiB per connection. Keep it at least the
-  stream window times the streams expected to transfer at once. The client
+  round trip delivered at most 64 KiB per connection. Any connection window is
+  valid, including one smaller than a single stream window: streams then wait
+  for connection credit and slow down. For full throughput, keep it at least
+  the stream window times the streams expected to transfer at once. The client
   default lets four streams each fill a 4 MiB window in one round trip.
 
 Since 0.3.0, the windows also grow at run time, as grpc-go's do.
@@ -1393,6 +1395,7 @@ off on both:
 
 | Windows (client stream / host stream / connection) | Download | 4 concurrent downloads | Upload |
 | --- | --- | --- | --- |
+| 64 KiB / 64 KiB / 64 KiB, static (`--static --stream 65536 --connection 65535`, the windows before 0.3.0) | 6.24 s | 20.39 s | 6.22 s |
 | 64 KiB / 64 KiB / 16 MiB, static (`--static --stream 65536`) | 4.95 s | 5.21 s | 4.98 s |
 | 4 MiB / 64 KiB / 16 MiB, static (`--static`, the 0.3.0 windows without growth) | 0.12 s | 0.21 s | 4.92 s |
 | 1 MiB / 1 MiB / 16 MiB, static (`--static --stream 1048576`) | 0.38 s | 0.46 s | 0.38 s |

@@ -2010,6 +2010,41 @@ RSpec.shared_examples "HTTP/2 server keepalive" do
       end
     end
 
+    it "keeps a wait's bound when a sibling spends the connection credit first" do
+      reactor do |task|
+        with_keepalive_host(task, keepalive: server_keepalive(time: nil),
+                                  client_options: { settings: open_window }) do |fixture|
+          client = fixture.client
+          client.connection.define_singleton_method(:request_window_update) { nil }
+          ping_through(task, client, "settings")
+          call = task.async { client.connection.call(connect_request(echo_path, "c" * 70_000)) }
+          large = call.wait.stream.id
+          wait_until(task, "the connection window spent") { client.wire.data_bytes[large] == 65_535 }
+          small = start_call(client, echo_path, "small")
+          await_headers(task, client, small, "spent000")
+          expect(credit_waits(fixture)).to eq([60, 60])
+          fixture.clock.advance(30)
+          # One byte of connection credit wakes both outputs; one spends it.
+          raw_window_update(client, 0, 1)
+          sent = -> { client.wire.data_bytes.values_at(large, small) }
+          wait_until(task, "one byte of DATA; sent #{sent.call}") { sent.call.sum == 65_536 }
+          loser = sent.call == [65_536, 0] ? small : large
+          ping_through(task, client, "credit30")
+          expect(credit_waits(fixture).sort).to eq([60, 90])
+          fixture.clock.advance(29)
+          ping_through(task, client, "credit59")
+          expect(client.wire.resets).to eq({})
+          fixture.clock.advance(1)
+          wait_until(task, "CANCEL on #{loser}; resets #{client.wire.resets}") do
+            client.wire.resets[loser] == KeepaliveClient::CANCEL
+          end
+          ping_through(task, client, "credit60")
+          expect(client.wire.resets).to eq(loser => KeepaliveClient::CANCEL)
+          expect(credit_waits(fixture)).to eq([90])
+        end
+      end
+    end
+
     it "ends a credit wait when the peer resets the stream" do
       reactor do |task|
         with_keepalive_host(task, keepalive: server_keepalive(time: nil),
