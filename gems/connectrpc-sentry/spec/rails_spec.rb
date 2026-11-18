@@ -45,7 +45,7 @@ RSpec.describe "Rails with sentry-rails" do
                            status: "ok", origin: "auto.rpc.connectrpc")
     expect(rpc[:timestamp]).not_to be_nil
     expect(rpc[:data]).to include("rpc.system.name" => "connectrpc", "rpc.method" => "example.v1.EchoService/Echo",
-                                  "rpc.response.status_code" => "OK", "http.response.status_code" => 200,
+                                  "rpc.status_code" => "OK", "http.response.status_code" => 200,
                                   "connectrpc.processing.state" => "finished")
     expect(rpc[:data]).not_to have_key("connectrpc.delivery")
     controller = host.spans.find { |span| span[:op] == "view.process_action.action_controller" }
@@ -71,7 +71,7 @@ RSpec.describe "Rails with sentry-rails" do
       expect(mechanism(error)).to include(type: subscribed ? "rails" : "connectrpc", handled: false)
       expect(error.to_h.dig(:exception, :values).last[:type]).to eq("RuntimeError")
       expect(rpc).to include(status: "internal_error")
-      expect(rpc[:data]).to include("rpc.response.status_code" => "internal")
+      expect(rpc[:data]).to include("rpc.status_code" => "internal")
     ensure
       Rails.error.unsubscribe(subscriber) if subscriber
     end
@@ -83,7 +83,7 @@ RSpec.describe "Rails with sentry-rails" do
     expect(post_rpc(app, "deliberate").status).to eq(400)
     expect(post_rpc(app, "missing").status).to eq(404)
     expect(error_events).to be_empty
-    codes = transactions.map { |event| rpc_span(event)[:data]["rpc.response.status_code"] }
+    codes = transactions.map { |event| rpc_span(event)[:data]["rpc.status_code"] }
     expect(codes).to eq(%w[invalid_argument not_found])
   end
 end

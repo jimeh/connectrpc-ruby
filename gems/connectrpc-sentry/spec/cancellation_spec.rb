@@ -35,7 +35,7 @@ RSpec.describe "Client cancellation" do
           trace = trace_of(rpc_transactions("rpc.server").first)
           expect(trace).to include(status: "cancelled")
           expect(trace[:data]).to include("connectrpc.delivery" => "aborted",
-                                          "rpc.response.status_code" => protocol == :grpc ? "CANCELLED" : "canceled")
+                                          "rpc.status_code" => protocol == :grpc ? "CANCELLED" : "canceled")
           expect(error_events).to be_empty
         ensure
           release.enqueue(true)
