@@ -13,6 +13,16 @@ url = "https://github.com/rhysd/actionlint/releases/download/v1.7.12/actionlint_
 url_api = "https://api.github.com/repos/rhysd/actionlint/releases/assets/384924896"
 provenance = "github-attestations"
 
+[[tools."aqua:EmbarkStudios/cargo-deny"]]
+version = "0.20.2"
+backend = "aqua:EmbarkStudios/cargo-deny"
+specifiers = ["0.20.2"]
+
+[tools."aqua:EmbarkStudios/cargo-deny"."platforms.linux-x64"]
+checksum = "sha256:9f12ed4c49936e09b48bf862b595cde2fe64fcbd9d74dfacac6131ca824c8d5f"
+url = "https://github.com/EmbarkStudios/cargo-deny/releases/download/0.20.2/cargo-deny-0.20.2-x86_64-unknown-linux-musl.tar.gz"
+url_api = "https://api.github.com/repos/EmbarkStudios/cargo-deny/releases/assets/471598214"
+
 [[tools."aqua:bufbuild/buf"]]
 version = "1.75.0"
 backend = "aqua:bufbuild/buf"
@@ -33,6 +43,16 @@ specifiers = ["36.2"]
 checksum = "sha256:121f6c7afe1d4d0e3ea6aab9432038599250134cbf4474cb1167d2c7decd4278"
 url = "https://github.com/protocolbuffers/protobuf/releases/download/v36.2/protoc-36.2-linux-x86_64.zip"
 url_api = "https://api.github.com/repos/protocolbuffers/protobuf/releases/assets/570742434"
+
+[[tools."aqua:rustsec/rustsec/cargo-audit"]]
+version = "0.23.0"
+backend = "aqua:rustsec/rustsec/cargo-audit"
+specifiers = ["0.23.0"]
+
+[tools."aqua:rustsec/rustsec/cargo-audit"."platforms.linux-x64"]
+checksum = "sha256:b77993532b253fcbf550996d7716465ec3d734d4e74e7f87bfb65a19add0fb59"
+url = "https://github.com/rustsec/rustsec/releases/download/cargo-audit/v0.23.0/cargo-audit-x86_64-unknown-linux-gnu-v0.23.0.tgz"
+url_api = "https://api.github.com/repos/rustsec/rustsec/releases/assets/731640338"
 
 [[tools."github:connectrpc/conformance"]]
 version = "1.0.6"
@@ -80,6 +100,11 @@ ruby_install = "false"
 [tools.ruby."platforms.linux-x64"]
 checksum = "sha256:5e5d85ad93b0adcccbad47733680f4892bd0078e3342437f7babce01c1872479"
 url = "https://cache.ruby-lang.org/pub/ruby/3.4/ruby-3.4.12.tar.gz"
+
+[[tools.rust]]
+version = "1.98.0"
+backend = "core:rust"
+specifiers = ["1.98.0"]
 
 [[tools.zizmor]]
 version = "1.31.1"

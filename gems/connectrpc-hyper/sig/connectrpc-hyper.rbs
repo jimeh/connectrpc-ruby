@@ -1,0 +1,21 @@
+module ConnectRPC
+  module Hyper
+    VERSION: String
+
+    # Since 0.3.0. A reactor-free client transport for core's unary,
+    # streaming and native gRPC SPIs. Construction validates options and
+    # starts no thread or socket.
+    class Transport
+      def initialize: (?connections: :pooled | :per_call, ?idle_timeout: Numeric?, ?keepalive: Keepalive?, ?http2: bool, ?connect_timeout: Numeric?, ?ca_file: (String | _ToPath)?, ?certificate_chain: Array[String]?, ?private_key: String?) -> void
+      def inspect: () -> String
+      def call: (TransportRequest) -> TransportResponse
+      def streaming_capabilities: () -> Array[streaming_cardinality]
+      def open_stream: [T] (StreamRequest) { (_StreamExchange) -> T } -> T
+      def grpc_capabilities: () -> Array[grpc_cardinality]
+      def open_grpc_stream: [T] (StreamRequest) { (_GRPCStreamExchange) -> T } -> T
+      # True when every in-flight call drained within grace; false after
+      # forced teardown. Later calls fail with the closed phrase.
+      def close: (?grace: Numeric) -> bool
+    end
+  end
+end

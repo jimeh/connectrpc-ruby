@@ -1,0 +1,31 @@
+[package]
+name = "connectrpc_hyper"
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.85"
+publish = false
+license = "MIT"
+description = "Native hyper/h2/rustls client transport for the connectrpc-hyper gem"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+bytes = "1.12.1"
+h2 = "0.4.20"
+http = "1.5.0"
+http-body = "1.1.0"
+http-body-util = "0.1.5"
+hyper = { version = "1.12.0", features = ["client", "http1", "http2"] }
+# Only the tokio runtime glue: no client-proxy feature, so nothing reads proxy
+# environment variables.
+hyper-util = { version = "0.1.21", default-features = false, features = ["tokio"] }
+magnus = { version = "0.9.3", features = ["rb-sys"] }
+rb-sys = "0.9.130"
+rustls = { version = "0.23.46", default-features = false, features = ["aws_lc_rs", "prefer-post-quantum", "std", "tls12"] }
+rustls-native-certs = "0.8.5"
+tokio = { version = "1.54.1", features = ["rt", "rt-multi-thread", "net", "time", "sync", "macros"] }
+tokio-rustls = { version = "0.26.6", default-features = false, features = ["aws_lc_rs", "tls12"] }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2.191"

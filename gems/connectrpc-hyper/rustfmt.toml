@@ -1,0 +1,2 @@
+# Pins formatting to rustfmt's defaults, independent of any user-level config.
+edition = "2024"

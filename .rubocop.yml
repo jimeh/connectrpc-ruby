@@ -11,6 +11,9 @@ AllCops:
     - examples/gen/**/*_pb.rb
     - interop/grpc/ruby/**/*.rb
     - gems/connectrpc-health/lib/grpc/**/*_pb.rb
+    # rake-compiler stages package copies and Rust build trees here.
+    - gems/connectrpc-hyper/tmp/**/*
+    - gems/connectrpc-hyper/target/**/*
     # Appraisal output is byte-checked with its actual generator.
     - gems/connectrpc-on-rails/gemfiles/**/*
 
@@ -44,6 +47,8 @@ Metrics/BlockLength:
     - gems/connectrpc-health/scripts/**/*.rb
     - gems/connectrpc-sentry/spec/**/*.rb
     - gems/connectrpc-sentry/scripts/**/*.rb
+    - gems/connectrpc-hyper/spec/**/*.rb
+    - gems/connectrpc-hyper/scripts/**/*.rb
     - gems/connectrpc-testing/spec/**/*.rb
     - gems/connectrpc-testing/scripts/**/*.rb
     - gems/connectrpc-falcon/spec/**/*.rb
@@ -94,6 +99,8 @@ Metrics/MethodLength:
     - gems/connectrpc-health/scripts/**/*.rb
     - gems/connectrpc-sentry/spec/**/*.rb
     - gems/connectrpc-sentry/scripts/**/*.rb
+    - gems/connectrpc-hyper/spec/**/*.rb
+    - gems/connectrpc-hyper/scripts/**/*.rb
     - gems/connectrpc-testing/spec/**/*.rb
     - gems/connectrpc-testing/scripts/**/*.rb
     - gems/connectrpc-falcon/spec/**/*.rb
@@ -143,6 +150,8 @@ Metrics/AbcSize:
     - gems/connectrpc-health/scripts/**/*.rb
     - gems/connectrpc-sentry/spec/**/*.rb
     - gems/connectrpc-sentry/scripts/**/*.rb
+    - gems/connectrpc-hyper/spec/**/*.rb
+    - gems/connectrpc-hyper/scripts/**/*.rb
     - gems/connectrpc-testing/spec/**/*.rb
     - gems/connectrpc-testing/scripts/**/*.rb
     - gems/connectrpc-falcon/spec/**/*.rb

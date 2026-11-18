@@ -655,6 +655,68 @@ run = "mise exec -- ruby gems/connectrpc-sentry/scripts/run.rb example"
 description = "Verify Sentry specs, source and packages"
 depends = ["sentry:test", "sentry:check", "sentry:package", "sentry:example"]
 
+# Optional reactor-free Rust client transport; independent bundle, pinned Rust
+# 1.98.0 (the rb-sys-dock image's) and Rust lint tools.
+
+[tasks."hyper:tools"]
+description = "Install pinned Rust, cargo-deny and cargo-audit; require pinned Ruby and Bundler for connectrpc-hyper"
+dir = "{{config_root}}/gems/connectrpc-hyper"
+tools.rust = "1.98.0"
+tools."aqua:EmbarkStudios/cargo-deny" = "0.20.2"
+tools."aqua:rustsec/rustsec/cargo-audit" = "0.23.0"
+env = { BUNDLE_GEMFILE = "{{config_root}}/gems/connectrpc-hyper/Gemfile", BUNDLE_PATH = "{{config_root}}/vendor/hyper/bundle", BUNDLE_USER_HOME = "{{config_root}}/vendor/hyper/bundler", BUNDLE_COOLDOWN = "3" }
+run = ["mise install --locked rust@1.98.0 aqua:EmbarkStudios/cargo-deny@0.20.2 aqua:rustsec/rustsec/cargo-audit@0.23.0", "ruby scripts/tools.rb"]
+
+[tasks."hyper:setup"]
+description = "Install the independent connectrpc-hyper bundle and compile the extension for the active Ruby"
+depends = ["hyper:tools"]
+tools.rust = "1.98.0"
+run = "ruby gems/connectrpc-hyper/scripts/run.rb setup"
+
+[tasks."hyper:peer"]
+description = "Build the disposable grpc-go/connect-go/raw HTTP/2 peer used by connectrpc-hyper specs"
+tools.go = "1.27.3"
+dir = "{{config_root}}/gems/connectrpc-hyper/interop"
+env = { GOTOOLCHAIN = "local", GOWORK = "off", GOFLAGS = "-mod=readonly", GOMODCACHE = "{{config_root}}/vendor/hyper/go/mod", GOCACHE = "{{config_root}}/vendor/hyper/go/build" }
+run = ["mise install --locked go@1.27.3", "go mod download all", "go mod verify", "go vet .", "go build -o ../../../vendor/hyper/peer ."]
+
+[tasks."hyper:test"]
+description = "Run connectrpc-hyper specs against local Go peers: interop, limits, interrupts, pooling, retries, liveness, fork, TLS and offload"
+depends = ["hyper:setup", "hyper:peer"]
+tools.rust = "1.98.0"
+run = "ruby gems/connectrpc-hyper/scripts/run.rb test"
+
+[tasks."hyper:check"]
+description = "Parse and lint connectrpc-hyper Ruby, then cargo fmt, clippy -D warnings, cargo deny, cargo audit and notices"
+depends = ["hyper:setup"]
+tools.rust = "1.98.0"
+tools."aqua:EmbarkStudios/cargo-deny" = "0.20.2"
+tools."aqua:rustsec/rustsec/cargo-audit" = "0.23.0"
+run = "ruby gems/connectrpc-hyper/scripts/run.rb check"
+
+[tasks."hyper:build"]
+description = "Build isolated core and connectrpc-hyper source archives"
+depends = ["hyper:setup"]
+run = "ruby gems/connectrpc-hyper/scripts/run.rb build"
+
+[tasks."hyper:package"]
+description = "Install the connectrpc-hyper source gem offline from a pre-fetched locked crate cache, outside the checkout, and smoke it"
+depends = ["hyper:build"]
+tools.rust = "1.98.0"
+run = "ruby gems/connectrpc-hyper/scripts/run.rb package"
+
+[tasks."hyper:interop"]
+description = "Verify the Go peer modules and run the connectrpc-hyper grpc-go/connect-go interop matrix"
+depends = ["hyper:setup", "hyper:peer"]
+tools.rust = "1.98.0"
+tools.go = "1.27.3"
+env = { GOTOOLCHAIN = "local", GOWORK = "off", GOFLAGS = "-mod=readonly", GOMODCACHE = "{{config_root}}/vendor/hyper/go/mod", GOCACHE = "{{config_root}}/vendor/hyper/go/build" }
+run = "ruby gems/connectrpc-hyper/scripts/run.rb interop"
+
+[tasks."hyper:verify"]
+description = "Verify connectrpc-hyper specs, Ruby and Rust lint, supply-chain checks, interop and the offline source-gem install"
+depends = ["hyper:test", "hyper:check", "hyper:package", "hyper:interop"]
+
 [tasks."rbs:source"]
 description = "Strictly check all selected core implementation files and private state"
 depends = ["rbs:setup"]
@@ -979,6 +1041,22 @@ run = [
   "mise exec -- ruby gems/connectrpc-sentry/scripts/run.rb test",
   "mise exec -- ruby gems/connectrpc-sentry/scripts/run.rb build",
   "mise exec -- ruby gems/connectrpc-sentry/scripts/run.rb package",
+]
+
+# Joins the floors aggregate with the CI floors matrix when the gem joins the
+# release train.
+[tasks."floors:hyper"]
+description = "Run connectrpc-hyper specs and package checks with runtime dependencies at their declared floors"
+depends = ["hyper:tools", "hyper:peer"]
+tools.rust = "1.98.0"
+env.CONNECTRPC_DEPENDENCY_FLOORS = "1"
+run = [
+  "rm -f gems/connectrpc-hyper/Gemfile.floors.lock",
+  "ruby gems/connectrpc-hyper/scripts/run.rb setup",
+  "ruby gems/connectrpc-hyper/scripts/run.rb floors",
+  "ruby gems/connectrpc-hyper/scripts/run.rb test",
+  "ruby gems/connectrpc-hyper/scripts/run.rb build",
+  "ruby gems/connectrpc-hyper/scripts/run.rb package",
 ]
 
 [tasks.floors]

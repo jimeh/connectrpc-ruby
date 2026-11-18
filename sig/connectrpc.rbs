@@ -558,6 +558,18 @@ module ConnectRPC
     def timeout_ms: () -> String
   end
 
+  # Since 0.3.0. Client HTTP/2 keepalive shared by optional transports;
+  # ConnectRPC::Async::Keepalive is the same class.
+  class Keepalive
+    def initialize: (time: Numeric, ?timeout: Numeric, ?permit_without_calls: bool) -> void
+    attr_reader time: Numeric
+    attr_reader timeout: Numeric
+    attr_reader permit_without_calls: bool
+    def ==: (untyped other) -> bool
+    def eql?: (untyped other) -> bool
+    def hash: () -> Integer
+  end
+
   class Context
     def initialize: (?request_metadata: metadata_input, ?deadline: Deadline?, ?lifecycle: Instrumentation::Handle?, ?cancellation: _Cancellation?) -> void
     attr_reader request_metadata: Metadata

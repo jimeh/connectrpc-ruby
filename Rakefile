@@ -40,7 +40,7 @@ task :syntax do
                    "gems/connectrpc-falcon/scripts/**/*.rb", "gems/connectrpc-falcon/soak/**/*.rb",
                    "gems/connectrpc-falcon/examples/**/*.rb",
                    "gems/connectrpc-falcon/*.gemspec", "gems/connectrpc-falcon/Gemfile",
-                   *%w[otel prometheus yabeda health sentry].flat_map do |name|
+                   *%w[otel prometheus yabeda health sentry hyper].flat_map do |name|
                      %W[gems/connectrpc-#{name}/{lib,spec,scripts}/**/*.rb gems/connectrpc-#{name}/*.gemspec
                         gems/connectrpc-#{name}/Gemfile]
                    end,

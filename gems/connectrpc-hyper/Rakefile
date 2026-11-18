@@ -1,0 +1,17 @@
+# frozen_string_literal: true
+
+require "rb_sys/extensiontask"
+
+GEMSPEC = Gem::Specification.load(File.join(__dir__, "connectrpc-hyper.gemspec"))
+
+# Platform gems carry one extension per Ruby minor under
+# lib/connectrpc/hyper/<minor>/; the source gem compiles at install time.
+RbSys::ExtensionTask.new("connectrpc_hyper", GEMSPEC) do |extension|
+  # Development builds pass lib/connectrpc/hyper/<minor> so both pinned Rubies
+  # keep their own extension, the layout platform gems use.
+  extension.lib_dir = ENV.fetch("CONNECTRPC_HYPER_LIB_DIR", "lib/connectrpc/hyper")
+  extension.ext_dir = "ext/connectrpc_hyper"
+  extension.cross_compile = true
+  extension.cross_platform = %w[x86_64-linux aarch64-linux x86_64-linux-musl aarch64-linux-musl arm64-darwin
+                                x86_64-darwin x64-mingw-ucrt aarch64-mingw-ucrt]
+end

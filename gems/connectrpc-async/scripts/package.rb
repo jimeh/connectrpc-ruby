@@ -34,7 +34,7 @@ core_expected = %w[
   exe/protoc-gen-connectrpc-ruby lib/connectrpc/generator.rb lib/connectrpc/generator/names.rb
   lib/connectrpc/generator/schema.rb lib/connectrpc/generator/renderer.rb lib/connectrpc/generator/runtime_names.rb
   lib/connectrpc/method.rb lib/connectrpc/metadata.rb lib/connectrpc/error.rb lib/connectrpc/cancellation.rb
-  lib/connectrpc/deadline.rb
+  lib/connectrpc/deadline.rb lib/connectrpc/keepalive.rb
   lib/connectrpc/compression.rb lib/connectrpc/message_io.rb
   lib/connectrpc/get_query.rb lib/connectrpc/protocol.rb
   lib/connectrpc/client.rb lib/connectrpc/server.rb lib/connectrpc/instrumentation.rb lib/connectrpc/interceptors.rb
@@ -115,6 +115,11 @@ Bundler.with_unbundled_env do
        'require "connectrpc"; abort if defined?(ConnectRPC::Async) || defined?(Rack) || defined?(Rails)'],
       *Activation.install_commands(working),
       [RbConfig.ruby, "-S", "gem", "install", "--norc", archives.last, "--local", "--no-document"],
+      # The source inventory cannot prove constant-alias identity; check it installed, in both require orders.
+      *[%w[connectrpc connectrpc/async], %w[connectrpc/async connectrpc]].map do |order|
+        [RbConfig.ruby, "-e", "#{order.map { |name| "require #{name.dump}" }.join('; ')}; " \
+                              "abort 'Keepalive alias lost' unless ConnectRPC::Async::Keepalive.equal?(ConnectRPC::Keepalive)"]
+      end,
       [RbConfig.ruby, "-S", "gem", "install", "--norc", "google-protobuf", "--version", "4.36.2", "--local",
        "--no-document"],
       [RbConfig.ruby, "-S", "gem", "install", "--norc", "webrick", "--version", "1.9.2", "--local", "--no-document"],

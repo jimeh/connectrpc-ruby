@@ -34,7 +34,7 @@ expected_core = %w[
   third_party/google/rpc/status.proto third_party/google/LICENSE third_party/protobuf-LICENSE third_party/README.md
   lib/connectrpc.rb lib/connectrpc/version.rb lib/connectrpc/method.rb lib/connectrpc/metadata.rb
   lib/connectrpc/error.rb lib/connectrpc/cancellation.rb
-  lib/connectrpc/deadline.rb lib/connectrpc/compression.rb lib/connectrpc/message_io.rb
+  lib/connectrpc/deadline.rb lib/connectrpc/keepalive.rb lib/connectrpc/compression.rb lib/connectrpc/message_io.rb
   lib/connectrpc/get_query.rb
   lib/connectrpc/protocol.rb lib/connectrpc/client.rb lib/connectrpc/server.rb lib/connectrpc/instrumentation.rb
   lib/connectrpc/interceptors.rb

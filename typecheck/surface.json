@@ -319,15 +319,7 @@
     "ConnectRPC::Async::ConnectionPolicy#max_pending_bytes": {"kind":"attribute","visibility":"public","classification":"supported"},
     "ConnectRPC::Async::ConnectionPolicy#retry_refused": {"kind":"attribute","visibility":"public","classification":"supported"},
     "ConnectRPC::Async::ConnectionPolicy#values": {"kind":"method","visibility":"protected","parameters":"","classification":"internal"},
-    "ConnectRPC::Async::ConnectionPolicy#wait_for_ready": {"kind":"attribute","visibility":"public","classification":"supported"},
-    "ConnectRPC::Async::Keepalive#==": {"kind":"method","visibility":"public","parameters":"other","classification":"supported"},
-    "ConnectRPC::Async::Keepalive#eql?": {"kind":"method","visibility":"public","parameters":"other","classification":"supported"},
-    "ConnectRPC::Async::Keepalive#hash": {"kind":"method","visibility":"public","parameters":"","classification":"supported"},
-    "ConnectRPC::Async::Keepalive#initialize": {"kind":"method","visibility":"public","parameters":"time:, timeout: 20, permit_without_calls: false","classification":"supported"},
-    "ConnectRPC::Async::Keepalive#permit_without_calls": {"kind":"attribute","visibility":"public","classification":"supported"},
-    "ConnectRPC::Async::Keepalive#time": {"kind":"attribute","visibility":"public","classification":"supported"},
-    "ConnectRPC::Async::Keepalive#timeout": {"kind":"attribute","visibility":"public","classification":"supported"},
-    "ConnectRPC::Async::Keepalive#values": {"kind":"method","visibility":"protected","parameters":"","classification":"internal"}
+    "ConnectRPC::Async::ConnectionPolicy#wait_for_ready": {"kind":"attribute","visibility":"public","classification":"supported"}
   },
   "gems/connectrpc-async/lib/connectrpc/async/host.rb": {
     "ConnectRPC::Async::Host#accept_backoff": {"kind":"method","visibility":"private","parameters":"delay","classification":"internal"},
@@ -1155,6 +1147,66 @@
   "gems/connectrpc-health/lib/grpc/health/v1/health_pb.rb": {
 
   },
+  "gems/connectrpc-hyper/lib/connectrpc/hyper.rb": {
+
+  },
+  "gems/connectrpc-hyper/lib/connectrpc/hyper/errors.rb": {
+    "ConnectRPC::Hyper::Errors.native": {"kind":"method","visibility":"public","parameters":"request, grpc:","classification":"internal"},
+    "ConnectRPC::Hyper::Errors.translate": {"kind":"method","visibility":"public","parameters":"failure, grpc:","classification":"internal"},
+    "ConnectRPC::Hyper::Errors.transport": {"kind":"method","visibility":"public","parameters":"kind","classification":"internal"},
+    "ConnectRPC::Hyper::Native::Failure#errno": {"kind":"attribute","visibility":"public","classification":"internal"},
+    "ConnectRPC::Hyper::Native::Failure#initialize": {"kind":"method","visibility":"public","parameters":"message, kind, reset_code, errno","classification":"internal"},
+    "ConnectRPC::Hyper::Native::Failure#kind": {"kind":"attribute","visibility":"public","classification":"internal"},
+    "ConnectRPC::Hyper::Native::Failure#reset_code": {"kind":"attribute","visibility":"public","classification":"internal"}
+  },
+  "gems/connectrpc-hyper/lib/connectrpc/hyper/exchange.rb": {
+    "ConnectRPC::Hyper::Exchange#abort": {"kind":"method","visibility":"public","parameters":"","classification":"internal"},
+    "ConnectRPC::Hyper::Exchange#close_send": {"kind":"method","visibility":"public","parameters":"","classification":"internal"},
+    "ConnectRPC::Hyper::Exchange#finish": {"kind":"method","visibility":"public","parameters":"timeout: nil","classification":"internal"},
+    "ConnectRPC::Hyper::Exchange#initialize": {"kind":"method","visibility":"public","parameters":"native, request, grpc:","classification":"internal"},
+    "ConnectRPC::Hyper::Exchange#read": {"kind":"method","visibility":"public","parameters":"length, timeout: nil","classification":"internal"},
+    "ConnectRPC::Hyper::Exchange#receive_trailers": {"kind":"method","visibility":"private","parameters":"","classification":"internal"},
+    "ConnectRPC::Hyper::Exchange#response_head": {"kind":"method","visibility":"public","parameters":"timeout: nil","classification":"internal"},
+    "ConnectRPC::Hyper::Exchange#response_trailers": {"kind":"method","visibility":"public","parameters":"","classification":"internal"},
+    "ConnectRPC::Hyper::Exchange#wait": {"kind":"method","visibility":"private","parameters":"timeout","classification":"internal"},
+    "ConnectRPC::Hyper::Exchange#write": {"kind":"method","visibility":"public","parameters":"bytes","classification":"internal"}
+  },
+  "gems/connectrpc-hyper/lib/connectrpc/hyper/tls.rb": {
+    "ConnectRPC::Hyper::TLS.ca_file": {"kind":"method","visibility":"public","parameters":"path","classification":"internal"},
+    "ConnectRPC::Hyper::TLS.certificate": {"kind":"method","visibility":"public","parameters":"pem","classification":"internal"},
+    "ConnectRPC::Hyper::TLS.client_identity": {"kind":"method","visibility":"public","parameters":"chain, pem","classification":"internal"},
+    "ConnectRPC::Hyper::TLS.identity": {"kind":"method","visibility":"public","parameters":"chain, pem","classification":"internal"},
+    "ConnectRPC::Hyper::TLS.input": {"kind":"method","visibility":"public","parameters":"name","classification":"internal"},
+    "ConnectRPC::Hyper::TLS.inputs": {"kind":"method","visibility":"public","parameters":"ca_file:, certificate_chain:, private_key:","classification":"internal"},
+    "ConnectRPC::Hyper::TLS::InvalidInput#initialize": {"kind":"method","visibility":"public","parameters":"input","classification":"internal"},
+    "ConnectRPC::Hyper::TLS::InvalidInput#input": {"kind":"attribute","visibility":"public","classification":"internal"}
+  },
+  "gems/connectrpc-hyper/lib/connectrpc/hyper/transport.rb": {
+    "ConnectRPC::Hyper::Transport#build_driver": {"kind":"method","visibility":"private","parameters":"","classification":"internal"},
+    "ConnectRPC::Hyper::Transport#call": {"kind":"method","visibility":"public","parameters":"request","classification":"supported"},
+    "ConnectRPC::Hyper::Transport#check_origin!": {"kind":"method","visibility":"private","parameters":"url","classification":"internal"},
+    "ConnectRPC::Hyper::Transport#check_request!": {"kind":"method","visibility":"private","parameters":"request","classification":"internal"},
+    "ConnectRPC::Hyper::Transport#close": {"kind":"method","visibility":"public","parameters":"grace: 5","classification":"supported"},
+    "ConnectRPC::Hyper::Transport#close_masked": {"kind":"method","visibility":"private","parameters":"grace","classification":"internal"},
+    "ConnectRPC::Hyper::Transport#driver": {"kind":"method","visibility":"private","parameters":"","classification":"internal"},
+    "ConnectRPC::Hyper::Transport#fields": {"kind":"method","visibility":"private","parameters":"headers","classification":"internal"},
+    "ConnectRPC::Hyper::Transport#finish_close": {"kind":"method","visibility":"private","parameters":"outcome","classification":"internal"},
+    "ConnectRPC::Hyper::Transport#grpc_capabilities": {"kind":"method","visibility":"public","parameters":"","classification":"supported"},
+    "ConnectRPC::Hyper::Transport#inherit_fork_state": {"kind":"method","visibility":"private","parameters":"","classification":"internal"},
+    "ConnectRPC::Hyper::Transport#initialize": {"kind":"method","visibility":"public","parameters":"connections: :pooled, idle_timeout: 1800, keepalive: nil, http2: true, connect_timeout: 20, ca_file: nil, certificate_chain: nil, private_key: nil","classification":"supported"},
+    "ConnectRPC::Hyper::Transport#inspect": {"kind":"method","visibility":"public","parameters":"","classification":"supported"},
+    "ConnectRPC::Hyper::Transport#open_grpc_stream": {"kind":"method","visibility":"public","parameters":"request, &","classification":"supported"},
+    "ConnectRPC::Hyper::Transport#open_stream": {"kind":"method","visibility":"public","parameters":"request, &","classification":"supported"},
+    "ConnectRPC::Hyper::Transport#optional_seconds": {"kind":"method","visibility":"private","parameters":"value, name","classification":"internal"},
+    "ConnectRPC::Hyper::Transport#perform_call": {"kind":"method","visibility":"private","parameters":"request","classification":"internal"},
+    "ConnectRPC::Hyper::Transport#perform_stream": {"kind":"method","visibility":"private","parameters":"request, grpc:","classification":"internal"},
+    "ConnectRPC::Hyper::Transport#state": {"kind":"method","visibility":"private","parameters":"","classification":"internal"},
+    "ConnectRPC::Hyper::Transport#streaming_capabilities": {"kind":"method","visibility":"public","parameters":"","classification":"supported"},
+    "ConnectRPC::Hyper::Transport#with_cancel": {"kind":"method","visibility":"private","parameters":"request","classification":"internal"}
+  },
+  "gems/connectrpc-hyper/lib/connectrpc/hyper/version.rb": {
+
+  },
   "gems/connectrpc-on-rails/lib/connectrpc-on-rails.rb": {
 
   },
@@ -1797,6 +1849,17 @@
     "ConnectRPC::ServerUnaryCall#protocol": {"kind":"attribute","visibility":"public","classification":"supported"},
     "ConnectRPC::ServerUnaryCall#request": {"kind":"attribute","visibility":"public","classification":"supported"},
     "ConnectRPC::ServerUnaryCall#request=": {"kind":"method","visibility":"public","parameters":"message","classification":"supported"}
+  },
+  "lib/connectrpc/keepalive.rb": {
+    "ConnectRPC::Keepalive#==": {"kind":"method","visibility":"public","parameters":"other","classification":"supported"},
+    "ConnectRPC::Keepalive#eql?": {"kind":"method","visibility":"public","parameters":"other","classification":"supported"},
+    "ConnectRPC::Keepalive#hash": {"kind":"method","visibility":"public","parameters":"","classification":"supported"},
+    "ConnectRPC::Keepalive#initialize": {"kind":"method","visibility":"public","parameters":"time:, timeout: 20, permit_without_calls: false","classification":"supported"},
+    "ConnectRPC::Keepalive#permit_without_calls": {"kind":"attribute","visibility":"public","classification":"supported"},
+    "ConnectRPC::Keepalive#seconds": {"kind":"method","visibility":"private","parameters":"value, name","classification":"internal"},
+    "ConnectRPC::Keepalive#time": {"kind":"attribute","visibility":"public","classification":"supported"},
+    "ConnectRPC::Keepalive#timeout": {"kind":"attribute","visibility":"public","classification":"supported"},
+    "ConnectRPC::Keepalive#values": {"kind":"method","visibility":"protected","parameters":"","classification":"internal"}
   },
   "lib/connectrpc/message_io.rb": {
     "ConnectRPC::MessageIO#initialize": {"kind":"method","visibility":"public","parameters":"input, limit, context","classification":"internal"},
