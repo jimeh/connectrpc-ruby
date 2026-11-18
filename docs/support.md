@@ -50,8 +50,8 @@ Ruby methods into extension points.
 Support requires the **same version** of `connectrpc` and every optional
 ConnectRPC gem used by the application: `connectrpc-rack`, `connectrpc-on-rails`,
 `connectrpc-async`, `connectrpc-falcon`, `connectrpc-testing`, `connectrpc-otel`,
-`connectrpc-prometheus`, `connectrpc-yabeda`, `connectrpc-health` and
-`connectrpc-sentry`.
+`connectrpc-prometheus`, `connectrpc-yabeda`, `connectrpc-health`,
+`connectrpc-sentry` and, since 0.3.0, `connectrpc-hyper`.
 Only the packages actually used need to be installed.
 
 Existing gemspec ranges of the form `~> M.m.0` allow patch versions to differ.
@@ -85,6 +85,7 @@ The [CI workflow](../.github/workflows/ci.yml) defines the executed combinations
 | Yabeda metrics | yabeda newest allowed 0.x, plus the floor 0.16.0 | Declaration and values through `yabeda/testing`; yabeda-prometheus naming is checked structurally, not installed |
 | Health service | google-protobuf newest allowed 4.x, plus the floor 4.36.2; grpc-go 1.85.0 health client and reference server | Check and List on real Rack, Async and Falcon hosts, Watch on Async and Falcon; grpc-go client over h2c, TLS and mTLS against Async and Falcon workers |
 | Sentry | sentry-ruby, sentry-rails and sentry-opentelemetry newest allowed 7.x, plus the floor 6.7.0 | Real SDK with an in-memory transport; sentry-rails with native Rails 8.1 and ActiveRecord, Rack, native Async/Falcon and ThreadedTransport. Fiber hosts require `hub_isolation_level = :fiber` |
+| Hyper transport | The committed `Cargo.lock` (hyper 1.12.0, h2 0.4.20, tokio 1.54.1, rustls 0.23.46 with aws-lc-rs 1.19.0), built with Rust 1.98.0 and at the declared MSRV 1.85; rb_sys newest allowed and the floor 0.9.130 for the source gem; grpc-go 1.85.0 and connect-go 1.21.1 peers | Calls from plain threads; async 2.46.0's worker pool only for the Ruby 4.0 offload specs. Platforms: [below](#connectrpc-hyper-platforms) |
 
 The official browser fixture runs against both MRI server versions. Its
 [artifact pins](../browser/artifacts.json) and [JS lock](../browser/bun.lock)
@@ -99,6 +100,38 @@ tool locks do not prove runtime compatibility. macOS, Windows, ARM, JRuby,
 TruffleRuby, Puma, every Rack server, and every combination of allowed framework
 and dependency versions are outside this initial supported environment. This
 does not assert they fail. The Rails 8.0 lane does not extend upstream maintenance.
+connectrpc-hyper's prebuilt gems are the one exception, described next.
+
+### connectrpc-hyper platforms
+
+Since 0.3.0, connectrpc-hyper ships a source gem and platform gems that carry
+its Rust extension for Ruby 3.4 and 4.0. CI cross-builds every platform gem in
+the pinned `rbsys/<platform>:0.9.130` images and treats each artifact as
+follows:
+
+| Platform gem | Built | Installed and exercised |
+| --- | --- | --- |
+| `x86_64-linux` (glibc 2.29+) | CI | Offline install and smoke calls on Ubuntu 24.04 x86_64, both MRI versions; the full specs and interop run against source builds on the same image |
+| `aarch64-linux` (glibc 2.29+) | CI | Offline install and smoke calls on native Ubuntu 24.04 arm64 runners, both MRI versions |
+| `x86_64-linux-musl`, `aarch64-linux-musl` | CI | Offline install and smoke calls in the official `ruby:3.4-alpine` and `ruby:4.0-alpine` images on the matching architecture. musl hosts need `libgcc_s` |
+| `arm64-darwin` (macOS 11+) | CI | Offline install and smoke calls on a macOS 15 arm64 runner, both MRI versions; non-gating |
+| `x64-mingw-ucrt` | CI | Provisional: offline install, smoke calls, the specs that apply off Linux and a Go interop subset on Windows Server 2025, in a non-gating job |
+| `x86_64-darwin`, `aarch64-mingw-ucrt` | CI | Build only |
+| Source gem | CI | Offline build from the packaged `Cargo.lock` and a pre-fetched crate cache on Ubuntu 24.04 x86_64, both MRI versions; needs Rust 1.85+, libclang and a C compiler |
+
+Smoke calls are real Connect unary calls over cleartext HTTP/1.1 and TLS
+against a local server. Windows x64 is a provisional platform for
+connectrpc-hyper only; every other package keeps the Ubuntu x86_64 profile.
+Expect it to change or be withdrawn without a minor release while its job is
+non-gating.
+
+The transport verifies TLS with rustls, not OpenSSL, so it is stricter than
+NetHTTP and the Async transports: server certificates that are CN-only, X.509
+v1, a single-label wildcard or a CA certificate used as the leaf fail
+verification; encrypted private keys and keys aws-lc-rs cannot sign with
+(Ed448) raise `ArgumentError`; and `SSL_CERT_FILE` or `SSL_CERT_DIR` replaces
+the platform roots instead of adding to them. See the
+[package guide](../gems/connectrpc-hyper/README.md#tls).
 
 ## Protocol and host matrix
 
@@ -132,6 +165,7 @@ a socket.
 | Async `Transport` | U/SS/CS/bidi | H2 h2c, verified TLS `h2`, mTLS | `async:interop`, `async:interop:streaming`, `async:conformance`, native specs and installed callers |
 | Async `ThreadedTransport` | Connect U/SS; gRPC U/SS | H2 h2c, verified TLS `h2`, mTLS; from any thread | `async:conformance:threaded`, `async:interop` unary, `async:interop:streaming` and `async:interop:grpc` cases from plain threads, threaded specs and installed generated callers |
 | Async `HTTP1Transport` | U/SS/CS | H1 TCP, verified TLS/mTLS; accepts only H1 ALPN or absent ALPN | `async:conformance:http1`, `async:interop:http1`, H1 specs and installed generated callers |
+| Hyper `Transport` (since 0.3.0) | U/SS/CS/bidi on H2; U/SS/CS with `http2: false` | H2 h2c, verified rustls TLS `h2`, mTLS; H1 TCP/TLS; from any thread without a reactor. Streaming over a TLS connection that negotiated `http/1.1` fails before any request | `hyper:test`, `hyper:interop` (connect-go over h2c, TLS, mTLS and H1), `hyper:package`, platform smoke jobs and installed callers |
 
 The standalone Async Host remains strict H2. Selecting `HTTP1Transport` for a
 client does not add H1 to that Host.
@@ -148,7 +182,8 @@ signals that owner. The exception is `ThreadedTransport`: it drives the H2
 `Transport` from one owner thread per process for callers on any thread. It
 supports Connect unary (POST and GET) and server streaming, and native gRPC
 unary and server streaming; stream blocks run on the caller's thread. There is
-no ordinary-thread client or bidi streaming.
+no ordinary-thread client or bidi streaming in connectrpc-async; since 0.3.0,
+connectrpc-hyper's `Transport` provides every shape from any thread.
 The H2 `Transport` manages its own connections: shared attempts outside RPC
 lifecycles, capped jittered backoff, opt-in wait-for-ready, count and request-byte
 admission, rerouting only of calls that wrote nothing, replacement of a
@@ -169,9 +204,10 @@ Server `:auto` means Connect plus native gRPC only. Both native gRPC and
 | Endpoints | RPC shapes | HTTP, codecs and compression | Owning evidence |
 | --- | --- | --- | --- |
 | Async Transport, Async Host, Falcon native server | U/SS/CS/bidi | H2 h2c, verified TLS and mTLS; protobuf, identity or opt-in per-message gzip; no GET | `async:conformance:grpc`, `falcon:conformance:grpc`, `async:interop:grpc`, `falcon:interop:grpc` and installed generated callers |
+| Hyper `Transport` (since 0.3.0) | U/SS/CS/bidi | H2 h2c, verified rustls TLS and mTLS; protobuf; no GET; from any thread | `hyper:interop` against grpc-go over h2c, TLS and mTLS, including trailers-only responses, and `hyper:test` |
 
-NetHTTP, Rack, Rails, Testing, HTTP1Transport and Falcon H1 do not provide
-native gRPC.
+NetHTTP, Rack, Rails, Testing, HTTP1Transport, Falcon H1 and the hyper
+transport with `http2: false` do not provide native gRPC.
 
 ### gRPC-Web
 
@@ -203,8 +239,8 @@ compression and whole-body compression are outside the profile.
 Portable adapters reject streaming before reading input or invoking handlers;
 incapable clients reject it before codecs or I/O. There is no H1 bidi,
 HTTP/1.0 Connect streaming, HTTP/3, implicit protocol fallback, RPC replay,
-new backend or ordinary-thread client or bidi streaming in this contract. Faraday is
-outside the profile.
+new backend, or ordinary-thread client bidi streaming outside the hyper
+transport, in this contract. Faraday is outside the profile.
 
 ## What the evidence establishes
 

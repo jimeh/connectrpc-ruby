@@ -1,12 +1,14 @@
 # CI
 
 The workflow runs on pull requests, pushes to `main`, manual dispatch and a
-daily schedule (04:37 UTC), on Ubuntu 24.04. It has 48 checks: nine core, three
-optional Rails, four optional HTTP/2, two optional Rack, two optional in-process
-testing, two optional RBS, four Falcon, two OpenTelemetry, two Prometheus, two
-Yabeda, two health, two Sentry, two browser gRPC-Web, nine lowest-allowed
-dependency checks and one runnable-examples check, with no serial cache primer
-or aggregate job:
+daily schedule (04:37 UTC), on Ubuntu 24.04 unless a row names another runner.
+It has 73 checks: nine core, three optional Rails, four optional HTTP/2, two
+optional Rack, two optional in-process testing, two optional RBS, four Falcon,
+two OpenTelemetry, two Prometheus, two Yabeda, two health, two Sentry, two
+browser gRPC-Web, ten lowest-allowed dependency checks, one runnable-examples
+check and 24 [hyper transport](#optional-hyper-lanes) checks, four of them
+non-gating. There is no serial cache primer or aggregate job; only the hyper
+smoke and Windows jobs wait for the cross-built gems:
 
 | Check | Ruby | Canonical commands |
 | --- | --- | --- |
@@ -17,7 +19,7 @@ or aggregate job:
 | Official conformance | 3.4.12, 4.0.9 | `mise run test:conformance` |
 | Rails 8.0 | 3.4.12 | `mise run test:rails`, `generation:check:rails`, `check:package:rails` with `RAILS_LANE=8.0` |
 | Rails 8.1 | 3.4.12, 4.0.9 | Same Rails commands with `RAILS_LANE=8.1` |
-| Lowest allowed async, falcon, rack, rails, otel, prometheus, yabeda, health, sentry | 3.4.12 | `mise run floors:<leaf>` |
+| Lowest allowed async, falcon, rack, rails, otel, prometheus, yabeda, health, sentry, hyper | 3.4.12 | `mise run floors:<leaf>` |
 | Async specs/package | 3.4.12, 4.0.9 | `mise run async:test`, `mise run async:package`, `mise run async:conformance`, `async:conformance:grpc`, `async:conformance:http1`, `async:conformance:threaded` |
 | Async Go interoperability | 3.4.12, 4.0.9 | `mise run async:interop`, `mise run async:interop:streaming`, `async:interop:http1`, `async:interop:grpc`, `async:interop:keepalive` |
 | Rack specs/check/package | 3.4.12, 4.0.9 | `mise run rack:test`, `mise run rack:check`, `mise run rack:package` |
@@ -32,6 +34,13 @@ or aggregate job:
 | Sentry tracing | 3.4.12, 4.0.9 | `mise run sentry:verify` |
 | Browser gRPC-Web | 3.4.12, 4.0.9 | `mise run browser:verify`, then `async:conformance:web`, `falcon:conformance:web` and `rack:conformance:web` |
 | Runnable examples | 4.0.9 | `mise run example:verify` |
+| Hyper specs, interop and package | 3.4.12, 4.0.9 | `mise run hyper:verify` |
+| Hyper MSRV | 3.4.12 | `mise run hyper:msrv` (Rust 1.85.0) |
+| Hyper gem, per platform (8 platform gems and the source gem) | 3.4.12 | `mise run hyper:cross` with `PLATFORM`, uploaded as `connectrpc-hyper-<platform>` |
+| Hyper Linux gem smoke (x86_64 and native arm64 runners) | 3.4.12, 4.0.9 | `scripts/install_smoke.rb` against the downloaded gem |
+| Hyper musl gem smoke (x86_64 and arm64) | `ruby:3.4-alpine`, `ruby:4.0-alpine` | `scripts/install_smoke.rb` inside the image |
+| Hyper arm64-darwin smoke, macOS 15 (non-gating) | 3.4.12, 4.0.9 | `scripts/install_smoke.rb` |
+| Hyper x64-mingw-ucrt, Windows Server 2025 (non-gating) | 3.4, 4.0 | Install smoke, then the applicable specs and Go interop subset against the artifact |
 
 Each matrix has `fail-fast: false`. Every check runs its commands on cache
 hits too. Package isolation still installs cached `.gem` artifacts offline and
@@ -61,22 +70,25 @@ re-enable the workflow in the Actions tab.
 
 The lowest-allowed matrix runs `floors:async`, `floors:falcon`, `floors:rack`,
 `floors:rails` (Rails 8.0 lane), `floors:otel`, `floors:prometheus`,
-`floors:yabeda`, `floors:health` and `floors:sentry` on Ruby 3.4.12. Each task sets
+`floors:yabeda`, `floors:health`, `floors:sentry` and `floors:hyper` on Ruby
+3.4.12. Each task sets
 `CONNECTRPC_DEPENDENCY_FLOORS=1`, generates its ignored wrapper Gemfile,
 installs it, asserts every runtime dependency resolved exactly at its declared
 floor (the OTel and Sentry leaves also constrain `json` to `< 3`; see development), then runs
 that package's specs and installed-package check. Because the
 wrapper does not exist before the task runs, these jobs disable the setup-ruby
-bundle cache and install from the registry each time. See
+bundle cache and install from the registry each time. The hyper leaf alone adds
+libclang, a C compiler and setup-go (steps gated on the leaf) and installs the
+pinned Rust through `hyper:tools`. See
 [development](development.md#fresh-resolution-and-the-lowest-allowed-lane).
 
 ## Pins-lifted canary
 
 A separate workflow, [`canary.yml`](../.github/workflows/canary.yml), runs
 daily at 05:17 UTC and on manual dispatch only, so it never gates a pull
-request or `main`. Its two-leaf matrix runs `mise run canary:async` and
-`mise run canary:falcon` on Ruby 3.4.12, with `fail-fast: false` and a 60-minute
-job timeout. It uses the same pinned actions and environment as the
+request or `main`. Its three-leaf matrix runs `mise run canary:async`,
+`mise run canary:falcon` and `mise run canary:hyper` on Ruby 3.4.12, with
+`fail-fast: false` and a 60-minute job timeout. It uses the same pinned actions and environment as the
 lowest-allowed jobs and disables the setup-ruby bundle cache, because each task
 generates its ignored `Gemfile.canary` and installs into `vendor/<pkg>/canary/`.
 
@@ -87,7 +99,14 @@ spec and the rest of the suite under separate wall-clock deadlines. The job
 summary names the result of each phase: passed, timeout (hang), contract guard
 failure with each broken contract, boot failure, or the failing examples. A red
 canary run is a signal to investigate before bumping a pin, not a CI failure to
-fix on `main`. See [development](development.md#pins-lifted-canary). Like the CI
+fix on `main`.
+
+The hyper leaf has no gem pins to lift. It copies the checkout into
+`vendor/hyper/canary/tree`, runs `cargo update` on that copy's `Cargo.lock`,
+reports every crate it changed (also in the job summary), then compiles the
+extension and runs the hyper specs in the copy. The tracked tree stays clean;
+a green run is the evidence for `hyper:cargo:update`, subject to the seven-day
+age rule. See [development](development.md#pins-lifted-canary). Like the CI
 schedule, GitHub disables this scheduled workflow after 60 days without
 repository activity.
 
@@ -290,7 +309,7 @@ dependency enters core, Rails or Async bundles.
 The pinned Ruby/Bundler action prepares the runtime with its bundle cache disabled
 only in this lane. One explicit `actions/cache` v6.1.0 step, pinned to
 `55cc8345863c7cc4c66a329aec7e433d2d1c52a9`, owns `vendor/bundle` and the independent
-`vendor/{rbs,rack,testing,async,falcon,otel,prometheus,yabeda,health,sentry}/bundle` directories. Rails Appraisal
+`vendor/{rbs,rack,testing,async,falcon,otel,prometheus,yabeda,health,sentry,hyper}/bundle` directories. Rails Appraisal
 needs the root bundle directory. There are no overlapping bundle-cache owners or
 bundle-specific setup-action environment overrides. The action release was
 published on 2026-06-26, satisfying the seven-day age policy.
@@ -360,12 +379,51 @@ sentry-rails, Rack, native Async/Falcon h2c and ThreadedTransport, installs the
 archive offline into a fresh external GEM_HOME and checks workspace
 cleanliness. `floors:sentry` covers sentry-ruby 6.7.0.
 
+## Optional hyper lanes
+
+The `hyper` job runs `hyper:verify` once per pinned Ruby with
+`gems/connectrpc-hyper/Gemfile`, `vendor/hyper/bundle` and
+`vendor/hyper/bundler`, validated through `hyper:tools`, which also installs
+Rust 1.98.0, cargo-deny and cargo-audit from `mise.lock` and checks `rustc`.
+apt provides libclang for rb-sys's bindgen and a C compiler for the DNS shim.
+setup-go provides Go 1.27.3; the CI override of `hyper:peer` validates it
+(`ci_runtime.rb hyper`) instead of installing Go, and keeps the module and
+build caches under `vendor/hyper/go`. `hyper:verify` compiles the extension,
+runs the specs, Ruby and Rust lint, cargo-deny and cargo-audit, the grpc-go and
+connect-go interop matrix, and the offline source-gem install with a smoke
+call. `hyper_msrv` builds the extension with the declared `rust-version`
+(1.85.0) against `Cargo.lock`.
+
+`hyper_cross` builds each platform gem with rb-sys-dock in its
+`rbsys/<platform>:0.9.130` image, in a disposable copy of the package so the
+checkout stays clean, checks the gem's platform, both Ruby minors and the
+dropped `rb_sys` dependency, and uploads it for 14 days. The `ruby` leaf builds
+the source gem. Three jobs need those artifacts:
+
+- `hyper_smoke` installs the x86_64 and aarch64 glibc gems offline into a fresh
+  GEM_HOME with a core gem built from the checkout, then runs real cleartext
+  and TLS calls, on `ubuntu-24.04` and native `ubuntu-24.04-arm` runners.
+- `hyper_smoke_musl` does the same inside the official Alpine Ruby images with
+  `docker run`, because JavaScript actions cannot run inside arm64 Alpine job
+  containers.
+- `hyper_smoke_darwin` (macOS 15 arm64) and `hyper_windows` (Windows Server
+  2025) set `continue-on-error`, so they report without gating. The Windows job
+  places the artifact's extension into the checkout, builds the Go peer and
+  runs the specs that apply off Linux, excluding the tags `fork`, `dns_shim`
+  (the `LD_PRELOAD` shim) and `linux_only` (`/proc` and accept-backlog
+  probes), then the interop subset.
+
+`x86_64-darwin` and `aarch64-mingw-ucrt` are build-only. Release publication of
+these artifacts is a follow-up; see [releasing](releasing.md).
+
 ## Public API typing gates
 
 The two RBS jobs run strict implementation checks for the core files and private
 state listed in `typecheck/source.rb`. They validate that source list, enforce
 the reviewed source/signature inventory, and check application callers for all
-eleven packages. Generated positive, exact per-file negative and nominal/bridge
+twelve packages. `rbs:package` compiles the hyper source gem offline from a
+locked crate cache fetched in the same run, so the job installs libclang and a
+C compiler first and `hyper:tools` installs the pinned Rust. Generated positive, exact per-file negative and nominal/bridge
 checks remain.
 Installed checks use normal RBS discovery in a fresh external GEM_HOME, validate
 each optional dependency closure and both composition orders, and exercise API-only
@@ -441,9 +499,9 @@ It opens or updates the release PR using an existing GitHub App from the
 `release-please` environment. After a release PR merges, it tags the commit and
 creates a draft GitHub release. The tag starts `release.yml`, which publishes
 from the `release` environment.
-The 48 CI checks above retain their mapping. `check:static` also runs the offline
-`release:check` invariant for all eleven versions, release configuration and
-installation guides. See [release preparation](releasing.md) for the candidate procedure and
+The 73 CI checks above retain their mapping. `check:static` also runs the offline
+`release:check` invariant for all twelve versions (connectrpc-hyper is versioned
+but not yet published), release configuration and installation guides. See [release preparation](releasing.md) for the candidate procedure and
 remaining App/account setup.
 
 ## Optional health lane

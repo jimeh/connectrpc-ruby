@@ -1,8 +1,11 @@
 # Hyper: connectrpc-hyper (reactor-free Rust client transport)
 
-Status: approved, in progress (issue
-[#171](https://github.com/jimeh/connectrpc-ruby/issues/171)). Base: `d521b60`.
-Branch `feat/connectrpc-hyper`, PR title
+Status: approved; implementation in progress on `feat/connectrpc-hyper`
+(issue [#171](https://github.com/jimeh/connectrpc-ruby/issues/171)). The gem,
+CI, cross builds, typecheck/package wiring, the versioned-but-unpublished
+release train entry (D15) and the documentation are in place; the proxy (D18)
+lands next. The contract below is kept as approved. Base: `d521b60`, rebased
+onto `ccffd92` (#159 merged). PR title
 `feat: add connectrpc-hyper, a reactor-free Rust client transport`.
 The design follows the #171 spike (hyper 1.x/h2, rustls, tokio, magnus and
 rb-sys). Jim approved building it and every recommendation below. A

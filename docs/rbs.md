@@ -210,6 +210,7 @@ target :app do
   library "connectrpc-yabeda"
   library "connectrpc-health"
   library "connectrpc-sentry"
+  library "connectrpc-hyper"
   check "app"
   configure_code_diagnostics(Steep::Diagnostic::Ruby.strict)
 end
@@ -232,7 +233,7 @@ are an explicit bridge described [below](#opt-in-framework-compatibility).
 
 | Owner | Supported API and extension SPI |
 | --- | --- |
-| Core | Method, non-generic Service, Client/Server options and calls, records, Metadata, CancellationSource/Token/Registration, Deadline/Context, Error/ErrorDetail, explicit NetHTTP (since 0.3.0 with `ca_file:`, `certificate_chain:`, `private_key:` and `proxy:`) and Google binding entry points |
+| Core | Method, non-generic Service, Client/Server options and calls, records, Metadata, CancellationSource/Token/Registration, Deadline/Context, Error/ErrorDetail, `Keepalive` (since 0.3.0), explicit NetHTTP (since 0.3.0 with `ca_file:`, `certificate_chain:`, `private_key:` and `proxy:`) and Google binding entry points |
 | Core shared, unary and observation SPI | `_Cancellation`, `_Binding`, `_Transport`, `_Input`, `_Handler`, `_Invoker`, callable clocks/error handlers, `_Subscriber`, six separate optional observer callback capabilities, host lifecycle Handle |
 | Core metrics (`connectrpc/metrics`) | `Metrics::Definitions`, `Instrument`, `Subscriber` and `ConnectionObserver` (custom sinks call its `publish_state` once their metrics exist); the `Metrics::_Recorder` sink SPI and the structural `Metrics::_ConnectionEvent` shape |
 | Core streaming and gRPC/Web SPI | `_StreamingTransport`, `_StreamExchange`, streaming input/output, `_GRPCTransport`, `_GRPCStreamExchange`, `_GRPCStatusCodec`, native server publication/output interfaces including `_GRPCWebOutput`; see the protocol-specific sections below |
@@ -246,6 +247,7 @@ are an explicit bridge described [below](#opt-in-framework-compatibility).
 | Yabeda | Metrics configuration, readers and `connection_observer`; Yabeda itself remains untyped and application configured |
 | Health | Registry constructor, status operations and handlers; `SERVICE`, plus the generated `grpc.health.v1` messages, client and handler factories (`handlers` and, since 0.3.0, `handlers_for`) through its opt-in bridge |
 | Sentry | `Subscriber.new(capture_exceptions: bool)` and `Subscriber#start`; observers are private and the Sentry SDK remains untyped and application configured |
+| Hyper | Since 0.3.0, `Transport` options, unary `call`, streaming and native gRPC capabilities and exchanges through core's SPI interfaces, and `close(grace:) -> bool`; the extension and exchange are private |
 
 `Async::Host#close`, `Async::ServerSession#close` and `Falcon::Server#close`
 return `bool?`. Nil means a nonjoining owned request or coordinator reentry is
@@ -490,7 +492,7 @@ includes bounded response-head/read/finish waits. Existing unary `_Transport`
 consumers need no new method. New core streaming files participate in the strict
 implementation target, with private declarations outside gem archives. Installed
 checks generate real mixed services and run native Async/Falcon streaming over
-localhost with all eleven normally installed packages, both composition orders,
+localhost with all twelve normally installed packages, both composition orders,
 codecs and codings. These remain separate from independent Go/official evidence.
 Custom server hosts may pass `capabilities: Array[:server_stream | :client_stream |
 :bidi_stream]?` to `Server#call_stream`. Nil preserves the legacy `http2:` behavior;
@@ -552,6 +554,20 @@ call; the exact negative rejects a non-boolean `capture_exceptions`. The
 installed runtime check requires the package in both composition orders and
 proves an uninitialized SDK observes nothing and loads neither sentry-rails nor
 sentry-opentelemetry.
+
+## Hyper types
+
+The hyper package declares `Transport` and `VERSION`. Its constructor types
+every option, including `keepalive: Keepalive?` from core, and its methods
+return core's `TransportResponse`, `_StreamExchange` and `_GRPCStreamExchange`,
+so the package adds no SPI of its own. The native extension, exchange, error
+translation and TLS validation are private constants classified internal in the
+source inventory. API callers construct both connection modes and use every
+entry point against core's client. `rbs:package` compiles the source gem offline
+from the pre-fetched locked crates, discovers its signatures outside the
+checkout, locks it through `rbs collection`, and the installed runtime makes
+real h2c calls from a plain thread to the installed Async Host in both
+composition orders.
 
 ## HTTP/1 client types
 
