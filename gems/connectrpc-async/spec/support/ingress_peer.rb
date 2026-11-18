@@ -3,25 +3,19 @@
 # Real localhost wire fixture. Only observations live here; parsing, HPACK,
 # stream states and application bodies remain the pinned native stack.
 require_relative "ingress_client"
+require_relative "ingress_wire"
 
 module IngressPeer
   include IngressClient
 
+  # `pings` holds ACK payloads, `probes` the peer's own PING payloads and
+  # `settings` its SETTINGS values. `control` orders the peer's stream-0
+  # WINDOW_UPDATEs, SETTINGS and PINGs; `data` sums DATA lengths per stream.
   def observe_ingress_wire(connection)
-    observations = { credit: Hash.new(0), resets: {}, pings: [], goaway: nil }
+    observations = { credit: Hash.new(0), resets: {}, pings: [], goaway: nil, probes: [], settings: [],
+                     control: [], data: Hash.new(0) }
     connection.define_singleton_method(:read_frame) do
-      super() do |frame|
-        case frame
-        when Protocol::HTTP2::WindowUpdateFrame
-          observations[:credit][frame.stream_id] += frame.unpack
-        when Protocol::HTTP2::ResetStreamFrame
-          observations[:resets][frame.stream_id] = frame.unpack
-        when Protocol::HTTP2::PingFrame
-          observations[:pings] << frame.unpack if frame.acknowledgement?
-        when Protocol::HTTP2::GoawayFrame
-          observations[:goaway] = frame.unpack
-        end
-      end
+      super() { |frame| IngressWire.record(observations, frame) }
     end
     observations
   end
@@ -34,6 +28,28 @@ module IngressPeer
     ingress_wait(task, "PING acknowledgement #{token}", state: -> { observations }) do
       observations[:pings].include?(token)
     end
+  end
+
+  # DATA in 16 KiB frames per [stream id, bytes], flushed once: the receiver
+  # reads all of it before any reply this peer writes afterwards, such as the
+  # ACK of a PING that the first frame prompts.
+  def ingress_burst(connection, *bursts)
+    connection.write_frames do |framer|
+      bursts.each do |id, bytes|
+        bytes.fdiv(16_384).ceil.times do |index|
+          frame = Protocol::HTTP2::DataFrame.new(id)
+          frame.pack("a" * [16_384, bytes - (index * 16_384)].min)
+          framer.write_frame(frame)
+        end
+      end
+    end
+  end
+
+  # The SETTINGS_INITIAL_WINDOW_SIZE values the peer sent alone, as receive
+  # window growth does.
+  def ingress_growth(observations)
+    window = Protocol::HTTP2::Settings::INITIAL_WINDOW_SIZE
+    observations[:settings].select { |values| values.map(&:first) == [window] }.map { |((_, value))| value }
   end
 
   def ingress_data(connection, id, bytes, padding: nil, finish: false)

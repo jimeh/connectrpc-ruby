@@ -2,9 +2,9 @@
 
 # HTTP/2 keepalive interoperability with the pinned grpc-go peer (#69). `async`
 # runs every case on h2c, TLS and mTLS concurrently; `falcon` runs the age
-# drain through real Falcon workers. Assertions read frames recorded on the
-# Ruby side of each connection and the Go peers' own checks, never elapsed
-# time alone.
+# drain and the BDP case through real Falcon workers. Assertions read frames
+# recorded on the Ruby side of each connection and the Go peers' own checks,
+# never elapsed time alone.
 
 # Ruby 4.0's fiber scheduler reads the Go peers' stdout pipes through the
 # experimental IO::Buffer; that warning is not about the code under test.
@@ -34,20 +34,28 @@ module KeepaliveInterop
   BDP_PING = [2, 4, 16, 16, 9, 14, 7, 7].pack("C*").unpack1("H*")
   # grpc-go client keepalive PINGs carry eight zero bytes (http2_client.go).
   KEEPALIVE_PING = "00" * 8
+  INITIAL_WINDOW_SIZE = Protocol::HTTP2::Settings::INITIAL_WINDOW_SIZE
   TYPES = { Protocol::HTTP2::DataFrame::TYPE => "data", Protocol::HTTP2::HeadersFrame::TYPE => "headers",
-            Protocol::HTTP2::PingFrame::TYPE => "ping", Protocol::HTTP2::GoawayFrame::TYPE => "goaway" }.freeze
+            Protocol::HTTP2::PingFrame::TYPE => "ping", Protocol::HTTP2::GoawayFrame::TYPE => "goaway",
+            Protocol::HTTP2::SettingsFrame::TYPE => "settings",
+            Protocol::HTTP2::WindowUpdateFrame::TYPE => "window_update" }.freeze
 
   # One frame as the Ruby side of a connection read or wrote it. `at` is the
   # system-wide monotonic clock, so worker records compare with the parent's.
+  # `settings` holds a non-ACK SETTINGS frame's values, `increment` a
+  # WINDOW_UPDATE's and `length` a DATA frame's.
   Frame = Data.define(:connection, :local_port, :remote_port, :direction, :type, :stream, :flags, :payload,
-                      :goaway, :at) do
+                      :goaway, :settings, :increment, :length, :at) do
     def read? = direction == "read"
     def write? = direction == "write"
     def ping? = type == "ping" && flags.nobits?(1)
     def ack? = type == "ping" && flags.allbits?(1)
+    def bdp? = type == "ping" && payload == BDP_PING
     def end_stream? = %w[data headers].include?(type) && flags.allbits?(1)
     def calm? = type == "goaway" && goaway[1] == ENHANCE_YOUR_CALM && goaway[2] == "too_many_pings"
-    def summary = [direction, type, stream, flags, payload, goaway].compact.join(" ")
+    # SETTINGS_INITIAL_WINDOW_SIZE alone, as receive window growth sends it.
+    def growth = settings&.map(&:first) == [INITIAL_WINDOW_SIZE] ? settings.first.last : nil
+    def summary = [direction, type, stream, flags, payload, goaway, settings, increment, length].compact.join(" ")
   end
 
   # Records every frame through protocol-http2's framer, the layer every
@@ -69,14 +77,34 @@ module KeepaliveInterop
   class << self
     attr_accessor :sink
 
+    # The longest run of consecutive `frames` each closer than `below`
+    # seconds to the one before it, as [frames in the run, smallest gap].
+    # PING enforcement strikes every PING in such a run after the first
+    # unless a HEADERS or DATA write forgave it.
+    def close_run(frames, below)
+      gaps = frames.each_cons(2).map { |earlier, later| later.at - earlier.at }
+      run = longest = gaps.empty? ? frames.size : 1
+      gaps.each do |gap|
+        run = gap < below ? run + 1 : 1
+        longest = [longest, run].max
+      end
+      [longest, gaps.min]
+    end
+
+    def milliseconds(seconds) = seconds ? "#{(seconds * 1000).round(1)} ms" : "none"
+
     def record(framer, direction, frame)
       local, remote = (@endpoints ||= ObjectSpace::WeakMap.new)[framer] ||= endpoints(framer)
       type = TYPES.fetch(frame.type, "other")
       payload = frame.unpack.unpack1("H*") if type == "ping"
       goaway = frame.unpack if type == "goaway"
+      settings = frame.unpack if type == "settings" && !frame.acknowledgement?
+      increment = frame.unpack if type == "window_update"
+      length = frame.length if type == "data"
       sink.call(Frame.new(connection: "#{Process.pid}:#{framer.object_id}", local_port: local, remote_port: remote,
                           direction: direction, type: type, stream: frame.stream_id, flags: frame.flags,
-                          payload: payload, goaway: goaway, at: Process.clock_gettime(Process::CLOCK_MONOTONIC)))
+                          payload: payload, goaway: goaway, settings: settings, increment: increment,
+                          length: length, at: Process.clock_gettime(Process::CLOCK_MONOTONIC)))
     end
 
     def endpoints(framer)
@@ -113,12 +141,13 @@ module KeepaliveInterop
 
     def connections(**) = frames(**).map(&:connection).uniq
 
-    # Each PING written waits `time` after the latest frame read before it.
+    # Each keepalive PING written waits `time` after the latest frame read
+    # before it. BDP PINGs follow DATA instead.
     def ping_gaps(connection)
       last_read = nil
       frames(connection).filter_map do |frame|
         last_read = frame.at if frame.read?
-        frame.at - last_read if frame.write? && frame.ping? && last_read
+        frame.at - last_read if frame.write? && frame.ping? && !frame.bdp? && last_read
       end
     end
 
@@ -272,6 +301,45 @@ module KeepaliveInterop
     end
   end
 
+  # Wire evidence shared by the Host and Falcon BDP cases, from a grpc-go
+  # default client's large uploads and downloads: its BDP PINGs are read and
+  # acknowledged, the host's own BDP PINGs are written and acknowledged, and
+  # the host grows its stream window with SETTINGS, never past the hosts'
+  # default 1 MiB max_receive_window. The host writes no GOAWAY; the client's
+  # only GOAWAY is the NO_ERROR one grpc-go sends when it closes.
+  # At least four grpc-go BDP PINGs on one connection each follow the one
+  # before within the Host's default min_time, so its enforcement had to
+  # forgive them to avoid three strikes.
+  module BDPEvidence
+    MIN_TIME = ConnectRPC::Async::ServerKeepalive.new.min_time
+    HOST_CEILING = 1_048_576
+
+    def self.verify(wire, port, label)
+      frames = wire.frames(local_port: port)
+      runs = wire.connections(local_port: port).map do |connection|
+        read = wire.frames(connection).select { |frame| frame.read? && frame.ping? && frame.bdp? }
+        KeepaliveInterop.close_run(read, MIN_TIME)
+      end
+      run, gap = runs.max_by(&:first) || [0, nil]
+      peer_pings = frames.count { |frame| frame.read? && frame.ping? && frame.bdp? }
+      peer_acked = frames.count { |frame| frame.write? && frame.ack? && frame.bdp? }
+      own_pings = frames.count { |frame| frame.write? && frame.ping? && frame.bdp? }
+      own_acked = frames.count { |frame| frame.read? && frame.ack? && frame.bdp? }
+      growth = frames.filter_map { |frame| frame.write? && frame.growth }
+      goaways = frames.select { |frame| frame.type == "goaway" && (frame.write? || frame.goaway[1] != 0) }
+      unless run >= 4 && peer_acked == peer_pings && own_pings.positive? && own_acked.positive? &&
+             growth.any? { |window| window > 65_536 } && growth.max <= HOST_CEILING && goaways.empty?
+        raise "#{label}: grpc-go BDP PINGs #{peer_pings}, acked #{peer_acked}, longest run on one connection " \
+              "under #{MIN_TIME}s #{run} (min gap #{KeepaliveInterop.milliseconds(gap)}); host BDP PINGs " \
+              "#{own_pings}, acked #{own_acked}; SETTINGS growth #{growth}; GOAWAY #{goaways.map(&:summary)}"
+      end
+
+      "#{peer_pings} grpc-go BDP PINGs acked, #{run} in a row on one connection each under #{MIN_TIME}s apart " \
+        "(min gap #{KeepaliveInterop.milliseconds(gap)}); host wrote #{own_pings} BDP PINGs (#{own_acked} acked) " \
+        "and grew its stream window #{growth.join(' -> ')}; no host or error GOAWAY"
+    end
+  end
+
   # One mode's peers, credentials and bidi helpers.
   class ModeCases
     def initialize(mode, binary:, fixtures:, helpers:, identities:, authority:, wire:)
@@ -316,8 +384,83 @@ module KeepaliveInterop
     end
   end
 
+  # The Ruby client's BDP case, part of ClientCases.
+  module ClientBDP
+    # The Ruby Transport's BDP PINGs against grpc-go's enforcement (MinTime
+    # 1s, a strike for any closer PING not forgiven by a server HEADERS or
+    # DATA write). Each BDP PING follows DATA read from the server, which
+    # forgives it. At least four BDP PINGs in a row, each under 1s after the
+    # one before, would reach grpc-go's third strike without that
+    # forgiveness. Starting at a 64 KiB stream window, three 1 MiB messages
+    # give the estimator room to grow it; DATA past 64 KiB between two stream
+    # WINDOW_UPDATEs shows grpc-go sending into the grown window. The client
+    # reads nothing until then, so it returns no stream credit and only the
+    # SETTINGS growth can grant those bytes, however fast either side runs.
+    def bdp_client(origin, port)
+      seen = @wire.connections(remote_port: port)
+      transport = ConnectRPC::Async::Transport.new(origin: origin, stream_receive_window: 65_536, **client_options)
+      payload = "\xA5".b * (1 << 20)
+      replies = []
+      peer_client(origin, transport).server_stream(MESSAGE.new(value: "bdp", payload: payload)) do |reader|
+        connection = new_connection(port, seen)
+        spent = -> { credit_spent(@wire.frames(connection)) }
+        @wire.wait("#{@mode} grpc-go DATA past 64 KiB in the grown stream window", within: 10, state: spent) do
+          spent.call > 65_536
+        end
+        reader.each { |message| replies << message }
+      end
+      unless replies.map(&:value) == ["bdp", "second", ""] && replies.all? { |reply| reply.payload == payload }
+        raise "#{@mode}: BDP server stream replies #{replies.map(&:value)}"
+      end
+
+      connection = new_connection(port, seen)
+      frames = @wire.frames(connection)
+      bdp_pings = frames.select { |frame| frame.write? && frame.ping? && frame.bdp? }
+      pings = bdp_pings.size
+      run, gap = KeepaliveInterop.close_run(bdp_pings, 1)
+      acked = frames.count { |frame| frame.read? && frame.ack? && frame.bdp? }
+      growth = frames.filter_map { |frame| frame.write? && frame.growth }
+      spent = credit_spent(frames)
+      goaways = frames.select { |frame| frame.read? && frame.type == "goaway" }
+      connections = @wire.connections(remote_port: port) - seen
+      unless pings >= 4 && run >= 4 && acked.positive? && growth.any? { |window| window > 65_536 } &&
+             spent > 65_536 && goaways.empty? && connections == [connection]
+        raise "#{@mode}: Ruby BDP PINGs #{pings}, longest run under 1s #{run} (min gap " \
+              "#{KeepaliveInterop.milliseconds(gap)}), acked #{acked}, SETTINGS growth #{growth}, most DATA " \
+              "between stream WINDOW_UPDATEs #{spent}, GOAWAY #{goaways.map(&:summary)}, connections #{connections}"
+      end
+
+      puts "PASS Ruby Transport BDP -> grpc-go MinTime 1s #{@mode}: #{pings} BDP PINGs (#{acked} acked), #{run} " \
+           "in a row each under 1s apart (min gap #{KeepaliveInterop.milliseconds(gap)}), stream window grown " \
+           "#{growth.join(' -> ')}, #{spent} DATA bytes between stream WINDOW_UPDATEs, no GOAWAY, 3 MiB server " \
+           "stream on one connection"
+    ensure
+      transport&.close(grace: 0)
+    end
+
+    # The most DATA read on one stream between WINDOW_UPDATEs the Ruby side
+    # wrote for it: at most the stream window at the time.
+    def credit_spent(frames)
+      since = Hash.new(0)
+      most = 0
+      frames.each do |frame|
+        next if frame.stream.zero?
+
+        if frame.read? && frame.type == "data"
+          since[frame.stream] += frame.length
+          most = [most, since[frame.stream]].max
+        elsif frame.write? && frame.type == "window_update"
+          since[frame.stream] = 0
+        end
+      end
+      most
+    end
+  end
+
   # The Ruby client against a grpc-go server.
   class ClientCases < ModeCases
+    include ClientBDP
+
     # Ruby client keepalive against grpc-go enforcement (MinTime 1s, no PINGs
     # without streams), compliant and over-eager, on one Go server.
     def ruby_client
@@ -326,6 +469,7 @@ module KeepaliveInterop
       port = URI(origin).port
       compliant_client(origin, port)
       eager_client(origin, port)
+      bdp_client(origin, port)
     ensure
       server&.finish(within: 10)
     end
@@ -357,8 +501,8 @@ module KeepaliveInterop
       peer_client(origin, transport).bidi do |duplex|
         echo(duplex, "first")
         connection = new_connection(port, seen)
-        acks = @wire.wait("#{@mode} four PING ACKs", within: 20) do
-          received = @wire.frames(connection).select { |frame| frame.read? && frame.ack? }
+        acks = @wire.wait("#{@mode} four keepalive PING ACKs", within: 20) do
+          received = @wire.frames(connection).select { |frame| frame.read? && frame.ack? && !frame.bdp? }
           received if received.size >= 4
         end
         echo(duplex, "after-pings")
@@ -395,8 +539,8 @@ module KeepaliveInterop
       client.bidi do |duplex|
         echo(duplex, "again")
         second = new_connection(port, seen, except: first)
-        @wire.wait("#{@mode} two PINGs on the next connection", within: 5) do
-          @wire.frames(second).count { |frame| frame.write? && frame.ping? } >= 2
+        @wire.wait("#{@mode} two keepalive PINGs on the next connection", within: 5) do
+          @wire.frames(second).count { |frame| frame.write? && frame.ping? && !frame.bdp? } >= 2
         end
         finish_bidi(duplex)
       end
@@ -488,15 +632,8 @@ module KeepaliveInterop
     def bdp
       host = host(ConnectRPC::Async::ServerKeepalive.new)
       go("keepalive-bdp", origin: origin(host.port)).finish(within: 30)
-      frames = @wire.frames(local_port: host.port)
-      bdp = frames.select { |frame| frame.read? && frame.ping? && frame.payload == BDP_PING }
-      acked = frames.count { |frame| frame.write? && frame.ack? && frame.payload == BDP_PING }
-      goaways = frames.select { |frame| frame.write? && frame.type == "goaway" }
-      unless bdp.any? && acked == bdp.size && goaways.empty?
-        raise "#{@mode}: BDP PINGs #{bdp.size}, acked #{acked}, GOAWAY #{goaways.map(&:summary)}"
-      end
-
-      puts "PASS grpc-go default client -> Host default #{@mode}: #{bdp.size} BDP PINGs acked, not rejected"
+      puts "PASS grpc-go default client <-> Host default #{@mode}: " \
+           "#{BDPEvidence.verify(@wire, host.port, "#{@mode} Host")}"
     ensure
       host&.close(grace: 0)
     end
@@ -528,25 +665,50 @@ module KeepaliveInterop
       barrier.stop
     end
 
-    # The age drain through two real Falcon workers over TLS. Worker frames
-    # reach this process as single-write JSON events on the worker event pipe.
+    # The age drain and the BDP case through two real Falcon workers over
+    # TLS, one cluster each: the BDP case uses the default ServerKeepalive, so
+    # no age drain splits its connection. Worker frames reach this process as
+    # single-write JSON events on each cluster's worker event pipe.
     def self.falcon(wire, binary:, fixtures:, helpers:, identities:, **)
       require "connectrpc/falcon"
       require_relative "../gems/connectrpc-falcon/spec/support/process_cluster"
+      age = { keepalive: ConnectRPC::Async::ServerKeepalive.new(max_connection_age: 1) }
+      falcon_cluster(wire, helpers, identities, age) do |host, port|
+        peer = GoPeer.new("tls keepalive-age", binary, "keepalive-age", "https://127.0.0.1:#{port}", "tls", fixtures)
+        evidence = AgeDrain.run(wire, peer, port, "tls Falcon")
+        workers = stop_falcon(wire, host, port)
+        puts "PASS Falcon max_connection_age 1s tls: #{evidence} (worker pids #{workers.join(', ')})"
+      end
+      falcon_cluster(wire, helpers, identities, {}) do |host, port|
+        GoPeer.new("tls keepalive-bdp", binary, "keepalive-bdp", "https://127.0.0.1:#{port}", "tls", fixtures)
+              .finish(within: 30)
+        evidence = BDPEvidence.verify(wire, port, "tls Falcon")
+        workers = stop_falcon(wire, host, port)
+        puts "PASS grpc-go default client <-> Falcon default tls: #{evidence} (worker pids #{workers.join(', ')})"
+      end
+    end
+
+    def self.falcon_cluster(wire, helpers, identities, options)
       reader, writer = IO.pipe
       writer = FalconProcessFixtures::FalconEventWriter.new(writer)
       writer.sync = true
       KeepaliveInterop.sink = ->(frame) { writer.puts(JSON.generate(kind: "frame", **frame.to_h)) }
-      host = FalconProcessFixtures::FalconProcessCluster.new(falcon_configuration(writer, helpers, identities), reader,
-                                                             writer)
+      configuration = falcon_configuration(writer, helpers, identities, options)
+      host = FalconProcessFixtures::FalconProcessCluster.new(configuration, reader, writer)
       host.event(:running, count: 2)
       pids = host.events.select { |event| event.fetch("kind") == "running" }.map { |event| event.fetch("pid") }
       raise "Real Falcon workers missing" unless pids.uniq.size == 2 && !pids.include?(Process.pid)
 
       pump = Async::Task.current.async { pump_events(reader, host, wire) }
-      port = host.service.port
-      peer = GoPeer.new("tls keepalive-age", binary, "keepalive-age", "https://127.0.0.1:#{port}", "tls", fixtures)
-      evidence = AgeDrain.run(wire, peer, port, "tls Falcon")
+      yield host, host.service.port
+    ensure
+      pump&.stop
+      host&.close
+    end
+
+    # Stops the workers, checks they released every request and connection,
+    # and returns the worker pids that served `port`.
+    def self.stop_falcon(wire, host, port)
       host.stop
       closed = wire.wait("Falcon workers closed", within: 10) do
         found = host.events.select { |event| event.fetch("kind") == "closed" }
@@ -556,16 +718,11 @@ module KeepaliveInterop
         event.values_at("requests", "connections") == [0, 0]
       end
 
-      workers = wire.connections(local_port: port).map { |connection| connection.split(":").first }
-      puts "PASS Falcon max_connection_age 1s tls: #{evidence} (worker pids #{workers.join(', ')})"
-    ensure
-      pump&.stop
-      host&.close
+      wire.connections(local_port: port).map { |connection| connection.split(":").first }.uniq
     end
 
-    def self.falcon_configuration(writer, helpers, identities)
+    def self.falcon_configuration(writer, helpers, identities, options)
       tls = helpers.host_tls(identities.fetch("server"))
-      options = { keepalive: ConnectRPC::Async::ServerKeepalive.new(max_connection_age: 1) }
       Async::Service::Configuration.build do
         service "grpc-keepalive" do
           include ConnectRPC::Falcon::Environment

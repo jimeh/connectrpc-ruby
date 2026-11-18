@@ -3,6 +3,11 @@
 module ConnectRPC
   module Falcon
     class Server < ::Falcon::Server
+      # The default ceiling of dynamic receive windows. grpc-go uses 16 MiB;
+      # hosts stop at 1 MiB so unread request data stays bounded in memory.
+      MAX_RECEIVE_WINDOW = 1_048_576
+      private_constant :MAX_RECEIVE_WINDOW
+
       def initialize(server:, endpoint:, rack_app: nil, cache: false, tls: nil, tls_provider: nil,
                      utilization_registry: nil, max_connections: 1024, max_requests: 128,
                      handshake_timeout: 10, idle_timeout: 60, refresh_interval: 60,
@@ -10,7 +15,8 @@ module ConnectRPC
                      keepalive: ::ConnectRPC::Async::ServerKeepalive.new, max_concurrent_streams: 100,
                      request_body_timeout: 60, response_body_timeout: 60, frame_write_timeout: 60,
                      stream_receive_window: 65_536,
-                     connection_receive_window: 16_777_216)
+                     connection_receive_window: 16_777_216, dynamic_receive_windows: true,
+                     max_receive_window: MAX_RECEIVE_WINDOW)
         raise ArgumentError, "cache must be true or false" unless [true, false].include?(cache)
 
         configured = if endpoint.is_a?(::IO::Endpoint::BoundEndpoint)
@@ -44,7 +50,8 @@ module ConnectRPC
           request_body_timeout: request_body_timeout, response_body_timeout: response_body_timeout,
           frame_write_timeout: frame_write_timeout,
           stream_receive_window: stream_receive_window,
-          connection_receive_window: connection_receive_window
+          connection_receive_window: connection_receive_window,
+          dynamic_receive_windows: dynamic_receive_windows, max_receive_window: max_receive_window
         )
         # Preserve parent-bound descriptors while installing a worker-local
         # accept wrapper through IO::Endpoint's supported wrapper option.

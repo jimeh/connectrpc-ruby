@@ -54,7 +54,8 @@ raise "Falcon DSL values differ" unless evaluator.count == 2 && evaluator.url ==
 raise "Falcon DSL server differs" unless evaluator.connectrpc_server.is_a?(ConnectRPC::Server)
 raise "Falcon DSL fallback differs" unless evaluator.rack_app.call("PATH_INFO" => "/ordinary").first == 200
 unless evaluator.server_options == { idle_timeout: nil, max_connections: 8, cache: true, keepalive: nil,
-                                     stream_receive_window: 1_048_576 }
+                                     stream_receive_window: 1_048_576, dynamic_receive_windows: true,
+                                     max_receive_window: 4_194_304 }
   raise "Falcon DSL options differ"
 end
 

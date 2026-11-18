@@ -196,7 +196,8 @@ RSpec.describe "Real Falcon process-worker lifecycle" do
            [JSON.generate(bytes: chunks.sum(&:bytesize), entries: chunks.size, pid: Process.pid)]]
         end
       end
-      config = configuration(writer, make_core: -> { server }, rack: rack, count: 1)
+      # Static: BDP growth would change the 64 KiB window and the exact credit asserted here.
+      config = configuration(writer, make_core: -> { server }, rack: rack, count: 1, dynamic_receive_windows: false)
       cluster = FalconProcessFixtures::FalconProcessCluster.new(config, reader, writer)
       pid = cluster.event(:running).fetch("pid")
       origin = "http://127.0.0.1:#{cluster.service.port}"

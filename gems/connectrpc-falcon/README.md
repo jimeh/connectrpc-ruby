@@ -104,7 +104,8 @@ Include `ConnectRPC::Falcon::Environment` in each service:
 - `server_options` supplies shared limits and host options such as `cache:`,
   `keepalive:`, and since 0.3.0 `max_concurrent_streams:`,
   `request_body_timeout:`, `response_body_timeout:`, `frame_write_timeout:`,
-  `stream_receive_window:` and `connection_receive_window:`.
+  `stream_receive_window:`, `connection_receive_window:`,
+  `dynamic_receive_windows:` and `max_receive_window:`.
 - Since 0.3.0, `connectrpc_close_grace` sets the managed worker stop grace in
   seconds (default 5); see [Shutdown](#shutdown).
 - `url` describes the listener.
@@ -427,6 +428,9 @@ the bare 503 when admission is full.
 Since 0.3.0, `stream_receive_window:` (default 65,536) and
 `connection_receive_window:` (default 16 MiB) size native HTTP/2 request
 uploads as on the Async `Host`, with the same memory and throughput trade-off.
+`dynamic_receive_windows:` (default true) grows them at run time from BDP PINGs
+up to `max_receive_window:` (default 1 MiB, below grpc-go's 16 MiB to bound
+unread request payload), as on the `Host`.
 See [Flow-control windows](../connectrpc-async/README.md#flow-control-windows).
 They do not apply to HTTP/1.
 
@@ -448,7 +452,10 @@ admission](../connectrpc-async/README.md#stream-admission). Neither bound
 applies to HTTP/1 connections.
 
 `falcon:interop:grpc` also runs a grpc-go bidi stream through an age drain on
-two real workers over TLS.
+two real workers over TLS. On a second pair of workers with the default
+keepalive, the grpc-go default client's large uploads and downloads check that
+its BDP PINGs are acknowledged and that the workers send their own and grow
+their stream windows without a GOAWAY.
 
 ```ruby
 server_options do

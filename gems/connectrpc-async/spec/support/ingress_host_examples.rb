@@ -38,7 +38,8 @@ RSpec.shared_examples "hosted HTTP/2 ingress backpressure" do
                   else
                     host_tls(anchors: mode == :mtls ? [tls_material[:client_ca]] : nil)
                   end
-        with_ingress_host(app, tls: options) do |host, origin|
+        # Static: BDP growth would change the 64 KiB window and the exact credit asserted here.
+        with_ingress_host(app, tls: options, dynamic_receive_windows: false) do |host, origin|
           with_ingress_client(task, origin, mode) do |connection, wire|
             response = connection.create_response
             response.instance_variable_set(:@request, Protocol::HTTP::Request["POST", "/hold", {}, nil])

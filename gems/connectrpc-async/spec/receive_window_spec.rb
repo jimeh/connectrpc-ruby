@@ -138,7 +138,7 @@ RSpec.describe "HTTP/2 receive windows" do
     end
   end
 
-  it "passes both windows from ThreadedTransport to its owner's connections" do
+  it "passes the window options from ThreadedTransport to its owner's connections" do
     observed = Thread::Queue.new
     hosts = []
     # The handler runs on the host's reactor thread, which owns the connection.
@@ -149,13 +149,29 @@ RSpec.describe "HTTP/2 receive windows" do
     }))
     hosts << peer.peer
     origin = "http://127.0.0.1:#{peer.peer.port}"
-    transport = threaded(origin: origin, stream_receive_window: 131_072, connection_receive_window: 262_144)
+    transport = threaded(origin: origin, stream_receive_window: 131_072, connection_receive_window: 262_144,
+                         max_receive_window: 196_608)
     expect(client(transport, origin).echo(AsyncHelpers::MESSAGE.new(name: "w")).message.name).to eq("w")
     # No response DATA has been sent yet, so the host's send window is the
     # client's whole connection window.
     expect(pop_within(observed, "the handler's view of the client windows")).to eq([131_072, 262_144])
+    _, limits = on_owner(transport) do
+      engine_of(transport).inner.instance_variable_get(:@resources).map do |resource|
+        resource.connection.instance_variable_get(:@bandwidth).instance_variable_get(:@limit)
+      end
+    end
+    expect(limits).to eq([196_608])
+    static = threaded(origin: origin, dynamic_receive_windows: false)
+    expect(client(static, origin).echo(AsyncHelpers::MESSAGE.new(name: "s")).message.name).to eq("s")
+    _, estimators = on_owner(static) do
+      engine_of(static).inner.instance_variable_get(:@resources).map do |resource|
+        resource.connection.instance_variable_get(:@bandwidth)
+      end
+    end
+    expect(estimators).to eq([nil])
   ensure
     transport&.close(grace: 0)
+    static&.close(grace: 0)
     peer&.stop
   end
 
@@ -215,7 +231,8 @@ RSpec.describe "HTTP/2 receive windows" do
         connection&.close
       end
       origin = "http://127.0.0.1:#{listener.local_address.ip_port}"
-      transport = ConnectRPC::Async::Transport.new(origin: origin)
+      # Static: the raw peer's 4 MiB burst would otherwise grow the window it measures.
+      transport = ConnectRPC::Async::Transport.new(origin: origin, dynamic_receive_windows: false)
       outgoing = ConnectRPC::StreamRequest.new(url: URI("#{origin}/stream"), http_method: "POST", headers: {})
       transport.open_stream(outgoing) do |exchange|
         exchange.close_send
@@ -257,18 +274,28 @@ RSpec.describe "HTTP/2 receive windows" do
         "Host" => ->(**options) { ConnectRPC::Async::Host.new(server: server, **options) }
       }
       constructors.each do |name, build|
-        %i[stream_receive_window connection_receive_window].each do |option|
+        %i[stream_receive_window connection_receive_window max_receive_window].each do |option|
           [65_534, 2**31, 65_536.0, "65536", nil].each do |value|
             expect { build.call(option => value) }
               .to raise_error(ArgumentError, "#{option} must be an integer from 65535 to 2147483647"),
                   "#{name} #{option}: #{value.inspect}"
           end
         end
+        # The ceiling is validated even when windows stay static.
+        expect { build.call(dynamic_receive_windows: false, max_receive_window: 0) }
+          .to raise_error(ArgumentError, "max_receive_window must be an integer from 65535 to 2147483647"), name
+        [nil, 1, "true", "false"].each do |value|
+          expect { build.call(dynamic_receive_windows: value) }
+            .to raise_error(ArgumentError, "dynamic_receive_windows must be true or false"),
+                "#{name} dynamic_receive_windows: #{value.inspect}"
+        end
       end
       built = [ConnectRPC::Async::Transport.new(origin: "http://127.0.0.1:1", stream_receive_window: 65_535,
-                                                connection_receive_window: (2**31) - 1),
+                                                connection_receive_window: (2**31) - 1, max_receive_window: 65_535),
                ConnectRPC::Async::ServerSession.new(application: ->(_) {}, stream_receive_window: (2**31) - 1,
-                                                    connection_receive_window: 65_535)]
+                                                    connection_receive_window: 65_535,
+                                                    dynamic_receive_windows: false,
+                                                    max_receive_window: (2**31) - 1)]
       built.first.close(grace: 0)
       built.last.abort
     end

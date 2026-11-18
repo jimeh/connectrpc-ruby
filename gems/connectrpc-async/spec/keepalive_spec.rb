@@ -160,7 +160,9 @@ RSpec.describe "HTTP/2 client keepalive" do
       end
       origin = origin_for(bound)
       events = []
-      transport = recording_transport(origin, events, connection_policy: keepalive_policy)
+      # Static windows: BDP PINGs would join the exact PING list asserted here.
+      transport = recording_transport(origin, events, connection_policy: keepalive_policy,
+                                                      dynamic_receive_windows: false)
       clock = install_clock(transport)
       expect(transport.call(request("#{origin}/warm")).body).to eq("/warm")
       resource = resources(transport).first
@@ -253,7 +255,9 @@ RSpec.describe "HTTP/2 client keepalive" do
         invocations = []
         peer = keepalive_peer(task, bound.sockets.first, holds, invocations)
         origin = origin_for(bound)
-        transport = ConnectRPC::Async::Transport.new(origin: origin, connection_policy: keepalive_policy)
+        # Static windows: BDP PINGs would join the exact PING list asserted here.
+        transport = ConnectRPC::Async::Transport.new(origin: origin, connection_policy: keepalive_policy,
+                                                     dynamic_receive_windows: false)
         clock = install_clock(transport)
         expect(transport.call(request("#{origin}/warm")).body).to eq("/warm")
         await_due(task, clock, 10)
@@ -276,7 +280,9 @@ RSpec.describe "HTTP/2 client keepalive" do
         bound = IO::Endpoint.tcp("127.0.0.1", 0).bound
         peer = keepalive_peer(task, bound.sockets.first, holds, [])
         origin = origin_for(bound)
-        transport = ConnectRPC::Async::Transport.new(origin: origin, connection_policy: keepalive_policy(permit: true))
+        # Static windows: BDP PINGs would join the exact PING list asserted here.
+        transport = ConnectRPC::Async::Transport.new(origin: origin, connection_policy: keepalive_policy(permit: true),
+                                                     dynamic_receive_windows: false)
         clock = install_clock(transport)
         expect(transport.call(request("#{origin}/warm")).body).to eq("/warm")
         2.times do |index|
@@ -447,7 +453,9 @@ RSpec.describe "HTTP/2 client keepalive" do
         peer = keepalive_peer(task, bound.sockets.first, held, invocations)
         origin = origin_for(bound)
         events = []
-        transport = recording_transport(origin, events, connection_policy: keepalive_policy)
+        # Static windows: BDP PINGs would join the exact PING list asserted here.
+        transport = recording_transport(origin, events, connection_policy: keepalive_policy,
+                                                        dynamic_receive_windows: false)
         clock = install_clock(transport)
         expect(transport.call(request("#{origin}/warm")).body).to eq("/warm")
         resource = resources(transport).first
@@ -525,7 +533,9 @@ RSpec.describe "HTTP/2 client keepalive" do
         end
         origin = origin_for(bound)
         events = []
-        transport = recording_transport(origin, events, connection_policy: keepalive_policy)
+        # Static windows: BDP PINGs would join the exact PING list asserted here.
+        transport = recording_transport(origin, events, connection_policy: keepalive_policy,
+                                                        dynamic_receive_windows: false)
         clock = install_clock(transport)
         expect(transport.call(request("#{origin}/warm")).body).to eq("/warm")
         resource = resources(transport).first

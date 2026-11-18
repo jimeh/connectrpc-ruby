@@ -16,7 +16,8 @@ host = ConnectRPC::Async::Host.new(server: server, tls_provider: provider, on_tl
                                    max_concurrent_streams: 64, request_body_timeout: 30,
                                    response_body_timeout: 45, frame_write_timeout: 90,
                                    stream_receive_window: 1_048_576,
-                                   connection_receive_window: 33_554_432)
+                                   connection_receive_window: 33_554_432, dynamic_receive_windows: true,
+                                   max_receive_window: 4_194_304)
 host.start.port&.succ
 host.addresses.each(&:ip_port)
 host.refresh_tls&.succ
@@ -58,7 +59,7 @@ session = ConnectRPC::Async::ServerSession.new(
   application: application, lifecycle_factory: ->(incoming) { application.start_call(incoming) },
   stop_accepting: -> {}, keepalive: nil, max_concurrent_streams: 100, request_body_timeout: nil,
   response_body_timeout: nil, frame_write_timeout: nil, stream_receive_window: 65_536,
-  connection_receive_window: 16_777_216
+  connection_receive_window: 16_777_216, dynamic_receive_windows: false, max_receive_window: 16_777_216
 )
 session.start.schedule { application.call(request) }.wait
 session.tls_status[:generation]&.succ
@@ -78,7 +79,7 @@ session.abort
 transport = ConnectRPC::Async::Transport.new(
   origin: "https://example.invalid", ca_file: "application-ca.pem", certificate_chain: ["client"],
   private_key: "key", connection_limit: 2, max_requests: 10, stream_receive_window: 4_194_304,
-  connection_receive_window: 67_108_864
+  connection_receive_window: 67_108_864, dynamic_receive_windows: false, max_receive_window: 33_554_432
 )
 ConnectRPC::Client.new(base_url: "https://example.invalid", binding: APIBinding.new, transport: transport)
 transport.close(grace: 0)
@@ -94,7 +95,7 @@ falcon = ConnectRPC::Falcon::Server.new(
   max_concurrent_streams: 32, request_body_timeout: 15.5, response_body_timeout: 30.5,
   frame_write_timeout: 45.5,
   stream_receive_window: 1_048_576,
-  connection_receive_window: 16_777_216
+  connection_receive_window: 16_777_216, dynamic_receive_windows: true, max_receive_window: 1_048_576
 )
 falcon.run.wait
 falcon.call(request)&.status&.succ

@@ -3,9 +3,13 @@
 # Times unary bodies over HTTP/2 through a local proxy that adds round-trip
 # time, to compare receive window settings. Not a gating check: the numbers
 # depend on the machine. The "Flow-control windows" table in the README came
-# from these defaults. Example:
+# from these defaults. Every run opens a new connection, so its windows start
+# at their configured sizes rather than where an earlier run grew them; a
+# small call establishes the connection before the timed one. Examples:
 #
 #   mise run async:bench:windows -- --stream 1048576
+#   mise run async:bench:windows -- --static
+#   mise run async:bench:windows -- --max 4194304
 require "optparse"
 require "socket"
 
@@ -29,6 +33,12 @@ OptionParser.new do |parser|
   end
   parser.on("--connection BYTES", Integer, "connection_receive_window for both sides") do |value|
     options[:windows][:connection_receive_window] = value
+  end
+  parser.on("--max BYTES", Integer, "max_receive_window for both sides") do |value|
+    options[:windows][:max_receive_window] = value
+  end
+  parser.on("--static", "dynamic_receive_windows: false for both sides") do
+    options[:windows][:dynamic_receive_windows] = false
   end
 end.parse!
 
@@ -108,29 +118,34 @@ end
 proxy = DelayProxy.new(ports.pop(timeout: 10) || abort("Host did not start"), options.fetch(:rtt) / 2)
 origin = "http://127.0.0.1:#{proxy.port}"
 clock = -> { Process.clock_gettime(Process::CLOCK_MONOTONIC) }
+# Each run gets its own transport, warmed by a small call that grows no window.
 median = lambda do |&block|
   times = Array.new(options.fetch(:runs)) do
+    transport = ConnectRPC::Async::Transport.new(origin: origin, **windows)
+    client = echo::Client.new(client: ConnectRPC::Client.new(base_url: origin, transport: transport,
+                                                             binding: binding))
+    client.echo(message.new(name: "warm"), timeout: 60)
     started = clock.call
-    block.call
+    block.call(client)
     clock.call - started
+  ensure
+    transport&.close
   end
   times.sort[times.size / 2]
 end
 
 Sync do |task|
-  transport = ConnectRPC::Async::Transport.new(origin: origin, **windows)
-  client = echo::Client.new(client: ConnectRPC::Client.new(base_url: origin, transport: transport, binding: binding))
-  client.echo(message.new(name: "warm"), timeout: 60)
-  download = median.call { client.echo(message.new(name: "download"), timeout: 300) }
-  concurrent = median.call do
+  download = median.call { |client| client.echo(message.new(name: "download"), timeout: 300) }
+  concurrent = median.call do |client|
     Array.new(4) { task.async { client.echo(message.new(name: "download"), timeout: 300) } }.each(&:wait)
   end
-  upload = median.call { client.echo(message.new(name: body), timeout: 300) }
-  transport.close
+  upload = median.call { |client| client.echo(message.new(name: body), timeout: 300) }
   puts format("windows=%<windows>s rtt=%<rtt>.3fs size=%<size>d download=%<download>.2fs " \
-              "4x-download=%<concurrent>.2fs upload=%<upload>.2fs",
+              "4x-download=%<concurrent>.2fs upload=%<upload>.2fs (medians of %<runs>d runs, each on a new " \
+              "connection)",
               windows: windows.empty? ? "defaults" : windows.inspect, rtt: options.fetch(:rtt),
-              size: options.fetch(:size), download: download, concurrent: concurrent, upload: upload)
+              size: options.fetch(:size), download: download, concurrent: concurrent, upload: upload,
+              runs: options.fetch(:runs))
 end
 stop << true
 host_thread.join(10)

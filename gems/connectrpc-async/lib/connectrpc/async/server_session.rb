@@ -12,6 +12,10 @@ module ConnectRPC
       ACCEPT_INITIAL_DELAY = 0.005
       ACCEPT_MAX_DELAY = 1.0
       private_constant :ACCEPT_RESOURCE_ERRORS, :ACCEPT_IMMEDIATE_ERRORS, :ACCEPT_INITIAL_DELAY, :ACCEPT_MAX_DELAY
+      # The default ceiling of dynamic receive windows. grpc-go uses 16 MiB;
+      # hosts stop at 1 MiB so unread request data stays bounded in memory.
+      MAX_RECEIVE_WINDOW = 1_048_576
+      private_constant :MAX_RECEIVE_WINDOW
 
       def initialize(application:, tls: nil, tls_provider: nil, max_connections: 1024, max_requests: 128,
                      handshake_timeout: 10, idle_timeout: 60, refresh_interval: 60, refresh_jitter: 0.1,
@@ -20,7 +24,8 @@ module ConnectRPC
                      max_concurrent_streams: 100, request_body_timeout: 60,
                      response_body_timeout: 60, frame_write_timeout: 60,
                      stream_receive_window: 65_536,
-                     connection_receive_window: 16_777_216)
+                     connection_receive_window: 16_777_216, dynamic_receive_windows: true,
+                     max_receive_window: MAX_RECEIVE_WINDOW)
         initialize_affinity
         raise ArgumentError, "application must be callable" unless application.respond_to?(:call)
         raise ArgumentError, "stop_accepting must be callable" if stop_accepting && !stop_accepting.respond_to?(:call)
@@ -48,6 +53,7 @@ module ConnectRPC
         @max_concurrent_streams = [max_concurrent_streams, @max_requests].min
         @stream_receive_window = Internal.receive_window(stream_receive_window, "stream_receive_window")
         @connection_receive_window = Internal.receive_window(connection_receive_window, "connection_receive_window")
+        @receive_window_limit = Internal.receive_window_limit(dynamic_receive_windows, max_receive_window)
         unless request_body_timeout.nil?
           @request_body_timeout = Internal.seconds(request_body_timeout, "request_body_timeout")
         end
@@ -324,7 +330,8 @@ module ConnectRPC
         connection.resource = resource
         connection.stream_limit = @max_concurrent_streams
         connection.admission = self
-        connection.receive_windows(stream: @stream_receive_window, connection: @connection_receive_window)
+        connection.receive_windows(stream: @stream_receive_window, connection: @connection_receive_window,
+                                   limit: @receive_window_limit)
         connection.read_connection_preface(Internal.settings(@max_requests,
                                                              max_concurrent_streams: @max_concurrent_streams,
                                                              stream_window: @stream_receive_window))

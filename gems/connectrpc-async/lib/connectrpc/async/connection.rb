@@ -26,6 +26,14 @@ module ConnectRPC
         value
       end
 
+      # The ceiling for dynamic receive windows, or nil when they stay static.
+      def self.receive_window_limit(dynamic, max)
+        raise ArgumentError, "dynamic_receive_windows must be true or false" unless [true, false].include?(dynamic)
+
+        max = receive_window(max, "max_receive_window")
+        max if dynamic
+      end
+
       # Raised before a writer enters the guard of a connection that can no
       # longer start streams. Nothing has been written for that writer.
       class UnusableConnection < IOError; end
@@ -56,19 +64,43 @@ module ConnectRPC
         end
 
         def receive_ping(frame)
-          @resource&.ping_acknowledged(frame.unpack) if frame.acknowledgement?
+          if frame.acknowledgement?
+            payload = frame.unpack
+            @resource&.ping_acknowledged(payload)
+            bandwidth_acknowledged(payload)
+          end
           super
         end
       end
 
       # Receive windows of a client or server connection.
+      #
+      # With a `limit` above the stream window, the windows grow at run time
+      # from a BDPEstimator, as grpc-go's do. Every received DATA frame counts,
+      # at connection level and including padding, refused and closed streams.
+      # A sample sends a stream-0 WINDOW_UPDATE for pending connection credit,
+      # then a PING. Growth sends a stream-0 WINDOW_UPDATE when the estimate
+      # exceeds the connection window, then SETTINGS_INITIAL_WINDOW_SIZE.
+      # Windows never shrink. Effects the peer can observe happen inside the
+      # frame guard just before each frame is encoded: the PING's send time is
+      # stamped, and a SETTINGS frame's window is appended to the pending local
+      # settings and raised on every live stream, so append order is wire
+      # order. The reader reserves connection credit when it queues the
+      # frames, and never writes them: client and server connections hand
+      # them to a writer task through `send_bandwidth_frames`.
       module ReceiveWindows
+        SETTINGS_WINDOW = ::Protocol::HTTP2::Settings::INITIAL_WINDOW_SIZE
+
         # Set before the preface. Streams use the stream window before the
         # peer acknowledges SETTINGS: accepting more than the peer may yet
         # send is safe, and a peer may spend the larger window before its ACK.
-        def receive_windows(stream:, connection:)
+        def receive_windows(stream:, connection:, limit: nil)
           @stream_receive_window = stream
           @connection_receive_window = connection
+          return unless limit && limit > stream
+
+          @bandwidth = BDPEstimator.new(window: stream, limit: limit)
+          @bandwidth_settings = {}.compare_by_identity
         end
 
         attr_reader :stream_receive_window
@@ -92,10 +124,107 @@ module ConnectRPC
         end
 
         # protocol-http2 retargets connection replenishment to the stream
-        # window when the peer acknowledges SETTINGS.
+        # window when the peer acknowledges SETTINGS. It also sets every
+        # stream's window to the acknowledged one, which is older and smaller
+        # than a grown window published while that ACK was in flight.
         def update_local_settings(changes)
           super
           local_window.desired = @connection_receive_window if @connection_receive_window
+          raise_stream_windows(@stream_receive_window) if @bandwidth
+        end
+
+        # Counts a received DATA frame of `bytes`, padding included.
+        def sample_bandwidth(bytes)
+          bandwidth = @bandwidth or return
+          send_bandwidth_frames(true, nil) if bandwidth.starts_sample?(bytes)
+        end
+
+        # A PING ACK `payload`, which may end the outstanding sample. Growth
+        # is sent at once.
+        def bandwidth_acknowledged(payload)
+          window = @bandwidth&.acknowledged(payload) or return
+          send_bandwidth_frames(false, window)
+        end
+
+        private
+
+        # The frames for growth to `window` and for a probe, each in grpc-go's
+        # order: connection credit, then the SETTINGS or the PING.
+        def bandwidth_frames(probe, window)
+          frames = []
+          frames.push(credit_frame(growth_credit(window)), settings_frame(window)) if window
+          frames.push(credit_frame(probe_credit), ping_frame) if probe
+          frames.compact
+        end
+
+        # An estimate past the connection window raises its target, and
+        # reserves the increment that reaches it.
+        def growth_credit(window)
+          return 0 unless window > @connection_receive_window
+
+          @connection_receive_window = window
+          local_window.desired = window
+          reserve_credit(window - local_window.available)
+        end
+
+        # Pending connection credit precedes a BDP PING, as in grpc-go, so an
+        # intermediary that polices PINGs sees a WINDOW_UPDATE first.
+        def probe_credit = reserve_credit(local_window.wanted)
+
+        # Reserved by the reader, before its frame is written: accepting more
+        # before the peer reads it is safe, and the reader's own connection
+        # WINDOW_UPDATEs then never count the same credit again.
+        def reserve_credit(amount)
+          return 0 unless amount.positive?
+
+          local_window.expand(amount)
+          amount
+        end
+
+        def credit_frame(amount)
+          return unless amount.positive?
+
+          frame = ::Protocol::HTTP2::WindowUpdateFrame.new(0)
+          frame.pack(amount)
+          frame
+        end
+
+        def settings_frame(window)
+          frame = ::Protocol::HTTP2::SettingsFrame.new
+          frame.pack([[SETTINGS_WINDOW, window]])
+          @bandwidth_settings[frame] = window
+          frame
+        end
+
+        def ping_frame
+          frame = @bandwidth_ping = ::Protocol::HTTP2::PingFrame.new
+          frame.pack(BDPEstimator::PING)
+          frame
+        end
+
+        # Runs inside the frame guard, just before `frame` is encoded.
+        def publish_receive_window(frame)
+          return unless @bandwidth
+
+          if frame.equal?(@bandwidth_ping)
+            @bandwidth_ping = nil
+            @bandwidth.sent
+          elsif !@bandwidth_settings.empty? && (window = @bandwidth_settings.delete(frame))
+            local_settings.append([[SETTINGS_WINDOW, window]])
+            @stream_receive_window = window if window > @stream_receive_window
+            raise_stream_windows(window)
+          end
+        end
+
+        # Never lowers a window, and never raises one past the RFC maximum.
+        def raise_stream_windows(window)
+          streams.each_value do |stream|
+            local = stream.local_window
+            next unless window > local.capacity
+
+            headroom = ::Protocol::HTTP2::MAXIMUM_ALLOWED_WINDOW_SIZE - local.available
+            local.capacity = [window, local.capacity + headroom].min
+          end
         end
       end
 
@@ -147,11 +276,25 @@ module ConnectRPC
         # Acquire while cancellable. Once a frame starts, encode/flush/state
         # must finish together; a second cancellation is reserved for raw abort.
         def write_frame(frame)
-          synchronize { ::Async::Task.current.defer_cancel { timed_write { super } } }
+          synchronize do
+            ::Async::Task.current.defer_cancel do
+              timed_write do
+                encoding(frame)
+                super
+              end
+            end
+          end
         end
 
         def write_frames(&)
-          synchronize { ::Async::Task.current.defer_cancel { timed_write { super(&) } } }
+          synchronize do
+            ::Async::Task.current.defer_cancel do
+              timed_write do
+                encoding_frames
+                super(&)
+              end
+            end
+          end
         end
 
         # Mirror async-http 0.105.0 and Async 2.46's eager Task#async, publishing
@@ -187,6 +330,7 @@ module ConnectRPC
           end
 
           super
+          sample_bandwidth(frame.length)
         end
 
         def delete(id)
@@ -226,6 +370,11 @@ module ConnectRPC
 
         # Only server connections have a request queue.
         def close_requests = nil
+
+        # Run inside the frame guard, just before a frame or a header block
+        # is encoded.
+        def encoding(frame) = publish_receive_window(frame)
+        def encoding_frames = nil
 
         # Server upkeep times each outermost frame write, from holding the
         # guard to its flush, so its watchdog never counts guard waits or
@@ -654,6 +803,74 @@ module ConnectRPC
         ensure
           @resource&.unusable
         end
+
+        # Starts the task that writes receive-window frames, before the reader
+        # starts. The reader only records what to send, so a BDP frame write
+        # that waits for the guard or the socket never stops it reading. The task
+        # is a control task of the resource: retirement captures, cancels and
+        # joins it, and a drain stops it once the final GOAWAY is written.
+        def start_receive_window_writer(parent)
+          return if !@bandwidth || @resource.finished?
+
+          @bandwidth_wake = ::Async::Condition.new
+          @bandwidth_credit = 0
+          task = ::Async::Task.new(parent, finished: false) { write_receive_windows }
+          @resource.maintain(task, control: true)
+          task.run
+          task
+        end
+
+        private
+
+        # Recorded without yielding, with connection credit reserved here as
+        # on a server. The estimator keeps at most one probe outstanding and
+        # estimates only grow, so the writer holds at most one probe, the
+        # latest growth and their summed credit. A retiring connection, or one
+        # whose writer stopped, abandons its probe and drops its growth.
+        def send_bandwidth_frames(probe, window)
+          unless @bandwidth_writing && !retiring?
+            @bandwidth.abandon if probe
+            return
+          end
+
+          if window
+            @bandwidth_credit += growth_credit(window)
+            @bandwidth_growth = window
+          end
+          if probe
+            @bandwidth_credit += probe_credit
+            @bandwidth_probe = true
+          end
+          @bandwidth_wake.signal
+        end
+
+        # One batch per wake: the summed credit, then the SETTINGS, then the
+        # PING. Each frame write defers cancellation, and raw-first retirement
+        # ends a stuck one. A writer that stops drops what it holds, including
+        # a probe whose PING was never written. As in the host's control
+        # writer, a write that finds the peer gone during a drain, before the
+        # reader does, stops only this writer: the reader, which meets the
+        # same end after reading what the peer sent, decides whether the drain
+        # outlives the peer.
+        def write_receive_windows
+          @bandwidth_writing = true
+          loop do
+            @bandwidth_wake.wait until @bandwidth_probe || @bandwidth_growth
+            frames = [credit_frame(@bandwidth_credit), @bandwidth_growth && settings_frame(@bandwidth_growth),
+                      @bandwidth_probe && ping_frame].compact
+            @bandwidth_credit = 0
+            @bandwidth_probe = @bandwidth_growth = nil
+            synchronize { frames.each { |frame| write_frame(frame) } }
+          end
+        rescue UnusableConnection
+          nil
+        rescue StandardError => e
+          @resource.abort(e) unless @resource.peer_departed? || @resource.outlives_peer?(e)
+        ensure
+          @bandwidth_writing = false
+          @bandwidth_probe = @bandwidth_growth = nil
+          @bandwidth.abandon
+        end
       end
 
       class ServerConnection < ::Async::HTTP::Protocol::HTTP2::Server
@@ -727,22 +944,12 @@ module ConnectRPC
           return super unless upkeep&.answers_pings?
 
           if frame.acknowledgement?
-            @resource.ping_acknowledged(frame.unpack)
+            payload = frame.unpack
+            @resource.ping_acknowledged(payload)
+            bandwidth_acknowledged(payload)
           else
             upkeep.ping(frame)
           end
-        end
-
-        def write_frame(frame)
-          super
-          upkeep&.stream_written if frame.is_a?(::Protocol::HTTP2::DataFrame) ||
-                                    frame.is_a?(::Protocol::HTTP2::HeadersFrame)
-        end
-
-        # Only header blocks are written as frame groups.
-        def write_frames(&)
-          super
-          upkeep&.stream_written
         end
 
         # Never raises a drain's frozen cutoff to the highest stream seen.
@@ -795,6 +1002,36 @@ module ConnectRPC
         end
 
         private
+
+        # A HEADERS or DATA write forgives the next client PING. As in
+        # grpc-go's loopy writer, that happens before the frame is encoded,
+        # inside the frame guard, so a PING the peer sends once it reads the
+        # frame, such as a BDP probe, is never read before the forgiveness.
+        def encoding(frame)
+          upkeep&.stream_written if frame.is_a?(::Protocol::HTTP2::DataFrame) ||
+                                    frame.is_a?(::Protocol::HTTP2::HeadersFrame)
+          super
+        end
+
+        # Only header blocks are written as frame groups.
+        def encoding_frames
+          upkeep&.stream_written
+          super
+        end
+
+        # Queued on the control writer without yielding. A retiring
+        # connection, or one whose drain is finishing or whose peer left,
+        # sends none: its control writer may already have stopped. Its probe
+        # is abandoned and its growth dropped.
+        def send_bandwidth_frames(probe, window)
+          upkeep = self.upkeep
+          if retiring? || !upkeep || @resource.finishing? || @resource.peer_departed?
+            @bandwidth.abandon if probe
+            return
+          end
+
+          upkeep.send_receive_window(bandwidth_frames(probe, window))
+        end
 
         # A refusal has no HTTP response; its reset alone completes delivery.
         def finish_request(response, incoming, written, error, refused: false)
