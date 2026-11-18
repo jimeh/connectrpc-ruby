@@ -1,26 +1,46 @@
 # frozen_string_literal: true
 
+require_relative "native_stall_report"
+
 module Conformance
   class NativeServerAdapter
     def self.run(input = $stdin, output = $stdout)
       reader, writer = IO.pipe
-      previous = Signal.trap("TERM") { writer.write_nonblock(".", exception: false) }
+      stall = NativeStallReport.new
+      main = Thread.current
+      previous = Signal.trap("TERM") do
+        writer.write_nonblock(".", exception: false)
+        stall.arm(main)
+      end
       config = Framing.read(input, ServerCompatRequest)
       raise "Missing native server configuration" unless config
 
       Async(finished: false) do
+        stall.scheduler = Fiber.scheduler
         host, port, bound = start_native_host(new(config), config)
         Framing.write(output, ServerCompatResponse.new(host: "127.0.0.1", port: port,
                                                        pem_cert: config.use_tls ? config.server_creds.cert : ""))
         Telemetry.record("server_ready", port: port)
         reader.read(1)
       ensure
-        close_native_host(host, bound)
-        Telemetry.record("server_stopped")
+        stop_native_host(host, bound, stall)
       end.wait
     ensure
       Signal.trap("TERM", previous) if previous
       close_signal(reader, writer)
+    end
+
+    # Records server_stopped whatever close raises, and what it raised: an
+    # Async::Cancel escaping this task would otherwise end it silently.
+    def self.stop_native_host(host, bound, stall)
+      stall.phase = :closing
+      close_native_host(host, bound)
+    rescue Exception => e # rubocop:disable Lint/RescueException -- report every close escape, then re-raise it
+      Telemetry.record("server_close_failed", error_class: e.class.name, message: e.message)
+      raise
+    ensure
+      Telemetry.record("server_stopped")
+      stall.phase = :stopped
     end
 
     def self.close_native_host(host, bound)

@@ -89,6 +89,16 @@ def native_environment(telemetry, host, artifacts)
     "CONFORMANCE_DIAGNOSTICS" => File.join(artifacts, "adapter-stderr.log") }
 end
 
+# CI keeps no artifacts, so a failed accounting shows the adapter's stderr.
+def report_adapter_stderr(artifacts)
+  path = File.join(artifacts, "adapter-stderr.log")
+  lines = File.exist?(path) ? File.readlines(path) : []
+  return if lines.empty?
+
+  warn "Adapter stderr (last #{[lines.size, 200].min} of #{lines.size} lines, #{path}):"
+  warn lines.last(200).join
+end
+
 success = true
 runs.each do |profile, direction|
   ledger = ledger_type.new(profile: profile, direction: direction,
@@ -113,6 +123,7 @@ runs.each do |profile, direction|
     File.write(File.join(artifacts, "summary.json"),
                "#{JSON.pretty_generate(accounting_valid: false, error: e.message)}\n")
     warn e.message
+    report_adapter_stderr(artifacts)
     success = false
   end
 end

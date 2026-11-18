@@ -41,7 +41,18 @@ File.open(File.join(directory, "runner.log"), "w") do |log|
 end
 puts raw
 events = File.readlines(environment.fetch("CONFORMANCE_TELEMETRY")).map { |line| JSON.parse(line) }
-summary = ledger.parse(raw, events, process.exitstatus)
+begin
+  summary = ledger.parse(raw, events, process.exitstatus)
+rescue StandardError
+  # CI keeps no artifacts, so a failed accounting shows the adapter's stderr.
+  path = environment.fetch("CONFORMANCE_DIAGNOSTICS")
+  lines = File.exist?(path) ? File.readlines(path) : []
+  unless lines.empty?
+    warn "Adapter stderr (last #{[lines.size, 200].min} of #{lines.size} lines, #{path}):"
+    warn lines.last(200).join
+  end
+  raise
+end
 File.write(File.join(directory, "summary.json"), "#{JSON.pretty_generate(summary)}\n")
 puts "Web #{host}: #{summary.fetch(:executed)} executed; #{summary.fetch(:passed)} passed; artifacts #{directory}"
 exit(process.success? && summary.fetch(:failed).zero? ? 0 : 1)

@@ -87,6 +87,19 @@ wakes the main loop, which closes the localhost host with bounded cleanup.
 Framing uses four-byte big-endian sizes, exact reads, flushes, a 16 MiB maximum,
 and explicit malformed/truncated errors. Protocol stdout contains frames only.
 
+The native server adapter records `server_stopped` even when closing its host
+raises, after a `server_close_failed` event naming the exception; an
+`Async::Cancel` would otherwise end the adapter task silently. The ledger fails
+with that exception, or names each server pid that never stopped and its last
+recorded event. The runner kills a server still running 5 s after SIGTERM, which
+loses its stderr, so an adapter that has not stopped 3 s after SIGTERM writes its
+reactor thread and Async task backtraces to `adapter-stderr.log`. The native and
+Web scripts print that file's tail when accounting fails, since CI keeps no
+artifacts. Telemetry writers in one process take a fiber-aware mutex before the
+shared file lock: on Ruby 4 a write can yield to the fiber scheduler while the
+lock is held, and a second fiber waiting in `flock` would block the reactor
+thread that has to resume the holder.
+
 ## Explicit caller cancellation
 
 All four `Client Cancellation/.../unary/cancel-after-close-send` cases must pass
