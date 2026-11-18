@@ -12,8 +12,9 @@ module ConnectRPC
       ACCEPT_INITIAL_DELAY = 0.005
       ACCEPT_MAX_DELAY = 1.0
       private_constant :ACCEPT_RESOURCE_ERRORS, :ACCEPT_IMMEDIATE_ERRORS, :ACCEPT_INITIAL_DELAY, :ACCEPT_MAX_DELAY
-      # The default ceiling of dynamic receive windows, grpc-go's.
-      MAX_RECEIVE_WINDOW = 16_777_216
+      # The default ceiling of dynamic receive windows. grpc-go uses 16 MiB;
+      # hosts stop at 1 MiB so unread request data stays bounded in memory.
+      MAX_RECEIVE_WINDOW = 1_048_576
       private_constant :MAX_RECEIVE_WINDOW
 
       def initialize(application:, tls: nil, tls_provider: nil, max_connections: 1024, max_requests: 128,

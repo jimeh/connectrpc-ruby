@@ -96,11 +96,13 @@ request_body_timeout: 60, response_body_timeout: 60,
 frame_write_timeout: 60, handshake_timeout: 10, idle_timeout: 60,
 refresh_interval: 60, refresh_jitter: 0.1, refresh_timeout: 10,
 on_tls_error: nil, keepalive: ServerKeepalive.new, fallback: nil,
-stream_receive_window: 65_536, connection_receive_window: 16_777_216)` returns
-a host. `fallback:`, `max_concurrent_streams:`, `request_body_timeout:`,
-`response_body_timeout:`, `frame_write_timeout:`, `stream_receive_window:` and
-`connection_receive_window:` are available since 0.3.0. The receive windows size request uploads; see
-[Flow-control windows](#flow-control-windows).
+stream_receive_window: 65_536, connection_receive_window: 16_777_216,
+dynamic_receive_windows: true, max_receive_window: 1_048_576)` returns a host.
+`fallback:`, `max_concurrent_streams:`, `request_body_timeout:`,
+`response_body_timeout:`, `frame_write_timeout:`, `stream_receive_window:`,
+`connection_receive_window:`, `dynamic_receive_windows:` and
+`max_receive_window:` are available since 0.3.0. The receive windows size
+request uploads; see [Flow-control windows](#flow-control-windows).
 
 - `start` binds/listens before returning self; `port` and `addresses` expose the
   actual binding. Since 0.3.0, every address `host` resolves to listens on one
@@ -502,7 +504,7 @@ within the 5-second `min_time`, are checked against the default
 `ServerKeepalive`, along with a raw PING flood and an age
 drain with a bidi stream in flight. During the grpc-go client's uploads the
 `Host` writes its own BDP PINGs, which the client acknowledges, and grows its
-stream window. It belongs to `async:verify`. grpc-go clients PING at most
+stream window, never past the default 1 MiB ceiling. It belongs to `async:verify`. grpc-go clients PING at most
 every 10 seconds, so the run takes about 45 seconds. `falcon:interop:grpc`
 runs the age drain and the BDP case through real Falcon workers.
 
@@ -511,9 +513,10 @@ runs the age drain and the BDP case through real Falcon workers.
 `Transport.new(origin:, ca_file: nil, certificate_chain: nil, private_key: nil,
 connection_limit: 1, max_requests: 128, connect_timeout: 10,
 connection_policy: ConnectionPolicy.new, connection_observer: nil,
-stream_receive_window: 4_194_304, connection_receive_window: 16_777_216)`
-implements core's transport seam for HTTP/2. Since 0.3.0, the receive windows
-size response downloads; see [Flow-control windows](#flow-control-windows).
+stream_receive_window: 4_194_304, connection_receive_window: 16_777_216,
+dynamic_receive_windows: true, max_receive_window: 16_777_216)` implements
+core's transport seam for HTTP/2. Since 0.3.0, the receive windows size
+response downloads; see [Flow-control windows](#flow-control-windows).
 
 - Origins contain only scheme/host/port; a bare trailing `/` is accepted.
   Request paths, including core's base prefix, remain intact.
@@ -1285,10 +1288,12 @@ for a server. Each is an integer from 65,535, the HTTP/2 initial window, to
 
 Since 0.3.0, the windows also grow at run time, as grpc-go's do.
 `dynamic_receive_windows:` (default true) turns growth on and off, and
-`max_receive_window:` (default 16 MiB, 16,777,216, grpc-go's ceiling; an
-integer from 65,535 to 2,147,483,647) caps it, on the same five classes. Each
-side estimates the bandwidth-delay product of its connection with grpc-go 1.85's
-algorithm:
+`max_receive_window:` (an integer from 65,535 to 2,147,483,647) caps it, on the
+same five classes. The ceiling defaults to 16 MiB (16,777,216), grpc-go's, on
+`Transport` and `ThreadedTransport`, and to 1 MiB (1,048,576) on `Host`,
+`ServerSession` and the Falcon server, which bounds the request payload a host
+holds unread; see the memory bounds below. Each side estimates the
+bandwidth-delay product of its connection with grpc-go 1.85's algorithm:
 
 - When DATA arrives and no sample is running, the receiver starts one: it sends
   a PING with grpc-go's BDP payload and counts every DATA byte that arrives until
@@ -1334,19 +1339,29 @@ already has, so a stream's retention bound is the larger of
 
 | Bound | Dynamic (defaults) | Static (`dynamic_receive_windows: false`) |
 | --- | --- | --- |
-| One host stream | 16 MiB | 64 KiB |
-| One server connection: bound times its stream limit, the smaller of `max_concurrent_streams` and `max_requests` | 1.56 GiB (100 streams) | 6.25 MiB |
-| Admitted host requests: bound times `max_requests` (128) | 2 GiB | 8 MiB |
+| One host stream | 1 MiB | 64 KiB |
+| One server connection: bound times its stream limit, the smaller of `max_concurrent_streams` and `max_requests` | 100 MiB (100 streams) | 6.25 MiB |
+| Admitted host requests: bound times `max_requests` (128) | 128 MiB | 8 MiB |
 | One client call | 16 MiB | 4 MiB |
 | One client transport: bound times its `max_requests` (128) | 2 GiB | 512 MiB |
 
 These are worst cases: each needs that many full windows that the application
-has not read. A host that accepts uploads from untrusted peers should lower the
-ceiling, for example `max_receive_window: 1_048_576` (100 MiB per connection,
-128 MiB across the host) or turn growth off with `dynamic_receive_windows:
-false`, which restores the 64 KiB per-stream bound of earlier releases. A
-stream that arrives while host admission is full is refused before the server
-reads its DATA, so it retains nothing.
+has not read. Since 0.3.0, the hosts' 1 MiB default ceiling departs from
+grpc-go's 16 MiB on purpose. A host holds unread request payload in Ruby strings
+in its process until the application reads it, and a Ruby process whose heap
+grew that far often keeps the memory after it is read, so the 1.56 GiB per
+connection and 2 GiB per host that a 16 MiB ceiling allows are a Ruby-specific
+hazard. 1 MiB keeps nearly all of the upload gain in the benchmark below. It
+caps upload throughput on long links instead: a stream moves at most one window
+per round trip, so one upload stream gets at most about 20 MiB/s at 50 ms RTT
+and about 5 MiB/s at 200 ms RTT. For grpc-go's behaviour, pass
+`max_receive_window: 16_777_216` to the host, or in Falcon `server_options`,
+and accept worst cases of 16 MiB per stream, about 1.56 GiB per connection and
+2 GiB across the host. A host that accepts uploads from untrusted peers can
+also turn growth off with `dynamic_receive_windows: false`, which restores the
+64 KiB per-stream bound of earlier releases. A stream that arrives while host
+admission is full is refused before the server reads its DATA, so it retains
+nothing.
 
 A client call retains at most one stream window of unread response payload,
 for example while a streaming call's application stops reading. A Connect unary
@@ -1366,12 +1381,13 @@ larger window costs memory only for calls the application started, and a Connect
 unary response within the default 4 MiB `response_wire_limit` fits in one
 window, so it never waits for stream credit. The server default starts at
 64 KiB per stream, because a server receives whatever its peers send, and grows
-with the measured bandwidth-delay product. `mise run async:bench:windows`
+with the measured bandwidth-delay product up to 1 MiB. `mise run async:bench:windows`
 measured these with 3 MiB unary bodies through a local proxy that adds 50 ms of
 round-trip time, each run on a new connection so that its windows start at their
 configured sizes. `--stream` or `--connection` in bytes sets a window on both
-the client and the host, `--max` sets `max_receive_window` on both, and
-`--static` turns dynamic windows off on both:
+the client and the host, `--max` sets `max_receive_window` on both, replacing
+the 16 MiB client and 1 MiB host defaults, and `--static` turns dynamic windows
+off on both:
 
 | Windows (client stream / host stream / connection) | Download | 4 concurrent downloads | Upload |
 | --- | --- | --- | --- |
@@ -1379,24 +1395,30 @@ the client and the host, `--max` sets `max_receive_window` on both, and
 | 4 MiB / 64 KiB / 16 MiB, static (`--static`, the 0.3.0 windows without growth) | 0.12 s | 0.21 s | 4.92 s |
 | 1 MiB / 1 MiB / 16 MiB, static (`--static --stream 1048576`) | 0.38 s | 0.46 s | 0.38 s |
 | 4 MiB / 4 MiB / 16 MiB, static (`--static --stream 4194304`) | 0.13 s | 0.22 s | 0.07 s |
-| 4 MiB / 64 KiB / 16 MiB, growing to 1 MiB (`--max 1048576`) | 0.12 s | 0.19 s | 0.62 s |
-| 4 MiB / 64 KiB / 16 MiB, growing to 4 MiB (`--max 4194304`) | 0.13 s | 0.18 s | 0.57 s |
-| 4 MiB / 64 KiB / 16 MiB, growing to 16 MiB (default) | 0.12 s | 0.17 s | 0.74 s |
-| 64 KiB / 64 KiB / 16 MiB, growing to 16 MiB (`--stream 65536`) | 4.33 s | 0.45 s | 0.70 s |
+| 4 MiB / 64 KiB / 16 MiB, growing to 16 MiB on the client and 1 MiB on the host (default) | 0.12 s | 0.19 s | 0.75 s |
+| 4 MiB / 64 KiB / 16 MiB, growing to 1 MiB on both (`--max 1048576`) | 0.12 s | 0.19 s | 0.62 s |
+| 4 MiB / 64 KiB / 16 MiB, growing to 4 MiB on both (`--max 4194304`) | 0.13 s | 0.18 s | 0.57 s |
+| 4 MiB / 64 KiB / 16 MiB, growing to 16 MiB on both, grpc-go's ceiling (`--max 16777216`) | 0.12 s | 0.17 s | 0.74 s |
+| 64 KiB / 64 KiB / 16 MiB, growing to 16 MiB on both (`--stream 65536 --max 16777216`) | 4.33 s | 0.45 s | 0.70 s |
 
-Growth takes a few round trips: an upload starting at 64 KiB reaches a 3 MiB
-window after about five samples, which is why it trails a static 4 MiB host
-window. A stream returns credit only once less than half of its window is
+The default and `--max 1048576` rows give the host the same windows, so their
+upload times differ only by run-to-run variation.
+
+Growth takes a few round trips: an upload starting at 64 KiB reaches the
+default 1 MiB host ceiling after four samples, or a 3 MiB window after about
+five with a higher ceiling, which is why it trails a static 4 MiB host window. A stream returns credit only once less than half of its window is
 available, as protocol-http2 does, so a lone stream can keep as little as half
 of its window in flight. Its samples then fall short of the two-thirds growth
 threshold, and its window can stop after one doubling, as the single 64 KiB
 client download above shows. grpc-go returns stream credit once a quarter of
 the window is pending, which keeps three quarters in flight.
 
-grpc-go starts both windows at 64 KiB and grows them up to 16 MiB as this
-package does, but any explicit window option turns its growth off. Go's
+grpc-go starts both windows at 64 KiB and grows them up to 16 MiB, as this
+package's clients do; this package's hosts stop at 1 MiB by default, as
+described above. Any explicit window option turns grpc-go's growth off. Go's
 net/http2 does not size windows dynamically: it uses 4 MiB stream and 1 GiB
-connection windows on clients and 1 MiB for both on servers. The client
+connection windows on clients and 1 MiB for both on servers, the same per-stream
+bound as the default host ceiling. The client
 connection window stays at 16 MiB, grpc-go's ceiling, instead of net/http2's
 1 GiB, because the two windows mean different things. net/http2 returns
 connection credit as the application reads, so its connection window also caps
@@ -1422,7 +1444,8 @@ follows [HTTP/2 flow control](https://www.rfc-editor.org/rfc/rfc9113.html#sectio
 With a 65,536-byte stream window, the server's starting window, each queue
 retains at most 65,536 payload bytes in at most five data entries, independent
 of frame count. A larger window, such as the 4 MiB client default or one grown
-up to `max_receive_window`, raises the byte bound to that window, in 16 KiB
+up to `max_receive_window` (by default 1 MiB on a host and 16 MiB on a client),
+raises the byte bound to that window, in 16 KiB
 entries. Each returned native chunk is
 at most 16,384 bytes. The core input adapter can retain one such chunk's remainder;
 the shared reader can hold one decoded DATA frame of at most 16,384 bytes.

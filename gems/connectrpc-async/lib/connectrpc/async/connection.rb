@@ -847,7 +847,11 @@ module ConnectRPC
         # One batch per wake: the summed credit, then the SETTINGS, then the
         # PING. Each frame write defers cancellation, and raw-first retirement
         # ends a stuck one. A writer that stops drops what it holds, including
-        # a probe whose PING was never written.
+        # a probe whose PING was never written. As in the host's control
+        # writer, a write that finds the peer gone during a drain, before the
+        # reader does, stops only this writer: the reader, which meets the
+        # same end after reading what the peer sent, decides whether the drain
+        # outlives the peer.
         def write_receive_windows
           @bandwidth_writing = true
           loop do
@@ -861,7 +865,7 @@ module ConnectRPC
         rescue UnusableConnection
           nil
         rescue StandardError => e
-          @resource.abort(e)
+          @resource.abort(e) unless @resource.peer_departed? || @resource.outlives_peer?(e)
         ensure
           @bandwidth_writing = false
           @bandwidth_probe = @bandwidth_growth = nil

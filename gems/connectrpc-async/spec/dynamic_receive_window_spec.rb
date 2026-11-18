@@ -451,6 +451,45 @@ RSpec.describe "HTTP/2 dynamic receive windows" do
     end
   end
 
+  it "grows a default Host's stream windows no further than 1 MiB" do
+    reactor do |task|
+      entered = Async::Queue.new
+      app = lambda do |request|
+        entered.enqueue(request.path)
+        Async::Promise.new.wait
+      end
+      window_host(app) do |host, origin|
+        with_ingress_client(task, origin, :h2c) do |connection, wire|
+          ingress_barrier(task, connection, wire)
+          # A frozen estimator clock makes every sample's bandwidth equal, so
+          # growth depends only on sample sizes, not on loopback timing.
+          host_connection(host).instance_variable_get(:@bandwidth).instance_variable_set(:@clock,
+                                                                                         Struct.new(:now).new(0.0))
+          growth = [131_072, 262_144, 524_288, 1_048_576]
+          # Each round fills a new stream's whole window, a sample that doubles
+          # the estimate, until it reaches the 1 MiB ceiling.
+          [65_536, *growth].each_with_index do |bytes, round|
+            upload = open_request(connection, origin, "/upload#{round}")
+            entered.dequeue
+            ingress_burst(connection, [upload.stream.id, bytes])
+            if round < growth.size
+              await_growth(task, wire, growth.first(round + 1))
+              next
+            end
+
+            ingress_barrier(task, connection, wire)
+            # At the ceiling, the full window starts no sample, and one byte
+            # past it resets only that stream.
+            expect([ingress_growth(wire), wire[:probes].size, wire[:resets]]).to eq([growth, 4, {}])
+            ingress_data(connection, upload.stream.id, "a")
+            ingress_barrier(task, connection, wire)
+            expect([wire[:resets], wire[:goaway]]).to eq([{ upload.stream.id => flow_control_error }, nil])
+          end
+        end
+      end
+    end
+  end
+
   it "sends no BDP PINGs or SETTINGS when windows are static" do
     reactor do |task|
       entered = Async::Queue.new

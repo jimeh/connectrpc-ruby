@@ -3,8 +3,9 @@
 module ConnectRPC
   module Falcon
     class Server < ::Falcon::Server
-      # The default ceiling of dynamic receive windows, grpc-go's.
-      MAX_RECEIVE_WINDOW = 16_777_216
+      # The default ceiling of dynamic receive windows. grpc-go uses 16 MiB;
+      # hosts stop at 1 MiB so unread request data stays bounded in memory.
+      MAX_RECEIVE_WINDOW = 1_048_576
       private_constant :MAX_RECEIVE_WINDOW
 
       def initialize(server:, endpoint:, rack_app: nil, cache: false, tls: nil, tls_provider: nil,

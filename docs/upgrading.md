@@ -132,17 +132,28 @@ These affect native HTTP/2 connections of the Async `Transport`,
   the old client window.
 - Receive windows grow at run time, as grpc-go's do: each side sends BDP PINGs
   while DATA arrives, at most one per round trip, and raises its stream windows,
-  and its connection window when needed, up to `max_receive_window` (default
-  16 MiB) with SETTINGS and WINDOW_UPDATE frames. A 3 MiB upload to a default
-  `Host` over 50 ms of round-trip time takes about 0.7 s instead of 5 s. A peer
-  can now drive a stream's unread retention up to `max_receive_window`, so the
-  worst cases grow: 16 MiB per stream, 1.56 GiB per server connection at the
-  default stream limit of 100, and 2 GiB across a host's or a transport's
-  128 admitted requests. Pass `dynamic_receive_windows: false` to keep static
-  windows and the earlier bounds, or a lower `max_receive_window`, such as
-  1 MiB, to keep growth with a smaller ceiling. A proxy or peer that polices
-  PINGs sees each BDP PING after DATA the other side wrote, which forgives it
-  under grpc-go's rules. See
+  and its connection window when needed, up to `max_receive_window` with
+  SETTINGS and WINDOW_UPDATE frames. A 3 MiB upload to a default `Host` over
+  50 ms of round-trip time takes about 0.75 s instead of 5 s. A peer can now
+  drive a stream's unread retention up to `max_receive_window`, so the worst
+  cases grow.
+  - `Host`, `ServerSession` and the Falcon server default to a 1 MiB ceiling:
+    1 MiB per stream, about 100 MiB per server connection at the default stream
+    limit of 100, and 128 MiB across a host's 128 admitted requests. This
+    departs from grpc-go's 16 MiB on purpose: gigabytes of unread request
+    payload held in a Ruby process are a memory hazard that a Go server does
+    not share to the same degree. It caps one upload stream at about 20 MiB/s
+    at 50 ms of round-trip time and 5 MiB/s at 200 ms. Pass
+    `max_receive_window: 16_777_216` to a host, or in Falcon `server_options`,
+    for grpc-go's ceiling, at 16 MiB per stream, about 1.56 GiB per connection
+    and 2 GiB per host.
+  - `Transport` and `ThreadedTransport` default to grpc-go's 16 MiB ceiling:
+    16 MiB per call and 2 GiB across a transport's 128 calls.
+
+  Pass `dynamic_receive_windows: false` to keep static windows and the earlier
+  bounds, or a lower `max_receive_window` to keep growth with a smaller
+  ceiling. A proxy or peer that polices PINGs sees each BDP PING after DATA the
+  other side wrote, which forgives it under grpc-go's rules. See
   [flow-control windows](../gems/connectrpc-async/README.md#flow-control-windows).
 - Forced teardown (an abort, an expired grace, or a keepalive or
   write-progress failure) shuts raw TCP down in both directions at once and

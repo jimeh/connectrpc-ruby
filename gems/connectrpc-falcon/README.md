@@ -429,7 +429,8 @@ Since 0.3.0, `stream_receive_window:` (default 65,536) and
 `connection_receive_window:` (default 16 MiB) size native HTTP/2 request
 uploads as on the Async `Host`, with the same memory and throughput trade-off.
 `dynamic_receive_windows:` (default true) grows them at run time from BDP PINGs
-up to `max_receive_window:` (default 16 MiB), as on the `Host`.
+up to `max_receive_window:` (default 1 MiB, below grpc-go's 16 MiB to bound
+unread request payload), as on the `Host`.
 See [Flow-control windows](../connectrpc-async/README.md#flow-control-windows).
 They do not apply to HTTP/1.
 

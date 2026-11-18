@@ -304,13 +304,15 @@ module KeepaliveInterop
   # Wire evidence shared by the Host and Falcon BDP cases, from a grpc-go
   # default client's large uploads and downloads: its BDP PINGs are read and
   # acknowledged, the host's own BDP PINGs are written and acknowledged, and
-  # the host grows its stream window with SETTINGS. The host writes no GOAWAY;
-  # the client's only GOAWAY is the NO_ERROR one grpc-go sends when it closes.
+  # the host grows its stream window with SETTINGS, never past the hosts'
+  # default 1 MiB max_receive_window. The host writes no GOAWAY; the client's
+  # only GOAWAY is the NO_ERROR one grpc-go sends when it closes.
   # At least four grpc-go BDP PINGs on one connection each follow the one
   # before within the Host's default min_time, so its enforcement had to
   # forgive them to avoid three strikes.
   module BDPEvidence
     MIN_TIME = ConnectRPC::Async::ServerKeepalive.new.min_time
+    HOST_CEILING = 1_048_576
 
     def self.verify(wire, port, label)
       frames = wire.frames(local_port: port)
@@ -326,7 +328,7 @@ module KeepaliveInterop
       growth = frames.filter_map { |frame| frame.write? && frame.growth }
       goaways = frames.select { |frame| frame.type == "goaway" && (frame.write? || frame.goaway[1] != 0) }
       unless run >= 4 && peer_acked == peer_pings && own_pings.positive? && own_acked.positive? &&
-             growth.any? { |window| window > 65_536 } && goaways.empty?
+             growth.any? { |window| window > 65_536 } && growth.max <= HOST_CEILING && goaways.empty?
         raise "#{label}: grpc-go BDP PINGs #{peer_pings}, acked #{peer_acked}, longest run on one connection " \
               "under #{MIN_TIME}s #{run} (min gap #{KeepaliveInterop.milliseconds(gap)}); host BDP PINGs " \
               "#{own_pings}, acked #{own_acked}; SETTINGS growth #{growth}; GOAWAY #{goaways.map(&:summary)}"
