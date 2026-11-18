@@ -79,7 +79,10 @@ module ConnectRPC
         # Once the peer left a drain, the drain alone ends the connection, so a
         # failed write stops only this writer. Such a write can still run: a
         # writer already due to run sees the departure's cancellation only
-        # after it.
+        # after it. A write can also find the peer gone before the reader
+        # does. As in grpc-go's loopy writer, that write then stops only this
+        # writer, and the reader, which meets the same end after reading what
+        # the peer sent, decides whether the drain outlives the peer.
         def run
           written = nil
           loop do
@@ -92,7 +95,7 @@ module ConnectRPC
             written.resolve(true)
           end
         rescue StandardError => e
-          @resource.abort(e) unless @resource.peer_departed?
+          @resource.abort(e) unless @resource.peer_departed? || @resource.outlives_peer?(e)
         ensure
           written&.resolve(false)
           @queue.dequeue.last.resolve(false) until @queue.empty?
