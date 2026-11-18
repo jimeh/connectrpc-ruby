@@ -87,8 +87,9 @@ module ConnectRPC
       # settings and raised on every live stream, so append order is wire
       # order. The reader reserves connection credit when it queues the
       # frames, and never writes them: client and server connections hand
-      # them to a writer task through `send_bandwidth_frames`.
-      module ReceiveWindows
+      # them to a writer task through `send_bandwidth_frames`, and the
+      # credit returned at a quarter of the window through `queue_credit`.
+      module ReceiveWindows # rubocop:disable Metrics/ModuleLength
         SETTINGS_WINDOW = ::Protocol::HTTP2::Settings::INITIAL_WINDOW_SIZE
 
         # Set before the preface. Streams use the stream window before the
@@ -133,6 +134,28 @@ module ConnectRPC
           raise_stream_windows(@stream_receive_window) if @bandwidth
         end
 
+        # Returns connection credit once a quarter of the connection window
+        # has arrived, as grpc-go does (`trInFlow.onData`). protocol-http2
+        # waits for half, which leaves concurrent streams, or a stream window
+        # as large as the connection window, short of connection credit.
+        #
+        # The reader calls this for every DATA frame, so, as grpc-go queues
+        # it on its writer, it reserves the credit and hands it to the
+        # connection's writer task without yielding: a frame write that holds
+        # the guard never stops it applying DATA. Without a writer that can
+        # take it, such as on a raw connection or a retiring or finishing one,
+        # the reader writes it itself through protocol-http2.
+        def request_window_update
+          wanted = local_window.wanted
+          return unless wanted.positive? && wanted >= receive_window_target / 4
+
+          if receive_window_writer?
+            queue_credit(reserve_credit(wanted))
+          else
+            send_window_update(wanted)
+          end
+        end
+
         # Counts a received DATA frame of `bytes`, padding included.
         def sample_bandwidth(bytes)
           bandwidth = @bandwidth or return
@@ -147,6 +170,8 @@ module ConnectRPC
         end
 
         private
+
+        def receive_window_target = local_window.desired || local_window.capacity
 
         # The frames for growth to `window` and for a probe, each in grpc-go's
         # order: connection credit, then the SETTINGS or the PING.
@@ -189,6 +214,29 @@ module ConnectRPC
           frame
         end
 
+        # Adds reserved `amount` to the one pending stream-0 WINDOW_UPDATE.
+        # Returns a new pending frame for the caller to queue, or nil when the
+        # amount joined a frame still queued. The frame's increment is packed
+        # when it is encoded, so credit added up to then goes with it.
+        def pending_credit_frame(amount)
+          return unless amount.positive?
+
+          @pending_credit = (@pending_credit || 0) + amount
+          return if @pending_credit_frame
+
+          @pending_credit_frame = ::Protocol::HTTP2::WindowUpdateFrame.new(0)
+        end
+
+        # Called once the pending frame is encoded, or when a client writer
+        # that stopped drops it. A host's stopped control writer drops its
+        # queued frame without clearing it, which is harmless: a writer stops
+        # only as its connection ends, so the dropped credit is not needed,
+        # and later credit goes inline.
+        def clear_pending_credit
+          @pending_credit_frame = nil
+          @pending_credit = 0
+        end
+
         def settings_frame(window)
           frame = ::Protocol::HTTP2::SettingsFrame.new
           frame.pack([[SETTINGS_WINDOW, window]])
@@ -202,8 +250,14 @@ module ConnectRPC
           frame
         end
 
-        # Runs inside the frame guard, just before `frame` is encoded.
+        # Runs inside the frame guard, just before `frame` is encoded. The
+        # pending WINDOW_UPDATE takes all credit reserved for it so far, and
+        # stops being pending, with no yield before it is encoded.
         def publish_receive_window(frame)
+          if frame.equal?(@pending_credit_frame)
+            frame.pack(@pending_credit)
+            return clear_pending_credit
+          end
           return unless @bandwidth
 
           if frame.equal?(@bandwidth_ping)
@@ -605,7 +659,10 @@ module ConnectRPC
           else
             discarded = frame.length
           end
-          reclaim_input(discarded)
+          # Receipt alone owes no stream credit, which counts only consumed or
+          # discarded bytes. Reclaiming nothing would still send credit an
+          # application read owes, and wait behind that read for the guard.
+          reclaim_input(discarded) if discarded.positive?
           data
         rescue ::Protocol::HTTP2::ProtocolError
           raise
@@ -623,11 +680,11 @@ module ConnectRPC
         end
 
         def request_window_update
-          return unless @reclaimed_input&.positive? && local_window.limited?
+          return unless credit_due?
 
           connection.synchronize do
             next if closed? || state == :half_closed_remote || connection.retiring?
-            next unless @reclaimed_input.positive? && local_window.limited?
+            next unless credit_due?
 
             ::Async::Task.current.defer_cancel do
               amount = @reclaimed_input
@@ -682,6 +739,21 @@ module ConnectRPC
             connection.output_started(task)
             yield task if block_given?
           end
+        end
+
+        private
+
+        # Stream credit returns once the application has consumed or
+        # discarded a quarter of the window, as grpc-go does (`inFlow.onRead`),
+        # so a stream whose reader keeps up has at least three quarters of its
+        # window in flight. protocol-http2 waits until half the window is
+        # unavailable, which keeps a lone stream's BDP samples near the
+        # two-thirds growth threshold. Credit cannot stall: a peer out of
+        # credit has a full window of bytes here, and every byte the
+        # application reads or discards counts.
+        def credit_due?
+          reclaimed = @reclaimed_input or return false
+          reclaimed.positive? && reclaimed >= local_window.capacity / 4
         end
       end
 
@@ -822,16 +894,16 @@ module ConnectRPC
           @resource&.unusable
         end
 
-        # Starts the task that writes receive-window frames, before the reader
-        # starts. The reader only records what to send, so a BDP frame write
-        # that waits for the guard or the socket never stops it reading. The task
-        # is a control task of the resource: retirement captures, cancels and
+        # Starts the task that writes connection credit and receive-window
+        # growth, before the reader starts, whether or not windows grow. The
+        # reader only records what to send, so a frame write that waits for
+        # the guard or the socket never stops it reading. The task is a
+        # control task of the resource: retirement captures, cancels and
         # joins it, and a drain stops it once the final GOAWAY is written.
         def start_receive_window_writer(parent)
-          return if !@bandwidth || @resource.finished?
+          return if @resource.finished?
 
-          @bandwidth_wake = ::Async::Condition.new
-          @bandwidth_credit = 0
+          @receive_window_wake = ::Async::Condition.new
           task = ::Async::Task.new(parent, finished: false) { write_receive_windows }
           @resource.maintain(task, control: true)
           task.run
@@ -840,43 +912,57 @@ module ConnectRPC
 
         private
 
+        # Whether the writer task runs and can still reach the peer.
+        def receive_window_writer?
+          !!@receive_window_writing && !retiring? && !@resource.finishing? && !@resource.peer_departed?
+        end
+
+        # Credit joins the pending WINDOW_UPDATE, which the writer's next
+        # batch writes.
+        def queue_credit(amount)
+          pending_credit_frame(amount)
+          @receive_window_wake.signal
+        end
+
         # Recorded without yielding, with connection credit reserved here as
         # on a server. The estimator keeps at most one probe outstanding and
-        # estimates only grow, so the writer holds at most one probe, the
-        # latest growth and their summed credit. A retiring connection, or one
-        # whose writer stopped, abandons its probe and drops its growth.
+        # estimates only grow, so the writer holds at most one probe and the
+        # latest growth, and their credit joins the pending WINDOW_UPDATE. A
+        # connection without a writer that can take them abandons its probe
+        # and drops its growth.
         def send_bandwidth_frames(probe, window)
-          unless @bandwidth_writing && !retiring?
+          unless receive_window_writer?
             @bandwidth.abandon if probe
             return
           end
 
           if window
-            @bandwidth_credit += growth_credit(window)
+            pending_credit_frame(growth_credit(window))
             @bandwidth_growth = window
           end
           if probe
-            @bandwidth_credit += probe_credit
+            pending_credit_frame(probe_credit)
             @bandwidth_probe = true
           end
-          @bandwidth_wake.signal
+          @receive_window_wake.signal
         end
 
-        # One batch per wake: the summed credit, then the SETTINGS, then the
-        # PING. Each frame write defers cancellation, and raw-first retirement
-        # ends a stuck one. A writer that stops drops what it holds, including
-        # a probe whose PING was never written. As in the host's control
-        # writer, a write that finds the peer gone during a drain, before the
-        # reader does, stops only this writer: the reader, which meets the
-        # same end after reading what the peer sent, decides whether the drain
-        # outlives the peer.
+        # One batch per wake: the pending WINDOW_UPDATE, then the SETTINGS,
+        # then the PING. The WINDOW_UPDATE takes the credit reserved until it
+        # is encoded; credit reserved after that gets a new one, which wakes
+        # the next batch. Each frame write defers cancellation, and raw-first
+        # retirement ends a stuck one. A writer that stops drops what it
+        # holds, including a probe whose PING was never written. As in the
+        # host's control writer, a write that finds the peer gone during a
+        # drain, before the reader does, stops only this writer: the reader,
+        # which meets the same end after reading what the peer sent, decides
+        # whether the drain outlives the peer.
         def write_receive_windows
-          @bandwidth_writing = true
+          @receive_window_writing = true
           loop do
-            @bandwidth_wake.wait until @bandwidth_probe || @bandwidth_growth
-            frames = [credit_frame(@bandwidth_credit), @bandwidth_growth && settings_frame(@bandwidth_growth),
+            @receive_window_wake.wait until @pending_credit_frame || @bandwidth_probe || @bandwidth_growth
+            frames = [@pending_credit_frame, @bandwidth_growth && settings_frame(@bandwidth_growth),
                       @bandwidth_probe && ping_frame].compact
-            @bandwidth_credit = 0
             @bandwidth_probe = @bandwidth_growth = nil
             synchronize { frames.each { |frame| write_frame(frame) } }
           end
@@ -885,9 +971,10 @@ module ConnectRPC
         rescue StandardError => e
           @resource.abort(e) unless @resource.peer_departed? || @resource.outlives_peer?(e)
         ensure
-          @bandwidth_writing = false
+          @receive_window_writing = false
+          clear_pending_credit
           @bandwidth_probe = @bandwidth_growth = nil
-          @bandwidth.abandon
+          @bandwidth&.abandon
         end
       end
 
@@ -1037,13 +1124,26 @@ module ConnectRPC
           super
         end
 
-        # Queued on the control writer without yielding. A retiring
-        # connection, or one whose drain is finishing or whose peer left,
-        # sends none: its control writer may already have stopped. Its probe
-        # is abandoned and its growth dropped.
-        def send_bandwidth_frames(probe, window)
+        # Whether the control writer can take receive-window frames. A
+        # retiring connection, or one whose drain is finishing or whose peer
+        # left, sends none: its control writer may already have stopped.
+        def receive_window_writer?
           upkeep = self.upkeep
-          if retiring? || !upkeep || @resource.finishing? || @resource.peer_departed?
+          !!upkeep && !retiring? && !@resource.finishing? && !@resource.peer_departed? && !upkeep.writer_stopped?
+        end
+
+        # Credit joins the WINDOW_UPDATE still queued on the control writer,
+        # or queues a new one, without yielding.
+        def queue_credit(amount)
+          frame = pending_credit_frame(amount) or return
+          upkeep.send_receive_window([frame])
+        end
+
+        # Queued on the control writer without yielding. Without a control
+        # writer that can take them, the probe is abandoned and the growth
+        # dropped.
+        def send_bandwidth_frames(probe, window)
+          unless receive_window_writer?
             @bandwidth.abandon if probe
             return
           end
