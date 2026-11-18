@@ -50,6 +50,11 @@ module ConnectRPC
       def close_read
         # The framing parser can close input itself before raising EOFError.
         @rejected_input&.abort_read
+        # Forced retirement has failed raw TCP and closes it, the TLS socket
+        # and this stream once every task has left them, so only the read
+        # state ends here.
+        return end_read if @resource&.send(:raw_failed?)
+
         @retiring_raw.close if @retiring_raw && !@retiring_raw.closed?
         super
       end
@@ -156,6 +161,15 @@ module ConnectRPC
           end
         end
       end
+
+      private
+
+      def end_read
+        return if @state == :closed
+
+        @persistent = false
+        receive_end_stream! if %i[open half_closed_local].include?(@state)
+      end
     end
     private_constant :HTTP1Connection
 
@@ -164,11 +178,12 @@ module ConnectRPC
     class HTTP1StreamInput
       attr_writer :input
 
-      def initialize(body, raw:, connection:)
+      def initialize(body, raw:, connection:, resource: nil)
         @body = body
         @framed = body&.body
         @raw = raw
         @connection = connection
+        @resource = resource
       end
 
       def on_close(&completion)
@@ -243,7 +258,7 @@ module ConnectRPC
           nil
         end
         remaining = @close_expires - now
-        ::Async::Task.current.sleep(remaining) if remaining.positive? && !@raw.closed?
+        ::Async::Task.current.sleep(remaining) if remaining.positive? && !@raw.closed? && !forced?
       end
 
       def discard
@@ -266,7 +281,11 @@ module ConnectRPC
         @connection.retiring_raw = nil
       end
 
+      # Forced retirement has already failed raw TCP and closes it once every
+      # task has left it; the connection's own close_read ends framed input.
       def abort_read
+        return if forced?
+
         @raw.close unless @raw.closed?
         # Finishable.close must still resolve after raw-first teardown. Closing
         # connection state first prevents framed close_read on an already shut IO.
@@ -275,16 +294,19 @@ module ConnectRPC
         nil
       end
 
+      def forced? = !!@resource&.send(:raw_failed?)
+
       def now = Process.clock_gettime(Process::CLOCK_MONOTONIC)
     end
     private_constant :HTTP1StreamInput
 
     # One request's original framing and deadline, owned only by native Web H1.
     class HTTP1RejectedInput
-      def initialize(body, raw:, connection:, headers:)
+      def initialize(body, raw:, connection:, headers:, resource: nil)
         @body = body
         @raw = raw
         @connection = connection
+        @resource = resource
         # Capture before processing. Invalid fields remain core's validation
         # responsibility and must not change its validation order.
         @deadline = GRPCProtocol.request_deadline(headers)
@@ -328,8 +350,10 @@ module ConnectRPC
         end
       end
 
+      # Forced retirement has already failed raw TCP and closes it once every
+      # task has left it.
       def abort_read
-        @raw.close unless @raw.closed?
+        @raw.close unless @raw.closed? || @resource&.send(:raw_failed?)
       end
 
       private
@@ -379,11 +403,11 @@ module ConnectRPC
       end
 
       def web_input(body, headers:)
-        HTTP1RejectedInput.new(body, raw: @raw, connection: @connection, headers: headers)
+        HTTP1RejectedInput.new(body, raw: @raw, connection: @connection, headers: headers, resource: self)
       end
 
       def prepare_stream_input(body)
-        @input_retirement = HTTP1StreamInput.new(body, raw: @raw, connection: @connection)
+        @input_retirement = HTTP1StreamInput.new(body, raw: @raw, connection: @connection, resource: self)
       end
 
       def abort
@@ -427,9 +451,10 @@ module ConnectRPC
           @raw.shutdown(Socket::SHUT_WR)
           cancel_root(@task)
           join(@task)
-          loop { @raw.readpartial(16_384) }
+          discard
         rescue EOFError
-          true
+          # A local raw failure also surfaces as EOF.
+          !@raw_failed
         rescue StandardError
           false
         ensure
@@ -444,6 +469,34 @@ module ConnectRPC
       private
 
       def now = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+
+      # Discards unread input until EOF, so the peer receives the complete
+      # response rather than a reset. This read is not a retirement member;
+      # retirement closes raw only after it has left raw.
+      def discard
+        raise EOFError if @raw_failed
+
+        @discarding = true
+        begin
+          loop { @raw.readpartial(16_384) }
+        ensure
+          @discarding = false
+          changed
+        end
+      end
+
+      # Fails the peer at once without closing the descriptor, as the HTTP/2
+      # resource does: on Ruby 4, IO#close interrupts every fiber blocked on
+      # the socket, even after it has left the read. Retirement closes the
+      # descriptor once its tasks have all left it.
+      def fail_raw
+        @raw_failed = true
+        @raw.shutdown(Socket::SHUT_RDWR) if @raw && !@raw.closed?
+      rescue IOError, SystemCallError
+        nil
+      end
+
+      def raw_failed? = !!@raw_failed
 
       def wait(task, expires)
         remaining = expires - now
@@ -498,7 +551,9 @@ module ConnectRPC
       end
 
       def retire
-        @raw.close unless @raw.closed?
+        # Failing raw TCP precedes any protocol, buffered stream or TLS
+        # disposal.
+        fail_raw
         # Best-effort scheduling hint only. A return proves no unwind or
         # completion; the retained-task joins below establish retirement.
         ::Async::Task.current.yield
@@ -518,13 +573,34 @@ module ConnectRPC
           capture_retirement
           break if @retirement_members.keys.all?(&:finished?)
         end
+        # A drain's discard read is not a member, but the shutdown ends it
+        # with EOF. The stream and TLS socket below close raw too, so every
+        # close waits for that read to leave raw.
+        @progress.wait while @discarding
         begin
           @connection.close
         rescue StandardError
           nil
+        ensure
+          begin
+            @socket&.close
+          rescue StandardError
+            nil
+          end
         end
+        close_raw
         @retirement_completed = true
         changed
+      ensure
+        # An interrupted retirement still releases the descriptor, although
+        # a fiber still blocked on raw may then get a late close interrupt.
+        close_raw
+      end
+
+      def close_raw
+        @raw.close if @raw && !@raw.closed?
+      rescue IOError, SystemCallError
+        nil
       end
 
       # Local counterpart of the private Async helper; no shared public utility.

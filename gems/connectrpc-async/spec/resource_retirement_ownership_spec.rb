@@ -436,15 +436,22 @@ RSpec.describe "Retirement lifecycle coordinators" do
     end
   end
 
+  def finalization(session)
+    tls = session.instance_variable_get(:@tls)
+    [session.instance_variable_get(:@state), tls.status[:state], tls.instance_variable_get(:@timer)&.finished?,
+     session.instance_variable_get(:@lifetime).finished?]
+  end
+
   # Session retirement fails every peer, then retires every resource whatever
-  # fails, is interrupted or prunes the resource list, and raises the first
-  # interruption, otherwise the first failure, afterwards.
+  # fails, is interrupted or prunes the resource list. It then closes the
+  # session and its TLS configuration, and raises the first interruption,
+  # otherwise the first failure.
   {
     listener: "listener cleanup fails",
     resource_raises: "listener cleanup fails and the first resource abort raises",
     pruned: "listener cleanup fails and a listener prunes a retired resource",
     resource_interrupted: "listener cleanup fails and the first resource abort is interrupted",
-    http1_interrupted: "listener cleanup fails and an HTTP/1 raw close is interrupted"
+    http1_interrupted: "listener cleanup fails and an HTTP/1 resource abort is interrupted"
   }.each do |mode, description|
     it "closes accepted raw peers that never served when #{description}" do
       reactor do |task|
@@ -452,8 +459,13 @@ RSpec.describe "Retirement lifecycle coordinators" do
         port = bound.sockets.first.local_address.ip_port
         failure = RuntimeError.new("listener cleanup failed")
         interruption = Async::Cancel.new("interrupted")
+        events = []
         session = ConnectRPC::Async::ServerSession.new(application: ConnectRPC::Async::Application.new(server: server),
-                                                       stop_accepting: -> { raise failure }).start
+                                                       tls_provider: -> { host_tls.merge(version: "one") },
+                                                       stop_accepting: lambda {
+                                                         events << :listener
+                                                         raise failure
+                                                       }).start
         peers = 2.times.map do
           peer = IO::Endpoint.tcp("127.0.0.1", port).connect
           raw, = bound.sockets.first.accept
@@ -475,42 +487,188 @@ RSpec.describe "Retirement lifecycle coordinators" do
             session.send(:capacity?)
           end
         when :http1_interrupted
-          http1_raw = Object.new
-          http1_raw.define_singleton_method(:closed?) { false }
-          http1_raw.define_singleton_method(:close) { raise interruption }
-          http1 = Struct.new(:raw) do
-            def abort = nil
-            def owns_task?(_task) = false
-            def retirement_completed? = true
-          end
-          session.instance_variable_get(:@resources).unshift(http1.new(http1_raw))
+          # An HTTP/1 resource fails its raw socket with every other peer,
+          # before listener cleanup can yield. Its own retirement closes it.
+          http1 = Object.new
+          http1.define_singleton_method(:fail_raw) { events << :http1_failed }
+          http1.define_singleton_method(:abort) { raise interruption }
+          http1.define_singleton_method(:owns_task?) { |_task| false }
+          http1.define_singleton_method(:retirement_completed?) { true }
+          session.instance_variable_get(:@resources).unshift(http1)
         end
         if %i[resource_interrupted http1_interrupted].include?(mode)
           # The interruption wins over the listener failure: session cleanup
           # ends cancelled, so abort returns rather than raising it.
-          expected = nil
           expect { session.abort }.not_to raise_error
         else
-          expected = failure
-          expect { session.abort }.to raise_error(equal(expected))
+          expect { session.abort }.to raise_error(equal(failure))
         end
+        expect(events).to eq(mode == :http1_interrupted ? %i[http1_failed listener] : [:listener])
         expect(resources).to all(satisfy { |resource| retirement_complete?(resource) })
         expect(resources.map(&:raw)).to all(be_closed)
         wait_until(task, "both peers read end of stream") do
           peers.all? { |peer| peer.read_nonblock(1, exception: false).nil? }
         end
-        # The owner guard reports the same cleanup outcome when it ends.
-        guard = session.instance_variable_get(:@lifetime)
-        reported = task.async do
-          guard.wait
-        rescue Exception => e # rubocop:disable Lint/RescueException -- the guard re-raises the retained interruption
-          e
-        end
-        guard.cancel
-        expect(reported.wait).to be(expected)
+        # Whatever failed, the session, its TLS refresh timer and its lifetime
+        # guard have finished, so the guard has nothing left to report.
+        expect(finalization(session)).to eq([:closed, :closed, true, true])
+        expect(session.close(grace: 0)).to be(false)
       ensure
         peers&.each { |raw| AsyncHelpers::INTERNAL.raw_close(raw) }
         bound&.close
+      end
+    end
+  end
+
+  it "closes the session when graceful close's listener cleanup fails" do
+    reactor do
+      failure = RuntimeError.new("listener cleanup failed")
+      session = ConnectRPC::Async::ServerSession.new(application: ConnectRPC::Async::Application.new(server: server),
+                                                     tls_provider: -> { host_tls.merge(version: "one") },
+                                                     stop_accepting: -> { raise failure }).start
+      expect { session.close(grace: 0) }.to raise_error(equal(failure))
+      expect(finalization(session)).to eq([:closed, :closed, true, true])
+      expect(session.close(grace: 0)).to be(false)
+    end
+  end
+
+  it "finishes TLS shutdown when the session cleanup is interrupted while a provider callback unwinds" do
+    reactor do |task|
+      gate = RetirementHelpers::CleanupGate.new
+      checks = 0
+      session = ConnectRPC::Async::ServerSession.new(
+        application: ConnectRPC::Async::Application.new(server: server), on_tls_error: ->(_) {},
+        tls_provider: lambda {
+          checks += 1
+          next host_tls.merge(version: "one") if checks == 1
+
+          begin
+            Async::Condition.new.wait
+          ensure
+            gate.hold
+          end
+        }
+      ).start
+      tls = session.instance_variable_get(:@tls)
+      refresh = task.async(finished: false) { session.refresh_tls }
+      wait_until(task, "the provider refresh started") { tls.instance_variable_get(:@callback) }
+      callback = tls.instance_variable_get(:@callback)
+      aborter = task.async(finished: false) { session.abort }
+      cleanup = gate.entered.dequeue && session.instance_variable_get(:@cleanup)
+      expect(cleanup).not_to be_finished
+      # The cleanup is joining the provider callback's held unwind.
+      Fiber.scheduler.raise(cleanup.fiber, Async::Cancel.new("cleanup interrupted"))
+      expect(cleanup).not_to be_finished
+      expect(tls.status[:state]).to eq(:closing)
+      gate.release
+      join_retirement_tasks(task, aborter, cleanup, callback)
+      expect(aborter.result).to equal(session)
+      expect(cleanup).to be_cancelled
+      expect(finalization(session)).to eq([:closed, :closed, true, true])
+      expect { refresh.wait }.to raise_error(ConnectRPC::Async::TLSConfiguration::Error)
+    ensure
+      gate&.release
+    end
+  end
+
+  # An abort caller that was not itself interrupted returns once the session
+  # closed, even when the cleanup task itself ended cancelled: raising that
+  # cancellation into the caller would unwind it as if it were cancelled.
+  it "closes the session without raising into an abort caller when its cleanup is cancelled" do
+    reactor do |task|
+      with_retirement_connection(task) do |state|
+        session, gate, resource = state.values_at(:session, :gate, :resource)
+        aborter = task.async(finished: false) { session.abort }
+        expect(gate.entered.dequeue).to equal(state.fetch(:handler))
+        cleanup = session.instance_variable_get(:@cleanup)
+        cleanup.cancel
+        expect(cleanup).not_to be_finished
+        expect(session.instance_variable_get(:@state)).to eq(:closing)
+        gate.release
+        join_retirement_tasks(task, aborter, cleanup)
+        expect(aborter.result).to equal(session)
+        expect(cleanup).to be_cancelled
+        expect(retirement_complete?(resource)).to be(true)
+        expect(session.instance_variable_get(:@state)).to eq(:closed)
+        wait_until(task, "lifetime guard finished") { session.instance_variable_get(:@lifetime).finished? }
+      end
+    end
+  end
+
+  it "closes the session without raising into an abort caller when the session owner is cancelled" do
+    reactor do |task|
+      with_retirement_connection(task) do |state|
+        session, gate, resource = state.values_at(:session, :gate, :resource)
+        guard = session.instance_variable_get(:@lifetime)
+        aborter = task.async(finished: false) { session.abort }
+        expect(gate.entered.dequeue).to equal(state.fetch(:handler))
+        # The owner's cancellation reaches the lifetime guard, which joins the
+        # running cleanup rather than starting another.
+        guard.cancel
+        expect(guard).not_to be_finished
+        expect(session.instance_variable_get(:@state)).to eq(:closing)
+        gate.release
+        join_retirement_tasks(task, aborter, guard)
+        expect(aborter.result).to equal(session)
+        expect(guard).to be_cancelled
+        expect(retirement_complete?(resource)).to be(true)
+        expect(session.instance_variable_get(:@state)).to eq(:closed)
+      end
+    end
+  end
+
+  # A client transport's forced teardown fails every connection first and
+  # retires each one whatever another's abort raises or is interrupted by,
+  # then reports that escape once, after closing.
+  %i[raises interrupted].each do |mode|
+    it "retires every client connection when the first forced connection abort #{mode}" do
+      reactor do |task|
+        entered = Async::Queue.new
+        host = ConnectRPC::Async::Host.new(server: server(echo: lambda { |message, _|
+          entered.enqueue(true)
+          Async::Condition.new.wait
+          message
+        }), max_concurrent_streams: 1, idle_timeout: nil).start
+        origin = "http://127.0.0.1:#{host.port}"
+        transport = ConnectRPC::Async::Transport.new(origin: origin, connection_limit: 2)
+        calls = 2.times.map do
+          task.async(finished: false) do
+            client(transport, origin).echo(AsyncHelpers::MESSAGE.new(name: "held"), timeout: nil)
+          rescue ConnectRPC::Error => e
+            e
+          end
+        end
+        2.times { entered.dequeue }
+        resources = transport.instance_variable_get(:@resources).dup
+        expect(resources.size).to eq(2)
+        error = mode == :raises ? RuntimeError.new("connection abort failed") : Async::Cancel.new("abort interrupted")
+        # Like a joined retirement's stored failure, every teardown join sees
+        # it. The connection's own reader, which also aborts it once its raw
+        # socket fails, does not.
+        sibling_failed = []
+        allow(resources.first).to receive(:abort).and_wrap_original do |abort, *arguments|
+          teardown = caller_locations.any? { |location| location.label.match?(/Transport#(close|abort)_owned\z/) }
+          sibling_failed << resources.last.send(:raw_failed?) if teardown
+          abort.call(*arguments)
+          raise error if teardown
+        end
+        if mode == :raises
+          expect { transport.close(grace: 0) }.to raise_error(equal(error))
+        else
+          # The closer itself ends cancelled, so close returns no outcome.
+          expect(transport.close(grace: 0)).to be_nil
+        end
+        # The second connection had already failed before the first abort could yield.
+        expect(sibling_failed).to eq([true])
+        expect(resources).to all(satisfy { |resource| retirement_complete?(resource) })
+        expect(resources.map(&:raw)).to all(be_closed)
+        expect(transport.instance_variable_get(:@state)).to eq(:closed)
+        expect(transport.instance_variable_get(:@lifetime)).to be_finished
+        expect(transport.close(grace: 0)).to be(false)
+        join_retirement_tasks(task, *calls)
+        expect(calls.map(&:result)).to all(be_a(ConnectRPC::Error))
+      ensure
+        host&.close(grace: 0)
       end
     end
   end

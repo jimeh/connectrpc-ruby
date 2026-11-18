@@ -569,33 +569,43 @@ module ConnectRPC
       def close_owned(expires)
         @manager.close
         waiter = @lifetime.async(finished: false) { @progress.wait until @calls.empty? }
-        graceful = true
         begin
           Internal.wait(waiter, expires)
         rescue ::Async::TimeoutError
-          graceful = false
-          @resources.each(&:abort)
-          @calls.each_key { |operation| Internal.cancel(operation[:task]) }
+          # An expired grace forces the same teardown as an abort, which
+          # reports its own first failure; the closer's abort is then a no-op.
+          return abort_owned
         ensure
           Internal.cancel(waiter)
         end
         drains = @resources.map { |resource| @lifetime.async(finished: false) { resource.drain(@lifetime, expires) } }
-        graceful = drains.map(&:wait).all? && graceful
+        graceful = drains.map(&:wait).all?
         @manager.finish
         finish_closed(graceful)
       end
 
+      # Every connection fails its raw socket before anything here can yield.
+      # Each later step runs whatever an earlier one raised, was interrupted
+      # by or changed, and the first interruption, otherwise the first
+      # failure, is raised once the transport has closed.
       def abort_owned
         return if @aborting
 
         @aborting = true
         @state = :closing unless @state == :closed
-        @manager&.close
-        @resources.each(&:abort)
-        @calls.each_key { |operation| Internal.cancel(operation[:task]) }
-        @manager&.finish
+        resources = @resources.dup
+        resources.each { |resource| resource.send(:fail_raw) }
+        failures = [Internal::Teardown.capture { @manager&.close }]
+        failures.concat((resources | @resources).map { |resource| Internal::Teardown.capture { resource.abort } })
+        @calls.each_key.to_a.each do |operation|
+          failures << Internal::Teardown.capture { Internal.cancel(operation[:task]) }
+        end
+        failures << Internal::Teardown.capture { @manager&.finish }
         finish_closed(false) unless @state == :closed
-        Internal.cancel(@lifetime)
+        failure = Internal::Teardown.first(failures)
+        stopped = Internal::Teardown.capture { Internal.cancel(@lifetime) }
+        failure ||= stopped
+        raise failure if failure
       end
     end
   end

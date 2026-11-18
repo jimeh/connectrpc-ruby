@@ -40,6 +40,10 @@ RSpec.describe "Falcon rejected Web HTTP/1 input" do
     target
   end
 
+  # Hygiene closes raw TCP itself; forced retirement shuts it down first and
+  # closes it once its tasks have joined. Either way the peer is cut off.
+  def raw_retired?(resource) = resource.raw.closed? || resource.send(:raw_failed?)
+
   def rejected_socket(origin, tls: false)
     raw = IO::Endpoint.tcp("127.0.0.1", URI(origin).port).connect
     socket = raw
@@ -262,10 +266,10 @@ RSpec.describe "Falcon rejected Web HTTP/1 input" do
             trace = TracePoint.new(:call) do |event|
               if event.self.equal?(resource.connection) && event.method_id == :close_read &&
                  event.defined_class == Protocol::HTTP1::Connection
-                backend_closes << resource.raw.closed?
+                backend_closes << raw_retired?(resource)
               end
               if event.self.equal?(events[:body]) && event.method_id == :close
-                closed_states << [resource.raw.closed?, Async::Task.current]
+                closed_states << [raw_retired?(resource), Async::Task.current]
               end
             end
             # Cleanup can finish before this fiber resumes: an already expired

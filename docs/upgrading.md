@@ -157,14 +157,24 @@ These affect native HTTP/2 connections of the Async `Transport`,
   [flow-control windows](../gems/connectrpc-async/README.md#flow-control-windows).
 - Forced teardown (an abort, an expired grace, or a keepalive or
   write-progress failure) shuts raw TCP down in both directions at once and
-  closes the descriptor after the connection's tasks have joined. Before 0.3.0
-  it closed the descriptor first, so a peer saw a reset whenever unread input
-  remained. It now sees end of stream first. On Ruby 4 the old close could
-  raise a stray `IOError: stream closed in another thread` into a server
-  connection's reader task. The client's `connection_limit + max_draining`
-  bound counts live sockets: a retiring socket stops counting once it is shut
-  down, so its descriptor can stay open beside a replacement until the
-  retiring connection's tasks finish.
+  closes the descriptor after the connection's tasks have joined. This covers
+  HTTP/2 connections, Falcon's HTTP/1 connections and `HTTP1Transport`
+  connections. Before 0.3.0 it closed the descriptor first, so a peer saw a
+  reset whenever unread input remained. It now sees end of stream first. On
+  Ruby 4 the old close could raise a stray `IOError: stream closed in another
+  thread` into a task still reading the connection. The client's
+  `connection_limit + max_draining` bound counts live sockets: a retiring
+  socket stops counting once it is shut down, so its descriptor can stay open
+  beside a replacement until the retiring connection's tasks finish.
+  `HTTP1Transport` keeps a retiring connection's lease until its descriptor
+  closes, as before.
+- A server session whose listener cleanup or connection teardown raises during
+  `close` or `abort` (Host, Falcon server or `ServerSession`) still ends
+  closed, with its TLS provider refresh stopped, and then raises the first
+  failure. Previously it stayed closing, and the refresh timer kept running
+  until the owner task ended. A client `Transport` whose close grace expires,
+  or whose owner ends, retires every connection even when one connection's
+  teardown raises, closes, and then raises that failure.
 
 These affect `connectrpc-otel` spans and trace propagation.
 

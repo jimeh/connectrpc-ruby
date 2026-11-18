@@ -2,7 +2,7 @@
 
 RSpec.describe "Falcon HTTP/1 idle expiry" do
   it "aborts an idle HTTP/1 connection without HTTP/2 GOAWAY upkeep" do
-    reactor do
+    reactor do |task|
       rack = ->(_env) { [200, { "content-type" => "text/plain" }, ["ok"]] }
       falcon(rack_app: rack, idle_timeout: 0.05) do |host, origin|
         raw = IO::Endpoint.tcp("127.0.0.1", URI(origin).port).connect
@@ -14,7 +14,11 @@ RSpec.describe "Falcon HTTP/1 idle expiry" do
         # Elapsed time is the behavior here: the real idle timer closes the
         # kept-alive connection while the client sends nothing.
         expect(raw.read).to eq("")
-        expect(resource.raw).to be_closed
+        # The peer reads end of stream at the raw shutdown; the descriptor
+        # closes once retirement has joined the connection's tasks.
+        wait_until(task, "idle retirement closed the descriptor") do
+          resource.send(:retirement_completed?) && resource.raw.closed?
+        end
       ensure
         AsyncHelpers::INTERNAL.raw_close(raw)
         connection&.close

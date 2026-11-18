@@ -92,7 +92,10 @@ RSpec.describe ConnectRPC::Async::HTTP1Transport, "cleanup ownership" do
             end
           end
           unwinding.wait
-          expect(resource.raw).to be_closed
+          # Abort fails raw without closing it; the final owner closes it after
+          # every worker has joined.
+          expect(resource).to be_aborted
+          expect(resource.raw).not_to be_closed
           expect(transport.instance_variable_get(:@idle)).to be_empty
           expect(transport.instance_variable_get(:@leases)).to include(resource)
           expect(stopper).not_to be_finished
@@ -215,7 +218,8 @@ RSpec.describe ConnectRPC::Async::HTTP1Transport, "cleanup ownership" do
         expect(aborter).not_to be_finished
         expect(child).not_to be_finished
         expect(cancellation_count).to eq(1)
-        expect(resource.raw).to be_closed
+        expect(resource).to be_aborted
+        expect(resource.raw).not_to be_closed
         expect(operation.fetch(:cleanup_done)).not_to be_resolved
         expect(transport.instance_variable_get(:@leases)).to eq([resource])
         expect(transport.instance_variable_get(:@idle)).to be_empty
@@ -328,7 +332,8 @@ RSpec.describe ConnectRPC::Async::HTTP1Transport, "cleanup ownership" do
         expect(held).not_to be_finished
         expect(operation[:cleanup_complete]).not_to be(true)
         expect(transport.instance_variable_get(:@leases)).to include(resource) if resource
-        expect(resource.raw).to be_closed if resource&.raw
+        expect(resource).to be_aborted if resource
+        expect(resource.raw).not_to be_closed if resource&.raw
         expect(operation[:writer]).to be_nil if %i[dispatch setup].include?(stage)
         release.resolve(nil)
         AsyncHelpers::INTERNAL.join(caller)
@@ -404,7 +409,8 @@ RSpec.describe ConnectRPC::Async::HTTP1Transport, "cleanup ownership" do
         expect(held).not_to be_finished
         expect(aborter).not_to be_finished
         expect(closer).not_to be_finished
-        expect(operation.fetch(:resource).raw).to be_closed
+        expect(operation.fetch(:resource)).to be_aborted
+        expect(operation.fetch(:resource).raw).not_to be_closed
         expect(operation.fetch(:cleanup_done)).not_to be_resolved
         expect(transport.instance_variable_get(:@leases)).to eq([operation.fetch(:resource)])
         release.resolve(nil)
