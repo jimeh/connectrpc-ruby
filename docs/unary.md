@@ -248,6 +248,62 @@ Their fields and responsibilities are documented in [design](design.md). Neither
 an in-process transport can set `TransportResponse#cause` on an error response;
 the client raises its decoded error with that exception as the `cause`.
 
+### NetHTTP TLS and proxies
+
+Since 0.3.0, `ConnectRPC::Transports::NetHTTP.new` takes the TLS options of the
+Async client transports, plus `proxy:`. NetHTTP stays a dependency-free client
+that opens one connection per call; the Async transports are the pooled and
+HTTP/2 options.
+
+```ruby
+transport = ConnectRPC::Transports::NetHTTP.new(
+  ca_file: "/etc/ssl/private-ca.pem",              # Added to the system trust store.
+  certificate_chain: [leaf_pem, intermediate_pem], # Client certificate, leaf first.
+  private_key: key_pem,
+  proxy: :environment                              # Default. Or a URL String or URI, or nil.
+)
+```
+
+- TLS always verifies the server certificate and hostname, requires TLS 1.2 or
+  later and offers ALPN `http/1.1`. `ca_file` adds a trust anchor file to the
+  system default store. `certificate_chain` and `private_key` must be given
+  together. An invalid input raises `ArgumentError` that names only the input,
+  such as `Invalid TLS client configuration: private_key`, with no `cause`. A
+  call to an `http://` URL on a transport with any TLS option raises
+  `ArgumentError` before it connects.
+- `proxy: :environment` reads `HTTPS_PROXY` for `https://` URLs, `HTTP_PROXY`
+  for `http://` URLs and the `NO_PROXY` exceptions once, when the transport is
+  constructed. As in Go's `net/http`, uppercase names win over lowercase ones,
+  a value without a scheme is read as `http://value`, an unparseable value is
+  ignored, and `localhost` and loopback addresses never use the environment
+  proxy.
+- `NO_PROXY` takes comma-separated entries: `*`, a domain (`example.com`
+  matches the domain and its subdomains; `.example.com` and `*.example.com`
+  match only subdomains), an IP address or a CIDR range, each with an optional
+  `:port`. Internationalized names are not converted to punycode.
+- A String or URI proxies every request, including loopback and `NO_PROXY`
+  hosts. A String without a scheme is read as `http://value`. `proxy: nil`
+  always connects directly.
+- Only `http://` proxies are supported. An `https://` URL tunnels through
+  `CONNECT`, and TLS verifies the target host, not the proxy. An `http://` URL
+  is sent to the proxy in absolute form. Proxy URL userinfo is percent-decoded
+  and sent as `Proxy-Authorization: Basic`. An explicit `https://` or
+  `socks5://` proxy raises `ArgumentError`; from the environment it fails the
+  call.
+- In a CGI process, where `REQUEST_METHOD` is set, an `HTTP_PROXY` value fails
+  every `http://` call rather than trusting a client-controlled `Proxy` request
+  header, as Go does. Explicit proxies are unaffected.
+
+Proxy failures are `unavailable`, with a fixed reason:
+`proxy authentication failed` (status 407), `proxy tunnel refused` (any other
+status but 200), `proxy tunnel failed` (a malformed, truncated or oversized
+reply, or bytes after a 200 reply), `proxy tunnel timed out`,
+`unsupported proxy scheme`, `invalid proxy address` and
+`proxy refused in CGI environment`. A `CONNECT` exchange is capped at 60
+seconds, as in Go, even with `timeout: nil`; an earlier deadline still ends the
+call with `deadline_exceeded`. Error messages and `inspect` never include proxy
+URLs, credentials, reply text or TLS material.
+
 ## Use unary GET
 
 Declare safe queries with the standard protobuf method option:
@@ -342,6 +398,14 @@ Incoming HTTP fields whose names or values cannot be represented as Connect
 metadata are omitted, including the entire field if any repeated value is
 invalid. Valid adjacent fields remain available in leading and trailing
 metadata. Outbound names and values are always validated strictly.
+
+Since 0.3.0, Connect clients send
+`User-Agent: connectrpc-ruby/<version> (ruby <RUBY_VERSION>)` and gRPC clients
+send `grpc-ruby-connectrpc/<version> (ruby <RUBY_VERSION>)`, unless the call
+metadata or an interceptor sets `user-agent`. `"user-agent" => []` sends no
+User-Agent. The client adds the default after interceptors run, so interceptors
+do not see it. NetHTTP sends exactly the request's `user-agent` values and
+never adds Net::HTTP's `User-Agent: Ruby`.
 
 Rack responses preserve arrays. Net::HTTP preserves repeated raw response
 fields, but joins outgoing request arrays with `", "`. rackup/WEBrick also
@@ -464,13 +528,15 @@ The default NetHTTP transport:
 
 - uses one connection per call and closes it on every outcome
 - sends the configured `Accept-Encoding`
-- ignores proxy environment variables
+- uses HTTP proxies from the environment by default (see
+  [NetHTTP TLS and proxies](#nethttp-tls-and-proxies))
 - disables retries and decompression
 - preserves TLS peer/hostname verification
 - does not follow redirects
 
-A transport-owned watchdog closes its socket at expiry, including during
-response-header trickle and blocked writes. Native DNS resolution may outlast
+A transport-owned watchdog closes the call's socket at expiry, including during
+TCP connect, a proxy `CONNECT` exchange, the TLS handshake, response-header
+trickle and blocked writes. Native DNS resolution may outlast
 the budget; expiry is checked when control returns. Codec work and request
 preparation are synchronous and checked before/after; gzip work also checks
 each native input/output chunk and member boundary. They are not interrupted.
@@ -517,9 +583,10 @@ delayed. Cancellation never substitutes a timeout header for `timeout: nil`.
 
 ### Transport behavior
 
-NetHTTP closes only its call-owned socket to interrupt exposed TLS, writes,
-headers and body reads. Native DNS/TCP before socket exposure remains
-cooperative; cancellation is checked on return before any later dispatch.
+NetHTTP owns each socket from its creation and closes only that socket to
+interrupt TCP connect, a proxy `CONNECT` exchange, TLS, writes, headers and body
+reads. Native DNS resolution remains cooperative; cancellation is checked on
+return before any later dispatch.
 The optional Async transport wakes its owner reactor and resets its stream.
 Healthy multiplexed siblings survive; a stuck frame retains the documented
 connection-wide cleanup fallback. Neither backend retries or replays a cancelled call.

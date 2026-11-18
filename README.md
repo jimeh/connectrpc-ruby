@@ -226,7 +226,7 @@ streaming. H1 is HTTP/1.1 and H2 is HTTP/2.
 
 | Client transport | Connect | Native gRPC |
 | --- | --- | --- |
-| Net::HTTP (core default) | U over H1, TCP or verified TLS | No |
+| Net::HTTP (core default) | U over H1, one connection per call (TCP, TLS, mTLS, HTTP proxies) | No |
 | Async `Transport` | U/SS/CS/bidi over H2 (h2c, TLS, mTLS) | U/SS/CS/bidi |
 | Async `ThreadedTransport` | U/SS over H2, callable from any thread | U/SS |
 | Async `HTTP1Transport` | U/SS/CS over H1 (TCP, TLS, mTLS) | No |

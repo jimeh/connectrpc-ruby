@@ -32,8 +32,8 @@ module ConnectRPC
                                     "grpc-accept-encoding" => [@accept_encoding.join(",")])
       headers["grpc-encoding"] = ["gzip"] if @encoding == :gzip
       headers["grpc-timeout"] = [GRPCProtocol.timeout(deadline)] if deadline
-      StreamRequest.new(url: url, http_method: "POST", headers: headers, deadline: deadline,
-                        cancellation: cancellation, lifecycle: lifecycle)
+      StreamRequest.new(url: url, http_method: "POST", headers: default_user_agent(headers, GRPCProtocol::USER_AGENT),
+                        deadline: deadline, cancellation: cancellation, lifecycle: lifecycle)
     end
   end
 end

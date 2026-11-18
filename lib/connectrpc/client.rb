@@ -259,6 +259,13 @@ module ConnectRPC
       headers["content-encoding"] = ["gzip"] if @encoding == :gzip
       %w[content-type content-encoding connect-protocol-version].each { |key| headers.delete(key) } if get
       headers["connect-timeout-ms"] = [deadline.timeout_ms] if deadline
+      default_user_agent(headers, Protocol::USER_AGENT)
+    end
+
+    # Presence, not truthiness: "user-agent" => [] sends none. Interceptors
+    # run earlier and do not see this default.
+    def default_user_agent(headers, value)
+      headers["user-agent"] = [value] unless headers.key?("user-agent")
       headers
     end
 

@@ -133,18 +133,28 @@ RSpec.describe ConnectRPC::Transports::NetHTTP do
     end
   end
 
-  it "keeps TLS peer/hostname verification enabled, ignores proxy env, and disables retries" do
+  it "keeps TLS peer/hostname verification enabled, routes through a proxy env snapshot, and disables retries" do
     keys = %w[http_proxy https_proxy HTTP_PROXY HTTPS_PROXY no_proxy NO_PROXY]
     previous = keys.to_h { |key| [key, ENV.fetch(key, nil)] }
     begin
       keys.each { |key| ENV[key] = key.downcase == "no_proxy" ? "" : "http://hostile.invalid:1234" }
+      environment = described_class.new
+      direct = described_class.new(proxy: nil)
+      context = environment.instance_variable_get(:@tls_context)
+      expect([context.verify_mode, context.verify_hostname]).to eq([OpenSSL::SSL::VERIFY_PEER, true])
+      expect(context.session_cache_mode).to eq(OpenSSL::SSL::SSLContext::SESSION_CACHE_OFF)
+      expect(context.options & OpenSSL::SSL::OP_NO_TICKET).to eq(OpenSSL::SSL::OP_NO_TICKET)
       %w[http https].each do |scheme|
-        http = transport.send(:connection, URI("#{scheme}://example.invalid"), ConnectRPC::Deadline.new(1))
-        expect(http.proxy?).to be(false)
-        if scheme == "https"
-          expect(http.verify_mode).to eq(OpenSSL::SSL::VERIFY_PEER)
-          expect(http.verify_hostname).to be(true)
+        url = URI("#{scheme}://example.invalid")
+        http = environment.send(:connection, url, ConnectRPC::Deadline.new(1), environment.send(:proxy_for, url))
+        if scheme == "http"
+          expect([http.proxy?, http.proxy_address, http.proxy_port,
+                  http.tunnel]).to eq([true, "hostile.invalid", 1234, nil])
+        else
+          expect([http.proxy?, http.tunnel.host, http.tunnel.port]).to eq([false, "hostile.invalid", 1234])
         end
+        unproxied = direct.send(:connection, url, nil, direct.send(:proxy_for, url))
+        expect([unproxied.proxy?, unproxied.tunnel]).to eq([false, nil])
         expect(http.max_retries).to eq(0)
         expect(http.ignore_eof).to be(false)
       end
@@ -258,7 +268,7 @@ RSpec.describe ConnectRPC::Transports::NetHTTP do
     now = 0.0
     deadline = ConnectRPC::Deadline.new(600, clock: -> { now })
     closed = Queue.new
-    socket = double("owned socket")
+    owner = double("socket owner")
     condition = ConditionVariable.new
     allow(ConditionVariable).to receive(:new).and_return(condition)
     expect(condition).to receive(:wait).with(instance_of(Mutex), 500).ordered do
@@ -267,9 +277,11 @@ RSpec.describe ConnectRPC::Transports::NetHTTP do
     expect(condition).to receive(:wait).with(instance_of(Mutex), 100).ordered do
       now += 100
     end
-    expect(socket).to receive(:shutdown).with(Socket::SHUT_RDWR) { expect(deadline).to be_expired }
-    expect(socket).to receive(:close) { closed << true }
-    watchdog = described_class::Watchdog.new(socket, deadline)
+    expect(owner).to receive(:close) do
+      expect(deadline).to be_expired
+      closed << true
+    end
+    watchdog = described_class::Watchdog.new(owner, deadline)
     expect(closed.pop(timeout: 1)).to be(true)
   ensure
     watchdog&.stop

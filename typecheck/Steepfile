@@ -10,6 +10,7 @@ target :core do
   check "../lib/connectrpc/method.rb", "../lib/connectrpc/metadata.rb", "../lib/connectrpc/error.rb"
   check "../lib/connectrpc/cancellation.rb"
   check "../lib/connectrpc/deadline.rb", "../lib/connectrpc/protocol.rb", "../lib/connectrpc/client.rb"
+  check "../lib/connectrpc/proxy.rb"
   check "../lib/connectrpc/server.rb", "../lib/connectrpc/instrumentation.rb", "../lib/connectrpc/interceptors.rb"
   check "../lib/connectrpc/compression.rb", "../lib/connectrpc/message_io.rb", "../lib/connectrpc/get_query.rb"
   check "../lib/connectrpc/streaming/*.rb", "../lib/connectrpc/grpc*.rb"

@@ -120,6 +120,10 @@ These are additive; existing code keeps working once the rename above is done.
   and `timeout:`, so a handler can pass `deadline: context.deadline` to a
   downstream call. Nothing propagates implicitly. See
   [deadlines](unary.md#deadlines).
+- `ConnectRPC::Transports::NetHTTP.new` accepts `ca_file:`,
+  `certificate_chain:` and `private_key:`, validated like the Async client
+  transports' options, and `proxy:`. See
+  [NetHTTP TLS and proxies](unary.md#nethttp-tls-and-proxies).
 
 ### Behavior changes
 
@@ -132,6 +136,25 @@ This affects core clients.
   `timeout: context.deadline.remaining`, now fails with `deadline_exceeded`
   once it reaches zero. Infinite, NaN and non-numeric timeouts still raise
   `ArgumentError`.
+- Every core client sends a default User-Agent:
+  `connectrpc-ruby/<version> (ruby <RUBY_VERSION>)` for Connect and
+  `grpc-ruby-connectrpc/<version> (ruby <RUBY_VERSION>)` for gRPC. A
+  `user-agent` in call metadata or set by an interceptor still wins, and
+  `"user-agent" => []` sends none. Servers that match on the old `Ruby` value
+  or on its absence need updating.
+
+These affect the core `Net::HTTP` transport.
+
+- It uses the proxy environment by default, as Go's `net/http` does:
+  `HTTPS_PROXY` for `https://` URLs and `HTTP_PROXY` for `http://` URLs, minus
+  `NO_PROXY`, `localhost` and loopback addresses. Before 0.3.0 it ignored them.
+  An environment proxy with a scheme other than `http://`, such as a
+  `socks5://` value set for another tool, now fails affected calls with
+  `unavailable`. Pass `proxy: nil` to connect directly as before.
+- It no longer sends Net::HTTP's `User-Agent: Ruby`; requests carry the client
+  default above or exactly the request's `user-agent` values.
+- TLS requires version 1.2 or later, offers ALPN `http/1.1`, and disables
+  session tickets and session resumption, matching the Async client transports.
 
 These affect the Async HTTP/2 and HTTP/1 client transports and the core
 `Net::HTTP` transport. Error codes are unchanged.

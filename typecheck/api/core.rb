@@ -59,6 +59,12 @@ request = ConnectRPC::TransportRequest.new(
   response_limit: 10
 )
 ConnectRPC::Transports::NetHTTP.new.call(request).body.size
+# Since 0.3.0, NetHTTP takes custom trust, a client identity and a proxy.
+ConnectRPC::Transports::NetHTTP.new(ca_file: "private-ca.pem", certificate_chain: %w[leaf intermediate],
+                                    private_key: "key", proxy: "http://proxy.invalid:3128").inspect.size
+ConnectRPC::Transports::NetHTTP.new(proxy: URI("http://proxy.invalid:3128")).call(request).status.succ
+ConnectRPC::Transports::NetHTTP.new(ca_file: nil, certificate_chain: nil, private_key: nil, proxy: nil)
+ConnectRPC::Transports::NetHTTP.new(proxy: :environment)
 
 ConnectRPC::Deadline.new(1, clock: APIClock.new).remaining
 call = ConnectRPC::Instrumentation::Call.new(:client, :connect, method, nil, nil, {})

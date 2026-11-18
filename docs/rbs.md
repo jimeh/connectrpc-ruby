@@ -232,7 +232,7 @@ are an explicit bridge described [below](#opt-in-framework-compatibility).
 
 | Owner | Supported API and extension SPI |
 | --- | --- |
-| Core | Method, non-generic Service, Client/Server options and calls, records, Metadata, CancellationSource/Token/Registration, Deadline/Context, Error/ErrorDetail, explicit NetHTTP and Google binding entry points |
+| Core | Method, non-generic Service, Client/Server options and calls, records, Metadata, CancellationSource/Token/Registration, Deadline/Context, Error/ErrorDetail, explicit NetHTTP (since 0.3.0 with `ca_file:`, `certificate_chain:`, `private_key:` and `proxy:`) and Google binding entry points |
 | Core shared, unary and observation SPI | `_Cancellation`, `_Binding`, `_Transport`, `_Input`, `_Handler`, `_Invoker`, callable clocks/error handlers, `_Subscriber`, six separate optional observer callback capabilities, host lifecycle Handle |
 | Core metrics (`connectrpc/metrics`) | `Metrics::Definitions`, `Instrument`, `Subscriber` and `ConnectionObserver` (custom sinks call its `publish_state` once their metrics exist); the `Metrics::_Recorder` sink SPI and the structural `Metrics::_ConnectionEvent` shape |
 | Core streaming and gRPC/Web SPI | `_StreamingTransport`, `_StreamExchange`, streaming input/output, `_GRPCTransport`, `_GRPCStreamExchange`, `_GRPCStatusCodec`, native server publication/output interfaces including `_GRPCWebOutput`; see the protocol-specific sections below |
@@ -324,7 +324,9 @@ optional observer discovery. The internal Numeric arithmetic declaration fills
 a missing upstream base signature; custom numeric arithmetic remains a runtime
 requirement. Narrow assertions record established phase, slice and format facts.
 
-NetHTTP socket/watchdog implementation, Google codec internals, generator
+The internal `ConnectRPC::Proxy` resolver is in the strict source set and
+declared under `typecheck/internal`, not `sig/`; it is not a supported API.
+NetHTTP socket/watchdog/TLS implementation, Google codec internals, generator
 internals and optional backend/framework implementation checking are later stages.
 Their supported public signatures and consumer checks are included here.
 
