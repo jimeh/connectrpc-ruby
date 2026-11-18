@@ -73,8 +73,12 @@ module WindowBenchmark
 
     private
 
+    # Nagle's algorithm would hold a small chunk, such as a WINDOW_UPDATE,
+    # until the previous one is acknowledged, adding the peer's delayed-ACK
+    # timeout to the round trip.
     def relay(client)
       upstream = TCPSocket.new("127.0.0.1", @target_port)
+      [client, upstream].each { |socket| socket.setsockopt(Socket::IPPROTO_TCP, Socket::TCP_NODELAY, 1) }
       [[client, upstream], [upstream, client]].each { |from, to| pipe(from, to) }
     end
 

@@ -228,8 +228,10 @@ module ConnectRPC
         end
 
         # Called once the pending frame is encoded, or when a client writer
-        # that stopped drops it. A writer stops only as its connection ends,
-        # so the dropped credit is not needed, and later credit goes inline.
+        # that stopped drops it. A host's stopped control writer drops its
+        # queued frame without clearing it, which is harmless: a writer stops
+        # only as its connection ends, so the dropped credit is not needed,
+        # and later credit goes inline.
         def clear_pending_credit
           @pending_credit_frame = nil
           @pending_credit = 0

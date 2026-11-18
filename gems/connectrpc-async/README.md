@@ -1333,9 +1333,11 @@ write connection `WINDOW_UPDATE`s either, with static or dynamic windows: as
 grpc-go queues them on its writer, it reserves the credit and hands it to a
 writer, and keeps applying DATA for every stream while another frame write
 holds the connection. Credit due while a `WINDOW_UPDATE` is still queued joins
-it, so at most one waits. Only once its connection is ending and the writer
-can no longer send does the reader write credit itself. The reader still
-writes SETTINGS ACKs, as before 0.3.0. A host queues BDP frames and connection credit on the
+it. On a client, that includes the credit for BDP PINGs and growth, so at most
+one waits; a host queues those as their own `WINDOW_UPDATE`s, so a few can
+wait. Only once its connection is ending and the writer can no longer send
+does the reader write credit itself. The reader still writes SETTINGS ACKs, as
+before 0.3.0. A host queues BDP frames and connection credit on the
 [control writer](#server-keepalive). A client hands them to a writer task of
 its connection, which holds at most one BDP PING, the latest growth and the
 pending connection credit, and sends growth as soon as the ACK that measured it
@@ -1397,29 +1399,31 @@ window, so it never waits for stream credit. The server default starts at
 with the measured bandwidth-delay product up to 1 MiB. `mise run async:bench:windows`
 measured these with 3 MiB unary bodies through a local proxy that adds 50 ms of
 round-trip time, each run on a new connection so that its windows start at their
-configured sizes, and reports the median of three runs. `--stream` or
+configured sizes, and reports the median of three runs. The proxy disables
+Nagle's algorithm, so a small frame such as a `WINDOW_UPDATE` never waits for
+a delayed ACK. `--stream` or
 `--connection` in bytes sets a window on both the client and the host, `--max`
 sets `max_receive_window` on both, replacing the 16 MiB client and 1 MiB host
 defaults, and `--static` turns dynamic windows off on both:
 
 | Windows (client stream / host stream / connection) | Download | 4 concurrent downloads | Upload |
 | --- | --- | --- | --- |
-| 64 KiB / 64 KiB / 64 KiB, static (`--static --stream 65536 --connection 65535`, the windows before 0.3.0, with 0.3.0's credit return) | 3.95 s | 13.23 s | 3.99 s |
-| 64 KiB / 64 KiB / 16 MiB, static (`--static --stream 65536`) | 2.61 s | 2.60 s | 2.57 s |
-| 4 MiB / 64 KiB / 16 MiB, static (`--static`, the 0.3.0 windows without growth) | 0.12 s | 0.23 s | 2.55 s |
-| 1 MiB / 1 MiB / 16 MiB, static (`--static --stream 1048576`) | 0.31 s | 0.38 s | 0.26 s |
-| 4 MiB / 4 MiB / 16 MiB, static (`--static --stream 4194304`) | 0.13 s | 0.18 s | 0.11 s |
-| 4 MiB / 64 KiB / 16 MiB, growing to 16 MiB on the client and 1 MiB on the host (default) | 0.14 s | 0.22 s | 0.64 s |
-| 4 MiB / 64 KiB / 16 MiB, growing to 1 MiB on both (`--max 1048576`) | 0.13 s | 0.21 s | 0.55 s |
-| 4 MiB / 64 KiB / 16 MiB, growing to 4 MiB on both (`--max 4194304`) | 0.13 s | 0.22 s | 0.54 s |
-| 4 MiB / 64 KiB / 16 MiB, growing to 16 MiB on both, grpc-go's ceiling (`--max 16777216`) | 0.13 s | 0.18 s | 0.62 s |
-| 64 KiB / 64 KiB / 16 MiB, growing to 16 MiB on both (`--stream 65536 --max 16777216`) | 0.67 s | 0.47 s | 0.64 s |
+| 64 KiB / 64 KiB / 64 KiB, static (`--static --stream 65536 --connection 65535`, the windows before 0.3.0, with 0.3.0's credit return) | 2.85 s | 11.13 s | 2.84 s |
+| 64 KiB / 64 KiB / 16 MiB, static (`--static --stream 65536`) | 2.52 s | 2.62 s | 2.53 s |
+| 4 MiB / 64 KiB / 16 MiB, static (`--static`, the 0.3.0 windows without growth) | 0.08 s | 0.14 s | 2.51 s |
+| 1 MiB / 1 MiB / 16 MiB, static (`--static --stream 1048576`) | 0.22 s | 0.26 s | 0.22 s |
+| 4 MiB / 4 MiB / 16 MiB, static (`--static --stream 4194304`) | 0.08 s | 0.13 s | 0.07 s |
+| 4 MiB / 64 KiB / 16 MiB, growing to 16 MiB on the client and 1 MiB on the host (default) | 0.08 s | 0.15 s | 0.48 s |
+| 4 MiB / 64 KiB / 16 MiB, growing to 1 MiB on both (`--max 1048576`) | 0.09 s | 0.15 s | 0.42 s |
+| 4 MiB / 64 KiB / 16 MiB, growing to 4 MiB on both (`--max 4194304`) | 0.09 s | 0.13 s | 0.44 s |
+| 4 MiB / 64 KiB / 16 MiB, growing to 16 MiB on both, grpc-go's ceiling (`--max 16777216`) | 0.09 s | 0.14 s | 0.43 s |
+| 64 KiB / 64 KiB / 16 MiB, growing to 16 MiB on both (`--stream 65536 --max 16777216`) | 0.49 s | 0.34 s | 0.43 s |
 
 The default and `--max 1048576` rows give the host the same windows, so their
 upload times differ only by run-to-run variation.
 
 Growth takes a few round trips: an upload starting at 64 KiB reaches the
-default 1 MiB host ceiling after four or five growth steps, about 0.5 s at
+default 1 MiB host ceiling after four or five growth steps, about 0.4 s at
 50 ms RTT, which is why it trails a static 4 MiB host window. A step needs a
 sample of at least two thirds of the estimate, and sets the estimate to twice
 the sample, up to the ceiling. With credit returned at a quarter, a lone stream
@@ -1427,14 +1431,14 @@ whose reader keeps up usually fills its window in a sample, so most steps in
 the benchmark double its window. The sample right after a step usually misses,
 because the peer can spend the grown window only once the SETTINGS reaches it,
 so a lone stream doubles about every other round trip, as in grpc-go. With
-protocol-http2's half rule, the samples reached between about half and four
-fifths of the estimate, and each step grew the window only 1.3 to 1.6 times.
+protocol-http2's half rule, more samples fell short of the estimate, so more
+steps grew the window by less than double, and more samples missed.
 `--growth` traces this for one sustained download and one upload per run
 (16 MiB bodies by default): each stream window step, and each BDP sample as a
 share of the estimate; the first sample usually belongs to the warm-up call.
 With `--growth --rtt 0.2 --size 67108864 --stream 65536
---max 16777216`, the download's window reached the 16 MiB ceiling after 3.6 s
-and the upload's after 2.9 s, against 4.7 s and 4.0 s with the half rule.
+--max 16777216`, the download's window reached the 16 MiB ceiling after 2.8 s
+and the upload's after 3.0 s, against 3.9 s and 3.1 s with the half rule.
 
 grpc-go starts both windows at 64 KiB and grows them up to 16 MiB, as this
 package's clients do; this package's hosts stop at 1 MiB by default, as
