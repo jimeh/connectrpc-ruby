@@ -460,9 +460,9 @@ wait for it rather than for the keepalive timeout. A write blocked on a full
 send buffer finishes only after the peer drains a large part of it, about 950 KB
 on Linux defaults. On Linux 4.6 and later, such a write is renewed for another
 bound whenever the socket's `TCP_INFO` shows that the peer acknowledged new data
-while unsent data was queued, so a peer that keeps reading, however slowly,
-stays connected, and one that stops is aborted one to two bounds after its last
-progress. On other platforms and older kernels each write keeps a fixed
+while unsent data was queued, so a peer whose TCP acknowledgements keep
+advancing, however slowly, stays connected, and one that stops is aborted one to
+two bounds after the later of its last progress and the write's start. On other platforms and older kernels each write keeps a fixed
 deadline, which a slow peer can miss while still reading; raise
 `frame_write_timeout` there for slow links. grpc-go has no flow-control wait
 bound and no frame write bound, but sets `TCP_USER_TIMEOUT` to its keepalive

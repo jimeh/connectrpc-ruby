@@ -2132,7 +2132,7 @@ RSpec.shared_examples "HTTP/2 server keepalive" do
     # in <linux/tcp.h>'s struct tcp_info.
     def server_acks(fixture)
       data = fixture.resource.raw.getsockopt(Socket::IPPROTO_TCP, Socket::TCP_INFO).data
-      [data.unpack1("Q<", offset: 120), data.unpack1("L<", offset: 24)]
+      [data.unpack1("Q", offset: 120), data.unpack1("L", offset: 24)]
     end
 
     # A server stream with ample credit floods a peer that does not read by

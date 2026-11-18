@@ -71,8 +71,8 @@ RSpec.describe "HTTP/2 frame write watchdog" do
   # cut short as from a kernel older than 4.6.
   def tcp_info(acked, unsent, size: 248)
     data = "\0".b * 248
-    data[120, 8] = [acked].pack("Q<")
-    data[144, 4] = [unsent].pack("L<")
+    data[120, 8] = [acked].pack("Q")
+    data[144, 4] = [unsent].pack("L")
     Socket::Option.new(:INET, :TCP, 11, data.byteslice(0, size))
   end
 
@@ -108,6 +108,44 @@ RSpec.describe "HTTP/2 frame write watchdog" do
     writes.write_started
     clock.now = 61.0
     expect(writes.remaining).to eq(-1)
+  end
+
+  # A hosting SPI socket need not offer getsockopt.
+  it "keeps a fixed deadline on a socket without getsockopt" do
+    stub_const("#{watchdog.name}::TCP_INFO", 11)
+    writes = watchdog.new(double("resource", raw: Object.new), clock: clock, timeout: 60, progress: true)
+    writes.write_started
+    clock.now = 61.0
+    expect(writes.remaining).to eq(-1)
+  end
+
+  # Write A finishes at once and write B blocks at 0.5, while the watchdog
+  # still sleeps toward A's deadline. It first sees B at 60, and the peer
+  # acknowledged data since A's sample, possibly during B, so B gets a whole
+  # bound from then rather than failing at 60.5.
+  it "gives a write it sees late a whole bound when the peer progressed meanwhile" do
+    stub_const("#{watchdog.name}::TCP_INFO", 11)
+    reactor do |task|
+      fake = ConnectionPeer::FakeClock.new
+      aborted = []
+      host = double("resource", raw: resource([tcp_info(1000, 10), tcp_info(2000, 10), tcp_info(2000, 10)]).raw)
+      allow(host).to receive(:maintain)
+      allow(host).to receive(:abort) { |error| aborted << error }
+      writes = watchdog.new(host, clock: fake, timeout: 60, progress: true)
+      due = ->(at) { fake.sleepers.any? { |sleeper| (sleeper.due - at).abs < 1e-9 } }
+      writes.start(task)
+      writes.write_started
+      wait_until(task, "A's deadline") { due.call(60) }
+      writes.write_finished
+      fake.advance(0.5)
+      writes.write_started
+      fake.advance(59.5)
+      wait_until(task, "B's deadline from its first sample; pending #{fake.sleepers.map(&:due)}") { due.call(120) }
+      fake.advance(59.9)
+      expect(aborted).to eq([])
+      fake.advance(0.1)
+      wait_until(task, "abort without progress since 60") { aborted.any? }
+    end
   end
 end
 

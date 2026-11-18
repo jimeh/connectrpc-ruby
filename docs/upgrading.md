@@ -163,8 +163,9 @@ and [Accept errors](../gems/connectrpc-async/README.md#accept-errors).
   seconds is aborted, failing all of its streams. This catches peers that stop
   reading their socket, for every RPC shape. On Linux 4.6 and later, a write
   blocked on a full send buffer is renewed for another 60 seconds while the peer
-  keeps acknowledging data, so a slow reader that keeps reading stays connected,
-  and one that stops is aborted 60 to 120 seconds after its last progress. On
+  keeps acknowledging data, so a slow reader whose TCP acknowledgements keep
+  advancing stays connected, and one that stops is aborted 60 to 120 seconds
+  after its last progress. On
   other platforms and older kernels each write keeps a fixed deadline, and a
   blocked write waits for the peer to drain a large part of the send buffer,
   about 950 KB on Linux defaults, so raise the bound with the new

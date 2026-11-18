@@ -438,12 +438,13 @@ that long for flow-control credit; server-streaming and bidi responses are
 exempt. Each frame write must finish within `frame_write_timeout:` (default 60
 seconds, nil turns it off), or the connection is aborted. On Linux 4.6 and
 later, a blocked write is renewed for another bound while the peer keeps
-acknowledging data, so a slow reader that keeps making progress stays connected
-and one that stops is aborted one to two bounds after its last progress, much
-like grpc-go's `TCP_USER_TIMEOUT`. On other platforms and older Linux kernels
+acknowledging data, so a slow reader whose TCP acknowledgements keep advancing
+stays connected and one that stops is aborted one to two bounds after its last
+progress, much like grpc-go's `TCP_USER_TIMEOUT`. On other platforms and older Linux kernels
 each write keeps a fixed deadline, which a slow reader can miss because a
 blocked write waits for the peer to drain about 950 KB; raise
-`frame_write_timeout:` there. grpc-go and Go's net/http have no such bound. See
+`frame_write_timeout:` there. Neither grpc-go nor Go's net/http has such a bound
+by default. See
 [Stream admission](../connectrpc-async/README.md#stream-admission). Neither
 bound applies to HTTP/1 connections.
 

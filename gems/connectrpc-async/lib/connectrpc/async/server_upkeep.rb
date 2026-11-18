@@ -202,10 +202,11 @@ module ConnectRPC
       # `progress`, on Linux, a write still in progress at its deadline is
       # renewed for another `timeout` when the socket's TCP_INFO shows the
       # peer acknowledged new data since the previous sample while unsent
-      # data was queued. The connection is aborted only once the peer made
-      # no such progress for a whole bound, like grpc-go's TCP_USER_TIMEOUT,
-      # which any progress resets. Elsewhere, or without a sample, each write
-      # keeps a fixed deadline.
+      # data was queued. The connection is then aborted one to two bounds
+      # after the later of the peer's last such progress and the blocked
+      # write's start, like grpc-go's TCP_USER_TIMEOUT, which any progress
+      # resets. Elsewhere, or without a sample, each write keeps a fixed
+      # deadline.
       #
       # Samples are taken only by this task, when it first sees a write in
       # progress and at that write's deadline, and by `remaining` once the
@@ -302,14 +303,16 @@ module ConnectRPC
         end
 
         # [tcpi_bytes_acked, tcpi_notsent_bytes], or nil without a sample,
-        # such as on a closed or non-TCP socket.
+        # such as on a closed or non-TCP socket, or a hosting SPI socket
+        # without getsockopt. The struct is in native byte order.
         def tcp_info
-          return unless TCP_INFO
+          raw = @resource.raw
+          return unless TCP_INFO && raw.respond_to?(:getsockopt)
 
-          data = @resource.raw.getsockopt(::Socket::IPPROTO_TCP, TCP_INFO).data
+          data = raw.getsockopt(::Socket::IPPROTO_TCP, TCP_INFO).data
           return if data.bytesize < TCP_INFO_MINIMUM
 
-          [data.unpack1("Q<", offset: BYTES_ACKED_OFFSET), data.unpack1("L<", offset: NOTSENT_BYTES_OFFSET)]
+          [data.unpack1("Q", offset: BYTES_ACKED_OFFSET), data.unpack1("L", offset: NOTSENT_BYTES_OFFSET)]
         rescue SystemCallError, IOError
           nil
         end
