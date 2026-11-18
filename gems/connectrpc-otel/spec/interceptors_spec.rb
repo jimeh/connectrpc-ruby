@@ -60,7 +60,7 @@ RSpec.describe "OpenTelemetry with unary interceptors" do
     expect(outcome.error).to equal(original)
     expect(outcome.normalized_error.message).to eq("Translated")
     receiver = rpc_spans(exporter).find { |span| span.kind == :server }
-    expect(receiver.attributes["rpc.response.status_code"]).to eq("invalid_argument")
+    expect(receiver.attributes["rpc.status_code"]).to eq("invalid_argument")
     expect(receiver.status.code).to eq(OpenTelemetry::Trace::Status::UNSET)
   end
 end

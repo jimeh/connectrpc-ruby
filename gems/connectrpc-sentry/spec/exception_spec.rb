@@ -16,7 +16,7 @@ RSpec.describe "Unexpected handler exception capture" do
     expect(error.tags).to include("rpc.system.name" => "connectrpc", "rpc.method" => "example.v1.EchoService/Fail")
     expect(error.transaction).to eq("example.v1.EchoService/Fail")
     expect(trace_of(owned)).to include(status: "internal_error")
-    expect(trace_of(owned)[:data]).to include("rpc.response.status_code" => "internal")
+    expect(trace_of(owned)[:data]).to include("rpc.status_code" => "internal")
     expect(owned.to_h.to_s).not_to include("secret bug", "private")
   end
 

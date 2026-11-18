@@ -64,7 +64,7 @@ RSpec.describe "Span lifetime, promotion and finish scope" do
     promoted = rpc_transactions("rpc.server").first
     expect(promoted.transaction).to eq("example.v1.EchoService/Echo")
     expect(trace_of(promoted)).to include(trace_id: caller.trace_id, parent_span_id: caller.span_id, status: "ok")
-    expect(trace_of(promoted)[:data]).to include("rpc.response.status_code" => "OK")
+    expect(trace_of(promoted)[:data]).to include("rpc.status_code" => "OK")
     expect(occurrences(trace_of(promoted)[:span_id])).to eq(1)
     expect(scope_span).to equal(caller)
   end

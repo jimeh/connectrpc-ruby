@@ -177,7 +177,7 @@ RSpec.describe "Native host tracing" do
         expect(span.attributes).to include("connectrpc.processing.state" => "not_started",
                                            "connectrpc.decision" => "host_rejected",
                                            "connectrpc.delivery" => "completed")
-        expect(span.attributes).not_to have_key("rpc.response.status_code")
+        expect(span.attributes).not_to have_key("rpc.status_code")
       end
     end
   end
@@ -216,7 +216,7 @@ RSpec.describe "Native host tracing" do
       servers = rpc_spans(exporter).select { |span| span.kind == :server }
       expect(servers.map { |span| span.attributes["connectrpc.delivery"] }.sort).to eq(%w[aborted completed])
       aborted = servers.find { |span| span.attributes["connectrpc.delivery"] == "aborted" }
-      expect(aborted.attributes).to include("rpc.response.status_code" => "OK", "error.type" => "delivery_aborted")
+      expect(aborted.attributes).to include("rpc.status_code" => "OK", "error.type" => "delivery_aborted")
       expect(typed.echo(AsyncHelpers::MESSAGE.new(name: "after")).message.name).to eq("after")
     ensure
       gate&.release&.enqueue(true)
@@ -263,7 +263,7 @@ RSpec.describe "Native host tracing" do
       wait_until(task, "deadline server completion") { rpc_spans(exporter).size == 2 }
       spans = rpc_spans(exporter)
       expect(spans.map do |span|
-        span.attributes["rpc.response.status_code"]
+        span.attributes["rpc.status_code"]
       end).to eq(%w[deadline_exceeded deadline_exceeded])
       expect(spans.map { |span| span.status.code }).to all(eq(OpenTelemetry::Trace::Status::ERROR))
       expect(spans.find { |span| span.kind == :server }.attributes["connectrpc.delivery"]).to eq("aborted")

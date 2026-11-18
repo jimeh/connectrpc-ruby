@@ -142,9 +142,11 @@ New `gems/connectrpc-sentry/` mirroring `connectrpc-otel`:
   `rpc.method=_OTHER`. Ops `rpc.server`/`rpc.client`, origin
   `auto.rpc.connectrpc`, source `:route`.
 - Bounded data: `rpc.system.name`, `rpc.method`, `connectrpc.protocol`
-  (gRPC-Web), `rpc.response.status_code`, `http.response.status_code`, client
-  `server.address`/`server.port`, wire bytes, processing duration,
-  `connectrpc.processing.state`, `connectrpc.decision`, `connectrpc.delivery`.
+  (gRPC-Web), `rpc.status_code`, `http.response.status_code`,
+  `server.address`/`server.port` (client endpoint; server request authority,
+  client-controlled),
+  wire bytes, processing duration, `connectrpc.processing.state`,
+  `connectrpc.decision`, `connectrpc.delivery`.
   No payloads, metadata, URLs or exception text.
 - Status: code to Sentry status (`canceled`->`cancelled`,
   `unknown`->`unknown_error`, `internal`->`internal_error`, others by name);

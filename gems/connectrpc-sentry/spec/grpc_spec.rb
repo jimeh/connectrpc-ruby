@@ -14,7 +14,7 @@ RSpec.describe "gRPC and gRPC-Web conventions" do
     expect(trace).to include(status: "not_found")
     expect(trace[:data]).to include("rpc.system.name" => "grpc", "connectrpc.protocol" => "grpc_web",
                                     "rpc.method" => "example.v1.EchoService/Fail",
-                                    "rpc.response.status_code" => "NOT_FOUND")
+                                    "rpc.status_code" => "NOT_FOUND")
     expect(error_events).to be_empty
   end
 
@@ -43,9 +43,14 @@ RSpec.describe "gRPC and gRPC-Web conventions" do
       clients = transactions.find { |event| event.transaction == "caller" }.spans
       servers = rpc_transactions("rpc.server").map { |event| trace_of(event) }
       [clients, servers].each do |spans|
-        expect(spans.map { |span| span[:data]["rpc.response.status_code"] }.sort).to eq(%w[CANCELLED INTERNAL OK])
+        expect(spans.map { |span| span[:data]["rpc.status_code"] }.sort).to eq(%w[CANCELLED INTERNAL OK])
         expect(spans.map { |span| span[:status] }.sort).to eq(%w[cancelled internal_error ok])
         expect(spans.map { |span| span[:data]["rpc.system.name"] }.uniq).to eq(["grpc"])
+        spans.each { |span| expect(span[:data]).not_to have_key("rpc.response.status_code") }
+      end
+      # Servers record the request authority, as clients record their endpoint.
+      (clients + servers).each do |span|
+        expect(span[:data]).to include("server.address" => "127.0.0.1", "server.port" => host.port)
       end
       expect(error_events.size).to eq(1)
       bug = servers.find { |span| span[:status] == "internal_error" }

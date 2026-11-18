@@ -79,7 +79,7 @@ module ConnectRPC
     def open_client_stream(method, request, outgoing, scope, state, lifecycle, call = nil, &) # rubocop:disable Metrics/ParameterLists, Metrics/MethodLength
       transport = @transport #: _StreamingTransport
       work = lambda do |exchange|
-        session = new_client_stream_session(method, state, exchange, lifecycle)
+        session = scope.session = new_client_stream_session(method, state, exchange, lifecycle)
         with_stream_session(session, scope) { perform_stream_scope(method, request, session, scope, call, &) }
       end
       if @protocol == :grpc

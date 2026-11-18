@@ -1598,7 +1598,12 @@ Use `async:conformance:grpc` for exact official inventories and
 to the owning verify task. `async:interop:grpc` first reproduces the official Go
 and Ruby peer outputs through the Async bundle, the same check root
 `grpc:generation:check` runs through the core bundle. `grpc:status:check`
-reproduces private Any/Status descriptors.
+reproduces private Any/Status descriptors. `async:interop:grpc` also checks
+that the `Transport` and `ThreadedTransport` clients decode the peer's rich
+status, typed details and metadata from a unary error sent after headers and
+from trailers-only unary and server-stream errors. A raw HTTP/2 client first
+checks that grpc-go sends each trailers-only error as one HEADERS frame with
+END_HEADERS and END_STREAM.
 
 ## gRPC-Web
 
@@ -1637,7 +1642,12 @@ handle in a separate task after the refusal. That handle is never activated and
 finishes once the reset is written, or as not delivered if the connection ends
 first. Shared H2 client connection attempts run outside every RPC lifecycle, so
 tracing never parents connection setup to the call that triggered it. Use the
-transport's `connection_observer` for connection events.
+transport's `connection_observer` for connection events. Since 0.3.0, the
+Application passes the request authority (HTTP/1 `Host` or HTTP/2
+`:authority`) to core as the reserved `host` field, so the server call records
+the address the client used; handler metadata never contains it. Like the
+`Host` field a Rack server passes, it counts toward the gRPC and gRPC-Web
+request field limits, as `:authority` counts toward an HTTP/2 header list.
 
 ## Static signatures
 

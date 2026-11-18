@@ -29,7 +29,7 @@ RSpec.describe "GET RPC observation" do
     expect(starts.first).to include("rpc.system.name" => "connectrpc")
     expect(starts.first).not_to have_key("connectrpc.protocol")
     expect(rpc_spans(exporter).first.attributes).to include("rpc.system.name" => "connectrpc",
-                                                            "rpc.response.status_code" => "OK")
+                                                            "rpc.status_code" => "OK")
   ensure
     start_provider&.shutdown
   end
@@ -58,7 +58,7 @@ RSpec.describe "GET RPC observation" do
       bytes = ConnectRPC::Metadata.decode_binary(payload.tr("-_", "+/"))
       expect(observed.first.body).to eq("")
       spans.each do |span|
-        expect(span.attributes).to include("rpc.response.status_code" => "OK", "connectrpc.delivery" => "unobserved",
+        expect(span.attributes).to include("rpc.status_code" => "OK", "connectrpc.delivery" => "unobserved",
                                            "connectrpc.request.wire_bytes" => bytes.bytesize)
         expect(span.attributes.keys).not_to include("url.full", "url.query", "http.url")
         expect(span.attributes.to_s).not_to include("private GET", "message=", "base64=", "compression=")
@@ -85,7 +85,7 @@ RSpec.describe "GET RPC observation" do
           receiver = rpc_spans(exporter).find { |span| span.kind == :server }
           expect(caller.parent_span_id).to eq(parent.context.span_id)
           expect(receiver.parent_span_id).to eq(caller.span_id)
-          expect(receiver.attributes).to include("rpc.response.status_code" => "OK",
+          expect(receiver.attributes).to include("rpc.status_code" => "OK",
                                                  "connectrpc.delivery" => "completed")
           expect(receiver.attributes["connectrpc.request.wire_bytes"]).to be_positive
           expect(receiver.attributes.to_s).not_to include("private GET", "message=")

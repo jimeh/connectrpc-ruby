@@ -37,10 +37,10 @@ RSpec.describe ConnectRPC::OTel::Subscriber do
       expect(seen.last).to eq("example")
       spans.each do |span|
         expect(span.name).to eq("example.v1.EchoService/Echo")
-        expect(span.attributes).to include("rpc.system.name" => "connectrpc", "rpc.response.status_code" => "OK",
+        expect(span.attributes).to include("rpc.system.name" => "connectrpc", "rpc.status_code" => "OK",
                                            "connectrpc.delivery" => "unobserved")
         expect(span.instrumentation_scope.version).to eq(ConnectRPC::OTel::VERSION)
-        expect(span.instrumentation_scope.attributes).to eq("connectrpc.semconv.version" => "1.44.0")
+        expect(span.instrumentation_scope.attributes).to eq("connectrpc.semconv.version" => "1.45.0")
         expect(span.status.code).to eq(OpenTelemetry::Trace::Status::UNSET)
         expect(Array(span.events)).to be_empty
         expect(span.attributes.to_s).not_to include("private payload", "tenant", "grpc.", "rpc.system=>")
@@ -53,14 +53,14 @@ RSpec.describe ConnectRPC::OTel::Subscriber do
   end
 
   %w[invalid_argument internal unavailable].each do |code|
-    it "uses the v1.44 role-specific status policy for #{code}" do
+    it "uses the v1.45 role-specific status policy for #{code}" do
       target = server(instrumentation: bus, echo: ->(*) { raise ConnectRPC::Error.new(code, "private description") })
       typed = client(ConnectRPC::Testing::Transport.new(server: target), "https://in-process.invalid",
                      instrumentation: bus)
       expect { typed.echo(message) }.to raise_error(ConnectRPC::Error)
       spans = rpc_spans(exporter)
       spans.each do |span|
-        expect(span.attributes["rpc.response.status_code"]).to eq(code)
+        expect(span.attributes["rpc.status_code"]).to eq(code)
         error = span.kind == :client || code != "invalid_argument"
         expect(span.status.code).to eq(error ? OpenTelemetry::Trace::Status::ERROR : OpenTelemetry::Trace::Status::UNSET)
         expect(span.attributes["error.type"]).to eq(error ? code : nil)
@@ -90,7 +90,7 @@ RSpec.describe ConnectRPC::OTel::Subscriber do
                 lifecycle: handle)
     handle.finish(delivery: :aborted, error: IOError.new("secret"))
     aborted = rpc_spans(exporter).last
-    expect(aborted.attributes).to include("rpc.response.status_code" => "OK", "error.type" => "delivery_aborted")
+    expect(aborted.attributes).to include("rpc.status_code" => "OK", "error.type" => "delivery_aborted")
     expect(aborted.status.code).to eq(OpenTelemetry::Trace::Status::ERROR)
   end
 
@@ -159,7 +159,7 @@ RSpec.describe ConnectRPC::OTel::Subscriber do
     rpc_spans(exporter).each do |span|
       expect(span.parent_span_id).to eq(OpenTelemetry::Trace::INVALID_SPAN_ID)
       expect(span.trace_id).not_to eq(parent.context.trace_id)
-      expect(span.attributes).not_to have_key("rpc.response.status_code")
+      expect(span.attributes).not_to have_key("rpc.status_code")
     end
     expect(current_span.context).not_to eq(parent.context)
   ensure
@@ -176,8 +176,8 @@ RSpec.describe ConnectRPC::OTel::Subscriber do
                    instrumentation: configured)
     typed.echo(message, metadata: { "x-capture" => Array.new(12, "a" * 300), "authorization" => "secret" })
     rpc_spans(captured).each do |span|
-      expect(span.attributes["connectrpc.request.metadata.x-capture"]).to eq(Array.new(8, "a" * 256))
-      expect(span.attributes["connectrpc.response.metadata.x-result"]).to eq(["response"])
+      expect(span.attributes["rpc.request.header.x-capture"]).to eq(Array.new(8, "a" * 256))
+      expect(span.attributes["rpc.response.header.x-result"]).to eq(["response"])
       expect(span.attributes.to_s).not_to include("secret", "authorization")
     end
     expect { described_class.new(request_metadata: ["*"]) }.to raise_error(ArgumentError)
@@ -221,8 +221,8 @@ RSpec.describe ConnectRPC::OTel::Subscriber do
       end
       caller = rpc_spans(exporter).find { |span| span.kind == :client }
       receiver = rpc_spans(exporter).find { |span| span.kind == :server }
-      expect(receiver.attributes["rpc.response.status_code"]).to eq(limit == 1 ? nil : "resource_exhausted")
-      expect(caller.attributes["rpc.response.status_code"]).to eq(limit == 1 ? "unavailable" : "resource_exhausted")
+      expect(receiver.attributes["rpc.status_code"]).to eq(limit == 1 ? nil : "resource_exhausted")
+      expect(caller.attributes["rpc.status_code"]).to eq(limit == 1 ? "unavailable" : "resource_exhausted")
       expect(rpc_spans(exporter).size).to eq(2)
     end
   end
@@ -245,7 +245,7 @@ RSpec.describe ConnectRPC::OTel::Subscriber do
     end
     rpc_spans(exporter).last(2).each do |span|
       expect(span.kind).to eq(:server)
-      expect(span.attributes).not_to have_key("rpc.response.status_code")
+      expect(span.attributes).not_to have_key("rpc.status_code")
       expect(span.attributes["error.type"]).to eq("preflight_rejected")
     end
     expect(rpc_spans(exporter).size).to eq(5)
@@ -258,7 +258,7 @@ RSpec.describe ConnectRPC::OTel::Subscriber do
                            input: StringIO.new("not gzip"))
     expect(response.status).to eq(400)
     span = rpc_spans(exporter).fetch(0)
-    expect(span.attributes["rpc.response.status_code"]).to eq("invalid_argument")
+    expect(span.attributes["rpc.status_code"]).to eq("invalid_argument")
     expect(span.attributes).not_to have_key("error.type")
     expect(span.status.code).to eq(OpenTelemetry::Trace::Status::UNSET)
     expect(Array(span.events)).to be_empty

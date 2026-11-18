@@ -11,6 +11,9 @@ module ConnectRPC
         @headers || operation(:reading) { leading }
       end
 
+      # Leading metadata already received and accepted; nil before then. Never reads.
+      def cached_headers = @headers
+
       # skip_data counts a message without decoding, inflating or observing it.
       # Envelope bounds still apply, and the terminal still decides the outcome.
       def receive(skip_data: false)

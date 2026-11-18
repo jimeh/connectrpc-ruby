@@ -133,7 +133,7 @@ RSpec.describe "Native Async and Falcon hosts" do
                                                      "connectrpc.decision" => "admission_rejected")
         # A refusal is a stream reset, not an HTTP response.
         expect(trace_of(rejected)[:data]).not_to have_key("http.response.status_code")
-        expect(trace_of(rejected)[:data]).not_to have_key("rpc.response.status_code")
+        expect(trace_of(rejected)[:data]).not_to have_key("rpc.status_code")
         expect(rejected.tags).to be_empty
         release.enqueue(true)
         expect(active.wait.message.name).to eq("admitted")
@@ -180,7 +180,7 @@ RSpec.describe "Native Async and Falcon hosts" do
         traces = rpc_transactions.map { |event| trace_of(event) }
         aborted = traces.find { |trace| trace[:data]["connectrpc.delivery"] == "aborted" }
         expect(aborted).to include(status: "unknown_error")
-        expect(aborted[:data]).to include("rpc.response.status_code" => "OK")
+        expect(aborted[:data]).to include("rpc.status_code" => "OK")
         completed = traces.find { |trace| trace[:data]["connectrpc.delivery"] == "completed" }
         expect(completed).to include(status: "ok")
       ensure

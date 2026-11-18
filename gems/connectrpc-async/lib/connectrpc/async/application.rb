@@ -19,7 +19,20 @@ module ConnectRPC
 
         return unless path && @server.handles?(path)
 
-        @server.start_call(path: path, headers: Internal.headers(request), http_method: request.method)
+        @server.start_call(path: path, headers: call_headers(request), http_method: request.method)
+      end
+
+      # async-http moves H1 Host and H2 :authority into request.authority. Core
+      # reads the server address from host, a reserved name handlers never see.
+      # Copy, so the cached leading H1 carrier stays unchanged. Any supplied
+      # authority wins, including an empty one, which core records as no
+      # address. Structural requests without an authority keep their headers.
+      def call_headers(request)
+        headers = Internal.headers(request)
+        authority = request.authority if request.respond_to?(:authority)
+        return headers unless authority.is_a?(String)
+
+        headers.merge("host" => [authority.dup.freeze])
       end
 
       def publication?(request)
@@ -71,7 +84,7 @@ module ConnectRPC
         declaration.is_a?(ServerStreamMethod) || declaration.is_a?(BidiStreamMethod)
       end
 
-      private :publication?, :http1_streaming_route?, :input_stream_route?, :output_stream_route?
+      private :call_headers, :publication?, :http1_streaming_route?, :input_stream_route?, :output_stream_route?
 
       def admission_response(request)
         path = request.path&.split("?", 2)&.first
@@ -85,7 +98,7 @@ module ConnectRPC
 
       def call_with_publication(request, publication:, lifecycle: nil, resource: nil)
         path, = request.path.split("?", 2)
-        headers = Internal.headers(request)
+        headers = call_headers(request)
         # This source-coupled host shares core's selection before choosing output.
         protocol = @server.send(:request_protocol, headers, request.method)
         h1_connect = !request.respond_to?(:stream) && http1_streaming_route?(request)
@@ -180,7 +193,7 @@ module ConnectRPC
           return @fallback ? @fallback.call(request) : ::Protocol::HTTP::Response[404, {}, nil]
         end
 
-        response = @server.call(path: path, http_method: request.method, headers: Internal.headers(request),
+        response = @server.call(path: path, http_method: request.method, headers: call_headers(request),
                                 input: Internal::Input.new(request.body), query: query || "", lifecycle: lifecycle,
                                 cancellation: stream&.processing_cancellation)
         body = response.body.empty? ? nil : [response.body]

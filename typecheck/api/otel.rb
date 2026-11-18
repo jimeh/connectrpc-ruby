@@ -1,7 +1,8 @@
 # frozen_string_literal: true
 
 subscriber = ConnectRPC::OTel::Subscriber.new(tracer_provider: APITracerProvider.new, propagator: APIPropagator.new,
-                                              request_metadata: ["x-request-id"], response_metadata: ["x-region"])
+                                              request_metadata: ["x-request-id"], response_metadata: ["x-region"],
+                                              response_trailers: ["x-tail"])
 ConnectRPC::Instrumentation.new(subscribers: [subscriber])
 ConnectRPC::OTel::Subscriber.new
 ConnectRPC::OTel::SEMCONV_VERSION.size

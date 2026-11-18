@@ -3,7 +3,7 @@
 RSpec.describe "Web authenticated processor and SDK ownership" do
   [%i[async h2], %i[falcon h2], %i[falcon http1]].each do |backend, protocol|
     it "retains #{backend}/#{protocol} mTLS identity through handler, codecs, status and original ensure" do
-      provider, exporter, bus = tracing
+      provider, exporter, bus = tracing(response_metadata: ["x-head"], response_trailers: ["x-tail"])
       reactor do |task|
         records = []
         host = nil
@@ -28,8 +28,10 @@ RSpec.describe "Web authenticated processor and SDK ownership" do
           observe.call(:status_ensure)
         end
         codec.define_singleton_method(:decode_status) { |bytes, **options| original.decode_status(bytes, **options) }
-        handler = lambda do |message, _context|
+        handler = lambda do |message, context|
           observe.call(:handler)
+          context.response_metadata["x-head"] = ["h"]
+          context.response_trailers["x-tail"] = ["t"]
           if message.name == "error"
             raise ConnectRPC::Error.new(:not_found, "safe", details: [
                                           ConnectRPC::ErrorDetail.new(type: "opaque.Type", value: "opaque")
@@ -39,9 +41,18 @@ RSpec.describe "Web authenticated processor and SDK ownership" do
         ensure
           observe.call(:handler_ensure)
         end
-        target = ConnectRPC::Server.new(services: [AsyncHelpers::ECHO::SERVICE], binding: binding,
+        watch = ConnectRPC::ServerStreamMethod.new(service: "trace.WebStreams", name: "Watch",
+                                                   request_type: AsyncHelpers::MESSAGE,
+                                                   response_type: AsyncHelpers::MESSAGE)
+        streams = ConnectRPC::Service.new(name: "trace.WebStreams", rpcs: [watch])
+        stream_handler = lambda do |message, writer, context|
+          handler.call(message, context)
+          writer.send_message(message)
+        end
+        target = ConnectRPC::Server.new(services: [AsyncHelpers::ECHO::SERVICE, streams], binding: binding,
                                         protocol: :grpc_web, status_codec: codec, instrumentation: bus,
-                                        handlers: AsyncHelpers::ECHO.handlers(echo: handler, fail: handler))
+                                        handlers: AsyncHelpers::ECHO.handlers(echo: handler, fail: handler)
+                                                                    .merge(watch.path => stream_handler))
         tls = host_tls(anchors: [tls_material.fetch(:client_ca)])
         if backend == :async
           host = ConnectRPC::Async::Host.new(server: target, tls: tls).start
@@ -71,23 +82,33 @@ RSpec.describe "Web authenticated processor and SDK ownership" do
         expect(socket.alpn_protocol).to eq(protocol == :h2 ? "h2" : "http/1.1")
         implementation = protocol == :h2 ? Async::HTTP::Protocol::HTTP2 : Async::HTTP::Protocol::HTTP1
         connection = implementation.client(socket)
-        %w[success error].each do |name|
+        # The authority differs from the listener address. An H2 request also
+        # carries an ordinary host header, which the authority overrides.
+        fields = { "content-type" => "application/grpc-web" }
+        fields["host"] = "ignored.example" if protocol == :h2
+        [["success", AsyncHelpers::ECHO::ECHO.path, "rpc.example:8443"],
+         ["error", AsyncHelpers::ECHO::ECHO.path, "rpc.example"], ["stream", watch.path, "rpc.example:8443"]]
+          .each do |name, path, authority|
           message = AsyncHelpers::MESSAGE.encode(AsyncHelpers::MESSAGE.new(name: name))
           wire = [0, message.bytesize].pack("CN") + message
-          response = connection.call(Protocol::HTTP::Request["POST", AsyncHelpers::ECHO::ECHO.path,
-                                                             { "content-type" => "application/grpc-web" }, [wire],
-                                                             authority: "127.0.0.1:#{port}", scheme: "https"])
+          response = connection.call(Protocol::HTTP::Request["POST", path, fields, [wire],
+                                                             authority: authority, scheme: "https"])
           expect(response.status).to eq(200)
           body = response.read
-          expect(body).to include("grpc-status: #{name == 'success' ? 0 : 5}\r\n")
+          expect(body).to include("grpc-status: #{name == 'error' ? 5 : 0}\r\n", "x-tail: t\r\n")
         end
-        wait_until(task, "SDK Web spans finish after delivery") { rpc_spans(exporter).size == 2 }
+        wait_until(task, "SDK Web spans finish after delivery") { rpc_spans(exporter).size == 3 }
         spans = rpc_spans(exporter)
-        expect(spans.map { |span| span.attributes["connectrpc.protocol"] }).to eq(%w[grpc_web grpc_web])
-        expect(spans.map { |span| span.attributes["rpc.system.name"] }).to eq(%w[grpc grpc])
-        expect(spans.map { |span| span.attributes["connectrpc.delivery"] }).to eq(%w[completed completed])
-        expect(spans.map { |span| span.attributes["rpc.response.status_code"] }).to eq(%w[OK NOT_FOUND])
+        expect(spans.map { |span| span.attributes["connectrpc.protocol"] }).to eq(%w[grpc_web] * 3)
+        expect(spans.map { |span| span.attributes["rpc.system.name"] }).to eq(%w[grpc] * 3)
+        expect(spans.map { |span| span.attributes["connectrpc.delivery"] }).to eq(%w[completed] * 3)
+        expect(spans.map { |span| span.attributes["rpc.status_code"] }).to eq(%w[OK NOT_FOUND OK])
+        expect(spans.map { |span| span.attributes["server.address"] }).to eq(%w[rpc.example] * 3)
+        expect(spans.map { |span| span.attributes["server.port"] }).to eq([8443, nil, 8443])
+        expect_no_retired_attributes(spans)
         spans.each do |span|
+          expect(span.attributes).to include("rpc.response.header.x-head" => ["h"],
+                                             "rpc.response.trailer.x-tail" => ["t"])
           observed = records.select { |record| record[2] == span.span_id }
           expect(observed.map(&:first)).to include(:handler, :decode, :handler_ensure, :codec_ensure,
                                                    :application_ensure)
