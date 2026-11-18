@@ -419,38 +419,47 @@ module ConnectRPC
 
         # Bounds each wait for flow-control credit to `seconds` on `clock`.
         # Only credit ends a wait, so a wakeup that leaves the window empty
-        # does not restart it. On expiry the stream is reset with CANCEL
-        # and the write raises ResponseBodyTimeout.
+        # does not restart it. Credit that a sibling stream spends first
+        # starts a new wait. On expiry the stream is reset with CANCEL and
+        # the write raises ResponseBodyTimeout.
         def bound_progress(clock, seconds)
           @progress_clock = clock
           @progress_seconds = seconds
         end
 
-        # async-http 0.105.0's loop, with its credit wait bounded.
+        # async-http 0.105.0's loop, with its credit wait bounded. The frame
+        # size is read again after every wait, with no yield before the
+        # frame consumes it: ending a wait can yield, and sibling streams
+        # woken by the same connection WINDOW_UPDATE can spend the shared
+        # credit meanwhile. Sending a stale size raises FlowControlError,
+        # which resets the stream with INTERNAL_ERROR.
         def write(chunk)
           until chunk.empty?
             stream = @stream or raise IOError, "HTTP/2 stream is closed!"
             maximum_size = stream.available_frame_size
-            maximum_size = await_credit(stream) if maximum_size <= 0
+            next await_credit(stream) unless maximum_size.positive?
+
             break unless (chunk = send_data(stream, chunk, maximum_size))
           end
         end
 
         private
 
+        # Returns once the stream has credit to send. Cancelling the timer
+        # yields to the event loop.
         def await_credit(stream)
           @stalled = false
           timer = credit_timer if @progress_seconds
-          maximum_size = @guard.synchronize do
+          credited = @guard.synchronize do
             size = stream.available_frame_size
             until size.positive? || @stalled
               @window_updated.wait(@guard)
               stream = @stream or raise IOError, "HTTP/2 stream is closed!"
               size = stream.available_frame_size
             end
-            size
+            size.positive?
           end
-          return maximum_size if maximum_size.positive?
+          return if credited
 
           stream.output_stalled
           @stream = nil
