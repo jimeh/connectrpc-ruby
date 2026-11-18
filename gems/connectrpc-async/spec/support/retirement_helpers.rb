@@ -40,8 +40,8 @@ module RetirementHelpers
       state = { gate: gate, commands: commands }
       core = retirement_server(state, entered)
       tls, settings = retirement_tls(mode, ca_file)
-      host, origin = retirement_host(core, tls: tls, idle_timeout: nil, **)
-      origin = origin.sub("http:", "https:") if tls
+      host, origin = retirement_host(core, **tls, idle_timeout: nil, **)
+      origin = origin.sub("http:", "https:") unless tls.empty?
       session = host.instance_variable_get(:@session)
       state.merge!(host: host, session: session, origin: origin)
       accepted = nil
@@ -83,13 +83,18 @@ module RetirementHelpers
     })
   end
 
+  # Host TLS options and client settings. :mtls_provider serves the same
+  # identity as :mtls through a TLS provider instead of static TLS.
   def retirement_tls(mode, ca_file)
-    return [nil, {}] if mode == :h2c
+    return [{}, {}] if mode == :h2c
 
-    anchors = [tls_material.fetch(:client_ca)] if mode == :mtls
+    mutual = %i[mtls mtls_provider].include?(mode)
+    anchors = [tls_material.fetch(:client_ca)] if mutual
     settings = { ca_file: ca_file }
-    settings.merge!(host_tls(tls_material.fetch(:identity)).except(:client_ca)) if mode == :mtls
-    [host_tls(anchors: anchors), settings]
+    settings.merge!(host_tls(tls_material.fetch(:identity)).except(:client_ca)) if mutual
+    source = host_tls(anchors: anchors)
+    tls = mode == :mtls_provider ? { tls_provider: -> { source.merge(version: "one") } } : { tls: source }
+    [tls, settings]
   end
 
   def close_retirement_fixture(state, transport, call)

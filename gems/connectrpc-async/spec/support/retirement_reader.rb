@@ -177,7 +177,7 @@ module RetirementReader
     expect(observer.returned).to equal(observer.reader)
     # Upstream can reparent the transient reader when its startup task finishes.
     expect(boundary.fetch(:parent)).to equal(boundary.fetch(:expected_parent))
-    expect(resource.raw).to be_closed
+    expect(resource.send(:raw_failed?)).to be(true)
     competitor = task.async(finished: false) { resource.abort(IOError.new("later reader competitor")) }
     expect(competitor).not_to be_finished
     expect(resource.send(:retirement_completed?)).to be(false)
@@ -186,6 +186,7 @@ module RetirementReader
     observer.return_gate.release
     task.with_timeout(2) { AsyncHelpers::INTERNAL.join_complete(competitor) }
     expect(resource.send(:retirement_completed?)).to be(true)
+    expect(resource.raw).to be_closed
     expect(observer.reader).to be_finished
     expect(observer.fiber).not_to be_alive
     expect(observer.disposals.size).to eq(1)

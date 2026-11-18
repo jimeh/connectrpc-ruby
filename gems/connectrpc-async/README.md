@@ -202,26 +202,33 @@ set `max_concurrent_streams` lower explicitly.
   fills the server's send buffer and stalls the write; the connection is then
   aborted raw socket first, which cancels its handlers and releases all of its
   slots. The bound applies to each frame or header block, not to a whole
-  response, and steady progress within one write does not extend it. A write
-  finishes when the kernel accepts its bytes. Once the socket's send buffer is
-  full, the kernel accepts more only after the peer has drained part of it,
-  which on Linux can be a third of the buffer, up to about 1 MiB with the
-  default 4 MiB maximum. So a peer that keeps reading, but too slowly to drain
-  that much within the bound, is also aborted. Unlike grpc-go's
-  `TCP_USER_TIMEOUT`, which fires when sent data stays unacknowledged, or unsent
-  behind a zero window, for that long, so that any progress resets it, this
-  bound is not reset by partial progress. Control frames queued behind a stalled
-  write, such as the ACKs of a client's BDP or keepalive PINGs or a drain's
-  GOAWAY and PING, wait for that write's bound instead of failing the connection
-  at the keepalive `timeout` first, and their deadlines count again once it
-  finishes. A control frame can therefore wait for several frame writes in turn,
-  each within its own bound, while the peer keeps reading. Raise
-  `frame_write_timeout` for clients that read large responses over slow links.
-  nil turns the bound off; a control frame queued behind a stalled write then
-  still ends the connection after the keepalive `timeout`, or 20 seconds without
-  keepalive. Otherwise the value is finite positive seconds. Application work
-  under the guard, such as closing a HEAD response's body, does not count as a
-  frame write.
+  response. A write finishes when the kernel accepts its bytes. Once the
+  socket's send buffer is full, the kernel accepts more only after the peer has
+  drained a large part of it: about 950 KB on Linux with the default 4 MiB
+  maximum. On Linux 4.6 and later, a write still blocked when its bound ends
+  gets another bound if the socket's `TCP_INFO` shows that the peer acknowledged
+  new data since the previous check while unsent data was queued. Progress means
+  new TCP acknowledgements, which a peer sends once its application frees enough
+  of its receive buffer for the window to open; reading a few bytes at a time
+  may not open it. A peer whose acknowledgements keep advancing, however slowly,
+  therefore stays connected. A peer that stops is aborted between one and two
+  bounds after the later of its last progress and the blocked write's start.
+  This is the idea behind grpc-go's `TCP_USER_TIMEOUT`, which any progress
+  resets, checked once per bound. On other platforms, older Linux kernels and
+  sockets without `TCP_INFO`, such as UNIX sockets, each write keeps a fixed
+  deadline, so a peer that keeps reading, but too slowly to drain that much
+  within the bound, is also aborted. Raise `frame_write_timeout` there for
+  clients that read large responses over slow links. Control frames queued
+  behind a stalled write, such as the ACKs of a client's BDP or keepalive PINGs
+  or a drain's GOAWAY and PING, wait for that write's bound, including its
+  renewals, instead of failing the connection at the keepalive `timeout` first,
+  and their deadlines count again once it finishes. A control frame can
+  therefore wait for several frame writes in turn, each within its own bound,
+  while the peer keeps reading. nil turns the bound off; a control frame queued
+  behind a stalled write then still ends the connection after the keepalive
+  `timeout`, or 20 seconds without keepalive. Otherwise the value is finite
+  positive seconds. Application work under the guard, such as closing a HEAD
+  response's body, does not count as a frame write.
 
 These two response bounds go beyond grpc-go and Go's `golang.org/x/net/http2`,
 which have no equivalent. grpc-go waits for flow-control credit without a bound
@@ -456,11 +463,13 @@ connection, or take over one in progress, keeping its debug data and cutoff and
 never raising the cutoff. Once the cutoff GOAWAY is written, they wait for the
 accepted streams, send a final GOAWAY naming the cutoff, half-close and wait for
 EOF, all within their own grace. A peer that closes or resets the connection
-after its streams finished, as the GOAWAY asks, counts as drained. Local work
-still running after delivery, such as stream cleanup and instrumentation
-observers, then finishes within the grace, and no final GOAWAY is sent. A
-`too_many_pings` decision keeps its own 1-second EOF bound during a takeover.
-Every write in these steps follows the control frame rules above.
+after its streams finished, as the GOAWAY asks, counts as drained, even when a
+control frame or keepalive PING write fails on the closed connection before the
+server reads the close. Local work still running after delivery, such as
+stream cleanup and instrumentation observers, then finishes within the grace,
+and no final GOAWAY is sent. A `too_many_pings` decision keeps its own 1-second
+EOF bound during a takeover. Every write in these steps follows the control
+frame rules above.
 
 Rails and Rack hosts cannot offer any of this; see
 [support](../../docs/support.md#http2-keepalive-and-connection-age).
@@ -603,7 +612,10 @@ nil or finite positive seconds, `keepalive` is nil or a `Keepalive`, and
   waiting call can open a replacement while it drains; GOAWAY alone never
   dials, and replacement is not a failure for backoff. Otherwise it keeps its
   slot until its streams finish, and joins the set when a member retires. The
-  client never has more than `connection_limit + max_draining` sockets open.
+  client never has more than `connection_limit + max_draining` live sockets.
+  A retiring connection's socket is shut down at once and stops counting; its
+  descriptor closes once the connection's tasks finish, which can include a
+  call that is resending on a replacement connection.
 - `drain_timeout` closes any graceful GOAWAY connection, in the set or not,
   that still has streams after that many seconds; those streams fail with
   `unavailable` and are not resent. `close` cancels drain timers, and its own
@@ -973,9 +985,9 @@ else, so later calls on the connection wait behind it until it finishes or
 their own deadline or cancellation ends them. With `keepalive` set, a frame
 that never finishes also blocks the keepalive PING, so the connection retires
 within `time + timeout` and the waiting calls, which sent nothing, move to a
-new connection. Forced teardown closes raw TCP
-before cancelling and joining writers/readers, then performs buffered/TLS
-cleanup.
+new connection. Forced teardown shuts raw TCP down before cancelling and
+joining writers/readers, then performs buffered/TLS cleanup and closes the
+descriptor.
 These are cooperative bounds, not arbitrary native/application interruption
 guarantees.
 
@@ -1021,7 +1033,7 @@ The client `Transport` and `HTTP1Transport` close return types remain `bool`.
 Private task joins distinguish a resolved result from actual finalization. They
 block on required children and task-local progress/finalization notifications,
 retaining captured child identities through reparenting or transient changes.
-A scheduling opportunity after raw close establishes no completion boundary;
+A scheduling opportunity after raw failure establishes no completion boundary;
 all retained task joins still precede disposal and retirement publication.
 
 These joins require cooperative tasks and a live application reactor. A

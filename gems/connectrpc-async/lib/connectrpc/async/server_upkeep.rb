@@ -42,6 +42,7 @@ module ConnectRPC
           @serial = 0
           @check_at = nil
           @delivering = ::Async::Condition.new
+          @stopped = false
         end
 
         # Starting each task can yield. A connection that starts retiring
@@ -60,10 +61,13 @@ module ConnectRPC
         end
 
         # The promise resolves true once the frame is written, or false if the
-        # writer stopped or failed first, or the queue was full.
+        # writer stopped or failed first, or the queue was full. A frame for a
+        # writer that already stopped resolves false at once.
         def write(frame)
           written = ::Async::Promise.new
-          if @queue.size >= MAX_PENDING
+          if @stopped
+            written.resolve(false)
+          elsif @queue.size >= MAX_PENDING
             written.resolve(false)
             @resource.abort(IOError.new("HTTP/2 control frames outran their writer"))
           else
@@ -79,7 +83,10 @@ module ConnectRPC
         # Once the peer left a drain, the drain alone ends the connection, so a
         # failed write stops only this writer. Such a write can still run: a
         # writer already due to run sees the departure's cancellation only
-        # after it.
+        # after it. A write can also find the peer gone before the reader
+        # does. As in grpc-go's loopy writer, that write then stops only this
+        # writer, and the reader, which meets the same end after reading what
+        # the peer sent, decides whether the drain outlives the peer.
         def run
           written = nil
           loop do
@@ -92,8 +99,9 @@ module ConnectRPC
             written.resolve(true)
           end
         rescue StandardError => e
-          @resource.abort(e) unless @resource.peer_departed?
+          @resource.abort(e) unless @resource.peer_departed? || @resource.outlives_peer?(e)
         ensure
+          @stopped = true
           written&.resolve(false)
           @queue.dequeue.last.resolve(false) until @queue.empty?
           @queued.clear
@@ -193,19 +201,48 @@ module ConnectRPC
       # frame guard until its flush finishes, to `timeout`. A frame write
       # defers cancellation, so a peer that stops reading can only be ended
       # by failing the connection raw-first. The bound applies to each frame
-      # or header block, not to a whole response, and continuous progress
-      # within one frame does not extend it.
+      # or header block, not to a whole response.
+      #
+      # A write blocked on a full send buffer finishes only once the kernel
+      # takes the rest of its bytes, after the peer drained a large part of
+      # the buffer: about 950 KB on Linux with the default 4 MiB `tcp_wmem`
+      # maximum. A slow but live reader could miss a fixed deadline. With
+      # `progress`, on Linux, a write still in progress at its deadline is
+      # renewed for another `timeout` when the socket's TCP_INFO shows the
+      # peer acknowledged new data since the previous sample while unsent
+      # data was queued. The connection is then aborted one to two bounds
+      # after the later of the peer's last such progress and the blocked
+      # write's start, like grpc-go's TCP_USER_TIMEOUT, which any progress
+      # resets. Elsewhere, or without a sample, each write keeps a fixed
+      # deadline.
+      #
+      # Samples are taken only by this task, when it first sees a write in
+      # progress and at that write's deadline, and by `remaining` once the
+      # deadline has passed. Starting or finishing a write never samples.
       class WriteWatchdog
+        # Linux's struct tcp_info is read only on Linux: FreeBSD also defines
+        # TCP_INFO, with a different layout.
+        TCP_INFO = (::Socket::TCP_INFO if RUBY_PLATFORM.include?("linux") && defined?(::Socket::TCP_INFO))
+        # Offsets in <linux/tcp.h>'s struct tcp_info: tcpi_bytes_acked (u64,
+        # Linux 4.1+) and tcpi_notsent_bytes (u32, Linux 4.6+). Older kernels
+        # return a shorter struct, which gives no sample.
+        BYTES_ACKED_OFFSET = 120
+        NOTSENT_BYTES_OFFSET = 144
+        TCP_INFO_MINIMUM = NOTSENT_BYTES_OFFSET + 4
+
         attr_reader :timeout
 
-        def initialize(resource, clock:, timeout:, message: "HTTP/2 frame write did not finish in time")
+        def initialize(resource, clock:, timeout:, message: "HTTP/2 frame write did not finish in time",
+                       progress: false)
           @resource = resource
           @clock = clock
           @timeout = timeout
           @message = message
+          @progress = progress
           @started = ::Async::Condition.new
           @serial = 0
-          @started_at = nil
+          @deadline = nil
+          @acked = nil
         end
 
         # A control task: it outlives drains until the final GOAWAY is
@@ -217,33 +254,75 @@ module ConnectRPC
           task
         end
 
-        # Called for every frame write; neither yields.
+        # Called for every frame write; neither yields nor samples.
         def write_started
           @serial += 1
-          @started_at = @clock.now
+          @deadline = @clock.now + @timeout
           @started.signal
         end
 
         def write_finished
-          @started_at = nil
+          @deadline = nil
         end
 
         # Seconds left before the frame write in progress, if any, misses its
-        # bound.
-        def remaining = @started_at && (@started_at + @timeout - @clock.now)
+        # bound. A deadline that has passed is renewed first if the peer made
+        # progress; only the watchdog task aborts.
+        def remaining
+          return unless @deadline
+
+          left = @deadline - @clock.now
+          left.positive? ? left : renew - @clock.now
+        end
 
         private
 
         def run
+          armed = nil
           loop do
-            @started.wait until @started_at
-            serial = @serial
-            remaining = @started_at + @timeout - @clock.now
-            @clock.sleep(remaining) if remaining.positive?
-            next unless @started_at && @serial == serial
+            @started.wait until @deadline
+            unless armed == @serial
+              armed = @serial
+              @deadline = [@deadline, @clock.now + @timeout].max if progressed?
+            end
+            left = remaining
+            next @clock.sleep(left) if left.positive?
 
             break @resource.abort(IOError.new(@message))
           end
+        end
+
+        # Renews a passed deadline if the peer made progress; returns it.
+        def renew
+          @deadline = @clock.now + @timeout if progressed?
+          @deadline
+        end
+
+        # Whether the peer acknowledged new data since the previous sample
+        # while unsent data is queued, so the peer is what holds the write.
+        # Every sample becomes the next one's baseline.
+        def progressed?
+          return false unless @progress && (sample = tcp_info)
+
+          acked, unsent = sample
+          previous = @acked
+          @acked = acked
+          !previous.nil? && acked > previous && unsent.positive?
+        end
+
+        # [tcpi_bytes_acked, tcpi_notsent_bytes], or nil without a sample,
+        # such as on a closed or non-TCP socket, or a hosting SPI socket
+        # without getsockopt. The struct is in native byte order.
+        def tcp_info
+          raw = @resource.raw
+          return unless TCP_INFO && raw.respond_to?(:getsockopt)
+
+          data = raw.getsockopt(::Socket::IPPROTO_TCP, TCP_INFO).data
+          return if data.bytesize < TCP_INFO_MINIMUM
+
+          [data.unpack1("Q", offset: BYTES_ACKED_OFFSET), data.unpack1("L", offset: NOTSENT_BYTES_OFFSET)]
+        rescue SystemCallError, IOError
+          nil
         end
       end
 
@@ -310,7 +389,7 @@ module ConnectRPC
           @random = random
           @keepalive = keepalive
           @idle_timeout = idle_timeout
-          @watchdog = WriteWatchdog.new(resource, clock: clock, timeout: write_timeout) if write_timeout
+          @watchdog = WriteWatchdog.new(resource, clock: clock, timeout: write_timeout, progress: true) if write_timeout
           @writer = ControlWriter.new(resource, clock: clock, timeout: keepalive&.timeout || CONTROL_SECONDS,
                                                 writes: @watchdog)
           if keepalive&.min_time
@@ -481,7 +560,10 @@ module ConnectRPC
             timer.run
             sent = written.wait
             @cutoff_written.resolve(sent)
-            next unless sent
+            # A GOAWAY a stopped writer refused or dropped still ends the
+            # connection at this bound, unless a drain already wrote its final
+            # GOAWAY and owns the connection; then the EOF bound below applies.
+            next timer.wait unless sent || @resource.finishing?
 
             Internal.cancel(timer)
             next if @resource.quiesce(@parent, clock: @clock, within: EOF_SECONDS)

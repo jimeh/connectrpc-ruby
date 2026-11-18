@@ -131,6 +131,16 @@ These affect native HTTP/2 connections of the Async `Transport`,
   `max_requests` of 128. Pass `stream_receive_window: 65_536` to keep the old
   client window. See
   [flow-control windows](../gems/connectrpc-async/README.md#flow-control-windows).
+- Forced teardown (an abort, an expired grace, or a keepalive or
+  write-progress failure) shuts raw TCP down in both directions at once and
+  closes the descriptor after the connection's tasks have joined. Before 0.3.0
+  it closed the descriptor first, so a peer saw a reset whenever unread input
+  remained. It now sees end of stream first. On Ruby 4 the old close could
+  raise a stray `IOError: stream closed in another thread` into a server
+  connection's reader task. The client's `connection_limit + max_draining`
+  bound counts live sockets: a retiring socket stops counting once it is shut
+  down, so its descriptor can stay open beside a replacement until the
+  retiring connection's tasks finish.
 
 These affect `connectrpc-otel` spans and trace propagation.
 
@@ -212,12 +222,17 @@ and [Accept errors](../gems/connectrpc-async/README.md#accept-errors).
   [Stream admission](../gems/connectrpc-async/README.md#stream-admission).
 - An HTTP/2 connection whose single frame write does not finish within 60
   seconds is aborted, failing all of its streams. This catches peers that stop
-  reading their socket, for every RPC shape. A write blocked on a full send
-  buffer finishes only once the peer has drained part of that buffer, so raise
-  the bound with the new `frame_write_timeout:` option for clients that read
-  large responses over slow links. With nil, a control frame such as a PING
-  ACK queued behind the stalled write still ends the connection after the
-  keepalive `timeout`.
+  reading their socket, for every RPC shape. On Linux 4.6 and later, a write
+  blocked on a full send buffer is renewed for another 60 seconds while the peer
+  keeps acknowledging data, so a slow reader whose TCP acknowledgements keep
+  advancing stays connected, and one that stops is aborted 60 to 120 seconds
+  after the later of its last progress and the blocked write's start. On other
+  platforms and older kernels each write keeps a fixed deadline, and a blocked
+  write waits for the peer to drain a large part of the send buffer, about 950
+  KB on Linux defaults, so raise the bound with the new `frame_write_timeout:`
+  option for clients that read large responses over slow links. With nil the
+  bound is off, and a control frame such as a PING ACK queued behind the stalled
+  write still ends the connection after the keepalive `timeout`.
 - An HTTP/2 stream that arrives while `max_requests` admission is full is
   refused with `RST_STREAM(REFUSED_STREAM)` while its HEADERS are read, before
   any of its DATA, instead of after its request was queued for dispatch. Its

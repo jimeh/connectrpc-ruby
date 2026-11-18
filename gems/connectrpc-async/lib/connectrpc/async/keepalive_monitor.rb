@@ -63,7 +63,9 @@ module ConnectRPC
         # records the reason, then aborts raw-first, which also ends a writer
         # stuck behind or inside another frame. After a timely ACK the writer
         # is left to finish as a child of this task, which retirement still
-        # captures; a later probe queues behind it under its own deadline.
+        # captures; a later probe queues behind it under its own deadline. A
+        # write that finds the peer gone during a drain stops the monitor and,
+        # as for control frames, leaves the decision to the reader.
         def probe
           @sequence += 1
           payload = [@sequence].pack("Q>")
@@ -71,9 +73,11 @@ module ConnectRPC
           outcome = ::Async::Promise.new
           @probe = [payload, deadline, outcome]
           parent = ::Async::Task.current
+          failure = nil
           writer = ::Async::Task.new(parent, finished: false) do
             @resource.connection.send_ping(payload)
-          rescue StandardError
+          rescue StandardError => e
+            failure = e
             outcome.resolve(:failed)
           end
           timer = ::Async::Task.new(parent, finished: false) do
@@ -83,7 +87,9 @@ module ConnectRPC
           end
           writer.run
           timer.run
-          return true if outcome.wait == :acknowledged
+          result = outcome.wait
+          return true if result == :acknowledged
+          return false if result == :failed && @resource.outlives_peer?(failure)
 
           @resource.record_close(REASON)
           @resource.abort(IOError.new("HTTP/2 keepalive PING was not acknowledged"))

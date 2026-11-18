@@ -217,10 +217,10 @@ module ConnectRPC
           super_method.call(error)
         end
 
-        # Retirement closes raw TCP, and abort marks the resource finished,
-        # before close! marks this connection closed. Session retirement closes
+        # Retirement fails raw TCP, and abort marks the resource finished,
+        # before close! marks this connection closed. Session retirement fails
         # every raw socket before it aborts each resource.
-        def retiring? = closed? || !!@resource&.finished? || !!@resource&.raw&.closed?
+        def retiring? = closed? || !!@resource&.finished? || !!@resource&.send(:raw_failed?)
 
         private
 
@@ -815,8 +815,8 @@ module ConnectRPC
         # takes any of its DATA. The control writer sends the reset; the
         # session observes the refusal. The request is captured first because
         # upstream detaches it from the closed stream. A retiring connection's
-        # control writer may already have stopped, leaving a queued reset
-        # unresolved, so its streams are left to dispatch, which refuses them.
+        # control writer may already have stopped, so its streams are left to
+        # dispatch, which refuses them.
         def admit(stream, upkeep)
           admission = self.admission
           return if !admission || !upkeep || retiring?
@@ -989,8 +989,15 @@ module ConnectRPC
         # writes its final GOAWAY, a peer that leaves after every stream has
         # closed, by its GOAWAY, an EOF or a reset, lost nothing: the work left
         # is local, such as a stream worker's cleanup and observers. A
-        # too_many_pings decision keeps its own bound instead.
+        # too_many_pings decision keeps its own bound instead. The EOF or
+        # reset after our own raw failure is never the peer leaving. A control
+        # frame or keepalive PING write that fails this way leaves the decision
+        # to the reader, which may still read frames the peer sent before it
+        # left. On TLS such a write raises the socket's own errno; OpenSSL
+        # raises SSLError from a write only after a read has already failed,
+        # which the reader decides before anything else runs.
         def outlives_peer?(error)
+          return false if @raw_failed
           return false unless @drain_running && !@finishing && !@aborted && @connection.streams.empty?
           return false if @upkeep&.violated?
 
@@ -1022,8 +1029,9 @@ module ConnectRPC
           if launch
             @aborted = true
             # A peer that ends the connection once its streams finished, as a
-            # GOAWAY asks, ends a drain cleanly, whether by EOF or a reset.
-            peer_left = @connection&.reader_task&.current? && empty?
+            # GOAWAY asks, ends a drain cleanly, whether by EOF or a reset. The
+            # EOF after our own raw failure is not the peer's.
+            peer_left = !@raw_failed && @connection&.reader_task&.current? && empty?
             @abort_during_drain = true if @drain_task && !@drained && !peer_left
             @cleanup = ::Async::Task.new(@lifetime, transient: true, finished: false) { retire(error) }
           end
@@ -1068,6 +1076,9 @@ module ConnectRPC
 
             finish_drain { @connection.send_goaway }
           rescue EOFError, *PEER_LEFT
+            # A local raw failure also surfaces as EOF or EPIPE.
+            next false if @raw_failed
+
             # The connection was empty, so a peer that resets it after the
             # GOAWAY, as a client retiring it raw-first does, lost no work.
             @drained = true
@@ -1101,6 +1112,8 @@ module ConnectRPC
             stop_maintenance
             finish_drain
           rescue EOFError, *PEER_LEFT
+            next false if @raw_failed
+
             @drained = true
             true
           rescue StandardError
@@ -1126,7 +1139,14 @@ module ConnectRPC
           Internal.join_complete(reader) if reader
           # Discard unread inbound control bytes before closing TCP, so
           # the peer receives the complete response/GOAWAY rather than RST.
-          loop { @raw.readpartial(16_384) }
+          # Retirement closes raw only after this read has left it.
+          @discarding = true
+          begin
+            loop { @raw.readpartial(16_384) }
+          ensure
+            @discarding = false
+            changed
+          end
         end
 
         def retirement_parent=(parent)
@@ -1152,7 +1172,22 @@ module ConnectRPC
 
         def retirement_completed? = !!@retirement_completed
 
-        # Retirement starts, closing raw TCP, before the owner notification
+        # Fails the peer at once, without closing the descriptor. On Ruby 4,
+        # IO#close interrupts every fiber blocked on the socket through the
+        # scheduler, and Async delivers that IOError by raising into the fiber
+        # wherever it is suspended next, even after it has already left the
+        # read. A shutdown wakes those fibers with EOF or EPIPE instead.
+        # Retirement closes the descriptor once they have all left it.
+        def fail_raw
+          @raw_failed = true
+          @raw.shutdown(Socket::SHUT_RDWR) if @raw && !@raw.closed?
+        rescue IOError, SystemCallError
+          nil
+        end
+
+        def raw_failed? = !!@raw_failed || !!@raw&.closed?
+
+        # Retirement starts, failing raw TCP, before the owner notification
         # can yield; a caller cancelled in that notification cannot leave it
         # unstarted. The notification still precedes any retirement join.
         def start_cleanup
@@ -1216,8 +1251,9 @@ module ConnectRPC
         end
 
         def retire(error)
-          # Raw TCP precedes any protocol, buffered stream or TLS disposal.
-          Internal.raw_close(@raw)
+          # Failing raw TCP precedes any protocol, buffered stream or TLS
+          # disposal.
+          fail_raw
           # Best-effort scheduling hint only. A return proves no unwind or
           # completion; the retained-task joins below establish retirement.
           ::Async::Task.current.yield
@@ -1242,6 +1278,10 @@ module ConnectRPC
             capture_retirement
             break if @retirement_members.keys.all?(&:finished?)
           end
+          # A drain's discard read is not a member, but the shutdown ends it
+          # with EOF. The protocol stream and TLS socket below close raw too,
+          # so every close waits for that read to leave raw.
+          @progress.wait while @discarding
           begin
             @connection&.finish_close(error)
           rescue StandardError
@@ -1253,8 +1293,13 @@ module ConnectRPC
               nil
             end
           end
+          Internal.raw_close(@raw)
           @retirement_completed = true
           changed
+        ensure
+          # An interrupted retirement still releases the descriptor, although
+          # a fiber still blocked on raw may then get a late close interrupt.
+          Internal.raw_close(@raw)
         end
       end
     end

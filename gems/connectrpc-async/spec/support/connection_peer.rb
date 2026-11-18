@@ -82,7 +82,9 @@ module ConnectionPeer
       end)
     end
 
-    def live = @resources.count { |resource| resource.raw && !resource.raw.closed? }
+    # A failed raw socket has shut down both directions; retirement closes its
+    # descriptor once its tasks have joined.
+    def live = @resources.count { |resource| resource.raw && !resource.send(:raw_failed?) }
 
     def observe
       @peak = [@peak, live].max

@@ -293,12 +293,7 @@ module ConnectRPC
             remaining = expires - Time.now
             if remaining <= 0 && @expired_generation != @generation
               @expired_generation = @generation
-              @expiry_reporting = true
-              begin
-                report(:expired)
-              ensure
-                @expiry_reporting = false
-              end
+              report(:expired)
               next
             end
 
@@ -345,16 +340,11 @@ module ConnectRPC
 
         @state = :closing
         Internal.cancel(@timer)
-        # Cancelling a parked task is a scheduling point. A parked watcher can
-        # no longer report once the state leaves :running, and the lifetime
-        # cancellation below ends it, so only a watcher inside its reporter is
-        # cancelled and joined here.
-        reporting = @expiry_reporting
-        Internal.cancel(@expiry) if reporting
+        Internal.cancel(@expiry)
         Internal.cancel(@attempt)
         Internal.cancel(@callback)
         Internal.join(@timer)
-        Internal.join(@expiry) if reporting
+        Internal.join(@expiry)
         Internal.join(@callback)
         Internal.join(@attempt)
         @state = :closed

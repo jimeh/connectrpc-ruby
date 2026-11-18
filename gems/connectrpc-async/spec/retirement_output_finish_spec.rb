@@ -44,7 +44,7 @@ RSpec.describe "Output finishing inside the retirement window" do
     host&.close(grace: 0)
   end
 
-  # Records [connection closed, resource finished, raw closed] when the
+  # Records [connection closed, resource finished, raw failed] when the
   # stream's output first finishes, proving which retirement window it hit.
   def finish_states(stream, &)
     states = []
@@ -52,9 +52,9 @@ RSpec.describe "Output finishing inside the retirement window" do
       next unless event.method_id == :finish_output && event.self.equal?(stream) && states.empty?
 
       connection = stream.connection
-      states << [connection.closed?, connection.resource.finished?, connection.resource.raw.closed?]
+      states << [connection.closed?, connection.resource.finished?, connection.resource.send(:raw_failed?)]
     end
-    trace.enable(&)
+    trace.enable { yield states }
     states
   end
 
@@ -101,12 +101,23 @@ RSpec.describe "Output finishing inside the retirement window" do
     end
   end
 
-  it "keeps a server response body's own failure after session raw close and before resource abort" do
+  it "keeps a server response body's own failure after session raw failure and before resource abort" do
     reactor do |task|
       open_chat(task) do |host, _exchange|
         failure = IOError.new("response body failed")
         resource, stream, output = server_output(host, failure)
-        states = finish_states(stream) { host.instance_variable_get(:@session).abort }
+        session = host.instance_variable_get(:@session)
+        states = finish_states(stream) do |seen|
+          # Hold the window between session raw failure and resource abort
+          # open until the output finishes; the failed socket's own reader
+          # would otherwise abort the resource first.
+          allow(resource).to receive(:abort).and_wrap_original do |abort, *args|
+            deadline = Async::Clock.now + 2
+            Async::Task.current.yield while seen.empty? && Async::Clock.now < deadline
+            abort.call(*args)
+          end
+          session.abort
+        end
         expect(states).to eq([[false, false, true]])
         expect(retirement_complete?(resource)).to be(true)
         expect { output.wait }.to raise_error(equal(failure))
