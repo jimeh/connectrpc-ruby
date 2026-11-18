@@ -1,37 +1,67 @@
 # frozen_string_literal: true
 
+require_relative "native_stall_report"
+
 module Conformance
   class NativeServerAdapter
     def self.run(input = $stdin, output = $stdout)
       reader, writer = IO.pipe
-      previous = Signal.trap("TERM") { writer.write_nonblock(".", exception: false) }
+      stall = NativeStallReport.new
+      main = Thread.current
+      previous = Signal.trap("TERM") do
+        writer.write_nonblock(".", exception: false)
+        stall.arm(main)
+      end
       config = Framing.read(input, ServerCompatRequest)
       raise "Missing native server configuration" unless config
 
+      owned = {}
       Async(finished: false) do
-        host, port, bound = start_native_host(new(config), config)
+        stall.scheduler = Fiber.scheduler
+        port = start_native_host(new(config), config, owned)
         Framing.write(output, ServerCompatResponse.new(host: "127.0.0.1", port: port,
                                                        pem_cert: config.use_tls ? config.server_creds.cert : ""))
         Telemetry.record("server_ready", port: port)
+        owned[:ready] = true
         reader.read(1)
       ensure
-        close_native_host(host, bound)
-        Telemetry.record("server_stopped")
+        stop_native_host(owned, stall)
       end.wait
     ensure
       Signal.trap("TERM", previous) if previous
       close_signal(reader, writer)
     end
 
-    def self.close_native_host(host, bound)
+    # Records server_stopped whatever close raises, and what it raised: an
+    # Async::Cancel escaping this task would otherwise end it silently. The
+    # full message, with any startup failure as its cause, goes to stderr.
+    def self.stop_native_host(owned, stall)
+      stall.phase = :closing
+      close_native_host(owned)
+    rescue Exception => e # rubocop:disable Lint/RescueException -- report every close escape, then re-raise it
+      Telemetry.record("server_close_failed", error_class: e.class.name, message: e.message)
+      $stderr.write("Native server close failed: #{e.full_message(highlight: false)}")
+      raise
+    ensure
+      Telemetry.record("server_stopped")
+      stall.phase = :stopped
+    end
+
+    # Closes whatever startup acquired, the listener even when closing the
+    # host raises. Only a host that became ready reports its closed lifetime.
+    def self.close_native_host(owned)
+      host = owned[:host]
       if ENV["CONNECTRPC_NATIVE_HOST"] == "rack"
         host&.close
         return
       end
 
-      host&.close(grace: 0)
-      observe_closed_host(host) if host
-      bound&.close
+      begin
+        host&.close(grace: 0)
+        observe_closed_host(host) if host && owned[:ready]
+      ensure
+        owned[:bound]&.close
+      end
     end
 
     def self.observe_closed_host(host)
@@ -60,7 +90,9 @@ module Conformance
         client_ca: config.client_tls_cert.empty? ? nil : [config.client_tls_cert] }
     end
 
-    def self.start_native_host(adapter, config)
+    # Fills `owned` as each resource is acquired, so cleanup reaches the
+    # listener and host even when a later startup step raises.
+    def self.start_native_host(adapter, config, owned)
       if ENV["CONNECTRPC_NATIVE_HOST"] == "rack"
         require_relative "../examples/localhost"
         rack = ConnectRPC::Rack.new(server: adapter.server)
@@ -69,8 +101,8 @@ module Conformance
                                                          path: env["PATH_INFO"], stream: nil)
           rack.call(env)
         end
-        host = EchoExample::Localhost.new(application)
-        return [host, URI(host.url).port, nil]
+        owned[:host] = EchoExample::Localhost.new(application)
+        return URI(owned[:host].url).port
       end
 
       if ENV.fetch("CONNECTRPC_NATIVE_HOST", "async") == "falcon"
@@ -78,13 +110,14 @@ module Conformance
         if ENV["CONNECTRPC_CONFORMANCE_WEB"] == "1" || ENV["CONNECTRPC_CONFORMANCE_HTTP1"] == "1"
           ConnectRPC::Falcon.const_get(:HTTP1Connection).prepend(WebHTTP1Arrival)
         end
-        bound = ConnectRPC::Falcon::Endpoint.parse("#{config.use_tls ? 'https' : 'http'}://127.0.0.1:0").bound
-        host = ConnectRPC::Falcon::Server.new(server: adapter.server, endpoint: bound, tls: native_tls(config))
-        host.run
-        [host, bound.sockets.first.local_address.ip_port, bound]
+        bound = owned[:bound] =
+          ConnectRPC::Falcon::Endpoint.parse("#{config.use_tls ? 'https' : 'http'}://127.0.0.1:0").bound
+        owned[:host] = ConnectRPC::Falcon::Server.new(server: adapter.server, endpoint: bound, tls: native_tls(config))
+        owned[:host].run
+        bound.sockets.first.local_address.ip_port
       else
-        host = ConnectRPC::Async::Host.new(server: adapter.server, tls: native_tls(config)).start
-        [host, host.port, nil]
+        owned[:host] = ConnectRPC::Async::Host.new(server: adapter.server, tls: native_tls(config)).start
+        owned[:host].port
       end
     end
   end

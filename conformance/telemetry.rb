@@ -52,14 +52,23 @@ module Conformance
       end
     end
 
+    # Adapter processes share the file through flock. The write runs as a
+    # blocking fiber, so the fiber scheduler never runs another fiber while
+    # this one holds the lock: on Ruby 4 IO#write can otherwise yield there,
+    # and a second fiber waiting in flock would block the reactor thread that
+    # has to resume the holder. Nor can another fiber run and cancel the
+    # writer partway through, which would lose a record made while unwinding.
     def self.record(event, **fields)
       target = ENV.fetch("CONFORMANCE_TELEMETRY", nil)
       return unless target
 
-      File.open(target, "a") do |file|
-        file.flock(File::LOCK_EX)
-        file.puts(JSON.generate({ event: event, pid: Process.pid, monotonic: Process.clock_gettime(Process::CLOCK_MONOTONIC) }
-                                 .merge(fields)))
+      line = JSON.generate({ event: event, pid: Process.pid, monotonic: Process.clock_gettime(Process::CLOCK_MONOTONIC) }
+                             .merge(fields))
+      Fiber.blocking do
+        File.open(target, "a") do |file|
+          file.flock(File::LOCK_EX)
+          file.puts(line)
+        end
       end
     end
   end
