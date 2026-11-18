@@ -153,6 +153,11 @@ These affect the core `Net::HTTP` transport.
   `unavailable`. Pass `proxy: nil` to connect directly as before.
 - It no longer sends Net::HTTP's `User-Agent: Ruby`; requests carry the client
   default above or exactly the request's `user-agent` values.
+- It opens its own sockets, so it no longer calls `Net::HTTP#connect`.
+  Instrumentation that hooks that method, such as the connection span of
+  `opentelemetry-instrumentation-net_http`, no longer observes connection
+  setup. Request spans and propagation through `Net::HTTP#request` are
+  unchanged.
 - TLS requires version 1.2 or later, offers ALPN `http/1.1`, and disables
   session tickets and session resumption, matching the Async client transports.
 - It dials resolved addresses as Go's `net.Dialer` does, instead of Ruby's
@@ -174,7 +179,10 @@ These affect the Async HTTP/2 and HTTP/1 client transports and the core
   `HTTP transport failed: TLS verification failed`. They also keep the
   original exception as `cause`; before 0.3.0 it was nil. Code that matches
   the exact message should match its prefix instead. Codec, compression and
-  metadata errors still have no `cause`.
+  metadata errors still have no `cause`. NetHTTP proxy failures, and response
+  parser errors on calls sent through an `http://` forward proxy, carry an
+  internal fixed-message exception as `cause` instead, so no proxy reply text
+  or credentials reach it.
 - Admission failures say `... transport admission is closed` once a transport
   is closing and `... transport admission is full` at its count or byte limit,
   instead of `... admission is closed or full`.

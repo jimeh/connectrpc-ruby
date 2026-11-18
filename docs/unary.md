@@ -745,6 +745,8 @@ innermost continuation starts dispatch, `request=` replaces the message and
 - Instrumentation injects its propagation headers after the chain, merging them
   with interceptor-added metadata as caller metadata. The lifecycle records the
   caller metadata before the chain and the metadata actually sent at dispatch.
+  Since 0.3.0, the client's default User-Agent is added after that point, so
+  it is not part of the recorded request metadata.
 - Every client unary `Response` is frozen, with or without interceptors: the
   struct, its `metadata` and its `trailers`. Core freezes a short-circuit or
   replacement `Response` before the next outer layer receives it. The message is
