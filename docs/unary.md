@@ -281,8 +281,12 @@ transport = ConnectRPC::Transports::NetHTTP.new(
   calls that would use it with `invalid proxy address`, never connecting
   directly. Spaces or control characters anywhere, percent escapes in the
   host, an IPv6 zone, an invalid port and userinfo outside RFC 3986's
-  characters or escapes all fail this way. Anything after the host and port,
-  such as a path, is ignored.
+  characters or escapes all fail this way. So does a numeric host that is not
+  a canonical IP address, such as `010.0.0.1`, `127.1` or `2130706433`: the C
+  resolver would read those as other addresses (`010.0.0.1` as `8.0.0.1`),
+  while Go refuses them. Anything after the host and port, such as a path, is
+  ignored. An explicit `URI` is used only when its text parses back to the
+  same scheme, host, port and userinfo.
 - `NO_PROXY` takes comma-separated entries: `*`, a domain (`example.com`
   matches the domain and its subdomains; `.example.com` and `*.example.com`
   match only subdomains), an IP address or a CIDR range, each with an optional
@@ -292,7 +296,10 @@ transport = ConnectRPC::Transports::NetHTTP.new(
   an IPv4-mapped range such as `::ffff:10.0.0.0/120` also matches IPv4 hosts.
   UTS #46's other validity checks and mappings are not applied, and a name in
   which NFKC produces a dot (U+2024 ONE DOT LEADER, for example) is rejected
-  rather than read as another domain. A name that
+  rather than read as another domain. A name with a character Go deletes or
+  checks but this mapping does not (a soft hyphen, a variation selector, a
+  zero-width joiner or any right-to-left script) or a label that starts or
+  ends with a hyphen is rejected the same way. A name that
   Go's IDNA would reject, because it has invalid bytes or maps to anything but
   letters, digits, hyphens and dots (a fullwidth at sign, slash or colon, for
   example), never matches as a `NO_PROXY` entry. As an environment proxy host

@@ -159,7 +159,13 @@ RSpec.describe ConnectRPC::Proxy do
     [
       "http://proxy\uFF20evil.test:3128", "proxy\uFF20evil.test:3128", "http://relay.test\uFF0Fedge:3128",
       "http://proxy\uFF1A9999", "http://proxy\uFF03x:3128", "http://pro\u3000xy:3128",
-      "http://pro\uFF3Fxy.test:3128", "http://b\u00FCcher.pro_xy:3128", "http://pr\xFFoxy:3128"
+      "http://pro\uFF3Fxy.test:3128", "http://b\u00FCcher.pro_xy:3128", "http://pr\xFFoxy:3128",
+      # Go deletes these or fails their validity checks; the mapping here
+      # does not reproduce that, so they fail closed instead of naming
+      # another host.
+      "http://a\u00ADb\u00FC.example:3128", "http://a\uFE0Fb\u00FC.example", "http://a\u200Db\u00FC.example",
+      "http://a\u05D0.example:3128", "http://\u0661\u0662.example", "http://\uFE63b\u00FC.example",
+      "http://b\u00FC-.example"
     ].each do |value|
       it "fails #{value.inspect} from the environment and rejects it explicitly" do
         expect { resolve({ "HTTPS_PROXY" => value }, "https://example.com") }
@@ -197,7 +203,10 @@ RSpec.describe ConnectRPC::Proxy do
       # NFKC maps U+2024 and U+FE52 to ".", which would name another domain.
       "corp\u2024example.com, good.test" => { "good.test" => false, "corp.example.com" => true,
                                               "www.corp.example.com" => true },
-      "example\uFE52com" => { "example.com" => true, "www.example.com" => true }
+      "example\uFE52com" => { "example.com" => true, "www.example.com" => true },
+      # Characters Go deletes (soft hyphen) or rejects drop the entry.
+      "ex\u00ADample.com, good.test" => { "good.test" => false, "example.com" => true },
+      "\u05D0.test" => { "xn--4db.test" => true }
     }.each do |no_proxy, targets|
       targets.each do |target, proxied|
         it "#{proxied ? 'proxies' : 'bypasses'} #{target} with NO_PROXY=#{no_proxy.inspect}" do
@@ -322,6 +331,69 @@ RSpec.describe ConnectRPC::Proxy do
           expect([error.class, error.message, error.cause]).to eq([ArgumentError, "Invalid proxy configuration", nil])
         end
       end
+    end
+  end
+
+  describe "numeric shorthand IPv4 hosts" do
+    # The C resolver reads these as 8.0.0.1 or 127.0.0.1; Go refuses them.
+    %w[010.0.0.1 2130706433 127.1 0x7f.1 0].each do |host|
+      it "fails #{host} closed from the environment and rejects it explicitly" do
+        value = "http://user:pw@#{host}:3128"
+        expect { resolve({ "HTTPS_PROXY" => value }, "https://example.com") }
+          .to raise_error(described_class::Unusable) { |error| expect(error.reason).to eq(:invalid_address) }
+        expect { described_class.resolver(value) }.to raise_error(ArgumentError, "Invalid proxy configuration")
+      end
+    end
+
+    it "keeps canonical IP literals" do
+      expect(resolve({ "HTTPS_PROXY" => "http://10.0.0.1:3128" },
+                     "https://example.com")).to eq(["http", "10.0.0.1", 3128])
+      expect(resolve({ "HTTPS_PROXY" => "http://[::1]:3128" }, "https://example.com")).to eq(["http", "::1", 3128])
+    end
+  end
+
+  describe "explicit URI options" do
+    it "rejects a URI whose components would reshape its authority once serialized" do
+      [
+        URI::HTTP.new("http", nil, "intended.test@different.test", 3128, nil, "/", nil, nil, nil),
+        URI::HTTP.new("http", nil, "different.test/path", 3128, nil, "/", nil, nil, nil),
+        URI::HTTP.new("http", "user", "different.test:9", 3128, nil, "/", nil, nil, nil),
+        URI::HTTP.new("http", nil, "proxy.test".encode(Encoding::UTF_16LE), 3128, nil, "/", nil, nil, nil)
+      ].each do |uri|
+        expect { described_class.resolver(uri) }.to raise_error do |error|
+          expect([error.class, error.message, error.cause]).to eq([ArgumentError, "Invalid proxy configuration", nil])
+        end
+      end
+    end
+
+    it "accepts a URI whose text parses back to the same components" do
+      endpoint = described_class.resolver(URI("HTTP://user:p%40ss@Proxy.Test:3128/x")).for(URI("https://x"))
+      expect(endpoint.to_h).to eq(scheme: "http", host: "proxy.test", port: 3128, user: "user", password: "p@ss")
+    end
+  end
+
+  describe "errors raised while another exception is handled" do
+    def ambient
+      raise "ambient"
+    rescue RuntimeError
+      yield
+    end
+
+    it "attaches no cause to the fixed configuration error or to Unusable" do
+      [-> { described_class.resolver("http://proxy.test:0") }, -> { described_class.resolver(42) },
+       -> { described_class.resolver(:environment, { "HTTPS_PROXY" => "http://:0" }).for(URI("https://x")) },
+       -> {
+         described_class.resolver(:environment, { "HTTP_PROXY" => "p", "REQUEST_METHOD" => "GET" }).for(URI("http://x"))
+       }]
+        .each do |call|
+          error = ambient do
+            call.call
+          rescue StandardError => e
+            e
+          end
+          expect(error).to be_a(ArgumentError).or be_a(described_class::Unusable)
+          expect(error.cause).to be_nil
+        end
     end
   end
 

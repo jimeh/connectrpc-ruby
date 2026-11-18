@@ -535,6 +535,8 @@ module ConnectRPC
     ASCII_HOST: Regexp
     CONTROL: Regexp
     FULL_STOPS: String
+    RIGHT_TO_LEFT: String
+    UNMAPPED: Regexp
     class Endpoint
       def initialize: (scheme: String, host: String, port: Integer?, user: String?, password: String?) -> void
       attr_reader scheme: String
@@ -552,10 +554,12 @@ module ConnectRPC
     end
     def self.resolver: (:environment | String | URI::Generic | nil, ?_Environment) -> resolver
     def self.explicit: (String | URI::Generic) -> Endpoint
+    def self.uri_endpoint: (URI::Generic) -> Endpoint?
     def self.parse: (String) -> Endpoint?
     def self.credentials: (String) -> [String, String?]?
     def self.decode: (String) -> String?
     def self.host_port: (String, String) -> [String, Integer?]?
+    def self.numeric_shorthand?: (String) -> bool
     def self.utf8: (untyped) -> String?
     def self.ascii_host: (String) -> String?
     def self.split_host_port: (String) -> [String, String]?

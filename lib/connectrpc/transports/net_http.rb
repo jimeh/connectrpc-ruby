@@ -212,11 +212,11 @@ module ConnectRPC
           head = +"".b
           loop do
             room = MAX_TUNNEL_HEAD - head.bytesize
-            raise ProxyFailure, "proxy tunnel failed" unless room.positive?
+            raise ProxyFailure, "proxy tunnel failed", cause: nil unless room.positive?
 
             chunk = socket.read_nonblock([16_384, room].min, exception: false)
             next wait_tunnel(socket, expires_at, :wait_readable) if chunk == :wait_readable
-            raise ProxyFailure, "proxy tunnel failed" if chunk.nil?
+            raise ProxyFailure, "proxy tunnel failed", cause: nil if chunk.nil?
 
             head << chunk
             check_tunnel!(expires_at)
@@ -230,12 +230,14 @@ module ConnectRPC
         def tunnel_status(head, complete)
           lines = head.split(/\r?\n/n)
           status = TUNNEL_STATUS.match(lines.first.to_s)
-          raise ProxyFailure, "proxy tunnel failed" unless status && lines.drop(1).all? { TUNNEL_FIELD.match?(it) }
+          raise ProxyFailure, "proxy tunnel failed", cause: nil unless status && lines.drop(1).all? {
+            TUNNEL_FIELD.match?(it)
+          }
 
           code = status[1].to_i
-          raise ProxyFailure, "proxy authentication failed" if code == 407
-          raise ProxyFailure, "proxy tunnel refused" unless code == 200
-          raise ProxyFailure, "proxy tunnel failed" unless complete
+          raise ProxyFailure, "proxy authentication failed", cause: nil if code == 407
+          raise ProxyFailure, "proxy tunnel refused", cause: nil unless code == 200
+          raise ProxyFailure, "proxy tunnel failed", cause: nil unless complete
         end
 
         def wait_tunnel(socket, expires_at, direction)
@@ -253,7 +255,8 @@ module ConnectRPC
         # outcomes.
         def check_tunnel!(expires_at)
           check_cancellation!
-          raise ProxyFailure, "proxy tunnel timed out" if Process.clock_gettime(Process::CLOCK_MONOTONIC) >= expires_at
+          raise ProxyFailure, "proxy tunnel timed out",
+                cause: nil if Process.clock_gettime(Process::CLOCK_MONOTONIC) >= expires_at
         end
 
         def start_tls(raw)
@@ -535,7 +538,7 @@ module ConnectRPC
         @proxy_mode = { environment: "environment", nil => "direct" }.fetch(proxy, "explicit")
         @proxy = Proxy.resolver(proxy)
         fixed = @proxy.is_a?(Proxy::Static) ? @proxy.endpoint : nil
-        raise ArgumentError, "Unsupported proxy scheme" if fixed && fixed.scheme != "http"
+        raise ArgumentError, "Unsupported proxy scheme", cause: nil if fixed && fixed.scheme != "http"
       end
 
       # Never shows proxy URLs, credentials or TLS material.
@@ -597,7 +600,7 @@ module ConnectRPC
       # NetHTTP speaks only to http:// proxies; CONNECT carries https targets.
       def proxy_for(url)
         proxy = @proxy.for(url)
-        raise ProxyFailure, "unsupported proxy scheme" if proxy && proxy.scheme != "http"
+        raise ProxyFailure, "unsupported proxy scheme", cause: nil if proxy && proxy.scheme != "http"
 
         proxy
       end

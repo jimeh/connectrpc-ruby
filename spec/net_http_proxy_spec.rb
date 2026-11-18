@@ -329,6 +329,35 @@ RSpec.describe "NetHTTP proxies" do
     end
   end
 
+  it "never dials a numeric shorthand proxy host, so no credentials leave the process" do
+    listener = TCPServer.new("127.0.0.1", 0)
+    port = listener.addr[1]
+    expect do
+      ConnectRPC::Transports::NetHTTP.new(proxy: "http://user:pw@2130706433:#{port}")
+    end.to raise_error(ArgumentError, "Invalid proxy configuration")
+    transport = with_env("HTTP_PROXY" => "http://user:pw@127.1:#{port}") { ConnectRPC::Transports::NetHTTP.new }
+    expect(Socket).not_to receive(:new)
+    error = failure(transport, transport_request("http://#{TLSPeer::TARGET}/svc"))
+    expect([error.code, error.message]).to eq(["unavailable", "HTTP transport failed: invalid proxy address"])
+    # The call has finished, so a connection it made would already be queued.
+    expect(listener.wait_readable(0)).to be_nil
+  ensure
+    listener&.close
+  end
+
+  it "attaches no ambient cause to explicit proxy errors" do
+    error = begin
+      raise "ambient"
+    rescue RuntimeError
+      begin
+        ConnectRPC::Transports::NetHTTP.new(proxy: "socks5://proxy.test:1080")
+      rescue ArgumentError => e
+        e
+      end
+    end
+    expect([error.message, error.cause]).to eq(["Unsupported proxy scheme", nil])
+  end
+
   it "rejects explicit proxy options without echoing them" do
     {
       "socks5://user:secret@proxy.test:1080" => "Unsupported proxy scheme",

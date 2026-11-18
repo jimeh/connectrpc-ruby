@@ -2,6 +2,7 @@
 
 require "uri"
 require "ipaddr"
+require "socket"
 
 module ConnectRPC
   # Chooses the HTTP proxy for one request URL, or none. Environment rules
@@ -29,6 +30,12 @@ module ConnectRPC
     CONTROL = /[\x00-\x20\x7F]/
     # Go's IDNA maps these to "."; NFKC leaves U+3002 as it is.
     FULL_STOPS = "\u3002\uFF0E\uFF61"
+    # Characters Go's IDNA deletes or rejects, which this mapping does not
+    # reproduce: default-ignorable code points (soft hyphen, variation
+    # selectors, ZWJ/ZWNJ) and right-to-left scripts, whose bidi rules are not
+    # checked. A host containing one fails closed.
+    RIGHT_TO_LEFT = "\u0590-\u08FF\uFB1D-\uFDFF\uFE70-\uFEFF\u{10800}-\u{10FFF}\u{1E800}-\u{1EFFF}"
+    UNMAPPED = /[\p{Default_Ignorable_Code_Point}#{RIGHT_TO_LEFT}]/
 
     # A proxy that this call must not use. The reason is a fixed symbol and the
     # message never includes the proxy value.
@@ -48,20 +55,33 @@ module ConnectRPC
       when :environment then Environment.new(env)
       when nil then Static.new(nil)
       when String, URI::Generic then Static.new(explicit(option))
-      else raise ArgumentError, "Invalid proxy configuration"
+      else raise ArgumentError, "Invalid proxy configuration", cause: nil
       end
     end
 
-    # A URI's components are not trusted, as URI::HTTP.new skips their checks,
-    # so it is parsed as text; the host[:port] shorthand is for Strings only.
     def self.explicit(option)
-      value = option.to_s
-      endpoint = parse(value) if option.is_a?(String) || value.include?("://")
-      raise ArgumentError, "Invalid proxy configuration" unless endpoint
+      endpoint = option.is_a?(String) ? parse(option) : uri_endpoint(option)
+      raise ArgumentError, "Invalid proxy configuration", cause: nil unless endpoint
 
       endpoint
     end
-    private_class_method :explicit
+
+    # URI::HTTP.new skips component checks, so delimiters in a component
+    # could reshape the authority once serialized. A URI is accepted only when
+    # its text parses back to the same components; the host[:port] shorthand
+    # is for Strings only.
+    def self.uri_endpoint(uri)
+      value = uri.to_s
+      return unless value.include?("://")
+
+      reparsed = URI.parse(value)
+      same = reparsed.scheme.to_s.casecmp?(uri.scheme.to_s) &&
+             %i[host port userinfo].all? { |part| reparsed.public_send(part) == uri.public_send(part) }
+      parse(value) if same
+    rescue StandardError
+      nil
+    end
+    private_class_method :explicit, :uri_endpoint
 
     # Parses scheme://userinfo@host:port[tail], or Go's host[:port] shorthand
     # for http, into an Endpoint. Nil for anything else: unlike Go, which goes
@@ -126,13 +146,24 @@ module ConnectRPC
         return if host.empty? || host.include?("%") || port.include?(":")
 
         host = host.ascii_only? ? (host.downcase if ASCII_HOST.match?(host)) : ascii_host(host)
-        return unless host
+        return if host.nil? || numeric_shorthand?(host)
       end
       return [host.freeze, PROXY_PORTS[scheme]] if port.empty?
 
       [host.freeze, port.to_i] if /\A[0-9]+\z/.match?(port) && port.to_i.between?(1, 65_535)
     end
-    private_class_method :credentials, :decode, :host_port
+
+    # The C resolver reads old BSD forms such as "010.0.0.1" (octal, so
+    # 8.0.0.1), "127.1" and "2130706433" as IPv4 addresses; Go refuses them.
+    # Only canonical IP literals are dialled as addresses.
+    def self.numeric_shorthand?(host)
+      return false if ip(host)
+
+      !Socket.getaddrinfo(host, nil, nil, :STREAM, nil, Socket::AI_NUMERICHOST).empty?
+    rescue SocketError
+      false
+    end
+    private_class_method :credentials, :decode, :host_port, :numeric_shorthand?
 
     # A valid UTF-8 copy of the value's bytes, or nil. Go handles bytes in any
     # encoding, so an invalidly encoded value is unparseable, not an exception.
@@ -150,12 +181,15 @@ module ConnectRPC
     # other validity checks and mappings are not applied.
     def self.ascii_host(host)
       return host if host.ascii_only?
+      return if UNMAPPED.match?(host)
 
       dotted = host.tr(FULL_STOPS, ".")
       normalized = dotted.unicode_normalize(:nfkc).downcase
       return if normalized.count(".") > dotted.count(".")
 
       labels = normalized.split(".", -1)
+      return if labels.any? { |label| label.start_with?("-") || label.end_with?("-") }
+
       mapped = labels.map { |label| label.ascii_only? ? label : "xn--#{Punycode.encode(label)}" }.join(".")
       mapped if LDH_HOST.match?(mapped)
     end
@@ -288,9 +322,9 @@ module ConnectRPC
         scheme = url.scheme.to_s.downcase
         proxy = { "https" => @https, "http" => @http }[scheme]
         return unless proxy
-        raise Unusable.new(:cgi) if scheme == "http" && @cgi # rubocop:disable Style/RaiseArgs
+        raise Unusable.new(:cgi), cause: nil if scheme == "http" && @cgi # rubocop:disable Style/RaiseArgs
         return unless use_proxy?(url, scheme)
-        raise Unusable.new(:invalid_address) unless proxy.is_a?(Endpoint) # rubocop:disable Style/RaiseArgs
+        raise Unusable.new(:invalid_address), cause: nil unless proxy.is_a?(Endpoint) # rubocop:disable Style/RaiseArgs
 
         proxy
       end
