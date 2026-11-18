@@ -435,9 +435,17 @@ module ConnectRPC
     def response_headers(context, content_type)
       # @type var headers: headers
       headers = context ? context.response_metadata.to_h : {}
-      context&.response_trailers&.each { |key, values| headers["trailer-#{key}"] = values }
+      append_trailer_fields(headers, context.response_trailers) if context
       headers["accept-encoding"] = ["gzip, identity"] if @encoding == :gzip
       headers.merge("content-type" => [content_type])
+    end
+
+    # A trailer without values writes no field, as Go net/http does, whatever the host.
+    def append_trailer_fields(headers, trailers)
+      trailers.each do |key, values|
+        merged = (headers["trailer-#{key}"] || []) + values
+        headers["trailer-#{key}"] = merged unless merged.empty?
+      end
     end
 
     # Reporters run on the calling thread or fiber, inside the instrumented call
@@ -488,7 +496,7 @@ module ConnectRPC
                      end
       headers = response_headers(context, "application/json")
       error.metadata.each { |key, values| headers[key] = (headers[key] || []) + values }
-      error.trailers.each { |key, values| headers["trailer-#{key}"] = (headers["trailer-#{key}"] || []) + values }
+      append_trailer_fields(headers, error.trailers)
       response = TransportResponse.new(status: status, headers: headers, body: body)
       if lifecycle
         lifecycle.code = code

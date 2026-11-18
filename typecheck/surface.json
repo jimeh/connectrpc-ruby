@@ -1890,6 +1890,7 @@
     "ConnectRPC::TransportResponse#cause=": {"kind":"attribute","visibility":"public","classification":"supported"}
   },
   "lib/connectrpc/server.rb": {
+    "ConnectRPC::Server#append_trailer_fields": {"kind":"method","visibility":"private","parameters":"headers, trailers","classification":"internal"},
     "ConnectRPC::Server#bare": {"kind":"method","visibility":"private","parameters":"status, headers, context: nil, cancellation: nil","classification":"internal"},
     "ConnectRPC::Server#call": {"kind":"method","visibility":"public","parameters":"path:, http_method:, headers:, input:, query: \"\", lifecycle: nil, cancellation: nil, on_error: nil","classification":"supported"},
     "ConnectRPC::Server#declarations": {"kind":"method","visibility":"private","parameters":"services","classification":"internal"},

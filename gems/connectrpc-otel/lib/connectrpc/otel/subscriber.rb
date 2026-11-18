@@ -245,10 +245,10 @@ module ConnectRPC
           recorded
         end
 
-        # A part over 258 bytes has more than 256 without its padding, so its
-        # padded encoding cannot fit; skip it without decoding.
+        # Padding only rounds the length up, so a part over 256 bytes cannot
+        # encode within 256; skip it without decoding.
         def padded_base64(part)
-          return if part.bytesize > 258
+          return if part.bytesize > 256
 
           encoded = [Metadata.decode_binary(part)].pack("m0")
           encoded if encoded.bytesize <= 256

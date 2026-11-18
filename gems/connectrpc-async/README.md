@@ -1610,7 +1610,9 @@ tracing never parents connection setup to the call that triggered it. Use the
 transport's `connection_observer` for connection events. Since 0.3.0, the
 Application passes the request authority (HTTP/1 `Host` or HTTP/2
 `:authority`) to core as the reserved `host` field, so the server call records
-the address the client used; handler metadata never contains it.
+the address the client used; handler metadata never contains it. Like the
+`Host` field a Rack server passes, it counts toward the gRPC and gRPC-Web
+request field limits, as `:authority` counts toward an HTTP/2 header list.
 
 ## Static signatures
 

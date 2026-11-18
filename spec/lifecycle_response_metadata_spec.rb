@@ -96,18 +96,23 @@ RSpec.describe "Lifecycle response headers, trailers and server authority" do
       end
     end
 
-    it "omits a value-less trailer that no unary header line carries" do
+    it "neither writes nor observes a value-less trailer on success and error" do
       rpc = declaration
-      handler = lambda do |message, context|
-        context.response_trailers["x-empty-list"] = []
-        context.response_trailers["x-blank"] = [""]
-        message
+      [nil, ConnectRPC::Error.new(:invalid_argument, "no", trailers: { "x-err-empty" => [] })].each do |error|
+        handler = lambda do |message, context|
+          context.response_trailers["x-empty-list"] = []
+          context.response_trailers["x-blank"] = [""]
+          raise error if error
+
+          message
+        end
+        response = server(rpc, handler).call(path: rpc.path, http_method: "POST", input: StringIO.new("hi"),
+                                             headers: { "content-type" => ["application/proto"] })
+        # Some Rack servers write an empty array as a blank field; the response never carries one.
+        expect(response.headers.keys).not_to include("trailer-x-empty-list", "trailer-x-err-empty")
+        expect(response.headers).to include("trailer-x-blank" => [""])
+        expect(outcomes.last.response_trailers).to eq("x-blank" => [""])
       end
-      response = server(rpc, handler).call(path: rpc.path, http_method: "POST", input: StringIO.new("hi"),
-                                           headers: { "content-type" => ["application/proto"] })
-      # Hosts write one header line per value, so the empty list never reaches the wire.
-      expect(response.headers).to include("trailer-x-empty-list" => [], "trailer-x-blank" => [""])
-      expect(outcomes.last.response_trailers).to eq("x-blank" => [""])
     end
 
     it "decodes mixed-case and repeated client trailers, dropping reserved and invalid names" do

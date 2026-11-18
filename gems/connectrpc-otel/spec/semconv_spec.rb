@@ -200,7 +200,8 @@ RSpec.describe "Semantic conventions 1.45.0 attributes" do
 
     it "decodes no oversized part and stops at the eighth entry of a long coalesced header" do
       provider, exporter, bus = tracing(response_metadata: ["x-data-bin"])
-      coalesced = (["A" * 400] + Array.new(1024, "AA")).join(",")
+      # A canonical unpadded 258-byte part pads to 260; a 256-byte part fits exactly.
+      coalesced = (["A" * 400, "A" * 258, "A" * 256] + Array.new(1024, "AA")).join(",")
       allow(ConnectRPC::Metadata).to receive(:decode_binary).and_call_original
       handler = lambda do |request, context|
         context.response_metadata["x-data-bin"] = [coalesced]
@@ -208,7 +209,7 @@ RSpec.describe "Semantic conventions 1.45.0 attributes" do
       end
       native_grpc(server(instrumentation: bus, protocol: :grpc, echo: handler), AsyncHelpers::ECHO::ECHO.path)
       span = rpc_spans(exporter).first
-      expect(span.attributes["rpc.response.header.x-data-bin"]).to eq(Array.new(8, "AA=="))
+      expect(span.attributes["rpc.response.header.x-data-bin"]).to eq(["A" * 256, *Array.new(7, "AA==")])
       expect(ConnectRPC::Metadata).to have_received(:decode_binary).exactly(8).times
     ensure
       provider&.shutdown

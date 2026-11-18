@@ -86,7 +86,7 @@ module ConnectRPC
       framing.emit(bytes, terminal: true)
     end
 
-    # Trailers are those the emitted terminal carries; none when no terminal is serialized.
+    # Trailers are those the rendered terminal carries; none when no terminal is serialized.
     def observe_stream_result(state, effective, trailers = Metadata.new)
       context = state.context #: StreamingContext
       state.lifecycle&.processing_finished(code: effective ? effective.code : "OK", error: state.error,
