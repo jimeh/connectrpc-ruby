@@ -989,8 +989,8 @@ and bidi streaming before any I/O.
   one 100 ms allowance, and the owner exits once it resumes. An owner that has
   already published its outcome and is exiting, for example while it waits for
   the GVL, is still joined, which can take up to another 100 ms. With a custom
-  `Deadline` clock the close cannot place an expired deadline in monotonic
-  time, so a stalled owner can cost a second 100 ms allowance.
+  `Deadline` clock the close cannot place the deadline in monotonic time, so a
+  stalled owner can cost up to two more 100 ms allowances.
 - After fork, the transport holds no inherited state; a child's calls are
   independent. A call in progress during fork stays the parent's.
 

@@ -86,6 +86,8 @@ RSpec.describe "PerCallTransport connection close, close budget and outcome prec
         # A wait that ended any earlier or later would leave more or less than the reserve.
         expect(left).to be_between(0.06, AsyncHelpers::INTERNAL::CLEANUP_SECONDS + 0.01)
         expect_released(boundaries.take.first)
+        # The peer records the GOAWAY on its own reader, which can trail the call's return.
+        eventually("the peer to record the GOAWAY") { peer.peer.goaways.any? }
         expect(peer.peer.goaways).to eq([no_error_goaway])
       end
     ensure
@@ -122,6 +124,8 @@ RSpec.describe "PerCallTransport connection close, close budget and outcome prec
         end
         expect(result).to eq(%w[s0 s1 s2 s3])
         expect_released(boundaries.take.first)
+        # The peer records the GOAWAY on its own reader, which can trail the call's return.
+        eventually("the peer to record the GOAWAY") { peer.peer.goaways.any? }
         expect(peer.peer.goaways).to eq([no_error_goaway])
       end
     ensure
@@ -157,6 +161,8 @@ RSpec.describe "PerCallTransport connection close, close budget and outcome prec
         # The drain waited its whole 100 ms budget for a FIN that never came.
         expect(elapsed).to be_between(AsyncHelpers::INTERNAL::CLEANUP_SECONDS, 1)
         expect_released(boundaries.take.first)
+        # The peer records the GOAWAY on its own reader, which can trail the call's return.
+        eventually("the peer to record the GOAWAY") { peer.peer.goaways.any? }
         expect(peer.peer.goaways).to eq([no_error_goaway])
       end
     ensure
