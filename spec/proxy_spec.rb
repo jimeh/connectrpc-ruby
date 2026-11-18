@@ -380,11 +380,10 @@ RSpec.describe ConnectRPC::Proxy do
     end
 
     it "attaches no cause to the fixed configuration error or to Unusable" do
+      cgi = { "HTTP_PROXY" => "p", "REQUEST_METHOD" => "GET" }
       [-> { described_class.resolver("http://proxy.test:0") }, -> { described_class.resolver(42) },
        -> { described_class.resolver(:environment, { "HTTPS_PROXY" => "http://:0" }).for(URI("https://x")) },
-       -> {
-         described_class.resolver(:environment, { "HTTP_PROXY" => "p", "REQUEST_METHOD" => "GET" }).for(URI("http://x"))
-       }]
+       -> { described_class.resolver(:environment, cgi).for(URI("http://x")) }]
         .each do |call|
           error = ambient do
             call.call

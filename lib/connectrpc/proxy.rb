@@ -179,7 +179,7 @@ module ConnectRPC
     # not a letter, digit, hyphen and dot name, which Go's STD3 rules reject,
     # so a mapping never yields a delimiter such as "@", "/" or ":". UTS #46's
     # other validity checks and mappings are not applied.
-    def self.ascii_host(host)
+    def self.ascii_host(host) # rubocop:disable Metrics/AbcSize, Metrics/CyclomaticComplexity, Metrics/PerceivedComplexity
       return host if host.ascii_only?
       return if UNMAPPED.match?(host)
 
@@ -322,9 +322,9 @@ module ConnectRPC
         scheme = url.scheme.to_s.downcase
         proxy = { "https" => @https, "http" => @http }[scheme]
         return unless proxy
-        raise Unusable.new(:cgi), cause: nil if scheme == "http" && @cgi # rubocop:disable Style/RaiseArgs
+        raise Unusable.new(:cgi), cause: nil if scheme == "http" && @cgi
         return unless use_proxy?(url, scheme)
-        raise Unusable.new(:invalid_address), cause: nil unless proxy.is_a?(Endpoint) # rubocop:disable Style/RaiseArgs
+        raise Unusable.new(:invalid_address), cause: nil unless proxy.is_a?(Endpoint)
 
         proxy
       end

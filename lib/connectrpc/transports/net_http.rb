@@ -230,9 +230,8 @@ module ConnectRPC
         def tunnel_status(head, complete)
           lines = head.split(/\r?\n/n)
           status = TUNNEL_STATUS.match(lines.first.to_s)
-          raise ProxyFailure, "proxy tunnel failed", cause: nil unless status && lines.drop(1).all? {
-            TUNNEL_FIELD.match?(it)
-          }
+          fields = lines.drop(1).all? { |line| TUNNEL_FIELD.match?(line) }
+          raise ProxyFailure, "proxy tunnel failed", cause: nil unless status && fields
 
           code = status[1].to_i
           raise ProxyFailure, "proxy authentication failed", cause: nil if code == 407
@@ -255,8 +254,9 @@ module ConnectRPC
         # outcomes.
         def check_tunnel!(expires_at)
           check_cancellation!
-          raise ProxyFailure, "proxy tunnel timed out",
-                cause: nil if Process.clock_gettime(Process::CLOCK_MONOTONIC) >= expires_at
+          return if Process.clock_gettime(Process::CLOCK_MONOTONIC) < expires_at
+
+          raise ProxyFailure, "proxy tunnel timed out", cause: nil
         end
 
         def start_tls(raw)
