@@ -1328,13 +1328,18 @@ grpc-go, every received DATA frame counts toward a sample, including padding and
 DATA for refused or closed streams, so traffic the host rejects can raise the
 windows of the streams it admits, up to `max_receive_window`. The reader never
 writes BDP frames, so a BDP frame write blocked by a full socket send buffer,
-such as during a large upload, never stops it reading. The reader still
-writes connection WINDOW_UPDATEs, through protocol-http2, and SETTINGS ACKs, as
-before 0.3.0. A host queues BDP frames on the
+such as during a large upload, never stops it reading. Since 0.3.0 it does not
+write connection `WINDOW_UPDATE`s either, with static or dynamic windows: as
+grpc-go queues them on its writer, it reserves the credit and hands it to a
+writer, and keeps applying DATA for every stream while another frame write
+holds the connection. Credit due while a `WINDOW_UPDATE` is still queued joins
+it, so at most one waits. Only once its connection is ending and the writer
+can no longer send does the reader write credit itself. The reader still
+writes SETTINGS ACKs, as before 0.3.0. A host queues BDP frames and connection credit on the
 [control writer](#server-keepalive). A client hands them to a writer task of
-its connection, which holds at most one BDP PING and the latest growth, and
-sends growth as soon as the ACK that measured it is read. Each takes effect
-when its frame is written:
+its connection, which holds at most one BDP PING, the latest growth and the
+pending connection credit, and sends growth as soon as the ACK that measured it
+is read. Each takes effect when its frame is written:
 a grown window is applied to the streams just before its SETTINGS reaches the
 wire, so the peer can spend it at once, including on a stream opened before the
 peer acknowledges it.
