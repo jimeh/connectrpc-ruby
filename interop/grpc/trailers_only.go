@@ -30,8 +30,9 @@ func runTrailersOnly(origin, mode, dir string) {
 	trailersOnlyClient(origin, mode, dir)
 }
 
-// Each RPC must receive exactly one HEADERS frame on its stream: END_STREAM,
-// the status, details and trailer metadata, and no DATA or x-head.
+// Each RPC must receive exactly one HEADERS frame on its stream, with
+// END_HEADERS and END_STREAM, the status, details and trailer metadata, and
+// no CONTINUATION, DATA or x-head.
 func trailersOnlyFrames(origin, mode, dir string) {
 	address := strings.TrimPrefix(strings.TrimPrefix(origin, "https://"), "http://")
 	var conn net.Conn
@@ -89,7 +90,11 @@ func trailersOnlyFrames(origin, mode, dir string) {
 				}
 			case *http2.MetaHeadersFrame:
 				if frame.StreamID == streamID {
+					// ReadMetaHeaders folds CONTINUATION frames into this one.
 					kind := "HEADERS"
+					if !frame.HeadersEnded() {
+						kind += "+CONTINUATION"
+					}
 					if frame.StreamEnded() {
 						kind += "+END_STREAM"
 					}
@@ -117,7 +122,7 @@ func trailersOnlyFrames(origin, mode, dir string) {
 		check(slices.Equal(values["grpc-message"], []string{"rich peer error"}), "trailers-only grpc-message")
 		check(len(values["grpc-status-details-bin"]) == 1, "trailers-only grpc-status-details-bin")
 		check(slices.Equal(values["x-tail"], []string{"done"}) && values["x-head"] == nil, "trailers-only metadata")
-		fmt.Printf("PASS raw framer %s %s trailers-only: one HEADERS frame with END_STREAM, no DATA; status, details, x-tail\n", mode, method)
+		fmt.Printf("PASS raw framer %s %s trailers-only: one HEADERS frame with END_HEADERS and END_STREAM, no CONTINUATION or DATA; status, details, x-tail\n", mode, method)
 	}
 }
 

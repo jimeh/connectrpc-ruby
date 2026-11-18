@@ -81,9 +81,9 @@ module GRPCInterop
     expect_rich_error("Unary trailers-only error", {}) { client.unary(MESSAGE.new(value: "trailers-only")) }
     expect_rich_error("SS trailers-only error", {}) do
       client.server_stream(MESSAGE.new(value: "trailers-only")) do |reader|
-        received = []
-        reader.each { |message| received << message } # rubocop:disable Style/MapIntoArray -- block-only each.
-        raise "SS trailers-only messages #{received.size}"
+        # Any message, even one followed by the expected error, fails the probe.
+        reader.each { |message| raise "SS trailers-only message #{message.value.inspect}" } # rubocop:disable Lint/UnreachableLoop
+        raise "SS trailers-only stream ended without an error"
       end
     end
   end
