@@ -976,8 +976,8 @@ and bidi streaming before any I/O.
   and ends 100 ms before the RPC deadline. That leaves time for the raw close
   that follows, so core's deadline check after the transport returns does not
   turn a result that arrived in time into `deadline_exceeded`. With 100 ms or
-  less of the deadline left, the close is raw. A close failure never replaces the call's result or a stream block's
-  own exception.
+  less of the deadline left, the close is raw. A close failure never replaces
+  the call's result or a stream block's own exception.
 - Deadlines, `CancellationToken`s, `Timeout`, `Thread#raise` and `Thread#kill`
   behave as for `ThreadedTransport` outside a reactor, and task cancellation and
   `with_timeout` as for `Transport` inside one; an interrupted stream is reset
@@ -986,7 +986,11 @@ and bidi streaming before any I/O.
   an interrupt ends the close's own wait, and the call still joins its owner
   threads, within the close's bound, before raising it. If the owner thread is
   stalled, for example by native code, the call returns at its deadline plus
-  one 100 ms allowance, and the owner exits once it resumes.
+  one 100 ms allowance, and the owner exits once it resumes. An owner that has
+  already published its outcome and is exiting, for example while it waits for
+  the GVL, is still joined, which can take up to another 100 ms. With a custom
+  `Deadline` clock the close cannot place an expired deadline in monotonic
+  time, so a stalled owner can cost a second 100 ms allowance.
 - After fork, the transport holds no inherited state; a child's calls are
   independent. A call in progress during fork stays the parent's.
 

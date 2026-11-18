@@ -15,7 +15,9 @@ module ConnectRPC
       # fails the call.
       POLICY = ConnectionPolicy.new(backoff: nil, max_pending_bytes: nil)
       INVALID_URL = "Request URL must be HTTP(S) with a host and no userinfo"
-      private_constant :POLICY, :INVALID_URL
+      # ConnectRPC::Deadline's default clock.
+      DEADLINE_CLOCK = Deadline.const_get(:MONOTONIC)
+      private_constant :POLICY, :INVALID_URL, :DEADLINE_CLOCK
 
       # The H2 Transport for one inline call. The wrapper's scope task, rather
       # than the caller's task, owns its guard, watcher, closer and every
@@ -126,11 +128,10 @@ module ConnectRPC
 
       def per_call(request, &)
         origin = origin_of(request.url)
-        deadline_at = Internal.now + request.deadline.remaining if request.deadline
         if ::Async::Task.current?
-          inline(origin, request, deadline_at, &)
+          inline(origin, request, &)
         else
-          threaded(origin, request, deadline_at, &)
+          threaded(origin, request, &)
         end
       end
 
@@ -150,20 +151,28 @@ module ConnectRPC
       # time. Core checks the deadline again once the transport returns, so
       # the wait for the peer's FIN ends one cleanup allowance before the
       # deadline, which leaves that allowance for the raw close and the joins;
-      # with less time left the close is raw. A Deadline reports no time past
-      # its expiry, so the deadline read when the call started also bounds it.
-      def close_plan(request, deadline_at)
-        return [Internal::CLEANUP_SECONDS, nil] unless deadline_at
+      # with less time left the close is raw. A live deadline places the
+      # cutoff by its own remaining time. Past its expiry a Deadline reports
+      # no time: on the default clock, which Internal.now also reads, the
+      # cutoff is its expiry; a custom clock's expiry has no monotonic
+      # instant, so the cutoff is now and a stalled owner gets its allowance
+      # from the start of the close.
+      def close_plan(deadline)
+        return [Internal::CLEANUP_SECONDS, nil] unless deadline
 
         now = Internal.now
-        cutoff = [deadline_at, now + request.deadline.remaining].min
+        remaining = deadline.remaining
+        cutoff = if remaining.positive? then now + remaining
+                 elsif deadline.__send__(:clock).equal?(DEADLINE_CLOCK) then deadline.__send__(:expires_at)
+                 else now
+                 end
         [(cutoff - now - Internal::CLEANUP_SECONDS).clamp(0.0, Internal::CLEANUP_SECONDS), cutoff]
       end
 
       # The scope task waits until teardown releases it. Construction, the
       # call and close run in the caller's fiber; the join covers every task
       # the call created, including after an interrupted construction or close.
-      def inline(origin, request, deadline_at)
+      def inline(origin, request)
         release = ::Async::Promise.new
         scope = ::Async::Task.new(::Async::Task.current, finished: false) { release.wait }
         inner = nil
@@ -172,7 +181,7 @@ module ConnectRPC
           inner = Inline.new(scope: scope, origin: origin, snapshot: @snapshot, **@options)
           yield inner
         ensure
-          interruption = finish_inline(inner, scope, release, close_plan(request, deadline_at).first)
+          interruption = finish_inline(inner, scope, release, close_plan(request.deadline).first)
           raise interruption if interruption
         end
       end
@@ -198,12 +207,12 @@ module ConnectRPC
 
       # Close runs with interrupts deferred; its own waits accept them and
       # the owner joins then finish before they propagate.
-      def threaded(origin, request, deadline_at)
+      def threaded(origin, request)
         inner = Threaded.new(origin: origin, snapshot: @snapshot, **@options)
         Thread.handle_interrupt(Object => :never) do
           Thread.handle_interrupt(Object => :immediate) { yield inner }
         ensure
-          inner.close_joined(*close_plan(request, deadline_at))
+          inner.close_joined(*close_plan(request.deadline))
         end
       end
     end
