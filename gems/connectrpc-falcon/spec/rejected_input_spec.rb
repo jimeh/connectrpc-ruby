@@ -40,9 +40,9 @@ RSpec.describe "Falcon rejected Web HTTP/1 input" do
     target
   end
 
-  # Hygiene closes raw TCP itself; forced retirement shuts it down first and
-  # closes it once its tasks have joined. Either way the peer is cut off.
-  def raw_retired?(resource) = resource.raw.closed? || resource.send(:raw_failed?)
+  # [closed, failed]: hygiene closes raw TCP itself; forced retirement shuts it
+  # down first and closes it once its tasks have joined.
+  def raw_state(resource) = [resource.raw.closed?, resource.send(:raw_failed?)]
 
   def rejected_socket(origin, tls: false)
     raw = IO::Endpoint.tcp("127.0.0.1", URI(origin).port).connect
@@ -266,10 +266,10 @@ RSpec.describe "Falcon rejected Web HTTP/1 input" do
             trace = TracePoint.new(:call) do |event|
               if event.self.equal?(resource.connection) && event.method_id == :close_read &&
                  event.defined_class == Protocol::HTTP1::Connection
-                backend_closes << raw_retired?(resource)
+                backend_closes << raw_state(resource)
               end
               if event.self.equal?(events[:body]) && event.method_id == :close
-                closed_states << [raw_retired?(resource), Async::Task.current]
+                closed_states << [raw_state(resource), Async::Task.current]
               end
             end
             # Cleanup can finish before this fiber resumes: an already expired
@@ -322,9 +322,21 @@ RSpec.describe "Falcon rejected Web HTTP/1 input" do
               expect(events[:completions].first.error).not_to be_a(ConnectRPC::Error)
             end
             expect(closed_states).not_to be_empty
-            expect(closed_states.map(&:first)).to all(be(true))
             expect(backend_closes).not_to be_empty if failure == :truncated
-            expect(backend_closes).to all(be(true))
+            case failure
+            when :abort
+              # Forced retirement leaves raw open, already shut down, until its
+              # tasks have joined, and ends framed input without closing it.
+              expect(closed_states.map(&:first)).to all(eq([false, true]))
+              expect(backend_closes).to be_empty
+            when :drain, :drain_malformed
+              # Input cleanup or the expired grace may retire raw first.
+              expect(closed_states.map(&:first)).to all(satisfy { |closed, failed| closed || failed })
+              expect(backend_closes).to all(satisfy { |closed, failed| closed || failed })
+            else
+              expect(closed_states.map(&:first)).to all(eq([true, false]))
+              expect(backend_closes).to all(eq([true, false]))
+            end
             expect(closed_states.first.last).to equal(processor)
             wire = +"".b
             begin

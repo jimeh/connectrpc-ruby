@@ -291,7 +291,9 @@ module ConnectRPC
         end)
         setup.run
         Internal.wait(setup, expires)
-        return if resource.finished? || resource.draining || (tls_generation && resource.generation < @retirement_floor)
+        # Setup leaves the original resource mapped, without a connection,
+        # when it refused an HTTP/1 replacement.
+        return unless resource.connection && serving?(resource)
 
         resource.ready = true
         resource.changed
@@ -317,12 +319,12 @@ module ConnectRPC
         if @http1 && ((!resource.snapshot.tls? &&
                        @selector.protocol_for(stream) == ::Async::HTTP::Protocol::HTTP1) ||
                       (resource.snapshot.tls? && socket.alpn_protocol != "h2"))
-          return resource unless replaceable?(resource)
+          return resource unless serving?(resource)
 
           replacement = @http1.call(stream, progress: @progress, generation: resource.generation)
           # Session abort maps nothing new; it may have started while the
           # callable ran.
-          return resource unless replaceable?(resource)
+          return resource unless serving?(resource)
 
           replacement.send(:retirement_parent=, @lifetime)
           replacement.raw = resource.raw
@@ -351,7 +353,7 @@ module ConnectRPC
         resource
       end
 
-      def replaceable?(resource)
+      def serving?(resource)
         !@aborting && !resource.finished? && !resource.draining &&
           !(tls_generation && resource.generation < @retirement_floor)
       end
@@ -681,11 +683,9 @@ module ConnectRPC
         resources = @resources.dup
         resources.each { |resource| resource.send(:fail_raw) if resource.respond_to?(:fail_raw, true) }
         failures = [Internal::Teardown.capture { stop_accepting }]
-        aborted = resources | @resources
-        failures.concat(aborted.map { |resource| Internal::Teardown.capture { resource.abort } })
-        # Setup no longer replaces a resource once this abort has started, but
-        # one more pass keeps any resource mapped meanwhile from escaping.
-        failures.concat((@resources - aborted).map { |resource| Internal::Teardown.capture { resource.abort } })
+        # Setup maps no HTTP/1 replacement once this abort has started, so
+        # these are every resource the session holds.
+        failures.concat((resources | @resources).map { |resource| Internal::Teardown.capture { resource.abort } })
         # Every resource has run its retirement, and a retirement that failed
         # has still failed and closed its raw socket. Nothing can retry it, so
         # the session closes whatever failed, and then reports the first

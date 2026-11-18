@@ -109,4 +109,49 @@ RSpec.describe "Falcon shared retirement completion" do
       bound&.close
     end
   end
+
+  # Listener cleanup yields before the abort pass reaches the original
+  # resource, so its setup finishes first, having refused the replacement.
+  # Serving then stops instead of starting work on a resource with no
+  # connection.
+  it "stops serving a resource whose HTTP/1 replacement session abort refused" do
+    reactor do |task|
+      bound = IO::Endpoint.tcp("127.0.0.1", 0).bound
+      port = bound.sockets.first.local_address.ip_port
+      boundary = Async::Queue.new
+      release = Async::Queue.new
+      session = ConnectRPC::Async::ServerSession.new(
+        application: ConnectRPC::Async::Application.new(server: server), alpn_protocols: %w[h2 http/1.1],
+        http1: ConnectRPC::Falcon.const_get(:HTTP1Resource).method(:new),
+        stop_accepting: lambda {
+          boundary.enqueue(true)
+          release.dequeue
+        }
+      ).start
+      peer = IO::Endpoint.tcp("127.0.0.1", port).connect
+      raw, = bound.sockets.first.accept
+      handle = session.accept(raw)
+      original = session.instance_variable_get(:@resources).first
+      server = task.async(finished: false) { handle.serve }
+      wait_until(task, "protocol detection reading the peer") do
+        original.tasks.any? { |setup| !setup.finished? }
+      end
+      aborter = task.async(finished: false) { session.abort }
+      task.with_timeout(2) { boundary.dequeue }
+      # The abort failed raw first, so detection read end of stream and chose
+      # HTTP/1 while listener cleanup is still held.
+      task.with_timeout(2) { server.wait }
+      expect(original.ready).not_to be(true)
+      expect(session.instance_variable_get(:@resources)).to eq([original])
+      expect(handle.instance_variable_get(:@resource)).to equal(original)
+      release.enqueue(true)
+      join_retirement_tasks(task, aborter)
+      expect(retirement_complete?(original)).to be(true)
+      expect(session.instance_variable_get(:@state)).to eq(:closed)
+    ensure
+      release&.enqueue(true)
+      peer&.close
+      bound&.close
+    end
+  end
 end

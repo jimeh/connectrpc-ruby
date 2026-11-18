@@ -347,7 +347,7 @@ module ConnectRPC
         failures.concat(tasks.values_at(0, 1, 3, 2).map { |task| join_retaining(task) })
         @state = :closed
         failures << Internal::Teardown.capture { Internal.cancel(@lifetime) }
-        interruption = failures.compact.first
+        interruption = Internal::Teardown.first(failures)
         raise interruption if interruption
       end
 

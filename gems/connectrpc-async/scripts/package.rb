@@ -45,7 +45,7 @@ core_expected = %w[
 abort "Core package changed" unless core.contents.sort == core_expected && core.spec.runtime_dependencies.empty?
 expected = %w[LICENSE README.md lib/connectrpc/async.rb lib/connectrpc/async/version.rb
               sig/connectrpc-async.rbs sig/manifest.yaml
-              lib/connectrpc/async/completion_join.rb
+              lib/connectrpc/async/completion_join.rb lib/connectrpc/async/teardown.rb
               lib/connectrpc/async/internal.rb lib/connectrpc/async/ingress.rb lib/connectrpc/async/tls.rb
               lib/connectrpc/async/bdp_estimator.rb
               lib/connectrpc/async/connection.rb lib/connectrpc/async/application.rb
