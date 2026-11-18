@@ -489,10 +489,10 @@ module ConnectRPC
             timer.run
             sent = written.wait
             @cutoff_written.resolve(sent)
-            # An unwritten GOAWAY, whether a stopped writer refused it or
-            # dropped it from its queue, still ends the connection at the
-            # bound unless something else ends it first.
-            next timer.wait unless sent
+            # A GOAWAY a stopped writer refused or dropped still ends the
+            # connection at this bound, unless a drain already wrote its final
+            # GOAWAY and owns the connection; then the EOF bound below applies.
+            next timer.wait unless sent || @resource.finishing?
 
             Internal.cancel(timer)
             next if @resource.quiesce(@parent, clock: @clock, within: EOF_SECONDS)

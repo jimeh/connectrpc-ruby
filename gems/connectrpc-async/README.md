@@ -457,11 +457,12 @@ never raising the cutoff. Once the cutoff GOAWAY is written, they wait for the
 accepted streams, send a final GOAWAY naming the cutoff, half-close and wait for
 EOF, all within their own grace. A peer that closes or resets the connection
 after its streams finished, as the GOAWAY asks, counts as drained, even when a
-control frame write fails on the closed connection before the server reads the
-close. Local work still running after delivery, such as stream cleanup and
-instrumentation observers, then finishes within the grace, and no final GOAWAY
-is sent. A `too_many_pings` decision keeps its own 1-second EOF bound during a
-takeover. Every write in these steps follows the control frame rules above.
+control frame or keepalive PING write fails on the closed connection before the
+server reads the close. Local work still running after delivery, such as
+stream cleanup and instrumentation observers, then finishes within the grace,
+and no final GOAWAY is sent. A `too_many_pings` decision keeps its own 1-second
+EOF bound during a takeover. Every write in these steps follows the control
+frame rules above.
 
 Rails and Rack hosts cannot offer any of this; see
 [support](../../docs/support.md#http2-keepalive-and-connection-age).
