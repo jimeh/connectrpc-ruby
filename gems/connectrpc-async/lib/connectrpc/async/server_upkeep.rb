@@ -4,7 +4,7 @@ module ConnectRPC
   module Async
     module Internal
       # Writes one server connection's control frames (PING ACKs, GOAWAYs,
-      # drain PINGs and refusals) off its reader, so the reader never blocks
+      # drain PINGs, refusals and receive-window growth) off its reader, so the reader never blocks
       # writing its own replies. Frames queue without yielding and are written
       # in order. Each must be written within `timeout` of being queued,
       # including any wait behind another writer's frame, and its own write,
@@ -439,6 +439,10 @@ module ConnectRPC
         end
 
         def stream_written = @strikes&.reset
+
+        # The receive-window estimator's WINDOW_UPDATE, SETTINGS and PING
+        # frames, queued in order without yielding.
+        def send_receive_window(frames) = frames.each { |frame| @writer.write(frame) }
 
         def write_started = @watchdog&.write_started
         def write_finished = @watchdog&.write_finished

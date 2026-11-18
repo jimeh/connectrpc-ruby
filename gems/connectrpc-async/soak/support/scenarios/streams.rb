@@ -110,10 +110,12 @@ RSpec.shared_examples "soak stream retirement" do |kind|
              concurrency: 12,
              payload_sizes: [16, Soak::Topology::FLOOD_MESSAGE]) do |c|
       peer = c.peer_thread("#{kind} server")
-      server = c.server(peer, kind: kind, connections: -> { 2 })
+      # Static windows on both sides: the ingress cap below is WINDOW, which BDP growth would raise.
+      server = c.server(peer, kind: kind, connections: -> { 2 }, dynamic_receive_windows: false)
       # The 4 MB flood saturates WINDOW, not the 4 MiB client default.
       clients = c.transport(server.origin, label: "persistent transport", persistent: true, reuse: true,
-                                           connections: 1, stream_receive_window: Soak::StreamSteps::WINDOW)
+                                           connections: 1, stream_receive_window: Soak::StreamSteps::WINDOW,
+                                           dynamic_receive_windows: false)
       threaded = c.threaded(server.origin, label: "persistent threaded", persistent: true, reuse: true)
       bodies = Soak::StreamSteps.watch_outputs(self)
       c.ingress_meter
@@ -199,10 +201,12 @@ RSpec.shared_examples "soak stream retirement" do |kind|
                        "ignored 4 MB upload with #{Soak::TIMER_HEADROOM} s deadline", concurrency: 4,
              payload_sizes: [16, Soak::Topology::FLOOD_MESSAGE]) do |c|
       peer = c.peer_thread("#{kind} servers")
-      server = c.server(peer, kind: kind, connections: -> { 1 })
+      # Static windows on both sides: the ingress cap below is WINDOW, which BDP growth would raise.
+      server = c.server(peer, kind: kind, connections: -> { 1 }, dynamic_receive_windows: false)
       # The 4 MB flood saturates WINDOW, not the 4 MiB client default.
       clients = c.transport(server.origin, label: "persistent transport", persistent: true, reuse: true,
-                                           connections: 1, stream_receive_window: Soak::StreamSteps::WINDOW)
+                                           connections: 1, stream_receive_window: Soak::StreamSteps::WINDOW,
+                                           dynamic_receive_windows: false)
       c.ingress_meter
       c.run do
         id = c.ledger.next_id("paused")

@@ -66,7 +66,9 @@ RSpec.describe "ThreadedTransport keepalive" do
     invocations = Thread::Queue.new
     peer = held_peer(Thread::Queue.new, invocations)
     origin = "http://127.0.0.1:#{peer.peer.port}"
-    transport = threaded(origin: origin, connection_policy: keepalive_policy(permit: true))
+    # Static windows: BDP PINGs would join the exact PING list asserted here.
+    transport = threaded(origin: origin, connection_policy: keepalive_policy(permit: true),
+                         dynamic_receive_windows: false)
     expect(transport.call(request("#{origin}/warm")).body).to eq("/warm")
     clock = install_keepalive_clock(transport)
     expect(Thread.new { transport.call(request("#{origin}/one")).body }.value).to eq("/one")

@@ -57,6 +57,8 @@
   "drain_policy": "Ruby::ArgumentTypeMismatch",
   "keepalive_policy": "Ruby::ArgumentTypeMismatch",
   "server_keepalive": "Ruby::ArgumentTypeMismatch",
+  "receive_window_toggle": "Ruby::ArgumentTypeMismatch",
+  "receive_window_ceiling": "Ruby::ArgumentTypeMismatch",
   "metrics_recorder": "Ruby::ArgumentTypeMismatch",
   "prometheus": "Ruby::ArgumentTypeMismatch",
   "yabeda": "Ruby::ArgumentTypeMismatch",

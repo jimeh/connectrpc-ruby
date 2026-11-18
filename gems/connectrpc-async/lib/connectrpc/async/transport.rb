@@ -7,10 +7,15 @@ module ConnectRPC
     class Transport
       include Internal::Affinity
 
+      # The default ceiling of dynamic receive windows, grpc-go's.
+      MAX_RECEIVE_WINDOW = 16_777_216
+      private_constant :MAX_RECEIVE_WINDOW
+
       def initialize(origin:, ca_file: nil, certificate_chain: nil, private_key: nil, connection_limit: 1,
                      max_requests: 128, connect_timeout: 10, connection_policy: ConnectionPolicy.new,
                      connection_observer: nil, stream_receive_window: 4_194_304,
-                     connection_receive_window: 16_777_216)
+                     connection_receive_window: 16_777_216, dynamic_receive_windows: true,
+                     max_receive_window: MAX_RECEIVE_WINDOW)
         initialize_affinity
         @origin = parse_origin(origin)
         @connection_limit = Internal.positive_integer(connection_limit, "connection_limit")
@@ -18,6 +23,7 @@ module ConnectRPC
         @connect_timeout = Internal.seconds(connect_timeout, "connect_timeout")
         @stream_receive_window = Internal.receive_window(stream_receive_window, "stream_receive_window")
         @connection_receive_window = Internal.receive_window(connection_receive_window, "connection_receive_window")
+        @receive_window_limit = Internal.receive_window_limit(dynamic_receive_windows, max_receive_window)
         unless connection_policy.is_a?(ConnectionPolicy)
           raise ArgumentError, "connection_policy must be a ConnectionPolicy"
         end
@@ -348,7 +354,8 @@ module ConnectRPC
         connection = Internal::ClientConnection.new(::IO::Stream(socket))
         resource.connection = connection
         connection.resource = resource
-        connection.receive_windows(stream: @stream_receive_window, connection: @connection_receive_window)
+        connection.receive_windows(stream: @stream_receive_window, connection: @connection_receive_window,
+                                   limit: @receive_window_limit)
         connection.send_connection_preface(Internal.settings(@max_requests, stream_window: @stream_receive_window)) do
           connection.grow_connection_window
         end

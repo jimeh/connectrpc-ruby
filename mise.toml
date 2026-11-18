@@ -763,7 +763,7 @@ env = { GOTOOLCHAIN = "local", GOWORK = "off", GOFLAGS = "-mod=readonly", GOMODC
 run = ["ruby gems/connectrpc-async/scripts/run.rb grpc_generation_check", "ruby gems/connectrpc-async/scripts/run.rb grpc_interop async"]
 
 [tasks."async:interop:keepalive"]
-description = "Run grpc-go keepalive, PING enforcement and age drain interop against async over h2c TLS and mTLS"
+description = "Run grpc-go keepalive, PING enforcement, BDP and age drain interop against async over h2c TLS and mTLS"
 depends = ["async:setup", "grpc:setup"]
 tools.go = "1.27.3"
 tools."aqua:protocolbuffers/protobuf/protoc" = "36.2"
@@ -771,7 +771,7 @@ env = { GOTOOLCHAIN = "local", GOWORK = "off", GOFLAGS = "-mod=readonly", GOMODC
 run = ["ruby gems/connectrpc-async/scripts/run.rb grpc_generation_check", "ruby gems/connectrpc-async/scripts/run.rb grpc_keepalive_interop async"]
 
 [tasks."falcon:interop:grpc"]
-description = "Run generated official grpc-go peers and a keepalive age drain against falcon over h2c TLS and mTLS"
+description = "Run generated official grpc-go peers, a keepalive age drain and BDP PINGs against falcon over h2c TLS and mTLS"
 depends = ["falcon:setup", "grpc:setup"]
 tools.go = "1.27.3"
 tools."aqua:protocolbuffers/protobuf/protoc" = "36.2"

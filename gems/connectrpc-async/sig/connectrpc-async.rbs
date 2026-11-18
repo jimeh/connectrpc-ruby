@@ -96,7 +96,7 @@ module ConnectRPC
       def hash: () -> Integer
     end
     class Host
-      def initialize: (server: Server, ?host: String, ?port: Integer, ?tls: tls?, ?tls_provider: (_TLSProvider | ^() -> tls_snapshot)?, ?max_connections: Integer, ?max_requests: Integer, ?handshake_timeout: Numeric, ?idle_timeout: Numeric?, ?refresh_interval: Numeric, ?refresh_jitter: Numeric, ?refresh_timeout: Numeric, ?on_tls_error: (_TLSErrorHandler | ^(tls_event) -> void)?, ?keepalive: ServerKeepalive?, ?fallback: (_Application | ^(_Request) -> _Response?)?, ?max_concurrent_streams: Integer, ?request_body_timeout: Numeric?, ?response_body_timeout: Numeric?, ?frame_write_timeout: Numeric?, ?stream_receive_window: Integer, ?connection_receive_window: Integer) -> void
+      def initialize: (server: Server, ?host: String, ?port: Integer, ?tls: tls?, ?tls_provider: (_TLSProvider | ^() -> tls_snapshot)?, ?max_connections: Integer, ?max_requests: Integer, ?handshake_timeout: Numeric, ?idle_timeout: Numeric?, ?refresh_interval: Numeric, ?refresh_jitter: Numeric, ?refresh_timeout: Numeric, ?on_tls_error: (_TLSErrorHandler | ^(tls_event) -> void)?, ?keepalive: ServerKeepalive?, ?fallback: (_Application | ^(_Request) -> _Response?)?, ?max_concurrent_streams: Integer, ?request_body_timeout: Numeric?, ?response_body_timeout: Numeric?, ?frame_write_timeout: Numeric?, ?stream_receive_window: Integer, ?connection_receive_window: Integer, ?dynamic_receive_windows: bool, ?max_receive_window: Integer) -> void
       attr_reader port: Integer?
       attr_reader addresses: Array[Addrinfo]
       def start: () -> self
@@ -161,7 +161,7 @@ module ConnectRPC
       def call: (ConnectionEvent) -> void
     end
     class Transport
-      def initialize: (origin: String, ?ca_file: String?, ?certificate_chain: Array[String]?, ?private_key: String?, ?connection_limit: Integer, ?max_requests: Integer, ?connect_timeout: Numeric, ?connection_policy: ConnectionPolicy, ?connection_observer: (_ConnectionObserver | ^(ConnectionEvent) -> void)?, ?stream_receive_window: Integer, ?connection_receive_window: Integer) -> void
+      def initialize: (origin: String, ?ca_file: String?, ?certificate_chain: Array[String]?, ?private_key: String?, ?connection_limit: Integer, ?max_requests: Integer, ?connect_timeout: Numeric, ?connection_policy: ConnectionPolicy, ?connection_observer: (_ConnectionObserver | ^(ConnectionEvent) -> void)?, ?stream_receive_window: Integer, ?connection_receive_window: Integer, ?dynamic_receive_windows: bool, ?max_receive_window: Integer) -> void
       def connection_state: () -> connection_state
       def grpc_capabilities: () -> Array[grpc_cardinality]
     def open_grpc_stream: [T] (StreamRequest) { (_GRPCStreamExchange) -> T } -> T
@@ -175,7 +175,7 @@ module ConnectRPC
     # blocks run on the caller's thread. call, the stream methods, exchange
     # operations and close raise LifecycleError on that owner thread.
     class ThreadedTransport
-      def initialize: (origin: String, ?ca_file: String?, ?certificate_chain: Array[String]?, ?private_key: String?, ?connection_limit: Integer, ?max_requests: Integer, ?connect_timeout: Numeric, ?connection_policy: ConnectionPolicy, ?connection_observer: (_ConnectionObserver | ^(ConnectionEvent) -> void)?, ?stream_receive_window: Integer, ?connection_receive_window: Integer) -> void
+      def initialize: (origin: String, ?ca_file: String?, ?certificate_chain: Array[String]?, ?private_key: String?, ?connection_limit: Integer, ?max_requests: Integer, ?connect_timeout: Numeric, ?connection_policy: ConnectionPolicy, ?connection_observer: (_ConnectionObserver | ^(ConnectionEvent) -> void)?, ?stream_receive_window: Integer, ?connection_receive_window: Integer, ?dynamic_receive_windows: bool, ?max_receive_window: Integer) -> void
       def connection_state: () -> connection_state
       def call: (TransportRequest) -> TransportResponse
       def streaming_capabilities: () -> Array[:server_stream]
@@ -196,7 +196,7 @@ module ConnectRPC
       interface _HTTP1Factory
         def call: (Object, progress: Object, generation: Integer?) -> Object
       end
-      def initialize: (application: _Application | ^(_Request, ?lifecycle: Instrumentation::Handle?) -> _Response?, ?tls: tls?, ?tls_provider: (_TLSProvider | ^() -> tls_snapshot)?, ?max_connections: Integer, ?max_requests: Integer, ?handshake_timeout: Numeric, ?idle_timeout: Numeric?, ?refresh_interval: Numeric, ?refresh_jitter: Numeric, ?refresh_timeout: Numeric, ?on_tls_error: (_TLSErrorHandler | ^(tls_event) -> void)?, ?alpn_protocols: Array[String], ?http1: _HTTP1Factory?, ?stop_accepting: (_Callback | ^() -> void)?, ?on_request_rejected: (_Callback | ^() -> void)?, ?lifecycle_factory: (_LifecycleFactory | ^(_Request) -> Instrumentation::Handle?)?, ?keepalive: ServerKeepalive?, ?max_concurrent_streams: Integer, ?request_body_timeout: Numeric?, ?response_body_timeout: Numeric?, ?frame_write_timeout: Numeric?, ?stream_receive_window: Integer, ?connection_receive_window: Integer) -> void
+      def initialize: (application: _Application | ^(_Request, ?lifecycle: Instrumentation::Handle?) -> _Response?, ?tls: tls?, ?tls_provider: (_TLSProvider | ^() -> tls_snapshot)?, ?max_connections: Integer, ?max_requests: Integer, ?handshake_timeout: Numeric, ?idle_timeout: Numeric?, ?refresh_interval: Numeric, ?refresh_jitter: Numeric, ?refresh_timeout: Numeric, ?on_tls_error: (_TLSErrorHandler | ^(tls_event) -> void)?, ?alpn_protocols: Array[String], ?http1: _HTTP1Factory?, ?stop_accepting: (_Callback | ^() -> void)?, ?on_request_rejected: (_Callback | ^() -> void)?, ?lifecycle_factory: (_LifecycleFactory | ^(_Request) -> Instrumentation::Handle?)?, ?keepalive: ServerKeepalive?, ?max_concurrent_streams: Integer, ?request_body_timeout: Numeric?, ?response_body_timeout: Numeric?, ?frame_write_timeout: Numeric?, ?stream_receive_window: Integer, ?connection_receive_window: Integer, ?dynamic_receive_windows: bool, ?max_receive_window: Integer) -> void
       def start: () -> self
       def close: (?grace: Numeric) -> bool?
       def abort: () -> self

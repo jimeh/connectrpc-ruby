@@ -57,9 +57,15 @@ module ConnectRPC
            "#{H2}::Request::Stream"],
           ["protocol-http2", "#{H2}::Server", :create_stream, :public, "(_ = ?, &)", "Protocol::HTTP2::Connection"],
           ["protocol-http2", "#{H2}::Server", :send_goaway, :public, "(_ = ?, _ = ?)", "Protocol::HTTP2::Connection"],
-          *%w[Client Server].map do |side|
-            ["protocol-http2", "#{H2}::#{side}", :update_local_settings, :public, "(_)", "Protocol::HTTP2::Connection"]
+          *%w[Client Server].flat_map do |side|
+            [["protocol-http2", "#{H2}::#{side}", :update_local_settings, :public, "(_)", "Protocol::HTTP2::Connection"],
+             ["protocol-http2", "#{H2}::#{side}", :consume_local_window, :public, "(_)",
+              "Protocol::HTTP2::FlowControlled"],
+             ["protocol-http2", "#{H2}::#{side}", :receive_ping, :public, "(_)", "Protocol::HTTP2::Connection"]]
           end,
+          ["protocol-http2", "Protocol::HTTP2::PendingSettings", :append, :public, "(_)",
+           "Protocol::HTTP2::PendingSettings"],
+          ["protocol-http2", "Protocol::HTTP2::Window", :capacity=, :public, "(_)", "Protocol::HTTP2::Window"],
           *%w[Request Response].flat_map do |side|
             STREAM_HOOKS.map { |gem, *hook| [gem, "#{H2}::#{side}::Stream", *hook] }
           end

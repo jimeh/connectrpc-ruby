@@ -401,7 +401,9 @@ RSpec.shared_examples "HTTP/2 server keepalive" do
   describe "server PINGs" do
     it "aborts a client that never acknowledges, cancelling its handler" do
       reactor do |task|
-        with_keepalive_host(task, keepalive: server_keepalive(time: 100, timeout: 20, min_time: nil)) do |fixture|
+        # Static windows: BDP PINGs would join the exact server PING list asserted here.
+        with_keepalive_host(task, keepalive: server_keepalive(time: 100, timeout: 20, min_time: nil),
+                                  dynamic_receive_windows: false) do |fixture|
           client = fixture.client
           client.wire.ack_pings = false
           held = task.async do
@@ -428,8 +430,9 @@ RSpec.shared_examples "HTTP/2 server keepalive" do
   describe "graceful drains" do
     it "drains an aged connection: heads-up, dispatch until the cutoff, refusal while a sibling streams" do
       reactor do |task|
-        with_keepalive_host(task, keepalive: server_keepalive(time: nil, min_time: nil,
-                                                              max_connection_age: 100)) do |fixture|
+        # Static windows: BDP PINGs would join the exact server PING list asserted here.
+        with_keepalive_host(task, keepalive: server_keepalive(time: nil, min_time: nil, max_connection_age: 100),
+                                  dynamic_receive_windows: false) do |fixture|
           client = fixture.client
           wire = client.wire
           response = watch(fixture, "sibling", "one")
@@ -471,7 +474,8 @@ RSpec.shared_examples "HTTP/2 server keepalive" do
     it "cuts off after 5 s without the drain ACK and aborts when the grace from age expiry ends" do
       reactor do |task|
         keepalive = server_keepalive(time: nil, min_time: nil, max_connection_age: 100, max_connection_age_grace: 50)
-        with_keepalive_host(task, keepalive: keepalive) do |fixture|
+        # Static windows: BDP PINGs would join the exact server PING list asserted here.
+        with_keepalive_host(task, keepalive: keepalive, dynamic_receive_windows: false) do |fixture|
           client = fixture.client
           client.wire.ack_pings = false
           held = task.async do
@@ -699,8 +703,9 @@ RSpec.shared_examples "HTTP/2 server keepalive" do
 
     it "starts the drain ACK fallback only once the drain PING is written" do
       reactor do |task|
-        with_keepalive_host(task, keepalive: server_keepalive(time: nil, min_time: nil,
-                                                              max_connection_age: 100)) do |fixture|
+        # Static windows: BDP PINGs would join the exact server PING list asserted here.
+        with_keepalive_host(task, keepalive: server_keepalive(time: nil, min_time: nil, max_connection_age: 100),
+                                  dynamic_receive_windows: false) do |fixture|
           client = fixture.client
           client.wire.ack_pings = false
           watch(fixture, "sibling", "one")
@@ -1404,8 +1409,9 @@ RSpec.shared_examples "HTTP/2 server keepalive" do
     # never saw it, and the reader takes none of its DATA as body.
     it "refuses a stream at HEADERS, before reading its DATA, when host admission is full" do
       reactor do |task|
+        # Static windows: a BDP probe's credit flush would change the exact connection credit asserted here.
         with_keepalive_host(task, keepalive: server_keepalive(time: nil), max_requests: 1,
-                                  connection_receive_window: 65_535) do |fixture|
+                                  connection_receive_window: 65_535, dynamic_receive_windows: false) do |fixture|
           gate = gate_lifecycle(fixture)
           rejections = count_rejections(fixture)
           held = task.async { unary(fixture, "hold-admission") }
@@ -1443,6 +1449,35 @@ RSpec.shared_examples "HTTP/2 server keepalive" do
           expect(other.wire.goaways).to eq([])
         ensure
           release_gate(gate)
+          close_keepalive_client(other)
+        end
+      end
+    end
+
+    # As in grpc-go, a refused stream's DATA still counts toward a BDP sample,
+    # which can grow the windows of the streams the host admits.
+    it "retains nothing for a stream refused at HEADERS while its DATA fills a BDP sample" do
+      reactor do |task|
+        with_keepalive_host(task, keepalive: server_keepalive(time: nil), max_requests: 1) do |fixture|
+          held = task.async { unary(fixture, "hold-admission") }
+          wait_until(task, "held call invoked") { fixture.log[:invoked] == ["hold-admission"] }
+          other = keepalive_client(task, fixture.host.port)
+          connection = second_resource(task, fixture).connection
+          received = body_bytes(connection)
+          refused = other.connection.next_stream_id
+          raw_requests(other, [[refused, request_headers(echo_path), "x" * 65_536]])
+          ping_through(task, other, "refused2")
+          growth = [[KeepaliveClient::INITIAL_WINDOW_SIZE, 131_072]]
+          wait_until(task, "growth SETTINGS; settings #{other.wire.settings}") do
+            other.wire.settings.include?(growth)
+          end
+          expect(other.wire.pings).to eq([AsyncHelpers::INTERNAL::BDPEstimator::PING])
+          expect(other.wire.resets).to eq(refused => KeepaliveClient::REFUSED_STREAM)
+          expect([received, connection.streams]).to eq([{}, {}])
+          fixture.log[:holds]["hold-admission"].enqueue(true)
+          expect(held.wait).to eq([200, encoded("hold-admission")])
+          expect(other.wire.goaways).to eq([])
+        ensure
           close_keepalive_client(other)
         end
       end
@@ -1623,8 +1658,9 @@ RSpec.shared_examples "HTTP/2 server keepalive" do
     # refusal instead of more observed ones.
     it "counts unwritten HEADERS refusals toward the stream limit" do
       reactor do |task|
+        # Static windows: BDP frames would join the exact control-writer queue asserted here.
         with_keepalive_host(task, keepalive: server_keepalive(time: nil), max_requests: 2,
-                                  max_concurrent_streams: 2) do |fixture|
+                                  max_concurrent_streams: 2, dynamic_receive_windows: false) do |fixture|
           rejections = count_rejections(fixture)
           held, other = fill_admission(task, fixture)
           sibling = task.async do
@@ -2315,7 +2351,8 @@ RSpec.shared_examples "HTTP/2 server keepalive" do
 
     it "sends a drain's GOAWAY and PING queued behind a held write that finishes within the bound" do
       reactor do |task|
-        with_keepalive_host(task, keepalive: server_keepalive(time: nil)) do |fixture|
+        # Static windows: BDP PINGs would join the exact server PING list asserted here.
+        with_keepalive_host(task, keepalive: server_keepalive(time: nil), dynamic_receive_windows: false) do |fixture|
           client = fixture.client
           client.wire.ack_pings = false
           watch(fixture, "sibling", "one")
@@ -2625,7 +2662,9 @@ RSpec.shared_examples "HTTP/2 server keepalive" do
       it "#{operation} sends the heads-up GOAWAY at once, dispatching until the cutoff " \
          "#{keepalive ? 'with' : 'without'} keepalive" do
         reactor do |task|
-          options = { keepalive: keepalive ? server_keepalive(time: nil) : nil, tls: operation == :drain_tls }
+          # Static windows: BDP PINGs would join the exact server PING list asserted here.
+          options = { keepalive: keepalive ? server_keepalive(time: nil) : nil, tls: operation == :drain_tls,
+                      dynamic_receive_windows: false }
           with_keepalive_host(task, **options) do |fixture|
             fixture.client.wire.ack_pings = false
             held = task.async { unary(fixture, "hold-drain") }
@@ -2650,8 +2689,9 @@ RSpec.shared_examples "HTTP/2 server keepalive" do
 
     it "takes over an age drain before its ACK, keeping its reason and dispatching until the cutoff" do
       reactor do |task|
-        with_keepalive_host(task, keepalive: server_keepalive(time: nil, min_time: nil,
-                                                              max_connection_age: 100)) do |fixture|
+        # Static windows: BDP PINGs would join the exact server PING list asserted here.
+        with_keepalive_host(task, keepalive: server_keepalive(time: nil, min_time: nil, max_connection_age: 100),
+                                  dynamic_receive_windows: false) do |fixture|
           client = fixture.client
           wire = client.wire
           wire.ack_pings = false

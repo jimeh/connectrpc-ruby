@@ -150,8 +150,9 @@ RSpec.describe "Lifecycle campaign harness" do
       control("retained stream bytes") do |c|
         server = c.server(c.peer_thread("host"))
         c.run do
+          # Static: BDP growth would raise the window past the 65,536-byte cap observed here.
           clients = c.transport(server.origin, label: "round transport",
-                                               stream_receive_window: 65_536)
+                                               stream_receive_window: 65_536, dynamic_receive_windows: false)
           resume = Async::Promise.new
           call = c.task.async do
             c.perform(clients, :server_stream, action: "flood", count: 20) do |reader|
@@ -180,8 +181,9 @@ RSpec.describe "Lifecycle campaign harness" do
         server = c.server(c.peer_thread("host"))
         c.ingress_meter
         c.run do
+          # Static: BDP growth would raise the window past the 65,536-byte cap observed here.
           clients = c.transport(server.origin, label: "round transport",
-                                               stream_receive_window: 65_536)
+                                               stream_receive_window: 65_536, dynamic_receive_windows: false)
           source = c.call_source("flood source")
           resume = Async::Promise.new
           call = c.task.async do

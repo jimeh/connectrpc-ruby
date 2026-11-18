@@ -357,6 +357,48 @@ RSpec.describe "connectrpc-async upstream contract" do
     end
   end
 
+  describe "relied on by dynamic receive windows" do
+    let(:connection) do
+      framer = Object.new
+      framer.define_singleton_method(:write_frame) { |_frame| nil }
+      framer.define_singleton_method(:flush) { nil }
+      Protocol::HTTP2::Client.new(framer)
+    end
+
+    def window = Protocol::HTTP2::Settings::INITIAL_WINDOW_SIZE
+
+    it "counts every DATA frame in consume_local_window, before the stream lookup, even for a closed stream" do
+      seen = []
+      connection.define_singleton_method(:consume_local_window) do |frame|
+        seen << frame.stream_id
+        super(frame)
+      end
+      connection.next_stream_id
+      frame = Protocol::HTTP2::DataFrame.new(1)
+      frame.pack("x" * 10)
+      connection.receive_data(frame)
+      expect([seen, connection.local_window.used]).to eq([[1], 10])
+    end
+
+    it "acknowledges appended local SETTINGS in order, so append order must be wire order" do
+      settings = connection.local_settings
+      settings.append([[window, 131_072]])
+      settings.append([[window, 262_144]])
+      expect(settings.pending.initial_window_size).to eq(262_144)
+      expect(settings.acknowledge).to eq([[window, 131_072]])
+      expect(settings.initial_window_size).to eq(131_072)
+    end
+
+    it "changes a window's available credit by a capacity change and rejects one past the RFC maximum" do
+      local = Protocol::HTTP2::Window.new(65_536)
+      local.consume(65_536)
+      local.capacity = 131_072
+      expect([local.capacity, local.available]).to eq([131_072, 65_536])
+      expect { local.capacity = Protocol::HTTP2::MAXIMUM_ALLOWED_WINDOW_SIZE + 65_537 }
+        .to raise_error(Protocol::HTTP2::FlowControlError)
+    end
+  end
+
   describe "relied on by the owned HTTP/1 client stream" do
     # HTTP1Stream implements only the stream calls protocol-http1 makes.
     stream_calls = %i[gets read readpartial write flush close close_read close_write]
@@ -539,6 +581,17 @@ RSpec.describe "connectrpc-async upstream contract" do
       connection.send_settings([[Protocol::HTTP2::Settings::INITIAL_WINDOW_SIZE, 65_536]])
       connection.update_local_settings(connection.local_settings.acknowledge)
       expect(connection.local_window.desired).to eq(65_536)
+    end
+
+    it "protocol-http2 update_local_settings sets every stream to the acknowledged window, even below one " \
+       "published since (delete the stream re-raise in ReceiveWindows#update_local_settings)" do
+      connection = Protocol::HTTP2::Client.new(framer.new)
+      stream = connection.create_stream
+      connection.send_settings([[Protocol::HTTP2::Settings::INITIAL_WINDOW_SIZE, 131_072]])
+      connection.send_settings([[Protocol::HTTP2::Settings::INITIAL_WINDOW_SIZE, 262_144]])
+      stream.local_window.capacity = 262_144
+      connection.update_local_settings(connection.local_settings.acknowledge)
+      expect(stream.local_window.capacity).to eq(131_072)
     end
 
     it "protocol-http2 sizes a new stream's receive window from acknowledged SETTINGS only " \

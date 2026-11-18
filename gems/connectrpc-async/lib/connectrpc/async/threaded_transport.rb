@@ -16,6 +16,9 @@ module ConnectRPC
       # Bounds front retries when each new owner stops before admitting the call.
       START_ATTEMPTS = 3
       private_constant :CLOSED, :FULL, :STOPPED, :OWNER, :START_ATTEMPTS
+      # The default ceiling of dynamic receive windows, grpc-go's.
+      MAX_RECEIVE_WINDOW = 16_777_216
+      private_constant :MAX_RECEIVE_WINDOW
 
       # Count and byte admission for one process. Engines that replace a failed
       # owner share it, so a stopped engine's mailboxes stay charged.
@@ -287,15 +290,18 @@ module ConnectRPC
       def initialize(origin:, ca_file: nil, certificate_chain: nil, private_key: nil, connection_limit: 1,
                      max_requests: 128, connect_timeout: 10, connection_policy: ConnectionPolicy.new,
                      connection_observer: nil, stream_receive_window: 4_194_304,
-                     connection_receive_window: 16_777_216)
+                     connection_receive_window: 16_777_216, dynamic_receive_windows: true,
+                     max_receive_window: MAX_RECEIVE_WINDOW)
         @origin = parse_origin(origin)
         @max_requests = Internal.positive_integer(max_requests, "max_requests")
         options = {
           connection_limit: Internal.positive_integer(connection_limit, "connection_limit"),
           max_requests: @max_requests, connect_timeout: Internal.seconds(connect_timeout, "connect_timeout"),
           stream_receive_window: Internal.receive_window(stream_receive_window, "stream_receive_window"),
-          connection_receive_window: Internal.receive_window(connection_receive_window, "connection_receive_window")
+          connection_receive_window: Internal.receive_window(connection_receive_window, "connection_receive_window"),
+          dynamic_receive_windows: dynamic_receive_windows, max_receive_window: max_receive_window
         }
+        Internal.receive_window_limit(dynamic_receive_windows, max_receive_window)
         unless connection_policy.is_a?(ConnectionPolicy)
           raise ArgumentError, "connection_policy must be a ConnectionPolicy"
         end
