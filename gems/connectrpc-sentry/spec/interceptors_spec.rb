@@ -29,6 +29,6 @@ RSpec.describe "Sentry capture with unary interceptors" do
     call_failing(:invalid_argument)
     expect(error_events).to be_empty
     expect(trace_of(rpc_transactions("rpc.server").first)[:data])
-      .to include("rpc.response.status_code" => "invalid_argument")
+      .to include("rpc.status_code" => "invalid_argument")
   end
 end

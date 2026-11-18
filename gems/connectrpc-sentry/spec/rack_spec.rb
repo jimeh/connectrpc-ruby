@@ -5,20 +5,20 @@ RSpec.describe "Rack hosting" do
 
   it "nests in Sentry's Rack transaction, renames it and records no delivery facts" do
     app = with_sentry_middleware(rpc_app)
-    expect(rack_post(app, "rack").status).to eq(200)
+    expect(rack_post(app, "rack", env: { "HTTP_HOST" => "api.example" }).status).to eq(200)
     expect(transactions.size).to eq(1)
     host = transactions.first
     expect(trace_of(host)[:op]).to eq("http.server")
     expect(host.transaction).to eq("example.v1.EchoService/Echo")
     rpc = host.spans.find { |span| span[:op] == "rpc.server" }
     expect(rpc).to include(parent_span_id: trace_of(host)[:span_id], status: "ok")
-    expect(rpc[:data]).to include("rpc.response.status_code" => "OK")
-    expect(rpc[:data]).not_to have_key("connectrpc.delivery")
+    expect(rpc[:data]).to include("rpc.status_code" => "OK", "server.address" => "api.example")
+    expect(rpc[:data].keys).not_to include("connectrpc.delivery", "server.port")
     expect(scope_span).to be_nil
   end
 
   it "owns a transaction finished at body close without Sentry's middleware" do
-    expect(rack_post(rpc_app, "rack").status).to eq(200)
+    expect(rack_post(rpc_app, "rack", env: { "HTTP_HOST" => "api.example:8443" }).status).to eq(200)
     expect(transactions.size).to eq(1)
     owned = transactions.first
     expect(owned.transaction).to eq("example.v1.EchoService/Echo")
@@ -26,9 +26,12 @@ RSpec.describe "Rack hosting" do
     trace = trace_of(owned)
     expect(trace).to include(op: "rpc.server", origin: "auto.rpc.connectrpc", status: "ok", parent_span_id: nil)
     expect(trace[:data]).to include("rpc.system.name" => "connectrpc", "rpc.method" => "example.v1.EchoService/Echo",
-                                    "rpc.response.status_code" => "OK", "http.response.status_code" => 200,
+                                    "rpc.status_code" => "OK", "http.response.status_code" => 200,
                                     "connectrpc.processing.state" => "finished", "connectrpc.decision" => "processed",
-                                    "connectrpc.delivery" => "body_closed")
+                                    "connectrpc.delivery" => "body_closed",
+                                    "server.address" => "api.example", "server.port" => 8443)
+    # Semantic conventions 1.45.0 renamed the status attribute.
+    expect(trace[:data]).not_to have_key("rpc.response.status_code")
     expect(trace[:data]).to include("connectrpc.request.wire_bytes", "connectrpc.response.wire_bytes",
                                     "connectrpc.processing.duration")
     expect(scope_span).to be_nil
@@ -105,7 +108,7 @@ RSpec.describe "Rack hosting" do
     expect(response.status).to eq(415)
     trace = trace_of(rpc_transactions.first)
     expect(trace[:data]).to include("http.response.status_code" => 415, "connectrpc.decision" => "processed")
-    expect(trace[:data]).not_to have_key("rpc.response.status_code")
+    expect(trace[:data]).not_to have_key("rpc.status_code")
     expect(trace[:status]).to eq(Sentry::Span::STATUS_MAP[415])
   end
 

@@ -239,13 +239,15 @@ module ConnectRPC
           tags = { "rpc.system.name" => system, "rpc.method" => method_name }
           tags["connectrpc.protocol"] = "grpc_web" if call.protocol == :grpc_web
           new(name: name, system: system, method_name: method_name, protocol: call.protocol,
-              data: tags.merge(peer(call)).freeze, tags: tags.freeze)
+              data: tags.merge(server(call)).freeze, tags: tags.freeze)
         end
 
-        def self.peer(call)
-          return {} unless call.role == :client
+        # Clients use their endpoint; servers the request authority, port only when explicit.
+        def self.server(call)
+          address = call.server_address
+          return {} unless address
 
-          { "server.address" => call.server_address, "server.port" => call.server_port }.compact
+          { "server.address" => address, "server.port" => call.server_port }.compact
         end
 
         def declared? = method_name != "_OTHER"
@@ -275,7 +277,7 @@ module ConnectRPC
           span = @span
           return unless span
 
-          span.set_data("rpc.response.status_code", @rpc.code(outcome.code)) if outcome.code
+          span.set_data("rpc.status_code", @rpc.code(outcome.code)) if outcome.code
           span.set_data(HTTP_STATUS, outcome.http_status) if outcome.http_status
           span.set_data("connectrpc.processing.duration", outcome.duration)
           span.set_data("connectrpc.request.wire_bytes", outcome.request_bytes) if outcome.request_bytes

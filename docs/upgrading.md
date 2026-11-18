@@ -80,6 +80,13 @@ gives one explicitly, from the request's `Host` or HTTP/2 `:authority`. Rack
 and Rails pass `Host`, and the native Async and Falcon hosts pass the
 authority. See [semantic conventions and error status](../gems/connectrpc-otel/README.md#semantic-conventions-and-error-status).
 
+`connectrpc-sentry` span data uses the same names. Its `rpc.response.status_code`
+is now `rpc.status_code`, with the same casing, and `rpc.server` spans and
+transactions carry `server.address` and `server.port` from the same request
+authority. Update Sentry queries, dashboards and alerts that read the old name.
+Sentry records no RPC metadata, so the header and trailer changes do not apply
+to it. See [data and privacy](../gems/connectrpc-sentry/README.md#data-and-privacy).
+
 Lifecycle subscribers also see trailers separately. `Instrumentation::Outcome`
 has a `response_trailers` member with trailing metadata, without any
 `trailer-` wire prefix, for every protocol and role. Connect unary

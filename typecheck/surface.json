@@ -1299,7 +1299,7 @@
     "ConnectRPC::Sentry::Subscriber::RPC#code": {"kind":"method","visibility":"public","parameters":"value","classification":"internal"},
     "ConnectRPC::Sentry::Subscriber::RPC#declared?": {"kind":"method","visibility":"public","parameters":"","classification":"internal"},
     "ConnectRPC::Sentry::Subscriber::RPC.build": {"kind":"method","visibility":"public","parameters":"call","classification":"internal"},
-    "ConnectRPC::Sentry::Subscriber::RPC.peer": {"kind":"method","visibility":"public","parameters":"call","classification":"internal"},
+    "ConnectRPC::Sentry::Subscriber::RPC.server": {"kind":"method","visibility":"public","parameters":"call","classification":"internal"},
     "ConnectRPC::Sentry::Subscriber::Support#annotate": {"kind":"method","visibility":"public","parameters":"span, rpc","classification":"internal"},
     "ConnectRPC::Sentry::Subscriber::Support#copy_scope": {"kind":"method","visibility":"public","parameters":"target, source","classification":"internal"},
     "ConnectRPC::Sentry::Subscriber::Support#finish_transaction": {"kind":"method","visibility":"public","parameters":"transaction, source, name: nil","classification":"internal"},
