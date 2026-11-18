@@ -163,7 +163,7 @@ RSpec.describe "Native admission and forced teardown observation" do
         expect(span.status.code).to eq(OpenTelemetry::Trace::Status::ERROR)
         # A refusal is a stream reset, not an HTTP response.
         expect(span.attributes).not_to have_key("http.response.status_code")
-        expect(span.attributes).not_to have_key("rpc.response.status_code")
+        expect(span.attributes).not_to have_key("rpc.status_code")
         release.enqueue(true)
         expect(active.wait.message.name).to eq("admitted")
       ensure
@@ -259,7 +259,7 @@ RSpec.describe "Native admission and forced teardown observation" do
       expect(rpc_spans(exporter)).to be_empty
       expect(host.close(grace: 0)).to be(false)
       span = rpc_spans(exporter).fetch(0)
-      expect(span.attributes).to include("rpc.response.status_code" => "OK", "connectrpc.delivery" => "aborted")
+      expect(span.attributes).to include("rpc.status_code" => "OK", "connectrpc.delivery" => "aborted")
       expect(span.status.code).to eq(OpenTelemetry::Trace::Status::ERROR)
     ensure
       callback_release&.enqueue(true)
@@ -292,7 +292,7 @@ RSpec.describe "Native admission and forced teardown observation" do
         expect(reading.wait).to eq(:closed)
         wait_until(task, "header-failure completion") { rpc_spans(exporter).size == 1 }
         span = rpc_spans(exporter).first
-        expect(span.attributes).to include("rpc.response.status_code" => "OK", "connectrpc.delivery" => "aborted")
+        expect(span.attributes).to include("rpc.status_code" => "OK", "connectrpc.delivery" => "aborted")
       end
     ensure
       release&.enqueue(true)

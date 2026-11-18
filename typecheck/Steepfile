@@ -3,6 +3,7 @@
 target :core do
   signature "../sig", "internal"
   library "uri"
+  library "ipaddr"
   library "json"
   library "zlib"
   check "../lib/connectrpc.rb", "../lib/connectrpc/version.rb"

@@ -55,14 +55,16 @@ module ConnectRPC
     def call_stream_handler: (registered_handler, stream_declaration, untyped, StreamingContext, untyped) -> untyped
     def single_stream_request: (Streaming::Session) -> untyped
     def render_stream_terminal: (Streaming::ServerState, _StreamingOutput) -> void
-    def stream_terminal_bytes: (Streaming::ServerState, StreamingContext) -> [String, Error?]
+    def stream_terminal_bytes: (Streaming::ServerState, StreamingContext) -> [String, Error?, Metadata]
+    def emitted_trailers: (Metadata, Error?, Error?) -> Metadata
+    def emitted_fields: (Metadata, Error?, Error?) -> headers
     def fail_unpublished_head: (Streaming::ServerState | GRPCProtocol::ServerState | GRPCWeb::ServerState, String) -> bot
     def grpc_head_failed?: (GRPCProtocol::ServerState | GRPCWeb::ServerState, Context) -> bool
     def publish_stream_head: (StreamingContext, Error?) -> void
     def stream_trailers: (Error?, Context) -> Metadata
     def append_metadata: (Metadata, Metadata) -> void
     def emit_stream_terminal: (String, _StreamingOutput) -> void
-    def observe_stream_result: (Streaming::ServerState | GRPCProtocol::ServerState | GRPCWeb::ServerState, Error?) -> void
+    def observe_stream_result: (Streaming::ServerState | GRPCProtocol::ServerState | GRPCWeb::ServerState, Error?, ?(Metadata | headers)) -> void
     def streaming_context: (Streaming::ServerState, ?headers: headers) -> StreamingContext
     def stream_head: (Metadata, codec, encoding) -> StreamHead
   end
@@ -128,6 +130,8 @@ module ConnectRPC
     end
     class ClientScope
       @state: CallCancellation?
+      @session: Session?
+      attr_writer session: Session?
       @lifecycle: Instrumentation::Handle?
       @intercepted: bool
       @dispatched: bool
@@ -241,6 +245,7 @@ module ConnectRPC
       attr_reader sent: Integer
       def initialize: (binding: _Binding, method: declaration, codec: codec, state: Context | CallCancellation, input: _StreamingInput | (_StreamExchange | _GRPCStreamExchange), output: _StreamingOutput | (_StreamExchange | _GRPCStreamExchange), request_limit: Integer, response_limit: Integer, request_wire_limit: Integer, response_wire_limit: Integer, request_encoding: encoding, response_encoding: encoding, terminal_wire_limit: Integer, terminal_limit: Integer, ?server: bool, ?context: Context?, ?lifecycle: Instrumentation::Handle?, ?accept_encoding: Array[encoding], ?strategy: ConnectStrategy | GRPCProtocol::Strategy | GRPCWeb::Strategy, ?publish: (^() -> void)?) -> void
       def headers: () -> Metadata
+      def cached_headers: () -> Metadata?
       def receive: (?skip_data: bool) -> untyped
       def request_complete?: () -> bool
       def send_message: (untyped) -> nil

@@ -3,7 +3,8 @@
 RSpec.describe "gRPC SDK conventions and processor ownership" do
   %i[async falcon].each do |backend|
     it "retains #{backend} mTLS identity and SDK context through all four shapes and cleanup" do
-      provider, exporter, bus = tracing(request_metadata: ["x-request"], response_metadata: ["x-response"])
+      provider, exporter, bus = tracing(request_metadata: ["x-request"], response_metadata: ["x-response"],
+                                        response_trailers: ["x-trailer"])
       reactor do
         records = []
         host = nil
@@ -30,6 +31,7 @@ RSpec.describe "gRPC SDK conventions and processor ownership" do
           observe.call(:handler)
           expect(context.request_metadata["x-request"]).to eq(["value"])
           context.response_metadata["x-response"] = ["value"]
+          context.response_trailers["x-trailer"] = ["value"]
           Async::Task.current.async do
             expect(host.peer_certificate).to be_nil
             expect(current_span.context).not_to be_valid
@@ -103,14 +105,20 @@ RSpec.describe "gRPC SDK conventions and processor ownership" do
           spans = rpc_spans(exporter)
           expect(spans.size).to eq(8)
           expect(spans.map { |span| span.attributes["rpc.system.name"] }).to all(eq("grpc"))
-          expect(spans.map { |span| span.attributes["rpc.response.status_code"] }).to all(eq("OK"))
+          expect(spans.map { |span| span.attributes["rpc.status_code"] }).to all(eq("OK"))
+          expect_no_retired_attributes(spans)
+          spans.each do |span|
+            expect(span.attributes).to include("rpc.response.header.x-response" => ["value"],
+                                               "rpc.response.trailer.x-trailer" => ["value"],
+                                               "server.address" => "127.0.0.1", "server.port" => port)
+          end
           spans.select { |span| span.kind == :server }.each do |span|
             observed = records.select { |record| record[2] == span.span_id }
             expect(observed.map(&:first)).to include(:handler, :encode, :decode, :codec_cleanup, :application_cleanup)
             expect(observed.map { |record| record[1].object_id }.uniq.size).to eq(1)
             expect(observed.map(&:last)).to all(eq(certificate.serial.to_i))
-            expect(span.attributes["rpc.request.metadata.x-request"]).to eq(["value"])
-            expect(span.attributes["rpc.response.metadata.x-response"]).to eq(["value"])
+            expect(span.attributes["rpc.request.header.x-request"]).to eq(["value"])
+            expect(span.attributes["rpc.response.header.x-response"]).to eq(["value"])
             expect(span.attributes["connectrpc.delivery"]).to eq("completed")
           end
         ensure
@@ -145,7 +153,7 @@ RSpec.describe "gRPC error observation" do
                }
         spans = rpc_spans(exporter)
         standard = code == "canceled" ? "CANCELLED" : "UNAVAILABLE"
-        expect(spans.map { |span| span.attributes["rpc.response.status_code"] }).to eq([standard, standard])
+        expect(spans.map { |span| span.attributes["rpc.status_code"] }).to eq([standard, standard])
         client_span = spans.find { |span| span.kind == :client }
         server_span = spans.find { |span| span.kind == :server }
         expect(client_span.attributes["error.type"]).to eq(standard)
@@ -172,7 +180,7 @@ RSpec.describe "gRPC local transport error conventions" do
     expect { core.call(AsyncHelpers::ECHO::ECHO, AsyncHelpers::MESSAGE.new) }.to raise_error(ConnectRPC::Error)
     span = rpc_spans(exporter).fetch(0)
     expect(span.attributes["rpc.system.name"]).to eq("grpc")
-    expect(span.attributes["rpc.response.status_code"]).to eq("UNAVAILABLE")
+    expect(span.attributes["rpc.status_code"]).to eq("UNAVAILABLE")
     expect(span.attributes["error.type"]).to eq("UNAVAILABLE")
     expect(span.attributes["connectrpc.delivery"]).to eq("aborted")
   ensure
@@ -204,7 +212,7 @@ RSpec.describe "gRPC SDK owned cleanup observation" do
           core.call(AsyncHelpers::ECHO::ECHO, AsyncHelpers::MESSAGE.new)
         end
         span = rpc_spans(exporter).fetch(0)
-        expect(span.attributes["rpc.response.status_code"]).to eq(failure ? "UNAVAILABLE" : "OK")
+        expect(span.attributes["rpc.status_code"]).to eq(failure ? "UNAVAILABLE" : "OK")
         expect(span.attributes["connectrpc.delivery"]).to eq(failure ? "aborted" : "completed")
         expect(span.status.code).to eq(failure ? OpenTelemetry::Trace::Status::ERROR : OpenTelemetry::Trace::Status::UNSET)
         expect(span.events || []).to be_empty

@@ -23,7 +23,7 @@ RSpec.describe "Cancellation tracing" do
     spans = rpc_spans(exporter)
     expect(spans.size).to eq(2)
     spans.each do |span|
-      expect(span.attributes).to include("rpc.response.status_code" => "canceled",
+      expect(span.attributes).to include("rpc.status_code" => "canceled",
                                          "connectrpc.processing.state" => "finished",
                                          "connectrpc.delivery" => "unobserved")
       expect(span.status.code).to eq(span.kind == :client ? OpenTelemetry::Trace::Status::ERROR : OpenTelemetry::Trace::Status::UNSET)
@@ -79,7 +79,7 @@ RSpec.describe "Cancellation tracing" do
           wait_until(task, "two exported canceled spans") { rpc_spans(exporter).size == 2 }
           spans = rpc_spans(exporter)
           code = protocol == :grpc ? "CANCELLED" : "canceled"
-          expect(spans.map { |span| span.attributes["rpc.response.status_code"] }).to eq([code, code])
+          expect(spans.map { |span| span.attributes["rpc.status_code"] }).to eq([code, code])
           receiver = spans.find { |span| span.kind == :server }
           caller = spans.find { |span| span.kind == :client }
           # A client cancellation is not a server error, even though the server's delivery aborted.

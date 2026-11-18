@@ -7,8 +7,13 @@ module ConnectRPC
     Call = Data.define(:role, :protocol, :method, :server_address, :server_port, :carrier, # rubocop:disable Lint/DataDefineOverride
                        :url_scheme, :url_path, :transport_class)
     Outcome = Data.define(:code, :http_status, :error, :normalized_error, :duration,
-                          :request_bytes, :response_bytes, :request_metadata, :response_metadata)
+                          :request_bytes, :response_bytes, :request_metadata, :response_metadata,
+                          :response_trailers)
     Completion = Data.define(:outcome, :processing_state, :decision, :delivery, :error, :http_status, :duration)
+    # @type var empty: headers
+    empty = {}
+    EMPTY_HEADERS = empty.freeze
+    private_constant :EMPTY_HEADERS
 
     Callbacks = Data.define(:attach, :detach, :processing_finished, :finished, :message_received, :message_sent)
     private_constant :Callbacks
@@ -33,6 +38,14 @@ module ConnectRPC
       # Client request facts added in 0.3.0 are optional, so earlier constructions keep working.
       def initialize(role:, protocol:, method:, server_address:, server_port:, carrier:,
                      url_scheme: nil, url_path: nil, transport_class: nil)
+        super
+      end
+    end
+
+    class Outcome
+      # Trailers added in 0.3.0 are optional, so earlier constructions keep working.
+      def initialize(code:, http_status:, error:, normalized_error:, duration:, request_bytes:, response_bytes:,
+                     request_metadata:, response_metadata:, response_trailers: EMPTY_HEADERS)
         super
       end
     end
@@ -82,6 +95,18 @@ module ConnectRPC
     rescue StandardError
       empty = {} #: headers
       empty.freeze
+    end
+
+    # Connect unary responses carry trailers as trailer-prefixed headers. Split
+    # one snapshot into headers and prefix-stripped, validated trailing metadata.
+    # A trailer without values writes no header line, so it is omitted.
+    def self.unary_carriers(headers)
+      values = carrier(headers)
+      [values.reject { |key, _| key.start_with?("trailer-") }.freeze,
+       carrier(Protocol.metadata(values, trailers: true).to_h.reject { |_, entries| entries.empty? })]
+    rescue StandardError
+      empty = {} #: headers
+      [empty.freeze, empty]
     end
 
     # A Handle has no internal synchronization. Hosts call one handle from one
@@ -166,14 +191,15 @@ module ConnectRPC
 
       # Prepare immutable facts; the original processor owns their final notification.
       def processing_finished(code:, http_status: nil, normalized_error: nil, error: nil,
-                              response_bytes: nil, response_metadata: {})
+                              response_bytes: nil, response_metadata: {}, response_trailers: {})
         record_failure(error) if error
         processing_at = @processing_at #: Float
         @outcome = Outcome.new(code: code, http_status: http_status, error: @error,
                                normalized_error: normalized_error, duration: now - processing_at,
                                request_bytes: @request_bytes, response_bytes: response_bytes,
                                request_metadata: Instrumentation.carrier(@request_metadata),
-                               response_metadata: Instrumentation.carrier(response_metadata))
+                               response_metadata: Instrumentation.carrier(response_metadata),
+                               response_trailers: Instrumentation.carrier(response_trailers))
         complete_processing unless @processing_held
       end
 

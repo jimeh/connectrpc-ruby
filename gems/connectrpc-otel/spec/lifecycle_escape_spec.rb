@@ -66,7 +66,7 @@ RSpec.describe "SDK spans across lifecycle execution boundaries" do
     spans = rpc_spans(exporter)
     expect(spans.size).to eq(2)
     spans.each do |span|
-      expect(span.attributes["rpc.response.status_code"]).to eq("OK")
+      expect(span.attributes["rpc.status_code"]).to eq("OK")
       expect(span.attributes).not_to have_key("error.type")
       expect(span.status.code).to eq(OpenTelemetry::Trace::Status::UNSET)
     end
@@ -99,7 +99,7 @@ RSpec.describe "SDK spans across lifecycle execution boundaries" do
       span = spans.first
       expect(span.kind).to eq(:server)
       expect(span.attributes).to include("connectrpc.delivery" => "aborted", "error.type" => "delivery_aborted")
-      expect(span.attributes).not_to have_key("rpc.response.status_code")
+      expect(span.attributes).not_to have_key("rpc.status_code")
       expect(span.status.code).to eq(OpenTelemetry::Trace::Status::ERROR)
       expect(outcomes).to contain_exactly(have_attributes(code: nil, error: nil))
       expect(current_span.context).not_to be_valid

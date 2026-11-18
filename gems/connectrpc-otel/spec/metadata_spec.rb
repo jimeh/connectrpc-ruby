@@ -43,7 +43,7 @@ RSpec.describe "Error types and propagated metadata" do
       native_grpc(server(bus, protocol: :grpc, invoker: invoker))
       attributes = span_attributes(exporter)
       expect(attributes["error.type"]).to eq("RuntimeError")
-      expect(attributes["rpc.response.status_code"]).to eq("OK")
+      expect(attributes["rpc.status_code"]).to eq("OK")
     end
 
     it "falls back to operation_failed for an anonymous exception class" do
@@ -63,7 +63,7 @@ RSpec.describe "Error types and propagated metadata" do
       expect { client.call(rpc, "hi", timeout: Float::NAN) }.to raise_error(ArgumentError)
       attributes = span_attributes(exporter)
       expect(attributes["error.type"]).to eq("ArgumentError")
-      expect(attributes).not_to have_key("rpc.response.status_code")
+      expect(attributes).not_to have_key("rpc.status_code")
     end
 
     it "keeps a non-OK wire code ahead of the original exception class on both roles" do
@@ -82,7 +82,7 @@ RSpec.describe "Error types and propagated metadata" do
       native_grpc(server(bus, protocol: :grpc), path: "/trace.Meta/Missing")
       attributes = span_attributes(exporter)
       expect(attributes["error.type"]).to eq("UNIMPLEMENTED")
-      expect(attributes["rpc.response.status_code"]).to eq("UNIMPLEMENTED")
+      expect(attributes["rpc.status_code"]).to eq("UNIMPLEMENTED")
     end
 
     it "keeps a portable gRPC preflight rejection lowercase" do
@@ -93,7 +93,7 @@ RSpec.describe "Error types and propagated metadata" do
       attributes = span_attributes(exporter)
       expect(attributes["rpc.system.name"]).to eq("grpc")
       expect(attributes["error.type"]).to eq("preflight_rejected")
-      expect(attributes).not_to have_key("rpc.response.status_code")
+      expect(attributes).not_to have_key("rpc.status_code")
     end
 
     it "keeps a gRPC-Web preflight rejection lowercase" do
