@@ -27,6 +27,16 @@ module ConnectRPC
           super(**)
         end
 
+        # Closes within `grace` and returns an exception raised into the
+        # caller's fiber meanwhile. A failure of the closer task itself is a
+        # close failure, which the call ignores whatever its class.
+        def close_retaining(grace)
+          close(grace: grace)
+          nil
+        rescue Exception => e # rubocop:disable Lint/RescueException -- the caller re-raises its own interruption after teardown
+          e unless @closer&.failed? && @closer.result.equal?(e)
+        end
+
         private
 
         def initialize_affinity
@@ -42,28 +52,37 @@ module ConnectRPC
       class Threaded < ThreadedTransport
         def initialize(snapshot:, **)
           @compiled_snapshot = snapshot
+          @engines = []
+          @cutoff = nil
           super(**)
         end
 
-        # Closes within `grace` and joins the owner thread. An interrupt of the
-        # close wait still joins the owner within the close's own bound before
-        # it propagates; a stalled owner is left to exit once it resumes.
-        def close_joined(grace)
-          closed = false
+        # Closes within `grace`, then joins every owner thread this call
+        # started, including one that stopped before the close began. The
+        # close's expiry never passes `cutoff`, so the close stops waiting for
+        # a stalled owner one cleanup allowance after it, and that owner exits
+        # once it resumes. An interrupt of the close wait still joins the
+        # owners, within the same bound, before it propagates.
+        def close_joined(grace, cutoff)
+          @cutoff = cutoff
           close(grace: grace)
-          closed = true
         ensure
-          join_owner unless closed
+          join_owners
         end
 
         private
 
-        def join_owner
-          thread = @engine&.thread
-          return unless thread && !thread.equal?(Thread.current)
+        # A start that fails can replace a stopped engine; each one is joined.
+        def build_engine(admission) = super.tap { |engine| @engines << engine }
 
+        def begin_close(expires) = super(@cutoff ? [expires, @cutoff].min : expires)
+
+        def join_owners
           expires = (@close_expires || Internal.now) + Internal::CLEANUP_SECONDS
-          thread.join([expires - Internal.now, 0].max)
+          @engines.each do |engine|
+            thread = engine.thread
+            thread.join([expires - Internal.now, 0].max) unless thread.equal?(Thread.current)
+          end
         end
 
         def client_snapshot(**) = @compiled_snapshot
@@ -76,7 +95,7 @@ module ConnectRPC
           connect_timeout: Internal.seconds(connect_timeout, "connect_timeout")
         }.freeze
         @tls_options = !(ca_file.nil? && certificate_chain.nil? && private_key.nil?)
-        # Compiled once, with system roots unless a CA is given, and shared by
+        # Compiled once, with system roots and any given CA, and shared by
         # every HTTPS call.
         @snapshot = Internal::TLS.client(ca_file: ca_file, certificate_chain: certificate_chain,
                                          private_key: private_key)
@@ -107,7 +126,12 @@ module ConnectRPC
 
       def per_call(request, &)
         origin = origin_of(request.url)
-        ::Async::Task.current? ? inline(origin, request, &) : threaded(origin, request, &)
+        deadline_at = Internal.now + request.deadline.remaining if request.deadline
+        if ::Async::Task.current?
+          inline(origin, request, deadline_at, &)
+        else
+          threaded(origin, request, deadline_at, &)
+        end
       end
 
       # Validates before any I/O. The request URL itself, with its path prefix
@@ -122,17 +146,24 @@ module ConnectRPC
         url.origin
       end
 
-      # Core checks the deadline again once the transport returns, so the
-      # graceful close never outlives it; an expired call closes raw.
-      def close_grace(request)
-        remaining = request.deadline&.remaining
-        remaining ? [remaining, Internal::CLEANUP_SECONDS].min : Internal::CLEANUP_SECONDS
+      # Returns the graceful close budget and the deadline as a monotonic
+      # time. Core checks the deadline again once the transport returns, so
+      # the wait for the peer's FIN ends one cleanup allowance before the
+      # deadline, which leaves that allowance for the raw close and the joins;
+      # with less time left the close is raw. A Deadline reports no time past
+      # its expiry, so the deadline read when the call started also bounds it.
+      def close_plan(request, deadline_at)
+        return [Internal::CLEANUP_SECONDS, nil] unless deadline_at
+
+        now = Internal.now
+        cutoff = [deadline_at, now + request.deadline.remaining].min
+        [(cutoff - now - Internal::CLEANUP_SECONDS).clamp(0.0, Internal::CLEANUP_SECONDS), cutoff]
       end
 
       # The scope task waits until teardown releases it. Construction, the
       # call and close run in the caller's fiber; the join covers every task
       # the call created, including after an interrupted construction or close.
-      def inline(origin, request)
+      def inline(origin, request, deadline_at)
         release = ::Async::Promise.new
         scope = ::Async::Task.new(::Async::Task.current, finished: false) { release.wait }
         inner = nil
@@ -141,7 +172,7 @@ module ConnectRPC
           inner = Inline.new(scope: scope, origin: origin, snapshot: @snapshot, **@options)
           yield inner
         ensure
-          interruption = finish_inline(inner, scope, release, close_grace(request))
+          interruption = finish_inline(inner, scope, release, close_plan(request, deadline_at).first)
           raise interruption if interruption
         end
       end
@@ -151,9 +182,7 @@ module ConnectRPC
       def finish_inline(inner, scope, release, grace)
         interruption = nil
         begin
-          inner&.close(grace: grace)
-        rescue Exception => e # rubocop:disable Lint/RescueException -- retain a caller interruption until teardown ends
-          interruption = e unless e.is_a?(StandardError) && !Internal.foreign_timeout?(e)
+          interruption = inner&.close_retaining(grace)
         ensure
           release.resolve(nil)
           # A construction cut short can leave a guard without its watcher.
@@ -168,13 +197,13 @@ module ConnectRPC
       end
 
       # Close runs with interrupts deferred; its own waits accept them and
-      # the owner join then finishes before they propagate.
-      def threaded(origin, request)
+      # the owner joins then finish before they propagate.
+      def threaded(origin, request, deadline_at)
         inner = Threaded.new(origin: origin, snapshot: @snapshot, **@options)
         Thread.handle_interrupt(Object => :never) do
           Thread.handle_interrupt(Object => :immediate) { yield inner }
         ensure
-          inner.close_joined(close_grace(request))
+          inner.close_joined(*close_plan(request, deadline_at))
         end
       end
     end

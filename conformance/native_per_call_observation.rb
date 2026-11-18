@@ -39,13 +39,14 @@ module Conformance
       PerCallInnerObservation.record(self) if @observation
     end
 
-    # Read when the transport returns, without joining anything: the owner
-    # thread must already have exited and the scope task finished.
+    # Read when the transport returns, without joining anything: every owner
+    # thread the front started must already have exited and the scope task
+    # finished.
     def boundary_facts
       facts = closed_facts
       if @per_call_front
-        thread = @per_call_front.instance_variable_get(:@engine)&.thread
-        facts.merge(path: "threaded", released: !thread&.alive?)
+        engines = @per_call_front.instance_variable_get(:@engines)
+        facts.merge(path: "threaded", released: engines.none? { |engine| engine.thread.alive? })
       else
         facts.merge(path: "inline", released: @scope.finished? && pending(@scope).empty?)
       end
@@ -66,32 +67,44 @@ module Conformance
   class ObservedPerCallTransport < ConnectRPC::Async::PerCallTransport
     def initialize(observation:, **)
       @observation = observation
+      # The transport freezes itself; this holder keeps the exit facts.
+      @exit_facts = []
       super(**)
     end
 
     def call(...)
-      @observation.observe(:transport) { super }
+      @observation.observe(:transport) { at_exit_facts { super } }
     end
 
     def open_stream(...)
-      @observation.observe(:transport) { super }
+      @observation.observe(:transport) { at_exit_facts { super } }
     end
 
     def open_grpc_stream(...)
-      @observation.observe(:transport) { super }
+      @observation.observe(:transport) { at_exit_facts { super } }
     end
 
-    # Every inner transport the call built, as it stood when the call
-    # returned. A call rejected before construction built none.
-    def closed_facts
+    # The facts captured as the adapter's one transport call returned. A case
+    # that never reached the transport has none, so they are read now.
+    def closed_facts = @exit_facts.last || boundary_facts
+
+    private
+
+    def at_exit_facts
+      yield
+    ensure
+      @exit_facts << boundary_facts
+    end
+
+    # Every inner transport the call built, as it stood at that moment. A call
+    # rejected before construction built none.
+    def boundary_facts
       inners = PerCallInnerObservation.inners.map(&:boundary_facts)
       { **all_of(inners, %i[tasks_finished streams_closed resources_finished lifetime_children_finished released]),
         **%i[calls acquiring].to_h { |fact| [fact, inners.sum { |inner| inner.fetch(fact) }] },
         state: closed?(inners) ? :closed : :open, raw_closed: inners.none? { |inner| inner[:raw_closed] == false },
         inners: inners.size, paths: inners.map { |inner| inner.fetch(:path) }.uniq, socket_interruption: nil }
     end
-
-    private
 
     def all_of(inners, facts) = facts.to_h { |fact| [fact, inners.all? { |inner| inner.fetch(fact) }] }
     def closed?(inners) = inners.all? { |inner| inner.fetch(:state) == :closed }

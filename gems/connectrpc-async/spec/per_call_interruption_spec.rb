@@ -43,6 +43,29 @@ RSpec.describe "PerCallTransport deadlines, cancellation and interrupts" do
 
   def threaded_class = ConnectRPC::Async::PerCallTransport.const_get(:Threaded)
 
+  # A raw peer that records each request's entry and never answers it, so
+  # the client's stream stays open until the client resets it.
+  def holding_peer(entered) = reset_recording_peer { |incoming| entered << incoming.path }
+
+  def expect_cancel_reset(peer)
+    eventually("RST_STREAM(CANCEL) at the peer") { !peer.peer.resets.empty? }
+    expect(peer.peer.resets).to eq([[0, 1, Protocol::HTTP2::Error::CANCEL]])
+  end
+
+  # Holds the stream's own cleanup task, once, as it starts retiring the
+  # stream, until the returned gate opens. `started` resolves on entry.
+  def hold_stream_cleanup(started, gate)
+    armed = [true]
+    trace = TracePoint.new(:call) do
+      next unless armed.shift
+
+      started.call
+      gate.call
+    end
+    trace.enable(target: ConnectRPC::Async::Transport.instance_method(:retire_stopped_output))
+    trace
+  end
+
   context "on the threaded path" do
     attr_reader :contexts, :entered, :release
 
@@ -169,7 +192,7 @@ RSpec.describe "PerCallTransport deadlines, cancellation and interrupts" do
             capture_error { transport.call(request("#{origin}/closing")) }
           end
           close_joined = threaded_class.instance_method(:close_joined)
-          pause = ThreadedHelpers::LinePause.new(close_joined, victim, "closed = false")
+          pause = ThreadedHelpers::LinePause.new(close_joined, victim, "@cutoff = cutoff")
           start << true
           pop_within(pause.held, "the caller to reach its close")
           count.times { |index| victim.raise(interrupt, "interrupt #{index}") }
@@ -184,6 +207,46 @@ RSpec.describe "PerCallTransport deadlines, cancellation and interrupts" do
         peer&.stop
       end
     end
+  end
+
+  # The stream block returns, so the caller waits for the owner's terminal
+  # outcome while the owner's own stream cleanup is held. An interrupt lands
+  # in that wait; the caller is then held before its close, so the owner can
+  # finish only after the interrupt has landed.
+  it "joins the owner before re-raising an interrupt that lands while the stream exits on the threaded path" do
+    peer = threaded_host(server: mixed_server)
+    origin = "http://127.0.0.1:#{peer.peer.port}"
+    interrupt = Class.new(StandardError)
+    held = Thread::Queue.new
+    owner_gate = Thread::Queue.new
+    cleanup = hold_stream_cleanup(-> { held << Thread.current }, -> { Fiber.blocking { owner_gate.pop } })
+    pause = nil
+    with_boundaries do |boundaries|
+      start = Thread::Queue.new
+      victim = Thread.new do
+        start.pop
+        capture_error { mixed_client(per_call, origin).watch(item("exit")) { |reader| reader.each { nil } } }
+      end
+      pause = ThreadedHelpers::LinePause.new(threaded_class.instance_method(:close_joined), victim,
+                                             "@cutoff = cutoff")
+      start << true
+      owner = pop_within(held, "the owner's stream cleanup")
+      expect(owner).not_to equal(victim)
+      victim.raise(interrupt, "while the stream exits")
+      pop_within(pause.held, "the interrupted caller to reach its close")
+      owner_gate << true
+      pause.open
+      error = value_within(victim, "the caller interrupted in the stream exit")
+      expect([error.class, error.message]).to eq([interrupt, "while the stream exits"])
+      observation = boundaries.take.first
+      expect(observation.fetch(:owners)).to eq([owner])
+      expect_released(observation)
+    end
+  ensure
+    cleanup&.disable
+    owner_gate&.<<(true)
+    pause&.open
+    peer&.stop
   end
 
   context "on the inline path" do
@@ -242,47 +305,74 @@ RSpec.describe "PerCallTransport deadlines, cancellation and interrupts" do
     end
 
     it "ends a cancelled caller task after teardown and resets the stream" do
+      entered = Thread::Queue.new
+      peer = holding_peer(entered)
+      origin = "http://127.0.0.1:#{peer.peer.port}"
       with_boundaries do |boundaries|
         reactor do |task|
-          entered = Async::Queue.new
-          release = Async::Queue.new
-          contexts = {}
-          host = gated_reactor_host(entered, release, contexts)
-          origin = "http://127.0.0.1:#{host.port}"
           victim = task.async(finished: false) { client(per_call, origin).echo(AsyncHelpers::MESSAGE.new(name: "v")) }
-          entered.dequeue
+          expect(entered.pop(timeout: 5)).to eq("/example.v1.EchoService/Echo")
           victim.cancel
           expect(victim.wait).to be_nil
           expect(victim).to be_cancelled
-          wait_until(task, "peer CANCEL") { contexts.fetch("v").cancelled? }
-          release.enqueue(true)
-        ensure
-          host&.close(grace: 0)
         end
         expect_released(boundaries.take.first)
+        expect_cancel_reset(peer)
       end
+    ensure
+      peer&.stop
     end
 
     it "re-raises an enclosing with_timeout unchanged and resets the stream" do
+      entered = Thread::Queue.new
+      peer = holding_peer(entered)
+      origin = "http://127.0.0.1:#{peer.peer.port}"
       with_boundaries do |boundaries|
-        reactor do |task|
-          entered = Async::Queue.new
-          release = Async::Queue.new
-          contexts = {}
-          host = gated_reactor_host(entered, release, contexts)
-          origin = "http://127.0.0.1:#{host.port}"
+        error = reactor do |task|
           typed = client(per_call, origin)
           # The handler is entered long before the 0.5 s timeout fires.
-          error = capture_error { task.with_timeout(0.5) { typed.echo(AsyncHelpers::MESSAGE.new(name: "wt")) } }
-          expect(error.class).to eq(Async::TimeoutError)
-          expect(entered.dequeue).to eq("wt")
-          wait_until(task, "peer CANCEL") { contexts.fetch("wt").cancelled? }
-          release.enqueue(true)
-        ensure
-          host&.close(grace: 0)
+          capture_error { task.with_timeout(0.5) { typed.echo(AsyncHelpers::MESSAGE.new(name: "wt")) } }
         end
+        expect(error.class).to eq(Async::TimeoutError)
+        expect(entered.pop(timeout: 5)).to eq("/example.v1.EchoService/Echo")
+        expect_released(boundaries.take.first)
+        expect_cancel_reset(peer)
+      end
+    ensure
+      peer&.stop
+    end
+
+    # The closer is held until the caller's own with_timeout, raising its own
+    # StandardError class, has fired into the caller's wait for the close.
+    it "re-raises an enclosing with_timeout with a custom error class that fires during the close" do
+      peer = threaded_recording_peer
+      origin = "http://127.0.0.1:#{peer.peer.port}"
+      closing = false
+      fired = nil
+      custom = Class.new(StandardError) do
+        define_method(:initialize) do |*arguments|
+          super(*arguments)
+          fired.resolve(closing)
+        end
+      end
+      hold = TracePoint.new(:call) do
+        closing = true
+        fired.wait
+      end
+      hold.enable(target: ConnectRPC::Async::Transport.instance_method(:close_owned))
+      with_boundaries do |boundaries|
+        error, during_close = reactor do |task|
+          fired = Async::Promise.new
+          # The response arrives long before the 0.5 s timeout fires.
+          [capture_error { task.with_timeout(0.5, custom) { per_call.call(request("#{origin}/custom")) } }, fired.wait]
+        end
+        expect(during_close).to be(true)
+        expect(error).to be_a(custom).and(have_attributes(message: "execution expired"))
         expect_released(boundaries.take.first)
       end
+    ensure
+      hold&.disable
+      peer&.stop
     end
 
     it "unwinds a cancellation during connection setup without leaving tasks or its socket" do
@@ -330,12 +420,21 @@ RSpec.describe "PerCallTransport deadlines, cancellation and interrupts" do
       pause&.disable
     end
 
-    # The stream block fails, and the caller's task is cancelled once the
-    # transport's stream cleanup starts.
+    # The stream block fails and the transport's stream cleanup task is held
+    # as it starts, so the caller's task is cancelled while it waits for that
+    # cleanup. Core keeps the block's own exception over the cancellation.
     it "finishes teardown when cancelled during stream cleanup" do
       started = nil
-      trace = TracePoint.new(:call) { started&.resolve(true) }
-      trace.enable(target: ConnectRPC::Async::Transport.instance_method(:cleanup))
+      gate = nil
+      victim = nil
+      returned = false
+      cancels = []
+      trace = hold_stream_cleanup(-> { started.resolve(true) }, -> { gate.wait })
+      cleaned = TracePoint.new(:return) { returned = true }
+      cleaned.enable(target: ConnectRPC::Async::Transport.instance_method(:cleanup))
+      delivered = TracePoint.new(:raise) do |point|
+        cancels << point.raised_exception if Async::Task.current?.equal?(victim)
+      end
       application = Class.new(StandardError)
       with_boundaries do |boundaries|
         reactor do |task|
@@ -345,6 +444,7 @@ RSpec.describe "PerCallTransport deadlines, cancellation and interrupts" do
           origin = "http://127.0.0.1:#{host.port}"
           before = task.children.to_a.reject(&:finished?)
           started = Async::Promise.new
+          gate = Async::Promise.new
           victim = task.async(finished: false) do
             mixed_client(per_call, origin).watch(item("s")) do |reader|
               reader.receive
@@ -352,17 +452,23 @@ RSpec.describe "PerCallTransport deadlines, cancellation and interrupts" do
             end
           end
           started.wait
+          expect(returned).to be(false)
+          delivered.enable
           victim.cancel
-          expect(capture_error { victim.wait }).to be_nil.or(be_a(application))
-          expect(victim).to be_finished
+          gate.resolve(true)
+          expect(capture_error { victim.wait }).to be_a(application)
+          delivered.disable
+          # The cancellation reached the caller's task inside the held cleanup.
+          expect(cancels.map(&:class)).to include(Async::Cancel)
           expect(task.children.to_a.reject(&:finished?) - before).to eq([])
         ensure
+          gate&.resolve(true)
           host&.close(grace: 0)
         end
         expect_released(boundaries.take.first)
       end
     ensure
-      trace&.disable
+      [trace, cleaned, delivered].each { |point| point&.disable }
     end
 
     [1, 2].each do |count|

@@ -11,7 +11,53 @@ RSpec.describe "PerCallTransport connection close, close budget and outcome prec
 
   def no_error_goaway = [0, 0, Protocol::HTTP2::Error::NO_ERROR, ""]
 
+  # One call of the given kind through the public client, reduced to the
+  # names it received.
+  def near_deadline_call(kind, typed, timeout)
+    return [typed.lookup(item("u"), timeout: timeout).message.name] if kind.end_with?("unary")
+
+    names = []
+    typed.watch(item("s"), timeout: timeout) { |reader| reader.each { |message| names << message.name } }
+    names
+  end
+
   PerCallHelpers::PATHS.each do |path|
+    # The handler answers about 90 ms before the client's deadline, from a
+    # peer that never sends FIN. The graceful close must leave the raw close
+    # and the joins inside the deadline, or core's own recheck after the
+    # transport returns turns the success into deadline_exceeded.
+    %w[connect_unary connect_stream grpc_unary grpc_stream].each do |kind|
+      it "returns a #{kind} result that arrives just before the deadline as success on the #{path} path" do
+        timeout = 0.5
+        respond_at = [nil]
+        # Wall-clock positioning is the scenario: the reply lands near the real deadline.
+        near = -> { sleep([respond_at.first - monotonic, 0].max) }
+        peer = withholding_host(server: mixed_server(
+          lookup: lambda { |message, _|
+            near.call
+            message
+          },
+          watch: lambda { |message, writer, _|
+            near.call
+            writer.send_message(message)
+          }
+        ))
+        protocol = kind.start_with?("grpc") ? :grpc : :connect
+        typed = mixed_client(per_call, "http://127.0.0.1:#{peer.peer.port}", protocol: protocol)
+        with_boundaries do |boundaries|
+          result = on_path(path) do
+            # The client's deadline starts after this, so at least 90 ms of it remain at the reply.
+            respond_at[0] = monotonic + timeout - 0.09
+            near_deadline_call(kind, typed, timeout)
+          end
+          expect(result).to eq([kind.end_with?("unary") ? "u" : "s"])
+          expect_released(boundaries.take.first)
+        end
+      ensure
+        peer&.stop
+      end
+    end
+
     it "closes a cooperative peer's connection with GOAWAY(NO_ERROR) and waits for its EOF on the #{path} path" do
       peer = threaded_recording_peer
       origin = "http://127.0.0.1:#{peer.peer.port}"
@@ -40,31 +86,6 @@ RSpec.describe "PerCallTransport connection close, close budget and outcome prec
         expect([response.status, response.body]).to eq([200, "ok"])
         # The drain waited its whole 100 ms budget for a FIN that never came.
         expect(elapsed).to be_between(AsyncHelpers::INTERNAL::CLEANUP_SECONDS, 1)
-        expect_released(boundaries.take.first)
-        expect(peer.peer.goaways).to eq([no_error_goaway])
-      end
-    ensure
-      peer&.stop
-    end
-
-    # A controlled clock leaves 10 ms of the deadline when the response is
-    # sent, so the close budget is that remainder rather than the 100 ms
-    # cleanup allowance, and the transport still returns its result.
-    it "bounds the close by the deadline's remainder on the #{path} path" do
-      now = [0.0]
-      deadline = ConnectRPC::Deadline.new(5, clock: -> { now.first })
-      sent = Thread::Queue.new
-      peer = withholding_peer do |incoming|
-        now[0] = 4.99
-        sent << monotonic
-        incoming.send_response(Protocol::HTTP::Response[200, {}, ["ok"]])
-      end
-      origin = "http://127.0.0.1:#{peer.peer.port}"
-      transport = per_call
-      with_boundaries do |boundaries|
-        response, returned = on_path(path) { [transport.call(request("#{origin}/ok", deadline: deadline)), monotonic] }
-        expect([response.status, response.body]).to eq([200, "ok"])
-        expect(returned - pop_within(sent, "the response")).to be < 0.08
         expect_released(boundaries.take.first)
         expect(peer.peer.goaways).to eq([no_error_goaway])
       end
@@ -120,11 +141,74 @@ RSpec.describe "PerCallTransport connection close, close budget and outcome prec
     end
   end
 
+  # Holds every owner thread on the line after its engine marked itself
+  # stopped and woke the caller, until a thread joins it. Returns the held
+  # owners, in order, and a release for the example's ensure.
+  def hold_stopped_owners
+    finalize = ConnectRPC::Async::ThreadedTransport.const_get(:Engine).instance_method(:finalize)
+    source, first = finalize.source_location
+    line = first + File.readlines(source).drop(first - 1).index do |text|
+      text.strip == "@front.send(:owner_finished, self, outcome)"
+    end
+    lock = Mutex.new
+    gates = Hash.new { |hash, thread| hash[thread] = Thread::Queue.new }
+    gate = ->(thread) { lock.synchronize { gates[thread] } }
+    held = Thread::Queue.new
+    hold = TracePoint.new(:line) do
+      held << Thread.current
+      gate.call(Thread.current).pop
+    end
+    hold.enable(target: finalize, target_line: line)
+    joins = TracePoint.new(:c_call) do |point|
+      gate.call(point.self) << true if point.method_id == :join && point.self.is_a?(Thread)
+    end
+    joins.enable
+    release = lambda do
+      [hold, joins].each(&:disable)
+      lock.synchronize { gates.each_value { |queue| queue << true } }
+    end
+    [held, release]
+  end
+
+  # Each owner fails to build its inner transport. Admitted, the call is
+  # admitted by the failing owner, as when owner construction fails. Replaced,
+  # each owner has stopped before the caller's admission reaches it, so the
+  # front starts all three attempts. The close finds a stopped engine, so it
+  # publishes its outcome without the owner having exited.
+  { admitted: 1, replaced: 3 }.each do |kind, count|
+    it "joins every owner thread the call started when its owner stops (#{kind})" do
+      threaded = ConnectRPC::Async::ThreadedTransport
+      failure = TracePoint.new(:call) do |point|
+        admitted = -> { point.self.instance_variable_get(:@engine)&.calls&.any? }
+        eventually("the call admitted", &admitted) if kind == :admitted
+        raise IOError, "inner construction failed"
+      end
+      failure.enable(target: threaded.instance_method(:build_inner))
+      admission = TracePoint.new(:call) { |point| eventually("the owner stopped") { point.self.state == :stopped } }
+      admission.enable(target: threaded.const_get(:Engine).instance_method(:admit)) if kind == :replaced
+      held, release = hold_stopped_owners
+      with_boundaries do |boundaries|
+        error = on_path(:threaded) { per_call.call(request("http://127.0.0.1:1/stopped")) }
+        expect([error.class, error.code, error.message])
+          .to eq([ConnectRPC::Error, "unavailable", "HTTP/2 transport owner stopped"])
+        owners = count.times.map { pop_within(held, "a stopped owner") }
+        expect(owners.map(&:alive?)).to eq([false] * count)
+        observation = boundaries.take.first
+        expect(observation.fetch(:owners)).to eq(owners)
+        expect_released(observation, dials: 0)
+      end
+    ensure
+      [failure, admission].each { |trace| trace&.disable }
+      release&.call
+    end
+  end
+
   # The owner thread is stalled in native-style blocking while it dials. The
-  # caller returns at its deadline plus the allowance, its close gives up on
-  # the stalled owner at the zero grace plus the allowance, and the owner
-  # exits by itself once released.
-  it "returns at the bound while the owner is stalled and lets the owner exit once released" do
+  # caller's wait returns at its deadline plus the allowance; the close, whose
+  # expiry is that deadline, then gives up on the stalled owner at once
+  # rather than adding a second allowance, and the owner exits by itself once
+  # released.
+  it "returns at the deadline plus one allowance while the owner is stalled and lets the owner exit once released" do
     peer = threaded_host(server: server)
     origin = "http://127.0.0.1:#{peer.peer.port}"
     held = Thread::Queue.new
@@ -134,16 +218,21 @@ RSpec.describe "PerCallTransport connection close, close budget and outcome prec
       Fiber.blocking { gate.pop }
     end
     trace.enable(target: ConnectRPC::Async::Transport.instance_method(:dial))
+    awaited = Thread::Queue.new
+    waits = TracePoint.new(:return) { awaited << monotonic }
+    waits.enable(target: ConnectRPC::Async::ThreadedTransport.instance_method(:await))
     transport = per_call
     caller = Thread.new do
       started = monotonic
       [capture_error { client(transport, origin).echo(AsyncHelpers::MESSAGE.new(name: "stalled"), timeout: 0.3) },
-       monotonic - started]
+       started, monotonic]
     end
     owner = pop_within(held, "the owner to stall in dial")
-    error, elapsed = value_within(caller, "the stalled caller")
+    error, started, returned = value_within(caller, "the stalled caller")
     expect([error.class, error.code]).to eq([ConnectRPC::Error, "deadline_exceeded"])
-    expect(elapsed).to be_between(0.3, 0.3 + 0.1 + 0.1 + 0.5)
+    # The close after the caller's wait adds no allowance of its own.
+    expect(returned - pop_within(awaited, "the caller's wait to return")).to be < 0.05
+    expect(returned - started).to be_between(0.3 + 0.1, 0.3 + 0.1 + 0.09)
     expect(owner).to be_alive
     trace.disable
     gate << true
@@ -151,6 +240,7 @@ RSpec.describe "PerCallTransport connection close, close budget and outcome prec
     expect(peer.peer.accepts.size).to be <= 1
   ensure
     trace&.disable
+    waits&.disable
     gate&.<<(true)
     peer&.stop
   end

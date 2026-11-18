@@ -938,7 +938,7 @@ client.call(method, message, timeout: 2) # Any thread, or inside an Async task.
 
 `PerCallTransport.new(ca_file: nil, certificate_chain: nil, private_key: nil,
 connect_timeout: 10)` validates its options and compiles one TLS snapshot at
-construction, with the system roots unless `ca_file` is given, and holds only
+construction, with the system roots plus the optional `ca_file`, and holds only
 frozen configuration. It has no `origin:` and no `close`: every call dials the
 scheme, host and port of its request URL, so one instance serves every origin
 from any number of threads. `http` URLs use h2c with prior knowledge and
@@ -972,20 +972,21 @@ and bidi streaming before any I/O.
   `REFUSED_STREAM` resends on the same connection, while a GOAWAY that cuts the
   call off resends on a second connection, as grpc-go's transparent retry does.
 - After the exchange, the call closes its connection gracefully: GOAWAY, a
-  half-close, then the peer's FIN. That close waits at most 100 ms, and never
-  past the RPC deadline; a call whose deadline already passed closes raw. A
-  close failure never replaces the call's result or a stream block's own
-  exception.
+  half-close, then the peer's FIN. The wait for that FIN lasts at most 100 ms
+  and ends 100 ms before the RPC deadline. That leaves time for the raw close
+  that follows, so core's deadline check after the transport returns does not
+  turn a result that arrived in time into `deadline_exceeded`. With 100 ms or
+  less of the deadline left, the close is raw. A close failure never replaces the call's result or a stream block's
+  own exception.
 - Deadlines, `CancellationToken`s, `Timeout`, `Thread#raise` and `Thread#kill`
   behave as for `ThreadedTransport` outside a reactor, and task cancellation and
   `with_timeout` as for `Transport` inside one; an interrupted stream is reset
   with `RST_STREAM(CANCEL)`. An interrupt that lands while the call closes its
   connection is raised once that teardown has finished. Outside a reactor such
-  an interrupt ends the close's own wait, and the call still joins the owner
-  thread, within the close's bound, before raising it. If the owner thread is
-  stalled, for example by native code, the call returns at its deadline plus the
-  100 ms allowance and the owner exits once it resumes, as for
-  `ThreadedTransport`.
+  an interrupt ends the close's own wait, and the call still joins its owner
+  threads, within the close's bound, before raising it. If the owner thread is
+  stalled, for example by native code, the call returns at its deadline plus
+  one 100 ms allowance, and the owner exits once it resumes.
 - After fork, the transport holds no inherited state; a child's calls are
   independent. A call in progress during fork stays the parent's.
 
