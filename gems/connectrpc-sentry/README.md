@@ -162,8 +162,9 @@ Names are `fully.qualified.Service/Method`. Unknown methods use `connectrpc` or
 is `auto.rpc.connectrpc`.
 
 Span data is bounded: `rpc.system.name` (`connectrpc` or `grpc`), `rpc.method`,
-`connectrpc.protocol=grpc_web` for gRPC-Web, `rpc.status_code` (lower-case
-Connect codes, upper-case gRPC codes including `CANCELLED`),
+`connectrpc.protocol=grpc_web` for gRPC-Web, `rpc.status_code` (`OK` on
+success, lower-case Connect error codes, upper-case gRPC codes including
+`CANCELLED`),
 `http.response.status_code`, `server.address`/`server.port`, measured wire bytes
 (`connectrpc.request.wire_bytes`, `connectrpc.response.wire_bytes`),
 `connectrpc.processing.duration`, `connectrpc.processing.state`,
@@ -175,7 +176,9 @@ The RPC data names follow the OpenTelemetry
 as `connectrpc-otel` records them. Client spans take `server.address` and
 `server.port` from the endpoint. Since 0.3.0, server spans take them from the
 request's `Host` or HTTP/2 `:authority`, with `server.port` only when the
-request states one; a missing or malformed authority records neither.
+request states one; a missing or malformed authority records neither. Like
+HTTP server conventions, the server value is client-controlled, so its
+cardinality is too.
 
 Span status maps the RPC code: `OK` to `ok`, `canceled` to `cancelled`,
 `unknown` to `unknown_error`, `internal` to `internal_error`, and every other

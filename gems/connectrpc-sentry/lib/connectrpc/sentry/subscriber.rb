@@ -268,15 +268,18 @@ module ConnectRPC
           @rpc = rpc
           @span = span
           @capture = capture
+          @recorded = false
         end
 
         private
 
+        # Outcome facts are recorded once, by whichever callback arrives first.
         # rubocop:disable Metrics/AbcSize, Metrics/CyclomaticComplexity, Metrics/MethodLength, Metrics/PerceivedComplexity
         def record_outcome(outcome)
           span = @span
-          return unless span
+          return if span.nil? || @recorded
 
+          @recorded = true
           span.set_data("rpc.status_code", @rpc.code(outcome.code)) if outcome.code
           span.set_data(HTTP_STATUS, outcome.http_status) if outcome.http_status
           span.set_data("connectrpc.processing.duration", outcome.duration)
@@ -295,11 +298,14 @@ module ConnectRPC
           span = @span
           return unless span
 
+          # An earlier observer's fatal exit can skip processing_finished.
+          outcome = completion.outcome
+          record_outcome(outcome) if outcome
           span.set_data("connectrpc.processing.state", completion.processing_state.to_s)
           span.set_data("connectrpc.decision", completion.decision.to_s)
           span.set_data("connectrpc.delivery", completion.delivery.to_s)
           span.set_data(HTTP_STATUS, completion.http_status) if completion.http_status
-          code = completion.outcome&.code
+          code = outcome&.code
           if completion.delivery == :aborted && (code.nil? || code == "OK")
             span.set_status("unknown_error")
           elsif code.nil? && completion.http_status

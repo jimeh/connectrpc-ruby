@@ -85,6 +85,39 @@ RSpec.describe "Rack hosting" do
     expect(nested[:status]).to eq("ok")
   end
 
+  describe "when an earlier subscriber escapes the processing callbacks" do
+    let(:fatal) { Class.new(Exception) } # rubocop:disable Lint/InheritException -- escape the StandardError boundary
+    let(:rpc_app) do
+      escaping = Object.new
+      error = fatal
+      escaping.define_singleton_method(:start) do |_|
+        Object.new.tap { |observer| observer.define_singleton_method(:processing_finished) { |_| raise error } }
+      end
+      ConnectRPC::Rack.new(server: echo_server(instrumentation: bus(escaping, ConnectRPC::Sentry::Subscriber.new)))
+    end
+
+    it "records the outcome on an owned transaction at finish" do
+      expect { rack_post(rpc_app, "escape") }.to raise_error(fatal)
+      trace = trace_of(rpc_transactions.first)
+      expect(trace[:data]).to include("rpc.status_code" => "OK", "http.response.status_code" => 200,
+                                      "connectrpc.delivery" => "aborted")
+      expect(trace[:data]).to include("connectrpc.processing.duration", "connectrpc.request.wire_bytes",
+                                      "connectrpc.response.wire_bytes")
+      expect(trace[:status]).to eq("unknown_error")
+    end
+
+    it "records the outcome on a nested span at finish" do
+      caller = start_caller
+      expect { rack_post(rpc_app, "escape") }.to raise_error(fatal)
+      caller.finish
+      nested = transactions.first.spans.find { |span| span[:op] == "rpc.server" }
+      expect(nested[:data]).to include("rpc.status_code" => "OK", "http.response.status_code" => 200,
+                                       "connectrpc.delivery" => "aborted")
+      expect(nested[:data]).to include("connectrpc.processing.duration")
+      expect(nested[:status]).to eq("unknown_error")
+    end
+  end
+
   it "names unknown methods by system with rpc.method _OTHER and keeps the host transaction name" do
     app = with_sentry_middleware(rpc_app)
     sentry(trace_ignore_status_codes: [])

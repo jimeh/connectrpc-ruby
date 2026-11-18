@@ -65,8 +65,8 @@ queries that read these attributes:
 | `connectrpc.response.metadata.<key>` (Connect) | `rpc.response.header.<key>` |
 | `rpc.response.metadata.<key>` (gRPC, gRPC-Web) | `rpc.response.header.<key>` |
 
-Status code values keep their casing: lower-case Connect codes and upper-case
-gRPC codes, including `CANCELLED`. Every protocol now uses the same metadata
+Status code values keep their casing: `OK` on success, lower-case Connect error
+codes and upper-case gRPC codes, including `CANCELLED`. Every protocol now uses the same metadata
 prefixes. Response headers and response trailers are separate: a name listed
 in `response_metadata:` records only response headers, and the new
 `response_trailers:` keyword of `Subscriber.new` records trailers as
@@ -81,9 +81,9 @@ and Rails pass `Host`, and the native Async and Falcon hosts pass the
 authority. See [semantic conventions and error status](../gems/connectrpc-otel/README.md#semantic-conventions-and-error-status).
 
 `connectrpc-sentry` span data uses the same names. Its `rpc.response.status_code`
-is now `rpc.status_code`, with the same casing, and `rpc.server` spans and
-transactions carry `server.address` and `server.port` from the same request
-authority. Update Sentry queries, dashboards and alerts that read the old name.
+is now `rpc.status_code`, with the same casing. `rpc.server` spans and
+transactions carry `server.address` from the same request authority, and
+`server.port` when the request gives one. Update Sentry queries, dashboards and alerts that read the old name.
 Sentry records no RPC metadata, so the header and trailer changes do not apply
 to it. See [data and privacy](../gems/connectrpc-sentry/README.md#data-and-privacy).
 
