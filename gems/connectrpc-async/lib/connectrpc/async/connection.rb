@@ -815,8 +815,8 @@ module ConnectRPC
         # takes any of its DATA. The control writer sends the reset; the
         # session observes the refusal. The request is captured first because
         # upstream detaches it from the closed stream. A retiring connection's
-        # control writer may already have stopped, leaving a queued reset
-        # unresolved, so its streams are left to dispatch, which refuses them.
+        # control writer may already have stopped, so its streams are left to
+        # dispatch, which refuses them.
         def admit(stream, upkeep)
           admission = self.admission
           return if !admission || !upkeep || retiring?
@@ -990,7 +990,12 @@ module ConnectRPC
         # closed, by its GOAWAY, an EOF or a reset, lost nothing: the work left
         # is local, such as a stream worker's cleanup and observers. A
         # too_many_pings decision keeps its own bound instead. The EOF or
-        # reset after our own raw failure is never the peer leaving.
+        # reset after our own raw failure is never the peer leaving. A control
+        # frame or keepalive PING write that fails this way leaves the decision
+        # to the reader, which may still read frames the peer sent before it
+        # left. On TLS such a write raises the socket's own errno; OpenSSL
+        # raises SSLError from a write only after a read has already failed,
+        # which the reader decides before anything else runs.
         def outlives_peer?(error)
           return false if @raw_failed
           return false unless @drain_running && !@finishing && !@aborted && @connection.streams.empty?

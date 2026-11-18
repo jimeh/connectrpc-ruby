@@ -948,6 +948,240 @@ RSpec.shared_examples "HTTP/2 server keepalive" do
       end
     end
 
+    # Parks the server reader before its next frame, so it cannot see the
+    # peer leave until resumed. The client's WINDOW_UPDATE ends the read in
+    # progress without any server reply.
+    def park_reader(fixture)
+      parked = Async::Promise.new
+      resume = Async::Promise.new
+      parking = true
+      fixture.resource.connection.define_singleton_method(:read_frame) do
+        if parking
+          parking = false
+          parked.resolve(true)
+          resume.wait
+        end
+        super()
+      end
+      raw_window_update(fixture.client, 0, 1)
+      parked.wait
+      resume
+    end
+
+    # Resets the client's TCP connection and waits until the server socket
+    # has the reset, without reading from it. Polling SO_ERROR consumes the
+    # pending ECONNRESET, so the next server write fails with EPIPE.
+    def reset_client(task, fixture)
+      fixture.client.raw.setsockopt(Socket::Option.linger(true, 0))
+      AsyncHelpers::INTERNAL.raw_close(fixture.client.raw)
+      raw = fixture.resource.raw
+      wait_until(task, "server socket reset") do
+        raw.getsockopt(Socket::SOL_SOCKET, Socket::SO_ERROR).int == Errno::ECONNRESET::Errno
+      end
+    end
+
+    # The peer leaves once its last stream closed, and the cutoff GOAWAY's
+    # write finds the reset before the reader does. The writer leaves the
+    # connection to the reader, which sees the peer leave once resumed.
+    [false, true].each do |tls|
+      it "lets a drain finish when a control frame write sees the peer leave before the reader " \
+         "(#{tls ? 'TLS' : 'h2c'})" do
+        reactor do |task|
+          with_keepalive_host(task, keepalive: server_keepalive(time: nil), tls: tls) do |fixture|
+            client = fixture.client
+            client.wire.ack_pings = false
+            resource = fixture.resource
+            connection = resource.connection
+            release = hold_post_delivery(fixture)
+            closing = task.async { fixture.host.close(grace: 5) }
+            # The drain PING is written and the cutoff waits for its 5 s fallback.
+            await_due(task, fixture.clock, 5)
+            resume = park_reader(fixture)
+            failures = []
+            connection.define_singleton_method(:write_frame) do |frame|
+              super(frame)
+            rescue StandardError => e
+              failures << e if frame.type == Protocol::HTTP2::GoawayFrame::TYPE
+              raise
+            end
+            reset_client(task, fixture)
+            fixture.clock.advance(5)
+            expect(resource.upkeep.drain("graceful_stop").wait).to be(false)
+            expect(failures).to contain_exactly(an_instance_of(Errno::EPIPE))
+            expect(resource).not_to be_finished
+            resume.resolve(true)
+            wait_until(task, "server reader ended") { connection.reader_task.finished? }
+            expect(resource).not_to be_finished
+            expect(resource.peer_departed?).to be(true)
+            release.enqueue(true)
+            expect(closing.wait).to be(true)
+            expect(fixture.log[:completions].map(&:delivery)).to eq([:completed])
+            expect(client.wire.goaways).to eq([[KeepaliveClient::MAX_STREAM_ID, KeepaliveClient::NO_ERROR,
+                                                "graceful_stop"]])
+          ensure
+            resume&.resolve(true)
+            release&.enqueue(true)
+          end
+        end
+      end
+    end
+
+    # A control frame write that sees the peer leave while a stream is still
+    # open fails the connection at once, as the reader would.
+    it "fails a drain at once when a control frame write sees the peer leave with a stream still open" do
+      reactor do |task|
+        with_keepalive_host(task, keepalive: server_keepalive(time: nil)) do |fixture|
+          client = fixture.client
+          client.wire.ack_pings = false
+          resource = fixture.resource
+          open = client.connection.next_stream_id
+          raw_headers(client, open, request_headers(echo_path))
+          raw_data(client, open, encoded("hold-open"), end_stream: true)
+          wait_until(task, "held call invoked") { fixture.log[:invoked].include?("hold-open") }
+          closing = task.async { fixture.host.close(grace: 5) }
+          await_due(task, fixture.clock, 5)
+          resume = park_reader(fixture)
+          reset_client(task, fixture)
+          expect(resource.upkeep.refuse(99).wait).to be(false)
+          expect(resource).to be_finished
+          expect(closing.wait).to be(false)
+          expect(resource.peer_departed?).to be(false)
+        ensure
+          resume&.resolve(true)
+        end
+      end
+    end
+
+    # A server keepalive PING written before the cutoff can also see the peer
+    # leave first. Like a control frame write, it leaves the drain to the
+    # reader instead of failing it as a keepalive timeout.
+    it "lets a drain finish when a keepalive PING write sees the peer leave before the reader" do
+      reactor do |task|
+        with_keepalive_host(task, keepalive: server_keepalive(time: 1)) do |fixture|
+          fixture.client.wire.ack_pings = false
+          resource = fixture.resource
+          connection = resource.connection
+          release = hold_post_delivery(fixture)
+          closing = task.async { fixture.host.close(grace: 5) }
+          await_due(task, fixture.clock, 5)
+          await_due(task, fixture.clock, 1)
+          resume = park_reader(fixture)
+          failures = []
+          connection.define_singleton_method(:send_ping) do |*arguments|
+            super(*arguments)
+          rescue StandardError => e
+            failures << e
+            raise
+          end
+          reset_client(task, fixture)
+          fixture.clock.advance(1)
+          wait_until(task, "keepalive PING write failed") { failures.any? }
+          wait_until(task, "keepalive probe decided") { resource.keepalive.instance_variable_get(:@probe).nil? }
+          expect(failures).to contain_exactly(an_instance_of(Errno::EPIPE))
+          expect(resource).not_to be_finished
+          resume.resolve(true)
+          wait_until(task, "server reader ended") { connection.reader_task.finished? }
+          expect(resource.peer_departed?).to be(true)
+          release.enqueue(true)
+          expect(closing.wait).to be(true)
+          expect(fixture.log[:completions].map(&:delivery)).to eq([:completed])
+        ensure
+          resume&.resolve(true)
+          release&.enqueue(true)
+        end
+      end
+    end
+
+    # Data the peer sent before its reset stays readable after a write sees
+    # the reset. The stream the reader then opens is still open when the
+    # reader sees the peer leave, so the drain fails, as it does when the
+    # reader sees the peer leave first.
+    it "fails a drain when the reader opens a stream after a control frame write saw the peer leave" do
+      reactor do |task|
+        with_keepalive_host(task, keepalive: server_keepalive(time: nil)) do |fixture|
+          client = fixture.client
+          client.wire.ack_pings = false
+          resource = fixture.resource
+          closing = task.async { fixture.host.close(grace: 5) }
+          await_due(task, fixture.clock, 5)
+          resume = park_reader(fixture)
+          late = client.connection.next_stream_id
+          raw_headers(client, late, request_headers(echo_path))
+          raw_data(client, late, encoded("hold-late"), end_stream: true)
+          reset_client(task, fixture)
+          expect(resource.upkeep.refuse(99).wait).to be(false)
+          expect(resource).not_to be_finished
+          resume.resolve(true)
+          expect(closing.wait).to be(false)
+          expect(resource.connection.remote_stream_id).to eq(late)
+          expect(resource.peer_departed?).to be(false)
+          expect(retired?(resource)).to be(true)
+        ensure
+          resume&.resolve(true)
+        end
+      end
+    end
+
+    # A writer that stopped for a peer that left resolves later control
+    # frames at once, so nothing waits on a frame it never writes, such as a
+    # HEADERS refusal's reset. A too_many_pings decision then still ends the
+    # connection at its own bound. Held post-delivery work keeps the drain
+    # from ending the connection first.
+    it "resolves control frames queued after the writer stopped for a peer that left, keeping the " \
+       "too_many_pings bound" do
+      reactor do |task|
+        with_keepalive_host(task, keepalive: server_keepalive(time: nil)) do |fixture|
+          fixture.client.wire.ack_pings = false
+          resource = fixture.resource
+          cleanup = AsyncHelpers::INTERNAL::CLEANUP_SECONDS
+          release = hold_post_delivery(fixture)
+          closing = task.async { fixture.host.close(grace: 5) }
+          await_due(task, fixture.clock, 5)
+          resume = park_reader(fixture)
+          reset_client(task, fixture)
+          expect(resource.upkeep.refuse(99).wait).to be(false)
+          later = resource.upkeep.refuse(101)
+          expect(later).to be_resolved
+          expect(later.value).to be(false)
+          resource.upkeep.send(:violate)
+          await_due(task, fixture.clock, cleanup)
+          expect(resource).not_to be_finished
+          fixture.clock.advance(cleanup)
+          wait_until(task, "too_many_pings bound") { resource.finished? }
+          expect(closing.wait).to be(false)
+        ensure
+          resume&.resolve(true)
+          release&.enqueue(true)
+        end
+      end
+    end
+
+    # Once a drain has written its final GOAWAY, the control writer has
+    # stopped. A too_many_pings decision then still ends the connection, within
+    # its EOF bound rather than the GOAWAY write bound. A duplicate of the
+    # client's socket keeps the peer from closing after the half-close.
+    it "ends a drain's final discard within the too_many_pings EOF bound when the writer already stopped" do
+      reactor do |task|
+        with_keepalive_host(task, keepalive: server_keepalive(time: nil)) do |fixture|
+          kept = fixture.client.raw.dup
+          resource = fixture.resource
+          closing = task.async { fixture.host.close(grace: 5) }
+          wait_until(task, "final discard") { resource.instance_variable_get(:@discarding) }
+          expect(resource).to be_finishing
+          eof = fixture.clock.now + AsyncHelpers::INTERNAL::ServerUpkeep::EOF_SECONDS
+          resource.upkeep.send(:violate)
+          await_due(task, fixture.clock, eof)
+          expect(fixture.clock.sleepers.map(&:due)).to eq([eof])
+          expect(resource).not_to be_finished
+          fixture.clock.advance(eof - fixture.clock.now)
+          expect(closing.wait).to be(false)
+          expect(resource).to be_finished
+        ensure
+          kept&.close
+        end
+      end
+    end
+
     it "keeps a too_many_pings decision ahead of a peer that leaves while a drain waits for its work" do
       reactor do |task|
         with_keepalive_host(task, keepalive: server_keepalive(time: nil)) do |fixture|

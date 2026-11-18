@@ -42,6 +42,7 @@ module ConnectRPC
           @serial = 0
           @check_at = nil
           @delivering = ::Async::Condition.new
+          @stopped = false
         end
 
         # Starting each task can yield. A connection that starts retiring
@@ -60,10 +61,13 @@ module ConnectRPC
         end
 
         # The promise resolves true once the frame is written, or false if the
-        # writer stopped or failed first, or the queue was full.
+        # writer stopped or failed first, or the queue was full. A frame for a
+        # writer that already stopped resolves false at once.
         def write(frame)
           written = ::Async::Promise.new
-          if @queue.size >= MAX_PENDING
+          if @stopped
+            written.resolve(false)
+          elsif @queue.size >= MAX_PENDING
             written.resolve(false)
             @resource.abort(IOError.new("HTTP/2 control frames outran their writer"))
           else
@@ -79,7 +83,10 @@ module ConnectRPC
         # Once the peer left a drain, the drain alone ends the connection, so a
         # failed write stops only this writer. Such a write can still run: a
         # writer already due to run sees the departure's cancellation only
-        # after it.
+        # after it. A write can also find the peer gone before the reader
+        # does. As in grpc-go's loopy writer, that write then stops only this
+        # writer, and the reader, which meets the same end after reading what
+        # the peer sent, decides whether the drain outlives the peer.
         def run
           written = nil
           loop do
@@ -92,8 +99,9 @@ module ConnectRPC
             written.resolve(true)
           end
         rescue StandardError => e
-          @resource.abort(e) unless @resource.peer_departed?
+          @resource.abort(e) unless @resource.peer_departed? || @resource.outlives_peer?(e)
         ensure
+          @stopped = true
           written&.resolve(false)
           @queue.dequeue.last.resolve(false) until @queue.empty?
           @queued.clear
@@ -552,7 +560,10 @@ module ConnectRPC
             timer.run
             sent = written.wait
             @cutoff_written.resolve(sent)
-            next unless sent
+            # A GOAWAY a stopped writer refused or dropped still ends the
+            # connection at this bound, unless a drain already wrote its final
+            # GOAWAY and owns the connection; then the EOF bound below applies.
+            next timer.wait unless sent || @resource.finishing?
 
             Internal.cancel(timer)
             next if @resource.quiesce(@parent, clock: @clock, within: EOF_SECONDS)
