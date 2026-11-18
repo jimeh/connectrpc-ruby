@@ -1,6 +1,6 @@
 # frozen_string_literal: true
 
-RSpec.describe "Fork" do
+RSpec.describe "Fork", :fork do
   before { skip "fork is unavailable" unless Process.respond_to?(:fork) }
 
   %w[grpc_h2c grpc_tls].each do |name|

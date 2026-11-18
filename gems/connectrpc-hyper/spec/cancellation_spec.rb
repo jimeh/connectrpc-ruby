@@ -80,7 +80,7 @@ RSpec.describe "Cancellation and deadlines" do
     expect(peer.count(/\Agrpc accept/, from: from)).to eq(1)
   end
 
-  it "cancels a token during TCP connect, TLS and while waiting behind another caller's dial" do
+  it "cancels a token during TCP connect, TLS and while waiting behind another caller's dial", :linux_only do
     port, cleanup = full_backlog
     silent = TCPServer.new("127.0.0.1", 0)
     accepted = Queue.new
@@ -117,7 +117,7 @@ RSpec.describe "Cancellation and deadlines" do
     silent&.close
   end
 
-  it "cancels a token during name resolution" do
+  it "cancels a token during name resolution", :dns_shim do
     environment = stall_environment
     output, status = ruby_child(<<~RUBY, env: environment)
       events = File.open(ENV.fetch("STALL_EVENTS"), "r+")
@@ -152,7 +152,7 @@ RSpec.describe "Cancellation and deadlines" do
     silent&.close
   end
 
-  it "sends the deadline remaining at dispatch, after a delayed setup" do
+  it "sends the deadline remaining at dispatch, after a delayed setup", :dns_shim do
     environment = stall_environment
     from = peer.mark
     port = URI(peer["raw"]).port

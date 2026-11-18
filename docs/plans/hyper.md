@@ -3,8 +3,8 @@
 Status: approved; implementation in progress on `feat/connectrpc-hyper`
 (issue [#171](https://github.com/jimeh/connectrpc-ruby/issues/171)). The gem,
 CI, cross builds, typecheck/package wiring, the versioned-but-unpublished
-release train entry (D15) and the documentation are in place; the proxy (D18)
-lands next. The contract below is kept as approved. Base: `d521b60`, rebased
+release train entry (D15), the proxy (D18) and the documentation are in
+place. The contract below is kept as approved. Base: `d521b60`, rebased
 onto `ccffd92` (#159 merged). PR title
 `feat: add connectrpc-hyper, a reactor-free Rust client transport`.
 The design follows the #171 spike (hyper 1.x/h2, rustls, tokio, magnus and
@@ -66,7 +66,7 @@ stage and reset its stream.
   stack data stays valid, but the re-raise unwinds through `rb_nogvl`: it must
   run under `rb_protect`. io-event builds the worker pool only with
   `rb_fiber_scheduler_blocking_operation_extract`, which Ruby 3.4 lacks.
-- PR #159 (`feat/net-http-options`, not merged) adds NetHTTP `ca_file:`
+- PR #159 (merged as `ccffd92`) added NetHTTP `ca_file:`
   (appended to the default store), `certificate_chain:` (Array of PEM strings,
   leaf first), `private_key:` (PEM string), TLS 1.2 minimum, no session
   resumption, `proxy: :environment` by default through `ConnectRPC::Proxy`, and
@@ -228,10 +228,16 @@ stage and reset its stream.
   `ConnectRPC::Async::Keepalive.equal?(ConnectRPC::Keepalive)` from installed
   packages in both require orders. connectrpc-hyper still does not depend on
   connectrpc-async.
-- D18 Proxy (phase 2, after #159 merges): `proxy:` through core's
-  `ConnectRPC::Proxy` with the same default and validation as NetHTTP, Rust
-  CONNECT tunnelling (Basic auth) for h2c, TLS and HTTP/1.1 targets. No
-  environment reading in the native graph (hyper-util `tokio` feature only).
+- D18 Proxy (phase 2, after #159 merged): `proxy:` through core's
+  `ConnectRPC::Proxy` with the same values, default, validation and fixed
+  phrases as NetHTTP. h2c and TLS targets tunnel with CONNECT (Basic auth) as
+  grpc-go does; plaintext HTTP/1.1 (`http2: false`) is forwarded in absolute
+  form as NetHTTP and Go net/http do. CONNECT keeps #159's bounds (10 MiB head,
+  60 s exchange, exact 200), except that bytes after the head are kept for h2c,
+  where a server may send SETTINGS behind the reply, as grpc-go keeps them.
+  Pool connections are keyed by origin and proxy route. No environment reading
+  in the native graph (hyper-util without proxy features, enforced by
+  `cargo deny`).
   Verify the default User-Agent reaches the wire unchanged, and that explicit
   repeated and empty values survive the transport.
 
@@ -405,10 +411,11 @@ environment ignored with an explicit proxy, and the User-Agent on the wire.
   (hyper, floors, canary, rbs) provisions the pinned Rust and libclang
   explicitly and pre-fetches the locked crates.
 
-## Phase 2 (after #159 merges)
+## Phase 2 (after #159 merged)
 
-Rebase, add `proxy:` (D18), switch to any shared TLS validation core exposes,
-verify the User-Agent, then mark the PR ready.
+Rebased onto `ccffd92`, added `proxy:` (D18) and verified the User-Agent.
+Core's `ClientTLS` stays a private constant, so the gem keeps its own copy of
+the validation, with a spec feeding the same inputs to both transports.
 
 ## Follow-ups
 

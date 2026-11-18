@@ -27,7 +27,7 @@ RSpec.describe "Transport failures" do
     closing&.close
   end
 
-  it "bounds TCP and TLS setup by connect_timeout, well inside the call deadline" do
+  it "bounds TCP and TLS setup by connect_timeout, well inside the call deadline", :linux_only do
     port, cleanup = full_backlog
     silent = TCPServer.new("127.0.0.1", 0)
     acceptor = Thread.new { loop { silent.accept } }
@@ -44,7 +44,7 @@ RSpec.describe "Transport failures" do
     silent&.close
   end
 
-  it "reports name resolution failures" do
+  it "reports name resolution failures", :dns_shim do
     environment = stall_environment
     output, status = ruby_child(<<~RUBY, env: environment)
       events = File.open(ENV.fetch("STALL_EVENTS"), "r+")

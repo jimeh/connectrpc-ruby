@@ -223,6 +223,10 @@ origin"`. rustls is stricter than OpenSSL:
 - Encrypted private keys are not accepted.
 - A key OpenSSL accepts but aws-lc-rs cannot sign with, such as Ed448, fails at
   construction with the `private_key` error.
+- `ca_file` is read with OpenSSL's store semantics, as NetHTTP reads it: a
+  CRL-only file adds no roots, and trust settings in `TRUSTED CERTIFICATE`
+  blocks are dropped. A `ca_file` certificate that rustls cannot use as a
+  trust anchor is rejected at construction.
 
 ## HTTP/1.1 and ALPN
 
@@ -249,20 +253,36 @@ environment and `NO_PROXY` semantics.
 - A String or URI proxies every request, including loopback and `NO_PROXY`
   hosts. `proxy: nil` always connects directly.
 - Only `http://` proxies are supported, with Basic `Proxy-Authorization` from
-  the URL's userinfo. An explicit invalid or unsupported proxy raises
-  `ArgumentError`. A problem with an environment proxy fails the affected calls
-  with NetHTTP's fixed phrases, and never falls back to a direct connection.
+  the URL's percent-decoded userinfo. An explicit invalid or unsupported proxy
+  raises `ArgumentError` (`Invalid proxy configuration` or
+  `Unsupported proxy scheme`) with no cause. A problem with an environment
+  proxy fails the affected calls with `unavailable` and NetHTTP's fixed phrases
+  (`invalid proxy address`, `unsupported proxy scheme`,
+  `proxy refused in CGI environment`) before any socket opens, and never falls
+  back to a direct connection.
 - h2c and TLS targets tunnel through `CONNECT`, as grpc-go does; TLS verifies
   the target host, not the proxy. Plaintext HTTP/1.1 (`http2: false`) requests
   to `http://` targets go to the proxy in absolute form, as NetHTTP and Go's
   `net/http` send them.
 - A `CONNECT` exchange reads at most a 10 MiB reply head within 60 seconds, as
-  in Go, and needs exactly status 200. Failures are `unavailable` with
+  in Go, and needs exactly status 200. For TLS and HTTP/1.1 targets no bytes
+  may follow the reply head, as in NetHTTP; for h2c they may, because an h2c
+  server can send its SETTINGS right behind the proxy's reply, and grpc-go
+  keeps such bytes. Failures are `unavailable` with
   `proxy authentication failed` (407), `proxy tunnel refused`,
-  `proxy tunnel failed` or `proxy tunnel timed out`; an earlier deadline still
-  ends the call with `deadline_exceeded`.
+  `proxy tunnel failed` or `proxy tunnel timed out`, and proxy reply bytes
+  never reach errors. The call deadline, cancellation, interrupts and
+  `connect_timeout` also cover the proxy hop; an earlier deadline still ends
+  the call with `deadline_exceeded`.
+- Pooled connections are kept per origin and proxy route (proxy address and
+  credentials), so direct and proxied calls never share a connection.
+  `inspect` shows only `proxy=environment`, `explicit` or `direct`, never the
+  proxy URL or credentials.
 - The native code never reads proxy variables itself; Ruby resolves the proxy
-  for each request.
+  for each request, and `cargo deny` rejects hyper-util's proxy features.
+- Compared with Go: `CONNECT` sends no `User-Agent` (Go sends
+  `Go-http-client/1.1`), forwarded HTTP/1.1 connections are not shared across
+  targets, and HTTPS and SOCKS proxies are not supported.
 
 Core's default `User-Agent` reaches the wire unchanged, and caller metadata
 that sets `user-agent` wins.

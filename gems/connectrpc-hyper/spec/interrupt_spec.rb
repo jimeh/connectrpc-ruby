@@ -49,7 +49,7 @@ RSpec.describe "Interrupts" do
   %i[pooled per_call].each do |mode|
     %i[raise raise_exception kill].each do |how|
       context "#{how} (#{mode})" do
-        it "lands while connecting to a full accept queue" do
+        it "lands while connecting to a full accept queue", :linux_only do
           port, cleanup = full_backlog
           transport = hyper(connections: mode)
           outcome = interrupt(how, ready: -> { wait_until("SYN_SENT") { syn_sent?(port) } }) do
@@ -118,7 +118,7 @@ RSpec.describe "Interrupts" do
     end
   end
 
-  it "lands during name resolution, for every interrupt and connection mode" do
+  it "lands during name resolution, for every interrupt and connection mode", :dns_shim do
     environment = stall_environment
     output, status = ruby_child(<<~RUBY, env: environment, timeout: 120)
       Interrupted = Class.new(RuntimeError)
@@ -165,7 +165,7 @@ RSpec.describe "Interrupts" do
     )
   end
 
-  it "never waits for parked resolvers: cancellation, another lookup, GC and exit" do
+  it "never waits for parked resolvers: cancellation, another lookup, GC and exit", :dns_shim do
     environment = stall_environment
     output, status = ruby_child(<<~RUBY, env: environment, timeout: 60)
       events = File.open(ENV.fetch("STALL_EVENTS"), "r+")
@@ -224,9 +224,17 @@ RSpec.describe "Interrupts" do
         wait_parked(writer_thread, "Exchange#write")
         peer.command("release #{tag}")
         result = outcome.pop(timeout: 20)
-        received = peer.wait_count(/grpc cs-recv \d+ 65536/, 40, from: from).map { |event| event.split[2] }
-        expect(received).to eq(Array.new(40, &:to_s))
-        expect(result).to eq(name == "Thread#wakeup" ? :completed : "masked")
+        peer.wait_event(/grpc cs-(eof|error)/, from: from)
+        received = peer.since(from).grep(/grpc cs-recv \d+ 65536/).map { |event| event.split[2] }
+        if name == "Thread#wakeup"
+          expect(received).to eq(Array.new(40, &:to_s))
+          expect(result).to eq(:completed)
+        else
+          # The deferred raise aborts the stream once the mask ends, and its
+          # RST_STREAM may overtake buffered DATA: the peer sees a prefix.
+          expect(received).to eq(Array.new(received.size, &:to_s))
+          expect(result).to eq("masked")
+        end
       end
     end
   end

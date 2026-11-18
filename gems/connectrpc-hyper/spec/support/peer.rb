@@ -5,7 +5,7 @@
 # stdin carries control commands. Waits are bounded and report what the peer
 # last said on timeout.
 class Peer
-  BINARY = File.join(ROOT, "vendor/hyper/peer")
+  BINARY = File.join(ROOT, "vendor/hyper/peer#{RbConfig::CONFIG.fetch('EXEEXT')}")
 
   class << self
     attr_reader :instance

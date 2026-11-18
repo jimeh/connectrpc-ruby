@@ -62,7 +62,7 @@ RSpec.describe "Transport#close" do
     expect(hyper.close).to be(true)
   end
 
-  it "closes during connection setup with grace 0 and fails the dialing call" do
+  it "closes during connection setup with grace 0 and fails the dialing call", :linux_only do
     port, cleanup = full_backlog
     transport = hyper
     dialing = Thread.new do
@@ -79,7 +79,7 @@ RSpec.describe "Transport#close" do
     cleanup&.call
   end
 
-  it "fails lazy exchanges and waiters behind a dial with the closed phrase" do
+  it "fails lazy exchanges and waiters behind a dial with the closed phrase", :linux_only do
     port, cleanup = full_backlog
     transport = hyper
     dialer = Thread.new do

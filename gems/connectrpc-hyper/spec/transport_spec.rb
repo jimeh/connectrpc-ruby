@@ -10,7 +10,7 @@ RSpec.describe ConnectRPC::Hyper::Transport do
     expect(hyper(http2: false).grpc_capabilities).to eq([])
   end
 
-  it "starts no thread or socket at construction, even with TLS options; the first call starts the runtime" do
+  it "starts no thread or socket at construction, even with TLS options; the first call starts the runtime", :linux_only do
     options = tls_options(mtls: true)
     output, status = ruby_child(<<~RUBY)
       threads = -> { Dir.children("/proc/self/task").size }

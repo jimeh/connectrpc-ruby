@@ -110,7 +110,7 @@ RSpec.describe "TLS parity" do
       .to eq(["unavailable", "HTTP transport failed: TLS verification failed"])
   end
 
-  it "rejects a wildcard over a single label" do
+  it "rejects a wildcard over a single label", :dns_shim do
     environment = stall_environment
     root = authority
     server = tls_server(*leaf(root, san: "DNS:*.test"))
