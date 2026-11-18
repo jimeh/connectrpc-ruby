@@ -202,26 +202,33 @@ set `max_concurrent_streams` lower explicitly.
   fills the server's send buffer and stalls the write; the connection is then
   aborted raw socket first, which cancels its handlers and releases all of its
   slots. The bound applies to each frame or header block, not to a whole
-  response, and steady progress within one write does not extend it. A write
-  finishes when the kernel accepts its bytes. Once the socket's send buffer is
-  full, the kernel accepts more only after the peer has drained part of it,
-  which on Linux can be a third of the buffer, up to about 1 MiB with the
-  default 4 MiB maximum. So a peer that keeps reading, but too slowly to drain
-  that much within the bound, is also aborted. Unlike grpc-go's
-  `TCP_USER_TIMEOUT`, which fires when sent data stays unacknowledged, or unsent
-  behind a zero window, for that long, so that any progress resets it, this
-  bound is not reset by partial progress. Control frames queued behind a stalled
-  write, such as the ACKs of a client's BDP or keepalive PINGs or a drain's
-  GOAWAY and PING, wait for that write's bound instead of failing the connection
-  at the keepalive `timeout` first, and their deadlines count again once it
-  finishes. A control frame can therefore wait for several frame writes in turn,
-  each within its own bound, while the peer keeps reading. Raise
-  `frame_write_timeout` for clients that read large responses over slow links.
-  nil turns the bound off; a control frame queued behind a stalled write then
-  still ends the connection after the keepalive `timeout`, or 20 seconds without
-  keepalive. Otherwise the value is finite positive seconds. Application work
-  under the guard, such as closing a HEAD response's body, does not count as a
-  frame write.
+  response. A write finishes when the kernel accepts its bytes. Once the
+  socket's send buffer is full, the kernel accepts more only after the peer has
+  drained a large part of it: about 950 KB on Linux with the default 4 MiB
+  maximum. On Linux 4.6 and later, a write still blocked when its bound ends
+  gets another bound if the socket's `TCP_INFO` shows that the peer acknowledged
+  new data since the previous check while unsent data was queued. Progress means
+  new TCP acknowledgements, which a peer sends once its application frees enough
+  of its receive buffer for the window to open; reading a few bytes at a time
+  may not open it. A peer whose acknowledgements keep advancing, however slowly,
+  therefore stays connected. A peer that stops is aborted between one and two
+  bounds after the later of its last progress and the blocked write's start.
+  This is the idea behind grpc-go's `TCP_USER_TIMEOUT`, which any progress
+  resets, checked once per bound. On other platforms, older Linux kernels and
+  sockets without `TCP_INFO`, such as UNIX sockets, each write keeps a fixed
+  deadline, so a peer that keeps reading, but too slowly to drain that much
+  within the bound, is also aborted. Raise `frame_write_timeout` there for
+  clients that read large responses over slow links. Control frames queued
+  behind a stalled write, such as the ACKs of a client's BDP or keepalive PINGs
+  or a drain's GOAWAY and PING, wait for that write's bound, including its
+  renewals, instead of failing the connection at the keepalive `timeout` first,
+  and their deadlines count again once it finishes. A control frame can
+  therefore wait for several frame writes in turn, each within its own bound,
+  while the peer keeps reading. nil turns the bound off; a control frame queued
+  behind a stalled write then still ends the connection after the keepalive
+  `timeout`, or 20 seconds without keepalive. Otherwise the value is finite
+  positive seconds. Application work under the guard, such as closing a HEAD
+  response's body, does not count as a frame write.
 
 These two response bounds go beyond grpc-go and Go's `golang.org/x/net/http2`,
 which have no equivalent. grpc-go waits for flow-control credit without a bound

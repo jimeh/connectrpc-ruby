@@ -2457,6 +2457,151 @@ RSpec.shared_examples "HTTP/2 server keepalive" do
         end
       end
     end
+
+    def write_watchdog = AsyncHelpers::INTERNAL::WriteWatchdog
+
+    # Whether this platform gives the watchdog Linux TCP_INFO samples, even
+    # where an example stubs them out.
+    def linux_tcp_info? = RUBY_PLATFORM.include?("linux") && defined?(Socket::TCP_INFO)
+
+    # The server socket's tcpi_bytes_acked and tcpi_unacked, at their offsets
+    # in <linux/tcp.h>'s struct tcp_info.
+    def server_acks(fixture)
+      data = fixture.resource.raw.getsockopt(Socket::IPPROTO_TCP, Socket::TCP_INFO).data
+      [data.unpack1("Q", offset: 120), data.unpack1("L", offset: 24)]
+    end
+
+    # A server stream with ample credit floods a peer that does not read by
+    # itself. Returns the probe once a frame write blocks on the full socket.
+    def flood(task, fixture)
+      client = fixture.client
+      raw_window_update(client, 0, KeepaliveClient::MAXIMUM_WINDOW - 65_535)
+      probe = WriteProbe.new(fixture.resource.socket)
+      fixture.resource.connection.stream.instance_variable_set(:@io, probe)
+      chunk = "f" * 65_536
+      256.times { fixture.log[:feeds]["flood"].enqueue(chunk) }
+      start_call(client, watch_method.path, "flood", content_type: "application/connect+proto")
+      wait_until(task, "a server frame write blocked on the socket", within: 10) { probe.writing? }
+      probe
+    end
+
+    # The peer reads once what its receive buffer holds, about 4 KiB, far
+    # less than a blocked write needs to finish. A shorter read can leave
+    # the peer's window closed. On Linux, waits until the server's kernel saw
+    # the peer acknowledge new data and has nothing left unacknowledged, so
+    # no late ACK lands after the next sample.
+    def read_slowly(task, fixture)
+      acked = server_acks(fixture).first if linux_tcp_info?
+      fixture.client.raw.readpartial(65_536)
+      return unless acked
+
+      wait_until(task, "the peer acknowledged new data; acks #{server_acks(fixture)}") do
+        now_acked, unacked = server_acks(fixture)
+        now_acked > acked && unacked.zero?
+      end
+    end
+
+    # The peer reads about 4 KiB every 30 s, so the blocked write never
+    # finishes, but the watchdog samples progress at each of its deadlines
+    # and renews it. Reads at 0, 30, ..., 150 renew it at 60, 120 and 180.
+    # The peer then stops; the sample at 180 saw its last progress, so the
+    # next deadline, 240, finds none and aborts.
+    it "keeps a connection whose peer reads a flooding server stream slowly" do
+      skip "no Linux TCP_INFO progress samples on this platform" unless write_watchdog::TCP_INFO
+
+      reactor do |task|
+        client_options = { read: false, receive_buffer: 4096, settings: open_window }
+        with_keepalive_host(task, keepalive: nil, max_requests: 1, client_options: client_options) do |fixture|
+          clock = fixture.clock
+          probe = flood(task, fixture)
+          written = probe.written
+          # The watchdog took its baseline sample before sleeping.
+          await_due(task, clock, 60)
+          6.times do |step|
+            read_slowly(task, fixture)
+            clock.advance(30)
+            await_due(task, clock, clock.now + 60) if step.odd?
+          end
+          expect([fixture.resource.finished?, probe.writing?, probe.written]).to eq([false, true, written])
+
+          clock.advance(59.9)
+          await_due(task, clock, 240)
+          expect(fixture.resource).not_to be_finished
+          clock.advance(0.1)
+          wait_until(task, "connection retired") { retired?(fixture.resource) }
+          expect(probe.written).to eq(written)
+        end
+      end
+    end
+
+    # The same reader as above, where the watchdog gets no samples: the
+    # write blocked at 0 keeps its fixed deadline, 60.
+    it "retires a slowly reading peer at the write's first deadline without progress samples" do
+      stub_const("#{write_watchdog.name}::TCP_INFO", nil)
+      reactor do |task|
+        client_options = { read: false, receive_buffer: 4096, settings: open_window }
+        with_keepalive_host(task, keepalive: nil, max_requests: 1, client_options: client_options) do |fixture|
+          clock = fixture.clock
+          probe = flood(task, fixture)
+          written = probe.written
+          await_due(task, clock, 60)
+          read_slowly(task, fixture)
+          clock.advance(30)
+          read_slowly(task, fixture)
+          clock.advance(29.9)
+          await_due(task, clock, 60)
+          expect(fixture.resource).not_to be_finished
+          clock.advance(0.1)
+          wait_until(task, "connection retired") { retired?(fixture.resource) }
+          expect(probe.written).to eq(written)
+        end
+      end
+    end
+
+    # The PING ACK must be written within the keepalive timeout, 20 s, and
+    # it waits for the blocked write's bound instead. Its check at 60 runs
+    # when the watchdog's does, and sees the renewed deadline rather than
+    # failing the connection. Reads at 0, 30, 60 and 90 renew the write at
+    # 60 and 120; the samples at 180 find no progress since 120.
+    it "keeps a control frame queued behind a renewed write past the write's first deadline" do
+      skip "no Linux TCP_INFO progress samples on this platform" unless write_watchdog::TCP_INFO
+
+      reactor do |task|
+        client_options = { read: false, receive_buffer: 4096, settings: open_window }
+        with_keepalive_host(task, keepalive: server_keepalive(time: nil), max_requests: 1,
+                                  client_options: client_options) do |fixture|
+          clock = fixture.clock
+          probe = flood(task, fixture)
+          written = probe.written
+          await_due(task, clock, 60)
+          send_ping(fixture.client, "bdp00001")
+          wait_until(task, "PING ACK waits for the frame guard") { fixture.resource.connection.guard_waiting? }
+          await_due(task, clock, 20)
+          read_slowly(task, fixture)
+          clock.advance(30)
+          read_slowly(task, fixture)
+          clock.advance(30)
+          # The renewed write, and the ACK's next check within its 20 s step.
+          await_due(task, clock, 120)
+          await_due(task, clock, 80)
+          expect(fixture.resource).not_to be_finished
+          2.times do
+            read_slowly(task, fixture)
+            clock.advance(30)
+          end
+          await_due(task, clock, 180)
+          expect([fixture.resource.finished?, probe.writing?, probe.written]).to eq([false, true, written])
+
+          clock.advance(59.9)
+          wait_until(task, "the ACK's check and the watchdog both due at 180; pending #{clock.sleepers.map(&:due)}") do
+            clock.sleepers.count { |sleeper| (sleeper.due - 180).abs < 1e-9 } == 2
+          end
+          expect(fixture.resource).not_to be_finished
+          clock.advance(0.1)
+          wait_until(task, "connection retired") { retired?(fixture.resource) }
+        end
+      end
+    end
   end
 
   describe "graceful close" do
