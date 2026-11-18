@@ -177,6 +177,18 @@ module ConnectRPC
       def open_grpc_stream: [T] (StreamRequest) { (_GRPCStreamExchange) -> T } -> T
       def close: (?grace: Numeric) -> bool
     end
+    # Since 0.3.0. Connect unary and server streaming, and native gRPC unary
+    # and server streaming, over one HTTP/2 connection per call to the
+    # request URL's origin, from any thread or inline in an Async task. Each
+    # call closes its own connection, so there is no close.
+    class PerCallTransport
+      def initialize: (?ca_file: String?, ?certificate_chain: Array[String]?, ?private_key: String?, ?connect_timeout: Numeric) -> void
+      def call: (TransportRequest) -> TransportResponse
+      def streaming_capabilities: () -> Array[:server_stream]
+      def open_stream: [T] (StreamRequest) { (_StreamExchange) -> T } -> T
+      def grpc_capabilities: () -> Array[:unary | :server_stream]
+      def open_grpc_stream: [T] (StreamRequest) { (_GRPCStreamExchange) -> T } -> T
+    end
     class HTTP1Transport
       def initialize: (origin: String, ?ca_file: String?, ?certificate_chain: Array[String]?, ?private_key: String?, ?connection_limit: Integer, ?max_requests: Integer, ?connect_timeout: Numeric) -> void
       def streaming_capabilities: () -> Array[:server_stream | :client_stream]
