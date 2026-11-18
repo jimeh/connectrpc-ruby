@@ -429,7 +429,8 @@ watchdog or timeout header only when it passes `timeout: nil` and no
 Since 0.3.0, every call, including the streaming calls and generated wrappers,
 also accepts `deadline:`, a `ConnectRPC::Deadline` or nil. The call uses the
 earlier of `timeout:` and `deadline:`, chosen once at call setup, and reuses the
-supplied object when it is earlier. A handler passes its own deadline to a
+supplied object when it is strictly earlier. The `timeout:` budget starts on the
+supplied deadline's clock, so the two expiries compare exactly. A handler passes its own deadline to a
 downstream call so it ends no later than the request that caused it:
 
 ```ruby

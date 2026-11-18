@@ -138,11 +138,17 @@ RSpec.describe "ConnectRPC::Protocol.call_deadline" do
     expect(selected).to be_a(ConnectRPC::Deadline)
   end
 
-  it "falls back to remaining time for a deadline on a custom clock" do
-    custom = ConnectRPC::Deadline.new(5, clock: -> { 0.0 })
-    expect(ConnectRPC::Protocol.call_deadline(10, custom)).to equal(custom)
-    later = ConnectRPC::Deadline.new(20, clock: -> { 0.0 })
-    expect(ConnectRPC::Protocol.call_deadline(10, later)).not_to equal(later)
+  it "builds the budget on a custom-clock deadline's own clock and compares absolute expiries" do
+    ticks = 0.0
+    clock = -> { ticks += 1.0 } # every read advances one second, like the stubbed monotonic clock
+    earlier = ConnectRPC::Deadline.new(10.5, clock: clock) # expires 0.5 s before a 10 s budget created on the next read
+    expect(ConnectRPC::Protocol.call_deadline(10, earlier)).to equal(earlier)
+    tied = ConnectRPC::Deadline.new(11, clock: clock)
+    expect(ConnectRPC::Protocol.call_deadline(10, tied)).not_to equal(tied)
+    later = ConnectRPC::Deadline.new(12, clock: clock)
+    selected = ConnectRPC::Protocol.call_deadline(10, later)
+    expect(selected).not_to equal(later)
+    expect(selected.remaining).to eq(9.0) # a 10 s budget on the custom clock, read one tick after creation
   end
 end
 

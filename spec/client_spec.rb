@@ -201,7 +201,8 @@ RSpec.describe ConnectRPC::Client do
       expect(opened.last.deadline).to equal(deadline)
       value, unit = opened.last.headers.fetch("grpc-timeout").first.match(/\A(\d+)([HMSmun])\z/).captures
       seconds = value.to_i * { "H" => 3600, "M" => 60, "S" => 1, "m" => 1e-3, "u" => 1e-6, "n" => 1e-9 }.fetch(unit)
-      expect(seconds).to be_between(0, 2)
+      expect(seconds).to be > 0
+      expect(seconds).to be <= 2
     end
 
     it "rejects a non-Deadline deadline and non-finite timeouts before any work" do

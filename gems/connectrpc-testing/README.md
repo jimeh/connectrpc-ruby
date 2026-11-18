@@ -112,16 +112,16 @@ from the remaining budget. Core reconstructs its cooperative server deadline
 from rounded/clamped wire milliseconds. The original deadline remains
 authoritative and expiry takes precedence over the response wire cap.
 
-The Client's omitted timeout remains 30 seconds; `timeout: nil` adds no deadline
-or timeout header. A low-level request with nil deadline can still explicitly
+The Client's omitted timeout remains 30 seconds; `timeout: nil` without
+`deadline:` adds no deadline or timeout header. A low-level request with nil deadline can still explicitly
 supply a core timeout header.
 
 ### Explicit unary cancellation
 
 Pass `cancellation: source.token` to core or generated client calls, where
 `source = ConnectRPC::CancellationSource.new`. The source is permanent and
-shareable; only `source.cancel` initiates cancellation. `timeout: nil` keeps no
-RPC deadline or wire timeout. Context offers cooperative `cancelled?`,
+shareable; only `source.cancel` initiates cancellation. `timeout: nil` without
+`deadline:` keeps no RPC deadline or wire timeout. Context offers cooperative `cancelled?`,
 `cancellation_reason` and `check!`. See the
 [unary guide](../../docs/unary.md#cancellation) for listener, arbitration and
 registration lifetime rules.

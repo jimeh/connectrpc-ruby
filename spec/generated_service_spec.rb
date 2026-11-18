@@ -420,6 +420,46 @@ RSpec.describe "Generated service-object handlers" do
       expect(mixed.handlers_for(Class.new).keys).to be_empty
       expect { mixed.handlers_for(Class.new, strict: true) }.to raise_error(ArgumentError, /watch, collect/)
     end
+
+    it "maps a Class's own and inherited singleton methods but not Class, Object or Object's singleton methods" do
+      stub_core(Class, :watch)
+      stub_core(Object, :collect)
+      stub_core(Object.singleton_class, :chat)
+      item = self.item
+      base = Class.new do
+        define_singleton_method(:lookup) { |request, _context| item.new(name: "class #{request.name}") }
+      end
+      service = Class.new(base)
+      handlers = mixed.handlers_for(service)
+      expect(handlers.keys).to eq([mixed::LOOKUP.path])
+      expect(handlers.values.first.receiver).to equal(service)
+      response = mixed_server(handlers).call(path: mixed::LOOKUP.path, http_method: "POST",
+                                             headers: { "content-type" => ["application/proto"] },
+                                             input: StringIO.new(item.new(name: "c").to_proto))
+      expect(item.decode(response.body).name).to eq("class c")
+      expect { mixed.handlers_for(service, strict: true) }.to raise_error(ArgumentError, /watch, collect, chat/)
+    end
+
+    it "keeps a mixin the implementation's class includes even when Object and Class also include it" do
+      item = self.item
+      # Object and Class can never un-include a module, so this anonymous mixin
+      # only holds lookup during the example; the after hook removes the
+      # method, leaving an empty module that cannot affect other examples.
+      mixin = Module.new
+      mixin.define_method(:lookup) { |request, _context| item.new(name: "mixin #{request.name}") }
+      stubbed << [mixin, :lookup]
+      impl = Class.new(implementation) { include mixin }.new
+      Object.include(mixin)
+      Class.include(mixin)
+      handlers = mixed.handlers_for(impl)
+      expect(handlers.keys).to eq(mixed::SERVICE.rpcs.map(&:path))
+      expect(handlers.fetch(mixed::LOOKUP.path).owner).to equal(mixin)
+      response = mixed_server(handlers).call(path: mixed::LOOKUP.path, http_method: "POST",
+                                             headers: { "content-type" => ["application/proto"] },
+                                             input: StringIO.new(item.new(name: "a").to_proto))
+      expect([response.status, item.decode(response.body).name]).to eq([200, "mixin a"])
+      expect(mixed.handlers_for(impl, strict: true).keys).to eq(handlers.keys)
+    end
   end
 
   it "returns an empty map for an empty service" do
