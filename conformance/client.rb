@@ -216,7 +216,7 @@ module Conformance
 
     def prepare(request)
       validate!(request)
-      declaration = SERVICE.methods.find { |rpc| rpc.name == request["method"] }
+      declaration = SERVICE.rpcs.find { |rpc| rpc.name == request["method"] }
       wire = request.request_messages.first
       unless wire.type_url.split("/").last == declaration.request_type.descriptor.name
         raise "Unexpected request type: #{wire.type_url}"

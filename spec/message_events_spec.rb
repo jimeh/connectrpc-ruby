@@ -44,7 +44,7 @@ RSpec.describe "Per-message lifecycle callbacks" do
   def messages(role, kind) = events.filter_map { |entry| entry.last if entry.first(2) == [role, kind] }
 
   def server(rpc, handler, **)
-    ConnectRPC::Server.new(services: [ConnectRPC::Service.new(name: rpc.service, methods: [rpc])], binding: binding,
+    ConnectRPC::Server.new(services: [ConnectRPC::Service.new(name: rpc.service, rpcs: [rpc])], binding: binding,
                            handlers: { rpc.path => handler }, instrumentation: bus, status_codec: status_codec, **)
   end
 
@@ -315,7 +315,7 @@ RSpec.describe "Per-message lifecycle callbacks" do
       bus = ConnectRPC::Instrumentation.new(subscribers: [failing, subscriber, plain],
                                             on_error: ->(error) { errors << error })
       rpc = declaration
-      target = ConnectRPC::Server.new(services: [ConnectRPC::Service.new(name: rpc.service, methods: [rpc])],
+      target = ConnectRPC::Server.new(services: [ConnectRPC::Service.new(name: rpc.service, rpcs: [rpc])],
                                       binding: binding, handlers: { rpc.path => ->(message, _) { message } },
                                       instrumentation: bus)
       client = ConnectRPC::Client.new(base_url: "https://example.invalid", binding: binding,

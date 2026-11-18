@@ -19,7 +19,7 @@ RSpec.describe ConnectRPC::OnRails::Controller do
   it "rejects streaming media and declarations before binding or entering the Rails action lifecycle" do
     rpc = ConnectRPC::ServerStreamMethod.new(service: service::SERVICE.name, name: "Watch",
                                              request_type: type, response_type: type)
-    mixed = ConnectRPC::Service.new(name: rpc.service, methods: [*service::SERVICE.methods, rpc])
+    mixed = ConnectRPC::Service.new(name: rpc.service, rpcs: [*service::SERVICE.rpcs, rpc])
     allow_any_instance_of(EchoController).to receive(:connect_service).and_return(mixed)
     allow_any_instance_of(EchoController).to receive(:connect_binding).and_return(binding)
     expect_any_instance_of(EchoController).not_to receive(:connect)
@@ -74,6 +74,14 @@ RSpec.describe ConnectRPC::OnRails::Controller do
                ).name).to eq("detail")
              }
     end
+  end
+
+  it "serves a controller that keeps the default connect_binding hook with the loaded Google binding" do
+    expect(DefaultBindingController.private_instance_methods(false)).not_to include(:connect_binding)
+    expect(DefaultBindingController.new.send(:connect_binding)).to be_nil
+    response = rpc("/default/example.v1.EchoService/Echo")
+    expect(response.status).to eq(200)
+    expect(binding.decode(response.body, type: type, codec: :proto)).to eq(type.new(name: "Jim", count: 42))
   end
 
   it "exposes only connect as the concern's public action and keeps hooks/accessors/handlers private" do

@@ -49,7 +49,7 @@ module Conformance
   UNIMPLEMENTED = ConnectRPC::Method.new(service: SERVICE_NAME, name: "Unimplemented",
                                          request_type: UnimplementedRequest,
                                          response_type: UnimplementedResponse)
-  SERVICE = ConnectRPC::Service.new(name: SERVICE_NAME, methods: [UNARY, IDEMPOTENT_UNARY, UNIMPLEMENTED])
+  SERVICE = ConnectRPC::Service.new(name: SERVICE_NAME, rpcs: [UNARY, IDEMPOTENT_UNARY, UNIMPLEMENTED])
 
   def self.pack(message)
     Google::Protobuf::Any.new(type_url: "type.googleapis.com/#{message.class.descriptor.name}", value: message.to_proto)

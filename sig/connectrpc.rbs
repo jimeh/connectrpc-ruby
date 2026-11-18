@@ -25,9 +25,10 @@ module ConnectRPC
   type streaming_cardinality = :server_stream | :client_stream | :bidi_stream
 
   class Service
-    def initialize: (name: String, methods: Array[declaration]) -> void
+    # Since 0.3.0, rpcs replaces the former methods keyword and reader.
+    def initialize: (name: String, rpcs: Array[declaration]) -> void
     attr_reader name: String
-    attr_reader methods: Array[declaration]
+    attr_reader rpcs: Array[declaration]
   end
 
   # Custom token-based codecs erase message identity at this boundary.
@@ -192,14 +193,17 @@ module ConnectRPC
   end
 
   class Client
-    def initialize: (base_url: String, binding: _Binding, ?transport: (_Transport | _StreamingTransport | _GRPCTransport)?, ?codec: codec, ?request_limit: Integer, ?response_limit: Integer, ?request_wire_limit: Integer, ?response_wire_limit: Integer, ?accept_encoding: Array[:identity | :gzip]?, ?use_get: bool, ?get_url_limit: Integer, ?protocol: :connect | :grpc, ?mode: :unary, ?encoding: :identity | :gzip, ?instrumentation: Instrumentation?, ?terminal_wire_limit: Integer, ?terminal_limit: Integer, ?status_codec: _GRPCStatusCodec?, ?grpc_status_wire_limit: Integer, ?grpc_status_limit: Integer, ?interceptors: Array[client_interceptor]) -> void
-    def call: [Req, Resp] (Method[Req, Resp], Req request, ?metadata: metadata_input, ?timeout: Numeric?, ?cancellation: CancellationToken?) -> Response[Resp]
+    # Since 0.3.0, an omitted or nil binding uses the loaded Google protobuf binding.
+    def initialize: (base_url: String, ?binding: _Binding?, ?transport: (_Transport | _StreamingTransport | _GRPCTransport)?, ?codec: codec, ?request_limit: Integer, ?response_limit: Integer, ?request_wire_limit: Integer, ?response_wire_limit: Integer, ?accept_encoding: Array[:identity | :gzip]?, ?use_get: bool, ?get_url_limit: Integer, ?protocol: :connect | :grpc, ?mode: :unary, ?encoding: :identity | :gzip, ?instrumentation: Instrumentation?, ?terminal_wire_limit: Integer, ?terminal_limit: Integer, ?status_codec: _GRPCStatusCodec?, ?grpc_status_wire_limit: Integer, ?grpc_status_limit: Integer, ?interceptors: Array[client_interceptor]) -> void
+    # Since 0.3.0, deadline: bounds the call with the earlier of it and timeout.
+    def call: [Req, Resp] (Method[Req, Resp], Req request, ?metadata: metadata_input, ?timeout: Numeric?, ?deadline: Deadline?, ?cancellation: CancellationToken?) -> Response[Resp]
   end
 
   class Server
     # Generated .handlers checks each concrete callable before this heterogeneous
     # registration map erases its individual request/response associations.
-    def initialize: (services: Array[Service], binding: _Binding, ?handlers: Hash[String, registered_handler], ?invoker: (^(Method[untyped, untyped], untyped, Context) -> untyped | _Invoker)?, ?request_limit: Integer, ?response_limit: Integer, ?request_wire_limit: Integer, ?response_wire_limit: Integer, ?protocol: server_protocol_selection, ?mode: :unary, ?encoding: :identity | :gzip, ?instrumentation: Instrumentation?, ?get_query_limit: Integer?, ?terminal_wire_limit: Integer, ?terminal_limit: Integer, ?status_codec: _GRPCStatusCodec?, ?grpc_status_wire_limit: Integer, ?grpc_status_limit: Integer, ?cors: GRPCWebCORS?, ?interceptors: Array[server_interceptor], ?on_error: (^(StandardError) -> void | _ServerErrorHandler)?) -> void
+    # Since 0.3.0, an omitted or nil binding uses the loaded Google protobuf binding.
+    def initialize: (services: Array[Service], ?binding: _Binding?, ?handlers: Hash[String, registered_handler], ?invoker: (^(Method[untyped, untyped], untyped, Context) -> untyped | _Invoker)?, ?request_limit: Integer, ?response_limit: Integer, ?request_wire_limit: Integer, ?response_wire_limit: Integer, ?protocol: server_protocol_selection, ?mode: :unary, ?encoding: :identity | :gzip, ?instrumentation: Instrumentation?, ?get_query_limit: Integer?, ?terminal_wire_limit: Integer, ?terminal_limit: Integer, ?status_codec: _GRPCStatusCodec?, ?grpc_status_wire_limit: Integer, ?grpc_status_limit: Integer, ?cors: GRPCWebCORS?, ?interceptors: Array[server_interceptor], ?on_error: (^(StandardError) -> void | _ServerErrorHandler)?) -> void
     attr_reader services: Array[Service]
     def handles?: (String path) -> bool
     def start_call: (path: String, headers: headers, ?http_method: String) -> Instrumentation::Handle?
@@ -538,6 +542,7 @@ module ConnectRPC
 
   class Deadline
     MAX_NATIVE_WAIT: Float
+    # Since 0.3.0, zero and negative finite timeouts are already expired.
     def initialize: (Numeric timeout, ?clock: ^() -> Numeric | _Clock) -> void
     def remaining: () -> Numeric
     def expired?: () -> bool
@@ -566,7 +571,8 @@ module ConnectRPC
     def initialize: (type: String, value: String) -> void
     attr_reader type: String
     attr_reader value: String
-    def decode: (binding: _Binding, type: Object) -> untyped
+    # Since 0.3.0, an omitted or nil binding uses the loaded Google protobuf binding.
+    def decode: (type: Object, ?binding: _Binding?) -> untyped
     def to_h: () -> Hash[String, String]
   end
 
@@ -676,9 +682,10 @@ module ConnectRPC
     | _BidiStreamHandler[untyped, untyped] | ^(ServerDuplex[untyped, untyped], StreamingContext) -> void
 
   class Client
-    def server_stream: [Req, Resp] (ServerStreamMethod[Req, Resp], Req, ?metadata: metadata_input, ?timeout: Numeric?, ?cancellation: CancellationToken?) { (ResponseReader[Resp]) -> void } -> nil
-    def client_stream: [Req, Resp] (ClientStreamMethod[Req, Resp], ?metadata: metadata_input, ?timeout: Numeric?, ?cancellation: CancellationToken?) { (RequestWriter[Req]) -> void } -> Response[Resp]
-    def bidi_stream: [Req, Resp] (BidiStreamMethod[Req, Resp], ?metadata: metadata_input, ?timeout: Numeric?, ?cancellation: CancellationToken?) { (ClientDuplex[Req, Resp]) -> void } -> nil
+    # Since 0.3.0, deadline: bounds each stream with the earlier of it and timeout.
+    def server_stream: [Req, Resp] (ServerStreamMethod[Req, Resp], Req, ?metadata: metadata_input, ?timeout: Numeric?, ?deadline: Deadline?, ?cancellation: CancellationToken?) { (ResponseReader[Resp]) -> void } -> nil
+    def client_stream: [Req, Resp] (ClientStreamMethod[Req, Resp], ?metadata: metadata_input, ?timeout: Numeric?, ?deadline: Deadline?, ?cancellation: CancellationToken?) { (RequestWriter[Req]) -> void } -> Response[Resp]
+    def bidi_stream: [Req, Resp] (BidiStreamMethod[Req, Resp], ?metadata: metadata_input, ?timeout: Numeric?, ?deadline: Deadline?, ?cancellation: CancellationToken?) { (ClientDuplex[Req, Resp]) -> void } -> nil
   end
   class Server
     def call_stream: (path: String, http_method: String, headers: headers, input: _StreamingInput, output: _StreamingOutput, publish: _PublishStreamHead | ^(StreamHead) -> void, ?lifecycle: Instrumentation::Handle?, ?cancellation: _Cancellation?, ?http2: bool, ?capabilities: Array[streaming_cardinality]?) -> TransportResponse?

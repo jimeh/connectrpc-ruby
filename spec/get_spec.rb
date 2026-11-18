@@ -13,7 +13,7 @@ RSpec.describe "Connect unary GET" do
     ConnectRPC::Method.new(service: "get.Service", name: "Read", request_type: String, response_type: String,
                            idempotency: :no_side_effects)
   end
-  let(:service) { ConnectRPC::Service.new(name: method.service, methods: [method]) }
+  let(:service) { ConnectRPC::Service.new(name: method.service, rpcs: [method]) }
   let(:server) do
     ConnectRPC::Server.new(services: [service], binding: binding, handlers: { method.path => ->(value, _) { value } })
   end
@@ -165,7 +165,7 @@ RSpec.describe "Connect unary GET" do
     unsafe = ConnectRPC::Method.new(service: method.service, name: "Write", request_type: String, response_type: String)
     merely = ConnectRPC::Method.new(service: method.service, name: "Retry", request_type: String, response_type: String,
                                     idempotency: :idempotent)
-    declarations = ConnectRPC::Service.new(name: method.service, methods: [method, unsafe, merely])
+    declarations = ConnectRPC::Service.new(name: method.service, rpcs: [method, unsafe, merely])
     target = ConnectRPC::Server.new(services: [declarations],
                                     binding: binding)
     expect(binding).not_to receive(:decode)

@@ -10,7 +10,7 @@ require "rack/lint"
 type = Google::Protobuf::StringValue
 method = ConnectRPC::Method.new(service: "installed.Echo", name: "Call", request_type: type, response_type: type,
                                 idempotency: :no_side_effects)
-service = ConnectRPC::Service.new(name: method.service, methods: [method])
+service = ConnectRPC::Service.new(name: method.service, rpcs: [method])
 binding = ConnectRPC::Bindings::GoogleProtobuf.new
 handler = lambda do |request, context|
   if request.value == "fail"

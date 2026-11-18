@@ -24,7 +24,7 @@ RSpec.describe "Lifecycle execution boundaries" do
   end
 
   def server(**, &handler)
-    ConnectRPC::Server.new(services: [ConnectRPC::Service.new(name: rpc.service, methods: [rpc])],
+    ConnectRPC::Server.new(services: [ConnectRPC::Service.new(name: rpc.service, rpcs: [rpc])],
                            binding: binding, instrumentation: bus,
                            handlers: { rpc.path => handler || ->(message, _) { message } }, **)
   end
@@ -134,7 +134,7 @@ RSpec.describe "Lifecycle execution boundaries" do
       stream = ConnectRPC::ServerStreamMethod.new(service: rpc.service, name: rpc.name,
                                                   request_type: String, response_type: String)
       return ConnectRPC::Server.new(
-        services: [ConnectRPC::Service.new(name: rpc.service, methods: [stream])], binding: binding,
+        services: [ConnectRPC::Service.new(name: rpc.service, rpcs: [stream])], binding: binding,
         instrumentation: bus, handlers: { rpc.path => lambda { |request, writer, context|
           writer.send_message(handler ? handler.call(request, context) : request)
         } }

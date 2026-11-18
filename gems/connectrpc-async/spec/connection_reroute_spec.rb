@@ -31,7 +31,7 @@ RSpec.describe "HTTP/2 dispatch-guard reroute" do
       method = stream_method
       observed = []
       target = ConnectRPC::Server.new(
-        services: [ConnectRPC::Service.new(name: method.service, methods: [method])],
+        services: [ConnectRPC::Service.new(name: method.service, rpcs: [method])],
         binding: ConnectRPC::Bindings::GoogleProtobuf.new,
         handlers: { method.path => lambda { |message, writer, _|
           observed << message.name

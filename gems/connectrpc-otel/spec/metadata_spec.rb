@@ -12,7 +12,7 @@ RSpec.describe "Error types and propagated metadata" do
   let(:rpc) { ConnectRPC::Method.new(service: "trace.Meta", name: "Call", request_type: :request, response_type: :response) }
 
   def server(bus, protocol:, **)
-    ConnectRPC::Server.new(services: [ConnectRPC::Service.new(name: rpc.service, methods: [rpc])], binding: binding,
+    ConnectRPC::Server.new(services: [ConnectRPC::Service.new(name: rpc.service, rpcs: [rpc])], binding: binding,
                            handlers: { rpc.path => ->(message, _) { message } }, protocol: protocol,
                            status_codec: ConnectRPC::Bindings::GoogleProtobuf.new, instrumentation: bus, **)
   end
@@ -60,7 +60,7 @@ RSpec.describe "Error types and propagated metadata" do
       _, exporter, bus = tracing
       client = ConnectRPC::Client.new(base_url: "https://example.invalid", binding: binding,
                                       transport: ->(_) { raise "unreachable" }, instrumentation: bus)
-      expect { client.call(rpc, "hi", timeout: 0) }.to raise_error(ArgumentError)
+      expect { client.call(rpc, "hi", timeout: Float::NAN) }.to raise_error(ArgumentError)
       attributes = span_attributes(exporter)
       expect(attributes["error.type"]).to eq("ArgumentError")
       expect(attributes).not_to have_key("rpc.response.status_code")

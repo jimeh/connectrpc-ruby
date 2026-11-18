@@ -15,12 +15,12 @@ module ConnectRPC
         @interceptor_error = false
       end
 
-      def run(timeout, cancellation, &)
+      def run(limit, cancellation, &)
         # @type var error: Exception?
         error = nil
         # @type var local_exit: bool
         local_exit = false
-        execute(timeout, cancellation, &).tap { local_exit = true }
+        execute(limit, cancellation, &).tap { local_exit = true }
       rescue Exception => e # rubocop:disable Lint/RescueException -- Finalization needs the actual escape, including fatal exceptions.
         error = e
         local_exit = true
@@ -29,8 +29,8 @@ module ConnectRPC
         finish_preserving_user(error, local_exit)
       end
 
-      def execute(timeout, cancellation)
-        active, deadline = start(timeout, cancellation)
+      def execute(limit, cancellation)
+        active, deadline = start(limit, cancellation)
         yield active, deadline
         active.commit! if @completed
         @result
@@ -148,8 +148,9 @@ module ConnectRPC
         (@innermost_ok && @completed) || (!delivered.nil? && delivered.equal?(@innermost_failure))
       end
 
-      def start(timeout, cancellation)
-        deadline = Deadline.new(timeout) unless timeout.nil?
+      def start(limit, cancellation)
+        timeout, supplied = limit
+        deadline = Protocol.call_deadline(timeout, supplied)
         active = @state = CallCancellation.new(deadline: deadline, cancellation: cancellation)
         active.check!
         [active, deadline]

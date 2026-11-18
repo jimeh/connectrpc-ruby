@@ -14,7 +14,7 @@ RSpec.describe "Native streaming terminal completion" do
           raise ConnectRPC::Error.new(:not_found, "early") if scenario == :remote_error
         end
         target = ConnectRPC::Server.new(
-          services: [ConnectRPC::Service.new(name: declaration.service, methods: [declaration])],
+          services: [ConnectRPC::Service.new(name: declaration.service, rpcs: [declaration])],
           binding: ConnectRPC::Bindings::GoogleProtobuf.new, handlers: { declaration.path => handler }
         )
         host = ConnectRPC::Async::Host.new(server: target).start

@@ -16,7 +16,7 @@ RSpec.describe "Native streaming shape capabilities" do
     end
   end
   let(:target) do
-    ConnectRPC::Server.new(services: [ConnectRPC::Service.new(name: methods.first.service, methods: methods)],
+    ConnectRPC::Server.new(services: [ConnectRPC::Service.new(name: methods.first.service, rpcs: methods)],
                            binding: binding, handlers: methods.to_h { |rpc| [rpc.path, ->(*) { raise "invoked" }] })
   end
 
@@ -74,7 +74,7 @@ RSpec.describe "Native streaming shape capabilities" do
         subscriber.define_singleton_method(:start) { |_| observer }
         instrumentation = ConnectRPC::Instrumentation.new(subscribers: [subscriber])
         implementation = ConnectRPC::Server.new(
-          services: [ConnectRPC::Service.new(name: unary.service, methods: [unary])],
+          services: [ConnectRPC::Service.new(name: unary.service, rpcs: [unary])],
           binding: binding, handlers: { unary.path => ->(*) { raise "invoked" } }, instrumentation: instrumentation
         )
         bytes = +""

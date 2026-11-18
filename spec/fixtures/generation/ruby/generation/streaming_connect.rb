@@ -4,6 +4,7 @@
 # source: generation/streaming.proto
 
 require "connectrpc"
+require "connectrpc/bindings/google_protobuf"
 require "generation/streaming_pb"
 
 module GenerationFixture
@@ -57,7 +58,7 @@ module GenerationFixture
       )
 
       SERVICE = ::ConnectRPC::Service.new(
-        name: "generation_streaming.v1.Mixed", methods: [LOOKUP, WATCH, COLLECT, CHAT]
+        name: "generation_streaming.v1.Mixed", rpcs: [LOOKUP, WATCH, COLLECT, CHAT]
       )
 
       class Client
@@ -89,6 +90,16 @@ module GenerationFixture
         raise ::ArgumentError, "chat must respond to call" unless chat.respond_to?(:call)
 
         { LOOKUP.path => lookup, WATCH.path => watch, COLLECT.path => collect, CHAT.path => chat }
+      end
+
+      def self.handlers_for(impl, strict: false)
+        raise ::ArgumentError, "strict must be true or false" unless [true, false].include?(strict)
+
+        rpcs = { lookup: LOOKUP, watch: WATCH, collect: COLLECT, chat: CHAT }
+        missing = rpcs.keys.reject { |name| impl.respond_to?(name) }
+        raise ::ArgumentError, "Missing service methods: #{missing.join(', ')}" if strict && !missing.empty?
+
+        rpcs.except(*missing).to_h { |name, rpc| [rpc.path, impl.public_method(name)] }
       end
     end
   end

@@ -33,7 +33,10 @@ RSpec.describe "Opt-in service RBS generation" do
     expect(response.file.first.content).to eq(original.file.first.content)
     expect(response.file.last.content).to include(
       "::ConnectRPC::Method[::RbsSpec::Messages::Container::Request, ::RbsSpec::Messages::Container::Reply]",
-      "module RbsSpec", "module Api", "def get_http:", "::ConnectRPC::Response[::RbsSpec::Messages::Container::Reply]"
+      "module RbsSpec", "module Api", "def get_http:", "::ConnectRPC::Response[::RbsSpec::Messages::Container::Reply]",
+      "?deadline: ::ConnectRPC::Deadline?",
+      "def self.handlers_for: (::Object impl, ?strict: bool) -> ::Hash[::String, ::ConnectRPC::_Handler[" \
+      "::RbsSpec::Messages::Container::Request, ::RbsSpec::Messages::Container::Reply]]"
     )
   end
 
@@ -86,7 +89,9 @@ RSpec.describe "Opt-in service RBS generation" do
     request.proto_file.last.service.first["method"].clear
     response = ConnectRPC::Generator.generate(request)
     expect(response.error).to eq("")
-    expect(response.file.last.content).to include("def self.handlers: () -> ::Hash[::String, bot]")
+    expect(response.file.last.content).to include("def self.handlers: () -> ::Hash[::String, bot]",
+                                                  "def self.handlers_for: (::Object impl, ?strict: bool) " \
+                                                  "-> ::Hash[::String, bot]")
     request.proto_file.last.service.clear
     expect(ConnectRPC::Generator.generate(request).file).to be_empty
   end

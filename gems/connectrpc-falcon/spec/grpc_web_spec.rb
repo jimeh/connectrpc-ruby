@@ -18,7 +18,7 @@ RSpec.describe "Falcon native gRPC-Web" do
       unary = ConnectRPC::Method.new(service: stream.service, name: "Call",
                                      request_type: AsyncHelpers::MESSAGE, response_type: AsyncHelpers::MESSAGE)
       target = ConnectRPC::Server.new(
-        services: [ConnectRPC::Service.new(name: stream.service, methods: [stream, unary])],
+        services: [ConnectRPC::Service.new(name: stream.service, rpcs: [stream, unary])],
         binding: ConnectRPC::Bindings::GoogleProtobuf.new, protocol: :grpc_web,
         handlers: { unary.path => ->(message, _) { message }, stream.path => lambda { |message, output, context|
           output.send_message(message)

@@ -4,6 +4,7 @@
 # source: grpc/health/v1/health.proto
 
 require "connectrpc"
+require "connectrpc/bindings/google_protobuf"
 require "grpc/health/v1/health_pb"
 
 module Grpc
@@ -47,7 +48,7 @@ module Grpc
         )
 
         SERVICE = ::ConnectRPC::Service.new(
-          name: "grpc.health.v1.Health", methods: [CHECK, LIST, WATCH]
+          name: "grpc.health.v1.Health", rpcs: [CHECK, LIST, WATCH]
         )
 
         class Client
@@ -74,6 +75,16 @@ module Grpc
           raise ::ArgumentError, "watch must respond to call" unless watch.respond_to?(:call)
 
           { CHECK.path => check, LIST.path => list, WATCH.path => watch }
+        end
+
+        def self.handlers_for(impl, strict: false)
+          raise ::ArgumentError, "strict must be true or false" unless [true, false].include?(strict)
+
+          rpcs = { check: CHECK, list: LIST, watch: WATCH }
+          missing = rpcs.keys.reject { |name| impl.respond_to?(name) }
+          raise ::ArgumentError, "Missing service methods: #{missing.join(', ')}" if strict && !missing.empty?
+
+          rpcs.except(*missing).to_h { |name, rpc| [rpc.path, impl.public_method(name)] }
         end
       end
     end

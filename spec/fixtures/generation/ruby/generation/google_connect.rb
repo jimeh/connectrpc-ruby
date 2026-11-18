@@ -4,6 +4,7 @@
 # source: generation/google.proto
 
 require "connectrpc"
+require "connectrpc/bindings/google_protobuf"
 require "generation/google_pb"
 require "google/protobuf/timestamp_pb"
 
@@ -38,7 +39,7 @@ module Google
         )
 
         SERVICE = ::ConnectRPC::Service.new(
-          name: "google.generation_fixture.v1.EchoService", methods: [ECHO, TIME]
+          name: "google.generation_fixture.v1.EchoService", rpcs: [ECHO, TIME]
         )
 
         class Client
@@ -60,6 +61,16 @@ module Google
           raise ::ArgumentError, "time must respond to call" unless time.respond_to?(:call)
 
           { ECHO.path => echo, TIME.path => time }
+        end
+
+        def self.handlers_for(impl, strict: false)
+          raise ::ArgumentError, "strict must be true or false" unless [true, false].include?(strict)
+
+          rpcs = { echo: ECHO, time: TIME }
+          missing = rpcs.keys.reject { |name| impl.respond_to?(name) }
+          raise ::ArgumentError, "Missing service methods: #{missing.join(', ')}" if strict && !missing.empty?
+
+          rpcs.except(*missing).to_h { |name, rpc| [rpc.path, impl.public_method(name)] }
         end
       end
     end

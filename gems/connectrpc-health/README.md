@@ -37,7 +37,6 @@ on this package.
 ## Usage
 
 ```ruby
-require "connectrpc/bindings/google_protobuf"
 require "connectrpc/health"
 
 health = ConnectRPC::Health::Registry.new(max_watchers: 100)
@@ -45,8 +44,7 @@ health.set("demo.v1.DemoService", :serving)
 
 server = ConnectRPC::Server.new(
   services: [Demo::V1::DemoService::SERVICE, ConnectRPC::Health::SERVICE],
-  handlers: demo_handlers.merge(health.handlers),
-  binding: ConnectRPC::Bindings::GoogleProtobuf.new, protocol: :auto
+  handlers: demo_handlers.merge(health.handlers), protocol: :auto
 )
 ```
 
@@ -112,7 +110,7 @@ require "async"
 require "connectrpc/async"
 
 probe = ConnectRPC::Server.new(services: [ConnectRPC::Health::SERVICE], handlers: health.handlers,
-                               binding: ConnectRPC::Bindings::GoogleProtobuf.new, protocol: :grpc)
+                               protocol: :grpc)
 Sync do
   app_host = ConnectRPC::Async::Host.new(server: server, host: "0.0.0.0", port: 8443, tls: tls).start
   probe_host = ConnectRPC::Async::Host.new(server: probe, host: "0.0.0.0", port: 8081).start
@@ -163,7 +161,7 @@ class HealthAuth
   end
 end
 
-server = ConnectRPC::Server.new(services: services, handlers: handlers, binding: binding,
+server = ConnectRPC::Server.new(services: services, handlers: handlers,
                                 protocol: :auto, interceptors: [HealthAuth.new])
 ```
 

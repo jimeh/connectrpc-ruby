@@ -114,7 +114,7 @@ RSpec.describe ConnectRPC::Server, "unexpected error reporting on gRPC, gRPC-Web
   let(:reports) { [] }
 
   def build(protocol, **)
-    described_class.new(services: [ConnectRPC::Service.new(name: method.service, methods: [method])],
+    described_class.new(services: [ConnectRPC::Service.new(name: method.service, rpcs: [method])],
                         binding: binding, status_codec: status_codec, protocol: protocol,
                         handlers: { method.path => ->(_message, _context) { raise failure } }, **)
   end
@@ -158,7 +158,7 @@ RSpec.describe ConnectRPC::Server, "unexpected error reporting on gRPC, gRPC-Web
   it "reports Connect streaming handler exceptions through the Server hook" do
     stream = ConnectRPC::ServerStreamMethod.new(service: method.service, name: "Watch", request_type: :request,
                                                 response_type: :response)
-    server = described_class.new(services: [ConnectRPC::Service.new(name: stream.service, methods: [stream])],
+    server = described_class.new(services: [ConnectRPC::Service.new(name: stream.service, rpcs: [stream])],
                                  binding: binding, on_error: ->(error) { reports << error },
                                  handlers: { stream.path => ->(_request, _writer, _context) { raise failure } })
     written = +""
@@ -182,7 +182,7 @@ RSpec.describe ConnectRPC::Server, "unexpected error reporting on gRPC, gRPC-Web
       now += 2
       raise failure
     end
-    server = described_class.new(services: [ConnectRPC::Service.new(name: stream.service, methods: [stream])],
+    server = described_class.new(services: [ConnectRPC::Service.new(name: stream.service, rpcs: [stream])],
                                  binding: binding, on_error: ->(error) { reports << error },
                                  handlers: { stream.path => late })
     written = +""

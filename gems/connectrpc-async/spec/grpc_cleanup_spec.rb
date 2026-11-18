@@ -43,7 +43,7 @@ RSpec.describe "gRPC owned cleanup outcome" do
       subscriber = Object.new
       subscriber.define_singleton_method(:start) { |_| observer }
       bus = ConnectRPC::Instrumentation.new(subscribers: [subscriber])
-      target = ConnectRPC::Server.new(services: [ConnectRPC::Service.new(name: method.service, methods: [method])],
+      target = ConnectRPC::Server.new(services: [ConnectRPC::Service.new(name: method.service, rpcs: [method])],
                                       handlers: { method.path => handler }, protocol: :grpc,
                                       binding: ConnectRPC::Bindings::GoogleProtobuf.new)
       host = ConnectRPC::Async::Host.new(server: target).start

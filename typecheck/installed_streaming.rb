@@ -150,7 +150,7 @@ cs = ConnectRPC::ClientStreamMethod.new(service: "installed.Host", name: "Collec
                                         response_type: String)
 bidi = ConnectRPC::BidiStreamMethod.new(service: "installed.Host", name: "Chat", request_type: String,
                                         response_type: String)
-custom = ConnectRPC::Server.new(services: [ConnectRPC::Service.new(name: ss.service, methods: [ss, cs, bidi])],
+custom = ConnectRPC::Server.new(services: [ConnectRPC::Service.new(name: ss.service, rpcs: [ss, cs, bidi])],
                                 binding: InstalledBinding.new,
                                 handlers: { ss.path => ->(message, writer, _) { writer.send_message(message) },
                                             cs.path => ->(reader, _) { reader.receive } })

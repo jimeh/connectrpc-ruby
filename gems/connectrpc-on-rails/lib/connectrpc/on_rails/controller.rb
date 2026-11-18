@@ -20,7 +20,8 @@ module ConnectRPC
       attr_reader :connect_request, :connect_context, :connect_method
 
       def connect_service = raise NotImplementedError, "Implement private connect_service"
-      def connect_binding = raise NotImplementedError, "Implement private connect_binding"
+      # nil selects core's default: the loaded Google protobuf binding.
+      def connect_binding = nil
       def connect_handlers = raise NotImplementedError, "Implement private connect_handlers"
       def connect_limits = {}
       def connect_instrumentation = nil

@@ -8,14 +8,14 @@ module ConnectRPC
     @terminal_wire_limit: Integer
     @terminal_limit: Integer
     private
-    def validate_stream_call!: (declaration, singleton(ServerStreamMethod) | singleton(ClientStreamMethod) | singleton(BidiStreamMethod), CancellationToken?, Proc?) -> nil
+    def validate_stream_call!: (declaration, singleton(ServerStreamMethod) | singleton(ClientStreamMethod) | singleton(BidiStreamMethod), Deadline?, CancellationToken?, Proc?) -> nil
     def stream_capability?: (declaration) -> bool
     def streaming_transport?: () -> bool
-    def stream_call: [Q, R] (Method[Q, R], Q, metadata_input, Numeric?, CancellationToken?) { (RequestWriter[Q]) -> void } -> Response[R]
-      | [Q, R] (ServerStreamMethod[Q, R], Q, metadata_input, Numeric?, CancellationToken?) { (ResponseReader[R]) -> void } -> nil
-      | [Q, R] (ClientStreamMethod[Q, R], nil, metadata_input, Numeric?, CancellationToken?) { (RequestWriter[Q]) -> void } -> Response[R]
-      | [Q, R] (BidiStreamMethod[Q, R], nil, metadata_input, Numeric?, CancellationToken?) { (ClientDuplex[Q, R]) -> void } -> nil
-    def run_stream: (declaration, untyped, metadata_input, timeout: Numeric?, cancellation: CancellationToken?, lifecycle: Instrumentation::Handle?, injection: metadata_input) { (stream_endpoint) -> void } -> Response[untyped]?
+    def stream_call: [Q, R] (Method[Q, R], Q, metadata_input, call_limit, CancellationToken?) { (RequestWriter[Q]) -> void } -> Response[R]
+      | [Q, R] (ServerStreamMethod[Q, R], Q, metadata_input, call_limit, CancellationToken?) { (ResponseReader[R]) -> void } -> nil
+      | [Q, R] (ClientStreamMethod[Q, R], nil, metadata_input, call_limit, CancellationToken?) { (RequestWriter[Q]) -> void } -> Response[R]
+      | [Q, R] (BidiStreamMethod[Q, R], nil, metadata_input, call_limit, CancellationToken?) { (ClientDuplex[Q, R]) -> void } -> nil
+    def run_stream: (declaration, untyped, metadata_input, limit: call_limit, cancellation: CancellationToken?, lifecycle: Instrumentation::Handle?, injection: metadata_input) { (stream_endpoint) -> void } -> Response[untyped]?
     def open_client_stream: (declaration, untyped, StreamRequest, Streaming::ClientScope, CallCancellation, Instrumentation::Handle?, ?ClientStreamCall?) { (stream_endpoint) -> void } -> void
     def new_client_stream_call: (stream_declaration, untyped, Metadata, Deadline?, CallCancellation) -> ClientStreamCall
     def intercept_stream: (Interceptors::Chain, stream_declaration, untyped, metadata_input, Streaming::ClientScope, CallCancellation, Deadline?, Instrumentation::Handle?, metadata_input) { (stream_endpoint) -> void } -> void
@@ -142,7 +142,7 @@ module ConnectRPC
       attr_accessor result: Response[untyped]?
       attr_accessor delivered_error: StandardError?
       def initialize: (Instrumentation::Handle?) -> void
-      def run: (Numeric?, CancellationToken?) { (CallCancellation, Deadline?) -> void } -> Response[untyped]?
+      def run: (call_limit, CancellationToken?) { (CallCancellation, Deadline?) -> void } -> Response[untyped]?
       def cleanup: (Session) -> void
       def record_user_error: (Exception) -> void
       def intercept: (Interceptors::Chain, ClientUnaryCall | ClientStreamCall) { () -> Response[untyped]? } -> Response[untyped]?
@@ -151,10 +151,10 @@ module ConnectRPC
       def dispatch: () { () -> Response[untyped]? } -> Response[untyped]?
       def delivery: (Exception?) -> (:unobserved | :completed | :aborted)
       def exchange_completed?: () -> bool
-      def execute: (Numeric?, CancellationToken?) { (CallCancellation, Deadline?) -> void } -> Response[untyped]?
+      def execute: (call_limit, CancellationToken?) { (CallCancellation, Deadline?) -> void } -> Response[untyped]?
       def finish: (Exception?) -> void
       def finish_preserving_user: (Exception?, bool) -> void
-      def start: (Numeric?, CancellationToken?) -> [CallCancellation, Deadline?]
+      def start: (call_limit, CancellationToken?) -> [CallCancellation, Deadline?]
       def implicit_abandonment?: () -> bool
       def success?: (Exception?) -> bool
       def delivery_completed?: (Exception?) -> bool

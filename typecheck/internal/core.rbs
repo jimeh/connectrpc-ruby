@@ -5,6 +5,8 @@ class Numeric
 end
 # Implementation-only contracts. This directory is never included in a gem.
 module ConnectRPC
+  # A call's timeout and supplied deadline, resolved once at call setup.
+  type call_limit = [Numeric?, Deadline?]
   class Method[Req, Resp]
     IDENTIFIER: Regexp
     QUALIFIED_NAME: Regexp
@@ -12,7 +14,7 @@ module ConnectRPC
   end
   class Service
     private
-    def validate_methods!: (String, Array[declaration]) -> nil
+    def validate_rpcs!: (String, Array[declaration]) -> nil
     def service_method?: (declaration, String) -> bool
   end
   class Metadata
@@ -46,6 +48,8 @@ module ConnectRPC
     type wire_error = { code: String, message: String, details: Array[ErrorDetail] }
     def self.limit!: (Integer) -> Integer
     def self.codec!: (codec) -> codec
+    def self.binding!: (_Binding?) -> _Binding
+    def self.call_deadline: (Numeric?, Deadline?) -> Deadline?
     def self.profile!: (server_protocol_selection, :unary, encoding, ?server: bool) -> nil
     def self.valid_server_protocol?: (server_protocol_selection) -> bool
     def self.server_protocols: (server_protocol_selection) -> Array[server_protocol]
@@ -143,11 +147,12 @@ module ConnectRPC
     @unary_interceptors: Interceptors::Chain?
     @stream_interceptors: Interceptors::Chain?
     private
-    def process_call: [Req, Resp] (Method[Req, Resp], Req, metadata_input, Numeric?, CancellationToken?, ?lifecycle: Instrumentation::Handle?, ?injection: metadata_input?) ?{ (TransportResponse) -> void } -> Response[Resp]
+    def validate_call_options!: (Deadline?, CancellationToken?) -> nil
+    def process_call: [Req, Resp] (Method[Req, Resp], Req, metadata_input, call_limit, CancellationToken?, ?lifecycle: Instrumentation::Handle?, ?injection: metadata_input?) ?{ (TransportResponse) -> void } -> Response[Resp]
     def exchange: [Req, Resp] (Method[Req, Resp], Req, Metadata, Deadline?, CallCancellation, Instrumentation::Handle?) ?{ (TransportResponse) -> void } -> Response[Resp]
     def intercept_call: [Req, Resp] (Interceptors::Chain, Method[Req, Resp], Req, Metadata, Deadline?, CallCancellation, Instrumentation::Handle?, metadata_input?) ?{ (TransportResponse) -> void } -> (Response[Resp] | StandardError)
     def dispatch_metadata: (ClientUnaryCall | ClientStreamCall, Instrumentation::Handle?, metadata_input?) -> Metadata
-    def instrumented_call: [Req, Resp] (Method[Req, Resp], Req, metadata_input, Numeric?, CancellationToken?) -> Response[Resp]
+    def instrumented_call: [Req, Resp] (Method[Req, Resp], Req, metadata_input, call_limit, CancellationToken?) -> Response[Resp]
     def injected_metadata: (Metadata, metadata_input?) -> Metadata
     def parse_base_url: (String) -> URI::Generic
     def default_transport: () -> Transports::NetHTTP

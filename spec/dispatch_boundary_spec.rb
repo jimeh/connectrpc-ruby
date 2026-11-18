@@ -27,7 +27,7 @@ RSpec.describe "Native predispatch cancellation boundary" do
           subscriber.define_singleton_method(:start) { |_| observer }
           source = ConnectRPC::CancellationSource.new
           source.cancel if reason == :canceled
-          target = ConnectRPC::Server.new(services: [ConnectRPC::Service.new(name: method.service, methods: [method])],
+          target = ConnectRPC::Server.new(services: [ConnectRPC::Service.new(name: method.service, rpcs: [method])],
                                           binding: binding, protocol: protocol,
                                           instrumentation: ConnectRPC::Instrumentation.new(subscribers: [subscriber]),
                                           handlers: kind == ConnectRPC::Method ? {} : { method.path => handler },

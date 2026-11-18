@@ -11,7 +11,7 @@ module Conformance
         raise "Unsupported native HTTP/1 client instruction"
       end
 
-      NATIVE_SERVICE.methods.find { |method| method.name == request["method"] } || raise("Unknown H1 method")
+      NATIVE_SERVICE.rpcs.find { |method| method.name == request["method"] } || raise("Unknown H1 method")
     end
 
     def supported_shape?(request)

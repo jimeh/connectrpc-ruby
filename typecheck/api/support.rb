@@ -87,7 +87,7 @@ class APIController < ActionController::API
     connect_context&.check!
   end
 
-  def connect_service = ConnectRPC::Service.new(name: "demo.Service", methods: [])
+  def connect_service = ConnectRPC::Service.new(name: "demo.Service", rpcs: [])
   def connect_binding = APIBinding.new
   def connect_handlers = {}
   def connect_limits = { request_limit: 1024, response_wire_limit: 2048, encoding: :gzip }

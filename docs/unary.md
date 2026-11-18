@@ -67,30 +67,51 @@ This creates official `greeting_pb.rb` and `greeting_connect.rb`. Add
 
 ```ruby
 require "greeting_connect"
-require "connectrpc/bindings/google_protobuf"
 
 service = Greeting::V1::GreetingService
-binding = ConnectRPC::Bindings::GoogleProtobuf.new
-core = ConnectRPC::Client.new(base_url: "http://127.0.0.1:8080", binding: binding, codec: :json)
+core = ConnectRPC::Client.new(base_url: "http://127.0.0.1:8080", codec: :json)
 client = service::Client.new(client: core)
 response = client.greet(Greeting::V1::Greeting.new(name: "Ruby"), timeout: 2)
 
 # Supply application callables accepting (request, context).
 handlers = service.handlers(greet: greet_handler, fail: fail_handler)
-server = ConnectRPC::Server.new(services: [service::SERVICE], handlers: handlers, binding: binding)
+server = ConnectRPC::Server.new(services: [service::SERVICE], handlers: handlers)
 ```
 
 `greet_handler` and `fail_handler` above are application-defined callables; the
 [runnable example](../examples/generated.rb) defines both and hosts the Rack app.
+
+Since 0.3.0, a service object can supply the handlers instead. `handlers_for`
+maps each RPC to the object's public method of the same snake-case name, which
+takes the arguments the callable would, `(request, context)` for unary:
+
+```ruby
+class Greeter
+  def greet(request, _context) = Greeting::V1::Greeting.new(name: "Hello, #{request.name}!")
+  def fail(_request, _context) = raise ConnectRPC::Error.new(:failed_precondition, "Not today")
+end
+
+server = ConnectRPC::Server.new(services: [service::SERVICE],
+                                handlers: service.handlers_for(Greeter.new, strict: true))
+```
 
 - `GREET` and `FAIL` are frozen `ConnectRPC::Method` constants; `SERVICE` is
   reusable.
 - Wrapper calls return the existing `Response` and forward keyword options
   exactly, including omission of `timeout:` versus explicit `timeout: nil`.
 - Binding, transport, codec, URL and limits belong to the configured core
-  client.
+  client. Since 0.3.0, the generated file requires
+  `connectrpc/bindings/google_protobuf`, so Client and Server use the Google
+  binding when `binding:` is omitted.
 - `handlers` requires all declared RPC keywords and validates callability. Use
   the existing Server handler map directly for partial/custom registration.
+- Since 0.3.0, `handlers_for(impl, strict: false)` checks each RPC with
+  `impl.respond_to?(name)`, so private methods count as missing and
+  `respond_to_missing?` is honored. It omits RPCs the object lacks, which the
+  Server's default invoker answers with `unimplemented`. `strict: true` raises
+  `ArgumentError` naming every missing method. It does not check arity. Server
+  streaming methods take `(request, writer, context)`, client streaming
+  `(reader, context)` and bidi `(duplex, context)`.
 
 ### Generate with Buf
 
@@ -162,17 +183,14 @@ method = ConnectRPC::Method.new(
   service: "example.v1.EchoService", name: "Echo",
   request_type: type, response_type: type
 )
-service = ConnectRPC::Service.new(name: method.service, methods: [method])
-binding = ConnectRPC::Bindings::GoogleProtobuf.new
+service = ConnectRPC::Service.new(name: method.service, rpcs: [method])
 handler = lambda do |request, context|
   context.check!
   context.response_metadata.add("x-worker", "ruby")
   context.response_trailers.add("x-finished", "yes")
   type.new(value: "Hello, #{request.value}!")
 end
-server = ConnectRPC::Server.new(
-  services: [service], binding: binding, handlers: { method.path => handler }
-)
+server = ConnectRPC::Server.new(services: [service], handlers: { method.path => handler })
 app = ConnectRPC::Rack.new(server: server) # Supply this to your Rack host.
 ```
 
@@ -188,9 +206,7 @@ Reusable handlers must synchronize any application state they share.
 With that app hosted at a base URL, a client call is:
 
 ```ruby
-client = ConnectRPC::Client.new(
-  base_url: "http://127.0.0.1:8080", binding: binding, codec: :json
-)
+client = ConnectRPC::Client.new(base_url: "http://127.0.0.1:8080", codec: :json)
 response = client.call(
   method, type.new(value: "Ruby"), metadata: { "x-request" => ["example"] }, timeout: 2
 )
@@ -213,9 +229,14 @@ own form, such as `""` for an empty `StringValue`.
 
 Bindings implement `encode(message, type:, codec:)` and
 `decode(bytes, type:, codec:)`, raising `ConnectRPC::CodecError` for codec
-failures. Transports implement `call(TransportRequest)` and return a
-`TransportResponse`. Their fields and responsibilities are documented in
-[design](design.md). Neither seam requires Google or Rack types. Since 0.3.0,
+failures. Since 0.3.0, `Client.new`, `Server.new` and `ErrorDetail#decode`
+accept an omitted or nil `binding:` once `require
+"connectrpc/bindings/google_protobuf"` has loaded the Google binding, and raise
+`ArgumentError` naming that require otherwise. Core never loads it. Pass
+`binding:` explicitly for a custom binding.
+
+Transports implement `call(TransportRequest)` and return a `TransportResponse`.
+Their fields and responsibilities are documented in [design](design.md). Neither seam requires Google or Rack types. Since 0.3.0,
 an in-process transport can set `TransportResponse#cause` on an error response;
 the client raises its decoded error with that exception as the `cause`.
 
@@ -235,8 +256,7 @@ Manual `Method.new` declarations accept the same three symbols.
 Enable GET on the core client; generated wrappers keep their existing API:
 
 ```ruby
-core = ConnectRPC::Client.new(base_url: "https://api.example.com", binding: binding,
-                             use_get: true, get_url_limit: 8192)
+core = ConnectRPC::Client.new(base_url: "https://api.example.com", use_get: true, get_url_limit: 8192)
 ```
 
 Only `:no_side_effects` methods select GET. The default remains POST.
@@ -272,10 +292,8 @@ requests and advertise `gzip, identity` for responses. Configure it on the serve
 to accept gzip requests and negotiate gzip success responses in both codecs:
 
 ```ruby
-client = ConnectRPC::Client.new(base_url: "http://127.0.0.1:8080", binding: binding,
-                                encoding: :gzip)
-server = ConnectRPC::Server.new(services: [service], binding: binding,
-                                handlers: { method.path => handler }, encoding: :gzip)
+client = ConnectRPC::Client.new(base_url: "http://127.0.0.1:8080", encoding: :gzip)
+server = ConnectRPC::Server.new(services: [service], handlers: { method.path => handler }, encoding: :gzip)
 ```
 
 Client `accept_encoding:` independently controls accepted responses. Its default
@@ -329,7 +347,7 @@ Raise a deliberate `ConnectRPC::Error.new(:invalid_argument, "safe message",
 details: [...], metadata: {...}, trailers: {...})` from a handler. Unexpected
 application exceptions become `internal` with `"Internal error"`. Clients raise
 `ConnectRPC::Error` with `code`, `details`, `metadata`, and `trailers`. Decode a
-detail with `detail.decode(binding: binding, type: message_class)` after choosing
+detail with `detail.decode(type: message_class)` after choosing
 the class corresponding to `detail.type`. `Error#code` is a frozen String such
 as `"invalid_argument"`, even though `Error.new` accepts a Symbol, so compare it
 with a String: `error.code == "invalid_argument"`.
@@ -339,7 +357,7 @@ Since 0.3.0, pass `on_error:` to the Server:
 
 ```ruby
 server = ConnectRPC::Server.new(
-  services: [service::SERVICE], binding: binding, handlers: handlers,
+  services: [service::SERVICE], handlers: handlers,
   on_error: ->(error) { logger.error(error.full_message(highlight: false)) }
 )
 ```
@@ -396,9 +414,30 @@ HTTP input coalescing belong to the library and host.
 
 ## Deadlines
 
-Client `timeout:` accepts finite positive seconds, defaulting to 30. Explicit
-`timeout: nil` sends no timeout header and creates no logical deadline or expiry
-watchdog. Native TCP/TLS/read/write waits remain independently capped at
+Client `timeout:` accepts finite real seconds, defaulting to 30. Since 0.3.0,
+zero and negative timeouts are already expired, as in grpc-go: the call fails
+locally with `deadline_exceeded` before the transport runs. Infinite, NaN and
+non-numeric timeouts raise `ArgumentError`. Explicit `timeout: nil` sends no
+timeout header and, without `deadline:`, creates no logical deadline or expiry
+watchdog.
+
+Since 0.3.0, every call, including the streaming calls and generated wrappers,
+also accepts `deadline:`, a `ConnectRPC::Deadline` or nil. The call uses the
+earlier of `timeout:` and `deadline:`, chosen once at call setup, and reuses the
+supplied object when it is earlier. A handler passes its own deadline to a
+downstream call so it ends no later than the request that caused it:
+
+```ruby
+def greet(request, context)
+  profile = profiles.lookup(ProfileRequest.new(id: request.name), deadline: context.deadline)
+  Greeting::V1::Greeting.new(name: "Hello, #{profile.message.display_name}!")
+end
+```
+
+The downstream call keeps the default 30 second cap when that is earlier;
+pass `timeout: nil` to rely on `deadline:` alone. Nothing propagates
+implicitly, and cancelling the upstream call does not cancel the downstream
+one. Native TCP/TLS/read/write waits remain independently capped at
 `9_999_999.999` seconds; a native timeout returns `unavailable`. Sustained
 progress can outlast that per-operation cap.
 
@@ -518,9 +557,8 @@ class RequireTenant
   end
 end
 
-client = ConnectRPC::Client.new(base_url: url, binding: binding, interceptors: [BearerAuth.new(tokens)])
-server = ConnectRPC::Server.new(services: services, binding: binding, handlers: handlers,
-                                interceptors: [RequireTenant.new])
+client = ConnectRPC::Client.new(base_url: url, interceptors: [BearerAuth.new(tokens)])
+server = ConnectRPC::Server.new(services: services, handlers: handlers, interceptors: [RequireTenant.new])
 ```
 
 `interceptors:` defaults to an empty Array. Core discovers each element's

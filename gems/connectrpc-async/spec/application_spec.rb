@@ -58,7 +58,7 @@ RSpec.describe "Native Protocol::HTTP application" do
       ConnectRPC.const_get(type).new(service: "test.Routes", name: type.to_s, request_type: AsyncHelpers::MESSAGE,
                                      response_type: AsyncHelpers::MESSAGE)
     end
-    routes = ConnectRPC::Server.new(services: [ConnectRPC::Service.new(name: "test.Routes", methods: methods)],
+    routes = ConnectRPC::Server.new(services: [ConnectRPC::Service.new(name: "test.Routes", rpcs: methods)],
                                     binding: ConnectRPC::Bindings::GoogleProtobuf.new,
                                     handlers: methods.to_h { |declaration| [declaration.path, ->(*) {}] })
     application = ConnectRPC::Async::Application.new(server: routes)

@@ -295,7 +295,7 @@ RSpec.describe ConnectRPC::Health::Registry do
 
   describe "handlers" do
     it "maps the three generated method paths and wraps without allocating a watcher" do
-      expect(registry.handlers.keys).to eq(HealthHelpers::HEALTH::SERVICE.methods.map(&:path))
+      expect(registry.handlers.keys).to eq(HealthHelpers::HEALTH::SERVICE.rpcs.map(&:path))
       expect(registry.handlers).to be_frozen
       watch = registry.handlers.fetch(HealthHelpers::HEALTH::WATCH.path)
       guarded = lambda do |request, writer, context|

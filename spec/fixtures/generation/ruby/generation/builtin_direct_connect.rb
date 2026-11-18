@@ -4,6 +4,7 @@
 # source: generation/builtin_direct.proto
 
 require "connectrpc"
+require "connectrpc/bindings/google_protobuf"
 require "generation/builtin_direct_pb"
 
 module Math
@@ -25,7 +26,7 @@ module Math
     )
 
     SERVICE = ::ConnectRPC::Service.new(
-      name: "math.GenerationFixturePlanService", methods: [ECHO]
+      name: "math.GenerationFixturePlanService", rpcs: [ECHO]
     )
 
     class Client
@@ -42,6 +43,16 @@ module Math
       raise ::ArgumentError, "echo must respond to call" unless echo.respond_to?(:call)
 
       { ECHO.path => echo }
+    end
+
+    def self.handlers_for(impl, strict: false)
+      raise ::ArgumentError, "strict must be true or false" unless [true, false].include?(strict)
+
+      rpcs = { echo: ECHO }
+      missing = rpcs.keys.reject { |name| impl.respond_to?(name) }
+      raise ::ArgumentError, "Missing service methods: #{missing.join(', ')}" if strict && !missing.empty?
+
+      rpcs.except(*missing).to_h { |name, rpc| [rpc.path, impl.public_method(name)] }
     end
   end
 end

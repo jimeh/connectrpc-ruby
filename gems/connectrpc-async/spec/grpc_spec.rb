@@ -31,7 +31,7 @@ RSpec.describe "Async native gRPC" do
         duplex.each { |message| duplex.send_message(message) }
       }
     }
-    ConnectRPC::Server.new(services: [ConnectRPC::Service.new(name: "test.GRPC", methods: declarations)],
+    ConnectRPC::Server.new(services: [ConnectRPC::Service.new(name: "test.GRPC", rpcs: declarations)],
                            binding: ConnectRPC::Bindings::GoogleProtobuf.new, handlers: handlers, protocol: :auto, **)
   end
 

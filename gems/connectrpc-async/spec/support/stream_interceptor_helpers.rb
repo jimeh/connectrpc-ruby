@@ -55,7 +55,7 @@ module StreamInterceptorHelpers
   def stream_message(name) = AsyncHelpers::MESSAGE.new(name: name)
 
   def stream_target(handlers, **)
-    service = ConnectRPC::Service.new(name: "test.Intercept", methods: SHAPES.keys.map { |shape| stream_rpc(shape) })
+    service = ConnectRPC::Service.new(name: "test.Intercept", rpcs: SHAPES.keys.map { |shape| stream_rpc(shape) })
     ConnectRPC::Server.new(services: [service], binding: ConnectRPC::Bindings::GoogleProtobuf.new, handlers: handlers,
                            **)
   end

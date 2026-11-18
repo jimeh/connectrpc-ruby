@@ -11,7 +11,7 @@ RSpec.describe "Falcon rejected Web HTTP/1 input" do
                                                        request_type: AsyncHelpers::MESSAGE,
                                                        response_type: AsyncHelpers::MESSAGE)
     options = if stream
-                { services: [ConnectRPC::Service.new(name: stream_method.service, methods: [stream_method])],
+                { services: [ConnectRPC::Service.new(name: stream_method.service, rpcs: [stream_method])],
                   binding: ConnectRPC::Bindings::GoogleProtobuf.new,
                   handlers: { stream_method.path => ->(*) { raise "Oversized request reached handler" } } }
               else
@@ -167,7 +167,7 @@ RSpec.describe "Falcon rejected Web HTTP/1 input" do
                                                     request_type: AsyncHelpers::MESSAGE,
                                                     response_type: AsyncHelpers::MESSAGE)
         target = ConnectRPC::Server.new(
-          services: [ConnectRPC::Service.new(name: stream.service, methods: [stream])],
+          services: [ConnectRPC::Service.new(name: stream.service, rpcs: [stream])],
           binding: ConnectRPC::Bindings::GoogleProtobuf.new, protocol: :grpc_web,
           handlers: { stream.path => lambda { |message, output, _|
             entered.enqueue(true)

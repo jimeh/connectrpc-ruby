@@ -83,8 +83,144 @@ RSpec.describe ConnectRPC::Client do
     expect(client.call(method, "hello", timeout: nil).message).to eq("hello")
   end
 
+  describe "explicit deadline:" do
+    let(:sent) { [] }
+    let(:transport) do
+      sent = self.sent
+      reply = self.reply
+      lambda do |request|
+        sent << request
+        reply
+      end
+    end
+    let(:stream_rpc) do
+      ConnectRPC::ServerStreamMethod.new(service: "test.Service", name: "Watch", request_type: String,
+                                         response_type: String)
+    end
+    let(:opened) { [] }
+    # Records each opened stream request, then stops before any exchange.
+    let(:stream_transport) do
+      opened = self.opened
+      Object.new.tap do |custom|
+        custom.define_singleton_method(:streaming_capabilities) { %i[server_stream client_stream bidi_stream] }
+        custom.define_singleton_method(:open_stream) do |request, &|
+          opened << request
+          raise "stream opened"
+        end
+        custom.define_singleton_method(:grpc_capabilities) { %i[unary server_stream client_stream bidi_stream] }
+        custom.define_singleton_method(:open_grpc_stream) do |request, &|
+          opened << request
+          raise "stream opened"
+        end
+      end
+    end
+    let(:status_codec) do
+      Object.new.tap do |codec|
+        codec.define_singleton_method(:encode_status) { |*| "" }
+        codec.define_singleton_method(:decode_status) { |*, **| nil }
+      end
+    end
+
+    def expect_deadline_exceeded(&)
+      expect(&).to raise_error(ConnectRPC::Error) { |error| expect(error.code).to eq("deadline_exceeded") }
+    end
+
+    it "sends the supplied deadline itself when it is earlier than the timeout" do
+      deadline = ConnectRPC::Deadline.new(2)
+      client.call(method, "hello", deadline: deadline)
+      expect(sent.last.deadline).to equal(deadline)
+      expect(sent.last.headers.fetch("connect-timeout-ms").first.to_i).to be_between(1, 2000)
+      client.call(method, "hello", timeout: nil, deadline: deadline)
+      expect(sent.last.deadline).to equal(deadline)
+    end
+
+    it "keeps the timeout, including the default 30 seconds, when it is earlier than the deadline" do
+      later = ConnectRPC::Deadline.new(600)
+      client.call(method, "hello", timeout: 1, deadline: later)
+      expect(sent.last.deadline).not_to equal(later)
+      expect(sent.last.headers.fetch("connect-timeout-ms").first.to_i).to be_between(1, 1000)
+      client.call(method, "hello", deadline: later)
+      expect(sent.last.headers.fetch("connect-timeout-ms").first.to_i).to be_between(29_000, 30_000)
+      client.call(method, "hello", timeout: nil, deadline: nil)
+      expect(sent.last.deadline).to be_nil
+      expect(sent.last.headers).not_to have_key("connect-timeout-ms")
+    end
+
+    it "hands interceptors the effective deadline" do
+      seen = []
+      interceptor = Object.new
+      interceptor.define_singleton_method(:client_unary) do |call, &continuation|
+        seen << call.deadline
+        continuation.call
+      end
+      deadline = ConnectRPC::Deadline.new(2)
+      client(interceptors: [interceptor]).call(method, "hello", deadline: deadline)
+      expect(seen.last).to equal(deadline)
+      expect(sent.last.deadline).to equal(deadline)
+    end
+
+    it "fails an already-expired unary Connect call locally without calling the transport" do
+      [{ deadline: ConnectRPC::Deadline.new(0) }, { timeout: 0 }, { timeout: -1 },
+       { timeout: nil, deadline: ConnectRPC::Deadline.new(-5) }].each do |options|
+        expect_deadline_exceeded { client.call(method, "hello", **options) }
+      end
+      expect(sent).to be_empty
+    end
+
+    it "fails an already-expired Connect stream and gRPC unary call before opening a stream" do
+      streaming = client(transport: stream_transport)
+      expect_deadline_exceeded { streaming.server_stream(stream_rpc, "hello", timeout: 0) { nil } }
+      expect_deadline_exceeded { streaming.server_stream(stream_rpc, "hello", deadline: ConnectRPC::Deadline.new(0)) { nil } }
+      grpc = client(transport: stream_transport, protocol: :grpc, status_codec: status_codec)
+      expect_deadline_exceeded { grpc.call(method, "hello", deadline: ConnectRPC::Deadline.new(0)) }
+      expect_deadline_exceeded { grpc.call(method, "hello", timeout: 0) }
+      expect(opened).to be_empty
+    end
+
+    it "uses the earlier deadline for stream requests" do
+      deadline = ConnectRPC::Deadline.new(2)
+      expect { client(transport: stream_transport).server_stream(stream_rpc, "hello", deadline: deadline) { nil } }
+        .to raise_error("stream opened")
+      expect(opened.last.deadline).to equal(deadline)
+      expect(opened.last.headers.fetch("connect-timeout-ms").first.to_i).to be_between(1, 2000)
+    end
+
+    it "rejects a non-Deadline deadline and non-finite timeouts before any work" do
+      streaming = client(transport: stream_transport)
+      upload = ConnectRPC::ClientStreamMethod.new(service: "test.Service", name: "Up", request_type: String,
+                                                  response_type: String)
+      [5, "soon", Time.now].each do |invalid|
+        expect { client.call(method, "hello", deadline: invalid) }.to raise_error(ArgumentError, /deadline/)
+        expect { streaming.server_stream(stream_rpc, "hello", deadline: invalid) { nil } }
+          .to raise_error(ArgumentError, /deadline/)
+        expect { streaming.client_stream(upload, deadline: invalid) { nil } }.to raise_error(ArgumentError, /deadline/)
+      end
+      [Float::NAN, Float::INFINITY].each do |timeout|
+        expect { client.call(method, "hello", timeout: timeout) }.to raise_error(ArgumentError)
+      end
+      expect(sent).to be_empty
+      expect(opened).to be_empty
+    end
+
+    it "lets a handler pass its context deadline to a downstream call" do
+      upstream_deadline = nil
+      downstream = client
+      handler = lambda do |request, context|
+        upstream_deadline = context.deadline
+        downstream.call(method, request, deadline: context.deadline).message
+      end
+      server = ConnectRPC::Server.new(services: [ConnectRPC::Service.new(name: method.service, rpcs: [method])],
+                                      binding: binding, handlers: { method.path => handler })
+      response = server.call(path: method.path, http_method: "POST", input: StringIO.new("wire:hello"),
+                             headers: { "content-type" => ["application/proto"], "connect-timeout-ms" => ["5000"] })
+      expect(response.status).to eq(200)
+      expect(sent.last.deadline).to equal(upstream_deadline)
+      expect(sent.last.headers.fetch("connect-timeout-ms").first.to_i).to be_between(1, 5000)
+    end
+  end
+
   it "runs all three custom seams through the host-neutral server" do
-    service = ConnectRPC::Service.new(name: method.service, methods: [method])
+    service = ConnectRPC::Service.new(name: method.service, rpcs: [method])
     invoker = lambda do |declaration, request, context|
       expect(declaration).to equal(method)
       expect(request).to eq("hello")

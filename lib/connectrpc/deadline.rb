@@ -6,8 +6,9 @@ module ConnectRPC
     MAX_NATIVE_WAIT = 9_999_999.999
 
     def initialize(timeout, clock: -> { Process.clock_gettime(Process::CLOCK_MONOTONIC) })
-      unless timeout.is_a?(Numeric) && timeout.real? && timeout.finite? && timeout.positive?
-        raise ArgumentError, "Timeout must be finite positive seconds"
+      # Zero and negative budgets are already expired, as in grpc-go.
+      unless timeout.is_a?(Numeric) && timeout.real? && timeout.finite?
+        raise ArgumentError, "Timeout must be finite real seconds"
       end
 
       @clock = clock

@@ -240,7 +240,7 @@ RSpec.describe "Call cancellation arbitration" do
       cancellation_source.cancel
       raise IOError, "reset body"
     end
-    service = ConnectRPC::Service.new(name: method.service, methods: [method])
+    service = ConnectRPC::Service.new(name: method.service, rpcs: [method])
     server = ConnectRPC::Server.new(services: [service], binding: binding,
                                     handlers: { method.path => ->(*) { raise "No invocation" } })
     result = server.call(path: method.path, http_method: "POST", headers: { "content-type" => ["application/proto"] },
@@ -397,7 +397,7 @@ RSpec.describe "GET processing cancellation ownership" do
     end.new
     method = ConnectRPC::Method.new(service: "example.Get", name: "Call", request_type: String, response_type: String,
                                     idempotency: :no_side_effects)
-    service = ConnectRPC::Service.new(name: method.service, methods: [method])
+    service = ConnectRPC::Service.new(name: method.service, rpcs: [method])
     target = ConnectRPC::Server.new(services: [service], binding: binding,
                                     handlers: { method.path => ->(*) { raise "Must not invoke handler" } })
     allow(target).to receive(:request_deadline).and_return(deadline)

@@ -6,7 +6,7 @@ module ConnectRPC
 
     # Public configuration keeps each validation next to its assignment.
     # rubocop:disable Metrics/MethodLength, Metrics/AbcSize, Metrics/CyclomaticComplexity, Metrics/PerceivedComplexity
-    def initialize(services:, binding:, handlers: {}, invoker: nil, request_limit: Protocol::DEFAULT_LIMIT,
+    def initialize(services:, binding: nil, handlers: {}, invoker: nil, request_limit: Protocol::DEFAULT_LIMIT,
                    response_limit: Protocol::DEFAULT_LIMIT, request_wire_limit: request_limit,
                    response_wire_limit: response_limit, protocol: :connect, mode: :unary, encoding: :identity,
                    instrumentation: nil, get_query_limit: nil, terminal_wire_limit: 65_536, terminal_limit: 65_536,
@@ -27,6 +27,7 @@ module ConnectRPC
       @cors = cors
       @grpc_status_wire_limit = Protocol.limit!(grpc_status_wire_limit)
       @grpc_status_limit = Protocol.limit!(grpc_status_limit)
+      binding = Protocol.binding!(binding)
       @status_codec = GRPCProtocol.status_codec!(binding, status_codec) if @protocol.intersect?(%i[grpc grpc_web])
       @terminal_wire_limit = Protocol.limit!(terminal_wire_limit)
       @terminal_limit = Protocol.limit!(terminal_limit)
@@ -259,7 +260,7 @@ module ConnectRPC
       raise ArgumentError, "Invalid service declarations" unless services.is_a?(Array) && services.all?(Service)
       raise ArgumentError, "Duplicate service" unless services.map(&:name).uniq.size == services.size
 
-      services.flat_map(&:methods).to_h { |method| [method.path, method] }.freeze
+      services.flat_map(&:rpcs).to_h { |method| [method.path, method] }.freeze
     end
 
     def invoke_handler(method, request, context)

@@ -56,7 +56,7 @@ RSpec.describe "gRPC SDK conventions and processor ownership" do
             duplex.each { |message| duplex.send_message(message) }
           }
         }
-        target = ConnectRPC::Server.new(services: [ConnectRPC::Service.new(name: "trace.GRPC", methods: methods)],
+        target = ConnectRPC::Server.new(services: [ConnectRPC::Service.new(name: "trace.GRPC", rpcs: methods)],
                                         binding: binding, status_codec: original, protocol: :grpc,
                                         handlers: handlers, instrumentation: bus)
         tls = host_tls(anchors: [tls_material.fetch(:client_ca)])

@@ -28,7 +28,7 @@ RSpec.describe "Server stream terminal head and error metadata" do
   end
 
   def server(protocol, rpc: declaration, **, &handler)
-    ConnectRPC::Server.new(services: [ConnectRPC::Service.new(name: rpc.service, methods: [rpc])],
+    ConnectRPC::Server.new(services: [ConnectRPC::Service.new(name: rpc.service, rpcs: [rpc])],
                            binding: binding, status_codec: ConnectRPC::Bindings::GoogleProtobuf.new,
                            protocol: protocol, instrumentation: instrumentation,
                            handlers: { rpc.path => handler }, **)

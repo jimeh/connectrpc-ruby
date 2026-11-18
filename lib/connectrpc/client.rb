@@ -6,7 +6,7 @@ module ConnectRPC
   class Client # rubocop:disable Metrics/ClassLength
     # Configuration validates each independent public bound eagerly.
     # rubocop:disable Metrics/MethodLength, Metrics/AbcSize
-    def initialize(base_url:, binding:, transport: nil, codec: :proto, request_limit: Protocol::DEFAULT_LIMIT,
+    def initialize(base_url:, binding: nil, transport: nil, codec: :proto, request_limit: Protocol::DEFAULT_LIMIT,
                    response_limit: Protocol::DEFAULT_LIMIT, request_wire_limit: request_limit,
                    response_wire_limit: response_limit, accept_encoding: nil, use_get: false, get_url_limit: 8192,
                    protocol: :connect, mode: :unary, encoding: :identity, instrumentation: nil,
@@ -17,6 +17,7 @@ module ConnectRPC
       @unary_interceptors, @stream_interceptors = Interceptors.client(interceptors)
       @grpc_status_wire_limit = Protocol.limit!(grpc_status_wire_limit)
       @grpc_status_limit = Protocol.limit!(grpc_status_limit)
+      binding = Protocol.binding!(binding)
       @status_codec = GRPCProtocol.status_codec!(binding, status_codec) if protocol == :grpc
       raise ArgumentError, "gRPC requires protobuf POST" if protocol == :grpc && (codec != :proto || use_get)
       raise ArgumentError, "use_get must be true or false" unless [true, false].include?(use_get)
@@ -40,32 +41,38 @@ module ConnectRPC
 
     # rubocop:enable Metrics/MethodLength, Metrics/AbcSize
 
-    def call(method, request, metadata: {}, timeout: 30, cancellation: nil)
+    def call(method, request, metadata: {}, timeout: 30, deadline: nil, cancellation: nil)
       raise ArgumentError, "call requires a unary Method" unless method.is_a?(Method)
 
-      unless cancellation.nil? || cancellation.is_a?(CancellationToken)
-        raise ArgumentError, "cancellation must be a CancellationToken or nil"
-      end
-
+      validate_call_options!(deadline, cancellation)
+      limit = [timeout, deadline] #: [Numeric?, Deadline?]
       if @protocol == :grpc
         raise ArgumentError, "Transport does not support unary gRPC" unless stream_capability?(method)
 
-        return stream_call(method, request, metadata, timeout, cancellation) { |_| nil }
+        return stream_call(method, request, metadata, limit, cancellation) { |_| nil }
       end
-      return instrumented_call(method, request, metadata, timeout, cancellation) if @instrumentation
+      return instrumented_call(method, request, metadata, limit, cancellation) if @instrumentation
 
-      process_call(method, request, metadata, timeout, cancellation)
+      process_call(method, request, metadata, limit, cancellation)
     end
 
     private
 
+    def validate_call_options!(deadline, cancellation)
+      raise ArgumentError, "deadline must be a Deadline or nil" unless deadline.nil? || deadline.is_a?(Deadline)
+      return if cancellation.nil? || cancellation.is_a?(CancellationToken)
+
+      raise ArgumentError, "cancellation must be a CancellationToken or nil"
+    end
+
     # rubocop:disable Metrics/MethodLength, Metrics/AbcSize, Metrics/CyclomaticComplexity, Metrics/PerceivedComplexity
-    def process_call(method, request, metadata, timeout, cancellation, lifecycle: nil, injection: nil, &observe)
+    def process_call(method, request, metadata, limit, cancellation, lifecycle: nil, injection: nil, &observe)
       # @type var state: CallCancellation?
       state = nil
       # @type var independent: Exception?
       independent = nil
-      deadline = Deadline.new(timeout) unless timeout.nil?
+      timeout, supplied = limit
+      deadline = Protocol.call_deadline(timeout, supplied)
       active = state = CallCancellation.new(deadline: deadline, cancellation: cancellation)
       active.check!
       metadata = Metadata.new(metadata)
@@ -143,7 +150,7 @@ module ConnectRPC
       metadata
     end
 
-    def instrumented_call(method, request, metadata, timeout, cancellation)
+    def instrumented_call(method, request, metadata, limit, cancellation)
       # @type var injection: Hash[String, String | Array[String]]
       injection = {}
       instrumentation = @instrumentation #: Instrumentation
@@ -157,8 +164,8 @@ module ConnectRPC
       completed = false
       begin
         result = lifecycle.activate do
-          process_call(method, request, metadata, timeout, cancellation, lifecycle: lifecycle,
-                                                                         injection: injection) do |received|
+          process_call(method, request, metadata, limit, cancellation, lifecycle: lifecycle,
+                                                                       injection: injection) do |received|
             response = received
           end
         end

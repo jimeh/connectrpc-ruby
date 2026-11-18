@@ -134,6 +134,13 @@ heterogeneous maps do not encode a particular key's method association. The
 core Server registration map erases those associations only after generated
 `.handlers` has checked each callable.
 
+Since 0.3.0, generated `.handlers_for(impl, ?strict: bool)` accepts any Object
+and returns the same handler-map value type. Its `public_method` values are
+not checked against each RPC's handler signature, statically or at runtime; the
+object's methods must accept the handler arguments themselves. Generated client
+signatures add `?deadline: ::ConnectRPC::Deadline?`, and core Client, Server and
+`ErrorDetail#decode` accept an optional `binding: _Binding?`.
+
 Method's `request_type` and `response_type` are arbitrary binding tokens typed
 as Object. A manual `Method.new` cannot infer instance types from those tokens.
 Supply an explicit application assertion after verifying your binding contract:
@@ -237,7 +244,7 @@ are an explicit bridge described [below](#opt-in-framework-compatibility).
 | OTel | Subscriber configuration and narrow tracer-provider/tracer/span/propagator capabilities; SDK and context implementation remain application owned |
 | Prometheus | Metrics configuration, readers and `connection_observer`; narrow structural registry/metric capabilities for prometheus-client |
 | Yabeda | Metrics configuration, readers and `connection_observer`; Yabeda itself remains untyped and application configured |
-| Health | Registry constructor, status operations and handlers; `SERVICE`, plus the generated `grpc.health.v1` messages, client and handler factory through its opt-in bridge |
+| Health | Registry constructor, status operations and handlers; `SERVICE`, plus the generated `grpc.health.v1` messages, client and handler factories (`handlers` and, since 0.3.0, `handlers_for`) through its opt-in bridge |
 | Sentry | `Subscriber.new(capture_exceptions: bool)` and `Subscriber#start`; observers are private and the Sentry SDK remains untyped and application configured |
 
 `Async::Host#close`, `Async::ServerSession#close` and `Falcon::Server#close`

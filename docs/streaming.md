@@ -134,7 +134,10 @@ end # => nil
 ```
 
 Generated mixed-service wrappers preserve these blocks, all options, actual nil
-timeouts and cancellation tokens. The same configured `Client(use_get: true)`
+timeouts and cancellation tokens. Since 0.3.0, each operation also accepts
+`deadline:`, and a stream uses the earlier of it and `timeout:`, as a
+[unary call](unary.md#deadlines) does. A handler passes `deadline:
+context.deadline` to bound a downstream stream by its own deadline. The same configured `Client(use_get: true)`
 uses GET for eligible unary calls and POST for streaming, without mode changes,
 retry, fallback or resend. `mode:` defaults to `:unary`, its only accepted
 value, so streaming needs no mode change.
@@ -167,6 +170,16 @@ EOF before invocation. CS success requires exactly one response. Cardinality
 violations are `unimplemented`. `context.request_metadata` stays mutable; reader
 and duplex `headers` return a frozen snapshot taken at the first read, which
 later Context writes do not change.
+
+Since 0.3.0, a generated service's `handlers_for(impl)` registers an object's
+public methods with these same arguments, such as `def watch(request, writer,
+context)`, beside unary methods. RPCs the object lacks are left out, so they
+answer `unimplemented`:
+
+```ruby
+server = ConnectRPC::Server.new(services: [service::SERVICE],
+                                handlers: service.handlers_for(MixedService.new, strict: true))
+```
 
 `context.send_headers(metadata: {})`, also delegated by response writers and
 server duplexes, publishes once. It can precede a handler delay or CS input.

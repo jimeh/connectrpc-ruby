@@ -27,7 +27,6 @@ class DemoController < ActionController::API
   private
 
   def connect_service = Demo::V1::DemoService::SERVICE
-  def connect_binding = ConnectRPC::Bindings::GoogleProtobuf.new
   def connect_handlers = DemoExample::Handlers.new("rails").to_h
   # Accept gzip, print the per-RPC log line and echo the request ID, like the
   # other servers. Interceptors run before controller callbacks such as before_action.

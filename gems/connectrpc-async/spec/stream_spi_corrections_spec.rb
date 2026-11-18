@@ -53,7 +53,7 @@ RSpec.describe "Direct streaming SPI cancellation composition" do
         binding = Object.new
         binding.define_singleton_method(:encode) { |message, **| message }
         binding.define_singleton_method(:decode) { |message, **| message }
-        target = ConnectRPC::Server.new(services: [ConnectRPC::Service.new(name: method.service, methods: [method])],
+        target = ConnectRPC::Server.new(services: [ConnectRPC::Service.new(name: method.service, rpcs: [method])],
                                         binding: binding,
                                         handlers: { method.path => lambda { |_, _|
                                           entered.enqueue(true)

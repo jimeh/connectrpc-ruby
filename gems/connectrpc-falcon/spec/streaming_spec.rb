@@ -22,7 +22,7 @@ RSpec.describe "Falcon native Connect streaming" do
                                      response_type: AsyncHelpers::MESSAGE)
       streaming = stream_methods.first
       target = ConnectRPC::Server.new(
-        services: [ConnectRPC::Service.new(name: "test.Streams", methods: [unary, streaming])],
+        services: [ConnectRPC::Service.new(name: "test.Streams", rpcs: [unary, streaming])],
         binding: ConnectRPC::Bindings::GoogleProtobuf.new,
         handlers: { unary.path => ->(message, _) { message },
                     streaming.path => ->(message, writer, _) { writer.send_message(message) } }

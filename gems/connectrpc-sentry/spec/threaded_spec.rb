@@ -17,7 +17,7 @@ RSpec.describe "ThreadedTransport from ordinary threads" do
     watch = lambda do |message, writer, _|
       2.times { |index| writer.send_message(MESSAGE.new(name: "#{message.name}#{index}")) }
     end
-    services = [ECHO::SERVICE, ConnectRPC::Service.new(name: "trace.Streams", methods: [stream_method])]
+    services = [ECHO::SERVICE, ConnectRPC::Service.new(name: "trace.Streams", rpcs: [stream_method])]
     handlers = ECHO.handlers(echo: echo, fail: echo).merge(stream_method.path => watch)
     ConnectRPC::Server.new(services: services, handlers: handlers, binding: protobuf, instrumentation: instrumentation)
   end

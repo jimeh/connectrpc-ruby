@@ -50,7 +50,7 @@ RSpec.describe "Health descriptor load order" do
         require "connectrpc/health"
         abort "older file loaded" if $older_health_loaded
         abort "feature reloaded" if require "grpc/health/v1/health_pb"
-        puts ConnectRPC::Health::SERVICE.methods.map(&:name).join(",")
+        puts ConnectRPC::Health::SERVICE.rpcs.map(&:name).join(",")
       RUBY
       expect([output.strip, status]).to eq(["Check,List,Watch", 0])
     end
@@ -62,7 +62,7 @@ RSpec.describe "Health descriptor load order" do
       abort "feature reloaded" if require "grpc/health/v1/health_pb"
       pool = Google::Protobuf::DescriptorPool.generated_pool
       abort "List missing" unless pool.lookup("grpc.health.v1.HealthListRequest")
-      puts ConnectRPC::Health::SERVICE.methods.map(&:name).join(",")
+      puts ConnectRPC::Health::SERVICE.rpcs.map(&:name).join(",")
     RUBY
     expect([output.strip, status]).to eq(["Check,List,Watch", 0])
   end

@@ -40,24 +40,24 @@ module ConnectRPC
   # rubocop:enable Metrics/MethodLength, Metrics/AbcSize
 
   class Service
-    attr_reader :name, :methods
+    attr_reader :name, :rpcs
 
-    def initialize(name:, methods:)
+    def initialize(name:, rpcs:)
       Method.validate_name!(name, qualified: true)
-      validate_methods!(name, methods)
+      validate_rpcs!(name, rpcs)
 
       @name = name.dup.freeze
-      @methods = methods.dup.freeze
+      @rpcs = rpcs.dup.freeze
       freeze
     end
 
     private
 
-    def validate_methods!(name, methods)
-      unless methods.is_a?(Array) && methods.all? { |method| service_method?(method, name) }
-        raise ArgumentError, "Methods must belong to this service"
+    def validate_rpcs!(name, rpcs)
+      unless rpcs.is_a?(Array) && rpcs.all? { |rpc| service_method?(rpc, name) }
+        raise ArgumentError, "RPCs must belong to this service"
       end
-      raise ArgumentError, "Duplicate methods" unless methods.map(&:name).uniq.size == methods.size
+      raise ArgumentError, "Duplicate RPCs" unless rpcs.map(&:name).uniq.size == rpcs.size
     end
 
     def service_method?(method, name)

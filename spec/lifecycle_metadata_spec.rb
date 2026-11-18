@@ -30,7 +30,7 @@ RSpec.describe "Lifecycle request metadata" do
   end
 
   def server(rpc, handler, instrumentation: bus, **)
-    ConnectRPC::Server.new(services: [ConnectRPC::Service.new(name: rpc.service, methods: [rpc])], binding: binding,
+    ConnectRPC::Server.new(services: [ConnectRPC::Service.new(name: rpc.service, rpcs: [rpc])], binding: binding,
                            handlers: { rpc.path => handler }, instrumentation: instrumentation,
                            status_codec: status_codec, **)
   end

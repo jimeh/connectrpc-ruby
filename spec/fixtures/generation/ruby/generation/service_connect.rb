@@ -4,6 +4,7 @@
 # source: generation/service.proto
 
 require "connectrpc"
+require "connectrpc/bindings/google_protobuf"
 require "generation/service_pb"
 require "generation/types_pb"
 
@@ -49,7 +50,7 @@ module GenerationFixture
       )
 
       SERVICE = ::ConnectRPC::Service.new(
-        name: "generation_fixture.v1.EchoService", methods: [ECHO, FAIL, GET_HTTP]
+        name: "generation_fixture.v1.EchoService", rpcs: [ECHO, FAIL, GET_HTTP]
       )
 
       class Client
@@ -77,6 +78,16 @@ module GenerationFixture
 
         { ECHO.path => echo, FAIL.path => fail, GET_HTTP.path => get_http }
       end
+
+      def self.handlers_for(impl, strict: false)
+        raise ::ArgumentError, "strict must be true or false" unless [true, false].include?(strict)
+
+        rpcs = { echo: ECHO, fail: FAIL, get_http: GET_HTTP }
+        missing = rpcs.keys.reject { |name| impl.respond_to?(name) }
+        raise ::ArgumentError, "Missing service methods: #{missing.join(', ')}" if strict && !missing.empty?
+
+        rpcs.except(*missing).to_h { |name, rpc| [rpc.path, impl.public_method(name)] }
+      end
     end
 
     module EmptyService
@@ -87,7 +98,7 @@ module GenerationFixture
       end
 
       SERVICE = ::ConnectRPC::Service.new(
-        name: "generation_fixture.v1.EmptyService", methods: []
+        name: "generation_fixture.v1.EmptyService", rpcs: []
       )
 
       class Client
@@ -97,6 +108,12 @@ module GenerationFixture
       end
 
       def self.handlers
+        {}
+      end
+
+      def self.handlers_for(_impl, strict: false)
+        raise ::ArgumentError, "strict must be true or false" unless [true, false].include?(strict)
+
         {}
       end
     end

@@ -47,13 +47,11 @@ fixture. Replace it with your own generated service:
 
 ```ruby
 require "connectrpc/testing"
-require "connectrpc/bindings/google_protobuf" # application's optional binding
-require "echo_connect" # application's generated messages and service
+require "echo_connect" # application's generated messages, service and binding
 
 service = Example::V1::EchoService
-binding = ConnectRPC::Bindings::GoogleProtobuf.new
 server = ConnectRPC::Server.new(
-  services: [service::SERVICE], binding: binding,
+  services: [service::SERVICE],
   handlers: service.handlers(
     echo: ->(request, context) {
       context.response_trailers.add("x-tested", "yes")
@@ -65,9 +63,7 @@ server = ConnectRPC::Server.new(
   )
 )
 transport = ConnectRPC::Testing::Transport.new(server: server)
-core = ConnectRPC::Client.new(
-  base_url: "https://in-process.invalid", binding: binding, transport: transport
-)
+core = ConnectRPC::Client.new(base_url: "https://in-process.invalid", transport: transport)
 client = service::Client.new(client: core)
 response = client.echo(Example::V1::EchoMessage.new(name: "hello"), timeout: nil)
 raise "Unexpected response" unless response.message.name == "hello"

@@ -49,7 +49,7 @@ module ConnectRPC
       def render_client_signature(method, depth)
         request, reply = types(method)
         options = "?metadata: ::ConnectRPC::metadata_input, ?timeout: ::Numeric?, " \
-                  "?cancellation: ::ConnectRPC::CancellationToken?"
+                  "?deadline: ::ConnectRPC::Deadline?, ?cancellation: ::ConnectRPC::CancellationToken?"
         name = Names.rpc(method.name)
         case declaration_type(method)
         when "ServerStreamMethod"
@@ -84,8 +84,9 @@ module ConnectRPC
         values = methods.map do |method|
           "::ConnectRPC::#{handler_type(method)}[#{types(method).join(', ')}]"
         end.uniq
-        line(depth + 1,
-             "def self.handlers: (#{keywords}) -> ::Hash[::String, #{values.empty? ? 'bot' : values.join(' | ')}]")
+        value = values.empty? ? "bot" : values.join(" | ")
+        line(depth + 1, "def self.handlers: (#{keywords}) -> ::Hash[::String, #{value}]")
+        line(depth + 1, "def self.handlers_for: (::Object impl, ?strict: bool) -> ::Hash[::String, #{value}]")
         line(depth, "end")
       end
     end

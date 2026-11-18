@@ -14,8 +14,8 @@ module Conformance
   BIDI_STREAM = ConnectRPC::BidiStreamMethod.new(service: SERVICE_NAME, name: "BidiStream",
                                                  request_type: BidiStreamRequest, response_type: BidiStreamResponse)
   NATIVE_SERVICE = ConnectRPC::Service.new(name: SERVICE_NAME,
-                                           methods: [UNARY, IDEMPOTENT_UNARY, UNIMPLEMENTED, SERVER_STREAM,
-                                                     CLIENT_STREAM, BIDI_STREAM])
+                                           rpcs: [UNARY, IDEMPOTENT_UNARY, UNIMPLEMENTED, SERVER_STREAM,
+                                                  CLIENT_STREAM, BIDI_STREAM])
 
   def self.proto_error(error)
     details = error.details.map do |detail|

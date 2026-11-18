@@ -4,6 +4,7 @@
 # source: generation/dotted.proto
 
 require "connectrpc"
+require "connectrpc/bindings/google_protobuf"
 require "generation/dotted_pb"
 
 module GenerationFixture
@@ -26,7 +27,7 @@ module GenerationFixture
       )
 
       SERVICE = ::ConnectRPC::Service.new(
-        name: "generation_dotted.service_name", methods: [GET_FOO]
+        name: "generation_dotted.service_name", rpcs: [GET_FOO]
       )
 
       class Client
@@ -43,6 +44,16 @@ module GenerationFixture
         raise ::ArgumentError, "get_foo must respond to call" unless get_foo.respond_to?(:call)
 
         { GET_FOO.path => get_foo }
+      end
+
+      def self.handlers_for(impl, strict: false)
+        raise ::ArgumentError, "strict must be true or false" unless [true, false].include?(strict)
+
+        rpcs = { get_foo: GET_FOO }
+        missing = rpcs.keys.reject { |name| impl.respond_to?(name) }
+        raise ::ArgumentError, "Missing service methods: #{missing.join(', ')}" if strict && !missing.empty?
+
+        rpcs.except(*missing).to_h { |name, rpc| [rpc.path, impl.public_method(name)] }
       end
     end
   end

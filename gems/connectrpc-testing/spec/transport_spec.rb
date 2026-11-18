@@ -393,7 +393,7 @@ RSpec.describe ConnectRPC::Testing::Transport do
   it "returns manual gRPC-Web responses for unexpected handler exceptions" do
     rpc = ConnectRPC::Method.new(service: "testing.Web", name: "Call", request_type: type, response_type: type)
     reports = []
-    web = ConnectRPC::Server.new(services: [ConnectRPC::Service.new(name: rpc.service, methods: [rpc])],
+    web = ConnectRPC::Server.new(services: [ConnectRPC::Service.new(name: rpc.service, rpcs: [rpc])],
                                  binding: binding, status_codec: binding, protocol: %i[connect grpc_web],
                                  handlers: { rpc.path => ->(*) { raise "handler bug" } },
                                  on_error: ->(error) { reports << error.message })
