@@ -1056,6 +1056,40 @@ RSpec.shared_examples "HTTP/2 server keepalive" do
       end
     end
 
+    # A writer that stopped for a peer that left resolves later control
+    # frames at once, so nothing waits on a frame it never writes, such as a
+    # HEADERS refusal's reset. A too_many_pings decision then still ends the
+    # connection at its own bound. Held post-delivery work keeps the drain
+    # from ending the connection first.
+    it "resolves control frames queued after the writer stopped for a peer that left, keeping the " \
+       "too_many_pings bound" do
+      reactor do |task|
+        with_keepalive_host(task, keepalive: server_keepalive(time: nil)) do |fixture|
+          fixture.client.wire.ack_pings = false
+          resource = fixture.resource
+          cleanup = AsyncHelpers::INTERNAL::CLEANUP_SECONDS
+          release = hold_post_delivery(fixture)
+          closing = task.async { fixture.host.close(grace: 5) }
+          await_due(task, fixture.clock, 5)
+          resume = park_reader(fixture)
+          reset_client(task, fixture)
+          expect(resource.upkeep.refuse(99).wait).to be(false)
+          later = resource.upkeep.refuse(101)
+          expect(later).to be_resolved
+          expect(later.value).to be(false)
+          resource.upkeep.send(:violate)
+          await_due(task, fixture.clock, cleanup)
+          expect(resource).not_to be_finished
+          fixture.clock.advance(cleanup)
+          wait_until(task, "too_many_pings bound") { resource.finished? }
+          expect(closing.wait).to be(false)
+        ensure
+          resume&.resolve(true)
+          release&.enqueue(true)
+        end
+      end
+    end
+
     it "keeps a too_many_pings decision ahead of a peer that leaves while a drain waits for its work" do
       reactor do |task|
         with_keepalive_host(task, keepalive: server_keepalive(time: nil)) do |fixture|

@@ -42,6 +42,7 @@ module ConnectRPC
           @serial = 0
           @check_at = nil
           @delivering = ::Async::Condition.new
+          @stopped = false
         end
 
         # Starting each task can yield. A connection that starts retiring
@@ -60,10 +61,13 @@ module ConnectRPC
         end
 
         # The promise resolves true once the frame is written, or false if the
-        # writer stopped or failed first, or the queue was full.
+        # writer stopped or failed first, or the queue was full. A frame for a
+        # writer that already stopped resolves false at once.
         def write(frame)
           written = ::Async::Promise.new
-          if @queue.size >= MAX_PENDING
+          if @stopped
+            written.resolve(false)
+          elsif @queue.size >= MAX_PENDING
             written.resolve(false)
             @resource.abort(IOError.new("HTTP/2 control frames outran their writer"))
           else
@@ -97,6 +101,7 @@ module ConnectRPC
         rescue StandardError => e
           @resource.abort(e) unless @resource.peer_departed? || @resource.outlives_peer?(e)
         ensure
+          @stopped = true
           written&.resolve(false)
           @queue.dequeue.last.resolve(false) until @queue.empty?
           @queued.clear
@@ -484,7 +489,9 @@ module ConnectRPC
             timer.run
             sent = written.wait
             @cutoff_written.resolve(sent)
-            next unless sent
+            # A stopped writer refuses the GOAWAY at once; the bound still
+            # ends the connection unless something else ends it first.
+            next timer.wait unless sent
 
             Internal.cancel(timer)
             next if @resource.quiesce(@parent, clock: @clock, within: EOF_SECONDS)

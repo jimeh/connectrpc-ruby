@@ -815,8 +815,8 @@ module ConnectRPC
         # takes any of its DATA. The control writer sends the reset; the
         # session observes the refusal. The request is captured first because
         # upstream detaches it from the closed stream. A retiring connection's
-        # control writer may already have stopped, leaving a queued reset
-        # unresolved, so its streams are left to dispatch, which refuses them.
+        # control writer may already have stopped, so its streams are left to
+        # dispatch, which refuses them.
         def admit(stream, upkeep)
           admission = self.admission
           return if !admission || !upkeep || retiring?
