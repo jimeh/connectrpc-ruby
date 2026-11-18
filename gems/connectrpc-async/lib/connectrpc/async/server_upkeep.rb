@@ -489,8 +489,9 @@ module ConnectRPC
             timer.run
             sent = written.wait
             @cutoff_written.resolve(sent)
-            # A stopped writer refuses the GOAWAY at once; the bound still
-            # ends the connection unless something else ends it first.
+            # An unwritten GOAWAY, whether a stopped writer refused it or
+            # dropped it from its queue, still ends the connection at the
+            # bound unless something else ends it first.
             next timer.wait unless sent
 
             Internal.cancel(timer)
