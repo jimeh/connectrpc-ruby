@@ -991,11 +991,11 @@ module ConnectRPC
         # is local, such as a stream worker's cleanup and observers. A
         # too_many_pings decision keeps its own bound instead. The EOF or
         # reset after our own raw failure is never the peer leaving. A control
-        # frame write that fails this way leaves the decision to the reader,
-        # which may still read frames the peer sent before it left. On TLS such
-        # a write raises the socket's own errno; OpenSSL raises SSLError from a
-        # write only after a read has already failed, which the reader decides
-        # before anything else runs.
+        # frame or keepalive PING write that fails this way leaves the decision
+        # to the reader, which may still read frames the peer sent before it
+        # left. On TLS such a write raises the socket's own errno; OpenSSL
+        # raises SSLError from a write only after a read has already failed,
+        # which the reader decides before anything else runs.
         def outlives_peer?(error)
           return false if @raw_failed
           return false unless @drain_running && !@finishing && !@aborted && @connection.streams.empty?
