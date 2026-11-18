@@ -91,12 +91,12 @@ RSpec.describe "Falcon shared retirement completion" do
       raw, = bound.sockets.first.accept
       handle = session.accept(raw)
       original = session.instance_variable_get(:@resources).first
-      server = task.async(finished: false) { handle.serve }
+      serving = task.async(finished: false) { handle.serve }
       wait_until(task, "protocol detection reading the peer") do
         original.tasks.any? { |setup| !setup.finished? }
       end
       aborter = task.async(finished: false) { session.abort }
-      join_retirement_tasks(task, aborter, server)
+      join_retirement_tasks(task, aborter, serving)
       mapped = session.instance_variable_get(:@resources)
       current = handle.instance_variable_get(:@resource)
       expect([current, *mapped]).to all(satisfy { |resource| retirement_complete?(resource) })
@@ -132,7 +132,7 @@ RSpec.describe "Falcon shared retirement completion" do
       raw, = bound.sockets.first.accept
       handle = session.accept(raw)
       original = session.instance_variable_get(:@resources).first
-      server = task.async(finished: false) { handle.serve }
+      serving = task.async(finished: false) { handle.serve }
       wait_until(task, "protocol detection reading the peer") do
         original.tasks.any? { |setup| !setup.finished? }
       end
@@ -140,7 +140,7 @@ RSpec.describe "Falcon shared retirement completion" do
       task.with_timeout(2) { boundary.dequeue }
       # The abort failed raw first, so detection read end of stream and chose
       # HTTP/1 while listener cleanup is still held.
-      task.with_timeout(2) { server.wait }
+      task.with_timeout(2) { serving.wait }
       expect(original.ready).not_to be(true)
       expect(session.instance_variable_get(:@resources)).to eq([original])
       expect(handle.instance_variable_get(:@resource)).to equal(original)

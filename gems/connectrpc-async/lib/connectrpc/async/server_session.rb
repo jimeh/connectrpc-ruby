@@ -291,6 +291,7 @@ module ConnectRPC
         end)
         setup.run
         Internal.wait(setup, expires)
+        # A session abort or drain that started during setup ends serving here.
         # Setup leaves the original resource mapped, without a connection,
         # when it refused an HTTP/1 replacement.
         return unless resource.connection && serving?(resource)
