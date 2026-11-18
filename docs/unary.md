@@ -299,7 +299,10 @@ transport = ConnectRPC::Transports::NetHTTP.new(
   rather than read as another domain. A name with a character Go deletes or
   checks but this mapping does not (a soft hyphen, a variation selector, a
   zero-width joiner or any right-to-left script) or a label that starts or
-  ends with a hyphen is rejected the same way. A name that
+  ends with a hyphen is rejected the same way. These rejections are not a
+  complete UTS #46 implementation: some other names, such as ones with
+  unassigned code points, leading combining marks or characters whose case
+  folding differs, still map to a different `xn--` name than Go's. A name that
   Go's IDNA would reject, because it has invalid bytes or maps to anything but
   letters, digits, hyphens and dots (a fullwidth at sign, slash or colon, for
   example), never matches as a `NO_PROXY` entry. As an environment proxy host
