@@ -549,6 +549,7 @@ module ConnectRPC
     def self.explicit: (String | URI::Generic) -> Endpoint
     def self.parse: (String) -> URI::Generic?
     def self.uri: (String) -> URI::Generic?
+    def self.utf8: (untyped) -> String?
     def self.ascii_host: (String) -> String
     def self.endpoint: (URI::Generic) -> Endpoint?
     def self.split_host_port: (String) -> [String, String]?

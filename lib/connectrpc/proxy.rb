@@ -66,6 +66,9 @@ module ConnectRPC
     # accepts a Unicode host, which Go's transport dials in ASCII form. Ruby's
     # URI accepts neither, so encode both before parsing.
     def self.uri(value)
+      value = utf8(value)
+      return unless value
+
       if (match = AUTHORITY.match(value))
         userinfo, at, host_port = match[2].to_s.rpartition("@")
         host, colon, port = host_port.partition(":")
@@ -76,13 +79,22 @@ module ConnectRPC
       nil
     end
 
-    # Lowercases a non-ASCII host and Punycode-encodes its non-ASCII labels,
-    # as Go's idna.Lookup.ToASCII does for ordinary names. Other UTS #46
-    # mapping, such as normalization and alternative dots, is not applied.
+    # A valid UTF-8 copy, or nil. Go handles bytes, so an invalidly encoded
+    # value is unparseable here rather than an exception.
+    def self.utf8(value)
+      value = value.to_s.dup.force_encoding(Encoding::UTF_8)
+      value if value.valid_encoding?
+    end
+
+    # Maps a non-ASCII host as Go's idna.Lookup.ToASCII does for ordinary
+    # names: NFKC, lowercase, ideographic full stops as dots, then Punycode
+    # for each non-ASCII label. UTS #46 validity checks and its other
+    # mappings are not applied.
     def self.ascii_host(host)
       return host if host.ascii_only?
 
-      host.downcase.split(".", -1).map { |label| label.ascii_only? ? label : "xn--#{Punycode.encode(label)}" }.join(".")
+      mapped = host.unicode_normalize(:nfkc).downcase.tr("\u3002", ".")
+      mapped.split(".", -1).map { |label| label.ascii_only? ? label : "xn--#{Punycode.encode(label)}" }.join(".")
     end
 
     # Nil unless the URL names a scheme, a host and any port in 1..65535. A
@@ -275,7 +287,8 @@ module ConnectRPC
       end
 
       def no_proxy(value) # rubocop:disable Metrics/MethodLength, Metrics/AbcSize, Metrics/CyclomaticComplexity, Metrics/PerceivedComplexity
-        value.to_s.split(",").each do |entry|
+        # Invalid bytes cannot match an ASCII host; the other entries still apply.
+        value.to_s.dup.force_encoding(Encoding::UTF_8).scrub.split(",").each do |entry|
           entry = entry.strip.downcase
           next if entry.empty?
 

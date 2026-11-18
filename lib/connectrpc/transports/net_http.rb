@@ -349,7 +349,10 @@ module ConnectRPC
         # socket that connected at once.
         def start(racer) # rubocop:disable Metrics/MethodLength, Metrics/AbcSize
           while racer.socket.nil? && (address = racer.addresses.shift)
-            racer.expires_at = now + budget(racer.addresses.size + 1)
+            # Read the clock after the deadline, so a delay between the two
+            # reads moves this expiry past the call deadline, never before it.
+            share = budget(racer.addresses.size + 1)
+            racer.expires_at = now + share
             socket = own(address)
             begin
               return socket if socket.connect_nonblock(address, exception: false) == 0 # rubocop:disable Style/NumericPredicate

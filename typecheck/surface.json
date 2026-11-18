@@ -1923,6 +1923,7 @@
     "ConnectRPC::Proxy.resolver": {"kind":"method","visibility":"public","parameters":"option, env = ENV","classification":"internal"},
     "ConnectRPC::Proxy.split_host_port": {"kind":"method","visibility":"public","parameters":"value","classification":"internal"},
     "ConnectRPC::Proxy.uri": {"kind":"method","visibility":"public","parameters":"value","classification":"internal"},
+    "ConnectRPC::Proxy.utf8": {"kind":"method","visibility":"public","parameters":"value","classification":"internal"},
     "ConnectRPC::Proxy::Endpoint": {"kind":"Data","visibility":"public","members":["scheme","host","port","user","password"],"options":[],"classification":"internal"},
     "ConnectRPC::Proxy::Endpoint#inspect": {"kind":"method","visibility":"public","parameters":"","classification":"internal"},
     "ConnectRPC::Proxy::Endpoint#pretty_print": {"kind":"method","visibility":"public","parameters":"printer","classification":"internal"},

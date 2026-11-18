@@ -205,6 +205,20 @@ RSpec.describe "NetHTTP owned dialing" do
     end
   end
 
+  it "reports deadline_exceeded when a thread switch lands between the attempt's deadline and clock reads" do
+    with_full_backlog do |port|
+      # The sleep stands in for a scheduler delay inside the attempt budget
+      # calculation; it widens that window rather than waiting for progress.
+      allow_any_instance_of(ConnectRPC::Transports::NetHTTP::Dialer).to receive(:budget)
+        .and_wrap_original do |original, *args|
+          sleep 0.05
+          original.call(*args)
+        end
+      request = transport_request("http://127.0.0.1:#{port}", timeout: 0.3)
+      expect(outcome { ConnectRPC::Transports::NetHTTP.new(proxy: nil).call(request) }).to eq("deadline_exceeded")
+    end
+  end
+
   it "closes a single pending attempt when an outer interruption lands during its wait" do
     with_full_backlog do |port|
       sockets = track_sockets

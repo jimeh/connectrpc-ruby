@@ -117,7 +117,11 @@ RSpec.describe ConnectRPC::Proxy do
       ".MÜNCHEN.test" => { "xn--mnchen-3ya.test" => true, "a.xn--mnchen-3ya.test" => false },
       "*.bücher.test:443" => { "a.xn--bcher-kva.test" => false, "a.xn--bcher-kva.test:8443" => true },
       "#{[0x4ED6, 0x4EEC, 0x4E3A, 0x4EC0, 0x4E48, 0x4E0D, 0x8BF4, 0x4E2D, 0x6587].pack('U*')}.test" =>
-        { "xn--ihqwcrb4cv8a8dqg056pqjye.test" => false }
+        { "xn--ihqwcrb4cv8a8dqg056pqjye.test" => false },
+      # Decomposed and fullwidth forms map as Go's idna.Lookup does.
+      "mu\u0308nchen.test" => { "xn--mnchen-3ya.test" => false },
+      "m\u00FCnchen\u3002test" => { "xn--mnchen-3ya.test" => false },
+      "\uFF2D\u00DCNCHEN.test" => { "xn--mnchen-3ya.test" => false }
     }.each do |no_proxy, targets|
       targets.each do |target, proxied|
         it "#{proxied ? 'proxies' : 'bypasses'} #{target} with NO_PROXY=#{no_proxy}" do
@@ -130,12 +134,33 @@ RSpec.describe ConnectRPC::Proxy do
     {
       "http://münchen.test:3128" => ["xn--mnchen-3ya.test", 3128],
       "MÜNCHEN.test" => ["xn--mnchen-3ya.test", 80],
-      "http://user:p@ss@proxy.bücher.de" => ["proxy.xn--bcher-kva.de", 80]
+      "http://user:p@ss@proxy.bücher.de" => ["proxy.xn--bcher-kva.de", 80],
+      "http://mu\u0308nchen.test" => ["xn--mnchen-3ya.test", 80],
+      "b\u00FCcher\u3002de:8080" => ["xn--bcher-kva.de", 8080]
     }.each do |value, (host, port)|
       it "dials the ASCII form of proxy host #{value}" do
         expect(resolve({ "HTTPS_PROXY" => value }, "https://example.com")).to eq(["http", host, port])
         expect(described_class.resolver(value).for(URI("https://x")).to_h.values_at(:host, :port)).to eq([host, port])
       end
+    end
+  end
+
+  describe "invalidly encoded values" do
+    invalid = "http://pr\xFFoxy:3128"
+
+    it "ignores an unparseable environment proxy instead of raising" do
+      expect(resolve({ "HTTPS_PROXY" => invalid, "NO_PROXY" => "*" }, "https://example.com")).to be_nil
+      expect(resolve({ "HTTPS_PROXY" => invalid }, "https://example.com")).to be_nil
+    end
+
+    it "rejects an explicit proxy with the fixed configuration error" do
+      expect { described_class.resolver(invalid) }.to raise_error(ArgumentError, "Invalid proxy configuration")
+    end
+
+    it "keeps the valid NO_PROXY entries next to an invalid one" do
+      env = { "HTTPS_PROXY" => "proxy", "NO_PROXY" => "bad\xFF.test, good.test" }
+      expect(resolve(env, "https://good.test")).to be_nil
+      expect(resolve(env, "https://other.test")).to eq(["http", "proxy", 80])
     end
   end
 
