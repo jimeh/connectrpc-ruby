@@ -114,13 +114,11 @@ module ConnectRPC
       end
 
       # Maps each RPC to the implementation's public method of the same snake
-      # case name. respond_to? decides presence, so private methods are missing.
-      # A method counts only when its owner precedes the first core boundary in
-      # the receiver's own lookup chain: Object's singleton class for a class,
-      # Module for another module and Object otherwise. Methods only inherited
-      # from Object, Module or Class, including later framework additions, are
-      # never bound, while mixins in the receiver's own chain still are, even
-      # when Object or Class also includes them.
+      # case name. respond_to? decides presence, so private methods are missing,
+      # and a method owned by a core ancestor is never bound. Class.ancestors
+      # covers Object's ancestors, including later framework additions, plus
+      # Module and Class, which only module implementations inherit from. A
+      # handler mixin that is also mixed into one of those counts as core.
       def render_handlers_for(methods, depth)
         line(depth, "")
         line(depth, "def self.handlers_for(#{'_' if methods.empty?}impl, strict: false)")
@@ -131,11 +129,10 @@ module ConnectRPC
         else
           entries = methods.map { |_method, ruby| "#{ruby}: #{ruby.upcase}" }.join(", ")
           line(depth + 1, "rpcs = { #{entries} }")
-          line(depth + 1, "core = [::Object.singleton_class, ::Module, ::Object]")
-          line(depth + 1, "own = impl.singleton_class.ancestors.take_while { |mod| !core.include?(mod) }")
+          line(depth + 1, "core = ::Class.ancestors")
           line(depth + 1, "found = rpcs.keys.filter_map do |name|")
           line(depth + 2, "method = impl.public_method(name) if impl.respond_to?(name)")
-          line(depth + 2, "[name, method] if method && own.include?(method.owner)")
+          line(depth + 2, "[name, method] if method && !core.include?(method.owner)")
           line(depth + 1, "end.to_h")
           line(depth + 1, "missing = rpcs.keys - found.keys")
           line(depth + 1, "raise ::ArgumentError, \"Missing service methods: \#{missing.join(', ')}\" " \

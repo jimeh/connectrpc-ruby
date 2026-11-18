@@ -35,9 +35,8 @@ RSpec.describe "Service generation" do
                                'name: "generation.v1.EchoService", rpcs: [GET_HTTP]',
                                "def self.handlers_for(impl, strict: false)",
                                "rpcs = { get_http: GET_HTTP }",
-                               "core = [::Object.singleton_class, ::Module, ::Object]",
-                               "own = impl.singleton_class.ancestors.take_while { |mod| !core.include?(mod) }",
-                               "[name, method] if method && own.include?(method.owner)")
+                               "core = ::Class.ancestors",
+                               "[name, method] if method && !core.include?(method.owner)")
     requires = %(require "connectrpc"\nrequire "connectrpc/bindings/google_protobuf"\nrequire "sample_pb")
     expect(content).to include(requires)
     expect(content).not_to include("methods: [")

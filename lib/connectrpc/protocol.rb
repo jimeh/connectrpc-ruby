@@ -50,10 +50,11 @@ module ConnectRPC
     # call setup. A supplied deadline that is strictly earlier is used as-is;
     # on a tie the timeout budget wins.
     def self.call_deadline(timeout, deadline)
-      return deadline if timeout.nil?
-      return Deadline.new(timeout) if deadline.nil?
+      budget = Deadline.new(timeout) unless timeout.nil?
+      return deadline if budget.nil?
+      return budget if deadline.nil?
 
-      deadline.__send__(:bounded_by, timeout)
+      deadline.__send__(:earlier_than?, budget) ? deadline : budget
     end
 
     def self.profile!(protocol, mode, encoding, server: false)

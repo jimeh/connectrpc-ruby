@@ -550,8 +550,8 @@ contract classifies the 100 ms allowance as a
 
 Pass `cancellation: source.token` to core or generated client calls, where
 `source = ConnectRPC::CancellationSource.new`. The source is permanent and
-shareable; only `source.cancel` initiates cancellation. `timeout: nil` keeps no
-RPC deadline or wire timeout. Context offers cooperative `cancelled?`,
+shareable; only `source.cancel` initiates cancellation. `timeout: nil` without
+`deadline:` keeps no RPC deadline or wire timeout. Context offers cooperative `cancelled?`,
 `cancellation_reason` and `check!`. See the
 [unary guide](../../docs/unary.md#cancellation) for listener, arbitration and
 registration lifetime rules.

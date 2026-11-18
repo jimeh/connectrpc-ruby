@@ -421,10 +421,9 @@ RSpec.describe "Generated service-object handlers" do
       expect { mixed.handlers_for(Class.new, strict: true) }.to raise_error(ArgumentError, /watch, collect/)
     end
 
-    it "maps a Class's own and inherited singleton methods but not Class, Object or Object's singleton methods" do
+    it "maps a Class's own and inherited singleton methods but not Class or Object methods" do
       stub_core(Class, :watch)
       stub_core(Object, :collect)
-      stub_core(Object.singleton_class, :chat)
       item = self.item
       base = Class.new do
         define_singleton_method(:lookup) { |request, _context| item.new(name: "class #{request.name}") }
@@ -440,25 +439,87 @@ RSpec.describe "Generated service-object handlers" do
       expect { mixed.handlers_for(service, strict: true) }.to raise_error(ArgumentError, /watch, collect, chat/)
     end
 
-    it "keeps a mixin the implementation's class includes even when Object and Class also include it" do
+    it "does not bind Class or Module methods for a class that inherits directly from BasicObject" do
+      stub_core(Class, :watch)
+      stub_core(Module, :collect)
       item = self.item
-      # Object and Class can never un-include a module, so this anonymous mixin
-      # only holds lookup during the example; the after hook removes the
-      # method, leaving an empty module that cannot affect other examples.
+      service = Class.new(BasicObject)
+      service.define_singleton_method(:lookup) { |request, _context| item.new(name: "basic #{request.name}") }
+      handlers = mixed.handlers_for(service)
+      expect(handlers.keys).to eq([mixed::LOOKUP.path])
+      expect(handlers.fetch(mixed::LOOKUP.path).call(item.new(name: "b"), nil).name).to eq("basic b")
+      expect { mixed.handlers_for(service, strict: true) }
+        .to raise_error(ArgumentError, "Missing service methods: watch, collect, chat")
+    end
+
+    it "does not bind methods from modules prepended to Object or Module" do
+      # Object and Module can never un-prepend a module, so these anonymous
+      # modules only hold their methods during the example; the after hook
+      # removes them, leaving empty modules that cannot affect other examples.
+      on_object = Module.new
+      on_object.define_method(:lookup) { |*| raise "prepended lookup must not be bound" }
+      on_module = Module.new
+      on_module.define_method(:watch) { |*| raise "prepended watch must not be bound" }
+      stubbed << [on_object, :lookup] << [on_module, :watch]
+      Object.prepend(on_object)
+      Module.prepend(on_module)
+
+      impl = Object.new
+      impl.define_singleton_method(:collect) { |_reader, _context| nil }
+      expect(impl.respond_to?(:lookup)).to be(true)
+      expect(mixed.handlers_for(impl).keys).to eq([mixed::COLLECT.path])
+      expect { mixed.handlers_for(impl, strict: true) }
+        .to raise_error(ArgumentError, "Missing service methods: lookup, watch, chat")
+
+      service = Module.new
+      service.define_singleton_method(:chat) { |_duplex, _context| nil }
+      expect(service.respond_to?(:watch)).to be(true)
+      expect(mixed.handlers_for(service).keys).to eq([mixed::CHAT.path])
+      expect { mixed.handlers_for(service, strict: true) }
+        .to raise_error(ArgumentError, "Missing service methods: lookup, watch, collect")
+    end
+
+    it "treats a handler mixin that is also mixed into Object as core" do
+      # Accepted limitation: lookup cannot tell the implementation's own mixin
+      # from the same module in Object's ancestors. Object can never un-include
+      # a module, so the after hook removes the method instead, leaving an
+      # empty module that cannot affect other examples.
       mixin = Module.new
-      mixin.define_method(:lookup) { |request, _context| item.new(name: "mixin #{request.name}") }
+      mixin.define_method(:lookup) { |*| raise "core mixin must not be bound" }
       stubbed << [mixin, :lookup]
-      impl = Class.new(implementation) { include mixin }.new
+      impl = Class.new { include mixin }.new
       Object.include(mixin)
-      Class.include(mixin)
-      handlers = mixed.handlers_for(impl)
-      expect(handlers.keys).to eq(mixed::SERVICE.rpcs.map(&:path))
-      expect(handlers.fetch(mixed::LOOKUP.path).owner).to equal(mixin)
-      response = mixed_server(handlers).call(path: mixed::LOOKUP.path, http_method: "POST",
-                                             headers: { "content-type" => ["application/proto"] },
-                                             input: StringIO.new(item.new(name: "a").to_proto))
-      expect([response.status, item.decode(response.body).name]).to eq([200, "mixin a"])
-      expect(mixed.handlers_for(impl, strict: true).keys).to eq(handlers.keys)
+      expect(mixed.handlers_for(impl)).to eq({})
+      expect { mixed.handlers_for(impl, strict: true) }.to raise_error(ArgumentError, /lookup/)
+    end
+  end
+
+  it "binds an object's class, mixin and singleton methods and a Module's own singleton methods" do
+    mixin = Module.new do
+      def watch(_request, _writer, _context) = nil
+    end
+    impl = Class.new do
+      include mixin
+
+      def lookup(_request, _context) = nil
+    end.new
+    impl.define_singleton_method(:collect) { |_reader, _context| nil }
+    handlers = mixed.handlers_for(impl)
+    expect(handlers.keys).to eq([mixed::LOOKUP, mixed::WATCH, mixed::COLLECT].map(&:path))
+    expect(handlers.values.map(&:owner)).to eq([impl.class, mixin, impl.singleton_class])
+
+    service = Module.new do
+      def self.chat(_duplex, _context) = nil
+    end
+    expect(mixed.handlers_for(service).transform_values(&:receiver)).to eq(mixed::CHAT.path => service)
+  end
+
+  it "returns no handlers for an immediate or frozen implementation and strict names every RPC" do
+    [1, :service, "frozen literal"].each do |impl|
+      expect(impl).to be_frozen
+      expect(mixed.handlers_for(impl)).to eq({})
+      expect { mixed.handlers_for(impl, strict: true) }
+        .to raise_error(ArgumentError, "Missing service methods: lookup, watch, collect, chat")
     end
   end
 

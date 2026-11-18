@@ -96,11 +96,10 @@ module Connectrpc
           raise ::ArgumentError, "strict must be true or false" unless [true, false].include?(strict)
 
           rpcs = { unary: UNARY, server_stream: SERVER_STREAM, client_stream: CLIENT_STREAM, bidi: BIDI }
-          core = [::Object.singleton_class, ::Module, ::Object]
-          own = impl.singleton_class.ancestors.take_while { |mod| !core.include?(mod) }
+          core = ::Class.ancestors
           found = rpcs.keys.filter_map do |name|
             method = impl.public_method(name) if impl.respond_to?(name)
-            [name, method] if method && own.include?(method.owner)
+            [name, method] if method && !core.include?(method.owner)
           end.to_h
           missing = rpcs.keys - found.keys
           raise ::ArgumentError, "Missing service methods: #{missing.join(', ')}" if strict && !missing.empty?

@@ -205,6 +205,26 @@ RSpec.describe ConnectRPC::Client do
       expect(seconds).to be <= 2
     end
 
+    it "keeps the monotonic timeout budget when a later deadline runs on a custom clock" do
+      clock = 0.0
+      allow(Process).to receive(:clock_gettime).and_call_original
+      allow(Process).to receive(:clock_gettime).with(Process::CLOCK_MONOTONIC) { clock }
+      seen = []
+      interceptor = Object.new
+      interceptor.define_singleton_method(:client_unary) do |call, &continuation|
+        seen << call.deadline
+        clock += 0.5 # past the 0.1 s budget in monotonic time, while the custom clock never moves
+        continuation.call
+      end
+      later = ConnectRPC::Deadline.new(3600, clock: -> { 0.0 })
+      expect_deadline_exceeded do
+        client(interceptors: [interceptor]).call(method, "hello", timeout: 0.1, deadline: later)
+      end
+      expect(seen.size).to eq(1)
+      expect(seen.first).not_to equal(later)
+      expect(sent).to be_empty
+    end
+
     it "rejects a non-Deadline deadline and non-finite timeouts before any work" do
       streaming = client(transport: stream_transport)
       upload = ConnectRPC::ClientStreamMethod.new(service: "test.Service", name: "Up", request_type: String,

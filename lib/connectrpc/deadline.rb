@@ -49,16 +49,19 @@ module ConnectRPC
 
     protected
 
-    attr_reader :expires_at
+    attr_reader :clock, :expires_at
 
     private
 
-    # The earlier of this deadline and a timeout budget started now. The budget
-    # reads this deadline's clock, so both expiries share one timeline and no
-    # gap between clock reads can reorder them; a tie selects the budget.
-    def bounded_by(timeout)
-      budget = Deadline.new(timeout, clock: @clock)
-      expires_at < budget.expires_at ? self : budget
+    # Whether this deadline expires strictly before other. A shared clock
+    # compares absolute expiries, so no gap between clock reads can reorder
+    # them. Distinct clocks can only compare remaining time, which can be off
+    # by the gap between the two reads.
+    def earlier_than?(other)
+      shared = clock #: (^() -> Numeric | _Clock) & _IdentityProbe
+      return expires_at < other.expires_at if shared.equal?(other.clock)
+
+      remaining < other.remaining
     end
   end
 

@@ -30,9 +30,13 @@ boundaries, finite transport SPI and absolute recovery/tail policies.
 `Client` owns request encoding, protocol headers, response validation, errors,
 metadata, byte limits and the deadline. Base URL path prefixes are retained.
 Each call selects one effective deadline at setup, the earlier of
-`Deadline.new(timeout)` and an explicit `deadline:`, reusing the supplied
-object when it wins. That deadline drives local cancellation, the wire timeout
-and interceptor-visible facts. A zero or negative budget is already expired and
+`Deadline.new(timeout)` on the shared monotonic clock and an explicit
+`deadline:`, reusing the supplied object when it is strictly earlier. Deadlines
+on that clock compare absolute expiries. A `deadline:` built on a custom
+`clock:` is compared with the call's timeout by remaining time at call setup,
+so the choice can be off by the time between those two clock reads; deadlines
+on the default clock compare exactly. The selected deadline drives local
+cancellation, the wire timeout and interceptor-visible facts. A zero or negative budget is already expired and
 fails before transport dispatch. Deadlines never propagate implicitly through
 thread or fiber storage: storage copied into a lazily created pool thread would
 leak one request's deadline into later jobs.
@@ -208,8 +212,7 @@ relative budget; a call has no logical client deadline, timeout header or expiry
 watchdog only with both `timeout: nil` and no `deadline:`. Native operation waits still
 use the exact `9_999_999.999` second cap, returning `unavailable` on timeout.
 Sustained progress can outlast this per-operation cap. For finite positive
-timeouts, one client deadline begins before encoding, on the monotonic clock
-unless a supplied `deadline:` brings its own clock. Remaining timeout milliseconds are
+timeouts, one monotonic client deadline begins before encoding. Remaining timeout milliseconds are
 rounded up and clamped to ten digits without extending actual expiry. NetHTTP
 recomputes the header at dispatch and checks the budget around connection,
 codec and body progress. Each call owns one connection; a finite deadline also owns one watchdog. The
@@ -470,13 +473,13 @@ contain frozen RPC declaration constants, `SERVICE`, a `Client` initialized with
 `.handlers_for(impl, strict: false)`, which maps each RPC path to
 `impl.public_method(name)` when `impl.respond_to?(name)` for the RPC's
 snake-case name and omits the rest (`strict: true` raises naming them). A
-method also counts as missing unless its owner precedes the first core boundary
-in `impl.singleton_class.ancestors`: `Object`'s singleton class for a class,
-`Module` for another module and `Object` otherwise. Methods `impl` only
-inherits from `Object`, `Module` or `Class`, including framework additions such
-as ActiveSupport's `Object#try`, are therefore never bound, while singleton
-methods and mixins in `impl`'s own chain are, even when `Object` or `Class`
-also includes the mixin. Unary wrappers forward
+method whose owner is in `Class.ancestors` at lookup time also counts as
+missing. That set holds `Object`'s ancestors, including modules frameworks
+include or prepend later, plus `Module` and `Class`, which only module
+implementations inherit from. Inherited core and framework methods such as
+ActiveSupport's `Object#try` are therefore never bound. A handler module that
+is also mixed into `Object`, `Module` or `Class` counts as a core method and is
+not bound. Unary wrappers forward
 `call(METHOD, request, **options)` unchanged. Streaming wrappers forward the matching scoped operation, its
 required block and all options. Partial handlers/custom invocation remain core
 Server features. The generated file requires the Google binding because its

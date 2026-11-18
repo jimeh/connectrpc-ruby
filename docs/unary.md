@@ -107,10 +107,14 @@ server = ConnectRPC::Server.new(services: [service::SERVICE],
   the existing Server handler map directly for partial/custom registration.
 - Since 0.3.0, `handlers_for(impl, strict: false)` checks each RPC with
   `impl.respond_to?(name)`, so private methods count as missing and
-  `respond_to_missing?` is honored. A method that `impl` only inherits from
-  `Object` (or, for a class or module, from `Class` or `Module`) also counts
-  as missing, including methods that frameworks such as ActiveSupport add
-  there. A module's own singleton methods (`def self.greet`) count. It omits
+  `respond_to_missing?` is honored. A method whose owner is in
+  `Class.ancestors` when `handlers_for` runs also counts as missing, so methods
+  `impl` only inherits from `Object` (or, for a class or module, from `Class`
+  or `Module`) are never bound, including methods that frameworks such as
+  ActiveSupport add there. A handler module that is also mixed into `Object`,
+  `Module` or `Class` counts as a core method and is not bound. Methods from
+  `impl`'s class, its other mixins and its singleton class, including a
+  module's own singleton methods (`def self.greet`), count. It omits
   RPCs the object lacks, which the Server's default invoker answers with
   `unimplemented`. `strict: true` raises `ArgumentError` naming every missing
   method. It does not check arity. Server streaming methods take
@@ -429,9 +433,13 @@ watchdog or timeout header only when it passes `timeout: nil` and no
 Since 0.3.0, every call, including the streaming calls and generated wrappers,
 also accepts `deadline:`, a `ConnectRPC::Deadline` or nil. The call uses the
 earlier of `timeout:` and `deadline:`, chosen once at call setup, and reuses the
-supplied object when it is strictly earlier. The `timeout:` budget starts on the
-supplied deadline's clock, so the two expiries compare exactly. A handler passes its own deadline to a
-downstream call so it ends no later than the request that caused it:
+supplied object when it is strictly earlier; a tie keeps the `timeout:`
+budget, which always runs on the default monotonic clock. A `deadline:` built
+on a custom `clock:` is compared with the call's timeout by remaining time at
+call setup, so the choice can be off by the time between those two clock
+reads; deadlines on the default clock compare exactly. A handler passes its
+own deadline to a downstream call so it ends no later than the request that
+caused it:
 
 ```ruby
 def greet(request, context)
