@@ -1,5 +1,6 @@
 # frozen_string_literal: true
 
+require "pp"
 require "connectrpc/transports/net_http"
 require_relative "support/socket_peer"
 require_relative "support/tls_peer"
@@ -64,6 +65,66 @@ RSpec.describe "NetHTTP TLS options" do
         expect(error.message).to eq("HTTP transport failed: TLS verification failed")
         expect(error.cause).to be_a(OpenSSL::SSL::SSLError)
       end
+    end
+  end
+
+  describe "the default context" do
+    let(:client_tls) { ConnectRPC::Transports::NetHTTP.const_get(:ClientTLS) }
+
+    # Records the client side only; the TLS peer runs in its own thread.
+    def contexts
+      contexts = Queue.new
+      client = Thread.current
+      allow(OpenSSL::SSL::SSLSocket).to receive(:new).and_wrap_original do |original, socket, context|
+        contexts << context if Thread.current == client
+        original.call(socket, context)
+      end
+      contexts
+    end
+
+    # Loading the system trust store costs milliseconds and hundreds of KiB.
+    it "loads no trust store at construction and shares one frozen context across transports" do
+      allow(OpenSSL::X509::Store).to receive(:new).and_call_original
+      transports = Array.new(2) { ConnectRPC::Transports::NetHTTP.new(proxy: nil) }
+      expect(OpenSSL::X509::Store).not_to have_received(:new)
+      used = contexts
+      transports.each do |transport|
+        with_tls_peer(server_context, answer) do |port|
+          expect(failure(transport, "https://localhost:#{port}").message)
+            .to eq("HTTP transport failed: TLS verification failed")
+        end
+      end
+      first, second = Array.new(2) { used.pop(timeout: 0) }
+      expect([first, first.frozen?, first.verify_mode]).to eq([second, true, OpenSSL::SSL::VERIFY_PEER])
+    end
+
+    it "builds a transport's own context when it has TLS options" do
+      with_ca_file do |ca_file|
+        allow(OpenSSL::X509::Store).to receive(:new).and_call_original
+        transport = ConnectRPC::Transports::NetHTTP.new(ca_file: ca_file, proxy: nil)
+        expect(OpenSSL::X509::Store).to have_received(:new).once
+        used = contexts
+        with_tls_peer(server_context, answer) do |port|
+          expect(transport.call(transport_request("https://localhost:#{port}", timeout: 5)).body).to eq("ok")
+        end
+        expect(used.pop(timeout: 0)).not_to equal(client_tls.default)
+      end
+    end
+
+    it "reads SSL_CERT_FILE when the default is first used, not at construction" do
+      saved = client_tls.instance_variable_get(:@default)
+      previous = ENV.fetch("SSL_CERT_FILE", nil)
+      client_tls.instance_variable_set(:@default, nil)
+      transport = ConnectRPC::Transports::NetHTTP.new(proxy: nil)
+      with_ca_file do |ca_file|
+        ENV["SSL_CERT_FILE"] = ca_file
+        with_tls_peer(server_context, answer) do |port|
+          expect(transport.call(transport_request("https://localhost:#{port}", timeout: 5)).body).to eq("ok")
+        end
+      end
+    ensure
+      client_tls.instance_variable_set(:@default, saved)
+      previous.nil? ? ENV.delete("SSL_CERT_FILE") : ENV["SSL_CERT_FILE"] = previous
     end
   end
 
@@ -143,6 +204,7 @@ RSpec.describe "NetHTTP TLS options" do
     it "keeps TLS material and proxy URLs out of inspect" do
       transport = ConnectRPC::Transports::NetHTTP.new(proxy: "http://user:secret@proxy.test:3128", **client_identity)
       expect(transport.inspect).to eq("#<ConnectRPC::Transports::NetHTTP proxy=explicit>")
+      expect(PP.pp(transport, +"")).to eq("#<ConnectRPC::Transports::NetHTTP proxy=explicit>\n")
       expect(ConnectRPC::Transports::NetHTTP.new.inspect).to eq("#<ConnectRPC::Transports::NetHTTP proxy=environment>")
     end
   end

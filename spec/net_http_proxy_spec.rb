@@ -201,6 +201,40 @@ RSpec.describe "NetHTTP proxies" do
     end
   end
 
+  it "rejects a CONNECT reply that is only read after the cap has passed" do
+    replied = Queue.new
+    sent = Queue.new
+    offset = 0
+    allow(Process).to receive(:clock_gettime).and_wrap_original do |original, *args|
+      original.call(*args) + offset
+    end
+    # Holds the client's first read until the whole reply is readable, then
+    # moves the clock past the cap, as if the client thread were descheduled.
+    allow_any_instance_of(Socket).to receive(:read_nonblock).and_wrap_original do |original, *args, **options|
+      if offset.zero?
+        raise "Reply gate timed out" unless replied.pop(timeout: 2) && original.receiver.wait_readable(2)
+
+        offset = ConnectRPC::Transports::NetHTTP::TUNNEL_TIMEOUT + 1
+      end
+      original.call(*args, **options)
+    end
+    proxy = lambda do |client|
+      read_request(client)
+      client.write("HTTP/1.1 200 Connection established\r\n\r\n")
+      replied << true
+      # Closing after any byte ends a ClientHello's handshake rather than stalling it.
+      sent << client.read(1).to_s
+    end
+    with_peer(proxy) do |proxy_url|
+      request = transport_request("https://#{TLSPeer::TARGET}:443")
+      request.deadline = nil
+      error = failure(ConnectRPC::Transports::NetHTTP.new(proxy: proxy_url), request)
+      expect([error.code, error.message]).to eq(["unavailable", "HTTP transport failed: proxy tunnel timed out"])
+    end
+    # No TLS ClientHello followed the late reply.
+    expect(sent.pop(timeout: 0)).to eq("")
+  end
+
   describe "proxy replies" do
     failures = Struct.new(:errors) do
       def record_failure(error) = errors << error

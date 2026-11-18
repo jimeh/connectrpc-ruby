@@ -22,8 +22,10 @@ module ConnectRPC
       class ProxyFailure < StandardError; end
 
       # Validates TLS client inputs exactly as ConnectRPC::Async's TLS client
-      # does and builds the one context every call of a transport reuses.
+      # does. A transport with TLS options builds its own context; every other
+      # transport shares one default context, built on first HTTPS use.
       module ClientTLS
+        DEFAULT_LOCK = Mutex.new
         CERTIFICATE = %r{\A-----BEGIN CERTIFICATE-----\s+[A-Za-z0-9+/=\s]+-----END CERTIFICATE-----\z}
         PRIVATE_KEY = %r{
           \A-----BEGIN\ (RSA\ PRIVATE\ KEY|EC\ PRIVATE\ KEY|PRIVATE\ KEY)-----
@@ -90,7 +92,26 @@ module ConnectRPC
           host unless Resolv::IPv4::Regex.match?(host) || Resolv::IPv6::Regex.match?(host)
         end
 
-        def self.context(ca_file:, certificate_chain:, private_key:) # rubocop:disable Metrics/MethodLength, Metrics/AbcSize
+        # Nil without TLS options. Loading the system trust store costs
+        # milliseconds and hundreds of KiB, so it happens once per process.
+        def self.context(ca_file:, certificate_chain:, private_key:)
+          return if ca_file.nil? && certificate_chain.nil? && private_key.nil?
+
+          build(ca_file, certificate_chain, private_key)
+        rescue InvalidInput => e
+          # Errors name only the input: never paths or key material.
+          raise ArgumentError, "Invalid TLS client configuration: #{e.input}", cause: nil
+        rescue StandardError
+          raise ArgumentError, "Invalid TLS client configuration", cause: nil
+        end
+
+        # SSL_CERT_FILE and SSL_CERT_DIR apply as they are at first use.
+        def self.default
+          @default || DEFAULT_LOCK.synchronize { @default ||= build(nil, nil, nil) }
+        end
+
+        # Setup freezes the context, so calls share it read-only.
+        def self.build(ca_file, certificate_chain, private_key) # rubocop:disable Metrics/MethodLength, Metrics/AbcSize
           context = OpenSSL::SSL::SSLContext.new
           context.set_params(verify_mode: OpenSSL::SSL::VERIFY_PEER, verify_hostname: true)
           context.min_version = OpenSSL::SSL::TLS1_2_VERSION
@@ -108,11 +129,6 @@ module ConnectRPC
           context.alpn_protocols = ["http/1.1"]
           context.setup
           context
-        rescue InvalidInput => e
-          # Errors name only the input: never paths or key material.
-          raise ArgumentError, "Invalid TLS client configuration: #{e.input}", cause: nil
-        rescue StandardError
-          raise ArgumentError, "Invalid TLS client configuration", cause: nil
         end
       end
       private_constant :ClientTLS
@@ -136,14 +152,16 @@ module ConnectRPC
           deadline ? deadline.native_timeout : Deadline::MAX_NATIVE_WAIT
         end
 
-        def connect # rubocop:disable Metrics/MethodLength
+        def connect # rubocop:disable Metrics/MethodLength, Metrics/AbcSize, Metrics/CyclomaticComplexity
           check_cancellation!
           # begin_transport can reconnect a closed socket even with retries
           # disabled. A second socket would escape the call's watchdog.
           raise IOError, "Owned connection is closed" if @socket
 
           connected = false
-          raw = open_socket(*dial_target)
+          attempts = []
+          raw = Dialer.new(attempts, socket_lifecycle, deadline, method(:check_cancellation!))
+                      .dial(Addrinfo.getaddrinfo(*dial_target, nil, :STREAM, nil, 0, timeout: native_wait))
           establish_tunnel(raw) if tunnel
           socket = use_ssl? ? start_tls(raw) : raw
           @socket = Net::BufferedIO.new(socket, read_timeout: @read_timeout, write_timeout: @write_timeout,
@@ -152,7 +170,9 @@ module ConnectRPC
           on_connect
           connected = true
         ensure
-          close_quietly(raw) if raw && !connected
+          # Every attempt closes unless it became the connection, including
+          # when an outer interruption lands mid-dial.
+          attempts&.each { |attempt| close_quietly(attempt) unless connected && attempt.equal?(raw) }
         end
 
         def dial_target
@@ -161,37 +181,6 @@ module ConnectRPC
           return [proxy_address, proxy_port] if proxy?
 
           [address, port]
-        end
-
-        # Addresses are tried one at a time. Each socket is owned before its
-        # connect starts, so cancellation and expiry close whichever is live.
-        def open_socket(host, port) # rubocop:disable Metrics/MethodLength
-          addresses = Addrinfo.getaddrinfo(host, port, nil, :STREAM, nil, 0, timeout: native_wait)
-          failure = nil
-          addresses.each do |address|
-            check_cancellation!
-            socket = Socket.new(address.afamily, Socket::SOCK_STREAM, 0)
-            socket_lifecycle&.attach(socket)
-            begin
-              connect_socket(socket, address)
-              socket.setsockopt(Socket::IPPROTO_TCP, Socket::TCP_NODELAY, 1)
-              return socket
-            rescue IOError, SystemCallError, Net::OpenTimeout => e
-              close_quietly(socket)
-              failure ||= e
-            end
-          end
-          check_cancellation!
-          raise failure || SocketError.new("No addresses")
-        end
-
-        def connect_socket(socket, address)
-          return if socket.connect_nonblock(address, exception: false) == 0 # rubocop:disable Style/NumericPredicate
-          raise Net::OpenTimeout, "TCP connect timed out" unless socket.wait_writable(native_wait)
-
-          socket.connect_nonblock(address)
-        rescue Errno::EISCONN
-          nil
         end
 
         def establish_tunnel(socket)
@@ -212,6 +201,7 @@ module ConnectRPC
               wait_tunnel(socket, expires_at, :wait_writable)
             else
               data = data.byteslice(written..).to_s
+              check_tunnel!(expires_at)
             end
           end
         end
@@ -229,6 +219,7 @@ module ConnectRPC
             raise ProxyFailure, "proxy tunnel failed" if chunk.nil?
 
             head << chunk
+            check_tunnel!(expires_at)
             ending = head.match(TUNNEL_HEAD_END, [head.bytesize - chunk.bytesize - 3, 0].max)
             next unless ending
 
@@ -247,22 +238,26 @@ module ConnectRPC
           raise ProxyFailure, "proxy tunnel failed" unless complete
         end
 
-        # The CONNECT cap applies even without a call deadline. Call expiry
-        # and cancellation keep their own outcomes.
         def wait_tunnel(socket, expires_at, direction)
           loop do
             wait = [native_wait, expires_at - Process.clock_gettime(Process::CLOCK_MONOTONIC)].min
             return if wait.positive? && socket.public_send(direction, wait)
 
-            check_cancellation!
-            if Process.clock_gettime(Process::CLOCK_MONOTONIC) >= expires_at
-              raise ProxyFailure, "proxy tunnel timed out"
-            end
+            check_tunnel!(expires_at)
           end
         end
 
+        # The CONNECT cap applies even without a call deadline, after every
+        # read or write as well as while waiting, so a reply that arrives
+        # late is never accepted. Call expiry and cancellation keep their own
+        # outcomes.
+        def check_tunnel!(expires_at)
+          check_cancellation!
+          raise ProxyFailure, "proxy tunnel timed out" if Process.clock_gettime(Process::CLOCK_MONOTONIC) >= expires_at
+        end
+
         def start_tls(raw)
-          socket = OpenSSL::SSL::SSLSocket.new(raw, tls_context)
+          socket = OpenSSL::SSL::SSLSocket.new(raw, tls_context || ClientTLS.default)
           socket.sync_close = true
           name = ClientTLS.server_name(address)
           socket.hostname = name if name
@@ -292,6 +287,153 @@ module ConnectRPC
         end
       end
 
+      # Dials resolved addresses as Go's net.Dialer does. Addresses of the
+      # first address's family are tried in order. The other family starts
+      # FALLBACK_DELAY later, or as soon as the first family has failed, so at
+      # most two attempts are in flight. Each attempt gets an equal share of
+      # the remaining deadline, at least MIN_ATTEMPT. The first connection
+      # wins and every other attempt closes. Connects are nonblocking and run
+      # in the calling thread; every attempt is owned from creation, so
+      # cancellation and expiry close all of them.
+      class Dialer # rubocop:disable Metrics/ClassLength
+        FALLBACK_DELAY = 0.3
+        MIN_ATTEMPT = 2.0
+
+        # One family's remaining addresses and its attempt in flight.
+        Racer = Struct.new(:addresses, :socket, :address, :expires_at, :failure)
+
+        def initialize(attempts, sockets, deadline, check)
+          @attempts = attempts
+          @sockets = sockets
+          @deadline = deadline
+          @check = check
+        end
+
+        # Raises the first failure of the first family when every address fails.
+        def dial(addresses) # rubocop:disable Metrics/MethodLength, Metrics/AbcSize, Metrics/CyclomaticComplexity, Metrics/PerceivedComplexity
+          family = addresses.first&.afamily
+          primaries, fallbacks = addresses.partition { |address| address.afamily == family }
+          racers = [Racer.new(primaries)]
+          pending = Racer.new(fallbacks) unless fallbacks.empty?
+          fallback_at = now + FALLBACK_DELAY
+          loop do
+            @check.call
+            if pending && (now >= fallback_at || exhausted?(racers.first))
+              racers << pending
+              pending = nil
+            end
+            racers.each do |racer|
+              socket = start(racer)
+              return won(socket, racers) if socket
+            end
+            live = racers.select(&:socket)
+            next if live.empty? && pending
+            break if live.empty?
+
+            ready = wait(live.map(&:socket), timeout(live, pending && fallback_at))
+            live.each do |racer|
+              socket = progress(racer, ready)
+              return won(socket, racers) if socket
+            end
+          end
+          @check.call
+          raise racers.first.failure || SocketError.new("No addresses")
+        end
+
+        private
+
+        def now = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+        def exhausted?(racer) = racer.socket.nil? && racer.addresses.empty?
+
+        # Starts the racer's next addresses until one is in flight. Returns a
+        # socket that connected at once.
+        def start(racer) # rubocop:disable Metrics/MethodLength, Metrics/AbcSize
+          while racer.socket.nil? && (address = racer.addresses.shift)
+            racer.expires_at = now + budget(racer.addresses.size + 1)
+            socket = own(address)
+            begin
+              return socket if socket.connect_nonblock(address, exception: false) == 0 # rubocop:disable Style/NumericPredicate
+
+              racer.socket = socket
+              racer.address = address
+            rescue IOError, SystemCallError => e
+              fail_attempt(racer, socket, e)
+            end
+          end
+          nil
+        end
+
+        # Go's partialDeadline: no per-attempt split without a deadline.
+        def budget(left)
+          return Deadline::MAX_NATIVE_WAIT unless @deadline
+
+          remaining = @deadline.remaining
+          share = remaining / left
+          share < MIN_ATTEMPT ? [remaining, MIN_ATTEMPT].min : share
+        end
+
+        # Creation and ownership cannot be split by an outer interruption.
+        def own(address)
+          Thread.handle_interrupt(Exception => :never) do
+            socket = Socket.new(address.afamily, Socket::SOCK_STREAM, 0)
+            @attempts << socket
+            @sockets.attach(socket)
+            socket
+          end
+        end
+
+        # A close from another thread wakes wait_writable but not IO.select.
+        # The owner shuts sockets down before closing them, which aborts a
+        # pending connect and wakes IO.select on Linux.
+        def wait(sockets, timeout)
+          return sockets.first.wait_writable(timeout) ? sockets : [] if sockets.size == 1
+
+          _, writable = IO.select(nil, sockets, nil, timeout)
+          writable || []
+        end
+
+        def timeout(live, fallback_at)
+          times = live.map(&:expires_at)
+          times << fallback_at if fallback_at
+          limit = @deadline ? @deadline.native_timeout : Deadline::MAX_NATIVE_WAIT
+          (times.min - now).clamp(0, limit)
+        end
+
+        # Returns the racer's socket once it has connected.
+        def progress(racer, ready)
+          socket = racer.socket
+          if ready.include?(socket)
+            begin
+              return socket if socket.connect_nonblock(racer.address, exception: false) == 0 # rubocop:disable Style/NumericPredicate
+            rescue IOError, SystemCallError => e
+              return fail_attempt(racer, socket, e)
+            end
+          end
+          fail_attempt(racer, socket, Net::OpenTimeout.new("TCP connect timed out")) if now >= racer.expires_at
+          nil
+        end
+
+        def fail_attempt(racer, socket, error)
+          racer.failure ||= error
+          racer.socket = nil
+          discard(socket)
+        end
+
+        def won(socket, racers)
+          racers.each { |racer| discard(racer.socket) unless racer.socket.nil? || racer.socket.equal?(socket) }
+          socket.setsockopt(Socket::IPPROTO_TCP, Socket::TCP_NODELAY, 1)
+          socket
+        end
+
+        def discard(socket)
+          @sockets.release(socket)
+          socket.close
+          nil
+        rescue IOError, SystemCallError
+          nil
+        end
+      end
+
       # Closes whatever socket the call owns when its deadline expires. Closing
       # wakes blocking waits even when individual reads keep progressing.
       class Watchdog
@@ -318,14 +460,15 @@ module ConnectRPC
         end
       end
 
-      # Holds the call's current socket. Once closed by cancellation or the
-      # watchdog, a later attach closes its socket at once. Retirement and
-      # callback closure share this guard. Unregister alone cannot prevent an
-      # already-running callback from touching a reused FD.
+      # Holds the call's sockets: every dial attempt from creation, then only
+      # the connection. Once closed by cancellation or the watchdog, a later
+      # attach closes its socket at once. Retirement and callback closure
+      # share this guard. Unregister alone cannot prevent an already-running
+      # callback from touching a reused FD.
       class SocketLifecycle
         def initialize(cancellation)
           @mutex = Mutex.new
-          @socket = nil
+          @sockets = []
           @closed = false
           @retired = false
           @registration = cancellation&.on_cancel { close }
@@ -335,9 +478,15 @@ module ConnectRPC
           @mutex.synchronize do
             return if @retired
 
-            @socket = socket
-            close_socket if @closed
+            @sockets << socket
+            close_socket(socket) if @closed
           end
+        end
+
+        # Drops an attempt the dialer has given up and closes itself.
+        def release(socket)
+          @mutex.synchronize { @sockets.delete(socket) }
+          nil
         end
 
         def close
@@ -345,14 +494,14 @@ module ConnectRPC
             return if @retired
 
             @closed = true
-            close_socket
+            @sockets.each { |socket| close_socket(socket) }
           end
         end
 
         def retire
           @mutex.synchronize do
             @retired = true
-            @socket = nil
+            @sockets = []
           end
           @registration&.unregister
           @registration = nil
@@ -360,11 +509,10 @@ module ConnectRPC
 
         private
 
-        # A socket still connecting cannot shut down; it must still close.
-        def close_socket
-          socket = @socket
-          return unless socket
-
+        # Shutdown aborts a pending connect, waking the dialer's IO.select. A
+        # socket that never started connecting cannot shut down; it must
+        # still close.
+        def close_socket(socket)
           begin
             socket.shutdown(Socket::SHUT_RDWR)
           rescue IOError, SystemCallError
@@ -379,7 +527,6 @@ module ConnectRPC
       # proxy: :environment snapshots HTTP_PROXY, HTTPS_PROXY and NO_PROXY now.
       # A String or URI proxies every request; nil connects directly.
       def initialize(ca_file: nil, certificate_chain: nil, private_key: nil, proxy: :environment)
-        @tls_options = !(ca_file.nil? && certificate_chain.nil? && private_key.nil?)
         @tls_context = ClientTLS.context(ca_file: ca_file, certificate_chain: certificate_chain,
                                          private_key: private_key)
         @proxy_mode = { environment: "environment", nil => "direct" }.fetch(proxy, "explicit")
@@ -392,7 +539,7 @@ module ConnectRPC
       def inspect = "#<#{self.class} proxy=#{@proxy_mode}>"
 
       def call(request)
-        raise ArgumentError, "TLS options require an HTTPS origin" if @tls_options && request.url.scheme != "https"
+        raise ArgumentError, "TLS options require an HTTPS origin" if @tls_context && request.url.scheme != "https"
 
         CallCancellation.with_request(request) { |outgoing| perform_call(outgoing) }
       end

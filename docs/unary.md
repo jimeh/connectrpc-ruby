@@ -280,14 +280,19 @@ transport = ConnectRPC::Transports::NetHTTP.new(
 - `NO_PROXY` takes comma-separated entries: `*`, a domain (`example.com`
   matches the domain and its subdomains; `.example.com` and `*.example.com`
   match only subdomains), an IP address or a CIDR range, each with an optional
-  `:port`. Internationalized names are not converted to punycode.
+  `:port`. As in Go, non-ASCII domain entries and proxy hostnames are
+  lowercased and converted to Punycode, so a Unicode entry matches its
+  `xn--` host name, and an IPv4-mapped range such as
+  `::ffff:10.0.0.0/120` also matches IPv4 hosts. Other UTS #46 mapping, such as
+  Unicode normalization, is not applied.
 - A String or URI proxies every request, including loopback and `NO_PROXY`
   hosts. A String without a scheme is read as `http://value`. `proxy: nil`
   always connects directly.
 - Only `http://` proxies are supported. An `https://` URL tunnels through
   `CONNECT`, and TLS verifies the target host, not the proxy. An `http://` URL
   is sent to the proxy in absolute form. Proxy URL userinfo is percent-decoded
-  and sent as `Proxy-Authorization: Basic`. An explicit `https://` or
+  and sent as `Proxy-Authorization: Basic`; as in Go, it ends at the last `@`,
+  so `http://user:p@ss@proxy:8080` has the password `p@ss`. An explicit `https://` or
   `socks5://` proxy raises `ArgumentError`; from the environment it fails the
   call.
 - In a CGI process, where `REQUEST_METHOD` is set, an `HTTP_PROXY` value fails
@@ -527,6 +532,8 @@ the remaining budget.
 The default NetHTTP transport:
 
 - uses one connection per call and closes it on every outcome
+- dials a dual-stack host as Go does: the second address family starts 300 ms
+  after the first, and each address gets a share of the remaining deadline
 - sends the configured `Accept-Encoding`
 - uses HTTP proxies from the environment by default (see
   [NetHTTP TLS and proxies](#nethttp-tls-and-proxies))

@@ -237,11 +237,18 @@ huge-budget calls verify conversions on the exercised plain TCP paths, not an
 actual 115-day duration or runtime TLS behavior.
 
 DNS/native resolution may outlast the budget. Resolution passes the remaining
-budget to `Addrinfo.getaddrinfo`, and resolved addresses are tried one at a
-time without `Timeout.timeout`; ConnectRPC never asynchronously interrupts
-application code. TLS handshake timeout uses the remaining budget after
-TCP/DNS. Peer/hostname verification stays on, with one TLS context per
-transport (TLS 1.2 minimum, ALPN `http/1.1`, session cache off). Since 0.3.0,
+budget to `Addrinfo.getaddrinfo`. Resolved addresses are dialed as Go's
+`net.Dialer` does: addresses of the first address's family are tried in order,
+each with an equal share of the remaining deadline but at least 2 seconds, and
+the other family starts 300 ms later, or at once if the first family fails. At
+most two nonblocking connects, one per family, are in flight in the calling
+thread, without `Timeout.timeout`; ConnectRPC never asynchronously interrupts
+application code. The first connection wins and every other attempt closes.
+TLS handshake timeout uses the remaining budget after TCP/DNS. Peer/hostname
+verification stays on (TLS 1.2 minimum, ALPN `http/1.1`, session cache off).
+Transports without TLS options share one default TLS context, built with the
+system trust store on first HTTPS use; a transport with TLS options builds its
+own at construction. Since 0.3.0,
 `ConnectRPC::Proxy` resolves the proxy for each URL, from a per-transport
 snapshot of the Go `net/http` proxy environment or an explicit `proxy:`. HTTPS
 targets tunnel with a transport-owned `CONNECT` exchange: its reply head is
@@ -306,9 +313,15 @@ part of the typed SPI, must stop; core completes the call itself.
 
 NetHTTP installs socket ownership before startup and attaches each raw socket
 when it is created, before its TCP connect starts. A socket created after
-cancellation or expiry won is closed immediately, and at most one socket per
-call is live at a time. A socket that cannot shut down while it is still
-connecting is still closed. TCP connect, proxy `CONNECT`, TLS, read, write and
+cancellation or expiry won is closed immediately. While dialing, the owner
+holds at most two attempts, one per address family; once connected it holds
+exactly the call's one connection. Every attempt that does not become the
+connection is closed, including when an outer interruption such as
+`Thread#raise` lands mid-dial. Cancellation and expiry shut sockets down
+before closing them: on Linux that aborts a pending connect and wakes the
+dialer's `IO.select`, which a close from another thread alone does not. A
+socket that cannot shut down because it never started connecting is still
+closed. TCP connect, proxy `CONNECT`, TLS, read, write and
 header waits are interruptible; native DNS resolution remains cooperative.
 Per-call retirement prevents late
 callbacks from accessing completed/recycled resources. Nil deadlines have no

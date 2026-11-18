@@ -155,6 +155,10 @@ These affect the core `Net::HTTP` transport.
   default above or exactly the request's `user-agent` values.
 - TLS requires version 1.2 or later, offers ALPN `http/1.1`, and disables
   session tickets and session resumption, matching the Async client transports.
+- It dials resolved addresses as Go's `net.Dialer` does, instead of Ruby's
+  `TCPSocket` Happy Eyeballs: addresses of one family are tried in order, each
+  with a share of the remaining deadline, and the other family starts 300 ms
+  later.
 
 These affect the Async HTTP/2 and HTTP/1 client transports and the core
 `Net::HTTP` transport. Error codes are unchanged.

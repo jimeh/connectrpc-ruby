@@ -140,7 +140,9 @@ RSpec.describe ConnectRPC::Transports::NetHTTP do
       keys.each { |key| ENV[key] = key.downcase == "no_proxy" ? "" : "http://hostile.invalid:1234" }
       environment = described_class.new
       direct = described_class.new(proxy: nil)
-      context = environment.instance_variable_get(:@tls_context)
+      # Transports without TLS options share the default context.
+      context = described_class.const_get(:ClientTLS).default
+      expect(environment.instance_variable_get(:@tls_context)).to be_nil
       expect([context.verify_mode, context.verify_hostname]).to eq([OpenSSL::SSL::VERIFY_PEER, true])
       expect(context.session_cache_mode).to eq(OpenSSL::SSL::SSLContext::SESSION_CACHE_OFF)
       expect(context.options & OpenSSL::SSL::OP_NO_TICKET).to eq(OpenSSL::SSL::OP_NO_TICKET)

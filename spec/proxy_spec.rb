@@ -1,5 +1,6 @@
 # frozen_string_literal: true
 
+require "pp"
 require "connectrpc/proxy"
 
 # Cases ported from golang.org/x/net/http/httpproxy proxy_test.go, adjusted to
@@ -96,6 +97,65 @@ RSpec.describe ConnectRPC::Proxy do
     end
   end
 
+  describe "internationalized names" do
+    {
+      "münchen" => "mnchen-3ya",
+      [0x0644, 0x064A, 0x0647, 0x0645, 0x0627, 0x0628, 0x062A, 0x0643, 0x0644, 0x0645, 0x0648, 0x0634, 0x0639, 0x0631,
+       0x0628, 0x064A, 0x061F].pack("U*") => "egbpdaj6bu4bxfgehfvwxn",
+      [0x4ED6, 0x4EEC, 0x4E3A, 0x4EC0, 0x4E48, 0x4E0D, 0x8BF4, 0x4E2D, 0x6587].pack("U*") => "ihqwcrb4cv8a8dqg056pqjye",
+      [0x0033, 0x5E74, 0x0042, 0x7D44, 0x91D1, 0x516B, 0x5148, 0x751F].pack("U*") => "3B-ww4c5e180e575a65lsy2b"
+    }.each do |label, encoded|
+      it "Punycode-encodes #{label.inspect} as RFC 3492 does" do
+        expect(described_class::Punycode.encode(label)).to eq(encoded)
+      end
+    end
+
+    # Expectations match http.ProxyFromEnvironment and canonicalAddr in Go 1.27.3.
+    {
+      "münchen.test" => { "xn--mnchen-3ya.test" => false, "sub.xn--mnchen-3ya.test" => false,
+                          "xn--bcher-kva.test" => true },
+      ".MÜNCHEN.test" => { "xn--mnchen-3ya.test" => true, "a.xn--mnchen-3ya.test" => false },
+      "*.bücher.test:443" => { "a.xn--bcher-kva.test" => false, "a.xn--bcher-kva.test:8443" => true },
+      "#{[0x4ED6, 0x4EEC, 0x4E3A, 0x4EC0, 0x4E48, 0x4E0D, 0x8BF4, 0x4E2D, 0x6587].pack('U*')}.test" =>
+        { "xn--ihqwcrb4cv8a8dqg056pqjye.test" => false }
+    }.each do |no_proxy, targets|
+      targets.each do |target, proxied|
+        it "#{proxied ? 'proxies' : 'bypasses'} #{target} with NO_PROXY=#{no_proxy}" do
+          env = { "HTTPS_PROXY" => "proxy", "NO_PROXY" => no_proxy }
+          expect(resolve(env, "https://#{target}").nil?).to be(!proxied)
+        end
+      end
+    end
+
+    {
+      "http://münchen.test:3128" => ["xn--mnchen-3ya.test", 3128],
+      "MÜNCHEN.test" => ["xn--mnchen-3ya.test", 80],
+      "http://user:p@ss@proxy.bücher.de" => ["proxy.xn--bcher-kva.de", 80]
+    }.each do |value, (host, port)|
+      it "dials the ASCII form of proxy host #{value}" do
+        expect(resolve({ "HTTPS_PROXY" => value }, "https://example.com")).to eq(["http", host, port])
+        expect(described_class.resolver(value).for(URI("https://x")).to_h.values_at(:host, :port)).to eq([host, port])
+      end
+    end
+  end
+
+  describe "IPv4-mapped NO_PROXY networks" do
+    # Expectations match http.ProxyFromEnvironment in Go 1.27.3.
+    {
+      "::ffff:10.0.0.0/120" => { "10.0.0.5" => false, "10.0.1.5" => true, "[::ffff:10.0.0.6]" => false,
+                                 "[::1:5]" => true },
+      "::ffff:0:0/96" => { "192.168.4.4" => false, "[2001:db8::1]" => true },
+      "::ffff:10.0.0.0/88" => { "10.0.0.5" => true }
+    }.each do |no_proxy, targets|
+      targets.each do |target, proxied|
+        it "#{proxied ? 'proxies' : 'bypasses'} #{target} with NO_PROXY=#{no_proxy}" do
+          expect(resolve({ "HTTPS_PROXY" => "proxy", "NO_PROXY" => no_proxy }, "https://#{target}").nil?)
+            .to be(!proxied)
+        end
+      end
+    end
+  end
+
   describe "CGI guard" do
     it "refuses a parsed HTTP proxy for an http target before NO_PROXY" do
       env = { "HTTP_PROXY" => "http://10.1.2.3:8080", "REQUEST_METHOD" => "GET", "NO_PROXY" => "*" }
@@ -130,11 +190,30 @@ RSpec.describe ConnectRPC::Proxy do
       end
     end
 
-    it "percent-decodes credentials without form decoding and hides them from inspect" do
-      endpoint = described_class.resolver("http://us%3Aer:p%40ss+w%2B@proxy.test:3128").for(URI("https://x"))
+    it "percent-decodes credentials without form decoding and hides them from inspect and pp" do
+      resolver = described_class.resolver("http://us%3Aer:p%40ss+w%2B@proxy.test:3128")
+      endpoint = resolver.for(URI("https://x"))
       expect([endpoint.user, endpoint.password]).to eq(["us:er", "p@ss+w+"])
-      expect([endpoint.inspect, endpoint.to_s].join).not_to include("ss", "us")
+      shown = [endpoint.inspect, endpoint.to_s, PP.pp(endpoint, +""), PP.pp([endpoint], +""), PP.pp(resolver, +"")]
+      expect(shown.join).not_to include("ss", "us")
       expect(described_class.resolver("http://proxy.test").for(URI("https://x")).user).to be_nil
+    end
+
+    # Go splits userinfo at the last "@" (go.dev/issue/22655); expectations
+    # match http.ProxyFromEnvironment in Go 1.27.3.
+    {
+      "http://user:p@ss@proxy.test:8080" => ["proxy.test", 8080, "user", "p@ss"],
+      "user:p@ss@proxy.test:8080" => ["proxy.test", 8080, "user", "p@ss"],
+      "http://u@ser:p@ss@proxy.test" => ["proxy.test", 80, "u@ser", "p@ss"],
+      "http://us%40er:p%2540@proxy.test:1/path?q=a@b" => ["proxy.test", 1, "us@er", "p%40"]
+    }.each do |value, expected|
+      it "splits #{value} at the last @ from the environment and explicitly" do
+        from_env = described_class.resolver(:environment, "HTTPS_PROXY" => value).for(URI("https://x"))
+        explicit = described_class.resolver(value).for(URI("https://x"))
+        [from_env, explicit].each do |endpoint|
+          expect(endpoint.to_h.values_at(:host, :port, :user, :password)).to eq(expected)
+        end
+      end
     end
 
     it "explicitly proxies every target, while nil never proxies" do

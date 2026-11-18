@@ -11,11 +11,14 @@ module ConnectRPC
     # A proxy for one request. The user and password are percent-decoded.
     Endpoint = Data.define(:scheme, :host, :port, :user, :password)
 
+    # Data#pretty_print ignores inspect, so pp would show the credentials.
     class Endpoint
       def inspect = "#<#{self.class} #{scheme} proxy>"
       def to_s = inspect
+      def pretty_print(printer) = printer.text(inspect)
     end
 
+    AUTHORITY = %r{\A([A-Za-z][A-Za-z0-9+.-]*://)([^/?#]*)(.*)\z}m
     PROXY_PORTS = { "http" => 80, "https" => 443, "socks5" => 1080, "socks5h" => 1080 }.freeze
     TARGET_PORTS = { "http" => 80, "https" => 443 }.freeze
 
@@ -52,20 +55,34 @@ module ConnectRPC
 
     # Go retries a value without a scheme or host as http://value. A value
     # that still fails to parse is unusable.
-    def self.parse(value) # rubocop:disable Metrics/MethodLength
-      uri = begin
-        URI.parse(value)
-      rescue URI::InvalidURIError
-        nil
+    def self.parse(value)
+      uri = uri(value)
+      return uri unless uri.nil? || uri.scheme.nil? || uri.host.to_s.empty?
+
+      uri("http://#{value}") || uri
+    end
+
+    # Go url.Parse splits userinfo at the last "@" (go.dev/issue/22655) and
+    # accepts a Unicode host, which Go's transport dials in ASCII form. Ruby's
+    # URI accepts neither, so encode both before parsing.
+    def self.uri(value)
+      if (match = AUTHORITY.match(value))
+        userinfo, at, host_port = match[2].to_s.rpartition("@")
+        host, colon, port = host_port.partition(":")
+        value = "#{match[1]}#{userinfo.gsub('@', '%40')}#{at}#{ascii_host(host)}#{colon}#{port}#{match[3]}"
       end
-      if uri.nil? || uri.scheme.nil? || uri.host.to_s.empty?
-        begin
-          return URI.parse("http://#{value}")
-        rescue URI::InvalidURIError
-          nil
-        end
-      end
-      uri
+      URI.parse(value)
+    rescue URI::InvalidURIError
+      nil
+    end
+
+    # Lowercases a non-ASCII host and Punycode-encodes its non-ASCII labels,
+    # as Go's idna.Lookup.ToASCII does for ordinary names. Other UTS #46
+    # mapping, such as normalization and alternative dots, is not applied.
+    def self.ascii_host(host)
+      return host if host.ascii_only?
+
+      host.downcase.split(".", -1).map { |label| label.ascii_only? ? label : "xn--#{Punycode.encode(label)}" }.join(".")
     end
 
     # Nil unless the URL names a scheme, a host and any port in 1..65535. A
@@ -114,6 +131,69 @@ module ConnectRPC
       address.ipv4_mapped? ? address.native : address
     rescue IPAddr::Error
       nil
+    end
+
+    # RFC 3492 Punycode encoding of one label, without the "xn--" prefix.
+    module Punycode
+      BASE = 36
+      T_MIN = 1
+      T_MAX = 26
+      SKEW = 38
+      DAMP = 700
+
+      def self.encode(label) # rubocop:disable Metrics/MethodLength, Metrics/AbcSize, Metrics/CyclomaticComplexity
+        points = label.codepoints
+        output = points.select { |point| point < 0x80 }.pack("U*")
+        basic = handled = output.length
+        output << "-" if basic.positive?
+        code = 0x80
+        delta = 0
+        bias = 72
+        while handled < points.length
+          following = points.select { |point| point >= code }.min.to_i
+          delta += (following - code) * (handled + 1)
+          code = following
+          points.each do |point|
+            delta += 1 if point < code
+            next unless point == code
+
+            output << digits(delta, bias)
+            bias = adapt(delta, handled + 1, handled == basic)
+            delta = 0
+            handled += 1
+          end
+          delta += 1
+          code += 1
+        end
+        output
+      end
+
+      # The generalized variable-length integer for one delta.
+      def self.digits(delta, bias)
+        output = +""
+        k = BASE
+        loop do
+          threshold = (k - bias).clamp(T_MIN, T_MAX)
+          return output << digit(delta) if delta < threshold
+
+          output << digit(threshold + ((delta - threshold) % (BASE - threshold)))
+          delta = (delta - threshold) / (BASE - threshold)
+          k += BASE
+        end
+      end
+
+      def self.digit(value) = (value < 26 ? value + 97 : value + 22).chr
+
+      def self.adapt(delta, points, first)
+        delta = first ? delta / DAMP : delta / 2
+        delta += delta / points
+        k = 0
+        while delta > ((BASE - T_MIN) * T_MAX) / 2
+          delta /= BASE - T_MIN
+          k += BASE
+        end
+        k + (((BASE - T_MIN + 1) * delta) / (delta + SKEW))
+      end
     end
 
     class Static
@@ -221,17 +301,19 @@ module ConnectRPC
           host = host[1..].to_s if host.start_with?("*.")
           exact = !host.start_with?(".")
           host = ".#{host}" if exact
-          @domain_matchers << [host.freeze, port.to_s.freeze, exact]
+          @domain_matchers << [Proxy.ascii_host(host).freeze, port.to_s.freeze, exact]
         end
         nil
       end
 
+      # Go matches an IPv4-mapped network of /96 or longer against IPv4 hosts.
       def cidr(entry)
         address, prefix = entry.split("/", 2)
         return unless address && prefix && /\A[0-9]{1,3}\z/.match?(prefix)
         return unless Proxy.ip(address)
 
-        IPAddr.new(entry)
+        network = IPAddr.new(entry)
+        network.ipv4_mapped? ? network.native : network
       rescue IPAddr::Error
         nil
       end
