@@ -205,6 +205,15 @@ RSpec.describe "Interrupts" do
   end
 
   describe "a wake without a pending interrupt" do
+    # Each message is larger than the peer's static 64 KiB stream window plus
+    # the 1 MiB that h2 buffers per stream, so hyper takes the first at once
+    # and the second write blocks from its first poll until the peer reads.
+    # With smaller messages a write can still be waiting for hyper to buffer
+    # it, and with grpc-go's default BDP estimator for a window update: either
+    # finishes the write before the wake lands.
+    def messages = 3
+    def payload = 2 << 20
+
     # One wait body has run since `entered` began and is still running after
     # a peer round trip: the write is blocked on flow control, with its
     # unblocking function registered, not between two native waits.
@@ -228,10 +237,10 @@ RSpec.describe "Interrupts" do
         outcome = Queue.new
         writer_thread = Thread.new do
           Thread.current.report_on_exception = false
-          client(peer["grpc_h2c"], transport: hyper).client_stream(metadata: { "x-mode" => "gate:#{tag}" },
-                                                                   timeout: 30) do |writer|
+          client(peer["grpc_static"], transport: hyper).client_stream(metadata: { "x-mode" => "gate:#{tag}" },
+                                                                      timeout: 30) do |writer|
             Thread.handle_interrupt(Object => :never) do
-              40.times { |index| writer.send_message(MSG.new(value: index.to_s, payload: "x".b * 65_536)) }
+              messages.times { |index| writer.send_message(MSG.new(value: index.to_s, payload: "x".b * payload)) }
             end
           end
           outcome << :completed
@@ -239,22 +248,21 @@ RSpec.describe "Interrupts" do
           outcome << e.message
         end
         # The peer reads nothing until released, so the writes block.
-        peer.wait_event(/grpc cs-gate-start #{tag}/, from: from)
+        peer.wait_event(/static cs-gate-start #{tag}/, from: from)
         entered = blocked_write(writer_thread)
         resumed = native.resumed_waits
         wake.call(writer_thread)
         wait_until("the blocked write to resume its wait") { native.resumed_waits > resumed }
-        # The woken write re-entered its wait and the stream blocks again
-        # (later writes may move as the peer's flow-control window grows),
-        # all before the peer read anything.
+        # The woken write re-entered its wait and still blocks, all before
+        # the peer read anything.
         expect(blocked_write(writer_thread)).to be > entered
-        expect(peer.since(from).grep(/grpc cs-recv/)).to be_empty
+        expect(peer.since(from).grep(/static cs-recv/)).to be_empty
         peer.command("release #{tag}")
         result = outcome.pop(timeout: 20)
-        peer.wait_event(/grpc cs-(eof|error)/, from: from)
-        received = peer.since(from).grep(/grpc cs-recv \d+ 65536/).map { |event| event.split[2] }
+        peer.wait_event(/static cs-(eof|error)/, from: from)
+        received = peer.since(from).grep(/static cs-recv \d+ #{payload}\z/).map { |event| event.split[2] }
         if name == "Thread#wakeup"
-          expect(received).to eq(Array.new(40, &:to_s))
+          expect(received).to eq(Array.new(messages, &:to_s))
           expect(result).to eq(:completed)
         else
           # The deferred raise aborts the stream once the mask ends, and its

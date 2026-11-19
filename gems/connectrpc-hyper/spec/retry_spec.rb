@@ -4,10 +4,16 @@ RSpec.describe "Retries" do
   def requests(tag, from) = peer.since(from).grep(/\A#{tag} request /)
   def accepts(tag, from) = peer.count(/\A#{tag} accept /, from: from)
 
-  # The peer allows one stream per connection. With stream 1 held, one queued
-  # call waits inside hyper for a stream slot and the other stays queued; a
-  # GOAWAY then ends the connection's admission, and hyper hands the queued
-  # request back unsent. hyper reports the stream-slot waiter as failed.
+  # The peer allows one stream per connection. With stream 1 held, a queued
+  # call either waits inside hyper for the stream slot or stays in hyper's
+  # request queue; a GOAWAY then ends the connection's admission. hyper hands
+  # a request still in its queue back unsent, and the transport sends it once
+  # more on a new connection; it reports the stream-slot waiter as failed.
+  # Whether hyper's connection task moved the first queued request into the
+  # slot wait before the GOAWAY arrived is its own scheduling, which nothing
+  # outside hyper observes, so either call may be handed back. Every call
+  # that succeeds reached the peer exactly once, on the new connection, and a
+  # failed one never reached it.
   { grpc: "Exchange#write", connect: "Driver#unary" }.each do |protocol, frame|
     it "sends a request hyper hands back unsent once more on a new connection (#{protocol})" do
       from = peer.mark
@@ -26,12 +32,13 @@ RSpec.describe "Retries" do
       queued.each { |thread| wait_parked(thread, frame) }
       peer.command("raw-goaway rawmcs1")
       succeeded, failed = queued.map(&:value).partition { |outcome| outcome.is_a?(MSG) }
-      expect(succeeded.size).to eq(1)
+      expect(succeeded).not_to be_empty
       expect(failed.map { |error| [error.code, error.message] })
-        .to eq([["unavailable", "HTTP transport failed: connection closed"]])
-      # Sent exactly once, as the first stream of a new connection.
-      peer.wait_event(/\Arawmcs1 request ok /, from: from)
-      expect(requests("rawmcs1", from).grep(/request ok /).map { |event| event[/n=\d+/] }).to eq(["n=1"])
+        .to eq(Array.new(failed.size, ["unavailable", "HTTP transport failed: connection closed"]))
+      # Each success sent exactly once, as a stream of one new connection.
+      peer.wait_count(/\Arawmcs1 request ok /, succeeded.size, from: from)
+      expect(requests("rawmcs1", from).grep(/request ok /).map { |event| event[/n=\d+/] })
+        .to eq(Array.new(succeeded.size) { |index| "n=#{index + 1}" })
       expect(accepts("rawmcs1", from)).to eq(2)
       peer.command("release #{tag}")
       expect(held.value).to eq(MSG.new)

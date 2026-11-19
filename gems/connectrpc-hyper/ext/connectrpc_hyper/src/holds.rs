@@ -57,12 +57,17 @@ impl Holds {
         points.get(name).cloned()
     }
 
-    /// Parks the current task at `name` while it is armed.
+    /// Parks the current task at `name` while it is armed. A zero bound only
+    /// counts the arrival, without yielding: even a zero timeout waits for a
+    /// timer tick, which a worker parked at another point may be holding up.
     pub async fn reach(&self, name: &str) {
         let Some(point) = self.point(name) else {
             return;
         };
         point.reached.fetch_add(1, Ordering::SeqCst);
+        if point.bound.is_zero() {
+            return;
+        }
         let released = async {
             loop {
                 let notified = point.notify.notified();

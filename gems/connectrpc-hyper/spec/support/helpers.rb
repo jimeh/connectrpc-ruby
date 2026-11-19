@@ -74,6 +74,23 @@ module HyperHelpers # rubocop:disable Metrics/ModuleLength
     result
   end
 
+  DIAL_COUNTS = %w[dial:started dial:joined].freeze
+
+  # Counts pool dials started and the callers that joined one while the block
+  # runs; zero-bound hold points only count. Returns the block's value.
+  def count_dial_joins(native_driver)
+    DIAL_COUNTS.each { |point| native_driver.hold(point, 0) }
+    yield
+  ensure
+    DIAL_COUNTS.each { |point| native_driver.release(point) }
+  end
+
+  # Waits until `count` callers joined one shared pool dial.
+  def wait_joined(native_driver, count)
+    wait_until("#{count} callers joined the pool dial") { native_driver.reached("dial:joined") >= count }
+    expect(DIAL_COUNTS.map { |point| native_driver.reached(point) }).to eq([1, count])
+  end
+
   # A thread parked in a native wait (GVL released) under the given frame.
   # The wait may not have polled its operation yet; a spec that needs a step
   # done (such as joining the pool dial) waits for its hold point instead.

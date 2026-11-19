@@ -36,14 +36,16 @@ RSpec.describe "Connection pooling" do
       from = peer.mark
       transport = hyper
       native_driver = driver(transport)
-      native_driver.hold("dial:joined", 0)
       native_driver.hold("connect:handshaken", 10)
       native_driver.hold("dial:pooled", 10)
       peer_client = client(peer["#{protocol}_h2c"], transport: transport, protocol: protocol)
       call = ->(value) { Thread.new { peer_client.unary(MSG.new(value: value), timeout: 10).message.value } }
-      before = %w[b0 b1].map { |value| call.call(value) }
+      before = count_dial_joins(native_driver) do
+        threads = %w[b0 b1].map { |value| call.call(value) }
+        wait_joined(native_driver, 2)
+        threads
+      end
       wait_until("the dial's handshake") { native_driver.reached("connect:handshaken") == 1 }
-      wait_until("both callers joined the dial") { native_driver.reached("dial:joined") == 2 }
       native_driver.release("connect:handshaken")
       wait_until("the dial pooled its connection") { native_driver.reached("dial:pooled") == 1 }
       during = call.call("during")
@@ -54,7 +56,6 @@ RSpec.describe "Connection pooling" do
       expect(call.call("after").value).to eq("after")
       expect(accepts(protocol, from)).to eq(1)
     ensure
-      native_driver&.release("dial:joined")
       native_driver&.release("connect:handshaken")
       native_driver&.release("dial:pooled")
     end
@@ -76,15 +77,15 @@ RSpec.describe "Connection pooling" do
     with_routed_tunnels(->(index) { index.zero? ? h1_port : h2_port }, gates) do |url, heads, ended|
       transport = hyper(proxy: url, **tls_options)
       native_driver = driver(transport)
-      native_driver.hold("dial:joined", 0)
       peer_client = client("https://127.0.0.1:#{h2_port}", transport: transport, protocol: :connect)
-      waiters = Array.new(3) do |index|
-        thread = Thread.new { peer_client.unary(MSG.new(value: "gate:#{tag}:w#{index}"), timeout: 20).message.value }
-        expect(heads.pop(timeout: 10)).to start_with("CONNECT ") if index.zero?
-        wait_until("waiter #{index} joined the dial") { native_driver.reached("dial:joined") == index + 1 }
-        thread
+      waiters = count_dial_joins(native_driver) do
+        Array.new(3) do |index|
+          thread = Thread.new { peer_client.unary(MSG.new(value: "gate:#{tag}:w#{index}"), timeout: 20).message.value }
+          expect(heads.pop(timeout: 10)).to start_with("CONNECT ") if index.zero?
+          wait_joined(native_driver, index + 1)
+          thread
+        end
       end
-      native_driver.release("dial:joined")
       expect(heads.size).to eq(0)
       gates[0] << true
       2.times { expect(heads.pop(timeout: 10)).to start_with("CONNECT ") }
@@ -190,24 +191,20 @@ RSpec.describe "Connection pooling" do
     # callers share no dial, so parking in the native wait is enough there.
     def dial_storm(transport, port, http2: true, callers: 4, timeouts: Array.new(callers, 10))
       native_driver = driver(transport)
-      native_driver.hold("dial:joined", 0) if http2
       started = monotonic
-      threads = timeouts.each_with_index.map do |timeout, index|
-        thread = Thread.new do
-          client("http://127.0.0.1:#{port}", transport: transport, protocol: :connect).unary(MSG.new, timeout: timeout)
-        rescue ConnectRPC::Error => e
-          [e.message, e.cause&.kind, monotonic - started]
+      storm = lambda do
+        timeouts.each_with_index.map do |timeout, index|
+          thread = Thread.new do
+            client("http://127.0.0.1:#{port}", transport: transport, protocol: :connect)
+              .unary(MSG.new, timeout: timeout)
+          rescue ConnectRPC::Error => e
+            [e.message, e.cause&.kind, monotonic - started]
+          end
+          http2 ? wait_joined(native_driver, index + 1) : wait_parked(thread, "Driver#unary")
+          thread
         end
-        if http2
-          wait_until("caller #{index} joined the pool dial") { native_driver.reached("dial:joined") == index + 1 }
-        else
-          wait_parked(thread, "Driver#unary")
-        end
-        thread
       end
-      [threads, started]
-    ensure
-      native_driver&.release("dial:joined")
+      [http2 ? count_dial_joins(native_driver, &storm) : storm.call, started]
     end
 
     { true => "shares one HTTP/2 dial and its failure, and the next call dials again",
@@ -279,6 +276,8 @@ RSpec.describe "Connection pooling" do
     end
     output, status = ruby_child(<<~RUBY, env: environment)
       transport = ConnectRPC::Hyper::Transport.new(connect_timeout: 6, proxy: nil)
+      driver = transport.instance_variable_get(:@driver)
+      driver.hold("dial:joined", 0)
       peer_client = client("http://peer.pair:#{port}", transport)
       started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
       calls = [0.5, 20].each_with_index.map do |timeout, index|
@@ -290,9 +289,11 @@ RSpec.describe "Connection pooling" do
           end
           [reply, (Process.clock_gettime(Process::CLOCK_MONOTONIC) - started).round(2)]
         end
-        Thread.pass until thread.status == "sleep" && thread.backtrace.to_a.first.to_s.include?("Native::")
+        # Each caller joins the one pool dial before the next starts.
+        Thread.pass until driver.reached("dial:joined") == index + 1
         thread
       end
+      driver.release("dial:joined")
       p [*calls.map(&:value), peer_client.unary(MSG.new(value: "later"), timeout: 5).message.value]
       transport.close(grace: 0)
     RUBY
@@ -320,18 +321,19 @@ RSpec.describe "Connection pooling" do
     with_gated_tunnels(port, gate) do |url, heads|
       transport = hyper(proxy: url, **tls_options)
       native_driver = driver(transport)
-      native_driver.hold("dial:joined", 0)
       peer_client = client("https://127.0.0.1:#{port}", transport: transport, protocol: :connect)
-      calls = Array.new(4) do |index|
-        thread = Thread.new { peer_client.unary(MSG.new(value: "gate:#{tag}:#{index}"), timeout: 20).message.value }
-        heads.pop(timeout: 10) if index.zero?
-        thread
+      calls, streaming = count_dial_joins(native_driver) do
+        calls = Array.new(4) do |index|
+          thread = Thread.new { peer_client.unary(MSG.new(value: "gate:#{tag}:#{index}"), timeout: 20).message.value }
+          heads.pop(timeout: 10) if index.zero?
+          thread
+        end
+        streaming = Thread.new do
+          error_of { peer_client.server_stream(MSG.new(value: "x"), timeout: 20) { |reader| values(reader) } }
+        end
+        wait_joined(native_driver, 5)
+        [calls, streaming]
       end
-      streaming = Thread.new do
-        error_of { peer_client.server_stream(MSG.new(value: "x"), timeout: 20) { |reader| values(reader) } }
-      end
-      wait_until("five waiters joined the held dial") { native_driver.reached("dial:joined") == 5 }
-      native_driver.release("dial:joined")
       # The waiters joined the held dial instead of dialing.
       expect(heads.size).to eq(0)
       gate << true
