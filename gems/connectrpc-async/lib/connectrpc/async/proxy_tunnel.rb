@@ -66,6 +66,9 @@ module ConnectRPC
 
         # Peeks at queued bytes and consumes only those up to the end of the
         # head. Returns the head and whether more bytes were already queued.
+        # The head so far has no delimiter, so one that ends in the peeked
+        # bytes starts at most three bytes before them; only that tail and the
+        # peeked bytes are searched, keeping the work per byte bounded.
         def self.read(socket, expires)
           head = +"".b
           loop do
@@ -78,10 +81,11 @@ module ConnectRPC
 
             check!(expires)
             offset = head.bytesize
-            ending = (head + peeked).match(HEAD_END, [offset - 3, 0].max)
-            length = ending ? ending.end(0) - offset : peeked.bytesize
+            base = [offset - 3, 0].max
+            ending = (head.byteslice(base..) + peeked).match(HEAD_END)
+            length = ending ? base + ending.end(0) - offset : peeked.bytesize
             head << consume(socket, length)
-            return [head.byteslice(0, ending.begin(0)).to_s, length < peeked.bytesize] if ending
+            return [head.byteslice(0, base + ending.begin(0)).to_s, length < peeked.bytesize] if ending
           end
         end
 

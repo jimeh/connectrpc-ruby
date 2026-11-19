@@ -188,6 +188,48 @@ RSpec.describe "PerCallTransport connection close, close budget and outcome prec
       peer&.stop
     end
 
+    # The deadline's clock fails while the close budget is computed, and only
+    # then. Teardown still runs, with a raw close, and the call keeps its own
+    # outcome: the stream's message, or the stream block's own exception.
+    %i[result block_error].each do |outcome|
+      it "tears down and keeps the #{outcome} when the deadline clock fails computing the close budget " \
+         "on the #{path} path" do
+        peer = threaded_host(server: mixed_server)
+        typed = mixed_client(per_call, "http://127.0.0.1:#{peer.peer.port}")
+        planning = [false]
+        trace = TracePoint.new(:call, :return) { |point| planning[0] = point.event == :call }
+        trace.enable(target: PerCallHelpers::PER_CALL.instance_method(:close_plan))
+        clock_failure = Class.new(StandardError)
+        application = Class.new(StandardError)
+        with_boundaries do |boundaries|
+          result = on_path(path) do
+            deadline = ConnectRPC::Deadline.new(5, clock: lambda {
+              raise clock_failure, "clock failed" if planning.first
+
+              monotonic
+            })
+            names = []
+            typed.watch(item("s"), deadline: deadline) do |reader|
+              reader.each { |message| names << message.name }
+              raise application, "from the block" if outcome == :block_error
+            end
+            names
+          end
+          aggregate_failures do
+            if outcome == :result
+              expect(result).to eq(["s"])
+            else
+              expect([result.class, result.message]).to eq([application, "from the block"])
+            end
+            expect_released(boundaries.take.first)
+          end
+        end
+      ensure
+        trace&.disable
+        peer&.stop
+      end
+    end
+
     it "never lets a close failure replace the result or a stream block's own exception on the #{path} path" do
       peer = threaded_host(server: mixed_server)
       origin = "http://127.0.0.1:#{peer.peer.port}"
@@ -215,6 +257,95 @@ RSpec.describe "PerCallTransport connection close, close budget and outcome prec
       trace&.disable
       peer&.stop
     end
+  end
+
+  # The deadline's clock yields, and never returns, while the close budget is
+  # computed. Meanwhile the caller's own with_timeout fires, with Async's
+  # class or the caller's own StandardError class. The timeout is the
+  # caller's: it is raised once the raw close and every join have finished.
+  { "Async::TimeoutError" => Async::TimeoutError, "a custom class" => Class.new(StandardError) }
+    .each do |label, error_class|
+    it "re-raises a with_timeout (#{label}) that fires while a yielding deadline clock computes the close budget " \
+       "after teardown on the inline path" do
+      peer = threaded_host(server: mixed_server)
+      typed = mixed_client(per_call, "http://127.0.0.1:#{peer.peer.port}")
+      planning = [false]
+      trace = TracePoint.new(:call, :return) { |point| planning[0] = point.event == :call }
+      trace.enable(target: PerCallHelpers::PER_CALL.instance_method(:close_plan))
+      with_boundaries do |boundaries|
+        error, names = reactor do |task|
+          names = []
+          error = capture_error do
+            task.with_timeout(5, error_class) do |timeout|
+              clock = lambda do
+                if planning.first
+                  # The caller's timer fires at the reactor's next turn, while this clock waits.
+                  timeout.duration = 0
+                  Async::Promise.new.wait
+                end
+                monotonic
+              end
+              typed.watch(item("s"), deadline: ConnectRPC::Deadline.new(5, clock: clock)) do |reader|
+                reader.each { |message| names << message.name }
+              end
+            end
+          end
+          [error, names]
+        end
+        aggregate_failures do
+          expect([error.class, error.message, names]).to eq([error_class, "execution expired", ["s"]])
+          expect_released(boundaries.take.first)
+        end
+      end
+    ensure
+      trace&.disable
+      peer&.stop
+    end
+  end
+
+  # A Thread#raise lands while the deadline's clock computes the close budget.
+  # Interrupts are deferred there, so the clock is not interrupted and the
+  # interrupt is not mistaken for the clock's own failure: it is raised once
+  # the close has joined the owner.
+  it "re-raises a Thread#raise that lands while the deadline clock computes the close budget after teardown " \
+     "on the threaded path" do
+    peer = threaded_host(server: mixed_server)
+    typed = mixed_client(per_call, "http://127.0.0.1:#{peer.peer.port}")
+    planning = [false]
+    trace = TracePoint.new(:call, :return) { |point| planning[0] = point.event == :call }
+    trace.enable(target: PerCallHelpers::PER_CALL.instance_method(:close_plan))
+    entered = Thread::Queue.new
+    gate = Thread::Queue.new
+    interrupt = Class.new(StandardError)
+    clock = lambda do
+      if planning.first
+        entered << true
+        gate.pop
+      end
+      monotonic
+    end
+    with_boundaries do |boundaries|
+      victim = Thread.new do
+        names = []
+        error = capture_error do
+          typed.watch(item("s"), deadline: ConnectRPC::Deadline.new(5, clock: clock)) do |reader|
+            reader.each { |message| names << message.name }
+          end
+        end
+        [error, names]
+      end
+      pop_within(entered, "the clock to compute the close budget")
+      # Queued for the victim, which defers it until its close accepts interrupts.
+      victim.raise(interrupt, "while the budget is computed")
+      gate << true
+      error, names = value_within(victim, "the interrupted caller")
+      expect([error.class, error.message, names]).to eq([interrupt, "while the budget is computed", ["s"]])
+      expect_released(boundaries.take.first)
+    end
+  ensure
+    trace&.disable
+    gate&.<<(true)
+    peer&.stop
   end
 
   # Holds every owner thread on the line after its engine marked itself

@@ -217,6 +217,14 @@ module ConnectRPC
         [(cutoff - now - Internal::CLEANUP_SECONDS).clamp(0.0, Internal::CLEANUP_SECONDS), cutoff]
       end
 
+      # The deadline's clock is the caller's code. Whatever it raises, the
+      # close falls back to a raw one and the call keeps its own outcome.
+      def close_plan_or_raw(deadline)
+        close_plan(deadline)
+      rescue Exception # rubocop:disable Lint/RescueException -- a failing clock must not skip teardown
+        [0.0, Internal.now]
+      end
+
       # The scope task waits until teardown releases it. Construction, the
       # call and close run in the caller's fiber; the join covers every task
       # the call created, including after an interrupted construction or close.
@@ -229,17 +237,22 @@ module ConnectRPC
           inner = Inline.new(scope: scope, origin: origin, snapshot: @snapshot, proxy: @proxy, **@options)
           yield inner
         ensure
-          interruption = finish_inline(inner, scope, release, close_plan(request.deadline).first)
+          interruption = finish_inline(inner, scope, release, request.deadline)
           raise interruption if interruption
         end
       end
 
-      # A close failure is ignored. A caller interruption during close or the
-      # join is retained until every task has finished, then returned.
-      def finish_inline(inner, scope, release, grace)
+      # A close failure is ignored. A caller interruption while the close
+      # budget is computed, during close or during the join is retained until
+      # every task has finished, then returned.
+      def finish_inline(inner, scope, release, deadline)
         interruption = nil
         begin
-          interruption = inner&.close_retaining(grace)
+          if inner
+            grace, interruption = inline_grace(scope, deadline)
+            closing = inner.close_retaining(grace)
+            interruption ||= closing
+          end
         ensure
           release.resolve(nil)
           # A construction cut short can leave a guard without its watcher.
@@ -253,14 +266,32 @@ module ConnectRPC
         interruption
       end
 
+      # Returns the close budget and an exception raised into the caller's
+      # fiber while it was computed. A custom deadline clock can yield, so a
+      # planner task under the scope reads it: the planner never fails, so an
+      # exception at its wait is the caller's. The close is then raw, and the
+      # scope's join finishes the cancelled planner.
+      def inline_grace(scope, deadline)
+        return [Internal::CLEANUP_SECONDS, nil] unless deadline
+
+        planner = ::Async::Task.new(scope, finished: false) { close_plan_or_raw(deadline).first }
+        planner.run
+        [planner.wait, nil]
+      rescue Exception => e # rubocop:disable Lint/RescueException -- the caller re-raises its own interruption after teardown
+        Internal.cancel(planner)
+        [0.0, e]
+      end
+
       # Close runs with interrupts deferred; its own waits accept them and
-      # the owner joins then finish before they propagate.
+      # the owner joins then finish before they propagate. Deferred, no
+      # interrupt can land while the close budget is computed, so anything
+      # raised there is the deadline clock's own failure.
       def threaded(origin, request)
         inner = Threaded.new(origin: origin, snapshot: @snapshot, proxy: @proxy, **@options)
         Thread.handle_interrupt(Object => :never) do
           Thread.handle_interrupt(Object => :immediate) { yield inner }
         ensure
-          inner.close_joined(*close_plan(request.deadline))
+          inner.close_joined(*close_plan_or_raw(request.deadline))
         end
       end
     end

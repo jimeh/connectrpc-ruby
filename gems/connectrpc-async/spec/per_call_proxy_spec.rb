@@ -90,6 +90,16 @@ RSpec.describe "PerCallTransport proxies" do
     acks
   end
 
+  # Sends the client preface to an h2c target ahead of the client and returns
+  # the target's first frame, its SETTINGS.
+  def target_settings(upstream)
+    upstream.write(ConnectProxy::PREFACE)
+    frame = upstream.read(9)
+    raise "Expected SETTINGS first, got #{frame.inspect}" unless frame.getbyte(3) == 4
+
+    frame << upstream.read((frame.getbyte(0) << 16) | frame.unpack1("@1n")).to_s
+  end
+
   # Records each dial's host and port, then stops it before any socket opens.
   def stop_dials
     dials = Thread::Queue.new
@@ -258,12 +268,7 @@ RSpec.describe "PerCallTransport proxies" do
       sent = +"".b
       proxy = ConnectProxy.new do |client, head, relay|
         upstream = relay.upstream(head)
-        upstream.write(ConnectProxy::PREFACE)
-        frame = upstream.read(9)
-        raise "Expected SETTINGS first, got #{frame.inspect}" unless frame.getbyte(3) == 4
-
-        frame << upstream.read((frame.getbyte(0) << 16) | frame.unpack1("@1n")).to_s
-        client.write(ConnectProxy::ESTABLISHED + frame)
+        client.write(ConnectProxy::ESTABLISHED + target_settings(upstream))
         raise "Expected the client preface" unless client.read(ConnectProxy::PREFACE.bytesize) == ConnectProxy::PREFACE
 
         relay.splice(client, upstream, tap: sent)
@@ -275,6 +280,65 @@ RSpec.describe "PerCallTransport proxies" do
       expect(name).to eq("settings")
       expect(pop_within(proxy.closed, "the client to end its tunnel")).to be(true)
       expect(settings_acks(sent)).to eq(1)
+    ensure
+      peer&.stop
+      proxy&.stop
+    end
+
+    # The 200 head's end is split across two reads: the client has consumed
+    # the first part, which holds no end, before the proxy sends the rest
+    # together with the target's SETTINGS. The end is found across the reads,
+    # and the SETTINGS stay for the connection, as its one SETTINGS ACK shows.
+    [["\r\n\r", "\n"], ["\r\n", "\r\n"], ["\r", "\n\r\n"], ["\n", "\n"]].each do |first, rest|
+      it "finds a head end split as #{first.inspect} then #{rest.inspect} across reads without consuming past it " \
+         "on the #{path} path" do
+        peer = mixed_host
+        consumed = Thread::Queue.new
+        trace = TracePoint.new(:return) { |point| consumed << point.return_value.bytesize if point.return_value }
+        trace.enable(target: AsyncHelpers::INTERNAL::ProxyTunnel.method(:consume))
+        sent = +"".b
+        proxy = ConnectProxy.new do |client, head, relay|
+          upstream = relay.upstream(head)
+          settings = target_settings(upstream)
+          part = "HTTP/1.1 200 Connection established#{first}"
+          client.write(part)
+          taken = 0
+          taken += pop_within(consumed, "the client to consume the head's first part") while taken < part.bytesize
+          client.write(rest + settings)
+          # A client that consumed the SETTINGS as head bytes never sends its preface; the call then fails.
+          next unless client.read(ConnectProxy::PREFACE.bytesize) == ConnectProxy::PREFACE
+
+          relay.splice(client, upstream, tap: sent)
+        end
+        transport = per_call(proxy: proxy.url, connect_timeout: 5)
+        name = on_path(path) do
+          mixed_client(transport, "http://#{target}:#{peer.peer.port}").lookup(item("split")).message.name
+        end
+        expect(name).to eq("split")
+        expect(pop_within(proxy.closed, "the client to end its tunnel")).to be(true)
+        expect(settings_acks(sent)).to eq(1)
+      ensure
+        trace&.disable
+        peer&.stop
+        proxy&.stop
+      end
+    end
+
+    # An explicit proxy applies to loopback too. The proxy dials the target's
+    # port on 127.0.0.1 whatever the requested host, so no IPv6 route is
+    # needed to check the request the client sends.
+    it "brackets an IPv6 literal target in the CONNECT line and Host field on the #{path} path" do
+      proxy = ConnectProxy.new
+      peer = mixed_host
+      port = peer.peer.port
+      transport = per_call(proxy: proxy.url)
+      with_boundaries do |boundaries|
+        name = on_path(path) { mixed_client(transport, "http://[::1]:#{port}").lookup(item("v6")).message.name }
+        expect(name).to eq("v6")
+        expect_released(boundaries.take.first)
+      end
+      expect(pop_within(proxy.heads, "a CONNECT head")).to eq(connect_head("[::1]:#{port}"))
+      expect(pop_within(proxy.closed, "the client to end its tunnel")).to be(true)
     ensure
       peer&.stop
       proxy&.stop
