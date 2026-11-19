@@ -979,7 +979,9 @@ and bidi streaming before any I/O.
   that follows, so core's deadline check after the transport returns does not
   turn a result that arrived in time into `deadline_exceeded`. With 100 ms or
   less of the deadline left, the close is raw. A close failure never replaces
-  the call's result or a stream block's own exception.
+  the call's result or a stream block's own exception. If a custom `Deadline`
+  clock raises while the call computes its close budget, the close is raw and
+  the call keeps its own outcome.
 - Deadlines, `CancellationToken`s, `Timeout`, `Thread#raise` and `Thread#kill`
   behave as for `ThreadedTransport` outside a reactor, and task cancellation and
   `with_timeout` as for `Transport` inside one; an interrupted stream is reset

@@ -77,16 +77,18 @@ RSpec.describe "PerCallTransport deadlines, cancellation and interrupts" do
 
     after { 4.times { release << true } }
 
+    # The raw peer has no deadline of its own and never answers, so the
+    # reset it records can only be the client's.
     it "fails at the deadline and resets the stream" do
-      peer = gated_host(contexts, entered, release)
+      peer = holding_peer(entered)
       origin = "http://127.0.0.1:#{peer.peer.port}"
       typed = client(per_call, origin)
       with_boundaries do |boundaries|
         error = on_path(:threaded) { typed.echo(AsyncHelpers::MESSAGE.new(name: "late"), timeout: 0.3) }
         expect([error.class, error.code]).to eq([ConnectRPC::Error, "deadline_exceeded"])
-        # The server's own deadline from the timeout header races the client's reset.
-        expect_peer_cancel(contexts, "late", %i[canceled deadline_exceeded])
+        expect(pop_within(entered, "the request at the peer")).to eq("/example.v1.EchoService/Echo")
         expect_released(boundaries.take.first)
+        expect_cancel_reset(peer)
       end
     ensure
       peer&.stop
@@ -252,9 +254,8 @@ RSpec.describe "PerCallTransport deadlines, cancellation and interrupts" do
   end
 
   context "on the inline path" do
-    def gated_reactor_host(entered, release, contexts = {})
-      target = server(echo: lambda { |message, context|
-        contexts[message.name] = context
+    def gated_reactor_host(entered, release)
+      target = server(echo: lambda { |message, _context|
         entered.enqueue(message.name)
         release.dequeue
         message
@@ -262,25 +263,25 @@ RSpec.describe "PerCallTransport deadlines, cancellation and interrupts" do
       ConnectRPC::Async::Host.new(server: target).start
     end
 
+    # The raw peer has no deadline of its own and never answers, so the
+    # reset it records can only be the client's.
     it "fails at the deadline, resets the stream and leaves no task under the caller" do
+      entered = Thread::Queue.new
+      peer = holding_peer(entered)
+      origin = "http://127.0.0.1:#{peer.peer.port}"
       with_boundaries do |boundaries|
         reactor do |task|
-          entered = Async::Queue.new
-          release = Async::Queue.new
-          contexts = {}
-          host = gated_reactor_host(entered, release, contexts)
-          origin = "http://127.0.0.1:#{host.port}"
           children = task.children.to_a
           error = capture_error { client(per_call, origin).echo(AsyncHelpers::MESSAGE.new(name: "late"), timeout: 0.3) }
           expect([error.class, error.code]).to eq([ConnectRPC::Error, "deadline_exceeded"])
           expect(task.children.to_a).to eq(children)
-          wait_until(task, "the handler cancelled") { contexts.fetch("late").cancelled? }
-          release.enqueue(true)
-        ensure
-          host&.close(grace: 0)
         end
+        expect(pop_within(entered, "the request at the peer")).to eq("/example.v1.EchoService/Echo")
         expect_released(boundaries.take.first)
+        expect_cancel_reset(peer)
       end
+    ensure
+      peer&.stop
     end
 
     it "keeps the reactor serving a sibling while a call waits on its handler" do
