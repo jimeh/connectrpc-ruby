@@ -414,8 +414,9 @@ not guaranteed, and it never gets another phrase. Teardown runs in the
 background once started, so it completes even if the closing thread is interrupted or a
 fiber scheduler stops the closing task (async's `Task#stop`). Every closer, a
 concurrent one included, keeps waiting for the outcome and raises the
-exception after teardown. If a closer leaves before teardown ends, such as a
-killed fiber, later closers still wait for and return the published outcome.
+exception after teardown. A closer that is killed (`Fiber#kill` or
+`Thread#kill`) stops waiting; teardown still completes, and later closers wait
+for and return the published outcome.
 On a non-blocking fiber under a fiber scheduler that wait runs on a helper
 thread, so sibling tasks still run and their calls can drain, and threads that
 sibling tasks start meanwhile keep their usual interrupt handling (see

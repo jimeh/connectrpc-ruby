@@ -255,9 +255,9 @@ stage and reset its stream.
   (specs minus fork and the Linux DNS shim, plus a Go interop subset) against
   that artifact. If green, `docs/support.md` lists Windows x64 as a provisional,
   hyper-only platform; otherwise it moves to a follow-up.
-  `aarch64-mingw-ucrt` is build-only. Since #174 its install and smoke calls on
-  Windows 11 arm64 gate CI and the release; since #175 the specs and the Go
-  interop subset also run there in the non-gating Windows job.
+  `aarch64-mingw-ucrt` was build-only at first. Since #174 its install and
+  smoke calls on Windows 11 arm64 gate CI and the release; since #175 the specs
+  and the Go interop subset also run there in the non-gating Windows job.
 - D15 Release wiring: the gem's version must follow the train (its gemspec
   derives the `connectrpc` requirement from it). `ReleaseTrain#check_configuration!`
   requires Release Please `extra-files` to equal the version files of
