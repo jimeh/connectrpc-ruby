@@ -1,7 +1,6 @@
 # frozen_string_literal: true
 
 require "socket"
-require "uri"
 require "connectrpc/proxy"
 
 module ConnectRPC
@@ -25,12 +24,13 @@ module ConnectRPC
         FIELD = /\A[!#$%&'*+\-.^_`|~0-9A-Za-z]+:/n
         UNUSABLE = { cgi: "proxy refused in CGI environment", invalid_address: "invalid proxy address" }.freeze
 
-        # The proxy for an origin, or nil, chosen as grpc-go does: as if the
-        # target were https://host:port whatever its scheme, so an environment
-        # resolver applies only HTTPS_PROXY and NO_PROXY. A proxy this module
-        # cannot use fails rather than going direct.
+        # The proxy for an origin, or nil, chosen by the origin's scheme as Go
+        # net/http chooses it: an environment resolver applies HTTP_PROXY to
+        # http (h2c) origins, refusing it in a CGI environment, and
+        # HTTPS_PROXY to https origins. A proxy this module cannot use fails
+        # rather than going direct.
         def self.select(resolver, origin)
-          proxy = resolver.for(URI::HTTPS.build(host: origin.host, port: origin.port))
+          proxy = resolver.for(origin)
           raise ProxyFailure, "unsupported proxy scheme", cause: nil if proxy && proxy.scheme != "http"
 
           proxy

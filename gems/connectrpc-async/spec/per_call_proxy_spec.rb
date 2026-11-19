@@ -148,13 +148,14 @@ RSpec.describe "PerCallTransport proxies" do
   end
 
   PerCallHelpers::PATHS.each do |path|
-    it "tunnels h2c and TLS targets through an HTTPS_PROXY snapshot, never HTTP_PROXY, on the #{path} path" do
-      proxy = ConnectProxy.new
+    it "tunnels h2c targets through an HTTP_PROXY snapshot and TLS targets through HTTPS_PROXY on the " \
+       "#{path} path" do
+      plain_proxy = ConnectProxy.new
+      secure_proxy = ConnectProxy.new
       plain = mixed_host
       secure = mixed_host(tls: target_tls)
       with_ca do |ca_file|
-        # HTTP_PROXY names a closed port, so using it would refuse the h2c call.
-        env = { "HTTPS_PROXY" => proxy.url, "HTTP_PROXY" => "http://127.0.0.1:9" }
+        env = { "HTTP_PROXY" => plain_proxy.url, "HTTPS_PROXY" => secure_proxy.url }
         h2c, tls = with_env(env) { [per_call, per_call(ca_file: ca_file)] }
         names = on_path(path) do
           [mixed_client(h2c, "http://#{target}:#{plain.peer.port}").lookup(item("h2c")).message.name,
@@ -165,54 +166,67 @@ RSpec.describe "PerCallTransport proxies" do
 
         expect(names).to eq(%w[h2c tls])
       end
-      heads = 2.times.map { pop_within(proxy.heads, "a CONNECT head") }
-      expect(heads).to eq([connect_head("#{target}:#{plain.peer.port}"), connect_head("#{target}:#{secure.peer.port}")])
+      expect(pop_within(plain_proxy.heads, "a CONNECT head")).to eq(connect_head("#{target}:#{plain.peer.port}"))
+      expect(pop_within(secure_proxy.heads, "a CONNECT head")).to eq(connect_head("#{target}:#{secure.peer.port}"))
+      expect([plain_proxy.accepted, secure_proxy.accepted]).to eq([1, 1])
     ensure
       plain&.stop
       secure&.stop
-      proxy&.stop
+      plain_proxy&.stop
+      secure_proxy&.stop
     end
 
-    it "routes as grpc-go does: HTTPS_PROXY for every scheme by the URL's actual port, then NO_PROXY and " \
+    it "routes as Go net/http does: the proxy for the URL's scheme by its actual port, then NO_PROXY and " \
        "loopback, on the #{path} path" do
       dials = stop_dials
       proxy = "http://proxy.invalid:3128"
       via_proxy = ["proxy.invalid", 3128]
       cases = [
-        [{ "HTTPS_PROXY" => proxy }, {}, "http://#{target}/x", via_proxy],
+        [{ "HTTP_PROXY" => proxy }, {}, "http://#{target}/x", via_proxy],
+        [{ "HTTP_PROXY" => proxy }, {}, "https://#{target}/x", [target, 443]],
         [{ "HTTPS_PROXY" => proxy }, {}, "https://#{target}/x", via_proxy],
-        [{ "HTTP_PROXY" => proxy }, {}, "http://#{target}:8080/x", [target, 8080]],
-        [{ "HTTPS_PROXY" => proxy, "NO_PROXY" => "#{target}:80" }, {}, "http://#{target}/x", [target, 80]],
+        [{ "HTTPS_PROXY" => proxy }, {}, "http://#{target}:8080/x", [target, 8080]],
+        [{ "HTTP_PROXY" => proxy, "NO_PROXY" => "#{target}:80" }, {}, "http://#{target}/x", [target, 80]],
         [{ "HTTPS_PROXY" => proxy, "NO_PROXY" => "#{target}:80" }, {}, "https://#{target}/x", via_proxy],
         [{ "HTTPS_PROXY" => proxy, "NO_PROXY" => ".test" }, {}, "https://#{target}:8443/x", [target, 8443]],
-        [{ "HTTPS_PROXY" => proxy }, {}, "http://127.0.0.1:8080/x", ["127.0.0.1", 8080]],
+        [{ "HTTP_PROXY" => proxy }, {}, "http://127.0.0.1:8080/x", ["127.0.0.1", 8080]],
         [{ "HTTPS_PROXY" => proxy }, {}, "https://localhost:8443/x", ["localhost", 8443]],
         [{ "HTTPS_PROXY" => proxy }, { proxy: nil }, "https://#{target}/x", [target, 443]],
+        # The CGI guard refuses only HTTP_PROXY, so a TLS call keeps its route.
+        [{ "REQUEST_METHOD" => "GET", "HTTP_PROXY" => proxy }, {}, "https://#{target}/x", [target, 443]],
+        [{ "REQUEST_METHOD" => "GET", "HTTPS_PROXY" => proxy }, {}, "https://#{target}/x", via_proxy],
         [{ "NO_PROXY" => "*" }, { proxy: proxy }, "http://127.0.0.1/x", via_proxy]
       ]
       cases.each do |env, options, url, expected|
         transport = with_env(env) { per_call(**options) }
         error = failure_of(path, transport, request(url))
         expect([error.class, error.code]).to eq([ConnectRPC::Error, "unavailable"])
-        expect([url, pop_within(dials, "a dial")]).to eq([url, expected])
+        expect([env, url, pop_within(dials, "a dial")]).to eq([env, url, expected])
       end
     end
 
     it "fails an unusable environment proxy closed before any socket on the #{path} path" do
       listener = TCPServer.new("127.0.0.1", 0)
       port = listener.addr[1]
-      {
+      cases = {
         "socks5://127.0.0.1:#{port}" => "unsupported proxy scheme",
         "https://127.0.0.1:#{port}" => "unsupported proxy scheme",
         "http://127.0.0.1:0" => "invalid proxy address",
         "http://127.0.0.1:#{port} " => "invalid proxy address"
-      }.each do |value, reason|
-        transport = with_env("HTTPS_PROXY" => value) { per_call }
+      }.flat_map do |value, reason|
+        [[{ "HTTP_PROXY" => value }, "http://#{target}:8080/x", reason],
+         [{ "HTTPS_PROXY" => value }, "https://#{target}:8443/x", reason]]
+      end
+      # Go net/http refuses HTTP_PROXY when REQUEST_METHOD marks a CGI request.
+      cases << [{ "REQUEST_METHOD" => "GET", "HTTP_PROXY" => "http://127.0.0.1:#{port}" },
+                "http://#{target}:8080/x", "proxy refused in CGI environment"]
+      cases.each do |env, url, reason|
+        transport = with_env(env) { per_call }
         expect(IO::Endpoint).not_to receive(:tcp)
         with_boundaries do |boundaries|
-          error = failure_of(path, transport, request("http://#{target}:8080/x"))
-          expect([error.class, error.code, error.message])
-            .to eq([ConnectRPC::Error, "unavailable", "HTTP/2 transport failed: #{reason}"])
+          error = failure_of(path, transport, request(url))
+          expect([env, error.class, error.code, error.message])
+            .to eq([env, ConnectRPC::Error, "unavailable", "HTTP/2 transport failed: #{reason}"])
           expect([error.cause.class, error.cause.message,
                   error.cause.cause]).to eq([AsyncHelpers::INTERNAL::ProxyFailure, reason, nil])
           expect(boundaries.dialed).to eq([])

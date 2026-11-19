@@ -181,8 +181,8 @@ module ConnectRPC
     # and server streaming, over one HTTP/2 connection per call to the
     # request URL's origin, from any thread or inline in an Async task. Each
     # call closes its own connection, so there is no close. proxy: defaults
-    # to a snapshot of HTTPS_PROXY and NO_PROXY, applied to every target as
-    # grpc-go applies them; a String or URI is an http:// proxy for every call.
+    # to a snapshot of the proxy environment, chosen by each URL's scheme as
+    # NetHTTP chooses it; a String or URI is an http:// proxy for every call.
     class PerCallTransport
       def initialize: (?ca_file: String?, ?certificate_chain: Array[String]?, ?private_key: String?, ?connect_timeout: Numeric, ?proxy: :environment | String | URI::Generic | nil) -> void
       def call: (TransportRequest) -> TransportResponse
