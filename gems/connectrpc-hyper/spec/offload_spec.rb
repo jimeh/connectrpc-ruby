@@ -1,8 +1,9 @@
 # frozen_string_literal: true
 
 # RB_NOGVL_OFFLOAD_SAFE lets async's worker pool (Ruby 4.0, io-event's
-# blocking-operation hook) run a native wait off the reactor thread. Each
-# case runs in its own process, with and without the pool.
+# blocking-operation hook) run a call's native wait off the reactor thread.
+# Close waits on a helper thread under any fiber scheduler. Each case runs in
+# its own process, with or without the pool.
 RSpec.describe "Inside an Async reactor" do
   offload = Gem::Version.new(RUBY_VERSION) >= Gem::Version.new("4.0")
 
@@ -19,6 +20,17 @@ RSpec.describe "Inside an Async reactor" do
           Fiber.scheduler ? sleep(0.001) : Thread.pass
         end
       end
+      def wait_bodies = ConnectRPC::Hyper.const_get(:Native).wait_bodies
+      # Yields to the reactor until `count` native wait bodies run (GVL
+      # released, unblocking function registered), or `done` (when given)
+      # finished.
+      def running(count = 1, done: nil)
+        deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + 10
+        until wait_bodies[1] >= count || done&.finished?
+          raise "never running: \#{wait_bodies}" if Process.clock_gettime(Process::CLOCK_MONOTONIC) > deadline
+          sleep(0.001)
+        end
+      end
       def ticks_during(task)
         ticks = 0
         ticker = task.async { loop { sleep 0.01; ticks += 1 } }
@@ -31,11 +43,10 @@ RSpec.describe "Inside an Async reactor" do
   end
 
   # Thread 1 closes a transport whose held stream outlasts the grace, then an
-  # Async task on the main thread closes it too and is stopped. Every closer
-  # waits for the first teardown in native close, which raises a fiber
-  # scheduler's stop only after the outcome is published. Without the worker
-  # pool that wait holds the reactor, so the stop lands after it returned;
-  # with the pool the stop lands while it is parked off the reactor.
+  # Async task on the main thread closes it too and is stopped while it
+  # waits. Every closer waits for the first teardown's published outcome; the
+  # task waits on a helper thread, so the stop lands while it waits and is
+  # raised only after the outcome is published.
   def concurrent_closers(pool:)
     output, status = reactor_child(<<~RUBY, pool: pool)
       transport = ConnectRPC::Hyper::Transport.new
@@ -60,7 +71,8 @@ RSpec.describe "Inside an Async reactor" do
         rescue Async::Stop
           [:stopped, driver.close_outcome]
         end
-        parked(3) if #{pool}
+        # The held read and both closers' waits.
+        parked(3)
         closer.stop
         closer.wait
       end.wait
@@ -70,14 +82,7 @@ RSpec.describe "Inside an Async reactor" do
     eval(output.lines.last) # rubocop:disable Security/Eval
   end
 
-  # On Windows (non-gating job, x64-mingw-ucrt) a child whose native wait
-  # runs on the reactor thread itself never finishes, while the same wait
-  # offloaded to the worker pool passes; the cause is not established (see
-  # the hyper plan's follow-ups), so these cases run on Linux only.
-  reactor_thread = { linux_only: true }
-
-  it "#{offload ? 'lets sibling tasks run' : 'blocks the reactor'} while a call waits, with the worker pool",
-     **(offload ? {} : reactor_thread) do
+  it "#{offload ? 'lets sibling tasks run' : 'blocks the reactor'} while a call waits, with the worker pool" do
     output, status = reactor_child(<<~RUBY, pool: true)
       peer_client = client(#{peer['grpc_h2c'].dump}, ConnectRPC::Hyper::Transport.new)
       Async do |task|
@@ -101,8 +106,7 @@ RSpec.describe "Inside an Async reactor" do
   # Ruby 3.4 gives a scheduler's hook a plain proc, and a cancelled scheduler
   # could unwind the waiting frame while the body still runs, so waits offer
   # the hook only on Ruby 4.0. The pool records each hand-off and runs it.
-  it "#{offload ? 'hands' : 'never hands'} a native wait to a scheduler's blocking_operation_wait hook",
-     **(offload ? {} : reactor_thread) do
+  it "#{offload ? 'hands' : 'never hands'} a native wait to a scheduler's blocking_operation_wait hook" do
     output, status = reactor_child(<<~RUBY, pool: false)
       handed = 0
       pool = Object.new
@@ -121,7 +125,7 @@ RSpec.describe "Inside an Async reactor" do
     expect(eval(output.lines.last)).to eq(["hook", offload]) # rubocop:disable Security/Eval
   end
 
-  it "blocks the reactor without the worker pool", **reactor_thread do
+  it "blocks the reactor without the worker pool" do
     output, status = reactor_child(<<~RUBY, pool: false)
       peer_client = client(#{peer['grpc_h2c'].dump}, ConnectRPC::Hyper::Transport.new)
       Async do |task|
@@ -140,9 +144,160 @@ RSpec.describe "Inside an Async reactor" do
     expect(eval(output.lines.last)).to match(["deadline_exceeded", be <= 1]) # rubocop:disable Security/Eval
   end
 
-  it "gives a concurrent closer on the reactor thread the first closer's outcome", **reactor_thread do
-    expect(concurrent_closers(pool: false))
-      .to eq([false, false, false, "HTTP transport failed: connection closed", [0, 0]])
+  [true, false].each do |pool|
+    # A sibling fiber's call is in flight on the closer's reactor and can only
+    # finish after the closer started waiting. The closer's wait must leave the
+    # reactor thread and the worker pool (one worker by default) free, or the
+    # sibling cannot drain and the grace expires into forced teardown.
+    it "lets a sibling fiber's call drain while another fiber waits in close, #{pool ? 'with' : 'without'} " \
+       "the worker pool" do
+      output, status = reactor_child(<<~RUBY, pool: pool)
+        transport = ConnectRPC::Hyper::Transport.new
+        driver = transport.instance_variable_get(:@driver)
+        outcome = Async do |task|
+          sent = Thread::Queue.new
+          release = Thread::Queue.new
+          sibling = task.async do
+            client(#{peer['grpc_h2c'].dump}, transport).client_stream(timeout: 30) do |writer|
+              writer.send_message(MSG.new(value: "a"))
+              sent << true
+              release.pop
+            end.message.value
+          rescue ConnectRPC::Error => e
+            e.message
+          end
+          sent.pop
+          closer = task.async { transport.close(grace: 10) }
+          # The close wait runs; a closer that held the reactor thread instead
+          # has returned before this task resumes.
+          running(done: closer)
+          release << true
+          [closer.wait, sibling.wait]
+        end.wait
+        p [outcome, transport.close(grace: 5), driver.stats[1..2]]
+      RUBY
+      expect(status).to be_success
+      expect(eval(output.lines.last)).to eq([[true, "a"], true, [0, 0]]) # rubocop:disable Security/Eval
+    end
+
+    # The held call is a sibling fiber on the closer's reactor, so it can only
+    # finish while the stopped closer keeps waiting on its helper thread. Close
+    # drains, and the stop reaches the closer once teardown published its
+    # outcome.
+    it "lets a sibling fiber's call drain after Task#stop lands on a closing task, #{pool ? 'with' : 'without'} " \
+       "the worker pool" do
+      output, status = reactor_child(<<~RUBY, pool: pool)
+        transport = ConnectRPC::Hyper::Transport.new
+        driver = nil
+        outcome = Async do |task|
+          sent = Thread::Queue.new
+          release = Thread::Queue.new
+          sibling = task.async do
+            client(#{peer['grpc_h2c'].dump}, transport).client_stream(timeout: 30) do |writer|
+              writer.send_message(MSG.new(value: "a"))
+              sent << true
+              release.pop
+            end.message.value
+          rescue ConnectRPC::Error => e
+            e.message
+          end
+          sent.pop
+          driver = transport.instance_variable_get(:@driver)
+          closer = task.async do
+            transport.close(grace: 5)
+          rescue Async::Stop
+            [:stopped, driver.close_outcome]
+          end
+          parked
+          closer.stop
+          release << true
+          [closer.wait, sibling.wait]
+        end.wait
+        p [outcome, transport.close(grace: 5), driver.stats[1..2]]
+      RUBY
+      expect(status).to be_success
+      expect(eval(output.lines.last)).to eq([[[:stopped, true], "a"], true, [0, 0]]) # rubocop:disable Security/Eval
+    end
+  end
+
+  it "still forces teardown after the grace when Task#stop lands on a closing task" do
+    from = peer.mark
+    output, status = reactor_child(<<~RUBY, pool: true)
+      transport = ConnectRPC::Hyper::Transport.new
+      ready = Queue.new
+      held = Thread.new do
+        client(#{peer['grpc_h2c'].dump}, transport).server_stream(MSG.new(value: "hold"), timeout: 30) do |reader|
+          reader.receive
+          ready << true
+          reader.receive
+        end
+      rescue ConnectRPC::Error => e
+        [e.code, e.message]
+      end
+      parked(ready: ready)
+      started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+      outcome = Async do |task|
+        closer = task.async do
+          transport.close(grace: 0.5)
+        rescue Async::Stop
+          :stopped
+        end
+        # The held read and the close wait on its helper thread.
+        parked(2)
+        closer.stop
+        closer.wait
+      end.wait
+      stopped_in = Process.clock_gettime(Process::CLOCK_MONOTONIC) - started
+      driver = transport.instance_variable_get(:@driver)
+      p [outcome, held.value, transport.close(grace: 5), driver.stats[1..2], stopped_in < 10]
+    RUBY
+    expect(status).to be_success
+    expect(eval(output.lines.last)).to eq( # rubocop:disable Security/Eval
+      [:stopped, ["unavailable", "HTTP transport failed: connection closed"], false, [0, 0], true]
+    )
+    peer.wait_event(/grpc ss-hold-done context canceled/, from: from)
+  end
+
+  # The held call waits in Ruby, so the only native wait is the close on its
+  # helper thread; the closer is stopped there and the call drains cleanly
+  # afterwards.
+  it "keeps a clean drain's true outcome when Task#stop lands on a closing task" do
+    output, status = reactor_child(<<~RUBY, pool: true)
+      transport = ConnectRPC::Hyper::Transport.new
+      sent = Queue.new
+      release = Queue.new
+      held = Thread.new do
+        client(#{peer['grpc_h2c'].dump}, transport).client_stream(timeout: 30) do |writer|
+          writer.send_message(MSG.new(value: "a"))
+          sent << true
+          release.pop
+        end.message.value
+      end
+      sent.pop
+      outcome = Async do |task|
+        closer = task.async do
+          transport.close(grace: 10)
+        rescue Async::Stop
+          :stopped
+        end
+        parked
+        closer.stop
+        release << true
+        closer.wait
+      end.wait
+      driver = transport.instance_variable_get(:@driver)
+      p [outcome, held.value, transport.close(grace: 5), driver.stats[1..2]]
+    RUBY
+    expect(status).to be_success
+    expect(eval(output.lines.last)).to eq([:stopped, "a", true, [0, 0]]) # rubocop:disable Security/Eval
+  end
+
+  [true, false].each do |pool|
+    it "raises Task#stop on a concurrent closer only after the first closer's outcome is published, " \
+       "#{pool ? 'with' : 'without'} the worker pool" do
+      expect(concurrent_closers(pool: pool))
+        .to eq([[:stopped, false], false, false, "HTTP transport failed: connection closed", [0, 0]])
+    end
   end
 
   context "with the worker pool on Ruby 4.0" do
@@ -218,127 +373,14 @@ RSpec.describe "Inside an Async reactor" do
       peer.wait_count(/grpc ss-hold-done context (canceled|deadline exceeded)/, 5, from: from)
     end
 
-    it "raises Task#stop on a concurrent closer only after the first closer's outcome is published" do
-      expect(concurrent_closers(pool: true))
-        .to eq([[:stopped, false], false, false, "HTTP transport failed: connection closed", [0, 0]])
-    end
-
-    it "still forces teardown after the grace when Task#stop lands on a closing task" do
-      from = peer.mark
-      output, status = reactor_child(<<~RUBY, pool: true)
-        transport = ConnectRPC::Hyper::Transport.new
-        ready = Queue.new
-        held = Thread.new do
-          client(#{peer['grpc_h2c'].dump}, transport).server_stream(MSG.new(value: "hold"), timeout: 30) do |reader|
-            reader.receive
-            ready << true
-            reader.receive
-          end
-        rescue ConnectRPC::Error => e
-          [e.code, e.message]
-        end
-        parked(ready: ready)
-        started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
-        outcome = Async do |task|
-          closer = task.async do
-            transport.close(grace: 0.5)
-          rescue Async::Stop
-            :stopped
-          end
-          # The held read and the offloaded close wait.
-          parked(2)
-          closer.stop
-          closer.wait
-        end.wait
-        stopped_in = Process.clock_gettime(Process::CLOCK_MONOTONIC) - started
-        driver = transport.instance_variable_get(:@driver)
-        p [outcome, held.value, transport.close(grace: 5), driver.stats[1..2], stopped_in < 10]
-      RUBY
-      expect(status).to be_success
-      expect(eval(output.lines.last)).to eq( # rubocop:disable Security/Eval
-        [:stopped, ["unavailable", "HTTP transport failed: connection closed"], false, [0, 0], true]
-      )
-      peer.wait_event(/grpc ss-hold-done context canceled/, from: from)
-    end
-
-    # The held call waits in Ruby, so the only native wait is the offloaded
-    # close; it is stopped there and the call drains cleanly afterwards.
-    it "keeps a clean drain's true outcome when Task#stop lands on a closing task" do
-      output, status = reactor_child(<<~RUBY, pool: true)
-        transport = ConnectRPC::Hyper::Transport.new
-        sent = Queue.new
-        release = Queue.new
-        held = Thread.new do
-          client(#{peer['grpc_h2c'].dump}, transport).client_stream(timeout: 30) do |writer|
-            writer.send_message(MSG.new(value: "a"))
-            sent << true
-            release.pop
-          end.message.value
-        end
-        sent.pop
-        outcome = Async do |task|
-          closer = task.async do
-            transport.close(grace: 10)
-          rescue Async::Stop
-            :stopped
-          end
-          parked
-          closer.stop
-          release << true
-          closer.wait
-        end.wait
-        driver = transport.instance_variable_get(:@driver)
-        p [outcome, held.value, transport.close(grace: 5), driver.stats[1..2]]
-      RUBY
-      expect(status).to be_success
-      expect(eval(output.lines.last)).to eq([:stopped, "a", true, [0, 0]]) # rubocop:disable Security/Eval
-    end
-
-    # The held call is a sibling fiber on the closer's reactor, so it can only
-    # finish while the stopped closer keeps waiting off the reactor thread.
-    # Close drains, and the stop reaches the closer once teardown published
-    # its outcome. On Windows the sibling never ran within the grace, as if
-    # the closer's wait re-entered after the stop on the reactor thread: the
-    # same unexplained reactor-thread wait as above.
-    it "lets a sibling fiber's call drain after Task#stop lands on a closing task", **reactor_thread do
-      output, status = reactor_child(<<~RUBY, pool: true)
-        transport = ConnectRPC::Hyper::Transport.new
-        driver = nil
-        outcome = Async do |task|
-          sent = Thread::Queue.new
-          release = Thread::Queue.new
-          sibling = task.async do
-            client(#{peer['grpc_h2c'].dump}, transport).client_stream(timeout: 30) do |writer|
-              writer.send_message(MSG.new(value: "a"))
-              sent << true
-              release.pop
-            end.message.value
-          rescue ConnectRPC::Error => e
-            e.message
-          end
-          sent.pop
-          driver = transport.instance_variable_get(:@driver)
-          closer = task.async do
-            transport.close(grace: 5)
-          rescue Async::Stop
-            [:stopped, driver.close_outcome]
-          end
-          parked
-          closer.stop
-          release << true
-          [closer.wait, sibling.wait]
-        end.wait
-        p [outcome, transport.close(grace: 5), driver.stats[1..2]]
-      RUBY
-      expect(status).to be_success
-      expect(eval(output.lines.last)).to eq([[[:stopped, true], "a"], true, [0, 0]]) # rubocop:disable Security/Eval
-    end
-
+    # async's default worker pool has one worker, which runs parked waits one
+    # at a time; two workers let the read and the write wait together.
     it "parks a read and a write of one bidi stream in two fibers, then stops both" do
       from = peer.mark
-      output, status = reactor_child(<<~RUBY, pool: true)
+      output, status = reactor_child(<<~RUBY, pool: false)
         peer_client = client(#{peer['grpc_h2c'].dump}, ConnectRPC::Hyper::Transport.new)
         outcome = nil
+        Fiber.set_scheduler(Async::Scheduler.new(worker_pool: IO::Event::WorkerPool.new(maximum_worker_count: 2)))
         Async do |task|
           call = task.async do
             peer_client.bidi(timeout: 20) do |stream|
@@ -352,11 +394,13 @@ RSpec.describe "Inside an Async reactor" do
             :stopped
           end
           # The reader waits for a message that never comes; the writer waits on
-          # flow control once the paused peer's window is spent.
-          parked(2)
+          # flow control once the paused peer's window is spent. Both wait
+          # bodies run, one on each worker.
+          running(2)
           call.stop
           outcome = call.wait
         end
+        Fiber.set_scheduler(nil)
         p outcome
       RUBY
       expect(status).to be_success

@@ -116,7 +116,7 @@ module ConnectRPC
         raise ArgumentError, "#{name} must be finite positive seconds#{' or nil' if nil_allowed}"
       end
 
-      # Every closer in this process, concurrent ones included, waits in
+      # Every closer in this process, concurrent ones included, waits for
       # native close: it starts teardown once, gives every closer its
       # published outcome and holds an interrupt or a fiber scheduler's
       # cancellation until then. The lock covers only the state and the
@@ -135,13 +135,50 @@ module ConnectRPC
         end
         outcome = nil
         begin
-          outcome = driver.close(grace.to_f)
+          outcome = await_close(driver, grace.to_f)
         ensure
           # Native close raises only after teardown published its outcome.
           outcome = driver.close_outcome == true if outcome.nil?
           @lock.synchronize { finish_close(outcome) }
         end
         outcome
+      end
+
+      # On a fiber scheduler's non-blocking fiber, native close runs on a
+      # helper thread joined with Thread#value, which yields to the
+      # scheduler: the wait takes neither the reactor thread nor a worker of
+      # the scheduler's pool, so sibling tasks keep running and can drain.
+      # An exception raised into the closer meanwhile (async's Task#stop) is
+      # held until the helper returned, as native close holds one.
+      def await_close(driver, grace)
+        return driver.close(grace) unless Fiber.scheduler && !Fiber.current.blocking?
+
+        helper = Thread.new do
+          [driver.close(grace), nil]
+        rescue Exception => e # rubocop:disable Lint/RescueException
+          [nil, e]
+        end
+        outcome, error = join_holding(helper)
+        raise error if error
+
+        outcome
+      end
+
+      # The thread's value. An exception raised into the caller while it
+      # joins is held, the first one winning, and raised once the thread
+      # finished; the thread must not raise itself, so every exception from
+      # Thread#value comes from outside it.
+      def join_holding(thread)
+        held = nil
+        begin
+          value = thread.value
+        rescue Exception => e # rubocop:disable Lint/RescueException
+          held ||= e
+          retry
+        end
+        raise held if held
+
+        value
       end
 
       def finish_close(outcome)
