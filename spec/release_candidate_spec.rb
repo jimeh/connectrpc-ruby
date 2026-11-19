@@ -147,6 +147,29 @@ RSpec.describe ReleaseCandidate do
 
       expect(File.symlink?(archive)).to be(false)
       expect(File.read(archive)).to eq("tested bytes")
+      expect(File.stat(File.dirname(archive)).mode & 0o7777).to eq(0o777 & ~File.umask)
+    end
+
+    it "restores both old outputs, and so a linked input, when a later replacement fails" do
+      root = directory("root")
+      artifacts = File.join(root, "vendor/hyper/release-artifacts")
+      evidence_output = File.join(root, "vendor/hyper/release-evidence")
+      only_copy = File.join(artifacts, "x86_64-linux-3.4.json")
+      write(only_copy, "only copy")
+      write(File.join(evidence_output, "old.json"), "old evidence")
+      archives = directory("archives")
+      write(File.join(archives, "connectrpc-hyper-#{version}.gem"), "new archive")
+      evidence = directory("linked-evidence")
+      File.symlink(only_copy, File.join(evidence, File.basename(only_copy)))
+      allow(FileUtils).to receive(:cp).and_call_original
+      allow(FileUtils).to receive(:cp).with(anything, evidence_output).and_raise(Errno::ENOSPC)
+
+      expect { described_class.collect!(root, [archives, evidence]) }.to raise_error(Errno::ENOSPC)
+
+      expect(Dir.children(artifacts)).to eq(["x86_64-linux-3.4.json"])
+      expect(File.read(File.join(evidence, File.basename(only_copy)))).to eq("only copy")
+      expect(File.read(File.join(evidence_output, "old.json"))).to eq("old evidence")
+      expect(Dir.children(File.join(root, "vendor/hyper")).sort).to eq(%w[release-artifacts release-evidence])
     end
   end
 

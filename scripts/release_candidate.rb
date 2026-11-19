@@ -21,8 +21,9 @@ class ReleaseCandidate # rubocop:disable Metrics/ClassLength
   # replacing their contents. Sources default to local hyper:cross and
   # install_smoke.rb outputs; `gh run download` directories of the hyper-gems
   # artifacts work too. Every selected file is copied into private staging
-  # before any output is replaced, so no input is lost however it is linked.
-  # Returns [source, destination, count] per directory.
+  # first, and the old outputs are only set aside until both new ones are in
+  # place (and restored if either fails), so no input is lost however it is
+  # linked. Returns [source, destination, count] per directory.
   def self.collect!(root, sources) # rubocop:disable Metrics/AbcSize, Metrics/CyclomaticComplexity, Metrics/MethodLength, Metrics/PerceivedComplexity
     archives, evidence = case sources
                          in [] then %w[vendor/hyper/cross vendor/hyper/evidence].map { File.join(root, it) }
@@ -43,23 +44,47 @@ class ReleaseCandidate # rubocop:disable Metrics/ClassLength
 
       [source, destination, found]
     end
-    staged = []
-    begin
-      plan.each do |_source, destination, found|
-        FileUtils.mkdir_p(File.dirname(destination))
-        staging = Dir.mktmpdir(".collect-", File.dirname(destination))
-        staged << staging
-        FileUtils.cp(found, staging) # follows symlinks, so staging holds the bytes
+    Dir.mktmpdir("connectrpc-hyper-collect-") do |staging|
+      staged = plan.each_with_index.map do |(_source, _destination, found), index|
+        File.join(staging, index.to_s).tap do |directory|
+          FileUtils.mkdir_p(directory)
+          FileUtils.cp(found, directory) # follows symlinks, so staging holds the bytes
+        end
       end
-      plan.zip(staged).map do |(source, destination, found), staging|
-        FileUtils.rm_rf(destination)
-        File.chmod(0o755, staging)
-        File.rename(staging, destination)
-        [source, destination, found.size]
-      end
-    ensure
-      FileUtils.rm_rf(staged)
+      replace_outputs!(plan.map { |_, destination, _| destination }.zip(staged))
     end
+    plan.map { |source, destination, found| [source, destination, found.size] }
+  end
+
+  # Sets each existing output aside, fills a fresh directory (ordinary mkdir
+  # permissions) from its staging, and deletes the old outputs only after every
+  # replacement succeeded; on failure it restores them. An old output that
+  # cannot be deleted stays beside the new one as <output>.collect-old-<pid>.
+  def self.replace_outputs!(pairs) # rubocop:disable Metrics/AbcSize, Metrics/MethodLength
+    moved = []
+    begin
+      pairs.each do |destination, staged|
+        FileUtils.mkdir_p(File.dirname(destination))
+        moved << [destination, move_aside(destination)]
+        FileUtils.mkdir_p(destination)
+        FileUtils.cp(Dir.children(staged).map { File.join(staged, it) }, destination)
+      end
+    rescue StandardError
+      moved.reverse_each do |destination, aside|
+        FileUtils.rm_rf(destination)
+        File.rename(aside, destination) if aside
+      end
+      raise
+    end
+    FileUtils.rm_rf(moved.filter_map(&:last))
+  end
+
+  # Renames an existing output (or output symlink) aside and returns the new
+  # name, or nil when there is nothing to keep.
+  def self.move_aside(destination)
+    return unless File.exist?(destination) || File.symlink?(destination)
+
+    "#{destination}.collect-old-#{Process.pid}".tap { |aside| File.rename(destination, aside) }
   end
 
   # A clear error for a source that is, or lies inside or around, an output;
@@ -78,7 +103,7 @@ class ReleaseCandidate # rubocop:disable Metrics/ClassLength
     parent = File.dirname(File.expand_path(path))
     File.directory?(parent) ? File.join(File.realpath(parent), File.basename(path)) : File.expand_path(path)
   end
-  private_class_method :overlapping?, :resolved
+  private_class_method :overlapping?, :resolved, :replace_outputs!, :move_aside
 
   def initialize(train = ReleaseTrain.new)
     @train = train
