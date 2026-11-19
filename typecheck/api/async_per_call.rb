@@ -5,6 +5,11 @@
 transport = ConnectRPC::Async::PerCallTransport.new(ca_file: "ca.pem", certificate_chain: ["client"],
                                                     private_key: "key", connect_timeout: 5)
 ConnectRPC::Async::PerCallTransport.new
+# Since 0.3.0, calls tunnel through an explicit or environment http:// proxy.
+ConnectRPC::Async::PerCallTransport.new(proxy: "http://proxy.invalid:3128").inspect.size
+ConnectRPC::Async::PerCallTransport.new(proxy: URI("http://proxy.invalid:3128"), connect_timeout: 5)
+ConnectRPC::Async::PerCallTransport.new(proxy: nil)
+ConnectRPC::Async::PerCallTransport.new(proxy: :environment)
 method = ConnectRPC::Method.new(service: "demo.Service", name: "Call", request_type: String, response_type: String,
                                 idempotency: :no_side_effects)
 client = ConnectRPC::Client.new(base_url: "https://device-1.example.invalid", binding: APIBinding.new,

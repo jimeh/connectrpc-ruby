@@ -113,13 +113,17 @@ def report_adapter_stderr(artifacts)
   warn lines.last(400).join
 end
 
+# Names one run's artifact directory.
+def run_stamp(host, protocol, per_call, profile, direction)
+  "#{Time.now.utc.strftime('%Y%m%dT%H%M%S')}-#{Process.pid}-#{RUBY_VERSION}-" \
+    "#{host}-#{protocol}#{"-#{per_call}" if per_call}-#{profile}-#{direction}"
+end
+
 success = true
 runs.each do |profile, direction|
   path = per_call ? { path: per_call } : {}
   ledger = ledger_type.new(profile: profile, direction: direction, selected: selector, **path)
-  stamp = "#{Time.now.utc.strftime('%Y%m%dT%H%M%S')}-#{Process.pid}-#{RUBY_VERSION}-" \
-          "#{host}-#{protocol}#{"-#{per_call}" if per_call}-#{profile}-#{direction}"
-  artifacts = File.join(root, "vendor/conformance/results", stamp)
+  artifacts = File.join(root, "vendor/conformance/results", run_stamp(host, protocol, per_call, profile, direction))
   telemetry = native_telemetry(artifacts)
   command = native_command(root, profile, direction, selector, protocol)
   raw, process = Open3.capture2e(native_environment(telemetry, host, artifacts, per_call), *command)

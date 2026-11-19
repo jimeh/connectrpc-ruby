@@ -34,7 +34,7 @@ RSpec.describe "PerCallTransport calls, origins and validation" do
     threads = Thread.list.size
     transport = with_ca { |ca_file| per_call(ca_file: ca_file, connect_timeout: 2) }
     expect([transport.frozen?, Thread.list.size]).to eq([true, threads])
-    expect(transport.inspect).to eq("#<ConnectRPC::Async::PerCallTransport connect_timeout=2>")
+    expect(transport.inspect).to eq("#<ConnectRPC::Async::PerCallTransport connect_timeout=2 proxy=environment>")
     expect([transport.streaming_capabilities, transport.grpc_capabilities])
       .to eq([%i[server_stream], %i[unary server_stream]])
   end
@@ -152,6 +152,32 @@ RSpec.describe "PerCallTransport calls, origins and validation" do
     expect(peer.peer.accepted).to eq(4)
   ensure
     peer&.stop
+  end
+
+  # Core sets the default; the transport sends whatever the request carries.
+  PerCallHelpers::PATHS.each do |path|
+    it "sends core's default User-Agent for Connect and gRPC, and a caller's own, on the #{path} path" do
+      agents = Thread::Queue.new
+      peer = threaded_recording_peer do |incoming|
+        agents << incoming.headers["user-agent"].to_s
+        incoming.send_response(Protocol::HTTP::Response[200, {}, ["ok"]])
+      end
+      origin = "http://127.0.0.1:#{peer.peer.port}"
+      transport = per_call
+      on_path(path) do
+        %i[connect grpc].each do |protocol|
+          typed = mixed_client(transport, origin, protocol: protocol)
+          capture_error { typed.lookup(item("default")) }
+          capture_error { typed.lookup(item("custom"), metadata: { "user-agent" => "custom-agent/1.0" }) }
+        end
+      end
+      expect(4.times.map { pop_within(agents, "a recorded User-Agent") }).to eq(
+        [ConnectRPC::Protocol::USER_AGENT, "custom-agent/1.0", ConnectRPC.const_get(:GRPCProtocol)::USER_AGENT,
+         "custom-agent/1.0"]
+      )
+    ensure
+      peer&.stop
+    end
   end
 
   it "dials an IPv6 literal by address and keeps its brackets in the authority" do

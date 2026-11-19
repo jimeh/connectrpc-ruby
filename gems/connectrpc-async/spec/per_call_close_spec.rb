@@ -259,7 +259,7 @@ RSpec.describe "PerCallTransport connection close, close budget and outcome prec
         eventually("the call admitted", &admitted) if kind == :admitted
         raise IOError, "inner construction failed"
       end
-      failure.enable(target: threaded.instance_method(:build_inner))
+      failure.enable(target: PerCallHelpers::PER_CALL.const_get(:Threaded).instance_method(:build_inner))
       admission = TracePoint.new(:call) { |point| eventually("the owner stopped") { point.self.state == :stopped } }
       admission.enable(target: threaded.const_get(:Engine).instance_method(:admit)) if kind == :replaced
       held, release = hold_stopped_owners

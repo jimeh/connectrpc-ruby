@@ -345,10 +345,15 @@ module ConnectRPC
 
       # Returns the connected TCP socket. The caller publishes it to the
       # resource only after this returns.
-      def dial = ::IO::Endpoint.tcp(@origin.hostname, @origin.port).connect
+      def dial(host = @origin.hostname, port = @origin.port) = ::IO::Endpoint.tcp(host, port).connect
+
+      # Runs on the published socket before TLS, so abort_setup's shutdown
+      # wakes any I/O it blocks on. A direct connection has nothing to do.
+      def tunnel(_raw) = nil
 
       def setup_connection(resource)
         resource.raw = dial
+        tunnel(resource.raw)
         socket = resource.raw
         if @snapshot
           socket = @snapshot.socket(resource.raw)
