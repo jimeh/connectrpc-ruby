@@ -660,14 +660,30 @@ depends = ["sentry:test", "sentry:check", "sentry:package", "sentry:example"]
 # Optional reactor-free Rust client transport; independent bundle, pinned Rust
 # 1.98.0 (the rb-sys-dock image's) and Rust lint tools.
 
+# mise resolves a task's tools before its run starts, so a toolchain installed
+# by the same task's run is not active there (a fresh runner would use its own
+# rustc). Install-only tasks run first, as setup:generation does for protoc.
+[tasks."hyper:toolchain"]
+description = "Install the locked Rust 1.98.0, cargo-deny and cargo-audit for connectrpc-hyper"
+run = "mise install --locked rust@1.98.0 aqua:EmbarkStudios/cargo-deny@0.20.2 aqua:rustsec/rustsec/cargo-audit@0.23.0"
+
+[tasks."hyper:toolchain:msrv"]
+description = "Install the locked MSRV Rust 1.85.0 for connectrpc-hyper"
+run = "mise install --locked rust@1.85.0"
+
+[tasks."hyper:toolchain:go"]
+description = "Install the locked Go 1.27.3 for the connectrpc-hyper peer"
+run = "mise install --locked go@1.27.3"
+
 [tasks."hyper:tools"]
-description = "Install pinned Rust, cargo-deny and cargo-audit; require pinned Ruby and Bundler for connectrpc-hyper"
+description = "Require pinned Rust, cargo-deny, cargo-audit, Ruby and Bundler for connectrpc-hyper"
+depends = ["hyper:toolchain"]
 dir = "{{config_root}}/gems/connectrpc-hyper"
 tools.rust = "1.98.0"
 tools."aqua:EmbarkStudios/cargo-deny" = "0.20.2"
 tools."aqua:rustsec/rustsec/cargo-audit" = "0.23.0"
 env = { BUNDLE_GEMFILE = "{{config_root}}/gems/connectrpc-hyper/Gemfile", BUNDLE_PATH = "{{config_root}}/vendor/hyper/bundle", BUNDLE_USER_HOME = "{{config_root}}/vendor/hyper/bundler", BUNDLE_COOLDOWN = "3" }
-run = ["mise install --locked rust@1.98.0 aqua:EmbarkStudios/cargo-deny@0.20.2 aqua:rustsec/rustsec/cargo-audit@0.23.0", "ruby scripts/tools.rb"]
+run = "ruby scripts/tools.rb"
 
 [tasks."hyper:setup"]
 description = "Install the independent connectrpc-hyper bundle and compile the extension for the active Ruby"
@@ -677,10 +693,11 @@ run = "ruby gems/connectrpc-hyper/scripts/run.rb setup"
 
 [tasks."hyper:peer"]
 description = "Build the disposable grpc-go/connect-go/raw HTTP/2 peer used by connectrpc-hyper specs"
+depends = ["hyper:toolchain:go"]
 tools.go = "1.27.3"
 dir = "{{config_root}}/gems/connectrpc-hyper/interop"
 env = { GOTOOLCHAIN = "local", GOWORK = "off", GOFLAGS = "-mod=readonly", GOMODCACHE = "{{config_root}}/vendor/hyper/go/mod", GOCACHE = "{{config_root}}/vendor/hyper/go/build" }
-run = ["mise install --locked go@1.27.3", "go mod download all", "go mod verify", "go vet .", "go build -o ../../../vendor/hyper/peer ."]
+run = ["go mod download all", "go mod verify", "go vet .", "go build -o ../../../vendor/hyper/peer ."]
 
 [tasks."hyper:test"]
 description = "Run connectrpc-hyper specs against local Go peers: interop, limits, interrupts, pooling, retries, liveness, fork, TLS and offload"
@@ -722,13 +739,15 @@ run = "ruby gems/connectrpc-hyper/scripts/run.rb cross"
 
 [tasks."hyper:msrv"]
 description = "Build the extension with the declared rust-version (MSRV) toolchain and the locked crate graph"
+depends = ["hyper:toolchain:msrv"]
 tools.rust = "1.85.0"
-run = ["mise install --locked rust@1.85.0", "ruby gems/connectrpc-hyper/scripts/msrv.rb"]
+run = "ruby gems/connectrpc-hyper/scripts/msrv.rb"
 
 [tasks."hyper:cargo:update"]
 description = "Update connectrpc-hyper's Cargo.lock (all crates, or `-- -p <crate>`) and regenerate its third-party notices"
+depends = ["hyper:toolchain"]
 tools.rust = "1.98.0"
-run = ["mise install --locked rust@1.98.0", "ruby gems/connectrpc-hyper/scripts/cargo_update.rb"]
+run = "ruby gems/connectrpc-hyper/scripts/cargo_update.rb"
 
 [tasks."hyper:verify"]
 description = "Verify connectrpc-hyper specs, Ruby and Rust lint, supply-chain checks, interop and the offline source-gem install"

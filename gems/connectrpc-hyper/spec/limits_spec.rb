@@ -118,7 +118,9 @@ RSpec.describe "Header, body and streaming limits" do
       expect(monotonic - started).to be >= 0.9
       # The stream window plus h2's bounded send buffer, then the writer blocks.
       expect(written).to be < 40
-      peer.wait_event(/grpc cs-noread-done context canceled/, from: from)
+      # The handler shares the client's deadline, so it may see its own
+      # deadline before the client's reset arrives; either ends the stream.
+      peer.wait_event(/grpc cs-noread-done context (canceled|deadline exceeded)/, from: from)
     end
   end
 end

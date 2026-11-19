@@ -81,11 +81,15 @@ URLs.
 | `idle_timeout:` | `1800` | Seconds before a pooled connection with no calls in flight closes; nil keeps it. |
 | `keepalive:` | `nil` | A `ConnectRPC::Keepalive`; see [keepalive](#keepalive). |
 | `http2:` | `true` | `false` sends Connect over HTTP/1.1 only. |
-| `connect_timeout:` | `20` | Seconds for DNS, TCP, proxy `CONNECT`, TLS and the HTTP/2 handshake; nil leaves only the call deadline. |
+| `connect_timeout:` | `20` | Seconds for DNS, TCP, proxy `CONNECT`, TLS and the HTTP/2 handshake; nil leaves only the call deadline. Each address of a host gets a share; see [connections](#connections-and-server-restarts). |
 | `ca_file:` | `nil` | PEM file appended to the trusted roots. |
 | `certificate_chain:` | `nil` | Client certificate chain, an Array of PEM strings, leaf first. |
 | `private_key:` | `nil` | Client key as a PEM string; required with `certificate_chain:`. |
 | `proxy:` | `:environment` | See [proxies](#proxies). |
+
+Durations accept any finite positive number. Native code caps each one (and
+`close(grace:)`) at about 115 days (9,999,999.999 seconds, the largest
+`connect-timeout-ms`), so a larger value behaves as that cap.
 
 `streaming_capabilities` is `[:server_stream, :client_stream, :bidi_stream]`
 with HTTP/2 and `[:server_stream, :client_stream]` with `http2: false`.
@@ -109,8 +113,13 @@ with HTTP/2 and `[:server_stream, :client_stream]` with `http2: false`.
 ## Connections and server restarts
 
 One HTTP/2 connection per origin and transport admits new calls; concurrent
-first callers share one dial. hyper multiplexes calls up to the peer's
-`SETTINGS_MAX_CONCURRENT_STREAMS`. Behaviour compared with a grpc-go channel:
+first callers share one dial attempt and its outcome. When that dial fails,
+every caller that waited for it fails the same way, as grpc-go fails the
+waiters of one attempt together, instead of each dialing again in turn. A
+caller whose own deadline, cancellation or interrupt ends its call while it
+leads the dial abandons the attempt, and a waiter dials again. hyper
+multiplexes calls up to the peer's `SETTINGS_MAX_CONCURRENT_STREAMS`.
+Behaviour compared with a grpc-go channel:
 
 - An idle connection answers server PINGs and processes GOAWAY without a call
   in flight.
@@ -127,12 +136,23 @@ first callers share one dial. hyper multiplexes calls up to the peer's
   offers backoff and `wait_for_ready`.
 - `idle_timeout` (grpc-go's 30 minutes) closes a pooled connection with no
   calls in flight. The timer claims the exact connection it saw idle, so it
-  never closes a connection a caller has just checked out.
+  never closes a connection a caller has just checked out, and a connection
+  closes only after a full `idle_timeout` without calls.
+- A request queued inside hyper for a `SETTINGS_MAX_CONCURRENT_STREAMS` slot
+  when GOAWAY arrives fails `unavailable` with
+  `HTTP transport failed: connection closed`. It never reached the wire, and
+  grpc-go retries such a stream transparently, but hyper reports it like a
+  stream the server may have processed and does not hand the request back, so
+  it is not replayed. Requests still waiting in hyper's own queue are handed
+  back and retried (below).
 
 `connections: :per_call` dials a fresh connection for every call and closes it
-afterwards. With `http2: false`, pooling keeps at most two idle keep-alive
-connections per origin (Go's `DefaultMaxIdleConnsPerHost`); only a connection
-whose request and response both completed returns to the pool.
+afterwards. With `http2: false`, connections dial in parallel, as Go's
+`net/http` dials them, since one HTTP/1.1 connection serves one call at a
+time; the same holds when TLS negotiates `http/1.1` for an `http2: true`
+transport. Pooling keeps at most two idle keep-alive connections per origin
+(Go's `DefaultMaxIdleConnsPerHost`); only a connection whose request and
+response both completed returns to the pool.
 
 Two requests are retried once on a fresh connection, within the original
 deadline and with the wire timeout recomputed: a request hyper hands back
@@ -143,7 +163,11 @@ handler that started never runs twice.
 Hostnames resolve through tokio's blocking pool (`getaddrinfo`), capped at
 512 threads, close to Go's 500 cgo lookup threads. A stalled lookup keeps its
 thread after the caller leaves. Addresses of both families are tried with Go's
-300 ms fallback delay.
+300 ms fallback delay. Within one family, addresses are tried in turn, each
+within an equal share of what is left of `connect_timeout` but at least 2
+seconds (Go's `partialDeadline`, as NetHTTP's dialer does), so a blackholed
+first address does not use up the whole budget. Without `connect_timeout`
+each attempt runs until the operating system gives up or the call deadline.
 
 ## Keepalive
 
@@ -264,6 +288,10 @@ environment and `NO_PROXY` semantics.
   the target host, not the proxy. Plaintext HTTP/1.1 (`http2: false`) requests
   to `http://` targets go to the proxy in absolute form, as NetHTTP and Go's
   `net/http` send them.
+- The environment proxy is chosen by the target URL's scheme, as Go's
+  `net/http` and NetHTTP choose it: an h2c target is `http://`, so it takes
+  `HTTP_PROXY`. grpc-go instead looks proxies up with an `https` scheme for
+  every target, so it would use `HTTPS_PROXY` for the same h2c target.
 - A `CONNECT` exchange reads at most a 10 MiB reply head within 60 seconds, as
   in Go, and needs exactly status 200. For TLS and HTTP/1.1 targets no bytes
   may follow the reply head, as in NetHTTP; for h2c they may, because an h2c
@@ -297,6 +325,10 @@ that sets `user-agent` wins.
   metadata over the limit fails before dispatch. h2 itself accepts header
   blocks up to 16 MiB, grpc-go's default, so a hostile block above that can
   still truncate trailers.
+- An HTTP/1.1 response head (status line, fields and chunked trailers) may be
+  up to 10 MiB with up to 1,024 fields, Go's `MaxResponseHeaderBytes`
+  default; hyper's own defaults (100 fields, about 400 KiB) are lower. A
+  larger head fails with `malformed response`.
 - Streaming messages follow core's message limits. Flow control uses BDP
   adaptive windows capped at 16 MiB like grpc-go, and each stream buffers at
   most 1 MiB of unsent request data, so `write` blocks while the peer does not
@@ -328,7 +360,12 @@ raise core's `deadline_exceeded` and `canceled` errors first.
 `close(grace: 5)` stops admission, lets in-flight calls finish within `grace`,
 then aborts the rest and waits for every connection task. It returns true when
 everything drained and false after forced teardown; repeated and concurrent
-calls share the first outcome.
+calls share the first outcome. A call admitted before `close` that is still
+dialing is in flight: it keeps dialing and runs within the grace, but its new
+connection is never pooled for other calls, and callers waiting behind its dial
+fail with `HTTP transport admission is closed`. The forced teardown runs even if
+the closing thread is interrupted or a fiber scheduler stops the closing task
+(async's `Task#stop`); the task's exception is raised after teardown.
 
 ## License
 

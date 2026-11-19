@@ -728,8 +728,9 @@ See the [health guide](../gems/connectrpc-health/README.md).
 
 `gems/connectrpc-hyper/` is a Rust extension (hyper, h2, rustls with
 aws-lc-rs, tokio; bound with magnus and rb-sys). Besides the pinned Rubies it
-needs Rust 1.98.0 (the rb-sys-dock image's), which `hyper:tools` installs from
-`mise.lock` with cargo-deny 0.20.2 and cargo-audit 0.23.0; libclang for
+needs Rust 1.98.0 (the rb-sys-dock image's), which `hyper:toolchain` (a
+`hyper:tools` dependency) installs from `mise.lock` with cargo-deny 0.20.2 and
+cargo-audit 0.23.0; libclang for
 bindgen; a C compiler; and Go 1.27.3 for the peer. On distributions whose
 libclang lacks clang's resource headers, the launcher points bindgen at the C
 compiler's include directory. Tasks:

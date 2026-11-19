@@ -225,7 +225,17 @@ impl CallState {
         recv.pending = None;
         let (response, lease) =
             delivered.map_err(|_| Failure::new("aborted", "exchange aborted"))??;
-        *self.lease.lock().unwrap_or_else(|e| e.into_inner()) = Some(lease);
+        {
+            // abort sets `aborted` before it takes the lease, so checking under
+            // the lease lock means an abort that already ran drops the lease
+            // here instead of leaving it held until the call is collected.
+            let mut slot = self.lease.lock().unwrap_or_else(|e| e.into_inner());
+            if self.aborted.load(Ordering::SeqCst) {
+                drop(lease);
+                return Err(Failure::new("aborted", "exchange aborted"));
+            }
+            *slot = Some(lease);
+        }
         let (parts, body) = response.into_parts();
         // HEADERS carried END_STREAM: a gRPC trailers-only response. h2 keeps
         // trailers that arrived right behind the head in its queue, so this is

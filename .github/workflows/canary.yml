@@ -42,7 +42,7 @@ jobs:
         with:
           persist-credentials: false
       # The hyper leaf runs `cargo update` in a temporary copy, compiles with the
-      # pinned Rust from hyper:tools and builds the Go peer.
+      # pinned Rust from hyper:toolchain and builds the Go peer.
       - name: Install libclang and a C compiler
         if: matrix.leaf == 'hyper'
         run: sudo apt-get update && sudo apt-get install --yes --no-install-recommends libclang-dev clang

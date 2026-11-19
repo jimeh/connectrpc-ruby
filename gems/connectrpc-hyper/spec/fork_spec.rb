@@ -124,6 +124,28 @@ RSpec.describe "Fork", :fork do
     end
   end
 
+  # A token's Notify lock may be held by a parent runtime thread at fork
+  # time, so firing an inherited token must not touch it.
+  it "ignores a cancellation token from before fork that the child fires" do
+    output, status = ruby_child(<<~RUBY)
+      cancel = ConnectRPC::Hyper.const_get(:Native)::Cancel.new
+      reader, writer = IO.pipe
+      pid = fork do
+        cancel.fire
+        writer.puts cancel.fired?.inspect
+        exit!(0)
+      end
+      writer.close
+      Process.wait(pid)
+      child = reader.read.chomp
+      parent = cancel.fired?
+      cancel.fire
+      p [child, parent, cancel.fired?]
+    RUBY
+    expect(status).to be_success
+    expect(output.lines.last.chomp).to eq('["false", false, true]')
+  end
+
   it "keeps a transport closed before fork closed in the child" do
     output, status = ruby_child(<<~RUBY)
       transport = ConnectRPC::Hyper::Transport.new

@@ -4,7 +4,9 @@
 //   STALL_EVENTS, block until a byte arrives on the FIFO named by
 //   STALL_RELEASE, announce "dns-leave", then fail with EAI_NONAME;
 // - names ending in ".delay" do the same, then resolve to 127.0.0.1;
-// - names ending in ".test" resolve to 127.0.0.1 at once.
+// - names ending in ".test" resolve to 127.0.0.1 at once;
+// - names ending in ".pair" resolve to 127.0.0.2, then 127.0.0.1 (two
+//   addresses of one family, in that order).
 // Everything else passes through.
 #define _GNU_SOURCE
 #include <dlfcn.h>
@@ -63,6 +65,23 @@ int getaddrinfo(const char *node, const char *service, const struct addrinfo *hi
   }
   if (ends_with(node, ".test")) {
     return real("127.0.0.1", service, hints, res);
+  }
+  if (ends_with(node, ".pair")) {
+    struct addrinfo *first = NULL;
+    int status = real("127.0.0.2", service, hints, &first);
+    if (status != 0) return status;
+    struct addrinfo *second = NULL;
+    status = real("127.0.0.1", service, hints, &second);
+    if (status != 0) {
+      freeaddrinfo(first);
+      return status;
+    }
+    // glibc's freeaddrinfo frees node by node, so one chained list is safe.
+    struct addrinfo *last = first;
+    while (last->ai_next) last = last->ai_next;
+    last->ai_next = second;
+    *res = first;
+    return 0;
   }
   return real(node, service, hints, res);
 }

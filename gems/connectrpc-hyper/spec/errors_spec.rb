@@ -44,6 +44,67 @@ RSpec.describe "Transport failures" do
     silent&.close
   end
 
+  # The shim resolves peer.pair to 127.0.0.2 (a full backlog on the peer's
+  # port drops its SYNs), then 127.0.0.1 (the peer). Go's partialDeadline
+  # gives the first address max(3 s / 2, 2 s) = 2 s, leaving 1 s for the peer.
+  it "gives each address its share of connect_timeout, so a blackholed first address does not use it all",
+     :dns_shim do
+    environment = stall_environment
+    port = URI(peer["grpc_h2c"]).port
+    blackhole = Socket.new(:INET, :STREAM)
+    blackhole.bind(Addrinfo.tcp("127.0.0.2", port))
+    blackhole.listen(0)
+    fillers = Array.new(8) do
+      socket = Socket.new(:INET, :STREAM)
+      socket.connect_nonblock(Addrinfo.tcp("127.0.0.2", port), exception: false)
+      socket
+    end
+    output, status = ruby_child(<<~RUBY, env: environment)
+      transport = ConnectRPC::Hyper::Transport.new(connect_timeout: 3, proxy: nil)
+      started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+      reply = begin
+        client("http://peer.pair:#{port}", transport).unary(MSG.new(value: "second"), timeout: 10).message.value
+      rescue ConnectRPC::Error => e
+        [e.code, e.message]
+      end
+      p [reply, (Process.clock_gettime(Process::CLOCK_MONOTONIC) - started).round(2)]
+    RUBY
+    expect(status).to be_success
+    reply, elapsed = eval(output.lines.last) # rubocop:disable Security/Eval
+    expect(reply).to eq("second")
+    expect(elapsed).to be_between(1.9, 2.9)
+  ensure
+    fillers&.each(&:close)
+    blackhole&.close
+  end
+
+  it "records a per-wait timeout as a lifecycle failure before its fixed phrase" do
+    recorded = []
+    lifecycle = Object.new
+    lifecycle.define_singleton_method(:record_failure) { |error| recorded << error }
+    request = ConnectRPC::StreamRequest.new(url: URI("#{peer['grpc_h2c']}/connectrpc.grpcinterop.v1.Peer/Bidi"),
+                                            http_method: "POST", headers: { "content-type" => ["application/grpc"] },
+                                            deadline: ConnectRPC::Deadline.new(10), lifecycle: lifecycle)
+    error = error_of { hyper.open_grpc_stream(request) { |exchange| exchange.response_head(timeout: 0.2) } }
+    expect([error.code, error.message, error.cause]).to eq(["unavailable", "HTTP transport failed: timed out", nil])
+    expect(recorded.map { |failure| [failure.class.name, failure.kind] })
+      .to eq([["ConnectRPC::Hyper::Native::Failure", :timeout]])
+  end
+
+  it "accepts an HTTP/1.1 response head larger than hyper's defaults, up to Go's 10 MiB bound" do
+    big = Array.new(300) { |index| ["x-big-#{index}", "v" * 4096] }.to_h
+    server = TinyHTTP.new { |_request, socket| TinyHTTP.ok(socket, headers: big) }
+    request = ConnectRPC::TransportRequest.new(url: URI("#{server.origin}/svc/Method"), http_method: "POST",
+                                               headers: { "content-type" => ["application/proto"] }, body: "",
+                                               response_limit: 1024, deadline: ConnectRPC::Deadline.new(5))
+    response = hyper(http2: false).call(request)
+    expect(response.status).to eq(200)
+    expect(response.headers.keys.grep(/\Ax-big-/).size).to eq(300)
+    expect(response.headers["x-big-299"]).to eq(["v" * 4096])
+  ensure
+    server&.close
+  end
+
   it "reports name resolution failures", :dns_shim do
     environment = stall_environment
     output, status = ruby_child(<<~RUBY, env: environment)

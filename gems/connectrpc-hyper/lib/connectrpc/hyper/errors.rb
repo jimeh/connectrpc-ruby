@@ -62,14 +62,15 @@ module ConnectRPC
       end
 
       # Runs one native operation for a request: cancellation and deadline
-      # first, then lifecycle failure recording, then the fixed phrase.
+      # first, then lifecycle failure recording (a per-wait timeout included,
+      # as the Async transport records it), then the fixed phrase.
       def self.native(request, grpc:)
         yield
       rescue Native::Failure => e
         request.cancellation ? request.cancellation.check! : request.deadline&.check!
+        request.lifecycle&.record_failure(e)
         raise Error.new(:unavailable, "HTTP transport failed: timed out"), cause: nil if e.kind == :timeout
 
-        request.lifecycle&.record_failure(e)
         translate(e, grpc: grpc)
       end
     end

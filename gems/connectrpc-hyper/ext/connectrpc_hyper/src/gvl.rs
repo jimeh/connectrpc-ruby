@@ -254,6 +254,12 @@ fn settled(waits: &Waits<'_>) -> Option<Failure> {
 /// Blocks with the GVL released until `future` ends, delivering Ruby
 /// interrupts only after it does. For teardown that must not be abandoned
 /// part way, such as a transport's close.
+///
+/// `Thread.handle_interrupt` defers thread interrupts, but a fiber
+/// scheduler's cancellation (async's `Task#stop` with the worker pool)
+/// re-raises through `rb_nogvl` regardless. That exception is held while
+/// `future` keeps running, on this thread from then on, where no scheduler
+/// can abandon it again, and is raised once `future` has ended.
 pub fn drive_uninterruptible<T, F>(ruby: &Ruby, future: F) -> Result<T, Error>
 where
     F: Future<Output = T> + Send,
@@ -261,9 +267,11 @@ where
 {
     let handle = runtime::handle();
     let mut future = pin!(future);
+    let mut raised: Option<Error> = None;
     loop {
         let interrupt = Signal::new();
-        let outcome = without_gvl_deferred(ruby, &interrupt, || {
+        let offload = raised.is_none();
+        let (outcome, error) = without_gvl_deferred(ruby, &interrupt, offload, || {
             handle.block_on(async {
                 tokio::select! {
                     biased;
@@ -271,24 +279,42 @@ where
                     result = future.as_mut() => Some(result),
                 }
             })
-        })?;
-        if let Some(result) = outcome {
-            return Ok(result);
+        });
+        if let Some(error) = error {
+            raised.get_or_insert(error);
+        }
+        if let Some(Some(result)) = outcome {
+            return match raised {
+                Some(error) => Err(error),
+                None => Ok(result),
+            };
         }
     }
 }
 
-/// Like `without_gvl`, but never raises a pending interrupt itself; the
-/// caller's surrounding Ruby code (masked with handle_interrupt) receives it.
-fn without_gvl_deferred<F, R>(ruby: &Ruby, interrupt: &Arc<Signal>, func: F) -> Result<R, Error>
+/// Like `without_gvl`, but never raises: it returns the body's result, if
+/// the body ran, and any Ruby exception raised around it, for the caller to
+/// raise after its teardown. `offload` lets a fiber scheduler run the body
+/// on a worker thread.
+fn without_gvl_deferred<F, R>(
+    ruby: &Ruby,
+    interrupt: &Arc<Signal>,
+    offload: bool,
+    func: F,
+) -> (Option<R>, Option<Error>)
 where
     F: FnOnce() -> R + Send,
     R: Send,
 {
+    let _active = Active::enter();
     let mut data = Data {
         func: Some(func),
         out: None,
     };
+    let mut flags = rb_sys::RB_NOGVL_INTR_FAIL;
+    if offload {
+        flags |= rb_sys::RB_NOGVL_OFFLOAD_SAFE;
+    }
     loop {
         let data_ptr = &mut data as *mut Data<F, R> as *mut c_void;
         let signal_ptr = Arc::as_ptr(interrupt) as *mut c_void;
@@ -298,18 +324,27 @@ where
                 data_ptr,
                 Some(unblock),
                 signal_ptr,
-                (rb_sys::RB_NOGVL_INTR_FAIL | rb_sys::RB_NOGVL_OFFLOAD_SAFE) as i32,
+                flags as i32,
             ) as rb_sys::VALUE
-        })?;
-        if ran != 0 {
-            break;
+        });
+        match ran {
+            Ok(0) => {}
+            Ok(_) => return (ran_output(&mut data), None),
+            // A scheduler's cancellation drained the body, then raised.
+            Err(error) => return (ran_output(&mut data), Some(error)),
         }
         // An interrupt is pending and unmasked: the caller masks interrupts
         // around close, so this only clears a stale flag. Run again.
-        ruby.thread_check_ints()?;
+        if let Err(error) = ruby.thread_check_ints() {
+            return (None, Some(error));
+        }
     }
-    match data.out.take().expect("nogvl body ran") {
-        Ok(value) => Ok(value),
+}
+
+/// The body's result, if it ran; a panic in the body resumes here.
+fn ran_output<F, R>(data: &mut Data<F, R>) -> Option<R> {
+    match data.out.take()? {
+        Ok(value) => Some(value),
         Err(panic) => resume_unwind(panic),
     }
 }

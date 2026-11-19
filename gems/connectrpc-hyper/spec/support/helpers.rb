@@ -99,9 +99,12 @@ module HyperHelpers # rubocop:disable Metrics/ModuleLength
     [server.addr[1], -> { (fillers + [server]).each(&:close) }]
   end
 
-  def syn_sent?(port)
+  def syn_sent?(port) = syn_sent(port).positive?
+
+  # Sockets connecting to the loopback port (SYN_SENT), fillers included.
+  def syn_sent(port)
     hex = format("%04X", port)
-    File.readlines("/proc/net/tcp").any? do |line|
+    File.readlines("/proc/net/tcp").count do |line|
       fields = line.split
       fields[2]&.end_with?(":#{hex}") && fields[3] == "02"
     end

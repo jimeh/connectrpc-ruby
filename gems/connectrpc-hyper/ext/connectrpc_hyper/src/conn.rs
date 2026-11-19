@@ -15,6 +15,7 @@ use rustls::pki_types::ServerName;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, ReadBuf};
 use tokio::net::TcpStream;
 use tokio::task::AbortHandle;
+use tokio::time::Instant;
 
 use crate::body::CallBody;
 use crate::failure::Failure;
@@ -29,6 +30,17 @@ const FALLBACK_DELAY: Duration = Duration::from_millis(300);
 const MAX_HEADER_LIST_SIZE: u32 = 16 << 20;
 /// Bounds what h2 buffers for one stream beyond its send window.
 const MAX_SEND_BUF_SIZE: usize = 1 << 20;
+/// Go net/http's default MaxResponseHeaderBytes, for HTTP/1.1 response heads
+/// (status line included) and chunked trailers. hyper's read buffer must be
+/// able to hold a whole head, so it may grow to this size on a busy
+/// connection; hyper's default (about 400 KiB) is below Go's bound.
+const MAX_H1_HEAD: usize = 10 << 20;
+/// Response header fields per HTTP/1.1 head. Go counts only bytes; hyper
+/// also caps fields (default 100) and allocates this many slots per response.
+const MAX_H1_HEADERS: usize = 1024;
+/// Go's net.Dialer minimum per-address share of the setup budget
+/// (saneMinimum in partialDeadline).
+const MIN_ATTEMPT: Duration = Duration::from_secs(2);
 
 /// A request's destination and the proxy it goes through, if any: the pool
 /// key, so direct and proxied connections never mix.
@@ -207,11 +219,44 @@ fn connect_failure(error: &io::Error) -> Failure {
     Failure::io(kind, error)
 }
 
-/// Tries each address in turn; returns the first error if all fail.
-async fn dial_serial(addresses: &[SocketAddr]) -> Result<TcpStream, Failure> {
+/// Go's partialDeadline: an equal share of the setup budget left for each
+/// remaining address, at least MIN_ATTEMPT (or all that is left).
+fn attempt_budget(deadline: Instant, remaining_addresses: usize) -> Duration {
+    let left = deadline.saturating_duration_since(Instant::now());
+    let share = left / u32::try_from(remaining_addresses.max(1)).unwrap_or(u32::MAX);
+    if share < MIN_ATTEMPT {
+        left.min(MIN_ATTEMPT)
+    } else {
+        share
+    }
+}
+
+/// Tries each address in turn, each within its share of the setup budget, so
+/// a blackholed address does not consume all of it; returns the first error
+/// if all fail. Without a budget each attempt runs until the OS gives up.
+async fn dial_serial(
+    addresses: &[SocketAddr],
+    deadline: Option<Instant>,
+) -> Result<TcpStream, Failure> {
     let mut first = None;
-    for address in addresses {
-        match TcpStream::connect(address).await {
+    for (index, address) in addresses.iter().enumerate() {
+        let attempt = TcpStream::connect(address);
+        let result = match deadline {
+            Some(deadline) => {
+                let budget = attempt_budget(deadline, addresses.len() - index);
+                match tokio::time::timeout(budget, attempt).await {
+                    Ok(result) => result,
+                    Err(_) => {
+                        first.get_or_insert_with(|| {
+                            Failure::new("connect_timeout", "connection attempt timed out")
+                        });
+                        continue;
+                    }
+                }
+            }
+            None => attempt.await,
+        };
+        match result {
             Ok(stream) => return Ok(stream),
             Err(e) => {
                 first.get_or_insert_with(|| connect_failure(&e));
@@ -224,16 +269,16 @@ async fn dial_serial(addresses: &[SocketAddr]) -> Result<TcpStream, Failure> {
 /// RFC 6555 as Go dials: the first address's family is primary; the other
 /// family starts after FALLBACK_DELAY, or at once if the primary fails, and
 /// the first connection wins. The primary's error is reported if both fail.
-async fn dial(host: &str, port: u16) -> Result<TcpStream, Failure> {
+async fn dial(host: &str, port: u16, deadline: Option<Instant>) -> Result<TcpStream, Failure> {
     let addresses = resolve(host, port).await?;
     let primary_v4 = addresses[0].is_ipv4();
     let (primaries, fallbacks): (Vec<SocketAddr>, Vec<SocketAddr>) = addresses
         .into_iter()
         .partition(|a| a.is_ipv4() == primary_v4);
     if fallbacks.is_empty() {
-        return dial_serial(&primaries).await;
+        return dial_serial(&primaries, deadline).await;
     }
-    let primary = dial_serial(&primaries);
+    let primary = dial_serial(&primaries, deadline);
     tokio::pin!(primary);
     let delay = tokio::time::sleep(FALLBACK_DELAY);
     tokio::pin!(delay);
@@ -245,7 +290,7 @@ async fn dial(host: &str, port: u16) -> Result<TcpStream, Failure> {
         },
         _ = &mut delay => {}
     }
-    let fallback = dial_serial(&fallbacks);
+    let fallback = dial_serial(&fallbacks, deadline);
     tokio::pin!(fallback);
     if let Some(failure) = primary_failure {
         return fallback.await.map_err(|_| failure);
@@ -298,16 +343,18 @@ fn tls_failure(error: &io::Error) -> Failure {
 }
 
 /// Connects and completes the handshake hyper performs (for HTTP/2, the
-/// preface is written; hyper exposes no peer-SETTINGS boundary).
+/// preface is written; hyper exposes no peer-SETTINGS boundary). `deadline`
+/// ends the setup budget that TCP attempts share; the caller enforces it.
 pub async fn connect(
     settings: &Settings,
     tls: Option<Arc<rustls::ClientConfig>>,
     origin: &Origin,
     tracker: &Arc<Tracker>,
+    deadline: Option<Instant>,
 ) -> Result<Connected, Failure> {
     let stream = match &origin.proxy {
-        Some(route) => dial(&route.host, route.port).await?,
-        None => dial(&origin.host, origin.port).await?,
+        Some(route) => dial(&route.host, route.port, deadline).await?,
+        None => dial(&origin.host, origin.port, deadline).await?,
     };
     let _ = stream.set_nodelay(true);
     let local_port = stream.local_addr().map(|a| a.port()).unwrap_or(0);
@@ -370,6 +417,9 @@ pub async fn connect(
         })
     } else {
         let (sender, connection) = http1::Builder::new()
+            .max_buf_size(MAX_H1_HEAD)
+            .max_header_size(MAX_H1_HEAD)
+            .max_headers(MAX_H1_HEADERS)
             .handshake(io)
             .await
             .map_err(|e| Failure::from_hyper(&e))?;

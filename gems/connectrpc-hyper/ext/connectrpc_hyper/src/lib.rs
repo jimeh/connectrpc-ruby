@@ -61,8 +61,22 @@ fn settle<T>(ruby: &Ruby, result: Result<Result<T, Failure>, Error>) -> Result<T
     result?.map_err(|failure| failure_error(ruby, failure))
 }
 
+/// The longest duration native code accepts from Ruby (about 115 days, the
+/// largest `connect-timeout-ms` value). Ruby accepts any finite positive
+/// number, and `Duration::from_secs_f64` or `Instant + Duration` panic for
+/// values above about 1.8e19 s, so every Ruby-supplied duration saturates
+/// here. The cap also keeps hyper's own `Instant + interval` keepalive
+/// arithmetic far from overflow.
+const MAX_SECONDS: f64 = 9_999_999.999;
+
+/// A Ruby-supplied number of seconds as a duration, saturated to
+/// `[0, MAX_SECONDS]`; never panics (NaN becomes zero).
+fn seconds(value: f64) -> Duration {
+    Duration::try_from_secs_f64(value.clamp(0.0, MAX_SECONDS)).unwrap_or(Duration::ZERO)
+}
+
 fn instant(seconds: Option<f64>) -> Option<Instant> {
-    seconds.map(|s| Instant::now() + Duration::from_secs_f64(s.clamp(0.0, 9_999_999.999)))
+    seconds.map(|s| Instant::now() + self::seconds(s))
 }
 
 fn bytes(value: RString) -> Bytes {
@@ -172,21 +186,30 @@ fn request_spec(
 }
 
 /// A cancellation handle registered with the call's token before the first
-/// native wait. `fire` is safe from any Ruby thread.
+/// native wait. `fire` is safe from any Ruby thread. A token created before
+/// fork and cancelled in the child does nothing: its Notify lock may have
+/// been held by a parent runtime thread at fork time.
 #[magnus::wrap(class = "ConnectRPC::Hyper::Native::Cancel", free_immediately, size)]
 struct Cancel {
-    signal: Arc<Signal>,
+    signal: ForkGuard<Arc<Signal>>,
 }
 
 impl Cancel {
     fn new() -> Self {
         Self {
-            signal: Signal::new(),
+            signal: ForkGuard::new(Signal::new()),
         }
     }
 
     fn fire(&self) {
-        self.signal.fire();
+        if !self.signal.inherited() {
+            self.signal.fire();
+        }
+    }
+
+    /// For specs: whether this process fired the token.
+    fn is_fired(&self) -> bool {
+        !self.signal.inherited() && self.signal.fired()
     }
 }
 
@@ -223,19 +246,15 @@ impl Driver {
         runtime::sockets::install();
         let config = Config {
             pooled,
-            idle_timeout: idle_timeout.map(Duration::from_secs_f64),
-            connect_timeout: connect_timeout.map(Duration::from_secs_f64),
+            idle_timeout: idle_timeout.map(seconds),
+            connect_timeout: connect_timeout.map(seconds),
             settings: Settings {
                 http2,
                 keepalive: keepalive.map(|(time, timeout, while_idle)| {
-                    (
-                        Duration::from_secs_f64(time),
-                        Duration::from_secs_f64(timeout),
-                        while_idle,
-                    )
+                    (seconds(time), seconds(timeout), while_idle)
                 }),
                 tunnel: proxy::Limits {
-                    timeout: Duration::from_secs_f64(tunnel.0),
+                    timeout: seconds(tunnel.0),
                     max_head: tunnel.1,
                 },
             },
@@ -344,14 +363,15 @@ impl Driver {
         }
         let core = rb_self.core.clone();
         core.begin_close();
-        let expires = tokio::time::Duration::from_secs_f64(grace.max(0.0));
+        let expires = tokio::time::Instant::now() + seconds(grace);
+        // Runs to the end even if the caller is interrupted or a fiber
+        // scheduler cancels the wait, so force always follows the grace.
         drive_uninterruptible(ruby, async move {
-            let start = tokio::time::Instant::now();
-            let drained = tokio::time::timeout_at(start + expires, core.wait_drained())
+            let drained = tokio::time::timeout_at(expires, core.wait_drained())
                 .await
                 .is_ok();
             let quiet = drained
-                && tokio::time::timeout_at(start + expires, core.tracker.wait_empty())
+                && tokio::time::timeout_at(expires, core.tracker.wait_empty())
                     .await
                     .is_ok();
             core.force().await;
@@ -560,6 +580,7 @@ fn init(ruby: &Ruby) -> Result<(), Error> {
     let cancel: RClass = native.define_class("Cancel", ruby.class_object())?;
     cancel.define_singleton_method("new", function!(Cancel::new, 0))?;
     cancel.define_method("fire", method!(Cancel::fire, 0))?;
+    cancel.define_method("fired?", method!(Cancel::is_fired, 0))?;
 
     let driver: RClass = native.define_class("Driver", ruby.class_object())?;
     driver.define_singleton_method("new", function!(Driver::new, 9))?;

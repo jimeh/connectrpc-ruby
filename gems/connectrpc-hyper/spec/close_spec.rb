@@ -1,8 +1,64 @@
 # frozen_string_literal: true
 
+require_relative "support/socket_proxy"
+
 RSpec.describe "Transport#close" do
+  include SocketProxy
+
   def closed_error(transport, origin = peer["grpc_h2c"])
     error_of { client(origin, transport: transport).unary(MSG.new, timeout: 5) }
+  end
+
+  # A CONNECT proxy that holds the tunnel, and with it the caller's dial,
+  # until `gate` yields, then relays to the h2c peer. `arrived` receives the
+  # CONNECT request.
+  def gated_relay(arrived, gate)
+    lambda do |downstream|
+      arrived << read_head(downstream)
+      gate.pop
+      upstream = TCPSocket.new("127.0.0.1", URI(peer["grpc_h2c"]).port)
+      downstream.write("HTTP/1.1 200 Connection established\r\n\r\n")
+      pipes = [[downstream, upstream], [upstream, downstream]].map do |from, to|
+        Thread.new do
+          IO.copy_stream(from, to)
+        rescue IOError, SystemCallError
+          nil
+        end
+      end
+      pipes.first.join(10)
+    ensure
+      upstream&.close
+    end
+  end
+
+  %i[pooled per_call].each do |connections|
+    it "lets a #{connections} call admitted before close finish its dial and call, then returns true" do
+      arrived = Queue.new
+      gate = Queue.new
+      with_socket_proxy(gated_relay(arrived, gate)) do |url|
+        transport = hyper(connections: connections, proxy: url)
+        peer_client = client("http://127.0.0.1:#{URI(peer['grpc_h2c']).port}", transport: transport)
+        dialing = Thread.new do
+          peer_client.unary(MSG.new(value: "admitted"), timeout: 20).message.value
+        rescue ConnectRPC::Error => e
+          [e.code, e.message]
+        end
+        expect(arrived.pop(timeout: 10)).to start_with("CONNECT ")
+        # gRPC unary dials in its first exchange write.
+        wait_parked(dialing, "Exchange#write")
+        closer = Thread.new { transport.close(grace: 10) }
+        # Parked in native close: admission is closed while the dial is held.
+        wait_parked(closer, "Driver#close")
+        gate << true
+        expect(dialing.value).to eq("admitted")
+        # Its connection was never pooled, so it closed with the call and
+        # close drained well inside the grace.
+        started = monotonic
+        expect(closer.value).to be(true)
+        expect(monotonic - started).to be < 5
+        expect(stats(transport)[1..2]).to eq([0, 0])
+      end
+    end
   end
 
   it "drains in-flight calls within grace and returns true" do

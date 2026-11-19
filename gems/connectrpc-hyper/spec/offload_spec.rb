@@ -143,6 +143,44 @@ RSpec.describe "Inside an Async reactor" do
       peer.wait_count(/grpc ss-hold-done context (canceled|deadline exceeded)/, 5, from: from)
     end
 
+    it "still forces teardown after the grace when Task#stop lands on a closing task" do
+      from = peer.mark
+      output, status = reactor_child(<<~RUBY, pool: true)
+        transport = ConnectRPC::Hyper::Transport.new
+        ready = Queue.new
+        held = Thread.new do
+          client(#{peer['grpc_h2c'].dump}, transport).server_stream(MSG.new(value: "hold"), timeout: 30) do |reader|
+            reader.receive
+            ready << true
+            reader.receive
+          end
+        rescue ConnectRPC::Error => e
+          [e.code, e.message]
+        end
+        parked(ready: ready)
+        started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+        outcome = Async do |task|
+          closer = task.async do
+            transport.close(grace: 0.5)
+          rescue Async::Stop
+            :stopped
+          end
+          # The held read and the offloaded close wait.
+          parked(2)
+          closer.stop
+          closer.wait
+        end.wait
+        stopped_in = Process.clock_gettime(Process::CLOCK_MONOTONIC) - started
+        driver = transport.instance_variable_get(:@driver)
+        p [outcome, held.value, transport.close(grace: 5), driver.stats[1..2], stopped_in < 10]
+      RUBY
+      expect(status).to be_success
+      expect(eval(output.lines.last)).to eq( # rubocop:disable Security/Eval
+        [:stopped, ["unavailable", "HTTP transport failed: connection closed"], false, [0, 0], true]
+      )
+      peer.wait_event(/grpc ss-hold-done context canceled/, from: from)
+    end
+
     it "parks a read and a write of one bidi stream in two fibers, then stops both" do
       from = peer.mark
       output, status = reactor_child(<<~RUBY, pool: true)

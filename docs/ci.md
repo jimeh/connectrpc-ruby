@@ -79,7 +79,7 @@ that package's specs and installed-package check. Because the
 wrapper does not exist before the task runs, these jobs disable the setup-ruby
 bundle cache and install from the registry each time. The hyper leaf alone adds
 libclang, a C compiler and setup-go (steps gated on the leaf) and installs the
-pinned Rust through `hyper:tools`. See
+pinned Rust through `hyper:toolchain`, which `hyper:tools` depends on. See
 [development](development.md#fresh-resolution-and-the-lowest-allowed-lane).
 
 ## Pins-lifted canary
@@ -383,8 +383,10 @@ cleanliness. `floors:sentry` covers sentry-ruby 6.7.0.
 
 The `hyper` job runs `hyper:verify` once per pinned Ruby with
 `gems/connectrpc-hyper/Gemfile`, `vendor/hyper/bundle` and
-`vendor/hyper/bundler`, validated through `hyper:tools`, which also installs
-Rust 1.98.0, cargo-deny and cargo-audit from `mise.lock` and checks `rustc`.
+`vendor/hyper/bundler`, validated through `hyper:tools`, which checks `rustc`
+after its `hyper:toolchain` dependency installs Rust 1.98.0, cargo-deny and
+cargo-audit from `mise.lock`. The install runs in its own task because mise
+resolves a task's tools before the task's commands run.
 apt provides libclang for rb-sys's bindgen and a C compiler for the DNS shim.
 setup-go provides Go 1.27.3; the CI override of `hyper:peer` validates it
 (`ci_runtime.rb hyper`) instead of installing Go, and keeps the module and
@@ -423,7 +425,7 @@ state listed in `typecheck/source.rb`. They validate that source list, enforce
 the reviewed source/signature inventory, and check application callers for all
 twelve packages. `rbs:package` compiles the hyper source gem offline from a
 locked crate cache fetched in the same run, so the job installs libclang and a
-C compiler first and `hyper:tools` installs the pinned Rust. Generated positive, exact per-file negative and nominal/bridge
+C compiler first and `hyper:toolchain` (through `hyper:tools`) installs the pinned Rust. Generated positive, exact per-file negative and nominal/bridge
 checks remain.
 Installed checks use normal RBS discovery in a fresh external GEM_HOME, validate
 each optional dependency closure and both composition orders, and exercise API-only

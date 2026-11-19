@@ -10,7 +10,8 @@ RSpec.describe ConnectRPC::Hyper::Transport do
     expect(hyper(http2: false).grpc_capabilities).to eq([])
   end
 
-  it "starts no thread or socket at construction, even with TLS options; the first call starts the runtime", :linux_only do
+  it "starts no thread or socket at construction, even with TLS options; the first call starts the runtime",
+     :linux_only do
     options = tls_options(mtls: true)
     output, status = ruby_child(<<~RUBY)
       threads = -> { Dir.children("/proc/self/task").size }
@@ -51,6 +52,30 @@ RSpec.describe ConnectRPC::Hyper::Transport do
   it "accepts nil idle and connect timeouts and a Keepalive" do
     expect { hyper(idle_timeout: nil, connect_timeout: nil, keepalive: ConnectRPC::Keepalive.new(time: 5)) }
       .not_to raise_error
+  end
+
+  # Ruby accepts any finite positive number; native code saturates each
+  # duration (about 115 days) instead of panicking, which used to abort the
+  # process at construction or leave close without teardown. A child process
+  # contains such an abort.
+  it "constructs, calls and closes normally with huge durations in every option" do
+    output, status = ruby_child(<<~RUBY)
+      results = [1e19, 1e20, Float::MAX, 10**400].flat_map do |value|
+        {
+          idle_timeout: { idle_timeout: value },
+          connect_timeout: { connect_timeout: value },
+          keepalive_time: { keepalive: ConnectRPC::Keepalive.new(time: value) },
+          keepalive_timeout: { keepalive: ConnectRPC::Keepalive.new(time: 60, timeout: value, permit_without_calls: true) }
+        }.map do |name, options|
+          transport = ConnectRPC::Hyper::Transport.new(**options)
+          reply = client(#{peer['grpc_h2c'].dump}, transport).unary(MSG.new(value: name.to_s), timeout: 5).message.value
+          [reply == name.to_s, transport.close(grace: value)]
+        end
+      end
+      p results.tally
+    RUBY
+    expect(status).to be_success
+    expect(output.lines.last.chomp).to eq({ [true, true] => 16 }.inspect)
   end
 
   it "requires a block for streams and validates close grace" do

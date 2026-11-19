@@ -205,12 +205,19 @@ RSpec.describe "Interrupts" do
         from = peer.mark
         tag = "spurious-#{name.gsub(/\W/, '')}-#{rand(1 << 30)}"
         outcome = Queue.new
+        # Native waits per message on the writer thread: a write that the wake
+        # reached re-enters its wait (two or more); an unwoken one waits once.
+        waits = []
         writer_thread = Thread.new do
           Thread.current.report_on_exception = false
           client(peer["grpc_h2c"], transport: hyper).client_stream(metadata: { "x-mode" => "gate:#{tag}" },
                                                                    timeout: 30) do |writer|
             Thread.handle_interrupt(Object => :never) do
-              40.times { |index| writer.send_message(MSG.new(value: index.to_s, payload: "x".b * 65_536)) }
+              40.times do |index|
+                before = native.wait_count
+                writer.send_message(MSG.new(value: index.to_s, payload: "x".b * 65_536))
+                waits << (native.wait_count - before)
+              end
             end
           end
           outcome << :completed
@@ -224,6 +231,7 @@ RSpec.describe "Interrupts" do
         wait_parked(writer_thread, "Exchange#write")
         peer.command("release #{tag}")
         result = outcome.pop(timeout: 20)
+        expect(waits.max).to be >= 2
         peer.wait_event(/grpc cs-(eof|error)/, from: from)
         received = peer.since(from).grep(/grpc cs-recv \d+ 65536/).map { |event| event.split[2] }
         if name == "Thread#wakeup"

@@ -2,11 +2,18 @@
 //!
 //! Pooled HTTP/2: one admitting connection per origin. A connection whose
 //! dispatcher ended (GOAWAY, error, close) stops admitting and drains its
-//! streams on its own while the next caller dials a new one; concurrent first
-//! callers share one dial. Idle connections close after `idle_timeout`; the
-//! reaper claims the exact checkout generation it observed idle.
-//! Pooled HTTP/1.1: at most two idle keep-alive connections per origin; only
-//! a connection whose request and response both completed cleanly returns.
+//! streams on its own while the next caller dials a new one. Concurrent
+//! callers share one dial attempt and its outcome, success or failure, as
+//! grpc-go fails every waiter of one attempt together. Idle connections close
+//! after `idle_timeout`; the reaper claims the exact checkout generation it
+//! observed idle.
+//! Pooled HTTP/1.1: connections dial in parallel, as Go net/http dials them,
+//! because one HTTP/1.1 connection serves one call at a time. At most two
+//! idle keep-alive connections per origin; only a connection whose request
+//! and response both completed cleanly returns, and each idle connection has
+//! one idle timer, cancelled when a call takes it.
+//! Closing: an admitted call that is dialing still proceeds within the grace,
+//! but a connection dialed after admission closed is never pooled.
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, Weak};
@@ -56,14 +63,97 @@ pub struct DriverCore {
 
 #[derive(Default)]
 pub struct OriginEntry {
-    dial: tokio::sync::Mutex<()>,
     state: Mutex<OriginState>,
 }
 
 #[derive(Default)]
 struct OriginState {
     h2: Option<Arc<H2Conn>>,
+    /// The shared dial in progress, while it has a leader.
+    dialing: Option<Arc<Attempt>>,
     idle_h1: Vec<IdleH1>,
+}
+
+/// One dial shared by every caller that found no usable connection while it
+/// ran. Its leader dials in its own call and publishes the outcome.
+#[derive(Default)]
+struct Attempt {
+    outcome: Mutex<Option<Outcome>>,
+    done: Signal,
+}
+
+#[derive(Clone)]
+enum Outcome {
+    /// The pool has a new HTTP/2 connection: check it out.
+    Pooled,
+    /// TLS negotiated HTTP/1.1, whose connections cannot be shared: each
+    /// waiter dials its own, in parallel.
+    Http1,
+    /// The dial failed: every waiter of this attempt fails the same way.
+    Failed(Failure),
+    /// The leader's call ended before its dial did (cancelled, interrupted or
+    /// past its deadline): no outcome exists, so a waiter dials again.
+    Abandoned,
+}
+
+impl Attempt {
+    async fn wait(&self) -> Outcome {
+        self.done.wait().await;
+        self.outcome
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+            .unwrap_or(Outcome::Abandoned)
+    }
+}
+
+/// The caller running an attempt's dial. Publishes `Abandoned` if dropped
+/// before it published an outcome.
+struct Leader {
+    entry: Arc<OriginEntry>,
+    attempt: Arc<Attempt>,
+    published: bool,
+}
+
+impl Leader {
+    fn publish(mut self, outcome: Outcome) {
+        self.finish(outcome);
+    }
+
+    /// Ends the attempt: later callers start a new one (or find the pooled
+    /// connection, which is inserted before this runs).
+    fn finish(&mut self, outcome: Outcome) {
+        if std::mem::replace(&mut self.published, true) {
+            return;
+        }
+        {
+            let mut state = self.entry.state.lock().unwrap_or_else(|e| e.into_inner());
+            if state
+                .dialing
+                .as_ref()
+                .is_some_and(|current| Arc::ptr_eq(current, &self.attempt))
+            {
+                state.dialing = None;
+            }
+        }
+        *self
+            .attempt
+            .outcome
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = Some(outcome);
+        self.attempt.done.fire();
+    }
+}
+
+impl Drop for Leader {
+    fn drop(&mut self) {
+        self.finish(Outcome::Abandoned);
+    }
+}
+
+enum Role {
+    Lead(Leader),
+    Wait(Arc<Attempt>),
 }
 
 struct H2Conn {
@@ -81,8 +171,20 @@ struct ConnShared {
 }
 
 struct IdleH1 {
-    id: u64,
+    /// Unique per park, so a timer only ever claims the park it started for.
+    park: u64,
     conn: H1Conn,
+    _timer: Option<IdleTimer>,
+}
+
+/// An idle connection's timer task, aborted when the connection leaves the
+/// idle list (checkout, close or expiry).
+struct IdleTimer(AbortHandle);
+
+impl Drop for IdleTimer {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
 }
 
 pub struct H1Conn {
@@ -370,13 +472,18 @@ impl DriverCore {
     }
 
     async fn dial(self: &Arc<Self>, origin: &Origin) -> Result<Connected, Failure> {
+        // Each address attempt gets a share of what is left of this budget.
+        let budget = self
+            .config
+            .connect_timeout
+            .map(|limit| tokio::time::Instant::now() + limit);
         let work = async {
             let tls = if origin.https {
                 Some(self.tls_config(self.config.settings.http2).await?)
             } else {
                 None
             };
-            conn::connect(&self.config.settings, tls, origin, &self.tracker).await
+            conn::connect(&self.config.settings, tls, origin, &self.tracker, budget).await
         };
         let connected = match self.config.connect_timeout {
             Some(limit) => tokio::time::timeout(limit, work)
@@ -393,7 +500,9 @@ impl DriverCore {
     }
 
     /// A connection for one call. `exclude` names a connection that just
-    /// refused or handed back a request: a retry never reuses it.
+    /// refused or handed back a request: a retry never reuses it. A call
+    /// admitted before close keeps dialing; only new attempts and waiters
+    /// behind another caller's dial fail with the closed phrase.
     pub async fn acquire(
         self: &Arc<Self>,
         origin: &Origin,
@@ -408,25 +517,74 @@ impl DriverCore {
             return self.fresh_lease(connected, None, require_h2);
         }
         let entry = self.entry(origin);
-        if let Some(lease) = self.checkout_ready(&entry, require_h2, exclude).await? {
-            return Ok(lease);
+        // HTTP/1.1 dial results cannot be shared; neither can a dial after a
+        // shared one negotiated HTTP/1.1.
+        let mut share = self.config.settings.http2;
+        loop {
+            if let Some(lease) = self.checkout_ready(&entry, require_h2, exclude).await? {
+                return Ok(lease);
+            }
+            if !share {
+                let connected = self.dial(origin).await?;
+                return self.fresh_lease(connected, Some(&entry), require_h2);
+            }
+            let attempt = match self.join(&entry) {
+                Role::Lead(leader) => return self.lead(origin, leader, require_h2).await,
+                Role::Wait(attempt) => attempt,
+            };
+            let outcome = tokio::select! {
+                outcome = attempt.wait() => outcome,
+                _ = self.closed.wait() => return Err(Failure::admission()),
+            };
+            if self.is_closing() {
+                return Err(Failure::admission());
+            }
+            match outcome {
+                Outcome::Pooled | Outcome::Abandoned => {}
+                Outcome::Http1 => share = false,
+                Outcome::Failed(failure) => return Err(failure),
+            }
         }
-        // Concurrent first callers wait here for one dial, then share it.
-        let _dialing = tokio::select! {
-            guard = entry.dial.lock() => guard,
-            _ = self.closed.wait() => return Err(Failure::admission()),
-        };
-        if self.is_closing() {
-            return Err(Failure::admission());
+    }
+
+    /// Joins the origin's dial in progress, or starts one and leads it.
+    fn join(&self, entry: &Arc<OriginEntry>) -> Role {
+        let mut state = entry.state.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(attempt) = &state.dialing {
+            return Role::Wait(attempt.clone());
         }
-        if let Some(lease) = self.checkout_ready(&entry, require_h2, exclude).await? {
-            return Ok(lease);
+        let attempt = Arc::new(Attempt::default());
+        state.dialing = Some(attempt.clone());
+        Role::Lead(Leader {
+            entry: entry.clone(),
+            attempt,
+            published: false,
+        })
+    }
+
+    /// Dials for the leader's own call and publishes the outcome to the
+    /// attempt's waiters. A dropped leader publishes `Abandoned` instead.
+    async fn lead(
+        self: &Arc<Self>,
+        origin: &Origin,
+        leader: Leader,
+        require_h2: bool,
+    ) -> Result<Lease, Failure> {
+        match self.dial(origin).await {
+            Ok(connected) => {
+                let outcome = match connected.handshake {
+                    Handshake::H2 { .. } => Outcome::Pooled,
+                    Handshake::H1 { .. } => Outcome::Http1,
+                };
+                let lease = self.fresh_lease(connected, Some(&leader.entry), require_h2);
+                leader.publish(outcome);
+                lease
+            }
+            Err(failure) => {
+                leader.publish(Outcome::Failed(failure.clone()));
+                Err(failure)
+            }
         }
-        let connected = self.dial(origin).await?;
-        if self.is_closing() {
-            return Err(Failure::admission());
-        }
-        self.fresh_lease(connected, Some(&entry), require_h2)
     }
 
     /// A checked-out connection ready for a request. A parked HTTP/1.1
@@ -481,6 +639,7 @@ impl DriverCore {
             // Stops admitting; its in-flight streams drain on their own.
             state.h2 = None;
         }
+        // Taking a connection out of the idle list drops its timer.
         while let Some(idle) = state.idle_h1.pop() {
             if idle.conn.sender.is_closed() {
                 continue;
@@ -528,7 +687,21 @@ impl DriverCore {
                     shared: shared.clone(),
                     local_port,
                 });
-                entry.state.lock().unwrap_or_else(|e| e.into_inner()).h2 = Some(conn);
+                {
+                    let mut state = entry.state.lock().unwrap_or_else(|e| e.into_inner());
+                    // Checked under the lock begin_close clears the pool with:
+                    // a connection dialed for a call admitted before close
+                    // serves only that call, then closes with it.
+                    if self.is_closing() {
+                        return Ok(Lease::H2 {
+                            sender,
+                            local_port,
+                            id,
+                            _active: None,
+                        });
+                    }
+                    state.h2 = Some(conn);
+                }
                 if let Some(timeout) = self.config.idle_timeout {
                     self.tracker.spawn(reap(
                         Arc::downgrade(entry),
@@ -582,28 +755,34 @@ impl DriverCore {
 
     /// Parks a clean HTTP/1.1 connection at once; the next checkout waits for
     /// hyper to report it ready before reusing it. Beyond the cap, dropping
-    /// the sender closes it gracefully.
+    /// the sender closes it gracefully. Each park starts one idle timer,
+    /// which the checkout that takes the connection aborts, so the
+    /// connection closes only after a full `idle_timeout` of idleness.
     fn park_h1(self: &Arc<Self>, entry: Arc<OriginEntry>, conn: H1Conn) {
-        let id = conn.id;
-        {
-            let mut state = entry.state.lock().unwrap_or_else(|e| e.into_inner());
-            if self.is_closing() || state.idle_h1.len() >= MAX_IDLE_H1 {
-                return;
-            }
-            state.idle_h1.push(IdleH1 { id, conn });
-        }
-        let Some(timeout) = self.config.idle_timeout else {
+        let park = self.next_id();
+        let mut state = entry.state.lock().unwrap_or_else(|e| e.into_inner());
+        if self.is_closing() || state.idle_h1.len() >= MAX_IDLE_H1 {
             return;
-        };
-        let closed = self.closed.clone();
-        self.tracker.spawn(async move {
-            tokio::select! {
-                _ = tokio::time::sleep(timeout) => {}
-                _ = closed.wait() => {}
-            }
-            // Claims this exact idle connection, if no call took it meanwhile.
-            let mut state = entry.state.lock().unwrap_or_else(|e| e.into_inner());
-            state.idle_h1.retain(|idle| idle.id != id);
+        }
+        let timer = self.config.idle_timeout.map(|timeout| {
+            let closed = self.closed.clone();
+            let entry = Arc::downgrade(&entry);
+            IdleTimer(self.tracker.spawn(async move {
+                tokio::select! {
+                    _ = tokio::time::sleep(timeout) => {}
+                    _ = closed.wait() => {}
+                }
+                // Claims this exact park; a connection checked out and parked
+                // again has a new park id and its own timer.
+                let Some(entry) = entry.upgrade() else { return };
+                let mut state = entry.state.lock().unwrap_or_else(|e| e.into_inner());
+                state.idle_h1.retain(|idle| idle.park != park);
+            }))
+        });
+        state.idle_h1.push(IdleH1 {
+            park,
+            conn,
+            _timer: timer,
         });
     }
 

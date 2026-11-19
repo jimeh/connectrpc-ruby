@@ -294,7 +294,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      # The hyper leaf compiles its extension (pinned Rust from hyper:tools) and builds the Go peer.
+      # The hyper leaf compiles its extension (pinned Rust from hyper:toolchain) and builds the Go peer.
       - name: Install libclang and a C compiler
         if: matrix.leaf == 'hyper'
         run: sudo apt-get update && sudo apt-get install --yes --no-install-recommends libclang-dev clang
@@ -559,7 +559,7 @@ jobs:
           install_args: aqua:protocolbuffers/protobuf/protoc@36.2 aqua:bufbuild/buf@1.75.0
           cache: true
           cache_key_prefix: connectrpc-ci-tools-v1
-      # rbs:package compiles the hyper source gem offline (pinned Rust from hyper:tools).
+      # rbs:package compiles the hyper source gem offline (pinned Rust from hyper:toolchain).
       - name: Install libclang and a C compiler
         run: sudo apt-get update && sudo apt-get install --yes --no-install-recommends libclang-dev clang
       - name: Identify RBS native cache platform
@@ -950,7 +950,7 @@ jobs:
           check-latest: false
           cache: true
           cache-dependency-path: gems/connectrpc-hyper/interop/go.sum
-      # hyper:tools installs the pinned Rust 1.98.0, cargo-deny and cargo-audit from mise.lock.
+      # hyper:toolchain (a hyper:tools dependency) installs the pinned Rust 1.98.0, cargo-deny and cargo-audit from mise.lock.
       - uses: jdx/mise-action@82a612c5ab8bcda7cc5db6b7e81a8e7584c3dc6e # v5.2.3
         with:
           version: "2026.10.19"
