@@ -612,6 +612,7 @@ fn init(ruby: &Ruby) -> Result<(), Error> {
     let hyper = connectrpc.define_module("Hyper")?;
     let native = hyper.define_module("Native")?;
     gvl::init_flags(ruby)?;
+    gvl::probe_start();
     native.define_singleton_method("wait_count", function!(wait_count, 0))?;
     native.define_singleton_method("operation_count", function!(operation_count, 0))?;
     native.define_singleton_method("active_waits", function!(active_waits, 0))?;
