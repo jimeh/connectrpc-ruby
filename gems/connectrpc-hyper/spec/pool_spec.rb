@@ -28,19 +28,22 @@ RSpec.describe "Connection pooling" do
   # The pool dial parks at connect:handshaken while two callers wait for it,
   # then again between pooling its connection and publishing its outcome; a
   # caller arriving then uses the pooled connection at once, and one after
-  # publication finds it pooled. Every caller shares the one accept.
+  # publication finds it pooled. Every caller shares the one accept. A caller
+  # parked in a native wait may not have claimed yet, so the spec waits for
+  # both to join the dial.
   { "Driver#unary" => :connect, "Exchange#write" => :grpc }.each do |path, protocol|
     it "shares one accept among #{path} callers arriving before, during and after the dial pools its connection" do
       from = peer.mark
       transport = hyper
       native_driver = driver(transport)
+      native_driver.hold("dial:joined", 0)
       native_driver.hold("connect:handshaken", 10)
       native_driver.hold("dial:pooled", 10)
       peer_client = client(peer["#{protocol}_h2c"], transport: transport, protocol: protocol)
       call = ->(value) { Thread.new { peer_client.unary(MSG.new(value: value), timeout: 10).message.value } }
       before = %w[b0 b1].map { |value| call.call(value) }
       wait_until("the dial's handshake") { native_driver.reached("connect:handshaken") == 1 }
-      before.each { |thread| wait_parked(thread, path) }
+      wait_until("both callers joined the dial") { native_driver.reached("dial:joined") == 2 }
       native_driver.release("connect:handshaken")
       wait_until("the dial pooled its connection") { native_driver.reached("dial:pooled") == 1 }
       during = call.call("during")
@@ -51,6 +54,7 @@ RSpec.describe "Connection pooling" do
       expect(call.call("after").value).to eq("after")
       expect(accepts(protocol, from)).to eq(1)
     ensure
+      native_driver&.release("dial:joined")
       native_driver&.release("connect:handshaken")
       native_driver&.release("dial:pooled")
     end
@@ -71,13 +75,16 @@ RSpec.describe "Connection pooling" do
     gates = Array.new(3) { Queue.new }
     with_routed_tunnels(->(index) { index.zero? ? h1_port : h2_port }, gates) do |url, heads, ended|
       transport = hyper(proxy: url, **tls_options)
+      native_driver = driver(transport)
+      native_driver.hold("dial:joined", 0)
       peer_client = client("https://127.0.0.1:#{h2_port}", transport: transport, protocol: :connect)
       waiters = Array.new(3) do |index|
         thread = Thread.new { peer_client.unary(MSG.new(value: "gate:#{tag}:w#{index}"), timeout: 20).message.value }
         expect(heads.pop(timeout: 10)).to start_with("CONNECT ") if index.zero?
-        wait_parked(thread, "Driver#unary")
+        wait_until("waiter #{index} joined the dial") { native_driver.reached("dial:joined") == index + 1 }
         thread
       end
+      native_driver.release("dial:joined")
       expect(heads.size).to eq(0)
       gates[0] << true
       2.times { expect(heads.pop(timeout: 10)).to start_with("CONNECT ") }
@@ -179,18 +186,28 @@ RSpec.describe "Connection pooling" do
   # One pool dial for every waiter: the full-backlog listener drops SYNs, so
   # each attempt runs until connect_timeout.
   describe "concurrent callers while a dial fails", :linux_only do
-    def dial_storm(transport, port, callers: 4, timeouts: Array.new(callers, 10))
+    # Each caller joins the pool dial before the next starts; HTTP/1.1
+    # callers share no dial, so parking in the native wait is enough there.
+    def dial_storm(transport, port, http2: true, callers: 4, timeouts: Array.new(callers, 10))
+      native_driver = driver(transport)
+      native_driver.hold("dial:joined", 0) if http2
       started = monotonic
-      threads = timeouts.map do |timeout|
+      threads = timeouts.each_with_index.map do |timeout, index|
         thread = Thread.new do
           client("http://127.0.0.1:#{port}", transport: transport, protocol: :connect).unary(MSG.new, timeout: timeout)
         rescue ConnectRPC::Error => e
           [e.message, e.cause&.kind, monotonic - started]
         end
-        wait_parked(thread, "Driver#unary")
+        if http2
+          wait_until("caller #{index} joined the pool dial") { native_driver.reached("dial:joined") == index + 1 }
+        else
+          wait_parked(thread, "Driver#unary")
+        end
         thread
       end
       [threads, started]
+    ensure
+      native_driver&.release("dial:joined")
     end
 
     { true => "shares one HTTP/2 dial and its failure, and the next call dials again",
@@ -199,7 +216,7 @@ RSpec.describe "Connection pooling" do
         port, cleanup = full_backlog
         baseline = syn_sent(port)
         transport = hyper(http2: http2, connect_timeout: 0.5)
-        threads, = dial_storm(transport, port)
+        threads, = dial_storm(transport, port, http2: http2)
         expected = http2 ? 1 : 4
         wait_until("#{expected} connect attempts") { syn_sent(port) == baseline + expected }
         outcomes = threads.map(&:value)
@@ -302,17 +319,19 @@ RSpec.describe "Connection pooling" do
     port = URI(peer["connect_tls_h1"]).port
     with_gated_tunnels(port, gate) do |url, heads|
       transport = hyper(proxy: url, **tls_options)
+      native_driver = driver(transport)
+      native_driver.hold("dial:joined", 0)
       peer_client = client("https://127.0.0.1:#{port}", transport: transport, protocol: :connect)
       calls = Array.new(4) do |index|
         thread = Thread.new { peer_client.unary(MSG.new(value: "gate:#{tag}:#{index}"), timeout: 20).message.value }
         heads.pop(timeout: 10) if index.zero?
-        wait_parked(thread, "Driver#unary")
         thread
       end
       streaming = Thread.new do
         error_of { peer_client.server_stream(MSG.new(value: "x"), timeout: 20) { |reader| values(reader) } }
       end
-      wait_parked(streaming, "Exchange#")
+      wait_until("five waiters joined the held dial") { native_driver.reached("dial:joined") == 5 }
+      native_driver.release("dial:joined")
       # The waiters joined the held dial instead of dialing.
       expect(heads.size).to eq(0)
       gate << true

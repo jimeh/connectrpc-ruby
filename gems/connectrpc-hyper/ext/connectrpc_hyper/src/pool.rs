@@ -583,6 +583,10 @@ impl DriverCore {
                             dial.clone(),
                         ));
                     }
+                    // Spec hold point: a spec armed with a zero bound counts
+                    // the callers that will get this dial's outcome. A thread
+                    // parked in a native wait may not have claimed yet.
+                    self.holds.reach("dial:joined").await;
                     dial
                 }
             };

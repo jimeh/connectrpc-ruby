@@ -75,6 +75,8 @@ module HyperHelpers # rubocop:disable Metrics/ModuleLength
   end
 
   # A thread parked in a native wait (GVL released) under the given frame.
+  # The wait may not have polled its operation yet; a spec that needs a step
+  # done (such as joining the pool dial) waits for its hold point instead.
   def wait_parked(thread, frame, timeout: 10)
     wait_until("#{thread.inspect} parked in #{frame}: #{thread.backtrace&.first(3).inspect}", timeout: timeout) do
       trace = thread.backtrace || []
