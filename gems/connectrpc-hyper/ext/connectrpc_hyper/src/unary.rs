@@ -2,7 +2,6 @@
 //! body under the response limit as one operation, so a call releases the
 //! GVL once.
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
 
 use bytes::{Bytes, BytesMut};
@@ -29,15 +28,12 @@ fn content_length(headers: &http::HeaderMap) -> Option<u64> {
 /// Retries once, on a fresh connection and with a refreshed wire timeout: a
 /// request hyper hands back unsent, or a stream the server refused with
 /// REFUSED_STREAM before response headers. Nothing else is replayed.
-/// `dispatched` is true while a request is queued: neither of those reached
-/// a handler, so a pending retry is not dispatched.
 pub async fn unary(
     core: Arc<DriverCore>,
     spec: RequestSpec,
     payload: Option<Bytes>,
     limit: usize,
     deadline: Option<Instant>,
-    dispatched: &AtomicBool,
 ) -> Result<Unary, Failure> {
     let mut exclude = None;
     loop {
@@ -47,7 +43,6 @@ pub async fn unary(
             None => CallBody::Empty,
         };
         let request = spec.build(body, deadline, lease.is_h2())?;
-        dispatched.store(true, Ordering::SeqCst);
         let response = match send(&mut lease, request).await {
             Ok(response) => response,
             Err(mut error) => {
@@ -55,7 +50,6 @@ pub async fn unary(
                 let replayable = unsent || Failure::refused_stream(error.error());
                 if replayable && exclude.is_none() {
                     exclude = Some(lease.id());
-                    dispatched.store(false, Ordering::SeqCst);
                     continue;
                 }
                 return Err(Failure::from_hyper(error.error()));

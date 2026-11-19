@@ -226,9 +226,13 @@ sibling task, until it finishes. On Ruby 4.0 with async's opt-in worker pool
 (`ASYNC_SCHEDULER_WORKER_POOL=true` or
 `Async::Scheduler.new(worker_pool: true)`), the wait moves to a worker thread:
 sibling tasks keep running, and `Task#stop`, cancellation, deadlines,
-`Thread#raise` and `Thread#kill` still land. Ruby 3.4 has no worker pool, so
-calls there always block the reactor. Use connectrpc-async's transports for
-calls from inside a reactor.
+`Thread#raise` and `Thread#kill` still land. Waits offer a fiber scheduler's
+`blocking_operation_wait` hook only on Ruby 4.0 and later, whose
+blocking-operation API lets io-event finish a running wait before it raises a
+cancellation. Ruby 3.4 hands the hook a plain proc, so a cancelled scheduler
+could unwind the call while its wait still runs on a worker; there calls always
+block the reactor, whatever the scheduler. Use connectrpc-async's transports
+for calls from inside a reactor.
 
 ## Fork
 
@@ -272,9 +276,10 @@ origin"`. rustls is stricter than OpenSSL:
 over HTTP/1.1, cleartext or TLS. With `http2: true`, every streaming call needs
 h2: when TLS negotiates `http/1.1`, `open_stream` and `open_grpc_stream` fail
 `unavailable` (`HTTP transport failed: ALPN negotiation failed`) before any
-request is sent, so the server sees no application request. Connect unary calls
-proceed over HTTP/1.1. Cleartext `http://` with HTTP/2 uses prior knowledge
-(h2c).
+request is sent, so the server sees no application request. While the origin's
+pool holds an idle HTTP/1.1 connection from such a negotiation, a streaming call
+fails with the same phrase without dialing. Connect unary calls proceed over
+HTTP/1.1. Cleartext `http://` with HTTP/2 uses prior knowledge (h2c).
 
 ## Proxies
 
@@ -370,7 +375,7 @@ failure as `cause`:
 | `HTTP transport failed: connection closed` | The connection closed, retired or received GOAWAY |
 | `HTTP transport failed: malformed response` | Protocol error |
 | `HTTP transport failed: stream reset` | A Connect stream reset by the server |
-| `HTTP transport admission is closed` | A call after `close`, or one forced teardown ended before it sent its request, with no `cause` |
+| `HTTP transport admission is closed` | A call after `close`, or one forced teardown ended after its own setup saw `close`, with no `cause` |
 
 A server `RST_STREAM` on a gRPC call maps as connectrpc-async does: codes 3
 and 11 to `resource_exhausted`, 7 to `unavailable`, 8 to `canceled`, 12 to
@@ -382,13 +387,15 @@ then aborts the rest and waits for every connection task. It returns true when
 everything drained and false after forced teardown; repeated and concurrent
 calls share the first outcome. Callers waiting for the shared HTTP/2 dial fail
 with `HTTP transport admission is closed`, and the dial ends. A call admitted
-before `close` that is dialing its own connection (per-call mode or HTTP/1.1)
-is in flight: it keeps dialing and runs within the grace, but its new
-connection is never pooled for other calls. Forced teardown fails a call that
-has not sent its request yet (still dialing, or waiting for a retry's
-connection) with `HTTP transport admission is closed`, since the server never
-saw it, and a call that sent its request with
-`HTTP transport failed: connection closed`. Teardown runs in the background
+before `close` that is dialing its own connection (per-call mode, HTTP/1.1, a
+dial after an HTTP/1.1 outcome, or a retry's own dial) is in flight: it keeps
+dialing and runs within the grace, but its new connection is never pooled for
+other calls. Lazy exchanges that have not dispatched and pending retries fail
+with `HTTP transport admission is closed`. Forced teardown fails each call it
+ends `unavailable` with `HTTP transport admission is closed` if the call's own
+setup saw `close` first, and otherwise with
+`HTTP transport failed: connection closed`. Which of the two a call gets is
+not guaranteed, and it never gets another phrase. Teardown runs in the background
 once started, so it completes even if the closing thread is interrupted or a
 fiber scheduler stops the closing task (async's `Task#stop`). Every closer, a
 concurrent one included, keeps waiting for the outcome, off the reactor thread

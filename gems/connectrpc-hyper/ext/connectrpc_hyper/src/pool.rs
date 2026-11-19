@@ -943,13 +943,13 @@ impl DriverCore {
     }
 
     /// Ends every call's waits and every owned task, then waits for the
-    /// tasks. Shutdown fires before any task is aborted, so a call woken by
-    /// an abort (a dropped response channel or pool dial) already sees it and
-    /// reports `Failure::forced`. Sealing before the wait means a call mid-poll
-    /// registers no task later.
+    /// tasks. Sealing first means a call mid-poll registers no task later.
+    /// The order does not choose a call's phrase: a call already mid-poll
+    /// sees a task's abort before `shutdown` in either order, so each site
+    /// that observes one maps it to the shutdown or closed phrase itself.
     pub async fn force(&self) {
-        self.shutdown.fire();
         self.tracker.seal();
+        self.shutdown.fire();
         // Spec hold point: a spec armed with a zero bound observes the seal.
         self.holds.reach("force:sealed").await;
         self.tracker.wait_empty().await;

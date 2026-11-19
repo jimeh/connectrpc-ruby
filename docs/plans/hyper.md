@@ -66,6 +66,11 @@ stage and reset its stream.
   stack data stays valid, but the re-raise unwinds through `rb_nogvl`: it must
   run under `rb_protect`. io-event builds the worker pool only with
   `rb_fiber_scheduler_blocking_operation_extract`, which Ruby 3.4 lacks.
+  Ruby 3.4.12's `rb_nogvl` still calls a scheduler's `blocking_operation_wait`
+  for an offload-safe body, handing it a plain proc
+  (`rb_fiber_scheduler_blocking_operation_wait` in scheduler.c), and nothing
+  there waits for the body before a cancellation unwinds the caller, so the
+  flag is passed only on Ruby 4.0 and later (D4, correction round 5).
 - PR #159 (merged as `ccffd92`) added NetHTTP `ca_file:`
   (appended to the default store), `certificate_chain:` (Array of PEM strings,
   leaf first), `private_key:` (PEM string), TLS 1.2 minimum, no session
@@ -96,14 +101,19 @@ stage and reset its stream.
   inherited sockets stay open until the child exits. No current-thread mode.
 - D4 Waits: `rb_nogvl(RB_NOGVL_INTR_FAIL | RB_NOGVL_OFFLOAD_SAFE)` under
   `rb_protect`, a UBF that only fires a signal, and a protected
-  `rb_thread_check_ints` afterwards. Rust never calls Ruby from a worker or
-  inside the nogvl body; data crossing the offload boundary is `Send`. A wait
-  woken without a pending interrupt resumes the same operation state and never
-  repeats a side effect (a `write` enqueues its bytes once, then waits for
-  hyper to pull them). The read and write directions of one stream progress
-  independently (core allows one reader and one writer concurrently, which
-  offload makes real), and `abort` signals and wins over busy operations
-  instead of skipping when a lock is held.
+  `rb_thread_check_ints` afterwards. `RB_NOGVL_OFFLOAD_SAFE` is passed only
+  when the running Ruby is 4.0 or later, read once when the extension loads:
+  4.0's blocking-operation API lets io-event's worker pool finish a running
+  body before it re-raises a cancellation, while on 3.4 a scheduler's hook
+  could unwind the waiting frame and leave the body's stack data dangling.
+  Rust never calls Ruby from a worker or inside the nogvl body; data crossing
+  the offload boundary is `Send`. A wait woken without a pending interrupt
+  resumes the same operation state and never repeats a side effect (a
+  `write` enqueues its bytes once, then waits for hyper to pull them). The
+  read and write directions of one stream progress independently (core allows
+  one reader and one writer concurrently, which offload makes real), and
+  `abort` signals and wins over busy operations instead of skipping when a
+  lock is held.
 - D5 Connections: `connections: :pooled` (default) keeps one *admitting* HTTP/2
   connection per origin per transport; a connection that received GOAWAY stops
   admitting, drains its existing streams and retires on its own while a new one
@@ -219,10 +229,12 @@ stage and reset its stream.
   completes however closers are interrupted; every closer, concurrent ones
   included, waits in native close for the published outcome with
   fiber-scheduler offload allowed throughout and raises a held exception
-  afterwards. Forced teardown fails a call that has not queued a request
-  (still in setup, waiting on a pool dial or on a retry's acquire) with the
-  admission phrase, since the server never saw it, and a call that queued one
-  with `HTTP transport failed: connection closed`.
+  afterwards. Forced teardown fails each call it ends `unavailable` with one
+  of two phrases: the admission phrase if the call's own setup saw closing
+  first, otherwise `HTTP transport failed: connection closed`. Which of the
+  two is not guaranteed, and no other phrase is possible; correction round 5
+  replaced round 4's choice by whether a request was queued, which picked the
+  wrong phrase once teardown landed during a streaming dispatch.
 - D14 Windows: cross-build `x64-mingw-ucrt` and run a non-gating Windows CI job
   (specs minus fork and the Linux DNS shim, plus a Go interop subset) against
   that artifact. If green, `docs/support.md` lists Windows x64 as a provisional,
@@ -412,12 +424,12 @@ cause, abort in a masked `ensure`. Rust owns connections, streams and waits.
 | Liveness and restart | Idle pooled connection answers server PINGs; reconnect after idle GOAWAY; GOAWAY with an active stream: the sibling finishes on the draining connection while a new call uses a new one; hard kill and restart on the same port; keepalive: withheld ACK retires the connection and fails in-flight calls `unavailable`, `permit_without_calls` on and off, behaviour with buffered DATA and with BDP pings |
 | Pool | Concurrent first callers share one connection; callers before, during and after the pool dial pools its connection share one accept; a pool dial outlives the call that started it and splits `connect_timeout` alone; a failed dial fails every waiter alike and is not cached; an `http/1.1` outcome serves each waiter on a free pooled or idle connection, the dialed one included, or else its own dial, and fails a streaming waiter; close fails pool-dial waiters and ends the dial; `per_call` opens one each; idle timeout closes an idle connection and the next call reconnects; idle eviction racing a checkout never fails the call; HTTP/1.1: two-idle cap, reuse, and an interrupted upload or incomplete response never returns its socket |
 | Retry | Unsent request on a closing connection succeeds once on a new connection; refused Connect unary retried once; a refusal from a pooled connection that still admits retries on a connection of its own while siblings and later calls keep the pooled one; no second retry; an ambiguous disconnect after the handler started is not replayed (the handler runs once) |
-| Fork | Subprocess with an in-flight stream in another thread, h2c and TLS: child calls work, parent stream intact, parent reuses its connection; fork while the runtime or root cache initialises; parent closes while a long-lived child stays alive (the peer sees the close, or the documented limitation); a transport closed before fork stays closed in the child |
+| Fork | Subprocess with an in-flight stream in another thread, h2c and TLS: child calls work, parent stream intact, parent reuses its connection; fork while the runtime or root cache initialises; parent closes while a long-lived child stays alive (the peer sees the close, or the documented limitation); a transport closed before fork stays closed in the child; a child that inherits a pending close, or never built its own driver, closes at once with `true` and then fails calls with the closed phrase |
 | TLS parity | ca_file appended to native roots; `SSL_CERT_FILE` override; chain/key validation errors name only the input, without a leaking cause; mTLS; name mismatch and IP SAN; provider-rejected identity (Ed448); TLS options on `http://` raise; rustls rejections pinned (CN-only, v1, single-label wildcard, CA as leaf, encrypted key) |
 | Errors | Fixed phrases for refused, DNS, TLS verify, closed, ALPN mismatch, deadline; server RST_STREAM with each mapped code |
-| Offload | Ruby 4.0 with async worker pool: sibling task progresses, stop/cancel/deadline/raise/kill land; simultaneous read and write on one bidi stream from two fibers, then abort or stop while both are parked; Ruby 3.4 and without the pool behave as a plain blocking call |
+| Offload | Ruby 4.0 with async worker pool: sibling task progresses, stop/cancel/deadline/raise/kill land; simultaneous read and write on one bidi stream from two fibers, then abort or stop while both are parked; a scheduler's `blocking_operation_wait` hook receives waits on 4.0 and never on 3.4; Ruby 3.4 and without the pool behave as a plain blocking call |
 | Spurious wake | A wake without a pending interrupt during a blocked `write` does not duplicate the message on the wire |
-| Close | `close(grace:)` drains in-flight calls (true), forced (false), later calls fail with the closed phrase; `close(grace: 0)` racing setup or a retry, with the closed phrase for calls that queued no request; repeated close shares the outcome, and a concurrent closer stopped by `Task#stop` raises only after it is published; a task aborted before its first poll is still counted until its socket closes; a `Task#stop` on the closer lets a sibling fiber's call drain before the stop is raised |
+| Close | `close(grace:)` drains in-flight calls (true), forced (false), later calls fail with the closed phrase; `close(grace: 0)` racing setup, a retry or a streaming dispatch (write first and head first), with one of the two forced-teardown phrases and never a bare `HTTP transport failed`; repeated close shares the outcome, and a concurrent closer stopped by `Task#stop` raises only after it is published; a task aborted before its first poll is still counted until its socket closes; a `Task#stop` on the closer lets a sibling fiber's call drain before the stop is raised |
 | Keepalive move | Core `Keepalive` specs (validation, equality, freezing); `ConnectRPC::Async::Keepalive.equal?(ConnectRPC::Keepalive)` from installed packages in both require orders; existing Async keepalive specs pass |
 | Fast path | Connect unary passes all unary specs and does one native wait (spec on an internal counter or a GVL-contention probe) |
 | Package | Source gem builds and installs in a clean GEM_HOME and runs a smoke call; exact manifest, MIT plus third-party notice, push host, MFA |
@@ -466,4 +478,10 @@ the validation, with a spec feeding the same inputs to both transports.
   sibling fiber's call drains after `Task#stop` lands on a closing task (Ruby
   4.0, with the pool): the sibling never ran within the grace, consistent with
   the stopped closer's re-entered wait running on the reactor thread, so it
-  is Linux-only too.
+  is Linux-only too. A reviewer's hypothesis, untested: the failing cases take
+  the plain `rb_nogvl` path with `RB_NOGVL_INTR_FAIL`, and if `rb_nogvl` keeps
+  returning without running the body while `thread_check_ints` neither raises
+  nor clears the pending flag, the wait loop spins holding the GVL and
+  starves sibling fibers. Probe: count iterations where nothing ran
+  (`ran == 0`), or print `Native.wait_bodies` and `resumed_waits` when the
+  child times out.

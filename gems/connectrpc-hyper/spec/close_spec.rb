@@ -9,6 +9,10 @@ RSpec.describe "Transport#close" do
     error_of { client(origin, transport: transport).unary(MSG.new, timeout: 5) }
   end
 
+  # A call that forced teardown ends fails with the closed phrase if its own
+  # setup saw closing first, else the shutdown phrase; which is not fixed.
+  def forced_phrase = eq("HTTP transport admission is closed").or(eq("HTTP transport failed: connection closed"))
+
   # A CONNECT proxy that holds the tunnel, and with it the caller's dial,
   # until `gate` yields, then relays to the h2c peer. `arrived` receives the
   # CONNECT request.
@@ -67,13 +71,14 @@ RSpec.describe "Transport#close" do
   # then returns; the released call must not start a task it no longer owns.
   # Both dials are the call's own (per-call HTTP/2, pooled HTTP/1.1), so the
   # hold parks the caller's thread, never a runtime worker that close waits
-  # for. The HTTP/2 request is queued on the connection whose dispatcher the
-  # sealed tracker refused, so it fails with the shutdown phrase. The
-  # HTTP/1.1 request comes back unsent and its retry meets the closed
-  # transport.
-  { "HTTP/2" => [{ connections: :per_call }, "grpc_h2c", :grpc, "HTTP transport failed: connection closed"],
-    "HTTP/1.1" => [{ http2: false }, "connect_h2c", :connect, "HTTP transport admission is closed"] }
-    .each do |name, (options, origin, protocol, message)|
+  # for. Neither request reaches the peer: the sealed tracker refused the
+  # dispatcher, so hyper hands each request back unqueued. The gRPC call
+  # (HTTP/2, write first) also loses its response task to the sealed tracker
+  # and fails at its next wait; the Connect unary (HTTP/1.1) retries and meets
+  # the closed transport. Each fails with one of the two forced phrases.
+  { "HTTP/2" => [{ connections: :per_call }, "grpc_h2c", :grpc],
+    "HTTP/1.1" => [{ http2: false }, "connect_h2c", :connect] }
+    .each do |name, (options, origin, protocol)|
       it "starts no #{name} dispatcher task after a forced close returned" do
         transport = hyper(**options)
         native_driver = driver(transport)
@@ -87,9 +92,40 @@ RSpec.describe "Transport#close" do
         native_driver.release("connect:handshaken")
         error = dialing.value
         expect([native_driver.reached("dispatcher"), stats(transport)[2]]).to eq([0, 0])
-        expect([error.code, error.message]).to eq(["unavailable", message])
+        expect([error.code, error.message]).to match(["unavailable", forced_phrase])
       ensure
         native_driver&.release("dispatcher")
+      end
+    end
+
+  # Head first: the released call dispatches its request to the task that
+  # awaits the response, which the sealed tracker refuses. The response head
+  # then finds that task gone without a delivery: forced teardown, not an
+  # abort of the call, so never a bare "HTTP transport failed".
+  { "HTTP/2" => [{ connections: :per_call }, "grpc_h2c", true],
+    "HTTP/1.1" => [{ http2: false }, "connect_h2c", false] }
+    .each do |name, (options, origin, grpc)|
+      it "fails an #{name} exchange waiting for its response head with a forced phrase after a forced close" do
+        transport = hyper(**options)
+        native_driver = driver(transport)
+        native_driver.hold("connect:handshaken", 10)
+        content_type = grpc ? "application/grpc" : "application/connect+proto"
+        request = ConnectRPC::StreamRequest.new(url: URI("#{peer[origin]}/connectrpc.grpcinterop.v1.Peer/Bidi"),
+                                                http_method: "POST", headers: { "content-type" => [content_type] })
+        opening = Thread.new do
+          error_of do
+            open = grpc ? :open_grpc_stream : :open_stream
+            transport.public_send(open, request) { |exchange| exchange.response_head(timeout: 20) }
+          end
+        end
+        wait_until("the handshake") { native_driver.reached("connect:handshaken") == 1 }
+        expect(transport.close(grace: 0)).to be(false)
+        native_driver.release("connect:handshaken")
+        error = opening.value
+        expect([error.code, error.message]).to match(["unavailable", forced_phrase])
+        expect(stats(transport)[1..2]).to eq([0, 0])
+      ensure
+        native_driver&.release("connect:handshaken")
       end
     end
 
@@ -173,16 +209,15 @@ RSpec.describe "Transport#close" do
     native_driver.release("socket:drop")
     expect(closer.value).to be(false)
     expect(stats(transport)[1..2]).to eq([0, 0])
-    # It never queued a request, so it fails with the closed phrase even when
-    # forced teardown ends its wait before it sees close.
-    expect([dialing.value.code, dialing.value.message]).to eq(["unavailable", "HTTP transport admission is closed"])
+    # With grace 0 the waiter may see the forced teardown before it sees
+    # close, so it fails with either forced phrase.
+    expect([dialing.value.code, dialing.value.message]).to match(["unavailable", forced_phrase])
   ensure
     %w[connect:handshaken socket:drop force:sealed].each { |name| native_driver&.release(name) }
   end
 
-  # Forced teardown ends the call's own dial. No request was queued, so the
-  # server never saw it: it fails with the closed phrase.
-  it "closes during a per-call dial with grace 0 and fails the dialing call with the closed phrase", :linux_only do
+  # Forced teardown ends the call's own dial with a forced phrase.
+  it "closes during a per-call dial with grace 0 and fails the dialing call with a forced phrase", :linux_only do
     port, cleanup = full_backlog
     transport = hyper(connections: :per_call)
     dialing = Thread.new do
@@ -193,7 +228,7 @@ RSpec.describe "Transport#close" do
     wait_until("SYN_SENT") { syn_sent?(port) }
     wait_parked(dialing, "Native::")
     expect(transport.close(grace: 0)).to be(false)
-    expect(dialing.value).to eq(["unavailable", "HTTP transport admission is closed"])
+    expect(dialing.value).to match(["unavailable", forced_phrase])
     expect(stats(transport)[1..2]).to eq([0, 0])
   ensure
     cleanup&.call

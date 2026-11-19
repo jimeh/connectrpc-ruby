@@ -98,6 +98,29 @@ RSpec.describe "Inside an Async reactor" do
     expect(ticks).to(offload ? be >= 10 : be <= 1)
   end
 
+  # Ruby 3.4 gives a scheduler's hook a plain proc, and a cancelled scheduler
+  # could unwind the waiting frame while the body still runs, so waits offer
+  # the hook only on Ruby 4.0. The pool records each hand-off and runs it.
+  it "#{offload ? 'hands' : 'never hands'} a native wait to a scheduler's blocking_operation_wait hook",
+     **(offload ? {} : reactor_thread) do
+    output, status = reactor_child(<<~RUBY, pool: false)
+      handed = 0
+      pool = Object.new
+      pool.define_singleton_method(:call) do |work|
+        handed += 1
+        Thread.new { work.call }.join
+      end
+      pool.define_singleton_method(:close) { nil }
+      peer_client = client(#{peer['grpc_h2c'].dump}, ConnectRPC::Hyper::Transport.new)
+      Fiber.set_scheduler(Async::Scheduler.new(worker_pool: pool))
+      task = Async { peer_client.unary(MSG.new(value: "hook"), timeout: 5).message.value }
+      Fiber.set_scheduler(nil)
+      p [task.result, handed.positive?]
+    RUBY
+    expect(status).to be_success
+    expect(eval(output.lines.last)).to eq(["hook", offload]) # rubocop:disable Security/Eval
+  end
+
   it "blocks the reactor without the worker pool", **reactor_thread do
     output, status = reactor_child(<<~RUBY, pool: false)
       peer_client = client(#{peer['grpc_h2c'].dump}, ConnectRPC::Hyper::Transport.new)

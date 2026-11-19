@@ -5,19 +5,20 @@
 //! cancellation). The UBF only fires a signal; the wait returns, and pending
 //! interrupts are delivered by `rb_thread_check_ints` under `rb_protect`, so
 //! no longjmp crosses Rust frames. Rust never calls Ruby inside the body,
-//! which may run on a fiber scheduler's worker thread (RB_NOGVL_OFFLOAD_SAFE):
-//! everything the body touches is `Send`.
+//! which may run on a fiber scheduler's worker thread (RB_NOGVL_OFFLOAD_SAFE,
+//! on Ruby 4.0 and later; see `FLAGS`): everything the body touches is
+//! `Send`.
 use std::cell::Cell;
 use std::ffi::c_void;
 use std::future::Future;
 use std::panic::{AssertUnwindSafe, catch_unwind, resume_unwind};
 use std::pin::pin;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicUsize, Ordering};
 use std::task::{Context, Poll, Waker};
 use std::time::Instant;
 
-use magnus::{Error, Ruby};
+use magnus::{Error, Module, Ruby};
 use tokio::sync::Notify;
 
 use crate::failure::Failure;
@@ -69,6 +70,39 @@ pub fn wait_bodies() -> (usize, usize) {
         ENTERED.load(Ordering::SeqCst),
         RUNNING.load(Ordering::SeqCst),
     )
+}
+
+/// The `rb_nogvl` flags for every wait, set once by `init_flags`.
+///
+/// RB_NOGVL_INTR_FAIL: with an interrupt already pending, rb_nogvl returns
+/// NULL without running the body or raising.
+///
+/// RB_NOGVL_OFFLOAD_SAFE lets a fiber scheduler with a worker pool run the
+/// body on a worker, which `Data` and the pinned future on the waiting
+/// thread's stack must outlive. Ruby 4.0's blocking-operation API (extract,
+/// execute, cancel) lets io-event's worker pool finish a running body before
+/// it re-raises a cancellation. Ruby 3.4 hands the body to the scheduler's
+/// `blocking_operation_wait` as a plain proc (scheduler.c,
+/// `rb_fiber_scheduler_blocking_operation_wait`), so a scheduler cancelled
+/// while that body still runs could unwind the waiting frame under it. The
+/// flag is passed only on Ruby 4.0 and later.
+static FLAGS: AtomicI32 = AtomicI32::new(rb_sys::RB_NOGVL_INTR_FAIL as i32);
+
+/// Sets `FLAGS` from the running Ruby's version, not the headers the
+/// extension was built against.
+pub fn init_flags(ruby: &Ruby) -> Result<(), Error> {
+    let version: String = ruby.class_object().const_get("RUBY_VERSION")?;
+    let major: u32 = version
+        .split('.')
+        .next()
+        .and_then(|major| major.parse().ok())
+        .unwrap_or(0);
+    let mut flags = rb_sys::RB_NOGVL_INTR_FAIL;
+    if major >= 4 {
+        flags |= rb_sys::RB_NOGVL_OFFLOAD_SAFE;
+    }
+    FLAGS.store(flags as i32, Ordering::SeqCst);
+    Ok(())
 }
 
 struct Active;
@@ -161,18 +195,17 @@ where
     loop {
         let data_ptr = &mut data as *mut Data<F, R> as *mut c_void;
         let signal_ptr = Arc::as_ptr(interrupt) as *mut c_void;
-        // RB_NOGVL_INTR_FAIL: with an interrupt already pending, rb_nogvl
-        // returns NULL without running the body or raising. OFFLOAD_SAFE lets a
-        // fiber scheduler with a worker pool run the body on a worker; its
-        // cancellation re-raises through rb_nogvl after draining the body, so
-        // rb_protect keeps that raise from unwinding Rust frames.
+        // See FLAGS. An offloading scheduler's cancellation re-raises through
+        // rb_nogvl after draining the body, so rb_protect keeps that raise
+        // from unwinding Rust frames.
+        let flags = FLAGS.load(Ordering::SeqCst);
         let ran = magnus::rb_sys::protect(|| unsafe {
             rb_sys::rb_nogvl(
                 Some(call::<F, R>),
                 data_ptr,
                 Some(unblock),
                 signal_ptr,
-                (rb_sys::RB_NOGVL_INTR_FAIL | rb_sys::RB_NOGVL_OFFLOAD_SAFE) as i32,
+                flags,
             ) as rb_sys::VALUE
         })?;
         if ran != 0 {
@@ -198,9 +231,6 @@ pub struct Waits<'a> {
     pub abort: Option<&'a Arc<Signal>>,
     /// The driver's forced teardown.
     pub shutdown: &'a Arc<Signal>,
-    /// Whether the call has queued a request; chooses the phrase forced
-    /// teardown reports (`Failure::forced`).
-    pub dispatched: &'a AtomicBool,
     pub deadline: Option<Instant>,
 }
 
@@ -270,7 +300,7 @@ where
             Wake::Done(result) => result,
             Wake::Canceled => Err(Failure::new("canceled", "call canceled")),
             Wake::Aborted => Err(Failure::new("aborted", "exchange aborted")),
-            Wake::Shutdown => Err(Failure::forced(waits.dispatched.load(Ordering::SeqCst))),
+            Wake::Shutdown => Err(Failure::shutdown()),
             Wake::Timeout => Err(Failure::new("timeout", "wait timed out")),
         });
     }
@@ -281,7 +311,7 @@ fn settled(waits: &Waits<'_>) -> Option<Failure> {
         return Some(Failure::new("aborted", "exchange aborted"));
     }
     if waits.shutdown.fired() {
-        return Some(Failure::forced(waits.dispatched.load(Ordering::SeqCst)));
+        return Some(Failure::shutdown());
     }
     if waits.cancel.is_some_and(|cancel| cancel.fired()) {
         return Some(Failure::new("canceled", "call canceled"));
@@ -296,9 +326,10 @@ fn settled(waits: &Waits<'_>) -> Option<Failure> {
 /// runtime task publishes, such as a transport's teardown. A Ruby exception
 /// raised meanwhile (a thread interrupt or a fiber scheduler's cancellation,
 /// such as async's `Task#stop`) does not end the wait: the first one is held
-/// and returned once `signal` fired, for the caller to raise. Every entry,
-/// re-entry after a cancellation included, lets a fiber scheduler run the
-/// wait on a worker thread, so a waiter never blocks its reactor's siblings.
+/// and returned once `signal` fired, for the caller to raise. Where waits
+/// offload (`FLAGS`), every entry, re-entry after a cancellation included,
+/// lets a fiber scheduler run the wait on a worker thread, so a waiter never
+/// blocks its reactor's siblings.
 pub fn wait_signal(ruby: &Ruby, signal: &Arc<Signal>) -> Option<Error> {
     let handle = runtime::handle();
     let mut raised: Option<Error> = None;
@@ -322,7 +353,8 @@ pub fn wait_signal(ruby: &Ruby, signal: &Arc<Signal>) -> Option<Error> {
 
 /// Like `without_gvl`, but never raises: it returns the body's result, if
 /// the body ran, and any Ruby exception raised around it, for the caller to
-/// raise later. A fiber scheduler may run the body on a worker thread.
+/// raise later. A fiber scheduler may run the body on a worker thread where
+/// waits offload.
 fn without_gvl_deferred<F, R>(
     ruby: &Ruby,
     interrupt: &Arc<Signal>,
@@ -337,7 +369,7 @@ where
         func: Some(func),
         out: None,
     };
-    let flags = rb_sys::RB_NOGVL_INTR_FAIL | rb_sys::RB_NOGVL_OFFLOAD_SAFE;
+    let flags = FLAGS.load(Ordering::SeqCst);
     loop {
         let data_ptr = &mut data as *mut Data<F, R> as *mut c_void;
         let signal_ptr = Arc::as_ptr(interrupt) as *mut c_void;
@@ -347,7 +379,7 @@ where
                 data_ptr,
                 Some(unblock),
                 signal_ptr,
-                flags as i32,
+                flags,
             ) as rb_sys::VALUE
         });
         match ran {

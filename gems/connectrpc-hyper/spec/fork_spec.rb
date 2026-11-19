@@ -161,6 +161,87 @@ RSpec.describe "Fork", :fork do
     expect(output.lines.last.chomp).to eq('["200", 200, :canceled]')
   end
 
+  # The child closes the transport, then calls on it, and reports
+  # [close outcome, closed promptly, the call's message]. A child that does
+  # not report within 10 seconds is killed and reports :hung.
+  def child_close = <<~RUBY
+    def child_close(transport)
+      reader, writer = IO.pipe
+      pid = fork do
+        reader.close
+        started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+        outcome = transport.close(grace: 5)
+        prompt = Process.clock_gettime(Process::CLOCK_MONOTONIC) - started < 2
+        message = begin
+          client(#{peer['grpc_h2c'].dump}, transport).unary(MSG.new, timeout: 5)
+          "called"
+        rescue ConnectRPC::Error => e
+          e.message
+        end
+        writer.puts [outcome, prompt, message].inspect
+        exit!(0)
+      end
+      writer.close
+      unless reader.wait_readable(10)
+        Process.kill(:KILL, pid)
+        Process.wait(pid)
+        return :hung
+      end
+      result = eval(reader.read)
+      Process.wait(pid)
+      result
+    end
+  RUBY
+  def child_closed = [true, true, "HTTP transport admission is closed"]
+
+  # A held stream keeps the parent's close pending across the fork. The
+  # child has neither the parent's closer thread nor its teardown, so it must
+  # not wait for either.
+  it "closes at once in a child that inherits the parent's pending close" do
+    output, status = ruby_child(<<~RUBY)
+      #{child_close}
+      transport = ConnectRPC::Hyper::Transport.new
+      held = Queue.new
+      holder = Thread.new do
+        client(#{peer['grpc_h2c'].dump}, transport).server_stream(MSG.new(value: "hold"), timeout: 30) do |reader|
+          held << reader.receive.value
+          reader.each { nil }
+        end
+      rescue ConnectRPC::Error => e
+        e.message
+      end
+      held.pop
+      closer = Thread.new { transport.close(grace: 30) }
+      deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + 10
+      until transport.inspect.include?("state=closing") && closer.status == "sleep" &&
+            closer.backtrace.to_a.any? { |line| line.include?("Driver#close") }
+        raise "close never parked" if Process.clock_gettime(Process::CLOCK_MONOTONIC) > deadline
+        Thread.pass
+      end
+      child = child_close(transport)
+      holder.kill.join
+      p [child, [true, false].include?(closer.value)]
+    RUBY
+    expect(status).to be_success
+    expect(eval(output.lines.last)).to eq([child_closed, true]) # rubocop:disable Security/Eval
+  end
+
+  # The child never built a driver of its own, so its close has nothing to
+  # drain, and the parent's driver and connection stay in use.
+  it "closes at once in a child that never built its own driver, leaving the parent's transport open" do
+    output, status = ruby_child(<<~RUBY)
+      #{child_close}
+      transport = ConnectRPC::Hyper::Transport.new
+      peer_client = client(#{peer['grpc_h2c'].dump}, transport)
+      call = ->(value) { peer_client.unary(MSG.new(value: value), timeout: 5).message.value }
+      call.call("parent")
+      child = child_close(transport)
+      p [child, call.call("after"), transport.instance_variable_get(:@driver).opened]
+    RUBY
+    expect(status).to be_success
+    expect(eval(output.lines.last)).to eq([child_closed, "after", 1]) # rubocop:disable Security/Eval
+  end
+
   it "keeps a transport closed before fork closed in the child" do
     output, status = ruby_child(<<~RUBY)
       transport = ConnectRPC::Hyper::Transport.new

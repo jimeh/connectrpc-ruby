@@ -14,7 +14,6 @@ mod tls;
 mod unary;
 
 use std::sync::Arc;
-use std::sync::atomic::AtomicBool;
 use std::time::{Duration, Instant};
 
 use bytes::Bytes;
@@ -302,18 +301,16 @@ impl Driver {
         let inflight = core
             .admit()
             .map_err(|failure| failure_error(ruby, failure))?;
-        let dispatched = AtomicBool::new(false);
         let waits = Waits {
             cancel: Some(&cancel.signal),
             abort: None,
             shutdown: &core.shutdown,
-            dispatched: &dispatched,
             deadline,
         };
         let outcome = drive(
             ruby,
             &waits,
-            unary::unary(core.clone(), spec, payload, limit, deadline, &dispatched),
+            unary::unary(core.clone(), spec, payload, limit, deadline),
         );
         drop(inflight);
         let response = settle(ruby, outcome)?;
@@ -466,7 +463,6 @@ impl Call {
             cancel: Some(&state.cancel),
             abort: Some(&state.abort),
             shutdown: state.shutdown(),
-            dispatched: &state.dispatched,
             deadline,
         }
     }
@@ -615,6 +611,7 @@ fn init(ruby: &Ruby) -> Result<(), Error> {
     let connectrpc = ruby.define_module("ConnectRPC")?;
     let hyper = connectrpc.define_module("Hyper")?;
     let native = hyper.define_module("Native")?;
+    gvl::init_flags(ruby)?;
     native.define_singleton_method("wait_count", function!(wait_count, 0))?;
     native.define_singleton_method("operation_count", function!(operation_count, 0))?;
     native.define_singleton_method("active_waits", function!(active_waits, 0))?;
