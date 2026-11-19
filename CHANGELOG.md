@@ -1,5 +1,53 @@
 # Changelog
 
+## [0.3.0](https://github.com/jimeh/connectrpc-ruby/compare/v0.2.1...v0.3.0) (2026-11-19)
+
+
+### ⚠ BREAKING CHANGES
+
+* connectrpc-sentry span data renames rpc.response.status_code to rpc.status_code.
+* connectrpc-otel renames rpc.response.status_code to rpc.status_code, and replaces rpc.request.metadata.<key>, rpc.response.metadata.<key>, connectrpc.request.metadata.<key> and connectrpc.response.metadata.<key> with rpc.request.header.<key> and rpc.response.header.<key>. Trailers are recorded as rpc.response.trailer.<key> through the new response_trailers: option. Connect unary Outcome#response_metadata no longer includes trailer-* headers.
+* Service#methods is now Service#rpcs, and Service.new takes rpcs: instead of methods:, with no alias. Regenerate every _connect.rb with the 0.3.0 protoc-gen-connectrpc-ruby plugin and replace hand-written methods: declarations and .methods reads with rpcs.
+* Optional connectrpc gems' RBS manifests no longer load core's signatures. Steepfiles must list library "connectrpc" beside each optional connectrpc library, plus library "connectrpc-async" beside library "connectrpc-falcon". Projects that use rbs collection need no change. See docs/upgrading.md.
+
+### Features
+
+* add Async connection gauges and a Host fallback app ([#100](https://github.com/jimeh/connectrpc-ruby/issues/100)) ([2178274](https://github.com/jimeh/connectrpc-ruby/commit/2178274a44723d5c124d66e4027c58c6c7a2ced9))
+* add connectrpc-hyper, a reactor-free Rust client transport ([#173](https://github.com/jimeh/connectrpc-ruby/issues/173)) ([c3a0ad6](https://github.com/jimeh/connectrpc-ruby/commit/c3a0ad6649c57344b12e2f56f53cc4cb16d38dfa)), closes [#171](https://github.com/jimeh/connectrpc-ruby/issues/171)
+* add TLS and proxy options to NetHTTP and send a default User-Agent ([#159](https://github.com/jimeh/connectrpc-ruby/issues/159)) ([ccffd92](https://github.com/jimeh/connectrpc-ruby/commit/ccffd92172d768ddcbc3143264c2aea8cfdbc862))
+* **async:** configurable HTTP/2 receive windows and a 16 MiB connection window ([#134](https://github.com/jimeh/connectrpc-ruby/issues/134)) ([1817c09](https://github.com/jimeh/connectrpc-ruby/commit/1817c094febdcf6ea40561c7127f7e5524fc5cf7))
+* **async:** default HTTP/2 client stream window to 4 MiB ([#141](https://github.com/jimeh/connectrpc-ruby/issues/141)) ([c1c8414](https://github.com/jimeh/connectrpc-ruby/commit/c1c84141a663790fb15fe550ff8c74231dddb379))
+* grow HTTP/2 receive windows from measured BDP on the Async clients and hosts ([#153](https://github.com/jimeh/connectrpc-ruby/issues/153)) ([b62044f](https://github.com/jimeh/connectrpc-ruby/commit/b62044fe299ac9418a16718aab1d7878c9cae495))
+* name Sentry RPC span data as OpenTelemetry semconv 1.45.0 does ([#167](https://github.com/jimeh/connectrpc-ruby/issues/167)) ([61764bf](https://github.com/jimeh/connectrpc-ruby/commit/61764bf74002527b8512164fea83c1de4bf2fcd3))
+* report response trailers and emit OpenTelemetry semconv 1.45.0 ([#164](https://github.com/jimeh/connectrpc-ruby/issues/164)) ([d8aea46](https://github.com/jimeh/connectrpc-ruby/commit/d8aea46f517c96e5eb32948b4a9fdfadbea1b0c4)), closes [#114](https://github.com/jimeh/connectrpc-ruby/issues/114)
+* report unexpected server exceptions through an on_error hook ([#122](https://github.com/jimeh/connectrpc-ruby/issues/122)) ([721ae37](https://github.com/jimeh/connectrpc-ruby/commit/721ae37cdfbc4c24be579dd413662815d1aace63))
+* return HTTP/2 flow-control credit at a quarter of each window, as grpc-go does ([#157](https://github.com/jimeh/connectrpc-ruby/issues/157)) ([79fdcf7](https://github.com/jimeh/connectrpc-ruby/commit/79fdcf7a707297b6a42f40476da6353120373581))
+* shorten generated service setup and pass deadlines downstream ([#152](https://github.com/jimeh/connectrpc-ruby/issues/152)) ([a211280](https://github.com/jimeh/connectrpc-ruby/commit/a211280d98c12f5a2ba9e3bf4113e540ca6a870f))
+
+
+### Bug Fixes
+
+* allow builtin module packages, linear namespace checks and rbs=false ([#129](https://github.com/jimeh/connectrpc-ruby/issues/129)) ([d0bf811](https://github.com/jimeh/connectrpc-ruby/commit/d0bf811730599038092171cf4a8794ea81683915)), closes [#115](https://github.com/jimeh/connectrpc-ruby/issues/115)
+* **async:** shut raw TCP down first and close it after retirement joins ([#147](https://github.com/jimeh/connectrpc-ruby/issues/147)) ([9344569](https://github.com/jimeh/connectrpc-ruby/commit/9344569ea97547a1ec4104ce0f3250d0f0f98d02))
+* bound HTTP/2 response write progress on the Async and Falcon hosts ([#138](https://github.com/jimeh/connectrpc-ruby/issues/138)) ([8e9d641](https://github.com/jimeh/connectrpc-ruby/commit/8e9d6419e8794d59f4f86136bc578271f154b592)), closes [#131](https://github.com/jimeh/connectrpc-ruby/issues/131)
+* bound per-connection HTTP/2 admission and drain with GOAWAY first ([#126](https://github.com/jimeh/connectrpc-ruby/issues/126)) ([5a2d560](https://github.com/jimeh/connectrpc-ruby/commit/5a2d560032304d02162bfe9600bcf9fb346c3f7c))
+* close sessions after failed retirement and retire HTTP/1 shutdown-first ([#158](https://github.com/jimeh/connectrpc-ruby/issues/158)) ([26b8794](https://github.com/jimeh/connectrpc-ruby/commit/26b879401b15e950588c9b05a167916c5b6f4af9))
+* close streaming terminal and protocol edge cases from the review ([#125](https://github.com/jimeh/connectrpc-ruby/issues/125)) ([d9801f1](https://github.com/jimeh/connectrpc-ruby/commit/d9801f1e8c0726c388df19225e308f2828f428ff))
+* **falcon:** serve Upgrade offers, keep the Rack facet app, configure close grace ([#124](https://github.com/jimeh/connectrpc-ruby/issues/124)) ([015b57e](https://github.com/jimeh/connectrpc-ruby/commit/015b57e27a8b2e7beb16e29ac1af9ac79e52b302))
+* honour caller timeouts and owner exit in Async transports, and keep client error causes ([#127](https://github.com/jimeh/connectrpc-ruby/issues/127)) ([87675eb](https://github.com/jimeh/connectrpc-ruby/commit/87675eb1c6a124eea4c7861d91197fe545d6fb09)), closes [#106](https://github.com/jimeh/connectrpc-ruby/issues/106)
+* keep Async and Falcon accepting at capacity, on accept errors and on certificate expiry ([#133](https://github.com/jimeh/connectrpc-ruby/issues/133)) ([4a8080a](https://github.com/jimeh/connectrpc-ruby/commit/4a8080a0d2d16efbada8e4bf4a7d93b46cb825fa)), closes [#117](https://github.com/jimeh/connectrpc-ruby/issues/117)
+* keep connectrpc gems out of RBS manifests for rbs collection users ([#121](https://github.com/jimeh/connectrpc-ruby/issues/121)) ([9caf3be](https://github.com/jimeh/connectrpc-ruby/commit/9caf3bed7027d0fa8b57bca8935941e01cfa25d9))
+* let a graceful HTTP/2 drain finish post-delivery work after the peer leaves ([#146](https://github.com/jimeh/connectrpc-ruby/issues/146)) ([d914dbf](https://github.com/jimeh/connectrpc-ruby/commit/d914dbf7ac8a38b45c241a42d8b3e45b18324fcb))
+* let a graceful HTTP/2 drain finish when a control frame write sees the peer leave first ([#151](https://github.com/jimeh/connectrpc-ruby/issues/151)) ([bd9ae72](https://github.com/jimeh/connectrpc-ruby/commit/bd9ae727d8a0194b25f1eb15152396bb25e25f9d))
+* **otel:** keep client cancellation off server errors and honor the global propagator ([#130](https://github.com/jimeh/connectrpc-ruby/issues/130)) ([6df1027](https://github.com/jimeh/connectrpc-ruby/commit/6df1027673f88ac85bcdd55cc21ebc26f1af30dd))
+* refuse HTTP/2 streams at HEADERS when host admission is full ([#144](https://github.com/jimeh/connectrpc-ruby/issues/144)) ([9e2dbfd](https://github.com/jimeh/connectrpc-ruby/commit/9e2dbfde88997de78d530c15bd790e706a31c528)), closes [#137](https://github.com/jimeh/connectrpc-ruby/issues/137)
+* renew the HTTP/2 write watchdog while the peer keeps acknowledging data ([#150](https://github.com/jimeh/connectrpc-ruby/issues/150)) ([2a19f1a](https://github.com/jimeh/connectrpc-ruby/commit/2a19f1aeec91f01866cf0c1dddde9b8d1d23f3fe))
+* **sentry:** send one set of Sentry baggage on NetHTTP and match URL propagation targets ([#136](https://github.com/jimeh/connectrpc-ruby/issues/136)) ([80cb291](https://github.com/jimeh/connectrpc-ruby/commit/80cb291c02bdf272aab431568187bb4a398ccba0))
+* stop concurrent HTTP/2 responses resetting when connection credit runs out ([#156](https://github.com/jimeh/connectrpc-ruby/issues/156)) ([823365c](https://github.com/jimeh/connectrpc-ruby/commit/823365c406ec9f2622d8a1b1b57eede9ba0e5c93))
+* stop conformance telemetry deadlocking native server adapters on Ruby 4 ([#168](https://github.com/jimeh/connectrpc-ruby/issues/168)) ([d521b60](https://github.com/jimeh/connectrpc-ruby/commit/d521b6064215eb3a02e8e5ca528a5d7e90ccf07e))
+* synchronize connectrpc-hyper specs on peer and dial barriers ([#179](https://github.com/jimeh/connectrpc-ruby/issues/179)) ([42fde41](https://github.com/jimeh/connectrpc-ruby/commit/42fde41938ba93512f5b863e768cac43c8c2c0e4)), closes [#177](https://github.com/jimeh/connectrpc-ruby/issues/177)
+* write HTTP/2 control frames without yielding per frame on the Async and Falcon hosts ([#143](https://github.com/jimeh/connectrpc-ruby/issues/143)) ([014cdc3](https://github.com/jimeh/connectrpc-ruby/commit/014cdc34dc84443d6bd4b675fa0c1fc2ddf974ed))
+
 ## [0.2.1](https://github.com/jimeh/connectrpc-ruby/compare/v0.2.0...v0.2.1) (2026-11-17)
 
 

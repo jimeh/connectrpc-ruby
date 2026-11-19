@@ -28,10 +28,10 @@ platforms that were built, installed and exercised.
 ## Installation
 
 ```ruby
-gem "connectrpc-hyper", "~> 0.2.0"
+gem "connectrpc-hyper", "~> 0.3.0"
 ```
 
-The runtime dependency is `connectrpc ~> 0.2.0`. The transport never loads
+The runtime dependency is `connectrpc ~> 0.3.0`. The transport never loads
 connectrpc-async, Rack or Google protobuf.
 
 ### Prebuilt platform gems

@@ -38,7 +38,7 @@ and adoption gates.
 ## Installation
 
 ```ruby
-gem "connectrpc-falcon", "~> 0.2.0"
+gem "connectrpc-falcon", "~> 0.3.0"
 gem "google-protobuf", ">= 4.36.2", "< 5"
 ```
 
