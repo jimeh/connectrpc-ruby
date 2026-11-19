@@ -45,12 +45,14 @@ RSpec.describe "Fork", :fork do
       events = peer.since(from)
       # The parent dialed once and reused its connection after the fork; the
       # child dialed its own, which closed when the child exited.
-      expect(events.grep(/\A#{tag} accept/).size).to eq(2)
+      accepted = events.grep(/\A#{tag} accept/)
+      expect(accepted.size).to eq(2)
       held_done = events.index { |event| event.match?(/#{tag} ss-hold-done/) }
       expect(held_done).not_to be_nil
       # The parent's held stream outlived the child: it ended only when the
       # parent killed its holder thread.
-      child_closed = events.index { |event| event.match?(/\A#{tag} conn-closed/) }
+      child_address = Regexp.escape(accepted.last.split.last)
+      child_closed = events.index { |event| event.match?(/\A#{tag} conn-closed #{child_address}\z/) }
       expect(child_closed).to be < held_done
     end
   end
@@ -115,7 +117,7 @@ RSpec.describe "Fork", :fork do
     Open3.popen2(RbConfig.ruby, "-e", code) do |stdin, stdout, wait|
       expect(stdout.gets&.chomp).to eq("closed true")
       # The child holds no copy of the socket, so the close reaches the peer now.
-      peer.wait_event(/\Agrpc conn-closed /, from: from)
+      peer.wait_closed("grpc", from: from)
       expect(wait).to be_alive
       stdin.puts("go")
       stdin.close

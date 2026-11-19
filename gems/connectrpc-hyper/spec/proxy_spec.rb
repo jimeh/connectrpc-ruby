@@ -294,6 +294,9 @@ RSpec.describe "Proxies" do
     end
   end
 
+  # A per-call dial is the call's own, so ending the call closes its proxy
+  # connection; a shared pooled dial would outlive the caller (see the
+  # pooling and interrupt specs).
   describe "stalled setup" do
     def stalling(phase, progress, closed)
       lambda do |client|
@@ -316,7 +319,7 @@ RSpec.describe "Proxies" do
         with_socket_proxy(stalling(phase, progress, closed)) do |url, listener|
           request = transport_request("https://peer.test:443/svc/Method", timeout: ending == :deadline ? 0.3 : nil)
           request.cancellation = source.token if ending == :cancellation
-          transport = hyper(proxy: url)
+          transport = hyper(proxy: url, connections: :per_call)
           caller = Thread.new { failure(transport, request) }
           expect(progress.pop(timeout: 5)).to be(true)
           source.cancel if ending == :cancellation
@@ -334,7 +337,7 @@ RSpec.describe "Proxies" do
       progress = Queue.new
       closed = Queue.new
       with_socket_proxy(stalling(:connect, progress, closed)) do |url|
-        transport = hyper(proxy: url)
+        transport = hyper(proxy: url, connections: :per_call)
         landed = Queue.new
         caller = Thread.new do
           transport.call(transport_request("https://peer.test:443/svc/Method", timeout: nil))

@@ -3,12 +3,24 @@
 //! point's bound passes, so a spec can hold one step of an interleaving that
 //! a race would otherwise decide. A driver with no armed point pays one
 //! atomic load per point.
+//!
+//! A point that parks its thread must never park a Ruby thread holding the
+//! GVL: the whole VM would stall for the point's bound, and the spec waiting
+//! to observe the hold could not run. `drive` therefore skips its GVL-held
+//! first poll while any point is armed in the process (`any_armed`).
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::Duration;
 
 use tokio::sync::Notify;
+
+/// Points armed across every driver in the process.
+static ARMED: AtomicUsize = AtomicUsize::new(0);
+
+pub fn any_armed() -> bool {
+    ARMED.load(Ordering::Acquire) > 0
+}
 
 #[derive(Default)]
 pub struct Holds {
@@ -88,10 +100,14 @@ impl Holds {
             changed: Condvar::new(),
             notify: Notify::new(),
         });
-        self.points
+        let replaced = self
+            .points
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .insert(name, point);
+        if replaced.is_none() {
+            ARMED.fetch_add(1, Ordering::AcqRel);
+        }
         self.armed.store(true, Ordering::Release);
     }
 
@@ -103,6 +119,7 @@ impl Holds {
             .unwrap_or_else(|e| e.into_inner())
             .remove(name);
         if let Some(point) = point {
+            ARMED.fetch_sub(1, Ordering::AcqRel);
             point.release();
         }
     }
@@ -113,5 +130,12 @@ impl Holds {
         points
             .get(name)
             .map_or(0, |point| point.reached.load(Ordering::SeqCst))
+    }
+}
+
+impl Drop for Holds {
+    fn drop(&mut self) {
+        let points = self.points.get_mut().unwrap_or_else(|e| e.into_inner());
+        ARMED.fetch_sub(points.len(), Ordering::AcqRel);
     }
 }

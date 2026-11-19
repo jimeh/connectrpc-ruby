@@ -107,10 +107,21 @@ stage and reset its stream.
 - D5 Connections: `connections: :pooled` (default) keeps one *admitting* HTTP/2
   connection per origin per transport; a connection that received GOAWAY stops
   admitting, drains its existing streams and retires on its own while a new one
-  admits. Concurrent first callers share one dial. `:per_call` opens one per
-  call. HTTP/1.1 mode pools idle keep-alive connections, at most two per origin
-  (Go's `DefaultMaxIdleConnsPerHost`); only a connection whose request and
-  response both completed cleanly returns to the pool.
+  admits. Pooled HTTP/2 dials belong to the pool, as in a grpc-go channel
+  (Jim's decision in correction round 3): an origin has at most one shared
+  dial, a task the driver owns, and every caller that finds no usable
+  connection waits for it under its own deadline, cancellation and
+  interrupts. Only the dial and `close` decide its outcome, and every waiter
+  gets it: the pooled connection; `http/1.1` from ALPN (the clean connection
+  is parked, one waiter takes it, the rest dial their own, and a streaming
+  waiter fails with the ALPN phrase); or the failure, which is not cached. A
+  waiter that leaves does not change the dial, so a call whose short deadline
+  ends fails `deadline_exceeded` while the dial pools its connection for later
+  calls. A second HTTP/2 connection never replaces a usable pooled one.
+  `:per_call` opens one per call. HTTP/1.1 mode dials per call and pools idle
+  keep-alive connections, at most two per origin (Go's
+  `DefaultMaxIdleConnsPerHost`); only a connection whose request and response
+  both completed cleanly returns to the pool.
 - D6 `idle_timeout: 1800` (grpc-go's 30 minutes) closes pooled connections with
   no calls in flight; nil disables. The idle timer claims the exact connection
   generation it observed idle, so it never closes a connection a caller has
@@ -120,9 +131,12 @@ stage and reset its stream.
   proxy CONNECT, TLS and the HTTP/2 handshake as hyper completes it (preface
   written). hyper exposes no peer-SETTINGS boundary, so a peer that accepts and
   stays silent is bounded by the call deadline (and keepalive when set);
-  document it. The call deadline always applies; nil leaves only the deadline.
+  document it. Each address attempt gets Go's `partialDeadline` share of the
+  setup budget: `connect_timeout` alone for the shared HTTP/2 dial (D5), and
+  the earlier of `connect_timeout` and the call deadline for a dial that serves
+  one call. The call deadline always applies; nil leaves only the deadline.
   The cancellation registration exists before the first native wait, so a
-  token cancels DNS, connect, TLS and waiting behind another caller's dial.
+  token cancels DNS, connect, TLS and a wait for the shared dial.
   The wire timeout headers (`grpc-timeout`, `connect-timeout-ms`) are
   recomputed from the remaining deadline at dispatch, after setup and on a
   retry, as the Async transport does.
@@ -190,7 +204,10 @@ stage and reset its stream.
   then aborts the rest and waits for the owned connection tasks to end (no
   detached tasks); true when drained, false after forced teardown. Repeated and
   concurrent calls share the first outcome. A transport closed before fork
-  stays closed.
+  stays closed. Teardown is a runtime task started by the first close, so it
+  completes however closers are interrupted; each closer waits for the
+  published outcome with fiber-scheduler offload allowed throughout and raises
+  a held exception afterwards.
 - D14 Windows: cross-build `x64-mingw-ucrt` and run a non-gating Windows CI job
   (specs minus fork and the Linux DNS shim, plus a Go interop subset) against
   that artifact. If green, `docs/support.md` lists Windows x64 as a provisional,
@@ -375,17 +392,17 @@ cause, abort in a masked `ensure`. Rust owns connections, streams and waits.
 | Interrupts | Matrix: DNS (LD_PRELOAD getaddrinfo shim), connect (full backlog), TLS (silent server), blocked write, blocked read; RuntimeError, an Exception subclass, `Thread#kill`; synchronised on parked-thread observation; follow-up call reuses the connection |
 | Teardown | GC and process exit with resolvers parked |
 | Streaming limits | Over-limit message fails `resource_exhausted`; flooding peer bounded by the window; peer that never reads blocks `write` until deadline |
-| Cancellation | Sibling reset with and without DATA in flight on a shared connection; cross-thread `CancellationSource`; per-call deadline; token cancel during DNS/TCP/TLS and while waiting behind another caller's dial; silent h2 peer bounded by the deadline; the wire timeout after a delayed setup reflects the remaining deadline |
+| Cancellation | Sibling reset with and without DATA in flight on a shared connection; cross-thread `CancellationSource`; per-call deadline; token cancel during DNS/TCP/TLS and while waiting for the shared dial; silent h2 peer bounded by the deadline; the wire timeout after a delayed setup reflects the remaining deadline |
 | Resolver | Several parked lookups, then cancellation, then a lookup of another origin succeeds; GC and exit do not wait |
 | Liveness and restart | Idle pooled connection answers server PINGs; reconnect after idle GOAWAY; GOAWAY with an active stream: the sibling finishes on the draining connection while a new call uses a new one; hard kill and restart on the same port; keepalive: withheld ACK retires the connection and fails in-flight calls `unavailable`, `permit_without_calls` on and off, behaviour with buffered DATA and with BDP pings |
-| Pool | Concurrent first callers share one connection; `per_call` opens one each; idle timeout closes an idle connection and the next call reconnects; idle eviction racing a checkout never fails the call; HTTP/1.1: two-idle cap, reuse, and an interrupted upload or incomplete response never returns its socket |
+| Pool | Concurrent first callers share one connection; callers before, during and after the pool dial pools its connection share one accept; a pool dial outlives the call that started it and splits `connect_timeout` alone; a failed dial fails every waiter alike and is not cached; an `http/1.1` outcome serves one waiter on the dialed connection, the rest on their own, and fails a streaming waiter; close fails pool-dial waiters and ends the dial; `per_call` opens one each; idle timeout closes an idle connection and the next call reconnects; idle eviction racing a checkout never fails the call; HTTP/1.1: two-idle cap, reuse, and an interrupted upload or incomplete response never returns its socket |
 | Retry | Unsent request on a closing connection succeeds once on a new connection; refused Connect unary retried once; no second retry; an ambiguous disconnect after the handler started is not replayed (the handler runs once) |
 | Fork | Subprocess with an in-flight stream in another thread, h2c and TLS: child calls work, parent stream intact, parent reuses its connection; fork while the runtime or root cache initialises; parent closes while a long-lived child stays alive (the peer sees the close, or the documented limitation); a transport closed before fork stays closed in the child |
 | TLS parity | ca_file appended to native roots; `SSL_CERT_FILE` override; chain/key validation errors name only the input, without a leaking cause; mTLS; name mismatch and IP SAN; provider-rejected identity (Ed448); TLS options on `http://` raise; rustls rejections pinned (CN-only, v1, single-label wildcard, CA as leaf, encrypted key) |
 | Errors | Fixed phrases for refused, DNS, TLS verify, closed, ALPN mismatch, deadline; server RST_STREAM with each mapped code |
 | Offload | Ruby 4.0 with async worker pool: sibling task progresses, stop/cancel/deadline/raise/kill land; simultaneous read and write on one bidi stream from two fibers, then abort or stop while both are parked; Ruby 3.4 and without the pool behave as a plain blocking call |
 | Spurious wake | A wake without a pending interrupt during a blocked `write` does not duplicate the message on the wire |
-| Close | `close(grace:)` drains in-flight calls (true), forced (false), later calls fail with the closed phrase; `close(grace: 0)` racing setup or a retry; repeated close shares the outcome |
+| Close | `close(grace:)` drains in-flight calls (true), forced (false), later calls fail with the closed phrase; `close(grace: 0)` racing setup or a retry; repeated close shares the outcome; a task aborted before its first poll is still counted until its socket closes; a `Task#stop` on the closer lets a sibling fiber's call drain before the stop is raised |
 | Keepalive move | Core `Keepalive` specs (validation, equality, freezing); `ConnectRPC::Async::Keepalive.equal?(ConnectRPC::Keepalive)` from installed packages in both require orders; existing Async keepalive specs pass |
 | Fast path | Connect unary passes all unary specs and does one native wait (spec on an internal counter or a GVL-contention probe) |
 | Package | Source gem builds and installs in a clean GEM_HOME and runs a smoke call; exact manifest, MIT plus third-party notice, push host, MFA |
@@ -426,3 +443,8 @@ the validation, with a spec feeding the same inputs to both transports.
   platform gems before the source gem, digest-pinned images, and the darwin
   SDK question (native macOS runners as the alternative).
 - Windows aarch64 runtime evidence.
+- Windows x64: a reactor child whose native wait runs on the Async reactor
+  thread itself (Ruby 3.4, or 4.0 without the worker pool) never finishes in
+  the non-gating job, while the same wait offloaded to the worker pool passes.
+  The cause is not established; those offload cases run on Linux only until a
+  Windows reproduction finds it.

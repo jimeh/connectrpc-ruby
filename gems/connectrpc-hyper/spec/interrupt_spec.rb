@@ -62,6 +62,9 @@ RSpec.describe "Interrupts" do
           cleanup&.call
         end
 
+        # A per-call dial is the call's, so its socket closes when the call
+        # ends. A pooled dial is the pool's: it carries on after the caller
+        # leaves, still owned by the transport, until connect_timeout or close.
         it "lands during the TLS handshake with a silent server and closes the socket" do
           silent = TCPServer.new("127.0.0.1", 0)
           accepted = Queue.new
@@ -78,6 +81,11 @@ RSpec.describe "Interrupts" do
           end
           expect_landed(how, outcome)
           expect(socket.read_nonblock(65_536, exception: false)).to be_a(String)
+          if mode == :pooled
+            expect(stats(transport)[1..2]).to eq([0, 1])
+            # Close ends the dial, whose task may stop before the grace check.
+            transport.close(grace: 0)
+          end
           expect(socket.wait_readable(5)).not_to be_nil
           expect(socket.read_nonblock(65_536, exception: false)).to be_nil
         ensure

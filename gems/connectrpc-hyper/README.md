@@ -112,16 +112,17 @@ with HTTP/2 and `[:server_stream, :client_stream]` with `http2: false`.
 
 ## Connections and server restarts
 
-One HTTP/2 connection per origin and transport admits new calls; concurrent
-first callers share one dial attempt and its outcome. When that dial fails,
-every caller that waited for it fails the same way, as grpc-go fails the
-waiters of one attempt together, instead of each dialing again in turn. A
-caller whose own deadline, cancellation or interrupt ends its call while it
-leads the dial, or whose deadline cuts the dial short, abandons the attempt,
-and a waiter dials again. A second HTTP/2 connection never replaces a usable
-pooled one: it serves only the call that dialed it, then closes. hyper
-multiplexes calls up to the peer's `SETTINGS_MAX_CONCURRENT_STREAMS`.
-Behaviour compared with a grpc-go channel:
+One HTTP/2 connection per origin and transport admits new calls. When there
+is none, the transport starts one dial for the origin, owned by the transport
+rather than by any call, and every caller that finds no connection waits for
+that dial. As in a grpc-go channel, its outcome is the same for every waiter:
+the new connection, or the failure. A waiter's own deadline, cancellation or
+interrupt ends only its wait. A call with a short deadline fails
+`deadline_exceeded` while the dial carries on and pools its connection for
+later calls. A second HTTP/2 connection never replaces a usable pooled one:
+it serves only the call that dialed it, then closes. hyper multiplexes calls
+up to the peer's `SETTINGS_MAX_CONCURRENT_STREAMS`. Behaviour compared with a
+grpc-go channel:
 
 - An idle connection answers server PINGs and processes GOAWAY without a call
   in flight.
@@ -149,13 +150,15 @@ Behaviour compared with a grpc-go channel:
   back and retried (below).
 
 `connections: :per_call` dials a fresh connection for every call and closes it
-afterwards. With `http2: false`, connections dial in parallel, as Go's
-`net/http` dials them, since one HTTP/1.1 connection serves one call at a
-time. When TLS negotiates `http/1.1` for an `http2: true` transport, the first
-burst of callers waits for the dial that found out, and later dials run in
-parallel. Pooling keeps at most two idle keep-alive connections per origin
-(Go's `DefaultMaxIdleConnsPerHost`); only a connection whose request and
-response both completed returns to the pool.
+afterwards. With `http2: false`, each call dials its own connection, in
+parallel, as Go's `net/http` dials them, since one HTTP/1.1 connection serves
+one call at a time. When TLS negotiates `http/1.1` for an `http2: true`
+transport, one caller that waited for that dial takes its connection and the
+others dial their own; a streaming call, which needs HTTP/2, fails with the
+ALPN phrase instead. A later burst that finds no idle connection waits for one
+shared dial again. Pooling keeps at most two idle keep-alive connections per
+origin (Go's `DefaultMaxIdleConnsPerHost`); only a connection whose request
+and response both completed returns to the pool.
 
 Two requests are retried once on a fresh connection, within the original
 deadline and with the wire timeout recomputed: a request hyper hands back
@@ -167,12 +170,14 @@ Hostnames resolve through tokio's blocking pool (`getaddrinfo`), capped at
 512 threads, close to Go's 500 cgo lookup threads. A stalled lookup keeps its
 thread after the caller leaves. Addresses of both families are tried with Go's
 300 ms fallback delay. Within one family, addresses are tried in turn, each
-within an equal share of what is left before the earlier of `connect_timeout`
-and the call deadline, but at least 2 seconds (Go's `partialDeadline`, as
-NetHTTP's dialer does), so a blackholed first address does not use up the
-whole budget. A call whose deadline ends during setup still fails
-`deadline_exceeded`. Without `connect_timeout` or a deadline each attempt runs
-until the operating system gives up.
+within an equal share of what is left of the setup budget, but at least 2
+seconds (Go's `partialDeadline`, as NetHTTP's dialer does), so a blackholed
+first address does not use up the whole budget. The shared HTTP/2 dial's
+budget is `connect_timeout`; a dial that serves one call (per-call mode,
+`http2: false`, or a call after an `http/1.1` outcome) gets the earlier of
+`connect_timeout` and its call's deadline. A call whose deadline ends during
+setup still fails `deadline_exceeded`. Without a budget each attempt runs
+until the operating system gives up, or until `close` ends the dial.
 
 ## Keepalive
 
@@ -206,7 +211,7 @@ call deadline and a cancellation token stop a call during name resolution,
 connect, TLS, a blocked write and a blocked read. The stream is reset with
 `CANCEL`, so the peer sees `RST_STREAM(CANCEL)`, and the shared connection
 keeps serving other calls. A token cancels name resolution, connect and TLS,
-including a wait behind another caller's dial. The wire timeout headers
+including a wait for the shared dial (which carries on for other callers). The wire timeout headers
 (`grpc-timeout`, `connect-timeout-ms`) carry the deadline remaining at dispatch,
 after connection setup and on a retry.
 
@@ -333,9 +338,10 @@ that sets `user-agent` wins.
   metadata over the limit fails before dispatch. h2 itself accepts header
   blocks up to 16 MiB, grpc-go's default, so a hostile block above that can
   still truncate trailers.
-- An HTTP/1.1 response head (status line and fields) and its chunked trailers
-  may each be up to 10 MiB, Go's `MaxResponseHeaderBytes` default, which
-  bounds only bytes. hyper also counts fields, so this transport accepts up to
+- An HTTP/1.1 response head (status line and fields) may be up to 10 MiB, the
+  bound Go's `MaxResponseHeaderBytes` default puts on the response head, in
+  bytes only. This transport applies the same 10 MiB cap to chunked trailers,
+  its own choice. hyper also counts fields, so this transport accepts up to
   1,024 of them in a head or in trailers; hyper's own defaults (100 fields,
   about 400 KiB) are lower. A larger head or trailer block fails with
   `malformed response`.
@@ -370,12 +376,16 @@ raise core's `deadline_exceeded` and `canceled` errors first.
 `close(grace: 5)` stops admission, lets in-flight calls finish within `grace`,
 then aborts the rest and waits for every connection task. It returns true when
 everything drained and false after forced teardown; repeated and concurrent
-calls share the first outcome. A call admitted before `close` that is still
-dialing is in flight: it keeps dialing and runs within the grace, but its new
-connection is never pooled for other calls, and callers waiting behind its dial
-fail with `HTTP transport admission is closed`. The forced teardown runs even if
-the closing thread is interrupted or a fiber scheduler stops the closing task
-(async's `Task#stop`); the task's exception is raised after teardown.
+calls share the first outcome. Callers waiting for the shared HTTP/2 dial fail
+with `HTTP transport admission is closed`, and the dial ends. A call admitted
+before `close` that is dialing its own connection (per-call mode or HTTP/1.1)
+is in flight: it keeps dialing and runs within the grace, but its new
+connection is never pooled for other calls. Teardown runs in the background
+once started, so it completes even if the closing thread is interrupted or a
+fiber scheduler stops the closing task (async's `Task#stop`). The closer keeps
+waiting for the outcome, off the reactor thread with async's worker pool, so
+sibling tasks still run and their calls can drain; the exception is raised
+after teardown.
 
 ## License
 

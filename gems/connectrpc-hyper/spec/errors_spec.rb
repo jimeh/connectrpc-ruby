@@ -45,10 +45,13 @@ RSpec.describe "Transport failures" do
   end
 
   # The shim resolves peer.pair to 127.0.0.2 (a full backlog on the peer's
-  # port drops its SYNs), then 127.0.0.1 (the peer). Go's partialDeadline
-  # splits the earlier of connect_timeout and the call deadline, giving the
-  # first address max(3 s / 2, 2 s) = 2 s and leaving 1 s for the peer.
-  it "gives each address its share of the earlier of connect_timeout and the deadline", :dns_shim do
+  # port drops its SYNs), then 127.0.0.1 (the peer). A per-call dial is the
+  # call's own, so Go's partialDeadline splits the earlier of connect_timeout
+  # and the call deadline, giving the first address max(3 s / 2, 2 s) = 2 s
+  # and leaving 1 s for the peer. (A pool dial splits connect_timeout alone;
+  # see the pooling specs.)
+  it "gives each address of an unshared dial its share of the earlier of connect_timeout and the deadline",
+     :dns_shim do
     environment = stall_environment
     port = URI(peer["grpc_h2c"]).port
     blackhole = Socket.new(:INET, :STREAM)
@@ -63,7 +66,8 @@ RSpec.describe "Transport failures" do
     budgets = [[3, 10], [20, 3], [nil, 3]]
     output, status = ruby_child(<<~RUBY, env: environment)
       results = #{budgets.inspect}.map do |connect_timeout, timeout|
-        transport = ConnectRPC::Hyper::Transport.new(connect_timeout: connect_timeout, proxy: nil)
+        transport = ConnectRPC::Hyper::Transport.new(connections: :per_call, connect_timeout: connect_timeout,
+                                                     proxy: nil)
         started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
         reply = begin
           client("http://peer.pair:#{port}", transport).unary(MSG.new(value: "second"), timeout: timeout).message.value

@@ -89,6 +89,17 @@ class Peer
     end
   end
 
+  # Waits until the first `count` connections `tag` accepted at or after
+  # `from` have closed. The peer logs a close only after the client's close
+  # returned, so an earlier example's close may land after `from`; matching
+  # this example's own connections by address keeps it from standing in.
+  def wait_closed(tag, from:, count: 1, timeout: 10)
+    addresses = wait_count(/\A#{tag} accept /, count, from: from, timeout: timeout).first(count).map { it.split.last }
+    addresses.each do |address|
+      wait_event(/\A#{tag} conn-closed #{Regexp.escape(address)}\z/, from: from, timeout: timeout)
+    end
+  end
+
   def count(pattern, from: 0) = since(from).grep(pattern).size
 
   # Runs a control command and waits for the peer to confirm it ran.

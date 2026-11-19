@@ -9,9 +9,11 @@
 use std::collections::HashMap;
 use std::future::Future;
 use std::mem::ManuallyDrop;
+use std::pin::Pin;
 use std::ptr;
 use std::sync::atomic::{AtomicPtr, Ordering};
 use std::sync::{Arc, Mutex};
+use std::task::{Context, Poll};
 
 use tokio::runtime::{Builder, Handle, Runtime};
 use tokio::sync::Notify;
@@ -228,6 +230,25 @@ struct Finished {
     id: u64,
 }
 
+/// A tracked future and its registration. Fields drop in declaration order,
+/// so the future, and every socket or task it owns, is gone before the
+/// registration leaves the set: whether the task completed, panicked, or was
+/// aborted before or during a poll. An `async` block holding both would drop
+/// its captures in capture order when aborted before its first poll, removing
+/// the registration first.
+struct Tracked {
+    future: Pin<Box<dyn Future<Output = ()> + Send>>,
+    _finished: Finished,
+}
+
+impl Future for Tracked {
+    type Output = ();
+
+    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<()> {
+        self.future.as_mut().poll(cx)
+    }
+}
+
 impl Drop for Finished {
     fn drop(&mut self) {
         let mut state = self.tracker.tasks.lock().unwrap_or_else(|e| e.into_inner());
@@ -268,9 +289,9 @@ impl Tracker {
             tracker: self.clone(),
             id,
         };
-        let join = handle().spawn(async move {
-            let _finished = finished;
-            future.await;
+        let join = handle().spawn(Tracked {
+            future: Box::pin(future),
+            _finished: finished,
         });
         let abort = join.abort_handle();
         state.running.insert(id, abort.clone());

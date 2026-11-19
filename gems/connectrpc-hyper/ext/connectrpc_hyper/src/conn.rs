@@ -94,18 +94,24 @@ pub struct Socket {
     stream: TcpStream,
     #[cfg(unix)]
     slot: Option<usize>,
+    holds: Arc<Holds>,
 }
 
 impl Socket {
-    fn new(stream: TcpStream) -> Self {
+    fn new(stream: TcpStream, holds: &Arc<Holds>) -> Self {
+        let holds = holds.clone();
         #[cfg(unix)]
         {
             use std::os::fd::AsRawFd;
             let slot = crate::runtime::sockets::register(stream.as_raw_fd());
-            Self { stream, slot }
+            Self {
+                stream,
+                slot,
+                holds,
+            }
         }
         #[cfg(not(unix))]
-        Self { stream }
+        Self { stream, holds }
     }
 
     /// Copies bytes waiting to be read without consuming them.
@@ -121,6 +127,9 @@ impl Socket {
 
 impl Drop for Socket {
     fn drop(&mut self) {
+        // Spec hold point while the socket is still open, in whatever thread
+        // drops it: an owned task's socket closes before close returns.
+        self.holds.block("socket:drop");
         // Deregister before the stream field drops and closes the fd.
         #[cfg(unix)]
         if let Some(slot) = self.slot.take() {
@@ -369,7 +378,7 @@ pub async fn connect(
     };
     let _ = stream.set_nodelay(true);
     let local_port = stream.local_addr().map(|a| a.port()).unwrap_or(0);
-    let mut socket = Socket::new(stream);
+    let mut socket = Socket::new(stream, holds);
     if let Some(route) = origin.proxy.as_ref().filter(|r| r.mode == Mode::Tunnel) {
         // Only an h2c server may send its SETTINGS before the client speaks.
         let strict = origin.https || !settings.http2;

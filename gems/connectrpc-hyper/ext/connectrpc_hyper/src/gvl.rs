@@ -21,16 +21,23 @@ use magnus::{Error, Ruby};
 use tokio::sync::Notify;
 
 use crate::failure::Failure;
-use crate::runtime;
+use crate::{holds, runtime};
 
 thread_local! {
-    /// GVL releases made by this Ruby thread; specs read it to prove the
-    /// unary fast path waits once.
+    /// Native operations driven by this Ruby thread, and the GVL releases
+    /// among them; specs read both to prove the unary fast path is one
+    /// operation that releases the GVL at most once. A ready result is taken
+    /// without a release, so releases alone cannot count operations.
+    static OPERATIONS: Cell<u64> = const { Cell::new(0) };
     static WAITS: Cell<u64> = const { Cell::new(0) };
 }
 
 pub fn wait_count() -> u64 {
     WAITS.with(Cell::get)
+}
+
+pub fn operation_count() -> u64 {
+    OPERATIONS.with(Cell::get)
 }
 
 /// Waits with the GVL released right now, across threads and fibers; specs
@@ -206,18 +213,20 @@ enum Wake<T> {
 /// Drives `future` to completion with the GVL released. The future lives in
 /// this frame, so a wake without a pending Ruby interrupt resumes the same
 /// operation state and never repeats a side effect. A ready result is taken
-/// first without releasing the GVL.
+/// first without releasing the GVL, except while a spec hold point is armed:
+/// one that parks the thread must not hold the GVL (see `holds`).
 pub fn drive<T, F>(ruby: &Ruby, waits: &Waits<'_>, future: F) -> Result<Result<T, Failure>, Error>
 where
     F: Future<Output = Result<T, Failure>> + Send,
     T: Send,
 {
+    OPERATIONS.with(|operations| operations.set(operations.get() + 1));
     let handle = runtime::handle();
     let mut future = pin!(future);
     if let Some(failure) = settled(waits) {
         return Ok(Err(failure));
     }
-    {
+    if !holds::any_armed() {
         let _context = handle.enter();
         let mut cx = Context::from_waker(Waker::noop());
         if let Poll::Ready(result) = future.as_mut().poll(&mut cx) {
@@ -280,53 +289,40 @@ fn settled(waits: &Waits<'_>) -> Option<Failure> {
     None
 }
 
-/// Blocks with the GVL released until `future` ends, delivering Ruby
-/// interrupts only after it does. For teardown that must not be abandoned
-/// part way, such as a transport's close.
-///
-/// `Thread.handle_interrupt` defers thread interrupts, but a fiber
-/// scheduler's cancellation (async's `Task#stop` with the worker pool)
-/// re-raises through `rb_nogvl` regardless. That exception is held while
-/// `future` keeps running, on this thread from then on, where no scheduler
-/// can abandon it again. It is returned with the result, for the caller to
-/// raise once it has recorded what the teardown did.
-pub fn drive_uninterruptible<T, F>(ruby: &Ruby, future: F) -> (T, Option<Error>)
-where
-    F: Future<Output = T> + Send,
-    T: Send,
-{
+/// Waits with the GVL released until `signal` fires, for an outcome that a
+/// runtime task publishes, such as a transport's teardown. A Ruby exception
+/// raised meanwhile (a thread interrupt or a fiber scheduler's cancellation,
+/// such as async's `Task#stop`) does not end the wait: the first one is held
+/// and returned once `signal` fired, for the caller to raise. Every entry,
+/// re-entry after a cancellation included, lets a fiber scheduler run the
+/// wait on a worker thread, so a waiter never blocks its reactor's siblings.
+pub fn wait_signal(ruby: &Ruby, signal: &Arc<Signal>) -> Option<Error> {
     let handle = runtime::handle();
-    let mut future = pin!(future);
     let mut raised: Option<Error> = None;
-    loop {
+    while !signal.fired() {
         let interrupt = Signal::new();
-        let offload = raised.is_none();
-        let (outcome, error) = without_gvl_deferred(ruby, &interrupt, offload, || {
+        let (_, error) = without_gvl_deferred(ruby, &interrupt, || {
             handle.block_on(async {
                 tokio::select! {
                     biased;
-                    _ = interrupt.wait() => None,
-                    result = future.as_mut() => Some(result),
+                    _ = interrupt.wait() => {}
+                    _ = signal.wait() => {}
                 }
             })
         });
         if let Some(error) = error {
             raised.get_or_insert(error);
         }
-        if let Some(Some(result)) = outcome {
-            return (result, raised);
-        }
     }
+    raised
 }
 
 /// Like `without_gvl`, but never raises: it returns the body's result, if
 /// the body ran, and any Ruby exception raised around it, for the caller to
-/// raise after its teardown. `offload` lets a fiber scheduler run the body
-/// on a worker thread.
+/// raise later. A fiber scheduler may run the body on a worker thread.
 fn without_gvl_deferred<F, R>(
     ruby: &Ruby,
     interrupt: &Arc<Signal>,
-    offload: bool,
     func: F,
 ) -> (Option<R>, Option<Error>)
 where
@@ -338,10 +334,7 @@ where
         func: Some(func),
         out: None,
     };
-    let mut flags = rb_sys::RB_NOGVL_INTR_FAIL;
-    if offload {
-        flags |= rb_sys::RB_NOGVL_OFFLOAD_SAFE;
-    }
+    let flags = rb_sys::RB_NOGVL_INTR_FAIL | rb_sys::RB_NOGVL_OFFLOAD_SAFE;
     loop {
         let data_ptr = &mut data as *mut Data<F, R> as *mut c_void;
         let signal_ptr = Arc::as_ptr(interrupt) as *mut c_void;
@@ -360,8 +353,9 @@ where
             // A scheduler's cancellation drained the body, then raised.
             Err(error) => return (ran_output(&mut data), Some(error)),
         }
-        // An interrupt is pending and unmasked: the caller masks interrupts
-        // around close, so this only clears a stale flag. Run again.
+        // An interrupt is pending. The caller masks thread interrupts around
+        // close, so this usually only clears the flag; one that raises is
+        // returned for the caller to hold.
         if let Err(error) = ruby.thread_check_ints() {
             return (None, Some(error));
         }

@@ -14,7 +14,6 @@ mod tls;
 mod unary;
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU8, Ordering};
 use std::time::{Duration, Instant};
 
 use bytes::Bytes;
@@ -27,7 +26,7 @@ use magnus::{
 use crate::call::CallState;
 use crate::conn::{Origin, Settings, proxy};
 use crate::failure::Failure;
-use crate::gvl::{Signal, Waits, drive, drive_uninterruptible};
+use crate::gvl::{Signal, Waits, drive, wait_signal};
 use crate::pool::{Config, DriverCore, RequestSpec, TimeoutHeader};
 use crate::runtime::{ForkGuard, Tracker};
 use crate::tls::TlsInputs;
@@ -218,8 +217,6 @@ impl Cancel {
 #[magnus::wrap(class = "ConnectRPC::Hyper::Native::Driver", free_immediately, size)]
 struct Driver {
     core: ForkGuard<Arc<DriverCore>>,
-    /// The teardown result of `close`: unknown, false or true (0, 1, 2).
-    outcome: AtomicU8,
 }
 
 impl Driver {
@@ -268,7 +265,6 @@ impl Driver {
         // thread and opens no socket.
         Ok(Self {
             core: ForkGuard::new(DriverCore::new(config, Tracker::new())),
-            outcome: AtomicU8::new(0),
         })
     }
 
@@ -361,43 +357,33 @@ impl Driver {
 
     /// Stops admission, lets in-flight calls finish within `grace`, then
     /// aborts the rest and waits for every owned task to end. True when
-    /// everything drained in time. The result is recorded before a held
-    /// fiber scheduler cancellation is raised, so `close_outcome` reports it.
+    /// everything drained in time. The first close starts teardown on the
+    /// runtime; every closer waits for its published outcome, with offload
+    /// allowed throughout. An exception raised meanwhile (an interrupt or a
+    /// fiber scheduler's cancellation) is held and raised after the outcome
+    /// is published, so `close_outcome` reports it.
     fn close(ruby: &Ruby, rb_self: &Self, grace: f64) -> Result<bool, Error> {
         if rb_self.core.inherited() {
             return Ok(true);
         }
-        let core = rb_self.core.clone();
-        core.begin_close();
-        let expires = tokio::time::Instant::now() + seconds(grace);
-        // Runs to the end even if the caller is interrupted or a fiber
-        // scheduler cancels the wait, so force always follows the grace.
-        let (quiet, raised) = drive_uninterruptible(ruby, async move {
-            let drained = tokio::time::timeout_at(expires, core.wait_drained())
-                .await
-                .is_ok();
-            let quiet = drained
-                && tokio::time::timeout_at(expires, core.tracker.wait_empty())
-                    .await
-                    .is_ok();
-            core.force().await;
-            quiet
-        });
-        rb_self
-            .outcome
-            .store(if quiet { 2 } else { 1 }, Ordering::SeqCst);
+        let torn_down = rb_self.core.start_teardown(seconds(grace));
+        let raised = wait_signal(ruby, &torn_down);
+        let quiet = rb_self
+            .core
+            .close_outcome()
+            .expect("teardown publishes its outcome before it signals");
         match raised {
             Some(error) => Err(error),
             None => Ok(quiet),
         }
     }
 
-    /// What the last native `close` did, or nil before one finished.
+    /// What `close` did, or nil before teardown finished.
     fn close_outcome(&self) -> Option<bool> {
-        match self.outcome.load(Ordering::SeqCst) {
-            0 => None,
-            outcome => Some(outcome == 2),
+        if self.core.inherited() {
+            return None;
         }
+        self.core.close_outcome()
     }
 
     /// For specs: arms hold point `name`; each arrival parks for at most
@@ -604,6 +590,10 @@ fn wait_count() -> u64 {
     gvl::wait_count()
 }
 
+fn operation_count() -> u64 {
+    gvl::operation_count()
+}
+
 fn active_waits() -> usize {
     gvl::active_waits()
 }
@@ -622,6 +612,7 @@ fn init(ruby: &Ruby) -> Result<(), Error> {
     let hyper = connectrpc.define_module("Hyper")?;
     let native = hyper.define_module("Native")?;
     native.define_singleton_method("wait_count", function!(wait_count, 0))?;
+    native.define_singleton_method("operation_count", function!(operation_count, 0))?;
     native.define_singleton_method("active_waits", function!(active_waits, 0))?;
     native.define_singleton_method("resumed_waits", function!(resumed_waits, 0))?;
     native.define_singleton_method("wait_bodies", function!(wait_bodies, 0))?;

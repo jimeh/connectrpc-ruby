@@ -26,7 +26,7 @@ impl Failure {
             kind,
             detail: error.kind().to_string(),
             reset: None,
-            errno: error.raw_os_error(),
+            errno: error.raw_os_error().map(ruby_errno),
         }
     }
 
@@ -108,3 +108,55 @@ impl Failure {
         false
     }
 }
+
+/// Ruby's `Errno` number for an OS error code. Windows reports socket errors
+/// as WSA codes, which Ruby maps to the C runtime's errno values when it
+/// raises (win32.c's `errmap`), so `Errno::ECONNREFUSED::Errno` is 107 there,
+/// not 10061. Codes without a C runtime value keep their WSA number, as Ruby
+/// defines those constants.
+fn ruby_errno(code: i32) -> i32 {
+    if cfg!(windows) {
+        WSA_ERRNO
+            .iter()
+            .find(|(wsa, _)| *wsa == code)
+            .map_or(code, |(_, errno)| *errno)
+    } else {
+        code
+    }
+}
+
+/// (WSA code, UCRT errno) for the socket errors Ruby's `errmap` maps.
+const WSA_ERRNO: [(i32, i32); 32] = [
+    (10004, 4),   // EINTR
+    (10009, 9),   // EBADF
+    (10013, 13),  // EACCES
+    (10014, 14),  // EFAULT
+    (10022, 22),  // EINVAL
+    (10024, 24),  // EMFILE
+    (10035, 140), // EWOULDBLOCK
+    (10036, 112), // EINPROGRESS
+    (10037, 103), // EALREADY
+    (10038, 128), // ENOTSOCK
+    (10039, 109), // EDESTADDRREQ
+    (10040, 115), // EMSGSIZE
+    (10041, 136), // EPROTOTYPE
+    (10042, 123), // ENOPROTOOPT
+    (10043, 135), // EPROTONOSUPPORT
+    (10045, 130), // EOPNOTSUPP
+    (10047, 102), // EAFNOSUPPORT
+    (10048, 100), // EADDRINUSE
+    (10049, 101), // EADDRNOTAVAIL
+    (10050, 116), // ENETDOWN
+    (10051, 118), // ENETUNREACH
+    (10052, 117), // ENETRESET
+    (10053, 106), // ECONNABORTED
+    (10054, 108), // ECONNRESET
+    (10055, 119), // ENOBUFS
+    (10056, 113), // EISCONN
+    (10057, 126), // ENOTCONN
+    (10060, 138), // ETIMEDOUT
+    (10061, 107), // ECONNREFUSED
+    (10062, 114), // ELOOP
+    (10063, 38),  // ENAMETOOLONG
+    (10065, 110), // EHOSTUNREACH
+];

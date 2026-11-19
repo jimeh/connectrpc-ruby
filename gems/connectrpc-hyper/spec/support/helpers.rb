@@ -139,7 +139,8 @@ module HyperHelpers # rubocop:disable Metrics/ModuleLength
   end
 
   # Runs Ruby code in a child process with this bundle; returns [stdout,
-  # status]. The child's stderr is reported when it fails.
+  # status]. The child's stderr is reported when it fails, and what it wrote
+  # so far when it times out.
   def ruby_child(code, env: {}, timeout: 60)
     preamble = <<~RUBY
       $LOAD_PATH.unshift(#{File.join(ROOT, 'interop/grpc/ruby').dump})
@@ -162,13 +163,14 @@ module HyperHelpers # rubocop:disable Metrics/ModuleLength
       readers = [[output, stdout], [errors, stderr]].map do |buffer, stream|
         Thread.new do
           Thread.current.report_on_exception = false
-          buffer << stream.read
+          loop { buffer << stream.readpartial(4096) }
         rescue IOError
           nil
         end
       end
       unless wait.join(timeout)
         Process.kill(:KILL, wait.pid)
+        readers.each { |reader| reader.join(5) }
         raise "Child Ruby timed out; output so far: #{output}; errors: #{errors}"
       end
       readers.each(&:join)

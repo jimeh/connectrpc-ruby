@@ -23,7 +23,7 @@ RSpec.describe "Liveness and restart" do
     from = peer.mark
     peer_client = client(peer["grpc_idle"], transport: hyper)
     peer_client.unary(MSG.new(value: "a"), timeout: 5)
-    peer.wait_event(/\Aidle conn-closed /, from: from)
+    peer.wait_closed("idle", from: from)
     expect(peer_client.unary(MSG.new(value: "b"), timeout: 5).message.value).to eq("b")
     expect(peer.count(/\Aidle accept/, from: from)).to eq(2)
   end
@@ -84,7 +84,7 @@ RSpec.describe "Liveness and restart" do
       expect(error.code).to eq("unavailable")
       expect(monotonic - started).to be < 5
       peer.wait_event(/\Arawnoack ping-withheld /, from: from)
-      peer.wait_event(/\Arawnoack conn-closed /, from: from)
+      peer.wait_closed("rawnoack", from: from)
     end
 
     it "probes an idle connection only with permit_without_calls" do
@@ -114,7 +114,7 @@ RSpec.describe "Liveness and restart" do
           exchange.close_send
           exchange.response_head(timeout: 5)
           # The peer's DATA frame is buffered and never read while it goes silent.
-          peer.wait_event(/\Arawnoack conn-closed /, from: from)
+          peer.wait_closed("rawnoack", from: from)
           exchange.read(64, timeout: 5)
           exchange.read(64, timeout: 5)
         end
@@ -131,7 +131,8 @@ RSpec.describe "Liveness and restart" do
         .server_stream(MSG.new(value: "count:2000:4096"), timeout: 30) { |reader| reader.each { count += 1 } }
       expect(count).to eq(2000)
       expect(peer.count(/\Agrpc accept/, from: from)).to eq(1)
-      expect(peer.count(/\Agrpc conn-closed/, from: from)).to eq(0)
+      address = Regexp.escape(accept_address("grpc", from))
+      expect(peer.count(/\Agrpc conn-closed #{address}\z/, from: from)).to eq(0)
     end
   end
 end
