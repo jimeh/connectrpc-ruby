@@ -83,10 +83,10 @@ RSpec.describe "Inside an Async reactor" do
   if ENV["HYPER_PROBE"]
     probe_variants = {
       "ticker_native_deadline" => ["peer_client.unary(MSG.new(value: 'hang'), timeout: 0.3)", true],
-      "ticker_native_ok" => ["peer_client.unary(MSG.new(value: 'ok'), timeout: 5).message.value", true],
       "ticker_busy_raise" => ["t = monotonic + 0.3; nil while monotonic < t; raise ConnectRPC::Error.new(:deadline_exceeded, 'x')", true],
       "ticker_busy_ok" => ["t = monotonic + 0.3; nil while monotonic < t; :ok", true],
-      "ticker_busy_short_ok" => ["t = monotonic + 0.005; nil while monotonic < t; :ok", true],
+      "ticker_busy_short_raise" => ["t = monotonic + 0.005; nil while monotonic < t; raise ConnectRPC::Error.new(:deadline_exceeded, 'x')", true],
+      "ticker_raise_runtime" => ["t = monotonic + 0.3; nil while monotonic < t; raise 'plain'", true],
       "noticker_native_deadline" => ["peer_client.unary(MSG.new(value: 'hang'), timeout: 0.3)", false],
       "noticker_busy_raise" => ["t = monotonic + 0.3; nil while monotonic < t; raise ConnectRPC::Error.new(:deadline_exceeded, 'x')", false],
     }
@@ -125,6 +125,11 @@ RSpec.describe "Inside an Async reactor" do
               child.wait
             rescue ConnectRPC::Error => e
               e.code
+            rescue Exception => e
+              mark "root got \#{e.class}: \#{e.message[0, 300]}\n  \#{(e.backtrace || []).first(25).join("\n  ")}"
+              c = e.cause
+              mark "cause \#{c.class}: \#{c.message[0, 300]}\n  \#{(c.backtrace || []).first(15).join("\n  ")}" if c
+              raise
             end
             mark "waited \#{result.inspect}"
             $tasks[:ticker]&.stop
