@@ -264,7 +264,7 @@ RSpec.describe "Interrupts" do
         rescue InterruptErrors::Interrupted => e
           outcome << e.message
         end
-        # The peer reads nothing until released, so the second write blocks.
+        # The peer reads nothing until released, so the third write blocks.
         peer.wait_event(/static cs-gate-start #{tag}/, from: from)
         entered = blocked_write(writer_thread, -> { written })
         resumed = native.resumed_waits

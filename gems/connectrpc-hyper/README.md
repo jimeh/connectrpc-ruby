@@ -131,10 +131,11 @@ grpc-go channel:
   normally. The next call dials a new connection.
 - After a hard kill, calls in flight fail `unavailable` with
   `HTTP transport failed: connection closed` and the next call reconnects.
-  A call that starts before the transport has read the reset still uses the
-  dead connection and fails the same way. grpc-go retries such a call when
-  the connection closed before its headers were written; hyper does not
-  report that, so this transport does not.
+  A call that starts before the transport has read the reset can still go
+  to the dead connection. If hyper had not taken its request yet, it hands it
+  back and the call is retried (below); once hyper took it, the call fails the
+  same way. grpc-go also retries a call whose headers its writer had not yet
+  attempted; hyper does not report that, so this transport does not.
 - A peer that goes silent without closing the socket is only detected by
   [keepalive](#keepalive) or the call deadline.
 - Reconnection is lazy. There is no `wait_for_ready`, no background reconnect

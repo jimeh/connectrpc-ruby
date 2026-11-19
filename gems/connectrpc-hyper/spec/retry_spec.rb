@@ -11,7 +11,7 @@ RSpec.describe "Retries" do
   # more on a new connection; it reports the stream-slot waiter as failed.
   # Whether hyper's connection task moved the first queued request into the
   # slot wait before the GOAWAY arrived is its own scheduling, which nothing
-  # outside hyper observes, so either call or both may be handed back. The
+  # outside hyper observes, so either call or both may be handed back.
   # The held stream's response head shows the client has applied the peer's
   # SETTINGS, which precede it on the wire; until then h2 does not know the
   # one-stream limit and would send the queued streams at once. The

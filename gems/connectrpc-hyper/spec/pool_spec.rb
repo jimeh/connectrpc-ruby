@@ -299,9 +299,12 @@ RSpec.describe "Connection pooling" do
         end
         thread
       end
+      # Counted once both calls ended: a dial started after the starter's
+      # deadline would show here.
+      values = calls.map(&:value)
       counts = points.map { |point| driver.reached(point) }
       points.each { |point| driver.release(point) }
-      p [*calls.map(&:value), peer_client.unary(MSG.new(value: "later"), timeout: 5).message.value, counts]
+      p [*values, peer_client.unary(MSG.new(value: "later"), timeout: 5).message.value, counts]
       transport.close(grace: 0)
     RUBY
     expect(status).to be_success

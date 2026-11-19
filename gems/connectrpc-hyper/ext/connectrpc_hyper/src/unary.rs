@@ -51,13 +51,13 @@ pub async fn unary(
             Ok(response) => response,
             Err(mut error) => {
                 let unsent = error.take_message().is_some();
+                if unsent {
+                    // Spec hold point: armed with a zero bound, it counts the
+                    // requests hyper handed back unsent.
+                    core.holds.reach("retry:unsent").await;
+                }
                 let replayable = unsent || Failure::refused_stream(error.error());
                 if replayable && exclude.is_none() {
-                    if unsent {
-                        // Spec hold point: armed with a zero bound, it counts
-                        // the requests hyper handed back unsent.
-                        core.holds.reach("retry:unsent").await;
-                    }
                     exclude = Some(lease.id());
                     continue;
                 }
