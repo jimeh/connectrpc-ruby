@@ -196,6 +196,7 @@ module HyperHelpers # rubocop:disable Metrics/ModuleLength
       status = wait.value
     end
     warn "Child Ruby failed (#{status.inspect}): #{errors}" unless status.success?
+    warn "PROBE child stderr:\n#{errors}" if ENV["HYPER_PROBE"] && status.success? # PROBE(#175)
     [output, status]
   end
 

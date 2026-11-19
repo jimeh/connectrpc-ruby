@@ -7,8 +7,17 @@ RSpec.describe "Inside an Async reactor" do
   offload = Gem::Version.new(RUBY_VERSION) >= Gem::Version.new("4.0")
 
   def reactor_child(code, pool:)
-    ruby_child(<<~RUBY, env: { "ASYNC_SCHEDULER_WORKER_POOL" => pool ? "true" : nil }, timeout: 60)
+    # PROBE(#175): temporary diagnostics; removed before review.
+    probe_env = { "CONNECTRPC_HYPER_PROBE" => ENV.fetch("HYPER_PROBE", nil) }
+    ruby_child(<<~RUBY, env: { "ASYNC_SCHEDULER_WORKER_POOL" => pool ? "true" : nil, **probe_env }, timeout: 40)
       require "async"
+      if ENV["CONNECTRPC_HYPER_PROBE"] == "ruby"
+        Thread.new do
+          sleep 8
+          Thread.list.each { |t| warn "RUBYPROBE \#{t.inspect}\n  \#{(t.backtrace || []).first(25).join("\n  ")}" }
+          warn "RUBYPROBE bodies=\#{ConnectRPC::Hyper.const_get(:Native).wait_bodies} resumed=\#{ConnectRPC::Hyper.const_get(:Native).resumed_waits}"
+        end
+      end
       def active_waits = ConnectRPC::Hyper.const_get(:Native).active_waits
       # Yields to the reactor until `count` native waits are parked, after
       # `ready` (when given) has a value.
@@ -74,7 +83,7 @@ RSpec.describe "Inside an Async reactor" do
   # runs on the reactor thread itself never finishes, while the same wait
   # offloaded to the worker pool passes; the cause is not established (see
   # the hyper plan's follow-ups), so these cases run on Linux only.
-  reactor_thread = { linux_only: true }
+  reactor_thread = {}
 
   it "#{offload ? 'lets sibling tasks run' : 'blocks the reactor'} while a call waits, with the worker pool",
      **(offload ? {} : reactor_thread) do
@@ -301,6 +310,7 @@ RSpec.describe "Inside an Async reactor" do
     # the closer's wait re-entered after the stop on the reactor thread: the
     # same unexplained reactor-thread wait as above.
     it "lets a sibling fiber's call drain after Task#stop lands on a closing task", **reactor_thread do
+      warn "PROBE sibling drain"
       output, status = reactor_child(<<~RUBY, pool: true)
         transport = ConnectRPC::Hyper::Transport.new
         driver = nil
