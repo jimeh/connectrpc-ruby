@@ -2,17 +2,19 @@
 
 require "json"
 require "rubygems"
+require_relative "../gems/connectrpc-hyper/scripts/platforms"
 
 # Source preparation only. This helper never loads ConnectRPC or contacts a registry.
-class ReleaseTrain
+class ReleaseTrain # rubocop:disable Metrics/ClassLength
   NAMES = %w[connectrpc connectrpc-rack connectrpc-async connectrpc-testing connectrpc-otel
              connectrpc-on-rails connectrpc-falcon connectrpc-prometheus connectrpc-yabeda
-             connectrpc-health connectrpc-sentry].freeze
-  # The published set above plus packages that follow the train's version but
-  # are not yet built or published by the candidate and publisher. Version
-  # files, version checks and the Release Please updater inventory use this set.
-  VERSIONED = (NAMES + %w[connectrpc-hyper]).freeze
-  VERSION_FILES = VERSIONED.to_h do |name|
+             connectrpc-health connectrpc-sentry connectrpc-hyper].freeze
+  # Gems that also publish one prebuilt archive per platform. CI builds and
+  # tests those archives; the candidate checks them against the source.
+  PLATFORMS = { "connectrpc-hyper" => HyperPlatforms::NATIVE }.freeze
+  # One published .gem file. platform is "ruby" for a source gem.
+  Archive = Struct.new(:name, :platform, :file, keyword_init: true)
+  VERSION_FILES = NAMES.to_h do |name|
     file = if name == "connectrpc"
              "lib/connectrpc/version.rb"
            else
@@ -48,12 +50,22 @@ class ReleaseTrain
   end
 
   def directory(name)
-    raise "Unknown release package #{name}" unless VERSIONED.include?(name)
+    raise "Unknown release package #{name}" unless NAMES.include?(name)
 
     name == "connectrpc" ? root : File.join(root, "gems", name)
   end
 
-  # Defaults to the published set, which the candidate and publisher build.
+  # Every archive, in publication order: gems in NAMES order (dependencies
+  # first), and within a gem its platform archives before its source archive.
+  def archives
+    NAMES.flat_map do |name|
+      [*PLATFORMS.fetch(name, []), "ruby"].map do |platform|
+        suffix = platform == "ruby" ? "" : "-#{platform}"
+        Archive.new(name: name, platform: platform, file: "#{name}-#{version}#{suffix}.gem")
+      end
+    end
+  end
+
   def specifications(names = NAMES)
     names.map do |name|
       Dir.chdir(directory(name)) do
@@ -66,12 +78,12 @@ class ReleaseTrain
   end
 
   def check_versions! # rubocop:disable Metrics/AbcSize, Metrics/CyclomaticComplexity
-    specifications(VERSIONED).each do |spec|
+    specifications.each do |spec|
       raise "Version mismatch: #{spec.name} #{spec.version}, expected #{version}" unless spec.version.to_s == version
       raise "Push host changed: #{spec.name}" unless spec.metadata["allowed_push_host"] == "https://rubygems.org"
       raise "MFA requirement lost: #{spec.name}" unless spec.metadata["rubygems_mfa_required"] == "true"
 
-      spec.runtime_dependencies.select { |dep| VERSIONED.include?(dep.name) }.each do |dependency|
+      spec.runtime_dependencies.select { |dep| NAMES.include?(dep.name) }.each do |dependency|
         next if dependency.requirement.to_s == requirement
 
         raise "Local dependency policy changed: #{spec.name} -> #{dependency} (expected #{requirement})"

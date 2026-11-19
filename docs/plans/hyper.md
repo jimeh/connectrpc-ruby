@@ -239,7 +239,8 @@ stage and reset its stream.
   (specs minus fork and the Linux DNS shim, plus a Go interop subset) against
   that artifact. If green, `docs/support.md` lists Windows x64 as a provisional,
   hyper-only platform; otherwise it moves to a follow-up.
-  `aarch64-mingw-ucrt` is build-only.
+  `aarch64-mingw-ucrt` is build-only. Since #174 its install and smoke calls on
+  Windows 11 arm64 gate CI and the release; the specs still do not run there.
 - D15 Release wiring: the gem's version must follow the train (its gemspec
   derives the `connectrpc` requirement from it). `ReleaseTrain#check_configuration!`
   requires Release Please `extra-files` to equal the version files of
@@ -433,7 +434,7 @@ cause, abort in a masked `ensure`. Rust owns connections, streams and waits.
 | Keepalive move | Core `Keepalive` specs (validation, equality, freezing); `ConnectRPC::Async::Keepalive.equal?(ConnectRPC::Keepalive)` from installed packages in both require orders; existing Async keepalive specs pass |
 | Fast path | Connect unary passes all unary specs and does one native wait (spec on an internal counter or a GVL-contention probe) |
 | Package | Source gem builds and installs in a clean GEM_HOME and runs a smoke call; exact manifest, MIT plus third-party notice, push host, MFA |
-| Cross | All platform gems build in CI as artifacts; Linux gems smoke-tested on their arch (native arm64 runner) and libc (Alpine containers); arm64-darwin smoke on a macOS runner (non-gating); x86_64-darwin is build-only, and `docs/support.md` says which artifacts were built, installed and exercised |
+| Cross | All platform gems build in CI as artifacts; Linux gems smoke-tested on their arch (native arm64 runner) and libc (Alpine containers); arm64-darwin smoke on a macOS runner (non-gating); x86_64-darwin is build-only, and `docs/support.md` says which artifacts were built, installed and exercised. Since #174 every platform gem and the source gem builds twice and smokes on a native runner for both Rubies, gating, including x86_64-darwin on macOS Intel |
 | Windows | Non-gating job runs specs and a Go interop subset against the x64-mingw-ucrt gem |
 | Types | `rbs:check` (inventory, consumers, caller evidence) and `rbs:package` |
 | Repository | `hyper:verify`, `mise run verify`, `mise run rack:verify`, `mise run check`, `mise run rbs:check`, `mise run rbs:package` before Ready |
@@ -451,6 +452,11 @@ environment ignored with an explicit proxy, and the User-Agent on the wire.
 - `hyper_smoke` (needs `hyper_cross`): install and smoke each Linux gem on its
   arch and libc for both Rubies.
 - `hyper_windows` (needs `hyper_cross`, non-gating).
+- Since #174, `hyper_cross` and `hyper_smoke` are replaced by `hyper_gems`,
+  which calls the reusable hyper-gems workflow that `release.yml` also calls:
+  build jobs per archive, smoke jobs per platform and Ruby on native runners,
+  a release candidate check and `Verified`. `hyper_msrv` is its own job and
+  `hyper_windows` needs `hyper_gems`. See [CI](../ci.md#optional-hyper-lanes).
 - `floors` gains `hyper`; `canary.yml` gains `canary:hyper`; the `rbs` job
   caches `vendor/hyper/bundle`. Every lane that compiles the extension
   (hyper, floors, canary, rbs) provisions the pinned Rust and libclang
@@ -468,8 +474,13 @@ the validation, with a spec feeding the same inputs to both transports.
   plus the source gem, SHA256 checks against the candidate, one Sigstore
   attestation and `gem push --attestation` per archive with trusted publishing,
   platform gems before the source gem, digest-pinned images, and the darwin
-  SDK question (native macOS runners as the alternative).
-- Windows aarch64 runtime evidence.
+  SDK question (native macOS runners as the alternative). Done in
+  [#174](https://github.com/jimeh/connectrpc-ruby/issues/174): the reusable
+  hyper-gems workflow builds each archive twice in digest-pinned osxcross and
+  other rb-sys-dock images and smokes it on native runners, including macOS
+  arm64 and Intel; see [releasing](../releasing.md#connectrpc-hyper-archives).
+- Windows aarch64 runtime evidence. Install and smoke calls on Windows 11 arm64
+  now gate the release; the specs do not run there.
 - Windows x64: a reactor child whose native wait runs on the Async reactor
   thread itself (Ruby 3.4, or 4.0 without the worker pool) never finishes in
   the non-gating job, while the same wait offloaded to the worker pool passes.
@@ -484,4 +495,7 @@ the validation, with a spec feeding the same inputs to both transports.
   nor clears the pending flag, the wait loop spins holding the GVL and
   starves sibling fibers. Probe: count iterations where nothing ran
   (`ran == 0`), or print `Native.wait_bodies` and `resumed_waits` when the
-  child times out.
+  child times out. Update (#174, from #175's investigation): these Windows
+  hangs came from the spec harness's console output, not the extension. #175
+  is fixing a separate `close` wait on Ruby 4.0 with a single-worker async
+  pool, which affects every platform, and owns the Linux-only tags.

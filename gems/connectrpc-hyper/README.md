@@ -21,10 +21,9 @@ without an Async reactor. A native extension built on hyper, h2, rustls with
 the aws-lc-rs provider and tokio owns connections, streams and blocking waits.
 Ruby keeps the protocol logic, deadlines, cancellation and error phrases.
 
-The package is experimental. It follows the release train's version, but its
-release wiring is not finished, so it is not yet published on RubyGems.org. See
-the [supported 0.x contract](../../docs/support.md) for the support profile and
-the platforms that were built, installed and exercised.
+The package is experimental and follows the release train's version. See the
+[supported 0.x contract](../../docs/support.md) for the support profile and the
+platforms that were built, installed and exercised.
 
 ## Installation
 
@@ -45,9 +44,9 @@ Rust or a compiler:
 | `x86_64-linux`, `aarch64-linux` | glibc 2.29 or later |
 | `x86_64-linux-musl`, `aarch64-linux-musl` | musl with `libgcc_s` (Alpine: the `libgcc` package) |
 | `arm64-darwin` | macOS 11 or later |
-| `x86_64-darwin` | Built, not exercised in CI |
+| `x86_64-darwin` | Intel macOS; the binaries declare macOS 10.13, and CI smoke-tests them on macOS 15 |
 | `x64-mingw-ucrt` | Windows x64, provisional (see [support](../../docs/support.md)) |
-| `aarch64-mingw-ucrt` | Built, not exercised in CI |
+| `aarch64-mingw-ucrt` | Windows arm64, provisional (see [support](../../docs/support.md)) |
 
 ### Source gem
 

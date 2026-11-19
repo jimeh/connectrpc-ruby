@@ -48,7 +48,7 @@ RSpec.describe ReleasePreparation do
   def release_branch(bump)
     Dir.mktmpdir("connectrpc-preparation-spec-") do |root|
       source = File.expand_path("..", __dir__)
-      owners = ReleaseTrain::VERSIONED.map do |name|
+      owners = ReleaseTrain::NAMES.map do |name|
         name == "connectrpc" ? "connectrpc.gemspec" : "gems/#{name}/#{name}.gemspec"
       end
       [*owners, *ReleaseTrain::VERSION_FILES.values, *ReleaseTrain::GUIDES,

@@ -2,13 +2,14 @@
 
 The workflow runs on pull requests, pushes to `main`, manual dispatch and a
 daily schedule (04:37 UTC), on Ubuntu 24.04 unless a row names another runner.
-It has 73 checks: nine core, three optional Rails, four optional HTTP/2, two
+It has 83 checks: nine core, three optional Rails, four optional HTTP/2, two
 optional Rack, two optional in-process testing, two optional RBS, four Falcon,
 two OpenTelemetry, two Prometheus, two Yabeda, two health, two Sentry, two
 browser gRPC-Web, ten lowest-allowed dependency checks, one runnable-examples
-check and 24 [hyper transport](#optional-hyper-lanes) checks, four of them
+check and 34 [hyper transport](#optional-hyper-lanes) checks, two of them
 non-gating. There is no serial cache primer or aggregate job; only the hyper
-smoke and Windows jobs wait for the cross-built gems:
+archive workflow's smoke, candidate and `Verified` jobs and the Windows job wait
+for the cross-built gems:
 
 | Check | Ruby | Canonical commands |
 | --- | --- | --- |
@@ -36,10 +37,14 @@ smoke and Windows jobs wait for the cross-built gems:
 | Runnable examples | 4.0.9 | `mise run example:verify` |
 | Hyper specs, interop and package | 3.4.12, 4.0.9 | `mise run hyper:verify` |
 | Hyper MSRV | 3.4.12 | `mise run hyper:msrv` (Rust 1.85.0) |
-| Hyper gem, per platform (8 platform gems and the source gem) | 3.4.12 | `mise run hyper:cross` with `PLATFORM`, uploaded as `connectrpc-hyper-<platform>` |
-| Hyper Linux gem smoke (x86_64 and native arm64 runners) | 3.4.12, 4.0.9 | `scripts/install_smoke.rb` against the downloaded gem |
-| Hyper musl gem smoke (x86_64 and arm64) | `ruby:3.4-alpine`, `ruby:4.0-alpine` | `scripts/install_smoke.rb` inside the image |
-| Hyper arm64-darwin smoke, macOS 15 (non-gating) | 3.4.12, 4.0.9 | `scripts/install_smoke.rb` |
+| Hyper gems / Build, per archive (8 platform gems and the source gem) | 3.4.12 | `HYPER_CROSS_TWICE=1 mise run hyper:cross` with `PLATFORM`, uploaded as `connectrpc-hyper-<platform>` |
+| Hyper gems / Smoke, Linux glibc (x86_64 and native arm64 runners) | 3.4.12, 4.0.9 | `scripts/install_smoke.rb` against the downloaded gem |
+| Hyper gems / Smoke, musl (x86_64 and arm64) | `ruby:3.4-alpine`, `ruby:4.0-alpine` | `scripts/install_smoke.rb` inside the image |
+| Hyper gems / Smoke, darwin (macOS 15 arm64 and Intel) | 3.4.12, 4.0.9 | `scripts/install_smoke.rb` |
+| Hyper gems / Smoke, mingw-ucrt (Windows Server 2025 x64, Windows 11 arm64) | 3.4.12, 4.0.9 | `scripts/install_smoke.rb` |
+| Hyper gems / Smoke, source gem | 3.4.12, 4.0.9 | `mise run hyper:smoke:source` (Rust 1.98.0) |
+| Hyper gems / Check the release candidate | 3.4.12 | `mise run release:build` against every downloaded archive and smoke record |
+| Hyper gems / Verified | none | Fails unless every build, smoke and candidate job succeeded |
 | Hyper x64-mingw-ucrt, Windows Server 2025 (non-gating) | 3.4, 4.0 | Install smoke, then the applicable specs and Go interop subset against the artifact |
 
 Each matrix has `fail-fast: false`. Every check runs its commands on cache
@@ -399,27 +404,59 @@ connect-go interop matrix, and the offline source-gem install with a smoke
 call. `hyper_msrv` builds the extension with the declared `rust-version`
 (1.85.0) against `Cargo.lock`.
 
-`hyper_cross` builds each platform gem with rb-sys-dock in its
-`rbsys/<platform>:0.9.130` image, in a disposable copy of the package so the
-checkout stays clean, checks the gem's platform, both Ruby minors and the
-dropped `rb_sys` dependency, and uploads it for 14 days. The `ruby` leaf builds
-the source gem. Three jobs need those artifacts:
+`hyper_gems` calls the reusable
+[hyper-gems workflow](../.github/workflows/hyper-gems.yml) with
+`contents: read`; the release workflow calls the same workflow before it may
+publish (see [releasing](releasing.md#connectrpc-hyper-archives)). A called
+workflow does not inherit the caller's `env`, so it declares the same
+workflow-level settings. Its jobs use no caches. GitHub shows its checks as:
 
-- `hyper_smoke` installs the x86_64 and aarch64 glibc gems offline into a fresh
-  GEM_HOME with a core gem built from the checkout, then runs real cleartext
-  and TLS calls, on `ubuntu-24.04` and native `ubuntu-24.04-arm` runners.
-- `hyper_smoke_musl` does the same inside the official Alpine Ruby images with
-  `docker run`, because JavaScript actions cannot run inside arm64 Alpine job
-  containers.
-- `hyper_smoke_darwin` (macOS 15 arm64) and `hyper_windows` (Windows Server
-  2025) set `continue-on-error`, so they report without gating. The Windows job
-  places the artifact's extension into the checkout, builds the Go peer and
-  runs the specs that apply off Linux, excluding the tags `fork`, `dns_shim`
-  (the `LD_PRELOAD` shim) and `linux_only` (`/proc` and accept-backlog
-  probes), then the interop subset.
+- `Hyper gems / Build connectrpc-hyper <platform>` for the eight platforms and
+  `ruby`. Each runs `hyper:cross` with `HYPER_CROSS_TWICE=1`: the platform gem
+  builds in its digest-pinned `rbsys/<platform>:0.9.130` image, in a disposable
+  copy of the package so the checkout stays clean, after a `cargo metadata
+  --locked` preflight, and fails if the build changed the crate manifests or
+  lock. It then deletes the work copy, Cargo home and rb-sys-dock cache,
+  rebuilds from empty caches at the same absolute paths and fails unless both
+  SHA256 match. The paths stay the same because darwin linkers embed the
+  absolute object paths of the build (and an LC_UUID derived from them) in the
+  binary, and CI always builds at the same workspace path. It then checks the
+  gem's platform, both Ruby minors and the dropped `rb_sys` dependency, and
+  uploads it for 14 days. The `ruby` leaf builds the source gem twice the same
+  way on Ruby 3.4.12.
+- `Hyper gems / Smoke connectrpc-hyper <platform> / Ruby <version>` installs the
+  glibc, darwin and mingw-ucrt gems offline into a fresh GEM_HOME with a core gem
+  built from the checkout, then runs real cleartext and TLS calls, on
+  `ubuntu-24.04`, native `ubuntu-24.04-arm`, `macos-15`, `macos-15-intel`,
+  `windows-2025` and `windows-11-arm` runners.
+- `Hyper gems / Smoke connectrpc-hyper <musl platform> / ruby:<minor>-alpine`
+  does the same inside the official Alpine Ruby images with `docker run`,
+  because JavaScript actions cannot run inside arm64 Alpine job containers.
+- `Hyper gems / Smoke connectrpc-hyper source gem / Ruby <version>` installs the
+  downloaded source gem with its rb_sys closure from the hyper bundle cache,
+  compiling with Rust 1.98.0, libclang and a C compiler and fetching the locked
+  crates, then smokes it.
+- `Hyper gems / Check the release candidate` needs the build and every smoke
+  job. Without secrets or an OIDC token, it downloads the archives and smoke
+  evidence into the same directories as the release publish job and runs
+  `mise run release:build` at the run's checkout, so a pull request proves the
+  inputs the publish job would check.
+- `Hyper gems / Verified` runs with `if: always()` and succeeds, setting the
+  workflow's `verified` output, only when every build, smoke and candidate job
+  succeeded.
 
-`x86_64-darwin` and `aarch64-mingw-ucrt` are build-only. Release publication of
-these artifacts is a follow-up; see [releasing](releasing.md).
+Every smoke leg checks the installed platform and the loaded extension's Ruby
+minor, prints the archive's SHA256, and uploads a
+`hyper-smoke-<platform>-<minor>` evidence record that the release candidate
+checks. All of these jobs gate. Every smoke job needs the whole build matrix,
+so one failing build leg skips every smoke leg, the candidate job and the
+release publish job, and `Verified` fails.
+
+`hyper_windows` (Windows Server 2025) needs `hyper_gems` and sets
+`continue-on-error`, so it reports without gating. It places the artifact's
+extension into the checkout, builds the Go peer and runs the specs that apply
+off Linux, excluding the tags `fork`, `dns_shim` (the `LD_PRELOAD` shim) and
+`linux_only` (`/proc` and accept-backlog probes), then the interop subset.
 
 ## Public API typing gates
 
@@ -504,9 +541,10 @@ It opens or updates the release PR using an existing GitHub App from the
 `release-please` environment. After a release PR merges, it tags the commit and
 creates a draft GitHub release. The tag starts `release.yml`, which publishes
 from the `release` environment.
-The 73 CI checks above retain their mapping. `check:static` also runs the offline
-`release:check` invariant for all twelve versions (connectrpc-hyper is versioned
-but not yet published), release configuration and installation guides. See [release preparation](releasing.md) for the candidate procedure and
+The 83 CI checks above retain their mapping. `check:static` also runs the offline
+`release:check` invariant for all twelve gems, release configuration and
+installation guides. `release.yml` calls the same hyper-gems workflow as CI and
+publishes only after its `verified` output is `true`. See [release preparation](releasing.md) for the candidate procedure and
 remaining App/account setup.
 
 ## Optional health lane

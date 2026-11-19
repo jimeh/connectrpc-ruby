@@ -27,11 +27,13 @@ arguments = case command
             when "test" then ["exec", "rspec", *ARGV]
             when "check" then ["exec", "ruby", "scripts/check.rb"]
             when "build", "package", "interop", "cross" then ["exec", "ruby", "scripts/#{command}.rb", *ARGV]
-            else abort "Usage: run.rb install|setup|floors|test|check|build|package|interop|cross"
+            # Paths are relative to the caller; the bundle runs in the package.
+            when "smoke" then ["exec", "ruby", "scripts/install_smoke.rb", *ARGV.map { File.expand_path(it) }]
+            else abort "Usage: run.rb install|setup|floors|test|check|build|package|interop|cross|smoke"
             end
 puts "Hyper package; Ruby #{RUBY_VERSION}; Bundler 4.0.23; Gemfile #{environment.fetch('BUNDLE_GEMFILE')}"
 $stdout.flush
-if %w[setup cross].include?(command)
+if %w[setup cross smoke].include?(command)
   system(environment, RbConfig.ruby, "-S", "bundle", "_4.0.23_", "install", chdir: package, exception: true)
 end
 exec(environment, RbConfig.ruby, "-S", "bundle", "_4.0.23_", *arguments, chdir: package)
