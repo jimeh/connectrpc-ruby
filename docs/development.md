@@ -745,7 +745,7 @@ compiler's include directory. Tasks:
 | `mise run hyper:package` | Build the source gem, fetch its locked crates into `vendor/hyper/cargo`, install it offline (`CARGO_NET_OFFLINE=true`) into a fresh GEM_HOME and run `scripts/smoke.rb`. |
 | `mise run hyper:verify` | All of the above. |
 | `mise run hyper:msrv` | Build the extension with Rust 1.85.0, the declared `rust-version`. |
-| `mise run hyper:cross -- <platform>` | Cross-build one platform gem (or `ruby` for the source gem) into `vendor/hyper/cross/<platform>/`; `PLATFORM=<platform>` also works. `HYPER_CROSS_TWICE=1` rebuilds from empty caches and fails unless the SHA256 match. |
+| `mise run hyper:cross -- <platform>` | Cross-build one platform gem (or `ruby` for the source gem) into `vendor/hyper/cross/<platform>/`; `PLATFORM=<platform>` also works. `HYPER_CROSS_TWICE=1` rebuilds from empty caches at the same paths and fails unless the SHA256 match. |
 | `mise run hyper:smoke:source -- vendor/hyper/cross/ruby [EVIDENCE.json]` | Install the built source gem into a fresh GEM_HOME, compiling with Rust 1.98.0 and fetching its locked crates, then smoke it. |
 | `mise run hyper:cargo:update` | `cargo update` (or `-- -p <crate>`), then regenerate `THIRD_PARTY_NOTICES.md`. |
 | `mise run canary:hyper` | Non-gating: the specs against `cargo update`'s newest crates. |
@@ -772,9 +772,11 @@ copies the package's tracked and unignored files into
 `vendor/hyper/cross-work/<platform>`, builds there for Ruby 3.4 and 4.0, fails
 if the build changed `Cargo.toml`, `Cargo.lock` or the extension's
 `Cargo.toml`, checks the gem and moves it to `vendor/hyper/cross/`, so several
-platforms can build from one checkout and the checkout stays clean. With
-`HYPER_CROSS_TWICE=1` it rebuilds under `vendor/hyper/cross-fresh/<platform>`
-from an empty Cargo home and rb-sys-dock cache. The `ruby` leaf requires Ruby
+platforms can build from one checkout and the checkout stays clean. Cross
+builds use their own Cargo home, `vendor/hyper/cross-cargo`, and the
+rb-sys-dock cache `vendor/hyper/rb-sys-dock`. With `HYPER_CROSS_TWICE=1` it
+deletes the work copy and both caches and rebuilds at the same absolute paths,
+because darwin binaries embed the build's absolute object paths. The `ruby` leaf requires Ruby
 3.4.12 and the commit time as `SOURCE_DATE_EPOCH`, so its archive equals the
 release candidate's source gem.
 `ruby gems/connectrpc-hyper/scripts/install_smoke.rb vendor/hyper/cross/<platform> [EVIDENCE.json]`

@@ -82,6 +82,44 @@ RSpec.describe ReleaseCandidate do
     File.join(@temporary, name).tap { |path| FileUtils.mkdir_p(path) }
   end
 
+  describe ".collect!" do
+    def write(path, bytes = File.basename(path))
+      FileUtils.mkdir_p(File.dirname(path))
+      File.write(path, bytes)
+    end
+
+    it "flattens explicit `gh run download` directories into the release:build inputs" do
+      archives = directory("downloaded/archives")
+      evidence = directory("downloaded/evidence")
+      write(File.join(archives, "connectrpc-hyper-x86_64-linux", "connectrpc-hyper-#{version}-x86_64-linux.gem"))
+      write(File.join(archives, "connectrpc-hyper-ruby", "connectrpc-hyper-#{version}.gem"))
+      write(File.join(evidence, "hyper-smoke-x86_64-linux-3.4", "x86_64-linux-3.4.json"))
+      root = directory("root")
+      write(File.join(root, "vendor/hyper/release-evidence/stale.json"))
+
+      collected = described_class.collect!(root, [archives, evidence])
+
+      expect(collected.map(&:last)).to eq([2, 1])
+      expect(Dir.children(File.join(root, "vendor/hyper/release-artifacts")).sort)
+        .to eq(["connectrpc-hyper-#{version}-x86_64-linux.gem", "connectrpc-hyper-#{version}.gem"])
+      expect(Dir.children(File.join(root, "vendor/hyper/release-evidence"))).to eq(["x86_64-linux-3.4.json"])
+    end
+
+    it "rejects inputs that share a name, or one path, before replacing anything" do
+      archives = directory("archives")
+      evidence = directory("evidence")
+      write(File.join(evidence, "first", "x86_64-linux-3.4.json"))
+      write(File.join(evidence, "second", "x86_64-linux-3.4.json"))
+      root = directory("root")
+      write(File.join(root, "vendor/hyper/release-artifacts/kept.gem"))
+
+      expect { described_class.collect!(root, [archives, evidence]) }
+        .to raise_error(/Several inputs share a name: x86_64-linux-3\.4\.json/)
+      expect { described_class.collect!(root, [archives]) }.to raise_error(ArgumentError)
+      expect(Dir.children(File.join(root, "vendor/hyper/release-artifacts"))).to eq(["kept.gem"])
+    end
+  end
+
   describe "#check_platform_archive!" do
     def check(archive, platform)
       candidate.check_platform_archive!(archive, platform, ReleaseCandidateFixtures.source(train))

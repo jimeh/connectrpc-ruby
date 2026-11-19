@@ -266,10 +266,6 @@ class ReleasePublisher # rubocop:disable Metrics/ClassLength
       JSON.parse(response.body)
     end
 
-    def sha256(name, version, platform = "ruby")
-      self.class.select_sha(versions(name), version, platform, name)
-    end
-
     # Pending publishers do not reserve names, so an existing gem must already
     # belong to the owner.
     def claimable?(name)

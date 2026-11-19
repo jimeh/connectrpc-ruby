@@ -591,6 +591,25 @@ RSpec.describe "Hyper CI mapping" do
     expect(gems_commands.fetch("smoke_source").join("\n")).to include("mise run hyper:smoke:source --")
   end
 
+  it "checks the release candidate from the publish job's inputs, without privileges, after every smoke" do
+    job = gems_jobs.fetch("candidate")
+    expect(job.fetch("name")).to eq("Check the release candidate")
+    expect(job.fetch("needs")).to match_array(gems_jobs.keys - %w[candidate verified])
+    expect(job.keys).not_to include("permissions", "environment", "secrets")
+    expect(job.to_s).not_to include("secrets.", "id-token")
+    expect(gems_step("candidate", "ruby/setup-ruby@").fetch("with"))
+      .to eq("ruby-version" => "3.4.12", "bundler" => "4.0.23", "bundler-cache" => false)
+    expect(gems_step("candidate", "jdx/mise-action@")).to eq(gems_step("build", "jdx/mise-action@"))
+    publish = YAML.load_file(File.join(root, ".github/workflows/release.yml")).dig("jobs", "publish", "steps")
+    from_publish = lambda do |steps|
+      steps.select do |step|
+        step.fetch("uses", "").start_with?("actions/download-artifact@") || step["run"] == "mise run release:build"
+      end
+    end
+    expect(from_publish.call(job.fetch("steps"))).to eq(from_publish.call(publish)).and have_attributes(size: 3)
+    expect(job.fetch("steps").last.fetch("run")).to include("git status --porcelain")
+  end
+
   it "reports verified only when every other job succeeded, with no other conditional or non-gating job" do
     verified = gems_jobs.fetch("verified")
     others = gems_jobs.keys - ["verified"]

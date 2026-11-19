@@ -739,7 +739,7 @@ env = { GOTOOLCHAIN = "local", GOWORK = "off", GOFLAGS = "-mod=readonly", GOMODC
 run = "ruby gems/connectrpc-hyper/scripts/run.rb interop"
 
 [tasks."hyper:cross"]
-description = "Cross-build one connectrpc-hyper gem with rb-sys-dock into vendor/hyper/cross/<platform> (PLATFORM or `-- <platform>`; `ruby` builds the source gem; HYPER_CROSS_TWICE=1 rebuilds from empty caches and compares)"
+description = "Cross-build one connectrpc-hyper gem with rb-sys-dock into vendor/hyper/cross/<platform> (PLATFORM or `-- <platform>`; `ruby` builds the source gem; HYPER_CROSS_TWICE=1 rebuilds from empty caches at the same paths and compares)"
 depends = ["hyper:tools"]
 # Host cargo checks Cargo.lock before rb-sys-dock starts.
 tools.rust = "1.98.0"

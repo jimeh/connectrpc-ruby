@@ -2,14 +2,14 @@
 
 The workflow runs on pull requests, pushes to `main`, manual dispatch and a
 daily schedule (04:37 UTC), on Ubuntu 24.04 unless a row names another runner.
-It has 82 checks: nine core, three optional Rails, four optional HTTP/2, two
+It has 83 checks: nine core, three optional Rails, four optional HTTP/2, two
 optional Rack, two optional in-process testing, two optional RBS, four Falcon,
 two OpenTelemetry, two Prometheus, two Yabeda, two health, two Sentry, two
 browser gRPC-Web, ten lowest-allowed dependency checks, one runnable-examples
-check and 33 [hyper transport](#optional-hyper-lanes) checks, two of them
+check and 34 [hyper transport](#optional-hyper-lanes) checks, two of them
 non-gating. There is no serial cache primer or aggregate job; only the hyper
-archive workflow's smoke and `Verified` jobs and the Windows job wait for the
-cross-built gems:
+archive workflow's smoke, candidate and `Verified` jobs and the Windows job wait
+for the cross-built gems:
 
 | Check | Ruby | Canonical commands |
 | --- | --- | --- |
@@ -43,7 +43,8 @@ cross-built gems:
 | Hyper gems / Smoke, darwin (macOS 15 arm64 and Intel) | 3.4.12, 4.0.9 | `scripts/install_smoke.rb` |
 | Hyper gems / Smoke, mingw-ucrt (Windows Server 2025 x64, Windows 11 arm64) | 3.4.12, 4.0.9 | `scripts/install_smoke.rb` |
 | Hyper gems / Smoke, source gem | 3.4.12, 4.0.9 | `mise run hyper:smoke:source` (Rust 1.98.0) |
-| Hyper gems / Verified | none | Fails unless every build and smoke job succeeded |
+| Hyper gems / Check the release candidate | 3.4.12 | `mise run release:build` against every downloaded archive and smoke record |
+| Hyper gems / Verified | none | Fails unless every build, smoke and candidate job succeeded |
 | Hyper x64-mingw-ucrt, Windows Server 2025 (non-gating) | 3.4, 4.0 | Install smoke, then the applicable specs and Go interop subset against the artifact |
 
 Each matrix has `fail-fast: false`. Every check runs its commands on cache
@@ -415,10 +416,14 @@ workflow-level settings. Its jobs use no caches. GitHub shows its checks as:
   builds in its digest-pinned `rbsys/<platform>:0.9.130` image, in a disposable
   copy of the package so the checkout stays clean, after a `cargo metadata
   --locked` preflight, and fails if the build changed the crate manifests or
-  lock. It then rebuilds from an empty Cargo home, rb-sys-dock cache and work
-  copy and fails unless both SHA256 match, checks the gem's platform, both Ruby
-  minors and the dropped `rb_sys` dependency, and uploads it for 14 days. The
-  `ruby` leaf builds the source gem twice the same way on Ruby 3.4.12.
+  lock. It then deletes the work copy, Cargo home and rb-sys-dock cache,
+  rebuilds from empty caches at the same absolute paths and fails unless both
+  SHA256 match. The paths stay the same because darwin linkers embed the
+  absolute object paths of the build (and an LC_UUID derived from them) in the
+  binary, and CI always builds at the same workspace path. It then checks the
+  gem's platform, both Ruby minors and the dropped `rb_sys` dependency, and
+  uploads it for 14 days. The `ruby` leaf builds the source gem twice the same
+  way on Ruby 3.4.12.
 - `Hyper gems / Smoke connectrpc-hyper <platform> / Ruby <version>` installs the
   glibc, darwin and mingw-ucrt gems offline into a fresh GEM_HOME with a core gem
   built from the checkout, then runs real cleartext and TLS calls, on
@@ -431,13 +436,21 @@ workflow-level settings. Its jobs use no caches. GitHub shows its checks as:
   downloaded source gem with its rb_sys closure from the hyper bundle cache,
   compiling with Rust 1.98.0, libclang and a C compiler and fetching the locked
   crates, then smokes it.
+- `Hyper gems / Check the release candidate` needs the build and every smoke
+  job. Without secrets or an OIDC token, it downloads the archives and smoke
+  evidence into the same directories as the release publish job and runs
+  `mise run release:build` at the run's checkout, so a pull request proves the
+  inputs the publish job would check.
 - `Hyper gems / Verified` runs with `if: always()` and succeeds, setting the
-  workflow's `verified` output, only when every build and smoke job succeeded.
+  workflow's `verified` output, only when every build, smoke and candidate job
+  succeeded.
 
 Every smoke leg checks the installed platform and the loaded extension's Ruby
 minor, prints the archive's SHA256, and uploads a
 `hyper-smoke-<platform>-<minor>` evidence record that the release candidate
-checks. All of these jobs gate.
+checks. All of these jobs gate. Every smoke job needs the whole build matrix,
+so one failing build leg skips every smoke leg, the candidate job and the
+release publish job, and `Verified` fails.
 
 `hyper_windows` (Windows Server 2025) needs `hyper_gems` and sets
 `continue-on-error`, so it reports without gating. It places the artifact's
@@ -528,7 +541,7 @@ It opens or updates the release PR using an existing GitHub App from the
 `release-please` environment. After a release PR merges, it tags the commit and
 creates a draft GitHub release. The tag starts `release.yml`, which publishes
 from the `release` environment.
-The 82 CI checks above retain their mapping. `check:static` also runs the offline
+The 83 CI checks above retain their mapping. `check:static` also runs the offline
 `release:check` invariant for all twelve gems, release configuration and
 installation guides. `release.yml` calls the same hyper-gems workflow as CI and
 publishes only after its `verified` output is `true`. See [release preparation](releasing.md) for the candidate procedure and

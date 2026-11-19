@@ -16,6 +16,36 @@ class ReleaseCandidate # rubocop:disable Metrics/ClassLength
   CRATE_SOURCES = %r{\A(?:Cargo\.(?:toml|lock)|ext/)}
   EVIDENCE_KEYS = %w[file sha256 platform ruby ruby_platform].freeze
 
+  # Flattens connectrpc-hyper archives and smoke evidence found anywhere under
+  # two source directories into the flat directories release:build reads,
+  # replacing their contents. Sources default to local hyper:cross and
+  # install_smoke.rb outputs; `gh run download` directories of the hyper-gems
+  # artifacts work too. Returns [source, destination, count] per directory.
+  def self.collect!(root, sources) # rubocop:disable Metrics/AbcSize, Metrics/CyclomaticComplexity, Metrics/MethodLength
+    archives, evidence = case sources
+                         in [] then %w[vendor/hyper/cross vendor/hyper/evidence].map { File.join(root, it) }
+                         in [String, String] then sources.map { File.expand_path(it) }
+                         else raise ArgumentError, "collect takes no paths or ARCHIVES EVIDENCE, got #{sources}"
+                         end
+    inputs = { File.join(root, "vendor/hyper/release-artifacts") => [archives, "connectrpc-hyper-*.gem"],
+               File.join(root, "vendor/hyper/release-evidence") => [evidence, "*.json"] }
+    plan = inputs.map do |destination, (source, pattern)|
+      raise "Collection source is missing: #{source}" unless Dir.exist?(source)
+
+      found = Dir.glob(File.join(source, "**", pattern))
+      duplicates = found.group_by { File.basename(it) }.select { |_, files| files.size > 1 }.keys
+      raise "Several inputs share a name: #{duplicates.join(', ')}" if duplicates.any?
+
+      [source, destination, found]
+    end
+    plan.map do |source, destination, found|
+      FileUtils.rm_rf(destination)
+      FileUtils.mkdir_p(destination)
+      FileUtils.cp(found, destination)
+      [source, destination, found.size]
+    end
+  end
+
   def initialize(train = ReleaseTrain.new)
     @train = train
   end

@@ -6,12 +6,13 @@ name: Hyper gems
 # architecture with both Ruby minors. Each smoke uploads an evidence record of
 # the exact archive bytes it exercised. CI and the release workflow call it; the
 # release publish job needs `verified` and checks every archive against that
-# evidence. No caches: published bytes must not depend on restored state.
+# evidence, which the unprivileged candidate job also checks here. No caches:
+# published bytes must not depend on restored state.
 on:
   workflow_call:
     outputs:
       verified:
-        description: "true only when every build and smoke job succeeded"
+        description: "true only when every build, smoke and candidate job succeeded"
         value: ${{ jobs.verified.outputs.verified }}
 
 permissions:
@@ -333,22 +334,71 @@ jobs:
             exit 1
           fi
 
+  # The release publish job's candidate check without its privileges: the
+  # downloaded archives and evidence, in the same layout, must pass
+  # release:build at this run's checkout, so a PR proves the publish inputs.
+  candidate:
+    name: Check the release candidate
+    needs: [build, smoke_linux, smoke_musl, smoke_darwin, smoke_windows, smoke_source]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ruby/setup-ruby@7f797815d8adceb1c412e7abefdd1ab4abc47a5f # v1.335.0
+        with:
+          ruby-version: "3.4.12"
+          bundler: "4.0.23"
+          bundler-cache: false
+      - uses: jdx/mise-action@82a612c5ab8bcda7cc5db6b7e81a8e7584c3dc6e # v5.2.3
+        with:
+          version: "2026.10.19"
+          add_shims_to_path: false
+          env: false
+          export_path: false
+          install: false
+          cache: false
+      - name: Download the tested connectrpc-hyper archives
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: connectrpc-hyper-*
+          path: vendor/hyper/release-artifacts
+          merge-multiple: true
+      - name: Download the connectrpc-hyper smoke evidence
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: hyper-smoke-*
+          path: vendor/hyper/release-evidence
+          merge-multiple: true
+      - name: Build candidate
+        env:
+          RELEASE_HYPER_ARTIFACTS: vendor/hyper/release-artifacts
+          RELEASE_HYPER_EVIDENCE: vendor/hyper/release-evidence
+        run: mise run release:build
+      - name: Check workspace stayed clean
+        if: always()
+        run: |
+          if [ -n "$(git status --porcelain --untracked-files=all)" ]; then
+            git status --short --untracked-files=all
+            exit 1
+          fi
+
   # The only job that runs after a failure: it reports `verified` only when
-  # every build and smoke job succeeded, so a failed, skipped or cancelled leg
-  # leaves the output unset.
+  # every build, smoke and candidate job succeeded, so a failed, skipped or
+  # cancelled leg leaves the output unset.
   verified:
     name: Verified
-    needs: [build, smoke_linux, smoke_musl, smoke_darwin, smoke_windows, smoke_source]
+    needs: [build, smoke_linux, smoke_musl, smoke_darwin, smoke_windows, smoke_source, candidate]
     if: always()
     runs-on: ubuntu-24.04
     outputs:
       verified: ${{ steps.check.outputs.verified }}
     steps:
-      - name: Require every build and smoke job to succeed
+      - name: Require every build, smoke and candidate job to succeed
         id: check
         env:
           NEEDS: ${{ toJSON(needs) }}
         run: |
-          echo "$NEEDS" | jq -e '(keys | sort) == ["build", "smoke_darwin", "smoke_linux", "smoke_musl", "smoke_source",
-            "smoke_windows"] and all(.[]; .result == "success")'
+          echo "$NEEDS" | jq -e '(keys | sort) == ["build", "candidate", "smoke_darwin", "smoke_linux", "smoke_musl",
+            "smoke_source", "smoke_windows"] and all(.[]; .result == "success")'
           echo "verified=true" >> "$GITHUB_OUTPUT"

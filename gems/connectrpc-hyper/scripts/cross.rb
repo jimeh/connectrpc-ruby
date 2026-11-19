@@ -9,9 +9,14 @@
 # points. It therefore runs in a disposable copy of the package's tracked
 # files, so the checkout stays clean and several platforms can build in turn.
 #
-# HYPER_CROSS_TWICE=1 builds the archive a second time from an empty Cargo
-# home, rb-sys-dock cache and work copy, and fails unless both SHA256 match.
-# The hyper-gems workflow always sets it.
+# HYPER_CROSS_TWICE=1 moves the first archive out, deletes the work copy,
+# Cargo home and rb-sys-dock cache, builds again from empty caches at the same
+# absolute paths, and fails unless both SHA256 match. The paths stay fixed
+# because rb-sys-dock mounts the work copy at its host path and keeps the cargo
+# target directory under it: darwin linkers embed those object paths (and an
+# LC_UUID derived from them) in the binary. CI always builds at the same
+# workspace path, which is what a release rebuild must reproduce. The
+# hyper-gems workflow always sets it.
 require "digest"
 require "fileutils"
 require "open3"
@@ -103,19 +108,26 @@ build = lambda do |work, cargo_home, cache_dir|
 end
 
 work = File.join(root, "vendor/hyper/cross-work", platform)
-built = build.call(work, File.join(root, "vendor/hyper/cargo"), File.join(root, "vendor/hyper/rb-sys-dock"))
+# Cross builds keep their own Cargo home: the twice build deletes it, and
+# hyper:package and rbs:package share vendor/hyper/cargo.
+cargo_home = File.join(root, "vendor/hyper/cross-cargo")
+cache_dir = File.join(root, "vendor/hyper/rb-sys-dock")
+built = build.call(work, cargo_home, cache_dir)
 archive = File.join(output, File.basename(built))
 FileUtils.mv(built, archive)
 FileUtils.rm_rf(work)
 sha256 = Digest::SHA256.file(archive).hexdigest
 if twice
-  fresh = File.join(root, "vendor/hyper/cross-fresh", platform)
-  FileUtils.rm_rf(fresh)
-  rebuilt = build.call(File.join(fresh, "work"), File.join(fresh, "cargo"), File.join(fresh, "rb-sys-dock"))
+  # rm_rf ignores errors, so a root-owned leftover would otherwise warm the rebuild.
+  FileUtils.rm_rf([cargo_home, cache_dir])
+  leftovers = [work, cargo_home, cache_dir].select { File.exist?(it) }
+  abort "Could not empty #{leftovers.join(', ')} before the rebuild" if leftovers.any?
+
+  rebuilt = build.call(work, cargo_home, cache_dir)
   second = Digest::SHA256.file(rebuilt).hexdigest
   abort "Non-reproducible #{File.basename(archive)}: #{sha256} then #{second}" unless
     File.basename(rebuilt) == File.basename(archive) && second == sha256
-  FileUtils.rm_rf(fresh)
+  FileUtils.rm_rf(work)
 end
 gem = Gem::Package.new(archive)
 spec = gem.spec

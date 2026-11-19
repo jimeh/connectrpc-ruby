@@ -342,13 +342,18 @@ RSpec.describe ReleasePublisher::RubyGems do
       ["rubygems.org", "/api/v1/versions/missing.json"] => -> { http_response(Net::HTTPNotFound, "404", "") }
     )
     registry = described_class.new(owner: "jimeh", environment: environment, log: log)
+    snapshot = registry.versions("connectrpc-hyper")
+    select = lambda do |platform, entries = snapshot|
+      described_class.select_sha(entries, "0.3.0", platform, "connectrpc-hyper")
+    end
 
-    expect(registry.sha256("connectrpc-hyper", "0.3.0")).to eq("a" * 64)
-    expect(registry.sha256("connectrpc-hyper", "0.3.0", "x86_64-linux")).to eq("b" * 64)
-    expect(registry.sha256("connectrpc-hyper", "0.3.0", "aarch64-linux")).to be_nil
-    expect { registry.sha256("connectrpc-hyper", "0.3.0", "arm64-darwin") }.to raise_error(/without a SHA256/)
-    expect(registry.sha256("missing", "0.3.0")).to be_nil
-    expect { described_class.select_sha(rows + [rows[1]], "0.3.0", "x86_64-linux", "connectrpc-hyper") }
+    expect(select.call("ruby")).to eq("a" * 64)
+    expect(select.call("x86_64-linux")).to eq("b" * 64)
+    expect(select.call("aarch64-linux")).to be_nil
+    expect { select.call("arm64-darwin") }.to raise_error(/without a SHA256/)
+    expect(registry.versions("missing")).to eq([])
+    expect(described_class.select_sha([], "0.3.0", "ruby", "missing")).to be_nil
+    expect { select.call("x86_64-linux", snapshot + [rows[1]]) }
       .to raise_error(/lists connectrpc-hyper 0.3.0 x86_64-linux more than once/)
   end
 

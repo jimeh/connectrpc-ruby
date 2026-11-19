@@ -214,17 +214,32 @@ MISE_RUBY_VERSION=4.0.9 mise run grpc:status:check
 connectrpc-hyper archives and one smoke evidence record per archive and Ruby
 minor, in two flat directories named by `RELEASE_HYPER_ARTIFACTS` and
 `RELEASE_HYPER_EVIDENCE`. Without them it stops and names both variables. The
-complete set comes from a hyper-gems run on the same commit, such as the PR's CI
-run: download its `connectrpc-hyper-*` and `hyper-smoke-*` artifacts, flatten
-them with `release:hyper:collect` and build:
+complete set comes from a hyper-gems run, and the local checkout must be the
+exact commit that run checked out. The source gem and the canonical build both
+take `SOURCE_DATE_EPOCH` from the checked-out commit, so any other commit fails
+with "Tested source gem differs from the canonical build". A pull request run
+checks out GitHub's synthetic merge commit (`refs/pull/<number>/merge`,
+`GITHUB_SHA` for the `pull_request` event), not the PR head. Read the commit
+from the checkout step's log of the run that produced the artifacts, which
+prints `HEAD is now at <sha>` and then the full SHA, and check it out detached
+(`git fetch origin <sha>`, or `refs/pull/<number>/merge` while it still points
+there). Runs on a push to main check out the pushed commit, and tag-triggered
+release runs check out the tag's commit in every job. Download the run's
+`connectrpc-hyper-*` and `hyper-smoke-*` artifacts, flatten them with
+`release:hyper:collect` and build:
 
 ```sh
+git switch --detach <checked-out-sha>
 gh run download <run-id> --pattern 'connectrpc-hyper-*' --dir vendor/hyper/downloaded/archives
 gh run download <run-id> --pattern 'hyper-smoke-*' --dir vendor/hyper/downloaded/evidence
 mise run release:hyper:collect -- vendor/hyper/downloaded/archives vendor/hyper/downloaded/evidence
 RELEASE_HYPER_ARTIFACTS=vendor/hyper/release-artifacts RELEASE_HYPER_EVIDENCE=vendor/hyper/release-evidence \
   mise run release:build
 ```
+
+The `Hyper gems / Check the release candidate` job runs the same
+`release:build` in every hyper-gems run, at that run's checkout, so a green job
+is the hosted equivalent of this procedure.
 
 Locally, `HYPER_CROSS_TWICE=1 mise run hyper:cross -- <platform>` builds one
 archive into `vendor/hyper/cross/<platform>/`, and
@@ -341,9 +356,14 @@ runs, so a release builds and tests exactly what CI does:
   version). A host `cargo metadata --locked` preflight rejects a stale
   `Cargo.lock`, and the build fails if the copy's `Cargo.toml`, `Cargo.lock` or
   extension `Cargo.toml` changed. The MinGW builds link without PE timestamps or
-  COFF symbol tables (`HyperPlatforms::MINGW_RUSTFLAGS`). Each archive is then
-  rebuilt from an empty Cargo home, rb-sys-dock cache and work copy, and the job
-  fails unless both SHA256 match. The source gem builds on Ruby 3.4.12 with the
+  COFF symbol tables (`HyperPlatforms::MINGW_RUSTFLAGS`). The job then moves the
+  archive out, deletes the work copy, Cargo home and rb-sys-dock cache, rebuilds
+  from empty caches at the same absolute paths, and fails unless both SHA256
+  match. The paths must stay the same: rb-sys-dock mounts the work copy at its
+  host path with the cargo target directory under it, and darwin linkers embed
+  those absolute object paths (and an LC_UUID derived from them) in the binary.
+  Every CI run builds at the same workspace path, so a release rebuild
+  reproduces the bytes CI tested. The source gem builds on Ruby 3.4.12 with the
   commit time as `SOURCE_DATE_EPOCH`, as the candidate does.
 - The smoke jobs install every platform gem offline into a fresh `GEM_HOME` on
   a native runner for its OS and architecture (Ubuntu x86_64 and arm64, Alpine
@@ -353,9 +373,16 @@ runs, so a release builds and tests exactly what CI does:
   TLS calls. The source gem compiles at install time with Rust 1.98.0 on
   Ubuntu. Each leg uploads a `hyper-smoke-<platform>-<minor>` record of the
   archive's file name, SHA256 and platform with the Ruby that exercised it.
+- `candidate` ("Check the release candidate") needs the build and every smoke
+  job. With no secrets or `id-token`, it downloads the archives and evidence
+  into the same flat directories as `publish` and runs `release:build` (below)
+  at the run's checkout. In pull request CI this proves the publish inputs
+  before a release; in a release run it checks them before the approval prompt.
 - `verified` runs after the others with `if: always()` and sets its output to
   `true` only when every other job succeeded. No other job is conditional or
-  `continue-on-error`.
+  `continue-on-error`. Every smoke job needs the whole build matrix, so one
+  failing build leg skips every smoke leg and `candidate`, and `verified`
+  fails.
 
 `publish` needs `hyper_gems` and runs only when its result is `success` and its
 `verified` output is `true`. A failed or skipped job skips every job that needs
@@ -420,8 +447,9 @@ PR:
    `https://rubygems.org/api/v1/gems/connectrpc-hyper.json`.
 3. Recommended: make `Hyper gems / Verified` a required status check on main,
    so a PR cannot merge with a failing or skipped archive leg.
-4. The `release` approval prompt appears only after every `hyper_gems` job
-   succeeded. Review that run's build and smoke logs before approving.
+4. The `release` approval prompt appears only after every `hyper_gems` job,
+   including `Check the release candidate`, succeeded. Review that run's build,
+   smoke and candidate logs before approving.
 
 
 Without a required reviewer, merging a release PR publishes without a further
@@ -442,6 +470,12 @@ cause, then resume in one of two ways:
   `hyper_gems` job, rebuilds and retests the hyper archives first.
 - Dispatch the release workflow on the same tag. That is a new run: it rebuilds
   and retests all nine hyper archives before `publish`.
+
+The hyper-gems artifacts are kept for 14 days. A publish-only re-run more than
+14 days after the build, for example after a long approval wait, fails at the
+download step before it uploads or pushes anything. If a publish-only re-run is
+skipped or cannot download the run's artifacts, dispatch the workflow on the
+same tag to rebuild and retest them.
 
 Either way the candidate is rebuilt from the tagged commit, and its bytes must
 match every asset already on the draft and every archive already on
