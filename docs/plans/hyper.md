@@ -111,9 +111,12 @@ stage and reset its stream.
   resumes the same operation state and never repeats a side effect (a
   `write` enqueues its bytes once, then waits for hyper to pull them). The
   read and write directions of one stream progress independently (core allows
-  one reader and one writer concurrently, which offload makes real), and
+  one reader and one writer concurrently, which offload makes real when the
+  pool has a worker for each: async builds io-event's pool with one worker by
+  default, which runs parked waits from different fibers one at a time), and
   `abort` signals and wins over busy operations instead of skipping when a
-  lock is held.
+  lock is held. The close wait (D13) never offers offload; Ruby moves it to a
+  helper thread instead.
 - D5 Connections: `connections: :pooled` (default) keeps one *admitting* HTTP/2
   connection per origin per transport; a connection that received GOAWAY stops
   admitting, drains its existing streams and retires on its own while a new one
@@ -224,23 +227,44 @@ stage and reset its stream.
   lazy exchanges and pending retries; lets in-flight calls finish within grace,
   then aborts the rest and waits for the owned connection tasks to end (no
   detached tasks); true when drained, false after forced teardown. Repeated and
-  concurrent calls share the first outcome. A transport closed before fork
-  stays closed. Teardown is a runtime task started by the first close, so it
-  completes however closers are interrupted; every closer, concurrent ones
-  included, waits in native close for the published outcome (offloaded to a
-  fiber scheduler's worker pool on Ruby 4.0, per D4) and raises a held
-  exception afterwards. Forced teardown fails each call it ends `unavailable` with one
-  of two phrases: the admission phrase if the call's own setup saw closing
-  first, otherwise `HTTP transport failed: connection closed`. Which of the
-  two is not guaranteed, and no other phrase is possible; correction round 5
+  concurrent calls share the first call's grace (reserved when it starts
+  closing, so a later closer that reaches native close first still uses it)
+  and outcome. A transport closed before fork stays closed. Teardown is a
+  runtime task started by the first close, so it completes however closers
+  are interrupted; every closer, concurrent ones included, waits in native
+  close for the published outcome and raises a held exception afterwards.
+  Under a fiber scheduler, on Ruby 3.4 and 4.0 alike, a closer on a
+  non-blocking fiber runs native close on a helper thread joined
+  with `Thread#value` (io-event's `process_wait` pattern), so the wait takes
+  neither the reactor thread nor a worker-pool worker and sibling fibers'
+  calls can drain; an exception raised into the closer meanwhile (async's
+  `Task#stop`) is held until the helper returns. That closer holds no
+  interrupt mask, because threads that sibling fibers start would copy it,
+  and waits for the transport lock only as a non-blocking fiber, because
+  `Mutex#unlock` wakes one waiter and a sibling woken through the scheduler
+  cannot run while a blocking wait sleeps the reactor thread. An exception
+  that lands while it reserves the close or starts the helper is held too,
+  and the closer retries; a lost helper reference can start a second helper,
+  which waits on the same teardown. The helper records the published outcome
+  itself; a closer that leaves before publication (a killed fiber or thread)
+  records nothing, and the next closer waits on the same teardown. If no
+  helper thread can start (`ThreadError`), the closer waits on its own
+  thread. A closer without a scheduler or inside `Fiber.blocking {}` waits on
+  the calling thread with thread interrupts deferred, so `Thread#kill` lands
+  after close returns. Forced teardown fails each call it
+  ends `unavailable` with one of two phrases: the admission phrase if the
+  call's own setup saw closing first, otherwise
+  `HTTP transport failed: connection closed`. Which of the two is not
+  guaranteed, and no other phrase is possible; correction round 5
   replaced round 4's choice by whether a request was queued, which picked the
   wrong phrase once teardown landed during a streaming dispatch.
 - D14 Windows: cross-build `x64-mingw-ucrt` and run a non-gating Windows CI job
   (specs minus fork and the Linux DNS shim, plus a Go interop subset) against
   that artifact. If green, `docs/support.md` lists Windows x64 as a provisional,
   hyper-only platform; otherwise it moves to a follow-up.
-  `aarch64-mingw-ucrt` is build-only. Since #174 its install and smoke calls on
-  Windows 11 arm64 gate CI and the release; the specs still do not run there.
+  `aarch64-mingw-ucrt` was build-only at first. Since #174 its install and
+  smoke calls on Windows 11 arm64 gate CI and the release; since #175 the specs
+  and the Go interop subset also run there in the non-gating Windows job.
 - D15 Release wiring: the gem's version must follow the train (its gemspec
   derives the `connectrpc` requirement from it). `ReleaseTrain#check_configuration!`
   requires Release Please `extra-files` to equal the version files of
@@ -391,6 +415,11 @@ cause, abort in a masked `ensure`. Rust owns connections, streams and waits.
   D13); each needs its own evidence, not only the happy path.
 - Fiber scheduler without the worker pool (or Ruby 3.4): the call blocks the
   reactor thread; documented, PerCallTransport remains the reactor option.
+  `close` on a non-blocking fiber under a fiber scheduler waits on a helper
+  thread, so it does not block the reactor; inside `Fiber.blocking {}` it
+  still waits on the calling thread. With the pool, async's default single
+  worker runs parked waits from different fibers one at a time; a larger
+  `IO::Event::WorkerPool` is the documented remedy.
 - rustls strictness (CN-only, X.509 v1, single-label wildcard, CA as leaf,
   encrypted keys): `TLS verification failed` or `ArgumentError`; documented.
 - Server RST_STREAM codes map as the Async transport does (3 and 11
@@ -428,14 +457,14 @@ cause, abort in a masked `ensure`. Rust owns connections, streams and waits.
 | Fork | Subprocess with an in-flight stream in another thread, h2c and TLS: child calls work, parent stream intact, parent reuses its connection; fork while the runtime or root cache initialises; parent closes while a long-lived child stays alive (the peer sees the close, or the documented limitation); a transport closed before fork stays closed in the child; a child that inherits a pending close, or never built its own driver, closes at once with `true` and then fails calls with the closed phrase |
 | TLS parity | ca_file appended to native roots; `SSL_CERT_FILE` override; chain/key validation errors name only the input, without a leaking cause; mTLS; name mismatch and IP SAN; provider-rejected identity (Ed448); TLS options on `http://` raise; rustls rejections pinned (CN-only, v1, single-label wildcard, CA as leaf, encrypted key) |
 | Errors | Fixed phrases for refused, DNS, TLS verify, closed, ALPN mismatch, deadline; server RST_STREAM with each mapped code |
-| Offload | Ruby 4.0 with async worker pool: sibling task progresses, stop/cancel/deadline/raise/kill land; simultaneous read and write on one bidi stream from two fibers, then abort or stop while both are parked; a scheduler's `blocking_operation_wait` hook receives waits on 4.0 and never on 3.4; Ruby 3.4 and without the pool behave as a plain blocking call |
+| Offload | Ruby 4.0 with async worker pool: sibling task progresses, stop/cancel/deadline/raise/kill land; simultaneous read and write on one bidi stream from two fibers on a two-worker pool, then abort or stop while both wait bodies run; a scheduler's `blocking_operation_wait` hook receives waits on 4.0 and never on 3.4; Ruby 3.4 and without the pool behave as a plain blocking call; on both Rubies, with and without the pool, a sibling fiber's in-flight call drains while another fiber waits in close |
 | Spurious wake | A wake without a pending interrupt during a blocked `write` does not duplicate the message on the wire |
-| Close | `close(grace:)` drains in-flight calls (true), forced (false), later calls fail with the closed phrase; `close(grace: 0)` racing setup, a retry or a streaming dispatch (write first and head first), with one of the two forced-teardown phrases and never a bare `HTTP transport failed`; repeated close shares the outcome, and a concurrent closer stopped by `Task#stop` raises only after it is published; a task aborted before its first poll is still counted until its socket closes; a `Task#stop` on the closer lets a sibling fiber's call drain before the stop is raised |
+| Close | `close(grace:)` drains in-flight calls (true), forced (false), later calls fail with the closed phrase; `close(grace: 0)` racing setup, a retry or a streaming dispatch (write first and head first), with one of the two forced-teardown phrases and never a bare `HTTP transport failed`; repeated close shares the outcome, and a concurrent closer stopped by `Task#stop` while it waits raises only after it is published; a task aborted before its first poll is still counted until its socket closes; a `Task#stop` on the closer lets a sibling fiber's call drain before the stop is raised |
 | Keepalive move | Core `Keepalive` specs (validation, equality, freezing); `ConnectRPC::Async::Keepalive.equal?(ConnectRPC::Keepalive)` from installed packages in both require orders; existing Async keepalive specs pass |
 | Fast path | Connect unary passes all unary specs and does one native wait (spec on an internal counter or a GVL-contention probe) |
 | Package | Source gem builds and installs in a clean GEM_HOME and runs a smoke call; exact manifest, MIT plus third-party notice, push host, MFA |
 | Cross | All platform gems build in CI as artifacts; Linux gems smoke-tested on their arch (native arm64 runner) and libc (Alpine containers); arm64-darwin smoke on a macOS runner (non-gating); x86_64-darwin is build-only, and `docs/support.md` says which artifacts were built, installed and exercised. Since #174 every platform gem and the source gem builds twice and smokes on a native runner for both Rubies, gating, including x86_64-darwin on macOS Intel |
-| Windows | Non-gating job runs specs and a Go interop subset against the x64-mingw-ucrt gem |
+| Windows | Non-gating job runs specs and a Go interop subset against the x64-mingw-ucrt and aarch64-mingw-ucrt gems on x64 and arm64 runners, both Rubies |
 | Types | `rbs:check` (inventory, consumers, caller evidence) and `rbs:package` |
 | Repository | `hyper:verify`, `mise run verify`, `mise run rack:verify`, `mise run check`, `mise run rbs:check`, `mise run rbs:package` before Ready |
 
@@ -451,7 +480,8 @@ environment ignored with an explicit proxy, and the User-Agent on the wire.
   workflow artifact; plus the MSRV build.
 - `hyper_smoke` (needs `hyper_cross`): install and smoke each Linux gem on its
   arch and libc for both Rubies.
-- `hyper_windows` (needs `hyper_cross`, non-gating).
+- `hyper_windows` (non-gating): x64 on `windows-2025` and aarch64 on
+  `windows-11-arm`, both Rubies, against the cross-built gems.
 - Since #174, `hyper_cross` and `hyper_smoke` are replaced by `hyper_gems`,
   which calls the reusable hyper-gems workflow that `release.yml` also calls:
   build jobs per archive, smoke jobs per platform and Ruby on native runners,
@@ -468,6 +498,22 @@ Rebased onto `ccffd92`, added `proxy:` (D18) and verified the User-Agent.
 Core's `ClientTLS` stays a private constant, so the gem keeps its own copy of
 the validation, with a spec feeding the same inputs to both transports.
 
+## Windows (#175)
+
+The non-gating Windows job's reactor-child failures had two causes, both
+fixed. console 1.38.0 under `GITHUB_ACTIONS=true` picks its XTerm output even
+for a pipe, whose `IO#winsize` raises `Errno::EBADF` on Windows; the task
+warning replaced the task's own error and could leave a reactor running, so
+spec children set `CONSOLE_OUTPUT=Serialized`. A closer's native wait
+offloaded to async's single-worker pool (or, on Ruby 3.4 and without the
+pool, held on the reactor thread) kept a sibling fiber's call from running
+its next wait, so the grace expired into forced teardown; Windows hit that
+ordering naturally, and Linux reproduced it by delaying the sibling. Close now
+waits on a helper thread under a fiber scheduler (D13), and the offload cases
+run on every platform. `hyper_windows` runs the specs and the Go interop
+subset against the x64 and aarch64 gems on `windows-2025` and
+`windows-11-arm`, for both Rubies.
+
 ## Follow-ups
 
 - Release workflow: a build matrix before publish, one archive per platform
@@ -479,23 +525,3 @@ the validation, with a spec feeding the same inputs to both transports.
   hyper-gems workflow builds each archive twice in digest-pinned osxcross and
   other rb-sys-dock images and smokes it on native runners, including macOS
   arm64 and Intel; see [releasing](../releasing.md#connectrpc-hyper-archives).
-- Windows aarch64 runtime evidence. Install and smoke calls on Windows 11 arm64
-  now gate the release; the specs do not run there.
-- Windows x64: a reactor child whose native wait runs on the Async reactor
-  thread itself (Ruby 3.4, or 4.0 without the worker pool) never finishes in
-  the non-gating job, while the same wait offloaded to the worker pool passes.
-  The cause is not established; those offload cases run on Linux only until a
-  Windows reproduction finds it. The same job also failed the case where a
-  sibling fiber's call drains after `Task#stop` lands on a closing task (Ruby
-  4.0, with the pool): the sibling never ran within the grace, consistent with
-  the stopped closer's re-entered wait running on the reactor thread, so it
-  is Linux-only too. A reviewer's hypothesis, untested: the failing cases take
-  the plain `rb_nogvl` path with `RB_NOGVL_INTR_FAIL`, and if `rb_nogvl` keeps
-  returning without running the body while `thread_check_ints` neither raises
-  nor clears the pending flag, the wait loop spins holding the GVL and
-  starves sibling fibers. Probe: count iterations where nothing ran
-  (`ran == 0`), or print `Native.wait_bodies` and `resumed_waits` when the
-  child times out. Update (#174, from #175's investigation): these Windows
-  hangs came from the spec harness's console output, not the extension. #175
-  is fixing a separate `close` wait on Ruby 4.0 with a single-worker async
-  pool, which affects every platform, and owns the Linux-only tags.
