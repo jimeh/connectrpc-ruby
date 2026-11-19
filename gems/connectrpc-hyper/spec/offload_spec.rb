@@ -79,6 +79,67 @@ RSpec.describe "Inside an Async reactor" do
     eval(output.lines.last) # rubocop:disable Security/Eval
   end
 
+  # PROBE(#175): bisect the Windows reactor hang; removed before review.
+  if ENV["HYPER_PROBE"]
+    probe_variants = {
+      "ticker_native_deadline" => ["peer_client.unary(MSG.new(value: 'hang'), timeout: 0.3)", true],
+      "ticker_native_ok" => ["peer_client.unary(MSG.new(value: 'ok'), timeout: 5).message.value", true],
+      "ticker_busy_raise" => ["t = monotonic + 0.3; nil while monotonic < t; raise ConnectRPC::Error.new(:deadline_exceeded, 'x')", true],
+      "ticker_busy_ok" => ["t = monotonic + 0.3; nil while monotonic < t; :ok", true],
+      "ticker_busy_short_ok" => ["t = monotonic + 0.005; nil while monotonic < t; :ok", true],
+      "noticker_native_deadline" => ["peer_client.unary(MSG.new(value: 'hang'), timeout: 0.3)", false],
+      "noticker_busy_raise" => ["t = monotonic + 0.3; nil while monotonic < t; raise ConnectRPC::Error.new(:deadline_exceeded, 'x')", false],
+    }
+    probe_variants.each do |name, (work, ticker)|
+      it "PROBE #{name}" do
+        output, status = ruby_child(<<~RUBY, env: { "CONNECTRPC_HYPER_PROBE" => "1" }, timeout: 20)
+          require "async"
+          def mark(m) = Fiber.blocking { $stderr.syswrite("MARK \#{format('%.3f', monotonic)} \#{m}\\n") }
+          def monotonic = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+          $tasks = {}
+          Thread.new do
+            sleep 6
+            $tasks.each { |k, t| Fiber.blocking { $stderr.syswrite("TASK \#{k} \#{t.status rescue '?'}\\n  \#{(t.fiber&.backtrace || []).first(20).join("\\n  ")}\\n") } }
+          end
+          peer_client = client(#{peer['grpc_h2c'].dump}, ConnectRPC::Hyper::Transport.new)
+          mark "start"
+          Async do |task|
+            $tasks[:root] = task
+            ticks = 0
+            if #{ticker}
+              $tasks[:ticker] = task.async { loop { sleep 0.01; ticks += 1 } }
+            end
+            mark "spawned"
+            result = begin
+              child = task.async do
+                mark "child start"
+                r = (#{work})
+                mark "child done"
+                r
+              rescue Exception => e
+                mark "child raised \#{e.class}"
+                raise
+              end
+              $tasks[:child] = child
+              mark "waiting"
+              child.wait
+            rescue ConnectRPC::Error => e
+              e.code
+            end
+            mark "waited \#{result.inspect}"
+            $tasks[:ticker]&.stop
+            mark "stopped ticker ticks=\#{ticks}"
+            Fiber.blocking { $stdout.syswrite([result, ticks].inspect + "\\n") }
+          end
+          mark "end"
+        RUBY
+        warn "PROBE #{name} status=#{status.inspect} output=#{output.inspect}"
+      rescue RuntimeError => e
+        warn "PROBE #{name} #{e.message}"
+      end
+    end
+  end
+
   # On Windows (non-gating job, x64-mingw-ucrt) a child whose native wait
   # runs on the reactor thread itself never finishes, while the same wait
   # offloaded to the worker pool passes; the cause is not established (see

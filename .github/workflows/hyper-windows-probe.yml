@@ -63,7 +63,7 @@ jobs:
       fail-fast: false
       matrix:
         ruby: ["3.4", "4.0"]
-        probe: ["1", "ruby"]
+        probe: ["1"]
         include:
           - { platform: x64-mingw-ucrt, runner: windows-2025 }
     defaults:
@@ -108,7 +108,7 @@ jobs:
         working-directory: gems/connectrpc-hyper
         run: |
           ruby scripts/use_artifact.rb ../../vendor/hyper/cross/${{ matrix.platform }}
-          bundle exec rspec spec/offload_spec.rb --format documentation
+          bundle exec rspec spec/offload_spec.rb --format documentation -e PROBE
 
   windows_arm:
     name: Probe aarch64-mingw-ucrt / Ruby ${{ matrix.ruby }}
@@ -162,4 +162,4 @@ jobs:
         working-directory: gems/connectrpc-hyper
         run: |
           ruby scripts/use_artifact.rb ../../vendor/hyper/cross/aarch64-mingw-ucrt
-          bundle exec rspec spec/offload_spec.rb --format documentation
+          bundle exec rspec spec/offload_spec.rb --format documentation -e PROBE
