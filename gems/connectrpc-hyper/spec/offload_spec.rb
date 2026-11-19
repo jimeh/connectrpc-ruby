@@ -7,18 +7,8 @@ RSpec.describe "Inside an Async reactor" do
   offload = Gem::Version.new(RUBY_VERSION) >= Gem::Version.new("4.0")
 
   def reactor_child(code, pool:)
-    # PROBE(#175): temporary diagnostics; removed before review.
-    probe_env = { "CONNECTRPC_HYPER_PROBE" => ENV.fetch("HYPER_PROBE", nil) }
-    ruby_child(<<~RUBY, env: { "ASYNC_SCHEDULER_WORKER_POOL" => pool ? "true" : nil, **probe_env }, timeout: 40)
+    ruby_child(<<~RUBY, env: { "ASYNC_SCHEDULER_WORKER_POOL" => pool ? "true" : nil }, timeout: 60)
       require "async"
-      at_exit { ConnectRPC::Hyper.const_get(:Native).probe_drain } if ENV["CONNECTRPC_HYPER_PROBE"]
-      if ENV["CONNECTRPC_HYPER_PROBE"] == "ruby"
-        Thread.new do
-          sleep 8
-          Thread.list.each { |t| warn "RUBYPROBE \#{t.inspect}\n  \#{(t.backtrace || []).first(25).join("\n  ")}" }
-          warn "RUBYPROBE bodies=\#{ConnectRPC::Hyper.const_get(:Native).wait_bodies} resumed=\#{ConnectRPC::Hyper.const_get(:Native).resumed_waits}"
-        end
-      end
       def active_waits = ConnectRPC::Hyper.const_get(:Native).active_waits
       # Yields to the reactor until `count` native waits are parked, after
       # `ready` (when given) has a value.
@@ -80,77 +70,11 @@ RSpec.describe "Inside an Async reactor" do
     eval(output.lines.last) # rubocop:disable Security/Eval
   end
 
-  # PROBE(#175): bisect the Windows reactor hang; removed before review.
-  if ENV["HYPER_PROBE"]
-    probe_variants = {
-      "ticker_native_deadline" => ["peer_client.unary(MSG.new(value: 'hang'), timeout: 0.3)", true],
-      "ticker_busy_raise" => ["t = monotonic + 0.3; nil while monotonic < t; raise ConnectRPC::Error.new(:deadline_exceeded, 'x')", true],
-      "ticker_busy_ok" => ["t = monotonic + 0.3; nil while monotonic < t; :ok", true],
-      "ticker_busy_short_raise" => ["t = monotonic + 0.005; nil while monotonic < t; raise ConnectRPC::Error.new(:deadline_exceeded, 'x')", true],
-      "ticker_raise_runtime" => ["t = monotonic + 0.3; nil while monotonic < t; raise 'plain'", true],
-      "noticker_native_deadline" => ["peer_client.unary(MSG.new(value: 'hang'), timeout: 0.3)", false],
-      "noticker_busy_raise" => ["t = monotonic + 0.3; nil while monotonic < t; raise ConnectRPC::Error.new(:deadline_exceeded, 'x')", false],
-    }
-    probe_variants.each do |name, (work, ticker)|
-      it "PROBE #{name}" do
-        output, status = ruby_child(<<~RUBY, env: { "CONNECTRPC_HYPER_PROBE" => "1" }, timeout: 20)
-          require "async"
-          def mark(m) = Fiber.blocking { $stderr.syswrite("MARK \#{format('%.3f', monotonic)} \#{m}\\n") }
-          def monotonic = Process.clock_gettime(Process::CLOCK_MONOTONIC)
-          $tasks = {}
-          Thread.new do
-            sleep 6
-            $tasks.each { |k, t| Fiber.blocking { $stderr.syswrite("TASK \#{k} \#{t.status rescue '?'}\\n  \#{(t.fiber&.backtrace || []).first(20).join("\\n  ")}\\n") } }
-          end
-          peer_client = client(#{peer['grpc_h2c'].dump}, ConnectRPC::Hyper::Transport.new)
-          mark "start"
-          Async do |task|
-            $tasks[:root] = task
-            ticks = 0
-            if #{ticker}
-              $tasks[:ticker] = task.async { loop { sleep 0.01; ticks += 1 } }
-            end
-            mark "spawned"
-            result = begin
-              child = task.async do
-                mark "child start"
-                r = (#{work})
-                mark "child done"
-                r
-              rescue Exception => e
-                mark "child raised \#{e.class}"
-                raise
-              end
-              $tasks[:child] = child
-              mark "waiting"
-              child.wait
-            rescue ConnectRPC::Error => e
-              e.code
-            rescue Exception => e
-              mark "root got \#{e.class}: \#{e.message[0, 300]}\n  \#{(e.backtrace || []).first(25).join("\n  ")}"
-              c = e.cause
-              mark "cause \#{c.class}: \#{c.message[0, 300]}\n  \#{(c.backtrace || []).first(15).join("\n  ")}" if c
-              raise
-            end
-            mark "waited \#{result.inspect}"
-            $tasks[:ticker]&.stop
-            mark "stopped ticker ticks=\#{ticks}"
-            Fiber.blocking { $stdout.syswrite([result, ticks].inspect + "\\n") }
-          end
-          mark "end"
-        RUBY
-        warn "PROBE #{name} status=#{status.inspect} output=#{output.inspect}"
-      rescue RuntimeError => e
-        warn "PROBE #{name} #{e.message}"
-      end
-    end
-  end
-
   # On Windows (non-gating job, x64-mingw-ucrt) a child whose native wait
   # runs on the reactor thread itself never finishes, while the same wait
   # offloaded to the worker pool passes; the cause is not established (see
   # the hyper plan's follow-ups), so these cases run on Linux only.
-  reactor_thread = {}
+  reactor_thread = { linux_only: true }
 
   it "#{offload ? 'lets sibling tasks run' : 'blocks the reactor'} while a call waits, with the worker pool",
      **(offload ? {} : reactor_thread) do
@@ -377,43 +301,32 @@ RSpec.describe "Inside an Async reactor" do
     # the closer's wait re-entered after the stop on the reactor thread: the
     # same unexplained reactor-thread wait as above.
     it "lets a sibling fiber's call drain after Task#stop lands on a closing task", **reactor_thread do
-      warn "PROBE sibling drain"
       output, status = reactor_child(<<~RUBY, pool: true)
         transport = ConnectRPC::Hyper::Transport.new
         driver = nil
         outcome = Async do |task|
           sent = Thread::Queue.new
           release = Thread::Queue.new
-          mark = ->(m) { Fiber.blocking { $stderr.syswrite("MARK \#{Process.clock_gettime(Process::CLOCK_MONOTONIC).round(3)} \#{m}\\n") } } # PROBE
           sibling = task.async do
             client(#{peer['grpc_h2c'].dump}, transport).client_stream(timeout: 30) do |writer|
               writer.send_message(MSG.new(value: "a"))
-              mark.("sibling sent")
               sent << true
               release.pop
-              mark.("sibling released")
-            end.message.value.tap { mark.("sibling finished") }
+            end.message.value
           rescue ConnectRPC::Error => e
-            mark.("sibling error \#{e.message}")
             e.message
           end
           sent.pop
-          mark.("root saw sent")
           driver = transport.instance_variable_get(:@driver)
           closer = task.async do
-            mark.("closer closing")
-            transport.close(grace: 5).tap { mark.("closer returned") }
+            transport.close(grace: 5)
           rescue Async::Stop
-            mark.("closer stopped")
             [:stopped, driver.close_outcome]
           end
           parked
-          mark.("root parked; stopping closer")
           closer.stop
-          mark.("root stopped closer; releasing")
           release << true
-          mark.("root released")
-          [closer.wait, sibling.wait].tap { mark.("root joined") }
+          [closer.wait, sibling.wait]
         end.wait
         p [outcome, transport.close(grace: 5), driver.stats[1..2]]
       RUBY
