@@ -773,8 +773,9 @@ copies the package's tracked and unignored files into
 if the build changed `Cargo.toml`, `Cargo.lock` or the extension's
 `Cargo.toml`, checks the gem and moves it to `vendor/hyper/cross/`, so several
 platforms can build from one checkout and the checkout stays clean. Cross
-builds use their own Cargo home, `vendor/hyper/cross-cargo`, and the
-rb-sys-dock cache `vendor/hyper/rb-sys-dock`. With `HYPER_CROSS_TWICE=1` it
+builds keep a Cargo home and rb-sys-dock cache per platform,
+`vendor/hyper/cross-cargo/<platform>` and `vendor/hyper/rb-sys-dock/<platform>`;
+run one build per platform at a time. With `HYPER_CROSS_TWICE=1` it
 deletes the work copy and both caches and rebuilds at the same absolute paths,
 because darwin binaries embed the build's absolute object paths. The `ruby` leaf requires Ruby
 3.4.12 and the commit time as `SOURCE_DATE_EPOCH`, so its archive equals the

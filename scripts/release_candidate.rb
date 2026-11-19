@@ -21,7 +21,7 @@ class ReleaseCandidate # rubocop:disable Metrics/ClassLength
   # replacing their contents. Sources default to local hyper:cross and
   # install_smoke.rb outputs; `gh run download` directories of the hyper-gems
   # artifacts work too. Returns [source, destination, count] per directory.
-  def self.collect!(root, sources) # rubocop:disable Metrics/AbcSize, Metrics/CyclomaticComplexity, Metrics/MethodLength
+  def self.collect!(root, sources) # rubocop:disable Metrics/AbcSize, Metrics/CyclomaticComplexity, Metrics/MethodLength, Metrics/PerceivedComplexity
     archives, evidence = case sources
                          in [] then %w[vendor/hyper/cross vendor/hyper/evidence].map { File.join(root, it) }
                          in [String, String] then sources.map { File.expand_path(it) }
@@ -30,7 +30,10 @@ class ReleaseCandidate # rubocop:disable Metrics/ClassLength
     inputs = { File.join(root, "vendor/hyper/release-artifacts") => [archives, "connectrpc-hyper-*.gem"],
                File.join(root, "vendor/hyper/release-evidence") => [evidence, "*.json"] }
     plan = inputs.map do |destination, (source, pattern)|
-      raise "Collection source is missing: #{source}" unless Dir.exist?(source)
+      raise ArgumentError, "Collection source is missing: #{source}" unless Dir.exist?(source)
+
+      overlap = inputs.keys.find { |output| overlapping?(source, output) }
+      raise ArgumentError, "Collection source #{source} overlaps the collection output #{overlap}" if overlap
 
       found = Dir.glob(File.join(source, "**", pattern))
       duplicates = found.group_by { File.basename(it) }.select { |_, files| files.size > 1 }.keys
@@ -45,6 +48,15 @@ class ReleaseCandidate # rubocop:disable Metrics/ClassLength
       [source, destination, found.size]
     end
   end
+
+  # Replacing an output would delete a source that is, or lies inside or
+  # around, that output.
+  def self.overlapping?(source, output)
+    source = File.realpath(source)
+    output = File.exist?(output) ? File.realpath(output) : File.expand_path(output)
+    [[source, output], [output, source]].any? { |path, parent| "#{path}/".start_with?("#{parent}/") }
+  end
+  private_class_method :overlapping?
 
   def initialize(train = ReleaseTrain.new)
     @train = train

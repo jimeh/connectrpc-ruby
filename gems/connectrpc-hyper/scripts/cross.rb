@@ -108,10 +108,11 @@ build = lambda do |work, cargo_home, cache_dir|
 end
 
 work = File.join(root, "vendor/hyper/cross-work", platform)
-# Cross builds keep their own Cargo home: the twice build deletes it, and
-# hyper:package and rbs:package share vendor/hyper/cargo.
-cargo_home = File.join(root, "vendor/hyper/cross-cargo")
-cache_dir = File.join(root, "vendor/hyper/rb-sys-dock")
+# Each platform keeps its own Cargo home and rb-sys-dock cache: the twice build
+# deletes both while other platforms may be building, and hyper:package and
+# rbs:package share vendor/hyper/cargo.
+cargo_home = File.join(root, "vendor/hyper/cross-cargo", platform)
+cache_dir = File.join(root, "vendor/hyper/rb-sys-dock", platform)
 built = build.call(work, cargo_home, cache_dir)
 archive = File.join(output, File.basename(built))
 FileUtils.mv(built, archive)

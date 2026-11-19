@@ -118,6 +118,23 @@ RSpec.describe ReleaseCandidate do
       expect { described_class.collect!(root, [archives]) }.to raise_error(ArgumentError)
       expect(Dir.children(File.join(root, "vendor/hyper/release-artifacts"))).to eq(["kept.gem"])
     end
+
+    it "rejects a missing source, or one that overlaps an output, before replacing anything" do
+      root = directory("root")
+      artifacts = File.join(root, "vendor/hyper/release-artifacts")
+      archive = File.join(artifacts, "connectrpc-hyper-#{version}.gem")
+      write(archive)
+      evidence = directory("evidence")
+
+      expect { described_class.collect!(root, [File.join(root, "missing"), evidence]) }
+        .to raise_error(ArgumentError, /source is missing/)
+      [artifacts, File.join(root, "vendor/hyper"), File.join(artifacts, "nested")].each do |source|
+        FileUtils.mkdir_p(source)
+        expect { described_class.collect!(root, [source, evidence]) }
+          .to raise_error(ArgumentError, /overlaps the collection output/)
+      end
+      expect(File.exist?(archive)).to be(true)
+    end
   end
 
   describe "#check_platform_archive!" do

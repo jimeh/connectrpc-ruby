@@ -216,9 +216,10 @@ minor, in two flat directories named by `RELEASE_HYPER_ARTIFACTS` and
 `RELEASE_HYPER_EVIDENCE`. Without them it stops and names both variables. The
 complete set comes from a hyper-gems run, and the local checkout must be the
 exact commit that run checked out. The source gem and the canonical build both
-take `SOURCE_DATE_EPOCH` from the checked-out commit, so any other commit fails
-with "Tested source gem differs from the canonical build". A pull request run
-checks out GitHub's synthetic merge commit (`refs/pull/<number>/merge`,
+take `SOURCE_DATE_EPOCH` from the checked-out commit, and the candidate rejects
+a tested source gem whose bytes differ from its own build ("Tested source gem
+differs from the canonical build"), which a different commit normally causes.
+A pull request run checks out GitHub's synthetic merge commit (`refs/pull/<number>/merge`,
 `GITHUB_SHA` for the `pull_request` event), not the PR head. Read the commit
 from the checkout step's log of the run that produced the artifacts, which
 prints `HEAD is now at <sha>` and then the full SHA, and check it out detached
