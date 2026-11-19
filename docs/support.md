@@ -125,10 +125,13 @@ below gates the release:
 Smoke calls are real Connect unary calls over cleartext HTTP/1.1 and TLS
 against a local server. The two Windows platforms are provisional for
 connectrpc-hyper only; every other package keeps the Ubuntu x86_64 profile.
-On Windows, a call whose native wait runs on an Async reactor thread can hang
-until [#175](https://github.com/jimeh/connectrpc-ruby/issues/175) is fixed.
-Expect the Windows platforms to change or be withdrawn without a minor release
-while they are provisional.
+Their full specs are not gating yet. The reactor-thread hangs the Windows spec
+job showed came from the spec harness's console output, not from
+connectrpc-hyper. [#175](https://github.com/jimeh/connectrpc-ruby/issues/175)
+is separately fixing a `close` wait on Ruby 4.0 with a single-worker async
+pool, which affects every platform, not only Windows. Expect the Windows
+platforms to change or be withdrawn without a minor release while they are
+provisional.
 
 The transport verifies TLS with rustls, not OpenSSL, so it is stricter than
 NetHTTP and the Async transports: server certificates that are CN-only, X.509
