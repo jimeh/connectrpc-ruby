@@ -937,12 +937,14 @@ client.call(method, message, timeout: 2) # Any thread, or inside an Async task.
 ```
 
 `PerCallTransport.new(ca_file: nil, certificate_chain: nil, private_key: nil,
-connect_timeout: 10)` validates its options and compiles one TLS snapshot at
-construction, with the system roots plus the optional `ca_file`, and holds only
-frozen configuration. It has no `origin:` and no `close`: every call dials the
-scheme, host and port of its request URL, so one instance serves every origin
-from any number of threads. `http` URLs use h2c with prior knowledge and
-`https` URLs use TLS with ALPN `h2`. The request URL, including core's path
+connect_timeout: 10, proxy: :environment)` validates its options, compiles one
+TLS snapshot at construction, with the system roots plus the optional
+`ca_file`, takes its [proxy](#proxies) snapshot and holds only frozen
+configuration. It has no `origin:` and no `close`: every call dials the scheme,
+host and port of its request URL, or tunnels to them through a proxy, so one
+instance serves every origin from any number of threads. `http` URLs use h2c
+with prior knowledge and `https` URLs use TLS with ALPN `h2`. The request URL,
+including core's path
 prefix and a GET query, reaches the server unchanged. A URL that is not HTTP(S),
 has no host or carries userinfo, and TLS options with an `http` URL, raise
 `ArgumentError` before any socket opens; the transport never falls back to
@@ -996,6 +998,52 @@ and bidi streaming before any I/O.
 
 Instrumentation reports `PerCallTransport` as the transport class, with the
 same call facts, outcomes and completions as the other HTTP/2 clients.
+
+### Proxies
+
+Since 0.3.0, `PerCallTransport` can reach its origins through an `http://`
+proxy. The pooled `Transport`, `ThreadedTransport` and `HTTP1Transport` take no
+`proxy:` option and never read the proxy environment.
+
+```ruby
+ConnectRPC::Async::PerCallTransport.new                     # proxy: :environment
+ConnectRPC::Async::PerCallTransport.new(proxy: "http://user:secret@proxy.internal:3128")
+ConnectRPC::Async::PerCallTransport.new(proxy: nil)         # Always direct.
+```
+
+- `proxy: :environment`, the default, reads `HTTPS_PROXY` and `NO_PROXY` once,
+  at construction, and applies them as grpc-go does: every target, h2c or TLS,
+  is looked up as if it were `https://host:port` with the request URL's port
+  (80 for an `http` URL without one). `HTTP_PROXY` is never used, because
+  HTTP/2 always tunnels and grpc-go ignores it too. This differs from NetHTTP,
+  which sends `http://` URLs through `HTTP_PROXY`. `NO_PROXY`, `localhost` and
+  loopback addresses connect directly, and values are parsed exactly as for
+  [NetHTTP](../../docs/unary.md#nethttp-tls-and-proxies).
+- A String or URI proxies every call, including loopback and `NO_PROXY` hosts;
+  `nil` always connects directly. A value that is not a valid proxy raises
+  `ArgumentError` (`Invalid proxy configuration`), and an `https://` or
+  `socks5://` proxy raises `ArgumentError` (`Unsupported proxy scheme`), both
+  with no `cause`. `inspect` shows only `proxy=environment`, `explicit` or
+  `direct`.
+- Every proxied call opens one TCP connection to the proxy and sends
+  `CONNECT host:port` with a matching `Host` field, since HTTP/2 cannot use a
+  forward proxy. Proxy URL userinfo is percent-decoded and sent as
+  `Proxy-Authorization: Basic`. The `CONNECT` request carries no
+  `User-Agent`. After a 200 reply, TLS verifies the target host, with its SNI
+  and ALPN `h2`, or h2c starts, exactly as without a proxy. Bytes an h2c server
+  sends right after the reply stay in the connection.
+- The `CONNECT` exchange is part of the call's one setup attempt, so
+  `connect_timeout` bounds it, and so does Go's 60-second `CONNECT` cap. A
+  deadline or cancellation while it is pending ends the call with its own
+  outcome and closes the proxy connection.
+- An unusable environment proxy fails the call closed, never going direct and
+  before any socket opens. Proxy failures are `unavailable` with a fixed
+  reason: `invalid proxy address`, `unsupported proxy scheme`,
+  `proxy authentication failed` (status 407), `proxy tunnel refused` (any other
+  status but 200), `proxy tunnel failed` (a malformed, truncated or oversized
+  reply, or bytes after a 200 reply to a TLS target) and
+  `proxy tunnel timed out`. Error messages never include proxy URLs,
+  credentials or reply text.
 
 ## Explicit HTTP/1.1 client
 

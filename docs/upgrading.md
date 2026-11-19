@@ -139,8 +139,11 @@ These are additive; existing code keeps working once the rename above is done.
 - `ConnectRPC::Async::PerCallTransport` makes Connect and native gRPC unary
   and server-streaming calls over one HTTP/2 connection per call. It takes no
   origin, keeps no connection between calls and works from any thread or
-  inside a reactor. See
-  [one-off calls](../gems/connectrpc-async/README.md#one-off-calls).
+  inside a reactor. Its `proxy:` option defaults to `:environment`, which
+  honors `HTTPS_PROXY` and `NO_PROXY` for every target, h2c or TLS, as grpc-go
+  does; pass `proxy: nil` to always connect directly. See
+  [one-off calls](../gems/connectrpc-async/README.md#one-off-calls) and
+  [its proxies](../gems/connectrpc-async/README.md#proxies).
 
 ### Behavior changes
 

@@ -80,7 +80,8 @@ module PerCallHelpers
   # One call's boundary left nothing of its own behind.
   def expect_released(observation, dials: 1)
     expect(observation.fetch(:sockets).size).to eq(dials)
-    expect([observation.fetch(:open), observation.fetch(:foreign_dialers)]).to eq([[], []])
+    # Inspected, because RSpec's failure message would read a leaked socket.
+    expect([observation.fetch(:open).map(&:inspect), observation.fetch(:foreign_dialers)]).to eq([[], []])
     if observation.fetch(:path) == :threaded
       expect(observation.fetch(:owner_alive)).to be(false)
     else

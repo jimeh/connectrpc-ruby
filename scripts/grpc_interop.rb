@@ -9,6 +9,7 @@ $LOAD_PATH.unshift(File.join(root, "interop/grpc/ruby"), File.join(root, "spec/f
 require "peer_connect"
 require "echo_connect"
 require_relative "../gems/connectrpc-async/spec/support/helpers"
+require_relative "../gems/connectrpc-async/spec/support/connect_proxy"
 host_kind = ARGV.fetch(0, "async")
 raise "Expected async or falcon" unless %w[async falcon].include?(host_kind)
 
@@ -118,9 +119,9 @@ module GRPCInterop
 
   # Both codings through one PerCallTransport: each on its own plain thread,
   # then each inside a reactor task. Every call opens and closes its own
-  # connection to the request URL's origin.
-  def self.per_call_probe(origin, options, helpers)
-    per_call = ConnectRPC::Async::PerCallTransport.new(**options)
+  # connection to the request URL's origin, directly or through `proxy`.
+  def self.per_call_probe(origin, options, helpers, proxy: nil)
+    per_call = ConnectRPC::Async::PerCallTransport.new(proxy: proxy&.url, **options)
     clients = %i[identity gzip].map do |coding|
       PEER::Client.new(client: ConnectRPC::Client.new(base_url: origin, binding: BINDING, transport: per_call,
                                                       protocol: :grpc, encoding: coding))
@@ -175,7 +176,17 @@ Dir.mktmpdir("grpc-interop-", File.join(root, "vendor/grpc")) do |fixtures| # ru
         GRPCInterop.per_call_probe(origin, options, helpers)
         puts "PASS Ruby->grpc-go #{mode}/identity+gzip unary/server-stream and rich errors (headers-first, " \
              "trailers-only) through PerCallTransport from plain threads and inside a reactor"
+        proxy = ConnectProxy.new
+        GRPCInterop.per_call_probe(origin, options, helpers, proxy: proxy)
+        heads = Array.new(proxy.heads.size) { proxy.heads.pop }
+        authority = URI(origin).authority
+        # Two codings, from two threads and two tasks, five calls each.
+        raise "Proxy CONNECT heads" unless heads == ["CONNECT #{authority} HTTP/1.1\r\nHost: #{authority}\r\n\r\n"] * 20
+
+        puts "PASS Ruby->grpc-go #{mode}/identity+gzip unary/server-stream and rich errors through PerCallTransport " \
+             "tunnelled by a local HTTP CONNECT proxy, from plain threads and inside a reactor"
       ensure
+        proxy&.stop
         input.close
         unless process.join(5)
           Process.kill("TERM", process.pid)
