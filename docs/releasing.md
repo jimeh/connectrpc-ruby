@@ -375,16 +375,21 @@ runs, so a release builds and tests exactly what CI does:
   Ubuntu. Each leg uploads a `hyper-smoke-<platform>-<minor>` record of the
   archive's file name, SHA256 and platform with the Ruby that exercised it.
 - The darwin gems build on Linux in the osxcross-based rb-sys-dock images,
-  which contain Apple's `MacOSX11.1.sdk` (it also sets the macOS 11 floor).
+  which contain Apple's `MacOSX11.1.sdk`. The deployment targets, not the SDK,
+  set the floors: macOS 11 for `arm64-darwin` and 10.13 for `x86_64-darwin`.
   Apple's Xcode and SDK agreement licenses the SDK for use on Apple-branded
-  computers; osxcross leaves that question to its users. This was a maintainer
+  computers running macOS; osxcross leaves that question to its users. This was a maintainer
   decision for #174: the digest-pinned images rebuild darwin binaries bit for
   bit, while native macOS builds would follow each runner image's Xcode.
   Building on native macOS runners is the alternative if that changes.
-- `macos-15-intel` is GitHub's last Intel macOS image, supported until about
-  August 2027. After that, `x86_64-darwin` keeps building but loses its native
-  smoke runner; decide then whether to keep shipping it untested natively or
-  drop it.
+- The `x86_64-darwin` smokes run on `macos-15-intel`, which GitHub announced
+  as supported until about August 2027
+  ([runner-images #13045](https://github.com/actions/runner-images/issues/13045)).
+  `macos-26-intel` has been generally available since February 2026
+  ([changelog](https://github.blog/changelog/2026-02-26-macos-26-is-now-generally-available-for-github-hosted-runners/))
+  and is the move when `macos-15-intel` retires. Without any Intel runner,
+  `x86_64-darwin` would keep building but lose its native smoke; decide then
+  whether to ship it untested natively or drop it.
 - `candidate` ("Check the release candidate") needs the build and every smoke
   job. With no secrets or `id-token`, it downloads the archives and evidence
   into the same flat directories as `publish` and runs `release:build` (below)

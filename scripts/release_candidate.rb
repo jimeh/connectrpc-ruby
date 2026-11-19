@@ -4,6 +4,7 @@ require "digest"
 require "fileutils"
 require "json"
 require "open3"
+require "securerandom"
 require "stringio"
 require "tmpdir"
 require "zlib"
@@ -44,7 +45,11 @@ class ReleaseCandidate # rubocop:disable Metrics/ClassLength
 
       [source, destination, found]
     end
-    Dir.mktmpdir("connectrpc-hyper-collect-") do |staging|
+    # Staging sits beside the outputs (never inside one, whatever TMPDIR says),
+    # on their filesystem.
+    parent = File.dirname(inputs.keys.first)
+    FileUtils.mkdir_p(parent)
+    Dir.mktmpdir(".collect-", parent) do |staging|
       staged = plan.each_with_index.map do |(_source, _destination, found), index|
         File.join(staging, index.to_s).tap do |directory|
           FileUtils.mkdir_p(directory)
@@ -59,7 +64,7 @@ class ReleaseCandidate # rubocop:disable Metrics/ClassLength
   # Sets each existing output aside, fills a fresh directory (ordinary mkdir
   # permissions) from its staging, and deletes the old outputs only after every
   # replacement succeeded; on failure it restores them. An old output that
-  # cannot be deleted stays beside the new one as <output>.collect-old-<pid>.
+  # cannot be deleted stays beside the new one as <output>.collect-old-<random>.
   def self.replace_outputs!(pairs) # rubocop:disable Metrics/AbcSize, Metrics/MethodLength
     moved = []
     begin
@@ -84,7 +89,14 @@ class ReleaseCandidate # rubocop:disable Metrics/ClassLength
   def self.move_aside(destination)
     return unless File.exist?(destination) || File.symlink?(destination)
 
-    "#{destination}.collect-old-#{Process.pid}".tap { |aside| File.rename(destination, aside) }
+    aside = nil
+    # A fresh name: renaming onto an existing file would silently replace it.
+    loop do
+      aside = "#{destination}.collect-old-#{SecureRandom.hex(6)}"
+      break unless File.exist?(aside) || File.symlink?(aside)
+    end
+    File.rename(destination, aside)
+    aside
   end
 
   # A clear error for a source that is, or lies inside or around, an output;

@@ -150,6 +150,24 @@ RSpec.describe ReleaseCandidate do
       expect(File.stat(File.dirname(archive)).mode & 0o7777).to eq(0o777 & ~File.umask)
     end
 
+    it "sets an old output aside under a fresh name, never over an existing file" do
+      root = directory("root")
+      artifacts = File.join(root, "vendor/hyper/release-artifacts")
+      write(File.join(artifacts, "old.gem"), "old")
+      stale = "#{artifacts}.collect-old-taken"
+      write(stale, "someone's file")
+      allow(SecureRandom).to receive(:hex).and_return("taken", "fresh")
+      archives = directory("archives")
+      write(File.join(archives, "connectrpc-hyper-#{version}.gem"), "new")
+
+      described_class.collect!(root, [archives, directory("evidence")])
+
+      expect(File.read(stale)).to eq("someone's file")
+      expect(Dir.children(artifacts)).to eq(["connectrpc-hyper-#{version}.gem"])
+      expect(Dir.children(File.join(root, "vendor/hyper")).sort)
+        .to eq(%w[release-artifacts release-artifacts.collect-old-taken release-evidence])
+    end
+
     it "restores both old outputs, and so a linked input, when a later replacement fails" do
       root = directory("root")
       artifacts = File.join(root, "vendor/hyper/release-artifacts")

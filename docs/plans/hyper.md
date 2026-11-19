@@ -495,4 +495,7 @@ the validation, with a spec feeding the same inputs to both transports.
   nor clears the pending flag, the wait loop spins holding the GVL and
   starves sibling fibers. Probe: count iterations where nothing ran
   (`ran == 0`), or print `Native.wait_bodies` and `resumed_waits` when the
-  child times out.
+  child times out. Update (#174, from #175's investigation): these Windows
+  hangs came from the spec harness's console output, not the extension. #175
+  is fixing a separate `close` wait on Ruby 4.0 with a single-worker async
+  pool, which affects every platform, and owns the Linux-only tags.

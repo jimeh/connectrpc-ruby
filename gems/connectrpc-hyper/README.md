@@ -44,9 +44,9 @@ Rust or a compiler:
 | `x86_64-linux`, `aarch64-linux` | glibc 2.29 or later |
 | `x86_64-linux-musl`, `aarch64-linux-musl` | musl with `libgcc_s` (Alpine: the `libgcc` package) |
 | `arm64-darwin` | macOS 11 or later |
-| `x86_64-darwin` | Built, not exercised in CI |
+| `x86_64-darwin` | Intel macOS; the binaries declare macOS 10.13, and CI smoke-tests them on macOS 15 |
 | `x64-mingw-ucrt` | Windows x64, provisional (see [support](../../docs/support.md)) |
-| `aarch64-mingw-ucrt` | Built, not exercised in CI |
+| `aarch64-mingw-ucrt` | Windows arm64, provisional (see [support](../../docs/support.md)) |
 
 ### Source gem
 
