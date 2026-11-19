@@ -11,6 +11,7 @@ RSpec.describe "Inside an Async reactor" do
     probe_env = { "CONNECTRPC_HYPER_PROBE" => ENV.fetch("HYPER_PROBE", nil) }
     ruby_child(<<~RUBY, env: { "ASYNC_SCHEDULER_WORKER_POOL" => pool ? "true" : nil, **probe_env }, timeout: 40)
       require "async"
+      at_exit { ConnectRPC::Hyper.const_get(:Native).probe_drain } if ENV["CONNECTRPC_HYPER_PROBE"]
       if ENV["CONNECTRPC_HYPER_PROBE"] == "ruby"
         Thread.new do
           sleep 8
@@ -383,26 +384,36 @@ RSpec.describe "Inside an Async reactor" do
         outcome = Async do |task|
           sent = Thread::Queue.new
           release = Thread::Queue.new
+          mark = ->(m) { Fiber.blocking { $stderr.syswrite("MARK \#{Process.clock_gettime(Process::CLOCK_MONOTONIC).round(3)} \#{m}\\n") } } # PROBE
           sibling = task.async do
             client(#{peer['grpc_h2c'].dump}, transport).client_stream(timeout: 30) do |writer|
               writer.send_message(MSG.new(value: "a"))
+              mark.("sibling sent")
               sent << true
               release.pop
-            end.message.value
+              mark.("sibling released")
+            end.message.value.tap { mark.("sibling finished") }
           rescue ConnectRPC::Error => e
+            mark.("sibling error \#{e.message}")
             e.message
           end
           sent.pop
+          mark.("root saw sent")
           driver = transport.instance_variable_get(:@driver)
           closer = task.async do
-            transport.close(grace: 5)
+            mark.("closer closing")
+            transport.close(grace: 5).tap { mark.("closer returned") }
           rescue Async::Stop
+            mark.("closer stopped")
             [:stopped, driver.close_outcome]
           end
           parked
+          mark.("root parked; stopping closer")
           closer.stop
+          mark.("root stopped closer; releasing")
           release << true
-          [closer.wait, sibling.wait]
+          mark.("root released")
+          [closer.wait, sibling.wait].tap { mark.("root joined") }
         end.wait
         p [outcome, transport.close(grace: 5), driver.stats[1..2]]
       RUBY

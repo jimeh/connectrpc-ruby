@@ -92,7 +92,8 @@ pub fn probe_start() {
     std::thread::spawn(|| {
         let mut last = String::new();
         loop {
-            std::thread::sleep(std::time::Duration::from_millis(500));
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            p_drain();
             let running = RUNNING.load(Ordering::SeqCst);
             let line = format!(
                 "entered={} running={} active={} skip={} skip_pending_or_trap={} check_err={} ubf={} resumed={} timeout={} done={}",
@@ -118,6 +119,23 @@ pub fn probe_start() {
             }
         }
     });
+}
+static P_EVENTS: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+pub fn p_event(what: String) {
+    if std::env::var_os("CONNECTRPC_HYPER_PROBE").is_some() {
+        let line = format!(
+            "EV t={}ms thread={:?} {}",
+            p_now(),
+            std::thread::current().id(),
+            what
+        );
+        P_EVENTS.lock().unwrap().push(line);
+    }
+}
+pub fn p_drain() {
+    for line in P_EVENTS.lock().unwrap().drain(..) {
+        eprintln!("{line}");
+    }
 }
 fn p_skip() {
     P_SKIP.fetch_add(1, Ordering::SeqCst);
@@ -210,6 +228,7 @@ impl Signal {
 }
 
 struct Data<F, R> {
+    caller: std::thread::ThreadId,
     func: Option<F>,
     out: Option<std::thread::Result<R>>,
 }
@@ -219,11 +238,17 @@ unsafe extern "C" fn call<F: FnOnce() -> R, R>(data: *mut c_void) -> *mut c_void
     // only this body touches it while the wait runs.
     let data = unsafe { &mut *(data as *mut Data<F, R>) };
     let func = data.func.take().expect("nogvl body runs once");
+    let inline = data.caller == std::thread::current().id();
+    p_event(format!(
+        "body enter {}",
+        if inline { "inline" } else { "offloaded" }
+    ));
     ENTERED.fetch_add(1, Ordering::SeqCst);
     P_BODY_START.store(p_now(), Ordering::SeqCst);
     RUNNING.fetch_add(1, Ordering::SeqCst);
     data.out = Some(catch_unwind(AssertUnwindSafe(func)));
     RUNNING.fetch_sub(1, Ordering::SeqCst);
+    p_event("body exit".into());
     // Any non-null value tells the caller the body ran.
     std::ptr::dangling_mut::<c_void>()
 }
@@ -232,6 +257,7 @@ unsafe extern "C" fn unblock(data: *mut c_void) {
     // SAFETY: `data` is the `Signal` the caller keeps alive across rb_nogvl.
     let signal = unsafe { &*(data as *const Signal) };
     P_UBF.fetch_add(1, Ordering::SeqCst);
+    p_event("ubf".into());
     signal.fire();
 }
 
@@ -246,6 +272,7 @@ where
     WAITS.with(|waits| waits.set(waits.get() + 1));
     let _active = Active::enter();
     let mut data = Data {
+        caller: std::thread::current().id(),
         func: Some(func),
         out: None,
     };
@@ -334,6 +361,7 @@ where
     let deadline = waits.deadline.map(tokio::time::Instant::from_std);
     loop {
         let interrupt = Signal::new();
+        p_event("drive wait".into());
         let wake = without_gvl(ruby, &interrupt, || {
             handle.block_on(async {
                 let expiry = async {
@@ -400,7 +428,9 @@ fn settled(waits: &Waits<'_>) -> Option<Failure> {
 pub fn wait_signal(ruby: &Ruby, signal: &Arc<Signal>) -> Option<Error> {
     let handle = runtime::handle();
     let mut raised: Option<Error> = None;
+    p_event("wait_signal start".into());
     while !signal.fired() {
+        p_event("wait_signal iteration".into());
         let interrupt = Signal::new();
         let (_, error) = without_gvl_deferred(ruby, &interrupt, || {
             handle.block_on(async {
@@ -415,6 +445,7 @@ pub fn wait_signal(ruby: &Ruby, signal: &Arc<Signal>) -> Option<Error> {
             raised.get_or_insert(error);
         }
     }
+    p_event(format!("wait_signal done raised={}", raised.is_some()));
     raised
 }
 
@@ -433,6 +464,7 @@ where
 {
     let _active = Active::enter();
     let mut data = Data {
+        caller: std::thread::current().id(),
         func: Some(func),
         out: None,
     };
@@ -453,7 +485,10 @@ where
             Ok(0) => {}
             Ok(_) => return (ran_output(&mut data), None),
             // A scheduler's cancellation drained the body, then raised.
-            Err(error) => return (ran_output(&mut data), Some(error)),
+            Err(error) => {
+                p_event(format!("deferred protect err ran={}", data.out.is_some()));
+                return (ran_output(&mut data), Some(error));
+            }
         }
         p_skip();
         // An interrupt is pending. The caller masks thread interrupts around
