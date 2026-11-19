@@ -277,7 +277,8 @@ RSpec.describe "Connection pooling" do
     output, status = ruby_child(<<~RUBY, env: environment)
       transport = ConnectRPC::Hyper::Transport.new(connect_timeout: 6, proxy: nil)
       driver = transport.instance_variable_get(:@driver)
-      driver.hold("dial:joined", 0)
+      points = %w[dial:started dial:joined]
+      points.each { |point| driver.hold(point, 0) }
       peer_client = client("http://peer.pair:#{port}", transport)
       started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
       calls = [0.5, 20].each_with_index.map do |timeout, index|
@@ -290,15 +291,22 @@ RSpec.describe "Connection pooling" do
           [reply, (Process.clock_gettime(Process::CLOCK_MONOTONIC) - started).round(2)]
         end
         # Each caller joins the one pool dial before the next starts.
-        Thread.pass until driver.reached("dial:joined") == index + 1
+        deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + 10
+        until driver.reached("dial:joined") == index + 1
+          raise "caller \#{index} never joined: \#{points.map { driver.reached(it) }}" if Process.clock_gettime(Process::CLOCK_MONOTONIC) > deadline
+
+          Thread.pass
+        end
         thread
       end
-      driver.release("dial:joined")
-      p [*calls.map(&:value), peer_client.unary(MSG.new(value: "later"), timeout: 5).message.value]
+      counts = points.map { |point| driver.reached(point) }
+      points.each { |point| driver.release(point) }
+      p [*calls.map(&:value), peer_client.unary(MSG.new(value: "later"), timeout: 5).message.value, counts]
       transport.close(grace: 0)
     RUBY
     expect(status).to be_success
-    starter, waiter, later = eval(output.lines.last) # rubocop:disable Security/Eval
+    starter, waiter, later, counts = eval(output.lines.last) # rubocop:disable Security/Eval
+    expect(counts).to eq([1, 2])
     expect(starter).to match(["deadline_exceeded", be < 1])
     expect(waiter).to match(["w1", be_between(2.9, 4)])
     expect(later).to eq("later")

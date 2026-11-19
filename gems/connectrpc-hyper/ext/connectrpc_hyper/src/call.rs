@@ -191,6 +191,9 @@ impl CallState {
         self.local_port.store(lease.local_port(), Ordering::SeqCst);
         self.h2.store(lease.is_h2(), Ordering::SeqCst);
         let sent = send(&mut lease, request);
+        // Spec hold point: armed with a zero bound, it counts the requests
+        // handed to hyper. `block` keeps this section free of awaits.
+        self.core.holds.block("request:queued");
         let (deliver, delivered) = oneshot::channel();
         self.core.tracker.spawn(respond(
             self.core.clone(),
@@ -385,7 +388,9 @@ async fn respond(
                 let Some(request) = error.take_message() else {
                     return Err(Failure::from_hyper(error.error()));
                 };
-                // Handed back unsent: the peer never saw it.
+                // Handed back unsent: the peer never saw it. Spec hold point:
+                // armed with a zero bound, it counts these retries.
+                core.holds.reach("retry:unsent").await;
                 let exclude = lease.id();
                 drop(lease);
                 let mut lease = core
