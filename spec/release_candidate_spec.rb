@@ -135,6 +135,19 @@ RSpec.describe ReleaseCandidate do
       end
       expect(File.exist?(archive)).to be(true)
     end
+
+    it "keeps an input that a symlink resolves into the output it replaces" do
+      root = directory("root")
+      archive = File.join(root, "vendor/hyper/release-artifacts/connectrpc-hyper-#{version}.gem")
+      write(archive, "tested bytes")
+      archives = directory("linked")
+      File.symlink(archive, File.join(archives, File.basename(archive)))
+
+      described_class.collect!(root, [archives, directory("evidence")])
+
+      expect(File.symlink?(archive)).to be(false)
+      expect(File.read(archive)).to eq("tested bytes")
+    end
   end
 
   describe "#check_platform_archive!" do

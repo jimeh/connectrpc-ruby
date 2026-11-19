@@ -20,7 +20,9 @@ class ReleaseCandidate # rubocop:disable Metrics/ClassLength
   # two source directories into the flat directories release:build reads,
   # replacing their contents. Sources default to local hyper:cross and
   # install_smoke.rb outputs; `gh run download` directories of the hyper-gems
-  # artifacts work too. Returns [source, destination, count] per directory.
+  # artifacts work too. Every selected file is copied into private staging
+  # before any output is replaced, so no input is lost however it is linked.
+  # Returns [source, destination, count] per directory.
   def self.collect!(root, sources) # rubocop:disable Metrics/AbcSize, Metrics/CyclomaticComplexity, Metrics/MethodLength, Metrics/PerceivedComplexity
     archives, evidence = case sources
                          in [] then %w[vendor/hyper/cross vendor/hyper/evidence].map { File.join(root, it) }
@@ -41,22 +43,42 @@ class ReleaseCandidate # rubocop:disable Metrics/ClassLength
 
       [source, destination, found]
     end
-    plan.map do |source, destination, found|
-      FileUtils.rm_rf(destination)
-      FileUtils.mkdir_p(destination)
-      FileUtils.cp(found, destination)
-      [source, destination, found.size]
+    staged = []
+    begin
+      plan.each do |_source, destination, found|
+        FileUtils.mkdir_p(File.dirname(destination))
+        staging = Dir.mktmpdir(".collect-", File.dirname(destination))
+        staged << staging
+        FileUtils.cp(found, staging) # follows symlinks, so staging holds the bytes
+      end
+      plan.zip(staged).map do |(source, destination, found), staging|
+        FileUtils.rm_rf(destination)
+        File.chmod(0o755, staging)
+        File.rename(staging, destination)
+        [source, destination, found.size]
+      end
+    ensure
+      FileUtils.rm_rf(staged)
     end
   end
 
-  # Replacing an output would delete a source that is, or lies inside or
-  # around, that output.
+  # A clear error for a source that is, or lies inside or around, an output;
+  # staging keeps inputs safe either way.
   def self.overlapping?(source, output)
     source = File.realpath(source)
-    output = File.exist?(output) ? File.realpath(output) : File.expand_path(output)
-    [[source, output], [output, source]].any? { |path, parent| "#{path}/".start_with?("#{parent}/") }
+    output = resolved(output)
+    within = ->(path, parent) { path == parent || path.start_with?(parent.end_with?("/") ? parent : "#{parent}/") }
+    within.call(source, output) || within.call(output, source)
   end
-  private_class_method :overlapping?
+
+  # The real path of an output, through its existing parent when it is absent.
+  def self.resolved(path)
+    return File.realpath(path) if File.exist?(path)
+
+    parent = File.dirname(File.expand_path(path))
+    File.directory?(parent) ? File.join(File.realpath(parent), File.basename(path)) : File.expand_path(path)
+  end
+  private_class_method :overlapping?, :resolved
 
   def initialize(train = ReleaseTrain.new)
     @train = train
