@@ -41,6 +41,29 @@ pub fn active_waits() -> usize {
     ACTIVE.load(Ordering::SeqCst)
 }
 
+/// Waits that resumed the same operation after a wake without a pending
+/// Ruby interrupt, across threads; specs read it to see one blocked
+/// operation re-enter its wait.
+static RESUMED: AtomicUsize = AtomicUsize::new(0);
+
+pub fn resumed_waits() -> usize {
+    RESUMED.load(Ordering::SeqCst)
+}
+
+/// Wait bodies begun, and running now, across threads. A running body has
+/// the GVL released and its unblocking function registered, so specs read
+/// these to wake a wait that is really blocked rather than one between
+/// bodies.
+static ENTERED: AtomicUsize = AtomicUsize::new(0);
+static RUNNING: AtomicUsize = AtomicUsize::new(0);
+
+pub fn wait_bodies() -> (usize, usize) {
+    (
+        ENTERED.load(Ordering::SeqCst),
+        RUNNING.load(Ordering::SeqCst),
+    )
+}
+
 struct Active;
 
 impl Active {
@@ -100,7 +123,10 @@ unsafe extern "C" fn call<F: FnOnce() -> R, R>(data: *mut c_void) -> *mut c_void
     // only this body touches it while the wait runs.
     let data = unsafe { &mut *(data as *mut Data<F, R>) };
     let func = data.func.take().expect("nogvl body runs once");
+    ENTERED.fetch_add(1, Ordering::SeqCst);
+    RUNNING.fetch_add(1, Ordering::SeqCst);
     data.out = Some(catch_unwind(AssertUnwindSafe(func)));
+    RUNNING.fetch_sub(1, Ordering::SeqCst);
     // Any non-null value tells the caller the body ran.
     std::ptr::dangling_mut::<c_void>()
 }
@@ -225,7 +251,10 @@ where
             })
         })?;
         return Ok(match wake {
-            Wake::Interrupted => continue,
+            Wake::Interrupted => {
+                RESUMED.fetch_add(1, Ordering::SeqCst);
+                continue;
+            }
             Wake::Done(result) => result,
             Wake::Canceled => Err(Failure::new("canceled", "call canceled")),
             Wake::Aborted => Err(Failure::new("aborted", "exchange aborted")),
@@ -259,8 +288,9 @@ fn settled(waits: &Waits<'_>) -> Option<Failure> {
 /// scheduler's cancellation (async's `Task#stop` with the worker pool)
 /// re-raises through `rb_nogvl` regardless. That exception is held while
 /// `future` keeps running, on this thread from then on, where no scheduler
-/// can abandon it again, and is raised once `future` has ended.
-pub fn drive_uninterruptible<T, F>(ruby: &Ruby, future: F) -> Result<T, Error>
+/// can abandon it again. It is returned with the result, for the caller to
+/// raise once it has recorded what the teardown did.
+pub fn drive_uninterruptible<T, F>(ruby: &Ruby, future: F) -> (T, Option<Error>)
 where
     F: Future<Output = T> + Send,
     T: Send,
@@ -284,10 +314,7 @@ where
             raised.get_or_insert(error);
         }
         if let Some(Some(result)) = outcome {
-            return match raised {
-                Some(error) => Err(error),
-                None => Ok(result),
-            };
+            return (result, raised);
         }
     }
 }

@@ -9,10 +9,11 @@ require "openssl"
 require "socket"
 require "tmpdir"
 
+# Real paths: macOS temporary directories resolve through /private.
 if ENV["GEM_HOME"]
-  spec = Gem.loaded_specs.fetch("connectrpc-hyper")
-  abort "Smoke loaded connectrpc-hyper outside GEM_HOME" unless spec.full_gem_path.start_with?("#{ENV.fetch('GEM_HOME',
-                                                                                                            nil)}/")
+  gem_path = File.realpath(Gem.loaded_specs.fetch("connectrpc-hyper").full_gem_path)
+  gem_home = File.realpath(ENV.fetch("GEM_HOME"))
+  abort "Smoke loaded connectrpc-hyper outside GEM_HOME" unless gem_path.start_with?("#{gem_home}/")
 end
 abort "Optional runtimes loaded" if defined?(Async) || defined?(Rack) || defined?(Google::Protobuf)
 

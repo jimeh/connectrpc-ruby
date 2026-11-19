@@ -385,12 +385,15 @@ The `hyper` job runs `hyper:verify` once per pinned Ruby with
 `gems/connectrpc-hyper/Gemfile`, `vendor/hyper/bundle` and
 `vendor/hyper/bundler`, validated through `hyper:tools`, which checks `rustc`
 after its `hyper:toolchain` dependency installs Rust 1.98.0, cargo-deny and
-cargo-audit from `mise.lock`. The install runs in its own task because mise
-resolves a task's tools before the task's commands run.
+cargo-audit from `mise.lock` and adds rustfmt and clippy to that toolchain
+(runners' rustup uses the `minimal` profile, which omits them). The install
+runs in its own task because mise resolves a task's tools before the task's
+commands run.
 apt provides libclang for rb-sys's bindgen and a C compiler for the DNS shim.
-setup-go provides Go 1.27.3; the CI override of `hyper:peer` validates it
-(`ci_runtime.rb hyper`) instead of installing Go, and keeps the module and
-build caches under `vendor/hyper/go`. `hyper:verify` compiles the extension,
+setup-go provides Go 1.27.3; the CI override of `hyper:toolchain:go`
+validates it (`ci_runtime.rb hyper`, in `hyper:peer`'s context) instead of
+installing Go, so `hyper:peer` is the same task locally and in CI and keeps
+the module and build caches under `vendor/hyper/go`. `hyper:verify` compiles the extension,
 runs the specs, Ruby and Rust lint, cargo-deny and cargo-audit, the grpc-go and
 connect-go interop matrix, and the offline source-gem install with a smoke
 call. `hyper_msrv` builds the extension with the declared `rust-version`

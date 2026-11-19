@@ -25,7 +25,7 @@ module ConnectRPC
       # (Go net/http rules, through core's ConnectRPC::Proxy). A String or URI
       # proxies every request; nil connects directly. Only http:// proxies.
       # rubocop:disable-next Metrics/MethodLength, Metrics/AbcSize
-      def initialize(connections: :pooled, idle_timeout: 1800, keepalive: nil, http2: true, connect_timeout: 20,
+      def initialize(connections: :pooled, idle_timeout: 1800, keepalive: nil, http2: true, connect_timeout: 10,
                      ca_file: nil, certificate_chain: nil, private_key: nil, proxy: :environment)
         raise ArgumentError, "connections must be :pooled or :per_call" unless CONNECTIONS.include?(connections)
         raise ArgumentError, "keepalive must be a Keepalive or nil" unless keepalive.nil? || keepalive.is_a?(Keepalive)
@@ -122,10 +122,13 @@ module ConnectRPC
           @close_pid = Process.pid
           driver = @driver if @driver_pid == Process.pid
         end
-        outcome = false
+        outcome = nil
         begin
           outcome = driver ? driver.close(grace.to_f) : true
         ensure
+          # Only native close raises here, and a fiber scheduler's
+          # cancellation only after teardown ended: its recorded outcome stands.
+          outcome = driver.close_outcome == true if outcome.nil?
           @lock.synchronize { finish_close(outcome) }
         end
         outcome

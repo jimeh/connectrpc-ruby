@@ -61,6 +61,33 @@ RSpec.describe "Transport#close" do
     end
   end
 
+  # The dialing call parks its thread inside the poll that finished the
+  # handshake, before the connection's dispatcher registers. A forced close
+  # then returns; the released call must not start a task it no longer owns.
+  # The HTTP/1.1 request comes back unsent and its retry meets the closed
+  # transport.
+  { "HTTP/2" => [true, "grpc_h2c", :grpc, "HTTP transport failed: connection closed"],
+    "HTTP/1.1" => [false, "connect_h2c", :connect, "HTTP transport admission is closed"] }
+    .each do |name, (http2, origin, protocol, message)|
+      it "starts no #{name} dispatcher task after a forced close returned" do
+        transport = hyper(http2: http2)
+        native_driver = driver(transport)
+        native_driver.hold("connect:handshaken", 10)
+        native_driver.hold("dispatcher", 10)
+        dialing = Thread.new do
+          error_of { client(peer[origin], transport: transport, protocol: protocol).unary(MSG.new, timeout: 20) }
+        end
+        wait_until("the handshake") { native_driver.reached("connect:handshaken") == 1 }
+        expect(transport.close(grace: 0)).to be(false)
+        native_driver.release("connect:handshaken")
+        error = dialing.value
+        expect([native_driver.reached("dispatcher"), stats(transport)[2]]).to eq([0, 0])
+        expect([error.code, error.message]).to eq(["unavailable", message])
+      ensure
+        native_driver&.release("dispatcher")
+      end
+    end
+
   it "drains in-flight calls within grace and returns true" do
     from = peer.mark
     transport = hyper

@@ -29,23 +29,36 @@ module SocketProxy
   # A CONNECT relay to the loopback `port`, one tunnel per connection. The
   # first tunnel waits for `gate` before it opens; later ones open at once.
   # Yields the proxy URL and a queue of the CONNECT request heads.
-  def with_gated_tunnels(port, gate)
+  def with_gated_tunnels(port, gate, &)
+    with_routed_tunnels(->(_index) { port }, [gate]) { |url, heads, _ended| yield url, heads }
+  end
+
+  # A CONNECT relay with one tunnel per connection, numbered in accept order.
+  # Tunnel N opens once `gates[N]` (if any) yields, then relays to the
+  # loopback port `routes.call(N)`. Yields the proxy URL, a queue of the
+  # CONNECT request heads and a queue of the numbers of tunnels that ended.
+  def with_routed_tunnels(routes, gates)
     listener = TCPServer.new("127.0.0.1", 0)
     heads = Queue.new
+    ended = Queue.new
     tunnels = []
-    acceptor = Thread.new { accept_tunnels(listener, port, gate, heads, tunnels) }
-    yield "http://127.0.0.1:#{listener.addr[1]}", heads
+    acceptor = Thread.new { accept_tunnels(listener, routes, gates, heads, ended, tunnels) }
+    yield "http://127.0.0.1:#{listener.addr[1]}", heads, ended
   ensure
     listener&.close
     acceptor&.join(5)
     tunnels&.each { |tunnel| tunnel.join(5) }
   end
 
-  def accept_tunnels(listener, port, gate, heads, tunnels)
+  def accept_tunnels(listener, routes, gates, heads, ended, tunnels) # rubocop:disable Metrics/ParameterLists
     loop do
       downstream = listener.accept
-      held = tunnels.empty? ? gate : nil
-      tunnels << Thread.new { tunnel(downstream, port, held, heads) }
+      index = tunnels.size
+      tunnels << Thread.new do
+        tunnel(downstream, routes.call(index), gates[index], heads)
+      ensure
+        ended << index
+      end
     end
   rescue IOError, SystemCallError
     nil

@@ -197,7 +197,9 @@ pub mod sockets {
 
 /// Every task a driver starts, including hyper's connection, body and
 /// response tasks, so a closing transport can abort them and wait for them
-/// to end: no detached tasks outlive `close`.
+/// to end: no detached tasks outlive `close`. Once sealed it refuses new
+/// tasks, so a call still mid-poll when teardown starts cannot register one
+/// after `close` observed the set empty.
 pub struct Tracker {
     tasks: Mutex<TrackerState>,
     emptied: Notify,
@@ -206,7 +208,19 @@ pub struct Tracker {
 #[derive(Default)]
 struct TrackerState {
     next: u64,
+    sealed: bool,
     running: HashMap<u64, AbortHandle>,
+}
+
+/// A tracked task's handle; empty when a sealed tracker refused the task.
+pub struct Task(Option<AbortHandle>);
+
+impl Task {
+    pub fn abort(&self) {
+        if let Some(task) = &self.0 {
+            task.abort();
+        }
+    }
 }
 
 struct Finished {
@@ -233,13 +247,21 @@ impl Tracker {
         })
     }
 
-    pub fn spawn<F>(self: &Arc<Self>, future: F) -> AbortHandle
+    pub fn spawn<F>(self: &Arc<Self>, future: F) -> Task
     where
         F: Future<Output = ()> + Send + 'static,
     {
         // The lock spans the spawn, so a task that ends at once removes an
-        // entry that already exists.
+        // entry that already exists, and `seal` waits for a registration in
+        // progress, then aborts it.
         let mut state = self.tasks.lock().unwrap_or_else(|e| e.into_inner());
+        if state.sealed {
+            drop(state);
+            // Dropped outside the lock: dropping it may release the last
+            // driver reference, whose teardown takes this lock.
+            drop(future);
+            return Task(None);
+        }
         state.next += 1;
         let id = state.next;
         let finished = Finished {
@@ -252,7 +274,16 @@ impl Tracker {
         });
         let abort = join.abort_handle();
         state.running.insert(id, abort.clone());
-        abort
+        Task(Some(abort))
+    }
+
+    /// Refuses every later spawn and aborts every registered task.
+    pub fn seal(&self) {
+        let mut state = self.tasks.lock().unwrap_or_else(|e| e.into_inner());
+        state.sealed = true;
+        for task in state.running.values() {
+            task.abort();
+        }
     }
 
     pub fn abort_all(&self) {

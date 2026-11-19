@@ -14,13 +14,13 @@ use hyper_util::rt::{TokioIo, TokioTimer};
 use rustls::pki_types::ServerName;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, ReadBuf};
 use tokio::net::TcpStream;
-use tokio::task::AbortHandle;
 use tokio::time::Instant;
 
 use crate::body::CallBody;
 use crate::failure::Failure;
 use crate::gvl::Signal;
-use crate::runtime::{TrackedExec, Tracker};
+use crate::holds::Holds;
+use crate::runtime::{Task, TrackedExec, Tracker};
 use proxy::{Mode, Route};
 
 /// Go's net.Dialer FallbackDelay for RFC 6555 dual-stack dialing.
@@ -187,8 +187,18 @@ pub enum Handshake {
     },
     H1 {
         sender: http1::SendRequest<CallBody>,
-        task: AbortHandle,
+        task: Task,
     },
+}
+
+/// Fires its signal when dropped: a dispatcher task that ends, is aborted or
+/// is refused by a sealed tracker reports its connection closed alike.
+struct FireOnDrop(Arc<Signal>);
+
+impl Drop for FireOnDrop {
+    fn drop(&mut self) {
+        self.0.fire();
+    }
 }
 
 pub struct Connected {
@@ -350,6 +360,7 @@ pub async fn connect(
     tls: Option<Arc<rustls::ClientConfig>>,
     origin: &Origin,
     tracker: &Arc<Tracker>,
+    holds: &Arc<Holds>,
     deadline: Option<Instant>,
 ) -> Result<Connected, Failure> {
     let stream = match &origin.proxy {
@@ -405,11 +416,14 @@ pub async fn connect(
             .handshake(io)
             .await
             .map_err(|e| Failure::from_hyper(&e))?;
+        registering(holds);
         let closed = Signal::new();
-        let dispatcher_closed = closed.clone();
+        let dispatcher_closed = FireOnDrop(closed.clone());
+        let holds = holds.clone();
         tracker.spawn(async move {
+            let _closed = dispatcher_closed;
+            holds.reach("dispatcher").await;
             let _ = connection.await;
-            dispatcher_closed.fire();
         });
         Ok(Connected {
             handshake: Handshake::H2 { sender, closed },
@@ -423,7 +437,10 @@ pub async fn connect(
             .handshake(io)
             .await
             .map_err(|e| Failure::from_hyper(&e))?;
+        registering(holds);
+        let holds = holds.clone();
         let task = tracker.spawn(async move {
+            holds.reach("dispatcher").await;
             let _ = connection.await;
         });
         Ok(Connected {
@@ -431,6 +448,13 @@ pub async fn connect(
             local_port,
         })
     }
+}
+
+/// Spec hold point between the handshake and the dispatcher's registration,
+/// inside the poll that finished the handshake: parking the thread, not the
+/// task, keeps forced teardown from winning the caller's wait first.
+fn registering(holds: &Holds) {
+    holds.block("connect:handshaken");
 }
 
 /// HTTP proxy routes. Ruby resolves the proxy (core's ConnectRPC::Proxy) and

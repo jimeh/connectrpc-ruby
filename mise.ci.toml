@@ -91,11 +91,12 @@ tools."aqua:rustsec/rustsec/cargo-audit" = "0.23.0"
 env = { BUNDLE_GEMFILE = "{{config_root}}/gems/connectrpc-hyper/Gemfile", BUNDLE_PATH = "{{config_root}}/vendor/hyper/bundle", BUNDLE_USER_HOME = "{{config_root}}/vendor/hyper/bundler", BUNDLE_COOLDOWN = "3" }
 run = "ruby scripts/ci_runtime.rb"
 
-# A command-bearing override replaces the whole task; keep this context aligned
-# with mise.toml. Only the Go installation differs: setup-go provides it.
-[tasks."hyper:peer"]
-description = "Validate action-provided Go and build the disposable grpc-go/connect-go/raw HTTP/2 peer used by connectrpc-hyper specs"
+# setup-go provides Go, so this validates it instead of installing it, in
+# hyper:peer's context (tools, env and dir match mise.toml's hyper:peer).
+# hyper:peer itself is the same task locally and in CI.
+[tasks."hyper:toolchain:go"]
+description = "Validate the action-provided Go 1.27.3 for the connectrpc-hyper peer"
 tools.go = "1.27.3"
 dir = "{{config_root}}/gems/connectrpc-hyper/interop"
 env = { GOTOOLCHAIN = "local", GOWORK = "off", GOFLAGS = "-mod=readonly", GOMODCACHE = "{{config_root}}/vendor/hyper/go/mod", GOCACHE = "{{config_root}}/vendor/hyper/go/build" }
-run = ["ruby {{config_root}}/scripts/ci_runtime.rb hyper", "go mod download all", "go mod verify", "go vet .", "go build -o ../../../vendor/hyper/peer ."]
+run = "ruby {{config_root}}/scripts/ci_runtime.rb hyper"

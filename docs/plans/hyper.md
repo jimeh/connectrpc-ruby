@@ -115,7 +115,8 @@ stage and reset its stream.
   no calls in flight; nil disables. The idle timer claims the exact connection
   generation it observed idle, so it never closes a connection a caller has
   just checked out.
-- D7 `connect_timeout: 20` (grpc-go's minimum connect timeout) bounds DNS, TCP,
+- D7 `connect_timeout: 10` (uniform with the connectrpc-async transports, Jim's
+  decision; grpc-go's minimum connect timeout is 20 s) bounds DNS, TCP,
   proxy CONNECT, TLS and the HTTP/2 handshake as hyper completes it (preface
   written). hyper exposes no peer-SETTINGS boundary, so a peer that accepts and
   stays silent is bounded by the call deadline (and keepalive when set);
@@ -251,7 +252,7 @@ transport = ConnectRPC::Hyper::Transport.new(
   idle_timeout: 1800,     # pooled connections; nil disables
   keepalive: nil,         # ConnectRPC::Keepalive.new(time: 60)
   http2: true,            # false: Connect over HTTP/1.1, unary/server/client streaming
-  connect_timeout: 20,
+  connect_timeout: 10,
   ca_file: nil, certificate_chain: nil, private_key: nil
   # proxy: added in phase 2 (D18)
 )

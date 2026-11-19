@@ -663,9 +663,15 @@ depends = ["sentry:test", "sentry:check", "sentry:package", "sentry:example"]
 # mise resolves a task's tools before its run starts, so a toolchain installed
 # by the same task's run is not active there (a fresh runner would use its own
 # rustc). Install-only tasks run first, as setup:generation does for protoc.
+# rustup's profile decides which components a new toolchain gets (CI
+# runners use `minimal`), so rustfmt and clippy for hyper:check are added
+# explicitly to the pinned toolchain.
 [tasks."hyper:toolchain"]
-description = "Install the locked Rust 1.98.0, cargo-deny and cargo-audit for connectrpc-hyper"
-run = "mise install --locked rust@1.98.0 aqua:EmbarkStudios/cargo-deny@0.20.2 aqua:rustsec/rustsec/cargo-audit@0.23.0"
+description = "Install the locked Rust 1.98.0 with rustfmt and clippy, cargo-deny and cargo-audit for connectrpc-hyper"
+run = [
+  "mise install --locked rust@1.98.0 aqua:EmbarkStudios/cargo-deny@0.20.2 aqua:rustsec/rustsec/cargo-audit@0.23.0",
+  "mise exec rust@1.98.0 -- rustup component add --toolchain 1.98.0 rustfmt clippy",
+]
 
 [tasks."hyper:toolchain:msrv"]
 description = "Install the locked MSRV Rust 1.85.0 for connectrpc-hyper"

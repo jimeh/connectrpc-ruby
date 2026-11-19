@@ -160,7 +160,7 @@ impl CallState {
         }
         let mut lease = match self
             .core
-            .acquire(&self.spec.origin, self.require_h2, None)
+            .acquire(&self.spec.origin, self.require_h2, None, self.deadline)
             .await
         {
             Ok(lease) => lease,
@@ -382,7 +382,7 @@ async fn respond(
                 let exclude = lease.id();
                 drop(lease);
                 let mut lease = core
-                    .acquire(&spec.origin, require_h2, Some(exclude))
+                    .acquire(&spec.origin, require_h2, Some(exclude), deadline)
                     .await?;
                 let request = spec.build(request.into_body(), deadline, lease.is_h2())?;
                 match send(&mut lease, request).await {

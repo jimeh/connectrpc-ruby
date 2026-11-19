@@ -32,6 +32,9 @@ impl Failure {
 
     /// An I/O failure on an established connection. TLS 1.3 servers reject a
     /// client certificate after the handshake, so their alert arrives here.
+    /// hyper's HTTP/1.1 body decoder reports bytes it rejects (a malformed
+    /// chunk, or trailers past the field or byte cap) as `InvalidData` or
+    /// `InvalidInput`, kinds a socket failure never has.
     pub fn transport_io(error: &std::io::Error) -> Self {
         match error
             .get_ref()
@@ -41,6 +44,13 @@ impl Failure {
                 Self::new("tls_verify", "certificate verification failed")
             }
             Some(_) => Self::new("tls", "TLS failure"),
+            None if matches!(
+                error.kind(),
+                std::io::ErrorKind::InvalidData | std::io::ErrorKind::InvalidInput
+            ) =>
+            {
+                Self::new("protocol", "malformed response")
+            }
             None => Self::io("closed", error),
         }
     }

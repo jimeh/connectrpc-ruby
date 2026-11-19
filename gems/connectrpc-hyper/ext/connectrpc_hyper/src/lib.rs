@@ -7,12 +7,14 @@ mod call;
 mod conn;
 mod failure;
 mod gvl;
+mod holds;
 mod pool;
 mod runtime;
 mod tls;
 mod unary;
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU8, Ordering};
 use std::time::{Duration, Instant};
 
 use bytes::Bytes;
@@ -216,6 +218,8 @@ impl Cancel {
 #[magnus::wrap(class = "ConnectRPC::Hyper::Native::Driver", free_immediately, size)]
 struct Driver {
     core: ForkGuard<Arc<DriverCore>>,
+    /// The teardown result of `close`: unknown, false or true (0, 1, 2).
+    outcome: AtomicU8,
 }
 
 impl Driver {
@@ -264,6 +268,7 @@ impl Driver {
         // thread and opens no socket.
         Ok(Self {
             core: ForkGuard::new(DriverCore::new(config, Tracker::new())),
+            outcome: AtomicU8::new(0),
         })
     }
 
@@ -356,7 +361,8 @@ impl Driver {
 
     /// Stops admission, lets in-flight calls finish within `grace`, then
     /// aborts the rest and waits for every owned task to end. True when
-    /// everything drained in time.
+    /// everything drained in time. The result is recorded before a held
+    /// fiber scheduler cancellation is raised, so `close_outcome` reports it.
     fn close(ruby: &Ruby, rb_self: &Self, grace: f64) -> Result<bool, Error> {
         if rb_self.core.inherited() {
             return Ok(true);
@@ -366,7 +372,7 @@ impl Driver {
         let expires = tokio::time::Instant::now() + seconds(grace);
         // Runs to the end even if the caller is interrupted or a fiber
         // scheduler cancels the wait, so force always follows the grace.
-        drive_uninterruptible(ruby, async move {
+        let (quiet, raised) = drive_uninterruptible(ruby, async move {
             let drained = tokio::time::timeout_at(expires, core.wait_drained())
                 .await
                 .is_ok();
@@ -376,7 +382,40 @@ impl Driver {
                     .is_ok();
             core.force().await;
             quiet
-        })
+        });
+        rb_self
+            .outcome
+            .store(if quiet { 2 } else { 1 }, Ordering::SeqCst);
+        match raised {
+            Some(error) => Err(error),
+            None => Ok(quiet),
+        }
+    }
+
+    /// What the last native `close` did, or nil before one finished.
+    fn close_outcome(&self) -> Option<bool> {
+        match self.outcome.load(Ordering::SeqCst) {
+            0 => None,
+            outcome => Some(outcome == 2),
+        }
+    }
+
+    /// For specs: arms hold point `name`; each arrival parks for at most
+    /// `bound` seconds unless released first.
+    fn hold(ruby: &Ruby, rb_self: &Self, name: String, bound: f64) -> Result<(), Error> {
+        rb_self.owned(ruby)?.holds.arm(name, seconds(bound));
+        Ok(())
+    }
+
+    /// For specs: releases and disarms hold point `name`.
+    fn release(ruby: &Ruby, rb_self: &Self, name: String) -> Result<(), Error> {
+        rb_self.owned(ruby)?.holds.release(&name);
+        Ok(())
+    }
+
+    /// For specs: arrivals at armed hold point `name`.
+    fn reached(ruby: &Ruby, rb_self: &Self, name: String) -> Result<usize, Error> {
+        Ok(rb_self.owned(ruby)?.holds.reached(&name))
     }
 
     fn opened(&self) -> usize {
@@ -569,6 +608,14 @@ fn active_waits() -> usize {
     gvl::active_waits()
 }
 
+fn resumed_waits() -> usize {
+    gvl::resumed_waits()
+}
+
+fn wait_bodies() -> (usize, usize) {
+    gvl::wait_bodies()
+}
+
 #[magnus::init]
 fn init(ruby: &Ruby) -> Result<(), Error> {
     let connectrpc = ruby.define_module("ConnectRPC")?;
@@ -576,6 +623,8 @@ fn init(ruby: &Ruby) -> Result<(), Error> {
     let native = hyper.define_module("Native")?;
     native.define_singleton_method("wait_count", function!(wait_count, 0))?;
     native.define_singleton_method("active_waits", function!(active_waits, 0))?;
+    native.define_singleton_method("resumed_waits", function!(resumed_waits, 0))?;
+    native.define_singleton_method("wait_bodies", function!(wait_bodies, 0))?;
 
     let cancel: RClass = native.define_class("Cancel", ruby.class_object())?;
     cancel.define_singleton_method("new", function!(Cancel::new, 0))?;
@@ -589,6 +638,10 @@ fn init(ruby: &Ruby) -> Result<(), Error> {
     driver.define_method("close", method!(Driver::close, 1))?;
     driver.define_method("opened", method!(Driver::opened, 0))?;
     driver.define_method("stats", method!(Driver::stats, 0))?;
+    driver.define_method("close_outcome", method!(Driver::close_outcome, 0))?;
+    driver.define_method("hold", method!(Driver::hold, 2))?;
+    driver.define_method("release", method!(Driver::release, 1))?;
+    driver.define_method("reached", method!(Driver::reached, 1))?;
 
     let call: RClass = native.define_class("Call", ruby.class_object())?;
     call.define_method("head", method!(Call::head, 1))?;

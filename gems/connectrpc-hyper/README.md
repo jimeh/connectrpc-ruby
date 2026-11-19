@@ -81,7 +81,7 @@ URLs.
 | `idle_timeout:` | `1800` | Seconds before a pooled connection with no calls in flight closes; nil keeps it. |
 | `keepalive:` | `nil` | A `ConnectRPC::Keepalive`; see [keepalive](#keepalive). |
 | `http2:` | `true` | `false` sends Connect over HTTP/1.1 only. |
-| `connect_timeout:` | `20` | Seconds for DNS, TCP, proxy `CONNECT`, TLS and the HTTP/2 handshake; nil leaves only the call deadline. Each address of a host gets a share; see [connections](#connections-and-server-restarts). |
+| `connect_timeout:` | `10` | Seconds for DNS, TCP, proxy `CONNECT`, TLS and the HTTP/2 handshake; nil leaves only the call deadline. Each address of a host gets a share; see [connections](#connections-and-server-restarts). |
 | `ca_file:` | `nil` | PEM file appended to the trusted roots. |
 | `certificate_chain:` | `nil` | Client certificate chain, an Array of PEM strings, leaf first. |
 | `private_key:` | `nil` | Client key as a PEM string; required with `certificate_chain:`. |
@@ -117,7 +117,9 @@ first callers share one dial attempt and its outcome. When that dial fails,
 every caller that waited for it fails the same way, as grpc-go fails the
 waiters of one attempt together, instead of each dialing again in turn. A
 caller whose own deadline, cancellation or interrupt ends its call while it
-leads the dial abandons the attempt, and a waiter dials again. hyper
+leads the dial, or whose deadline cuts the dial short, abandons the attempt,
+and a waiter dials again. A second HTTP/2 connection never replaces a usable
+pooled one: it serves only the call that dialed it, then closes. hyper
 multiplexes calls up to the peer's `SETTINGS_MAX_CONCURRENT_STREAMS`.
 Behaviour compared with a grpc-go channel:
 
@@ -149,8 +151,9 @@ Behaviour compared with a grpc-go channel:
 `connections: :per_call` dials a fresh connection for every call and closes it
 afterwards. With `http2: false`, connections dial in parallel, as Go's
 `net/http` dials them, since one HTTP/1.1 connection serves one call at a
-time; the same holds when TLS negotiates `http/1.1` for an `http2: true`
-transport. Pooling keeps at most two idle keep-alive connections per origin
+time. When TLS negotiates `http/1.1` for an `http2: true` transport, the first
+burst of callers waits for the dial that found out, and later dials run in
+parallel. Pooling keeps at most two idle keep-alive connections per origin
 (Go's `DefaultMaxIdleConnsPerHost`); only a connection whose request and
 response both completed returns to the pool.
 
@@ -164,10 +167,12 @@ Hostnames resolve through tokio's blocking pool (`getaddrinfo`), capped at
 512 threads, close to Go's 500 cgo lookup threads. A stalled lookup keeps its
 thread after the caller leaves. Addresses of both families are tried with Go's
 300 ms fallback delay. Within one family, addresses are tried in turn, each
-within an equal share of what is left of `connect_timeout` but at least 2
-seconds (Go's `partialDeadline`, as NetHTTP's dialer does), so a blackholed
-first address does not use up the whole budget. Without `connect_timeout`
-each attempt runs until the operating system gives up or the call deadline.
+within an equal share of what is left before the earlier of `connect_timeout`
+and the call deadline, but at least 2 seconds (Go's `partialDeadline`, as
+NetHTTP's dialer does), so a blackholed first address does not use up the
+whole budget. A call whose deadline ends during setup still fails
+`deadline_exceeded`. Without `connect_timeout` or a deadline each attempt runs
+until the operating system gives up.
 
 ## Keepalive
 
@@ -287,7 +292,10 @@ environment and `NO_PROXY` semantics.
 - h2c and TLS targets tunnel through `CONNECT`, as grpc-go does; TLS verifies
   the target host, not the proxy. Plaintext HTTP/1.1 (`http2: false`) requests
   to `http://` targets go to the proxy in absolute form, as NetHTTP and Go's
-  `net/http` send them.
+  `net/http` send them, so proxies that allow `CONNECT` only to port 443 still
+  work. A forwarding proxy handles each request as an HTTP intermediary:
+  streaming calls over this path depend on it passing chunked bodies through
+  incrementally. TLS targets always tunnel, end to end.
 - The environment proxy is chosen by the target URL's scheme, as Go's
   `net/http` and NetHTTP choose it: an h2c target is `http://`, so it takes
   `HTTP_PROXY`. grpc-go instead looks proxies up with an `https` scheme for
@@ -325,10 +333,12 @@ that sets `user-agent` wins.
   metadata over the limit fails before dispatch. h2 itself accepts header
   blocks up to 16 MiB, grpc-go's default, so a hostile block above that can
   still truncate trailers.
-- An HTTP/1.1 response head (status line, fields and chunked trailers) may be
-  up to 10 MiB with up to 1,024 fields, Go's `MaxResponseHeaderBytes`
-  default; hyper's own defaults (100 fields, about 400 KiB) are lower. A
-  larger head fails with `malformed response`.
+- An HTTP/1.1 response head (status line and fields) and its chunked trailers
+  may each be up to 10 MiB, Go's `MaxResponseHeaderBytes` default, which
+  bounds only bytes. hyper also counts fields, so this transport accepts up to
+  1,024 of them in a head or in trailers; hyper's own defaults (100 fields,
+  about 400 KiB) are lower. A larger head or trailer block fails with
+  `malformed response`.
 - Streaming messages follow core's message limits. Flow control uses BDP
   adaptive windows capped at 16 MiB like grpc-go, and each stream buffers at
   most 1 MiB of unsent request data, so `write` blocks while the peer does not

@@ -39,15 +39,20 @@ Dir.mktmpdir("connectrpc-hyper-install-") do |temporary|
   run = ->(*args) { system(environment, RbConfig.ruby, *args, chdir: working, exception: true) }
   run.call("-S", "gem", "install", "--norc", "--local", "--no-document", File.basename(core),
            File.basename(hyper.gem.path))
-  run.call("-e", <<~'CODE')
+  # A file, not `-e`: Windows argument quoting does not keep a multi-line
+  # program intact. Real paths, because macOS temporary directories resolve
+  # through /private.
+  File.write(File.join(working, "installed.rb"), <<~'CODE')
     require "connectrpc/hyper"
     spec = Gem.loaded_specs.fetch("connectrpc-hyper")
-    abort "Loaded outside GEM_HOME" unless spec.full_gem_path.start_with?("#{ENV.fetch('GEM_HOME')}/")
+    gem_path = File.realpath(spec.full_gem_path)
+    abort "Loaded outside GEM_HOME" unless gem_path.start_with?("#{File.realpath(ENV.fetch('GEM_HOME'))}/")
     minor = RUBY_VERSION[/\A\d+\.\d+/]
-    binary = Dir.glob(File.join(spec.full_gem_path, "lib/connectrpc/hyper/{#{minor}/,}connectrpc_hyper.{so,bundle}"))
+    binary = Dir.glob(File.join(gem_path, "lib/connectrpc/hyper/{#{minor}/,}connectrpc_hyper.{so,bundle}"))
     abort "Extension missing for Ruby #{minor}" if binary.empty?
     puts "Installed connectrpc-hyper #{spec.version} (#{spec.platform}) for Ruby #{RUBY_VERSION} " \
-         "(#{RUBY_PLATFORM}): #{binary.first.delete_prefix("#{spec.full_gem_path}/")}"
+         "(#{RUBY_PLATFORM}): #{binary.first.delete_prefix("#{gem_path}/")}"
   CODE
+  run.call("installed.rb")
   run.call("smoke.rb")
 end

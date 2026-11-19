@@ -572,9 +572,19 @@ RSpec.describe "Hyper CI mapping" do
     local.zip(ci).each do |local_task, ci_task|
       %w[tools env dir depends depends_post].each { |key| expect(ci_task.fetch(key)).to eq(local_task.fetch(key)) }
     end
-    expect(ci.last.fetch("run").first).to eq("ruby {{config_root}}/scripts/ci_runtime.rb hyper")
-    expect(ci.last.fetch("run").drop(1)).to eq(local.last.fetch("run").drop(1))
-    expect(local.last.fetch("run").first).to eq("mise install --locked go@1.27.3")
+    expect(ci.last.fetch("run")).to eq(local.last.fetch("run"))
+    expect(local.last.fetch("depends")).to eq(["hyper:toolchain:go"])
+    # Locally the dependency installs Go; in CI it validates setup-go's Go in
+    # the peer's own context.
+    toolchain = [nil, "ci"].map do |mode|
+      output, error, status = Open3.capture3({ "MISE_ENV" => mode }, "mise", "tasks", "info", "hyper:toolchain:go",
+                                             "--json")
+      expect(status.success?).to be(true), error
+      JSON.parse(output)
+    end
+    expect(toolchain.map { |task| task.fetch("run") })
+      .to eq([["mise install --locked go@1.27.3"], ["ruby {{config_root}}/scripts/ci_runtime.rb hyper"]])
+    %w[tools env dir].each { |key| expect(toolchain.last.fetch(key)).to eq(local.last.fetch(key)) }
   end
 end
 

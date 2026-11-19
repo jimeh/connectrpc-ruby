@@ -125,25 +125,38 @@ RSpec.describe "Fork", :fork do
   end
 
   # A token's Notify lock may be held by a parent runtime thread at fork
-  # time, so firing an inherited token must not touch it.
+  # time, so firing an inherited token must not touch it. A native call in
+  # the child that carries the token shows whether the fire landed: a fired
+  # token fails the call as canceled before it dials.
   it "ignores a cancellation token from before fork that the child fires" do
+    url = "#{peer['connect_h2c']}/connectrpc.grpcinterop.v1.Peer/Unary"
     output, status = ruby_child(<<~RUBY)
-      cancel = ConnectRPC::Hyper.const_get(:Native)::Cancel.new
+      native = ConnectRPC::Hyper.const_get(:Native)
+      cancel = native::Cancel.new
+      call = lambda do
+        driver = native::Driver.new(true, true, nil, 5.0, nil, [], nil, nil, [60.0, 1024])
+        status, = driver.unary("POST", #{url.dump}, [["content-type", "application/proto"]], "".b, 1024, nil, 5.0,
+                               cancel, nil)
+        driver.close(0.0)
+        status
+      rescue native::Failure => e
+        e.kind
+      end
       reader, writer = IO.pipe
       pid = fork do
         cancel.fire
-        writer.puts cancel.fired?.inspect
+        writer.puts call.call.inspect
         exit!(0)
       end
       writer.close
       Process.wait(pid)
       child = reader.read.chomp
-      parent = cancel.fired?
+      before = call.call
       cancel.fire
-      p [child, parent, cancel.fired?]
+      p [child, before, call.call]
     RUBY
     expect(status).to be_success
-    expect(output.lines.last.chomp).to eq('["false", false, true]')
+    expect(output.lines.last.chomp).to eq('["200", 200, :canceled]')
   end
 
   it "keeps a transport closed before fork closed in the child" do

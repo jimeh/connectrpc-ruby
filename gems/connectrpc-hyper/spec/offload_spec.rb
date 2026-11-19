@@ -181,6 +181,39 @@ RSpec.describe "Inside an Async reactor" do
       peer.wait_event(/grpc ss-hold-done context canceled/, from: from)
     end
 
+    # The held call waits in Ruby, so the only native wait is the offloaded
+    # close; it is stopped there and the call drains cleanly afterwards.
+    it "keeps a clean drain's true outcome when Task#stop lands on a closing task" do
+      output, status = reactor_child(<<~RUBY, pool: true)
+        transport = ConnectRPC::Hyper::Transport.new
+        sent = Queue.new
+        release = Queue.new
+        held = Thread.new do
+          client(#{peer['grpc_h2c'].dump}, transport).client_stream(timeout: 30) do |writer|
+            writer.send_message(MSG.new(value: "a"))
+            sent << true
+            release.pop
+          end.message.value
+        end
+        sent.pop
+        outcome = Async do |task|
+          closer = task.async do
+            transport.close(grace: 10)
+          rescue Async::Stop
+            :stopped
+          end
+          parked
+          closer.stop
+          release << true
+          closer.wait
+        end.wait
+        driver = transport.instance_variable_get(:@driver)
+        p [outcome, held.value, transport.close(grace: 5), driver.stats[1..2]]
+      RUBY
+      expect(status).to be_success
+      expect(eval(output.lines.last)).to eq([:stopped, "a", true, [0, 0]]) # rubocop:disable Security/Eval
+    end
+
     it "parks a read and a write of one bidi stream in two fibers, then stops both" do
       from = peer.mark
       output, status = reactor_child(<<~RUBY, pool: true)

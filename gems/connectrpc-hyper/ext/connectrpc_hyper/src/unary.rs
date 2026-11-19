@@ -37,7 +37,7 @@ pub async fn unary(
 ) -> Result<Unary, Failure> {
     let mut exclude = None;
     loop {
-        let mut lease = core.acquire(&spec.origin, false, exclude).await?;
+        let mut lease = core.acquire(&spec.origin, false, exclude, deadline).await?;
         let body = match &payload {
             Some(bytes) => CallBody::Full(Some(bytes.clone())),
             None => CallBody::Empty,

@@ -84,10 +84,19 @@ RSpec.describe "Proxies" do
       streamed = []
       peer_client.server_stream(MSG.new(value: "count:2:1"), timeout: 5) { |reader| streamed = values(reader) }
       expect(streamed).to eq(%w[0 1])
+      # The forwarding proxy streams the chunked request body: the peer sees
+      # the first message before the second is written.
+      response = peer_client.client_stream(timeout: 5) do |writer|
+        writer.send_message(MSG.new(value: "a"))
+        peer.wait_event(/connect cs-recv a /, from: from)
+        writer.send_message(MSG.new(value: "b"))
+      end
+      expect(response.message.value).to eq("a,b")
       prefix = "#{origin}/connectrpc.grpcinterop.v1.Peer"
       expect(proxy_events(from)).to eq(["proxy forward POST #{prefix}/Unary auth=ok",
-                                        "proxy forward POST #{prefix}/ServerStream auth=ok"])
-      expect(peer.count(%r{\Aconnect http HTTP/1\.1 /}, from: from)).to eq(2)
+                                        "proxy forward POST #{prefix}/ServerStream auth=ok",
+                                        "proxy forward POST #{prefix}/ClientStream auth=ok"])
+      expect(peer.count(%r{\Aconnect http HTTP/1\.1 /}, from: from)).to eq(3)
     end
 
     it "keeps an h2c server's SETTINGS that arrive with the CONNECT reply" do
