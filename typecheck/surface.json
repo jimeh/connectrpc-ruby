@@ -1205,6 +1205,7 @@
     "ConnectRPC::Hyper::Transport#proxy_mode": {"kind":"method","visibility":"private","parameters":"","classification":"internal"},
     "ConnectRPC::Hyper::Transport#proxy_resolver": {"kind":"method","visibility":"private","parameters":"option","classification":"internal"},
     "ConnectRPC::Hyper::Transport#proxy_route": {"kind":"method","visibility":"private","parameters":"url","classification":"internal"},
+    "ConnectRPC::Hyper::Transport#seconds": {"kind":"method","visibility":"private","parameters":"value, name, nil_allowed: false","classification":"internal"},
     "ConnectRPC::Hyper::Transport#state": {"kind":"method","visibility":"private","parameters":"","classification":"internal"},
     "ConnectRPC::Hyper::Transport#streaming_capabilities": {"kind":"method","visibility":"public","parameters":"","classification":"supported"},
     "ConnectRPC::Hyper::Transport#tunnel_limits": {"kind":"method","visibility":"private","parameters":"","classification":"internal"},

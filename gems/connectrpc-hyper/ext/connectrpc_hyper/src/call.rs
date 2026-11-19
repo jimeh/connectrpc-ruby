@@ -79,6 +79,9 @@ pub struct CallState {
     aborted: AtomicBool,
     finished: AtomicBool,
     failed: AtomicBool,
+    /// True while a request is queued (see `Failure::forced`); a retry of a
+    /// request handed back unsent clears it until it queues again.
+    pub dispatched: Arc<AtomicBool>,
     ended: Arc<AtomicBool>,
     body: Mutex<Option<mpsc::Receiver<Bytes>>>,
     dispatch: tokio::sync::Mutex<Dispatch>,
@@ -110,6 +113,7 @@ impl CallState {
             aborted: AtomicBool::new(false),
             finished: AtomicBool::new(false),
             failed: AtomicBool::new(false),
+            dispatched: Arc::new(AtomicBool::new(false)),
             ended: Arc::new(AtomicBool::new(false)),
             body: Mutex::new(Some(rx)),
             dispatch: tokio::sync::Mutex::new(Dispatch::Pending),
@@ -190,6 +194,7 @@ impl CallState {
         };
         self.local_port.store(lease.local_port(), Ordering::SeqCst);
         self.h2.store(lease.is_h2(), Ordering::SeqCst);
+        self.dispatched.store(true, Ordering::SeqCst);
         let sent = send(&mut lease, request);
         let (deliver, delivered) = oneshot::channel();
         self.core.tracker.spawn(respond(
@@ -200,6 +205,7 @@ impl CallState {
             lease,
             sent,
             self.abort.clone(),
+            self.dispatched.clone(),
             deliver,
         ));
         *state = Dispatch::Dispatched(Some(delivered));
@@ -369,6 +375,7 @@ async fn respond(
     lease: Lease,
     sent: Sent,
     abort: Arc<Signal>,
+    dispatched: Arc<AtomicBool>,
     deliver: oneshot::Sender<Delivered>,
 ) {
     let work = async {
@@ -381,10 +388,12 @@ async fn respond(
                 // Handed back unsent: the peer never saw it.
                 let exclude = lease.id();
                 drop(lease);
+                dispatched.store(false, Ordering::SeqCst);
                 let mut lease = core
                     .acquire(&spec.origin, require_h2, Some(exclude), deadline)
                     .await?;
                 let request = spec.build(request.into_body(), deadline, lease.is_h2())?;
+                dispatched.store(true, Ordering::SeqCst);
                 match send(&mut lease, request).await {
                     Ok(response) => Ok((response, lease)),
                     Err(error) => Err(Failure::from_hyper(error.error())),
@@ -395,7 +404,7 @@ async fn respond(
     let delivered = tokio::select! {
         result = work => result,
         _ = abort.wait() => return,
-        _ = core.shutdown.wait() => Err(Failure::shutdown()),
+        _ = core.shutdown.wait() => Err(Failure::forced(dispatched.load(Ordering::SeqCst))),
     };
     let _ = deliver.send(delivered);
 }

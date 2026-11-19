@@ -63,6 +63,16 @@ impl Failure {
         Self::new("shutdown", "transport closed")
     }
 
+    /// What forced teardown reports to a call: the shutdown phrase once it
+    /// queued a request, else the closed phrase, as the server never saw it.
+    pub fn forced(dispatched: bool) -> Self {
+        if dispatched {
+            Self::shutdown()
+        } else {
+            Self::admission()
+        }
+    }
+
     /// Classifies by type, HTTP/2 code and errno, never by message text.
     pub fn from_hyper(error: &hyper::Error) -> Self {
         let mut source = error.source();

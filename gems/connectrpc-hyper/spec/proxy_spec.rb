@@ -362,9 +362,9 @@ RSpec.describe "Proxies" do
       end
     end
 
-    it "caps a CONNECT exchange without a call deadline or connect_timeout" do
+    it "caps a CONNECT exchange without a call deadline, well inside connect_timeout" do
       with_socket_proxy(stalling(:connect, Queue.new, Queue.new)) do |url|
-        transport = hyper(proxy: url, connect_timeout: nil)
+        transport = hyper(proxy: url, connect_timeout: 30)
         allow(transport).to receive(:tunnel_limits).and_return([0.3, 1024])
         transport.send(:build_driver)
         started = monotonic

@@ -57,11 +57,15 @@ RSpec.describe "Connection pooling" do
   end
 
   # Three callers wait on a pool dial through tunnel 0, which reaches an
-  # http/1.1-only peer: one takes the parked connection and the other two
-  # dial their own, through tunnels 1 and 2 to an h2 peer, each held by its
-  # gate. Tunnel 1's connection is pooled first; tunnel 2's then serves only
-  # its own call and closes, and the next call reuses tunnel 1.
+  # http/1.1-only peer. The peer holds every call until released, so the
+  # caller that takes the parked connection keeps it busy, and the other two
+  # find no usable connection and dial their own, through tunnels 1 and 2 to
+  # an h2 peer, each held by its gate. Tunnel 1's connection is pooled first;
+  # tunnel 2's then serves only its own call and closes, and the next call
+  # reuses tunnel 1.
   it "keeps the first pooled HTTP/2 connection when callers after an HTTP/1.1 dial each negotiate h2" do
+    from = peer.mark
+    tag = "after-h1-#{rand(1 << 30)}"
     h1_port = URI(peer["connect_tls_h1"]).port
     h2_port = URI(peer["connect_tls"]).port
     gates = Array.new(3) { Queue.new }
@@ -69,7 +73,7 @@ RSpec.describe "Connection pooling" do
       transport = hyper(proxy: url, **tls_options)
       peer_client = client("https://127.0.0.1:#{h2_port}", transport: transport, protocol: :connect)
       waiters = Array.new(3) do |index|
-        thread = Thread.new { peer_client.unary(MSG.new(value: "w#{index}"), timeout: 20).message.value }
+        thread = Thread.new { peer_client.unary(MSG.new(value: "gate:#{tag}:w#{index}"), timeout: 20).message.value }
         expect(heads.pop(timeout: 10)).to start_with("CONNECT ") if index.zero?
         wait_parked(thread, "Driver#unary")
         thread
@@ -79,9 +83,11 @@ RSpec.describe "Connection pooling" do
       2.times { expect(heads.pop(timeout: 10)).to start_with("CONNECT ") }
       gates[1] << true
       # The parked HTTP/1.1 connection's call and tunnel 1's call.
-      wait_until("two calls") { waiters.count { |thread| !thread.alive? } == 2 }
+      peer.wait_count(/ unary-gate-start #{tag}\z/, 2, from: from)
       gates[2] << true
-      expect(waiters.map(&:value)).to eq(%w[w0 w1 w2])
+      peer.wait_count(/ unary-gate-start #{tag}\z/, 3, from: from)
+      peer.command("release #{tag}")
+      expect(waiters.map(&:value)).to eq(Array.new(3) { |index| "gate:#{tag}:w#{index}" })
       expect(ended.pop(timeout: 10)).to eq(2)
       expect(peer_client.unary(MSG.new(value: "next"), timeout: 5).message.value).to eq("next")
       expect([heads.size, ended.size]).to eq([0, 0])
@@ -284,18 +290,21 @@ RSpec.describe "Connection pooling" do
     blackhole&.close
   end
 
-  # After the pool dial negotiated http/1.1, one waiter takes its parked
-  # connection, the others dial their own, and a streaming waiter, which
-  # needs HTTP/2, fails without dialing.
+  # After the pool dial negotiated http/1.1, each waiter uses a usable pooled
+  # or idle connection, else dials its own, and a streaming waiter, which
+  # needs HTTP/2, fails without dialing. The peer holds every call until all
+  # four arrived, so no connection is free again in between: one waiter takes
+  # the parked connection and three dial.
   it "serves the waiters of a dial that negotiated HTTP/1.1 on HTTP/1.1 connections" do
     from = peer.mark
+    tag = "h1-waiters-#{rand(1 << 30)}"
     gate = Queue.new
     port = URI(peer["connect_tls_h1"]).port
     with_gated_tunnels(port, gate) do |url, heads|
       transport = hyper(proxy: url, **tls_options)
       peer_client = client("https://127.0.0.1:#{port}", transport: transport, protocol: :connect)
       calls = Array.new(4) do |index|
-        thread = Thread.new { peer_client.unary(MSG.new(value: "h1-#{index}"), timeout: 20).message.value }
+        thread = Thread.new { peer_client.unary(MSG.new(value: "gate:#{tag}:#{index}"), timeout: 20).message.value }
         heads.pop(timeout: 10) if index.zero?
         wait_parked(thread, "Driver#unary")
         thread
@@ -307,8 +316,10 @@ RSpec.describe "Connection pooling" do
       # The waiters joined the held dial instead of dialing.
       expect(heads.size).to eq(0)
       gate << true
-      expect(calls.map(&:value)).to eq(%w[h1-0 h1-1 h1-2 h1-3])
       expect(streaming.value.message).to eq("HTTP transport failed: ALPN negotiation failed")
+      peer.wait_count(/ unary-gate-start #{tag}\z/, 4, from: from)
+      peer.command("release #{tag}")
+      expect(calls.map(&:value)).to eq(Array.new(4) { |index| "gate:#{tag}:#{index}" })
       # The dialed connection served one waiter; three more dialed their own
       # tunnels, and the streaming waiter none.
       expect(heads.size).to eq(3)

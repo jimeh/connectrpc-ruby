@@ -8,18 +8,21 @@
 //! HTTP/2 dial at a time, a task the driver owns. Its outcome is decided only
 //! by the dial and by `close`, never by a caller, and every caller that waited
 //! for it gets the same outcome: a pooled connection to check out, HTTP/1.1
-//! (the clean connection is parked; one waiter takes it and the rest dial
-//! their own), or the failure. A caller decides to use a connection, or else
-//! to join or start the dial, under one lock. It waits under its own
-//! deadline, cancellation and interrupts, and leaving changes nothing about
-//! the dial, whose per-address budget splits `connect_timeout` alone.
+//! (the clean connection is parked idle; each waiter then uses a usable
+//! pooled or idle connection, else dials its own), or the failure. A caller
+//! decides to use a connection, or else to join or start the dial, under one
+//! lock. It waits under its own deadline, cancellation and interrupts, and
+//! leaving changes nothing about the dial, whose per-address budget splits
+//! `connect_timeout` alone. A dial still running when its transport is
+//! garbage collected ends within `connect_timeout`.
 //!
 //! Unshared dials run inside one call, bounded by the earlier of
 //! `connect_timeout` and the call deadline: per-call mode, `http2: false`
 //! (one HTTP/1.1 connection serves one call at a time, so connections dial
-//! in parallel, as Go net/http dials them) and callers after an HTTP/1.1
-//! outcome. A second HTTP/2 connection never replaces a usable pooled one: it
-//! serves only the call that dialed it. Idle connections close after
+//! in parallel, as Go net/http dials them), callers after an HTTP/1.1
+//! outcome and a retry from a pooled connection that still admits. A second
+//! HTTP/2 connection never replaces a usable pooled one: it serves only the
+//! call that dialed it. Idle connections close after
 //! `idle_timeout`; the reaper claims the exact checkout generation it
 //! observed idle, read under the lock checkouts count with. At most two idle
 //! HTTP/1.1 keep-alive connections per origin; only a connection whose request
@@ -58,7 +61,7 @@ type TlsConfigs = (Arc<rustls::ClientConfig>, Arc<rustls::ClientConfig>);
 pub struct Config {
     pub pooled: bool,
     pub idle_timeout: Option<Duration>,
-    pub connect_timeout: Option<Duration>,
+    pub connect_timeout: Duration,
     pub settings: Settings,
     pub tls: TlsInputs,
 }
@@ -109,8 +112,8 @@ struct Dial {
 enum Outcome {
     /// The pool has a usable HTTP/2 connection: check it out.
     Pooled,
-    /// TLS negotiated HTTP/1.1. The connection is parked idle, if it fits:
-    /// one waiter takes it and the others dial their own.
+    /// TLS negotiated HTTP/1.1. The connection is parked idle, if it fits;
+    /// waiters claim again without sharing a dial.
     Http1,
     /// The dial failed: every waiter fails the same way.
     Failed(Failure),
@@ -507,15 +510,11 @@ impl DriverCore {
         origin: &Origin,
         deadline: Option<Instant>,
     ) -> Result<Connected, Failure> {
-        let limit = self
-            .config
-            .connect_timeout
-            .map(|limit| tokio::time::Instant::now() + limit);
-        let deadline = deadline.map(tokio::time::Instant::from_std);
-        let budget = match (limit, deadline) {
-            (Some(limit), Some(deadline)) => Some(limit.min(deadline)),
-            (limit, deadline) => limit.or(deadline),
-        };
+        let limit = self.config.connect_timeout;
+        let mut budget = tokio::time::Instant::now() + limit;
+        if let Some(deadline) = deadline {
+            budget = budget.min(tokio::time::Instant::from_std(deadline));
+        }
         let work = async {
             let tls = if origin.https {
                 Some(self.tls_config(self.config.settings.http2).await?)
@@ -532,12 +531,9 @@ impl DriverCore {
             )
             .await
         };
-        let connected = match self.config.connect_timeout {
-            Some(limit) => tokio::time::timeout(limit, work)
-                .await
-                .map_err(|_| Failure::new("connect_timeout", "connection setup timed out"))??,
-            None => work.await?,
-        };
+        let connected = tokio::time::timeout(limit, work)
+            .await
+            .map_err(|_| Failure::new("connect_timeout", "connection setup timed out"))??;
         self.opened.fetch_add(1, Ordering::SeqCst);
         Ok(connected)
     }
@@ -548,8 +544,9 @@ impl DriverCore {
 
     /// A connection for one call ending at `deadline`. `exclude` names a
     /// connection that just refused or handed back a request: a retry never
-    /// reuses it. A call admitted before close keeps its own unshared dial;
-    /// new calls and waiters of a pool dial fail with the closed phrase.
+    /// reuses it, and never evicts it while it still admits other calls. A
+    /// call admitted before close keeps its own unshared dial; new calls and
+    /// waiters of a pool dial fail with the closed phrase.
     pub async fn acquire(
         self: &Arc<Self>,
         origin: &Origin,
@@ -692,7 +689,14 @@ impl DriverCore {
     ) -> Result<Claim, Failure> {
         let mut state = entry.state.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(conn) = state.h2.as_ref() {
-            if conn.usable() && exclude != Some(conn.shared.id) {
+            let usable = conn.usable();
+            if usable && exclude == Some(conn.shared.id) {
+                // A retry from a connection that still admits: it stays pooled
+                // for its other calls, and the retry gets a connection of its
+                // own, which pool_h2 then leaves unpooled.
+                return Ok(Claim::Dial);
+            }
+            if usable {
                 // Under the state lock, so the reaper's claim sees it.
                 conn.shared.active.fetch_add(1, Ordering::AcqRel);
                 conn.shared.generation.fetch_add(1, Ordering::AcqRel);
@@ -788,8 +792,9 @@ impl DriverCore {
     /// Checked under the lock begin_close clears the pool with: a connection
     /// dialed for a call admitted before close serves only that call, then
     /// closes with it. So does one dialed while a usable connection is pooled
-    /// (an unshared dial after an HTTP/1.1 outcome may still get h2 from TLS):
-    /// replacing it would retire a working connection with streams in flight.
+    /// (an unshared dial after an HTTP/1.1 outcome may still get h2 from TLS,
+    /// and a retry dials past a connection that still admits): replacing it
+    /// would retire a working connection with streams in flight.
     fn pool_h2(
         self: &Arc<Self>,
         entry: &Arc<OriginEntry>,
@@ -938,10 +943,13 @@ impl DriverCore {
     }
 
     /// Ends every call's waits and every owned task, then waits for the
-    /// tasks. Sealing first means a call mid-poll registers no task later.
+    /// tasks. Shutdown fires before any task is aborted, so a call woken by
+    /// an abort (a dropped response channel or pool dial) already sees it and
+    /// reports `Failure::forced`. Sealing before the wait means a call mid-poll
+    /// registers no task later.
     pub async fn force(&self) {
-        self.tracker.seal();
         self.shutdown.fire();
+        self.tracker.seal();
         // Spec hold point: a spec armed with a zero bound observes the seal.
         self.holds.reach("force:sealed").await;
         self.tracker.wait_empty().await;

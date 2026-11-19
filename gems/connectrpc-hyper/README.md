@@ -81,7 +81,7 @@ URLs.
 | `idle_timeout:` | `1800` | Seconds before a pooled connection with no calls in flight closes; nil keeps it. |
 | `keepalive:` | `nil` | A `ConnectRPC::Keepalive`; see [keepalive](#keepalive). |
 | `http2:` | `true` | `false` sends Connect over HTTP/1.1 only. |
-| `connect_timeout:` | `10` | Seconds for DNS, TCP, proxy `CONNECT`, TLS and the HTTP/2 handshake; nil leaves only the call deadline. Each address of a host gets a share; see [connections](#connections-and-server-restarts). |
+| `connect_timeout:` | `10` | Seconds for DNS, TCP, proxy `CONNECT`, TLS and the HTTP/2 handshake. Must be finite, as connectrpc-async requires, so every dial ends on its own. Each address of a host gets a share; see [connections](#connections-and-server-restarts). |
 | `ca_file:` | `nil` | PEM file appended to the trusted roots. |
 | `certificate_chain:` | `nil` | Client certificate chain, an Array of PEM strings, leaf first. |
 | `private_key:` | `nil` | Client key as a PEM string; required with `certificate_chain:`. |
@@ -153,9 +153,10 @@ grpc-go channel:
 afterwards. With `http2: false`, each call dials its own connection, in
 parallel, as Go's `net/http` dials them, since one HTTP/1.1 connection serves
 one call at a time. When TLS negotiates `http/1.1` for an `http2: true`
-transport, one caller that waited for that dial takes its connection and the
-others dial their own; a streaming call, which needs HTTP/2, fails with the
-ALPN phrase instead. A later burst that finds no idle connection waits for one
+transport, each caller that waited for that dial uses a usable pooled or idle
+connection if there is one, such as the clean connection that dial parked,
+and otherwise dials its own; a streaming call, which needs HTTP/2, fails with
+the ALPN phrase instead. A later burst that finds no idle connection waits for one
 shared dial again. Pooling keeps at most two idle keep-alive connections per
 origin (Go's `DefaultMaxIdleConnsPerHost`); only a connection whose request
 and response both completed returns to the pool.
@@ -164,7 +165,9 @@ Two requests are retried once on a fresh connection, within the original
 deadline and with the wire timeout recomputed: a request hyper hands back
 unsent, on any call shape, and a Connect unary call that the server refused
 with `REFUSED_STREAM` before response headers. Nothing else is replayed, so a
-handler that started never runs twice.
+handler that started never runs twice. When the pooled connection that refused
+or handed back the request still admits calls, it stays pooled for them and
+the retry dials a connection that serves only that call.
 
 Hostnames resolve through tokio's blocking pool (`getaddrinfo`), capped at
 512 threads, close to Go's 500 cgo lookup threads. A stalled lookup keeps its
@@ -174,10 +177,11 @@ within an equal share of what is left of the setup budget, but at least 2
 seconds (Go's `partialDeadline`, as NetHTTP's dialer does), so a blackholed
 first address does not use up the whole budget. The shared HTTP/2 dial's
 budget is `connect_timeout`; a dial that serves one call (per-call mode,
-`http2: false`, or a call after an `http/1.1` outcome) gets the earlier of
-`connect_timeout` and its call's deadline. A call whose deadline ends during
-setup still fails `deadline_exceeded`. Without a budget each attempt runs
-until the operating system gives up, or until `close` ends the dial.
+`http2: false`, a call after an `http/1.1` outcome, or a retry that leaves a
+pooled connection in place) gets the earlier of `connect_timeout` and its
+call's deadline. A call whose deadline ends during setup still fails
+`deadline_exceeded`. A shared dial still running when its transport is
+garbage collected ends within `connect_timeout`.
 
 ## Keepalive
 
@@ -366,7 +370,7 @@ failure as `cause`:
 | `HTTP transport failed: connection closed` | The connection closed, retired or received GOAWAY |
 | `HTTP transport failed: malformed response` | Protocol error |
 | `HTTP transport failed: stream reset` | A Connect stream reset by the server |
-| `HTTP transport admission is closed` | A call after `close`, with no `cause` |
+| `HTTP transport admission is closed` | A call after `close`, or one forced teardown ended before it sent its request, with no `cause` |
 
 A server `RST_STREAM` on a gRPC call maps as connectrpc-async does: codes 3
 and 11 to `resource_exhausted`, 7 to `unavailable`, 8 to `canceled`, 12 to
@@ -380,12 +384,16 @@ calls share the first outcome. Callers waiting for the shared HTTP/2 dial fail
 with `HTTP transport admission is closed`, and the dial ends. A call admitted
 before `close` that is dialing its own connection (per-call mode or HTTP/1.1)
 is in flight: it keeps dialing and runs within the grace, but its new
-connection is never pooled for other calls. Teardown runs in the background
+connection is never pooled for other calls. Forced teardown fails a call that
+has not sent its request yet (still dialing, or waiting for a retry's
+connection) with `HTTP transport admission is closed`, since the server never
+saw it, and a call that sent its request with
+`HTTP transport failed: connection closed`. Teardown runs in the background
 once started, so it completes even if the closing thread is interrupted or a
-fiber scheduler stops the closing task (async's `Task#stop`). The closer keeps
-waiting for the outcome, off the reactor thread with async's worker pool, so
-sibling tasks still run and their calls can drain; the exception is raised
-after teardown.
+fiber scheduler stops the closing task (async's `Task#stop`). Every closer, a
+concurrent one included, keeps waiting for the outcome, off the reactor thread
+with async's worker pool, so sibling tasks still run and their calls can
+drain; the exception is raised after teardown.
 
 ## License
 

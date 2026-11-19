@@ -24,7 +24,7 @@ module ConnectRPC
       # proxy: :environment snapshots HTTP_PROXY, HTTPS_PROXY and NO_PROXY now
       # (Go net/http rules, through core's ConnectRPC::Proxy). A String or URI
       # proxies every request; nil connects directly. Only http:// proxies.
-      # rubocop:disable-next Metrics/MethodLength, Metrics/AbcSize
+      # rubocop:disable-next Metrics/MethodLength
       def initialize(connections: :pooled, idle_timeout: 1800, keepalive: nil, http2: true, connect_timeout: 10,
                      ca_file: nil, certificate_chain: nil, private_key: nil, proxy: :environment)
         raise ArgumentError, "connections must be :pooled or :per_call" unless CONNECTIONS.include?(connections)
@@ -33,13 +33,12 @@ module ConnectRPC
 
         @connections = connections
         @idle_timeout = optional_seconds(idle_timeout, "idle_timeout")
-        @connect_timeout = optional_seconds(connect_timeout, "connect_timeout")
+        @connect_timeout = seconds(connect_timeout, "connect_timeout")
         @keepalive = keepalive
         @http2 = http2
         @tls = TLS.inputs(ca_file: ca_file, certificate_chain: certificate_chain, private_key: private_key)
         @proxy = proxy_resolver(proxy)
         @lock = Mutex.new
-        @closed = ConditionVariable.new
         @state = :open
         # Building the driver imports the TLS identity into the provider, so
         # an identity aws-lc-rs cannot use fails here. It starts nothing.
@@ -106,28 +105,39 @@ module ConnectRPC
 
       def optional_seconds(value, name)
         return if value.nil?
-        return value if value.is_a?(Numeric) && value.real? && value.finite? && value.positive?
 
-        raise ArgumentError, "#{name} must be finite positive seconds or nil"
+        seconds(value, name, nil_allowed: true)
       end
 
+      # connectrpc-async's rule (ConnectRPC::Async::Internal.seconds).
+      def seconds(value, name, nil_allowed: false)
+        return value if value.is_a?(Numeric) && value.real? && value.finite? && value.positive?
+
+        raise ArgumentError, "#{name} must be finite positive seconds#{' or nil' if nil_allowed}"
+      end
+
+      # Every closer in this process, concurrent ones included, waits in
+      # native close: it starts teardown once, gives every closer its
+      # published outcome and holds an interrupt or a fiber scheduler's
+      # cancellation until then. The lock covers only the state and the
+      # driver handoff.
       def close_masked(grace) # rubocop:disable Metrics/MethodLength
         driver = nil
         @lock.synchronize do
           inherit_fork_state
-          @closed.wait(@lock) while @state == :closing
           return @close_outcome if @state == :closed
+          # A forked child that never built its own driver has nothing to drain.
+          return finish_close(true) unless @driver_pid == Process.pid
 
           @state = :closing
           @close_pid = Process.pid
-          driver = @driver if @driver_pid == Process.pid
+          driver = @driver
         end
         outcome = nil
         begin
-          outcome = driver ? driver.close(grace.to_f) : true
+          outcome = driver.close(grace.to_f)
         ensure
-          # Only native close raises here, and a fiber scheduler's
-          # cancellation only after teardown ended: its recorded outcome stands.
+          # Native close raises only after teardown published its outcome.
           outcome = driver.close_outcome == true if outcome.nil?
           @lock.synchronize { finish_close(outcome) }
         end
@@ -135,9 +145,8 @@ module ConnectRPC
       end
 
       def finish_close(outcome)
-        @close_outcome = outcome
         @state = :closed
-        @closed.broadcast
+        @close_outcome = outcome
       end
 
       # A child that inherits another process's pending close has no driver
@@ -163,7 +172,7 @@ module ConnectRPC
 
       def build_driver
         roots, chain, key = @tls
-        @driver = Native::Driver.new(@connections == :pooled, @http2, @idle_timeout&.to_f, @connect_timeout&.to_f,
+        @driver = Native::Driver.new(@connections == :pooled, @http2, @idle_timeout&.to_f, @connect_timeout.to_f,
                                      native_keepalive, roots || [], chain, key, tunnel_limits)
         @driver_pid = Process.pid
       rescue Native::Failure => e

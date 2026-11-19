@@ -252,28 +252,19 @@ fn attempt_budget(deadline: Instant, remaining_addresses: usize) -> Duration {
 
 /// Tries each address in turn, each within its share of the setup budget, so
 /// a blackholed address does not consume all of it; returns the first error
-/// if all fail. Without a budget each attempt runs until the OS gives up.
-async fn dial_serial(
-    addresses: &[SocketAddr],
-    deadline: Option<Instant>,
-) -> Result<TcpStream, Failure> {
+/// if all fail.
+async fn dial_serial(addresses: &[SocketAddr], deadline: Instant) -> Result<TcpStream, Failure> {
     let mut first = None;
     for (index, address) in addresses.iter().enumerate() {
-        let attempt = TcpStream::connect(address);
-        let result = match deadline {
-            Some(deadline) => {
-                let budget = attempt_budget(deadline, addresses.len() - index);
-                match tokio::time::timeout(budget, attempt).await {
-                    Ok(result) => result,
-                    Err(_) => {
-                        first.get_or_insert_with(|| {
-                            Failure::new("connect_timeout", "connection attempt timed out")
-                        });
-                        continue;
-                    }
-                }
+        let budget = attempt_budget(deadline, addresses.len() - index);
+        let result = match tokio::time::timeout(budget, TcpStream::connect(address)).await {
+            Ok(result) => result,
+            Err(_) => {
+                first.get_or_insert_with(|| {
+                    Failure::new("connect_timeout", "connection attempt timed out")
+                });
+                continue;
             }
-            None => attempt.await,
         };
         match result {
             Ok(stream) => return Ok(stream),
@@ -288,7 +279,7 @@ async fn dial_serial(
 /// RFC 6555 as Go dials: the first address's family is primary; the other
 /// family starts after FALLBACK_DELAY, or at once if the primary fails, and
 /// the first connection wins. The primary's error is reported if both fail.
-async fn dial(host: &str, port: u16, deadline: Option<Instant>) -> Result<TcpStream, Failure> {
+async fn dial(host: &str, port: u16, deadline: Instant) -> Result<TcpStream, Failure> {
     let addresses = resolve(host, port).await?;
     let primary_v4 = addresses[0].is_ipv4();
     let (primaries, fallbacks): (Vec<SocketAddr>, Vec<SocketAddr>) = addresses
@@ -370,7 +361,7 @@ pub async fn connect(
     origin: &Origin,
     tracker: &Arc<Tracker>,
     holds: &Arc<Holds>,
-    deadline: Option<Instant>,
+    deadline: Instant,
 ) -> Result<Connected, Failure> {
     let stream = match &origin.proxy {
         Some(route) => dial(&route.host, route.port, deadline).await?,

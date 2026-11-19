@@ -39,8 +39,12 @@ RSpec.describe ConnectRPC::Hyper::Transport do
     [{ connections: :shared }, "connections must be :pooled or :per_call"],
     [{ idle_timeout: 0 }, "idle_timeout must be finite positive seconds or nil"],
     [{ idle_timeout: Float::INFINITY }, "idle_timeout must be finite positive seconds or nil"],
-    [{ connect_timeout: -1 }, "connect_timeout must be finite positive seconds or nil"],
-    [{ connect_timeout: "20" }, "connect_timeout must be finite positive seconds or nil"],
+    # As the connectrpc-async transports require: a pool dial outlives its
+    # callers, so it must end on its own.
+    [{ connect_timeout: nil }, "connect_timeout must be finite positive seconds"],
+    [{ connect_timeout: Float::INFINITY }, "connect_timeout must be finite positive seconds"],
+    [{ connect_timeout: -1 }, "connect_timeout must be finite positive seconds"],
+    [{ connect_timeout: "20" }, "connect_timeout must be finite positive seconds"],
     [{ keepalive: 60 }, "keepalive must be a Keepalive or nil"],
     [{ http2: nil }, "http2 must be true or false"]
   ].each do |options, message|
@@ -49,9 +53,8 @@ RSpec.describe ConnectRPC::Hyper::Transport do
     end
   end
 
-  it "accepts nil idle and connect timeouts and a Keepalive" do
-    expect { hyper(idle_timeout: nil, connect_timeout: nil, keepalive: ConnectRPC::Keepalive.new(time: 5)) }
-      .not_to raise_error
+  it "accepts a nil idle timeout and a Keepalive" do
+    expect { hyper(idle_timeout: nil, keepalive: ConnectRPC::Keepalive.new(time: 5)) }.not_to raise_error
   end
 
   # Ruby accepts any finite positive number; native code saturates each

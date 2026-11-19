@@ -198,6 +198,9 @@ pub struct Waits<'a> {
     pub abort: Option<&'a Arc<Signal>>,
     /// The driver's forced teardown.
     pub shutdown: &'a Arc<Signal>,
+    /// Whether the call has queued a request; chooses the phrase forced
+    /// teardown reports (`Failure::forced`).
+    pub dispatched: &'a AtomicBool,
     pub deadline: Option<Instant>,
 }
 
@@ -267,7 +270,7 @@ where
             Wake::Done(result) => result,
             Wake::Canceled => Err(Failure::new("canceled", "call canceled")),
             Wake::Aborted => Err(Failure::new("aborted", "exchange aborted")),
-            Wake::Shutdown => Err(Failure::shutdown()),
+            Wake::Shutdown => Err(Failure::forced(waits.dispatched.load(Ordering::SeqCst))),
             Wake::Timeout => Err(Failure::new("timeout", "wait timed out")),
         });
     }
@@ -278,7 +281,7 @@ fn settled(waits: &Waits<'_>) -> Option<Failure> {
         return Some(Failure::new("aborted", "exchange aborted"));
     }
     if waits.shutdown.fired() {
-        return Some(Failure::shutdown());
+        return Some(Failure::forced(waits.dispatched.load(Ordering::SeqCst)));
     }
     if waits.cancel.is_some_and(|cancel| cancel.fired()) {
         return Some(Failure::new("canceled", "call canceled"));

@@ -45,6 +45,28 @@ RSpec.describe "Retries" do
     expect(accepts("raw", from)).to eq(2)
   end
 
+  # The pooled connection still admits when it refuses one stream, so the
+  # retry dials a connection that serves only that call. The held sibling
+  # finishes on the pooled connection, the retry's connection closes after
+  # its call, and a later call reuses the pooled one as its third stream.
+  it "retries a refused stream on a connection of its own and keeps the pooled connection for other calls" do
+    from = peer.mark
+    transport = hyper
+    origin = peer["raw"]
+    tag = "retry-keep-#{rand(1 << 30)}"
+    held = Thread.new { raw_call(origin, "hold:#{tag}", transport: transport, timeout: 20).message }
+    peer.wait_event(/\Araw request hold:#{tag} /, from: from)
+    expect(raw_call(origin, "refuse-once:#{tag}", transport: transport, protocol: :connect).message).to eq(MSG.new)
+    peer.command("release #{tag}")
+    expect(held.value).to eq(MSG.new)
+    expect(raw_call(origin, "ok", transport: transport, protocol: :connect).message).to eq(MSG.new)
+    expect(requests("raw", from).map { |event| event.split.values_at(2, 4) })
+      .to eq([["hold:#{tag}", "n=1"], ["refuse-once:#{tag}", "n=2"], ["refuse-once:#{tag}", "n=1"], %w[ok n=3]])
+    pooled, retried = peer.wait_count(/\Araw accept /, 2, from: from).map { |event| Regexp.escape(event.split.last) }
+    peer.wait_event(/\Araw conn-closed #{retried}\z/, from: from)
+    expect([accepts("raw", from), peer.count(/\Araw conn-closed #{pooled}\z/, from: from)]).to eq([2, 0])
+  end
+
   it "never retries twice" do
     from = peer.mark
     error = error_of { raw_call(peer["raw"], "refuse-always", transport: hyper, protocol: :connect) }

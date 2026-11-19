@@ -63,7 +63,7 @@ RSpec.describe "Transport failures" do
       socket
     end
     # [connect_timeout, call deadline]
-    budgets = [[3, 10], [20, 3], [nil, 3]]
+    budgets = [[3, 10], [20, 3]]
     output, status = ruby_child(<<~RUBY, env: environment)
       results = #{budgets.inspect}.map do |connect_timeout, timeout|
         transport = ConnectRPC::Hyper::Transport.new(connections: :per_call, connect_timeout: connect_timeout,

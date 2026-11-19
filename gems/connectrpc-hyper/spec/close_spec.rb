@@ -67,8 +67,10 @@ RSpec.describe "Transport#close" do
   # then returns; the released call must not start a task it no longer owns.
   # Both dials are the call's own (per-call HTTP/2, pooled HTTP/1.1), so the
   # hold parks the caller's thread, never a runtime worker that close waits
-  # for. The HTTP/1.1 request comes back unsent and its retry meets the
-  # closed transport.
+  # for. The HTTP/2 request is queued on the connection whose dispatcher the
+  # sealed tracker refused, so it fails with the shutdown phrase. The
+  # HTTP/1.1 request comes back unsent and its retry meets the closed
+  # transport.
   { "HTTP/2" => [{ connections: :per_call }, "grpc_h2c", :grpc, "HTTP transport failed: connection closed"],
     "HTTP/1.1" => [{ http2: false }, "connect_h2c", :connect, "HTTP transport admission is closed"] }
     .each do |name, (options, origin, protocol, message)|
@@ -171,14 +173,16 @@ RSpec.describe "Transport#close" do
     native_driver.release("socket:drop")
     expect(closer.value).to be(false)
     expect(stats(transport)[1..2]).to eq([0, 0])
-    # With grace 0 the waiter may see the forced teardown before it sees
-    # close, so it fails with either phrase.
-    expect(dialing.value.code).to eq("unavailable")
+    # It never queued a request, so it fails with the closed phrase even when
+    # forced teardown ends its wait before it sees close.
+    expect([dialing.value.code, dialing.value.message]).to eq(["unavailable", "HTTP transport admission is closed"])
   ensure
     %w[connect:handshaken socket:drop force:sealed].each { |name| native_driver&.release(name) }
   end
 
-  it "closes during a per-call dial with grace 0 and fails the dialing call", :linux_only do
+  # Forced teardown ends the call's own dial. No request was queued, so the
+  # server never saw it: it fails with the closed phrase.
+  it "closes during a per-call dial with grace 0 and fails the dialing call with the closed phrase", :linux_only do
     port, cleanup = full_backlog
     transport = hyper(connections: :per_call)
     dialing = Thread.new do
@@ -189,7 +193,7 @@ RSpec.describe "Transport#close" do
     wait_until("SYN_SENT") { syn_sent?(port) }
     wait_parked(dialing, "Native::")
     expect(transport.close(grace: 0)).to be(false)
-    expect(dialing.value).to eq(["unavailable", "HTTP transport failed: connection closed"])
+    expect(dialing.value).to eq(["unavailable", "HTTP transport admission is closed"])
     expect(stats(transport)[1..2]).to eq([0, 0])
   ensure
     cleanup&.call

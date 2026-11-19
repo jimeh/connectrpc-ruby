@@ -14,6 +14,7 @@ mod tls;
 mod unary;
 
 use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 use std::time::{Duration, Instant};
 
 use bytes::Bytes;
@@ -226,7 +227,7 @@ impl Driver {
         pooled: bool,
         http2: bool,
         idle_timeout: Option<f64>,
-        connect_timeout: Option<f64>,
+        connect_timeout: f64,
         keepalive: Option<(f64, f64, bool)>,
         roots: RArray,
         chain: Option<RArray>,
@@ -248,7 +249,7 @@ impl Driver {
         let config = Config {
             pooled,
             idle_timeout: idle_timeout.map(seconds),
-            connect_timeout: connect_timeout.map(seconds),
+            connect_timeout: seconds(connect_timeout),
             settings: Settings {
                 http2,
                 keepalive: keepalive.map(|(time, timeout, while_idle)| {
@@ -301,16 +302,18 @@ impl Driver {
         let inflight = core
             .admit()
             .map_err(|failure| failure_error(ruby, failure))?;
+        let dispatched = AtomicBool::new(false);
         let waits = Waits {
             cancel: Some(&cancel.signal),
             abort: None,
             shutdown: &core.shutdown,
+            dispatched: &dispatched,
             deadline,
         };
         let outcome = drive(
             ruby,
             &waits,
-            unary::unary(core.clone(), spec, payload, limit, deadline),
+            unary::unary(core.clone(), spec, payload, limit, deadline, &dispatched),
         );
         drop(inflight);
         let response = settle(ruby, outcome)?;
@@ -463,6 +466,7 @@ impl Call {
             cancel: Some(&state.cancel),
             abort: Some(&state.abort),
             shutdown: state.shutdown(),
+            dispatched: &state.dispatched,
             deadline,
         }
     }

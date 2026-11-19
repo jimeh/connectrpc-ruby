@@ -49,6 +49,17 @@ func unaryBehaviour(ctx context.Context, tag string, in *pb.Message) (*pb.Messag
 		return &pb.Message{Value: "big", Payload: make([]byte, n)}, nil
 	case strings.HasPrefix(in.Value, "once:"):
 		emit("%s unary-handled %s", tag, in.Value)
+	case strings.HasPrefix(in.Value, "gate:"):
+		// gate:<name>[:<label>] answers once "release <name>" arrives, so
+		// the call keeps its connection busy until then.
+		name, _, _ := strings.Cut(strings.TrimPrefix(in.Value, "gate:"), ":")
+		emit("%s unary-gate-start %s", tag, name)
+		select {
+		case <-gate(name):
+		case <-ctx.Done():
+			emit("%s unary-gate-done %s %v", tag, name, ctx.Err())
+			return nil, status.FromContextError(ctx.Err()).Err()
+		}
 	}
 	return in, nil
 }
