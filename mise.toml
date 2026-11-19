@@ -739,9 +739,17 @@ env = { GOTOOLCHAIN = "local", GOWORK = "off", GOFLAGS = "-mod=readonly", GOMODC
 run = "ruby gems/connectrpc-hyper/scripts/run.rb interop"
 
 [tasks."hyper:cross"]
-description = "Cross-build one connectrpc-hyper gem with rb-sys-dock into vendor/hyper/cross/<platform> (PLATFORM or `-- <platform>`; `ruby` builds the source gem)"
+description = "Cross-build one connectrpc-hyper gem with rb-sys-dock into vendor/hyper/cross/<platform> (PLATFORM or `-- <platform>`; `ruby` builds the source gem; HYPER_CROSS_TWICE=1 rebuilds from empty caches and compares)"
 depends = ["hyper:tools"]
+# Host cargo checks Cargo.lock before rb-sys-dock starts.
+tools.rust = "1.98.0"
 run = "ruby gems/connectrpc-hyper/scripts/run.rb cross"
+
+[tasks."hyper:smoke:source"]
+description = "Install a built connectrpc-hyper source gem (`-- DIRECTORY [EVIDENCE.json]`) into a fresh GEM_HOME, compiling with pinned Rust and fetching locked crates, then smoke it"
+depends = ["hyper:tools"]
+tools.rust = "1.98.0"
+run = "ruby gems/connectrpc-hyper/scripts/run.rb smoke"
 
 [tasks."hyper:msrv"]
 description = "Build the extension with the declared rust-version (MSRV) toolchain and the locked crate graph"
@@ -1162,7 +1170,7 @@ run = "mise exec -- ruby scripts/soak.rb async falcon"
 
 # Release preparation never tags, creates a GitHub release, or publishes gems.
 [tasks."release:check"]
-description = "Check twelve synchronized versions (eleven published), installation guides and release guards offline"
+description = "Check twelve synchronized gems (twenty archives), installation guides and release guards offline"
 run = "mise exec -- ruby scripts/release.rb check"
 
 [tasks."release:prepare"]
@@ -1174,8 +1182,12 @@ description = "CI only (release-please.yml on main): commit prepared installatio
 run = "mise exec -- ruby scripts/release.rb prepare-pr"
 
 [tasks."release:build"]
-description = "Build and compare eleven canonical candidate archives from a clean Ruby 3.4.12 checkout"
+description = "Build and compare twelve canonical archives from a clean Ruby 3.4.12 checkout, and check the eight tested connectrpc-hyper platform archives and their smoke evidence (RELEASE_HYPER_ARTIFACTS, RELEASE_HYPER_EVIDENCE)"
 run = "mise exec -- ruby scripts/release.rb build"
+
+[tasks."release:hyper:collect"]
+description = "Collect connectrpc-hyper archives and smoke evidence (`-- [ARCHIVES EVIDENCE]`, default vendor/hyper/cross and vendor/hyper/evidence) into vendor/hyper/release-{artifacts,evidence} for release:build"
+run = "mise exec -- ruby scripts/release.rb collect"
 
 [tasks."release:tools"]
 description = "Install the frozen Sigstore signing bundle used by the release workflow"

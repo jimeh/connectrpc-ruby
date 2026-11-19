@@ -468,8 +468,13 @@ the validation, with a spec feeding the same inputs to both transports.
   plus the source gem, SHA256 checks against the candidate, one Sigstore
   attestation and `gem push --attestation` per archive with trusted publishing,
   platform gems before the source gem, digest-pinned images, and the darwin
-  SDK question (native macOS runners as the alternative).
-- Windows aarch64 runtime evidence.
+  SDK question (native macOS runners as the alternative). Done in
+  [#174](https://github.com/jimeh/connectrpc-ruby/issues/174): the reusable
+  hyper-gems workflow builds each archive twice in digest-pinned osxcross and
+  other rb-sys-dock images and smokes it on native runners, including macOS
+  arm64 and Intel; see [releasing](../releasing.md#connectrpc-hyper-archives).
+- Windows aarch64 runtime evidence. Install and smoke calls on Windows 11 arm64
+  now gate the release; the specs do not run there.
 - Windows x64: a reactor child whose native wait runs on the Async reactor
   thread itself (Ruby 3.4, or 4.0 without the worker pool) never finishes in
   the non-gating job, while the same wait offloaded to the worker pool passes.

@@ -11,9 +11,11 @@ require_relative "release_train"
 
 # Publishes one canonical candidate from its release tag. Every step can be
 # re-run: draft assets and registry versions that already exist must match the
-# candidate bytes, and the GitHub release is published only after all eleven gems.
+# candidate bytes, and the GitHub release is published only after all twelve
+# gems' twenty archives. Each archive is identified by its file: gem name,
+# version and platform ("ruby" for a source gem).
 class ReleasePublisher # rubocop:disable Metrics/ClassLength
-  Artifact = Struct.new(:name, :file, :path, :sha256, keyword_init: true)
+  Artifact = Struct.new(:name, :platform, :file, :path, :sha256, keyword_init: true)
   # assets maps each asset name to an adapter-specific handle.
   Release = Struct.new(:id, :tag, :draft, :assets, keyword_init: true)
 
@@ -36,10 +38,10 @@ class ReleasePublisher # rubocop:disable Metrics/ClassLength
       stage!(release, [*gems, record])
       push!(gems, published)
       @github.publish(release)
-      @log.puts "Published #{@tag}: eleven gems on RubyGems.org and the GitHub release"
+      @log.puts "Published #{@tag}: twelve gems (twenty archives) on RubyGems.org and the GitHub release"
     else
       verify_published!(release, gems, record)
-      @log.puts "#{@tag} is already published with matching assets and gems"
+      @log.puts "#{@tag} is already published with matching assets and archives"
     end
   end
 
@@ -58,29 +60,43 @@ class ReleasePublisher # rubocop:disable Metrics/ClassLength
       raise "Candidate #{@candidate} is not #{version} at #{@revision}"
     end
 
-    hashes = record.fetch("artifacts").to_h { |artifact| [artifact.fetch("file"), artifact.fetch("sha256")] }
-    specifications = @train.specifications
-    files = specifications.map(&:file_name)
-    unless hashes.keys.sort == files.sort && Dir.children(@candidate).sort == [*files, "candidate.json"].sort
+    records = record.fetch("artifacts")
+    files = records.map { |artifact| artifact.fetch("file") }
+    raise "Candidate records an archive more than once: #{@candidate}" unless files.uniq.size == files.size
+
+    records = records.to_h { |artifact| [artifact.fetch("file"), artifact] }
+    archives = @train.archives
+    expected = archives.map(&:file)
+    unless files.sort == expected.sort && Dir.children(@candidate).sort == [*expected, "candidate.json"].sort
       raise "Candidate artifact inventory differs: #{@candidate}"
     end
 
     published = []
-    gems = specifications.map do |spec|
+    @train.specifications.each do |spec|
       local = spec.runtime_dependencies.map(&:name) & ReleaseTrain::NAMES
       raise "Publication order puts #{spec.name} before #{local - published}" unless (local - published).empty?
 
       published << spec.name
-      artifact(spec.name, spec.file_name).tap do |gem|
-        raise "Candidate hash differs: #{gem.file}" unless gem.sha256 == hashes.fetch(gem.file)
+    end
+    gems = archives.map do |archive|
+      artifact(archive.name, archive.platform, archive.file).tap do |gem|
+        recorded = records.fetch(gem.file)
+        raise "Candidate platform differs: #{gem.file}" unless recorded["platform"] == gem.platform
+        raise "Candidate hash differs: #{gem.file}" unless gem.sha256 == recorded.fetch("sha256")
       end
     end
-    [gems, artifact(nil, "candidate.json")]
+    [gems, artifact(nil, nil, "candidate.json")]
   end
 
-  def artifact(name, file)
+  def artifact(name, platform, file)
     path = File.join(@candidate, file)
-    Artifact.new(name: name, file: file, path: path, sha256: Digest::SHA256.file(path).hexdigest)
+    Artifact.new(name: name, platform: platform, file: file, path: path, sha256: Digest::SHA256.file(path).hexdigest)
+  end
+
+  # One versions snapshot per gem name for each preflight or verification.
+  def registry_lookup
+    snapshots = Hash.new { |cache, name| cache[name] = @registry.versions(name) }
+    ->(gem) { RubyGems.select_sha(snapshots[gem.name], version, gem.platform, gem.name) }
   end
 
   def verify_assets!(release, artifacts) # rubocop:disable Metrics/AbcSize
@@ -102,27 +118,28 @@ class ReleasePublisher # rubocop:disable Metrics/ClassLength
     end
   end
 
-  # Check every gem before uploading or pushing anything, so a conflict cannot
-  # strand a partially published train. Ownership is checked even when bytes
-  # match: reproducible builds let anyone push identical archives first.
-  def registry_state!(gems)
+  # Check every archive before uploading or pushing anything, so a conflict
+  # cannot strand a partially published train. Ownership is checked once per
+  # gem name, even when bytes match: reproducible builds let anyone push
+  # identical archives first.
+  def registry_state!(gems) # rubocop:disable Metrics/MethodLength
+    gems.map(&:name).uniq.each do |name|
+      raise "#{name} on RubyGems.org has other owners; stop for a maintainer decision" unless @registry.claimable?(name)
+    end
+    lookup = registry_lookup
     gems.to_h do |gem|
-      unless @registry.claimable?(gem.name)
-        raise "#{gem.name} on RubyGems.org has other owners; stop for a maintainer decision"
-      end
-
-      published = @registry.sha256(gem.name, version)
+      published = lookup.call(gem)
       if published && published != gem.sha256
-        raise "#{gem.name} #{version} on RubyGems.org differs from the candidate; stop for a maintainer decision"
+        raise "#{gem.file} on RubyGems.org differs from the candidate; stop for a maintainer decision"
       end
 
-      [gem.name, published]
+      [gem.file, published]
     end
   end
 
   def push!(gems, published)
     gems.each do |gem|
-      if published[gem.name]
+      if published[gem.file]
         @log.puts "#{gem.file} is already on RubyGems.org with the candidate's bytes"
       else
         @registry.push(gem.path, @signer.sign(gem.path))
@@ -136,8 +153,9 @@ class ReleasePublisher # rubocop:disable Metrics/ClassLength
     missing = [*gems, record].map(&:file) - release.assets.keys
     raise "Published release #{@tag} is missing assets: #{missing.join(', ')}" if missing.any?
 
+    lookup = registry_lookup
     gems.each do |gem|
-      next if @registry.sha256(gem.name, version) == gem.sha256
+      next if lookup.call(gem) == gem.sha256
 
       raise "Published release #{@tag} has no matching #{gem.file} on RubyGems.org; stop for a maintainer decision"
     end
@@ -225,14 +243,31 @@ class ReleasePublisher # rubocop:disable Metrics/ClassLength
       @log = log
     end
 
-    def sha256(name, version)
+    # The SHA256 of one published archive, or nil when that version and
+    # platform is not listed. RubyGems.org does not list yanked versions, and
+    # pushing a yanked version fails, which stops the run.
+    def self.select_sha(entries, version, platform, name)
+      rows = entries.select { |entry| entry["number"] == version && entry["platform"] == platform }
+      raise "RubyGems.org lists #{name} #{version} #{platform} more than once" if rows.size > 1
+      return if rows.empty?
+
+      sha = rows.first["sha"]
+      raise "RubyGems.org lists #{name} #{version} #{platform} without a SHA256" if sha.to_s.empty?
+
+      sha
+    end
+
+    # Every listed version row of a gem; empty when the gem does not exist.
+    def versions(name)
       response = request(Net::HTTP::Get.new(URI("#{HOST}/api/v1/versions/#{name}.json")))
-      return if response.is_a?(Net::HTTPNotFound)
+      return [] if response.is_a?(Net::HTTPNotFound)
       raise "RubyGems.org versions lookup for #{name} failed: HTTP #{response.code}" unless response.is_a?(Net::HTTPOK)
 
-      JSON.parse(response.body).find do |entry|
-        entry["number"] == version && entry["platform"] == "ruby"
-      end&.fetch("sha")
+      JSON.parse(response.body)
+    end
+
+    def sha256(name, version, platform = "ruby")
+      self.class.select_sha(versions(name), version, platform, name)
     end
 
     # Pending publishers do not reserve names, so an existing gem must already

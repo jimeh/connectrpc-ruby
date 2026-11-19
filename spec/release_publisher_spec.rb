@@ -4,6 +4,7 @@ require "digest"
 require "json"
 require "tmpdir"
 require_relative "../scripts/release_publisher"
+require_relative "../gems/connectrpc-hyper/scripts/platforms"
 
 module ReleasePublisherFakes
   # GitHub, RubyGems.org and Sigstore are external boundaries. The fakes record
@@ -37,15 +38,27 @@ module ReleasePublisherFakes
     end
   end
 
+  # published maps archive files to SHA256; versions serves them as
+  # RubyGems.org version rows.
   class FakeRegistry
+    attr_reader :lookups
+
     def initialize(events, published, foreign: [])
       @events = events
       @published = published
       @foreign = foreign
+      @lookups = []
+      @archives = ReleaseTrain.new.archives.to_h { |archive| [archive.file, archive] }
     end
 
-    def sha256(name, _version)
-      @published[name]
+    def versions(name)
+      @lookups << name
+      @published.filter_map do |file, sha|
+        archive = @archives.fetch(file)
+        next unless archive.name == name
+
+        { "number" => ReleaseTrain.new.version, "platform" => archive.platform, "sha" => sha }
+      end
     end
 
     def claimable?(name)
@@ -54,7 +67,7 @@ module ReleasePublisherFakes
 
     def push(path, attestation)
       @events << [:push, File.basename(path), File.basename(attestation)]
-      @published[File.basename(path).delete_suffix("-#{ReleaseTrain.new.version}.gem")] = Digest::SHA256.file(path).hexdigest
+      @published[File.basename(path)] = Digest::SHA256.file(path).hexdigest
     end
   end
 
@@ -88,7 +101,8 @@ RSpec.describe ReleasePublisher do
   let(:train) { ReleaseTrain.new }
   let(:version) { train.version }
   let(:events) { [] }
-  let(:files) { ReleaseTrain::NAMES.map { |name| "#{name}-#{version}.gem" } }
+  let(:files) { train.archives.map(&:file) }
+  let(:hyper_platform_files) { HyperPlatforms::NATIVE.map { |platform| "connectrpc-hyper-#{version}-#{platform}.gem" } }
 
   around do |example|
     Dir.mktmpdir("connectrpc-publish-spec-") do |candidate|
@@ -98,9 +112,10 @@ RSpec.describe ReleasePublisher do
   end
 
   before do
-    artifacts = files.map do |file|
-      File.binwrite(File.join(@candidate, file), "archive #{file}")
-      { "file" => file, "sha256" => Digest::SHA256.hexdigest("archive #{file}") }
+    artifacts = train.archives.map do |archive|
+      File.binwrite(File.join(@candidate, archive.file), "archive #{archive.file}")
+      { "file" => archive.file, "platform" => archive.platform,
+        "sha256" => Digest::SHA256.hexdigest("archive #{archive.file}") }
     end
     record = { "version" => version, "revision" => "abc123", "artifacts" => artifacts }
     File.write(File.join(@candidate, "candidate.json"), "#{JSON.generate(record)}\n")
@@ -119,7 +134,11 @@ RSpec.describe ReleasePublisher do
                         registry: registry, signer: ReleasePublisherFakes::FakeSigner.new(events), log: StringIO.new)
   end
 
-  it "uploads every asset, attests and pushes gems in dependency order, then publishes the release last" do
+  def pushed = events.select { |event| event.first == :push }.map { |event| event[1] }
+
+  def candidate_record = JSON.parse(File.read(File.join(@candidate, "candidate.json")))
+
+  it "uploads every asset, attests and pushes archives in dependency order, then publishes the release last" do
     github = ReleasePublisherFakes::FakeGitHub.new(events, draft: true, assets: {})
     publisher(github).publish!
 
@@ -127,9 +146,12 @@ RSpec.describe ReleasePublisher do
     expect(events.select { |event| event.first == :upload }.map(&:last)).to match_array([*files, "candidate.json"])
     pushes = events.select { |event| event.first == :push }
     expect(pushes.map { |event| event[1] }).to eq(files)
-    # Metrics sinks, the health service and Sentry depend only on core and publish after the original seven packages.
-    expect(files.last(4)).to eq(%W[connectrpc-prometheus-#{version}.gem connectrpc-yabeda-#{version}.gem
-                                   connectrpc-health-#{version}.gem connectrpc-sentry-#{version}.gem])
+    expect(files.size).to eq(20)
+    # Metrics sinks, the health service, Sentry and hyper depend only on core and publish after the original
+    # seven packages; hyper's platform archives precede its source gem, which is last.
+    expect(files.drop(7).first(4)).to eq(%W[connectrpc-prometheus-#{version}.gem connectrpc-yabeda-#{version}.gem
+                                            connectrpc-health-#{version}.gem connectrpc-sentry-#{version}.gem])
+    expect(files.last(9)).to eq([*hyper_platform_files, "connectrpc-hyper-#{version}.gem"])
     expect(pushes.map(&:last)).to eq(files.map { |file| "#{file}.sigstore.json" })
     expect(events.index([:sign, files.first])).to be > events.rindex { |event| event.first == :upload }
     expect(events.last).to eq([:publish, 1])
@@ -140,19 +162,61 @@ RSpec.describe ReleasePublisher do
   it "resumes from retained assets and published gems without replacing either" do
     retained = ["candidate.json", files[0], files[1]].to_h { |file| [file, bytes(file)] }
     github = ReleasePublisherFakes::FakeGitHub.new(events, draft: true, assets: retained)
-    registry = ReleasePublisherFakes::FakeRegistry.new(events,
-                                                       { "connectrpc" => sha(files[0]),
-                                                         "connectrpc-rack" => sha(files[1]) })
+    registry = ReleasePublisherFakes::FakeRegistry.new(events, { files[0] => sha(files[0]), files[1] => sha(files[1]) })
     publisher(github, registry: registry).publish!
 
     expect(events.select { |event| event.first == :upload }.map(&:last)).to match_array(files.drop(2))
-    expect(events.select { |event| event.first == :push }.map { |event| event[1] }).to eq(files.drop(2))
+    expect(pushed).to eq(files.drop(2))
     expect(events.last).to eq([:publish, 1])
   end
 
+  # A pushed platform archive freezes the candidate; the run continues with the
+  # absent archives of the same gem name.
+  it "resumes a partly published gem by archive, skipping only the archives already on RubyGems.org" do
+    published = files.first(11).to_h { |file| [file, sha(file)] }
+    published[hyper_platform_files[1]] = sha(hyper_platform_files[1])
+    github = ReleasePublisherFakes::FakeGitHub.new(events, draft: true, assets: files.to_h { [it, bytes(it)] })
+    registry = ReleasePublisherFakes::FakeRegistry.new(events, published)
+    publisher(github, registry: registry).publish!
+
+    expect(pushed).to eq([*(hyper_platform_files - [hyper_platform_files[1]]), "connectrpc-hyper-#{version}.gem"])
+    expect(registry.lookups.tally).to eq(ReleaseTrain::NAMES.to_h { |name| [name, 1] })
+    expect(events.last).to eq([:publish, 1])
+  end
+
+  it "stops before uploading, signing or pushing when only the last platform archive conflicts" do
+    published = { files[0] => sha(files[0]), hyper_platform_files.last => "0" * 64 }
+    github = ReleasePublisherFakes::FakeGitHub.new(events, draft: true, assets: {})
+    registry = ReleasePublisherFakes::FakeRegistry.new(events, published)
+
+    expect { publisher(github, registry: registry).publish! }
+      .to raise_error(/#{Regexp.escape(hyper_platform_files.last)} on RubyGems.org differs/)
+    expect(events).to eq([[:lookup, "v#{version}"]])
+  end
+
   {
-    "different bytes for a version" => [{ published: { "connectrpc-async" => "0" * 64 } },
-                                        /connectrpc-async .* on RubyGems.org differs/],
+    "a duplicate record" => [->(record) { record["artifacts"] << record["artifacts"].last.dup },
+                             /records an archive more than once/],
+    "a missing platform record" => [->(record) { record["artifacts"].delete_at(12) },
+                                    /Candidate artifact inventory differs/],
+    "a source platform for a platform archive" => [->(record) { record["artifacts"][11]["platform"] = "ruby" },
+                                                   /Candidate platform differs: .*-x86_64-linux.gem/]
+  }.each do |label, (change, failure)|
+    it "rejects a candidate with #{label} before contacting GitHub" do
+      record = candidate_record
+      change.call(record)
+      File.write(File.join(@candidate, "candidate.json"), JSON.generate(record))
+      github = ReleasePublisherFakes::FakeGitHub.new(events, draft: true, assets: {})
+      expect { publisher(github).publish! }.to raise_error(failure)
+      expect(events).to be_empty
+    end
+  end
+
+  {
+    "different bytes for a version" => [
+      { published: { "connectrpc-async-#{ReleaseTrain.new.version}.gem" => "0" * 64 } },
+      /connectrpc-async-.*\.gem on RubyGems.org differs/
+    ],
     "other owners for a new gem name" => [{ published: {}, foreign: ["connectrpc-otel"] },
                                           /connectrpc-otel on RubyGems.org has other owners/],
     "other owners for identical bytes" => [{ published: :identical_rack, foreign: ["connectrpc-rack"] },
@@ -161,7 +225,7 @@ RSpec.describe ReleasePublisher do
     it "stops before uploading or pushing anything when RubyGems.org has #{label}" do
       github = ReleasePublisherFakes::FakeGitHub.new(events, draft: true, assets: {})
       published = registry_state[:published]
-      published = { "connectrpc-rack" => sha(files[1]) } if published == :identical_rack
+      published = { files[1] => sha(files[1]) } if published == :identical_rack
       registry = ReleasePublisherFakes::FakeRegistry.new(events, published,
                                                          foreign: registry_state.fetch(:foreign, []))
 
@@ -195,14 +259,17 @@ RSpec.describe ReleasePublisher do
 
   it "verifies an already published release without changing it and rejects an incomplete one" do
     assets = [*files, "candidate.json"].to_h { |file| [file, bytes(file)] }
-    complete = ReleaseTrain::NAMES.zip(files).to_h { |name, file| [name, sha(file)] }
+    complete = files.to_h { |file| [file, sha(file)] }
     github = ReleasePublisherFakes::FakeGitHub.new(events, draft: false, assets: assets)
     publisher(github, registry: ReleasePublisherFakes::FakeRegistry.new(events, complete)).publish!
     expect(events).to eq([[:lookup, "v#{version}"]])
 
-    incomplete = complete.except("connectrpc-falcon")
+    incomplete = complete.except(files[6])
     expect { publisher(github, registry: ReleasePublisherFakes::FakeRegistry.new(events, incomplete)).publish! }
       .to raise_error(/no matching connectrpc-falcon-.*on RubyGems.org/)
+    incomplete = complete.except(hyper_platform_files[4])
+    expect { publisher(github, registry: ReleasePublisherFakes::FakeRegistry.new(events, incomplete)).publish! }
+      .to raise_error(/no matching connectrpc-hyper-.*-arm64-darwin.gem on RubyGems.org/)
   end
 end
 
@@ -262,6 +329,27 @@ RSpec.describe ReleasePublisher::RubyGems do
     expect { described_class.new(owner: "jimeh", environment: environment, log: log).push("/c/a.gem", "/s/a") }
       .to raise_error(/trusted publisher exchange failed: HTTP 404 no publisher/)
     expect(Open3).not_to have_received(:capture2e)
+  end
+
+  it "finds one archive's SHA256 by version and platform in one versions snapshot" do
+    rows = [{ "number" => "0.3.0", "platform" => "ruby", "sha" => "a" * 64 },
+            { "number" => "0.3.0", "platform" => "x86_64-linux", "sha" => "b" * 64 },
+            { "number" => "0.2.0", "platform" => "x86_64-linux", "sha" => "c" * 64 },
+            { "number" => "0.3.0", "platform" => "arm64-darwin", "sha" => nil }]
+    stub_http(
+      ["rubygems.org", "/api/v1/versions/connectrpc-hyper.json"] =>
+        -> { http_response(Net::HTTPOK, "200", JSON.generate(rows)) },
+      ["rubygems.org", "/api/v1/versions/missing.json"] => -> { http_response(Net::HTTPNotFound, "404", "") }
+    )
+    registry = described_class.new(owner: "jimeh", environment: environment, log: log)
+
+    expect(registry.sha256("connectrpc-hyper", "0.3.0")).to eq("a" * 64)
+    expect(registry.sha256("connectrpc-hyper", "0.3.0", "x86_64-linux")).to eq("b" * 64)
+    expect(registry.sha256("connectrpc-hyper", "0.3.0", "aarch64-linux")).to be_nil
+    expect { registry.sha256("connectrpc-hyper", "0.3.0", "arm64-darwin") }.to raise_error(/without a SHA256/)
+    expect(registry.sha256("missing", "0.3.0")).to be_nil
+    expect { described_class.select_sha(rows + [rows[1]], "0.3.0", "x86_64-linux", "connectrpc-hyper") }
+      .to raise_error(/lists connectrpc-hyper 0.3.0 x86_64-linux more than once/)
   end
 
   it "treats a missing gem or one the owner already owns as claimable" do

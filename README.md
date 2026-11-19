@@ -188,7 +188,7 @@ integrations you use:
 | [`connectrpc-yabeda`](gems/connectrpc-yabeda/README.md) | You want the same metrics through Yabeda and any of its adapters | `connectrpc/yabeda` |
 | [`connectrpc-health`](gems/connectrpc-health/README.md) | You want the standard `grpc.health.v1` service (Check, List and Watch) for Kubernetes probes, `grpc_health_probe` and load balancers | `connectrpc/health` |
 | [`connectrpc-sentry`](gems/connectrpc-sentry/README.md) | You use the Sentry Ruby SDK and want one native Sentry transaction or span per RPC side, plus reports of unexpected handler exceptions | `connectrpc/sentry` |
-| [`connectrpc-hyper`](gems/connectrpc-hyper/README.md) | Since 0.3.0 (not yet published): you want a pooled HTTP/2 client for any thread, with every call shape and native gRPC, without an Async reactor. A Rust extension, with prebuilt platform gems | `connectrpc/hyper` |
+| [`connectrpc-hyper`](gems/connectrpc-hyper/README.md) | Since 0.3.0: you want a pooled HTTP/2 client for any thread, with every call shape and native gRPC, without an Async reactor. A Rust extension, with prebuilt platform gems | `connectrpc/hyper` |
 
 Use the same version of `connectrpc` and every ConnectRPC gem in an
 application. Their `~>` dependency ranges allow patch versions to differ, but the

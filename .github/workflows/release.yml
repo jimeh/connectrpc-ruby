@@ -1,9 +1,15 @@
 name: Release
 
 # Publishes the draft GitHub release that Release Please created with a v* tag.
-# Re-run, or dispatch on the same tag, to resume a partial publication: existing
-# draft assets and RubyGems versions are verified against the rebuilt candidate,
-# never replaced. RubyGems trusted publishers name this file and environment.
+# First, hyper_gems builds the nine connectrpc-hyper archives in unprivileged
+# jobs and installs and smokes each on its native runner (hyper-gems.yml);
+# publish runs only after every one of those jobs succeeded, so the `release`
+# approval comes after the build and test. publish never runs Docker: it checks
+# the downloaded archives and smoke evidence against the canonical candidate.
+# Re-run the failed publish job to reuse this run's tested archives, or dispatch
+# on the same tag to rebuild and retest everything. Either way existing draft
+# assets and RubyGems versions are verified against the candidate, never
+# replaced. RubyGems trusted publishers name this file and environment.
 on:
   push:
     tags: ["v*"]
@@ -20,12 +26,22 @@ env:
   MISE_LOCKED: "1"
 
 jobs:
+  hyper_gems:
+    name: Hyper gems
+    if: startsWith(github.ref, 'refs/tags/v')
+    # GitHub resolves a local reusable workflow from the caller's commit, not the
+    # workspace; actionlint 1.7.12 does not accept the `$/` form yet.
+    uses: ./.github/workflows/hyper-gems.yml # zizmor: ignore[self-repository]
+    permissions:
+      contents: read
+
   publish:
     name: Publish
-    if: startsWith(github.ref, 'refs/tags/v')
+    needs: hyper_gems
+    if: startsWith(github.ref, 'refs/tags/v') && needs.hyper_gems.result == 'success' && needs.hyper_gems.outputs.verified == 'true'
     runs-on: ubuntu-24.04
     environment: release
-    timeout-minutes: 30
+    timeout-minutes: 45
     permissions:
       contents: write # upload assets to the draft release, then publish it
       id-token: write # RubyGems trusted publishing and Sigstore signing
@@ -46,9 +62,25 @@ jobs:
           export_path: false
           install: false
           cache: false
+      # Outside the candidate output; release:build copies what it checks.
+      - name: Download the tested connectrpc-hyper archives
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: connectrpc-hyper-*
+          path: vendor/hyper/release-artifacts
+          merge-multiple: true
+      - name: Download the connectrpc-hyper smoke evidence
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: hyper-smoke-*
+          path: vendor/hyper/release-evidence
+          merge-multiple: true
       - name: Install signing tools
         run: mise run release:tools
       - name: Build candidate
+        env:
+          RELEASE_HYPER_ARTIFACTS: vendor/hyper/release-artifacts
+          RELEASE_HYPER_EVIDENCE: vendor/hyper/release-evidence
         run: mise run release:build
       - name: Attest, push and publish
         env:

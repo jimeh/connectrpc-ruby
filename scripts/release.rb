@@ -6,8 +6,7 @@ train = ReleaseTrain.new
 case ARGV
 when ["check"]
   train.check!
-  puts "Release train #{train.version}: twelve versions (eleven published), instrumentation, guides and push " \
-       "hosts agree"
+  puts "Release train #{train.version}: twelve gems (twenty archives), instrumentation, guides and push hosts agree"
 when ["prepare"]
   train.prepare!
   puts "Prepared installation guides for #{train.version}; review and sign the diff"
@@ -25,7 +24,40 @@ when ["prepare-pr"]
   ).commit!
 when ["build"]
   require_relative "release_candidate"
-  puts "Candidate archives: #{ReleaseCandidate.new(train).build_from_git!}"
+  # The CI-tested connectrpc-hyper archives and their smoke evidence, each in
+  # one flat directory (see release:hyper:collect).
+  inputs = %w[RELEASE_HYPER_ARTIFACTS RELEASE_HYPER_EVIDENCE].to_h do |name|
+    value = ENV.fetch(name, "")
+    if value.empty?
+      abort "release:build needs #{name}: the tested connectrpc-hyper archives (RELEASE_HYPER_ARTIFACTS) and their " \
+            "smoke evidence (RELEASE_HYPER_EVIDENCE) from the hyper-gems workflow, or from `mise run hyper:cross` " \
+            "and install_smoke.rb collected with `mise run release:hyper:collect`"
+    end
+    [name, File.expand_path(value, train.root)]
+  end
+  candidate = ReleaseCandidate.new(train).build_from_git!(platform_archives: inputs.fetch("RELEASE_HYPER_ARTIFACTS"),
+                                                          evidence: inputs.fetch("RELEASE_HYPER_EVIDENCE"))
+  puts "Candidate archives: #{candidate}"
+when ["collect"], ["collect", String, String]
+  require "fileutils"
+  # Flattens archives and smoke evidence into the release:build input
+  # directories, replacing their contents. Sources default to local
+  # hyper:cross and install_smoke.rb outputs; `gh run download` directories of
+  # the hyper-gems artifacts work too.
+  archives, evidence = ARGV.drop(1).map { File.expand_path(it) }
+  { File.join(train.root, "vendor/hyper/release-artifacts") =>
+      [archives || File.join(train.root, "vendor/hyper/cross"), "connectrpc-hyper-*.gem"],
+    File.join(train.root, "vendor/hyper/release-evidence") =>
+      [evidence || File.join(train.root, "vendor/hyper/evidence"), "*.json"] }.each do |destination, (source, pattern)|
+    found = Dir.glob(File.join(source, "**", pattern))
+    duplicates = found.group_by { File.basename(it) }.select { |_, files| files.size > 1 }.keys
+    abort "Several inputs share a name: #{duplicates.join(', ')}" if duplicates.any?
+
+    FileUtils.rm_rf(destination)
+    FileUtils.mkdir_p(destination)
+    FileUtils.cp(found, destination)
+    puts "Collected #{found.size} files from #{source} into #{destination}"
+  end
 when ["tools"]
   require_relative "release_tools"
   system(*ReleaseTools.bundle("install"), exception: true)
@@ -51,5 +83,5 @@ when ["publish"]
     ).publish!
   end
 else
-  abort "Usage: ruby scripts/release.rb check|prepare|prepare-pr|build|tools|publish"
+  abort "Usage: ruby scripts/release.rb check|prepare|prepare-pr|build|collect [ARCHIVES EVIDENCE]|tools|publish"
 end

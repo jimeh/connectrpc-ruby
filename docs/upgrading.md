@@ -132,7 +132,7 @@ These are additive; existing code keeps working once the rename above is done.
 - The new optional `connectrpc-hyper` gem adds `ConnectRPC::Hyper::Transport`,
   a client transport on a Rust extension (hyper, h2, rustls and tokio) that
   makes Connect and native gRPC calls of every shape from any thread without
-  an Async reactor. It is versioned with the train but not yet published. It
+  an Async reactor. It publishes prebuilt platform gems and a source gem. It
   needs a matching `connectrpc` and a prebuilt platform gem, or Rust 1.85+,
   libclang and a C compiler for the source gem. See the
   [package guide](../gems/connectrpc-hyper/README.md).

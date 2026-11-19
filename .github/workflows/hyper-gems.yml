@@ -1,0 +1,354 @@
+name: Hyper gems
+
+# Builds the nine connectrpc-hyper archives (eight platform gems and the source
+# gem), each twice from empty caches in digest-pinned rb-sys-dock images, and
+# installs and smokes every archive on a native runner for its OS and
+# architecture with both Ruby minors. Each smoke uploads an evidence record of
+# the exact archive bytes it exercised. CI and the release workflow call it; the
+# release publish job needs `verified` and checks every archive against that
+# evidence. No caches: published bytes must not depend on restored state.
+on:
+  workflow_call:
+    outputs:
+      verified:
+        description: "true only when every build and smoke job succeeded"
+        value: ${{ jobs.verified.outputs.verified }}
+
+permissions:
+  contents: read
+
+# A called workflow does not inherit its caller's env.
+env:
+  MISE_ENV: ci
+  MISE_LOCKED: "1"
+  BUNDLE_IGNORE_CONFIG: "true"
+  BUNDLE_PATH: ${{ github.workspace }}/vendor/bundle
+  BUNDLE_DISABLE_SHARED_GEMS: "true"
+  BUNDLE_VERSION: "4.0.23"
+
+jobs:
+  build:
+    name: Build connectrpc-hyper ${{ matrix.platform }}
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        platform: [x86_64-linux, aarch64-linux, x86_64-linux-musl, aarch64-linux-musl, arm64-darwin, x86_64-darwin,
+                   x64-mingw-ucrt, aarch64-mingw-ucrt, ruby]
+    env:
+      CI_EXPECTED_RUBY_VERSION: "3.4.12"
+      BUNDLE_GEMFILE: ${{ github.workspace }}/gems/connectrpc-hyper/Gemfile
+      BUNDLE_PATH: ${{ github.workspace }}/vendor/hyper/bundle
+      BUNDLE_USER_HOME: ${{ github.workspace }}/vendor/hyper/bundler
+      BUNDLE_COOLDOWN: "3"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ruby/setup-ruby@7f797815d8adceb1c412e7abefdd1ab4abc47a5f # v1.335.0
+        with:
+          ruby-version: "3.4.12"
+          bundler: "4.0.23"
+          bundler-cache: false
+      - uses: jdx/mise-action@82a612c5ab8bcda7cc5db6b7e81a8e7584c3dc6e # v5.2.3
+        with:
+          version: "2026.10.19"
+          add_shims_to_path: false
+          env: false
+          export_path: false
+          install: false
+          cache: false
+      # Platform gems build in HyperPlatforms::IMAGES; `ruby` is the source gem.
+      - name: Build twice from empty caches and compare
+        env:
+          PLATFORM: ${{ matrix.platform }}
+          HYPER_CROSS_TWICE: "1"
+        run: mise run hyper:cross
+      - name: Upload the gem
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: connectrpc-hyper-${{ matrix.platform }}
+          path: vendor/hyper/cross/${{ matrix.platform }}/*.gem
+          if-no-files-found: error
+          retention-days: 14
+      - name: Check workspace stayed clean
+        if: always()
+        run: |
+          if [ -n "$(git status --porcelain --untracked-files=all)" ]; then
+            git status --short --untracked-files=all
+            exit 1
+          fi
+
+  smoke_linux:
+    name: Smoke connectrpc-hyper ${{ matrix.platform }} / Ruby ${{ matrix.ruby }}
+    needs: build
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { platform: x86_64-linux, runner: ubuntu-24.04, ruby: "3.4.12", minor: "3.4" }
+          - { platform: x86_64-linux, runner: ubuntu-24.04, ruby: "4.0.9", minor: "4.0" }
+          - { platform: aarch64-linux, runner: ubuntu-24.04-arm, ruby: "3.4.12", minor: "3.4" }
+          - { platform: aarch64-linux, runner: ubuntu-24.04-arm, ruby: "4.0.9", minor: "4.0" }
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ruby/setup-ruby@7f797815d8adceb1c412e7abefdd1ab4abc47a5f # v1.335.0
+        with:
+          ruby-version: ${{ matrix.ruby }}
+          bundler: "4.0.23"
+          bundler-cache: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: connectrpc-hyper-${{ matrix.platform }}
+          path: vendor/hyper/cross/${{ matrix.platform }}
+      - name: Install the platform gem offline and smoke it
+        env:
+          PLATFORM: ${{ matrix.platform }}
+          MINOR: ${{ matrix.minor }}
+        run: |
+          ruby gems/connectrpc-hyper/scripts/install_smoke.rb "vendor/hyper/cross/$PLATFORM" \
+            "vendor/hyper/evidence/$PLATFORM-$MINOR.json"
+      - name: Upload the smoke evidence
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: hyper-smoke-${{ matrix.platform }}-${{ matrix.minor }}
+          path: vendor/hyper/evidence/${{ matrix.platform }}-${{ matrix.minor }}.json
+          if-no-files-found: error
+          retention-days: 14
+      - name: Check workspace stayed clean
+        if: always()
+        run: |
+          if [ -n "$(git status --porcelain --untracked-files=all)" ]; then
+            git status --short --untracked-files=all
+            exit 1
+          fi
+
+  # The official Alpine Ruby images on the matching runner architecture. Plain
+  # docker run, because JavaScript actions cannot run in arm64 Alpine job containers.
+  smoke_musl:
+    name: Smoke connectrpc-hyper ${{ matrix.platform }} / ${{ matrix.image }}
+    needs: build
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { platform: x86_64-linux-musl, runner: ubuntu-24.04, image: "ruby:3.4-alpine", minor: "3.4" }
+          - { platform: x86_64-linux-musl, runner: ubuntu-24.04, image: "ruby:4.0-alpine", minor: "4.0" }
+          - { platform: aarch64-linux-musl, runner: ubuntu-24.04-arm, image: "ruby:3.4-alpine", minor: "3.4" }
+          - { platform: aarch64-linux-musl, runner: ubuntu-24.04-arm, image: "ruby:4.0-alpine", minor: "4.0" }
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: connectrpc-hyper-${{ matrix.platform }}
+          path: vendor/hyper/cross/${{ matrix.platform }}
+      - name: Install the platform gem offline and smoke it
+        env:
+          IMAGE: ${{ matrix.image }}
+          PLATFORM: ${{ matrix.platform }}
+          MINOR: ${{ matrix.minor }}
+        run: |
+          docker run --rm --user "$(id -u):$(id -g)" --env HOME=/tmp --volume "$PWD:$PWD" --workdir "$PWD" \
+            "$IMAGE" ruby gems/connectrpc-hyper/scripts/install_smoke.rb "vendor/hyper/cross/$PLATFORM" \
+            "vendor/hyper/evidence/$PLATFORM-$MINOR.json"
+      - name: Upload the smoke evidence
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: hyper-smoke-${{ matrix.platform }}-${{ matrix.minor }}
+          path: vendor/hyper/evidence/${{ matrix.platform }}-${{ matrix.minor }}.json
+          if-no-files-found: error
+          retention-days: 14
+      - name: Check workspace stayed clean
+        if: always()
+        run: |
+          if [ -n "$(git status --porcelain --untracked-files=all)" ]; then
+            git status --short --untracked-files=all
+            exit 1
+          fi
+
+  smoke_darwin:
+    name: Smoke connectrpc-hyper ${{ matrix.platform }} / Ruby ${{ matrix.ruby }}
+    needs: build
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { platform: arm64-darwin, runner: macos-15, ruby: "3.4.12", minor: "3.4" }
+          - { platform: arm64-darwin, runner: macos-15, ruby: "4.0.9", minor: "4.0" }
+          - { platform: x86_64-darwin, runner: macos-15-intel, ruby: "3.4.12", minor: "3.4" }
+          - { platform: x86_64-darwin, runner: macos-15-intel, ruby: "4.0.9", minor: "4.0" }
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ruby/setup-ruby@7f797815d8adceb1c412e7abefdd1ab4abc47a5f # v1.335.0
+        with:
+          ruby-version: ${{ matrix.ruby }}
+          bundler: "4.0.23"
+          bundler-cache: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: connectrpc-hyper-${{ matrix.platform }}
+          path: vendor/hyper/cross/${{ matrix.platform }}
+      - name: Install the platform gem offline and smoke it
+        env:
+          PLATFORM: ${{ matrix.platform }}
+          MINOR: ${{ matrix.minor }}
+        run: |
+          ruby gems/connectrpc-hyper/scripts/install_smoke.rb "vendor/hyper/cross/$PLATFORM" \
+            "vendor/hyper/evidence/$PLATFORM-$MINOR.json"
+      - name: Upload the smoke evidence
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: hyper-smoke-${{ matrix.platform }}-${{ matrix.minor }}
+          path: vendor/hyper/evidence/${{ matrix.platform }}-${{ matrix.minor }}.json
+          if-no-files-found: error
+          retention-days: 14
+      - name: Check workspace stayed clean
+        if: always()
+        run: |
+          if [ -n "$(git status --porcelain --untracked-files=all)" ]; then
+            git status --short --untracked-files=all
+            exit 1
+          fi
+
+  # Install and smoke only; ci.yml's hyper_windows runs the applicable specs.
+  smoke_windows:
+    name: Smoke connectrpc-hyper ${{ matrix.platform }} / Ruby ${{ matrix.ruby }}
+    needs: build
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { platform: x64-mingw-ucrt, runner: windows-2025, ruby: "3.4.12", minor: "3.4" }
+          - { platform: x64-mingw-ucrt, runner: windows-2025, ruby: "4.0.9", minor: "4.0" }
+          - { platform: aarch64-mingw-ucrt, runner: windows-11-arm, ruby: "3.4.12", minor: "3.4" }
+          - { platform: aarch64-mingw-ucrt, runner: windows-11-arm, ruby: "4.0.9", minor: "4.0" }
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ruby/setup-ruby@7f797815d8adceb1c412e7abefdd1ab4abc47a5f # v1.335.0
+        with:
+          ruby-version: ${{ matrix.ruby }}
+          bundler: "4.0.23"
+          bundler-cache: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: connectrpc-hyper-${{ matrix.platform }}
+          path: vendor/hyper/cross/${{ matrix.platform }}
+      - name: Install the platform gem offline and smoke it
+        env:
+          PLATFORM: ${{ matrix.platform }}
+          MINOR: ${{ matrix.minor }}
+        run: |
+          ruby gems/connectrpc-hyper/scripts/install_smoke.rb "vendor/hyper/cross/$PLATFORM" \
+            "vendor/hyper/evidence/$PLATFORM-$MINOR.json"
+      - name: Upload the smoke evidence
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: hyper-smoke-${{ matrix.platform }}-${{ matrix.minor }}
+          path: vendor/hyper/evidence/${{ matrix.platform }}-${{ matrix.minor }}.json
+          if-no-files-found: error
+          retention-days: 14
+      - name: Check workspace stayed clean
+        if: always()
+        run: |
+          if [ -n "$(git status --porcelain --untracked-files=all)" ]; then
+            git status --short --untracked-files=all
+            exit 1
+          fi
+
+  # The downloaded source gem itself, compiled at install time with pinned
+  # Rust; its locked crates come from the network here (hyper:package covers
+  # the offline build).
+  smoke_source:
+    name: Smoke connectrpc-hyper source gem / Ruby ${{ matrix.ruby }}
+    needs: build
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { ruby: "3.4.12", minor: "3.4" }
+          - { ruby: "4.0.9", minor: "4.0" }
+    env:
+      CI_EXPECTED_RUBY_VERSION: ${{ matrix.ruby }}
+      BUNDLE_GEMFILE: ${{ github.workspace }}/gems/connectrpc-hyper/Gemfile
+      BUNDLE_PATH: ${{ github.workspace }}/vendor/hyper/bundle
+      BUNDLE_USER_HOME: ${{ github.workspace }}/vendor/hyper/bundler
+      BUNDLE_COOLDOWN: "3"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # rb-sys's bindgen needs libclang; the extension build needs a C compiler.
+      - name: Install libclang and a C compiler
+        run: sudo apt-get update && sudo apt-get install --yes --no-install-recommends libclang-dev clang
+      - uses: ruby/setup-ruby@7f797815d8adceb1c412e7abefdd1ab4abc47a5f # v1.335.0
+        with:
+          ruby-version: ${{ matrix.ruby }}
+          bundler: "4.0.23"
+          bundler-cache: false
+      # hyper:toolchain (a hyper:tools dependency) installs the pinned Rust 1.98.0 from mise.lock.
+      - uses: jdx/mise-action@82a612c5ab8bcda7cc5db6b7e81a8e7584c3dc6e # v5.2.3
+        with:
+          version: "2026.10.19"
+          add_shims_to_path: false
+          env: false
+          export_path: false
+          install: false
+          cache: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: connectrpc-hyper-ruby
+          path: vendor/hyper/cross/ruby
+      - name: Install the source gem and smoke it
+        env:
+          MINOR: ${{ matrix.minor }}
+        run: mise run hyper:smoke:source -- vendor/hyper/cross/ruby "vendor/hyper/evidence/ruby-$MINOR.json"
+      - name: Upload the smoke evidence
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: hyper-smoke-ruby-${{ matrix.minor }}
+          path: vendor/hyper/evidence/ruby-${{ matrix.minor }}.json
+          if-no-files-found: error
+          retention-days: 14
+      - name: Check workspace stayed clean
+        if: always()
+        run: |
+          if [ -n "$(git status --porcelain --untracked-files=all)" ]; then
+            git status --short --untracked-files=all
+            exit 1
+          fi
+
+  # The only job that runs after a failure: it reports `verified` only when
+  # every build and smoke job succeeded, so a failed, skipped or cancelled leg
+  # leaves the output unset.
+  verified:
+    name: Verified
+    needs: [build, smoke_linux, smoke_musl, smoke_darwin, smoke_windows, smoke_source]
+    if: always()
+    runs-on: ubuntu-24.04
+    outputs:
+      verified: ${{ steps.check.outputs.verified }}
+    steps:
+      - name: Require every build and smoke job to succeed
+        id: check
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+        run: |
+          echo "$NEEDS" | jq -e '(keys | sort) == ["build", "smoke_darwin", "smoke_linux", "smoke_musl", "smoke_source",
+            "smoke_windows"] and all(.[]; .result == "success")'
+          echo "verified=true" >> "$GITHUB_OUTPUT"

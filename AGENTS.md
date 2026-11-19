@@ -120,8 +120,10 @@ commented. `hyper:*` tasks use `vendor/hyper` and `coverage/hyper` with Rust
 peer (`hyper:peer`, Go 1.27.3). Commit `Cargo.lock` and build `--locked`; crate
 updates use `hyper:cargo:update` and the 7-day age rule, and regenerate
 `THIRD_PARTY_NOTICES.md` with `scripts/notices.rb`. `hyper:cross` builds one
-platform gem with rb-sys-dock in a disposable copy. The gem is versioned with
-the train (`ReleaseTrain::VERSIONED`) but not published yet (`NAMES`).
+platform gem with rb-sys-dock in a disposable copy (digest-pinned images,
+`HYPER_CROSS_TWICE=1` for the reproducibility check).
+`.github/workflows/hyper-gems.yml` builds and smokes all nine archives for CI
+and the release; `ReleaseTrain::PLATFORMS` makes the candidate check them.
 
 Public API changes must update the owning gem's signatures, the supported/SPI
 inventory and focused caller evidence. Read [RBS guidance](docs/rbs.md) before

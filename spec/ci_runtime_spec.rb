@@ -137,9 +137,9 @@ end
 RSpec.describe "CI check mapping" do
   let(:workflow) { YAML.load_file(File.expand_path("../.github/workflows/ci.yml", __dir__)) }
   let(:all_jobs) { workflow.fetch("jobs") }
-  # The hyper transport's jobs, including cross-built artifacts and their
-  # dependent smoke and Windows jobs, have their own mapping below.
-  let(:hyper_jobs) { %w[hyper hyper_msrv hyper_cross hyper_smoke hyper_smoke_musl hyper_smoke_darwin hyper_windows] }
+  # The hyper transport's jobs, including the reusable archive workflow and
+  # the dependent Windows job, have their own mapping below.
+  let(:hyper_jobs) { %w[hyper hyper_msrv hyper_gems hyper_windows] }
   let(:jobs) { all_jobs.except(*hyper_jobs) }
 
   it "preserves all 28 existing checks and adds browser, metrics, health, Sentry and lowest-allowed leaves" do
@@ -229,7 +229,7 @@ RSpec.describe "CI check mapping" do
   end
 
   it "runs a floors leaf for every versioned package with third-party runtime dependencies" do
-    expected = ReleaseTrain::VERSIONED.reject { |name| DependencyFloors.floors([name]).empty? }.map do |name|
+    expected = ReleaseTrain::NAMES.reject { |name| DependencyFloors.floors([name]).empty? }.map do |name|
       name == "connectrpc-on-rails" ? "rails" : name.delete_prefix("connectrpc-")
     end
     expect(jobs.dig("floors", "strategy", "matrix", "leaf")).to match_array(expected)
@@ -445,7 +445,9 @@ RSpec.describe "Pins-lifted canary workflow" do
     expect(cron.first.split.first(2)).not_to eq(ci_cron.split.first(2))
     expect(workflow.fetch("permissions")).to eq("contents" => "read")
     expect(workflow.fetch("env")).to eq(ci.fetch("env"))
-    ci_commands = ci.fetch("jobs").values.flat_map { |entry| entry.fetch("steps").filter_map { |step| step["run"] } }
+    ci_commands = ci.fetch("jobs").values.flat_map do |entry|
+      entry.fetch("steps", []).filter_map { |step| step["run"] }
+    end
     expect(ci_commands.join("\n")).not_to include("canary")
   end
 
@@ -495,7 +497,10 @@ end
 RSpec.describe "Hyper CI mapping" do
   let(:root) { File.expand_path("..", __dir__) }
   let(:jobs) { YAML.load_file(File.join(root, ".github/workflows/ci.yml")).fetch("jobs") }
-  let(:commands) { jobs.transform_values { |job| job.fetch("steps").filter_map { |step| step["run"] } } }
+  let(:gems_workflow) { YAML.load_file(File.join(root, ".github/workflows/hyper-gems.yml")) }
+  let(:gems_jobs) { gems_workflow.fetch("jobs") }
+  let(:commands) { jobs.transform_values { |job| job.fetch("steps", []).filter_map { |step| step["run"] } } }
+  let(:gems_commands) { gems_jobs.transform_values { |job| job.fetch("steps").filter_map { |step| step["run"] } } }
   let(:hyper_env) do
     { "BUNDLE_GEMFILE" => "${{ github.workspace }}/gems/connectrpc-hyper/Gemfile",
       "BUNDLE_PATH" => "${{ github.workspace }}/vendor/hyper/bundle",
@@ -518,47 +523,101 @@ RSpec.describe "Hyper CI mapping" do
     %w[floors rbs].each { |name| expect(commands.fetch(name).join("\n")).to include("libclang-dev") }
   end
 
-  it "builds every Rakefile platform gem and the source gem, uploaded under one name each" do
+  def gems_step(job, action)
+    gems_jobs.fetch(job).fetch("steps").find { |entry| entry.fetch("uses", "").start_with?(action) }
+  end
+
+  it "calls the reusable archive workflow read-only and runs the Windows specs after it" do
+    caller = jobs.fetch("hyper_gems")
+    expect(caller).to eq("name" => "Hyper gems", "uses" => "./.github/workflows/hyper-gems.yml",
+                         "permissions" => { "contents" => "read" })
+    expect(jobs.fetch("hyper_windows").fetch("needs")).to eq("hyper_gems")
+    expect(gems_workflow.fetch("on", gems_workflow[true]).keys).to eq(["workflow_call"])
+    expect(gems_workflow.fetch("permissions")).to eq("contents" => "read")
+    # Called workflows do not inherit the caller's env; the runtime guard needs these.
+    expect(gems_workflow.fetch("env")).to eq(YAML.load_file(File.join(root, ".github/workflows/ci.yml")).fetch("env"))
+  end
+
+  it "builds every Rakefile platform gem and the source gem twice without caches, uploaded under one name each" do
     require_relative "../gems/connectrpc-hyper/scripts/platforms"
-    job = jobs.fetch("hyper_cross")
+    job = gems_jobs.fetch("build")
     expect(job.dig("strategy", "matrix", "platform")).to eq([*HyperPlatforms::NATIVE, "ruby"])
     expect(job.fetch("env")).to include(hyper_env)
     cross = job.fetch("steps").find { |entry| entry["run"] == "mise run hyper:cross" }
-    expect(cross.fetch("env")).to eq("PLATFORM" => "${{ matrix.platform }}")
-    upload = step("hyper_cross", "actions/upload-artifact@").fetch("with")
+    expect(cross.fetch("env")).to eq("PLATFORM" => "${{ matrix.platform }}", "HYPER_CROSS_TWICE" => "1")
+    expect(gems_step("build", "ruby/setup-ruby@").fetch("with")).to include("bundler-cache" => false)
+    expect(gems_step("build", "jdx/mise-action@").fetch("with")).to include("cache" => false)
+    upload = gems_step("build", "actions/upload-artifact@").fetch("with")
     expect(upload).to include("name" => "connectrpc-hyper-${{ matrix.platform }}", "if-no-files-found" => "error")
+    caches = gems_jobs.values.flat_map { |entry| entry.fetch("steps", []) }
+                      .filter_map { |step| step["with"]&.slice("bundler-cache", "cache") }.reject(&:empty?)
+    expect(caches.uniq).to contain_exactly({ "bundler-cache" => false }, { "cache" => false })
+    expect(gems_jobs.values.flat_map { |entry| entry.fetch("steps", []) }
+                    .select { |step| step.fetch("uses", "").start_with?("actions/cache@") }).to be_empty
   end
 
-  it "smokes the Linux gems on their own architecture and libc, and macOS and Windows without gating" do
-    %w[hyper_smoke hyper_smoke_musl hyper_smoke_darwin hyper_windows].each do |name|
-      expect(jobs.fetch(name).fetch("needs")).to eq("hyper_cross")
-      download = step(name, "actions/download-artifact@")
-      expect(download.fetch("uses")).to eq("actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333")
-      expect(download.dig("with", "name")).to start_with("connectrpc-hyper-")
-      expect(commands.fetch(name).join("\n")).to include("scripts/install_smoke.rb")
-      expect(jobs.fetch(name).fetch("steps").last.fetch("run")).to include("git status --porcelain")
+  it "smokes every archive on its native runner for both Ruby minors, gating, and records evidence" do
+    smoke = %w[smoke_linux smoke_musl smoke_darwin smoke_windows smoke_source]
+    legs = smoke.flat_map do |name|
+      gems_jobs.dig(name, "strategy", "matrix", "include").map do |entry|
+        [entry.fetch("platform", "ruby"), entry.fetch("runner", gems_jobs.dig(name, "runs-on")), entry.fetch("minor")]
+      end
     end
-    smoke = jobs.dig("hyper_smoke", "strategy", "matrix", "include").map do |entry|
-      entry.values_at("platform", "runner")
+    runners = { "x86_64-linux" => "ubuntu-24.04", "aarch64-linux" => "ubuntu-24.04-arm",
+                "x86_64-linux-musl" => "ubuntu-24.04", "aarch64-linux-musl" => "ubuntu-24.04-arm",
+                "arm64-darwin" => "macos-15", "x86_64-darwin" => "macos-15-intel",
+                "x64-mingw-ucrt" => "windows-2025", "aarch64-mingw-ucrt" => "windows-11-arm", "ruby" => "ubuntu-24.04" }
+    expect(runners.keys).to eq([*HyperPlatforms::NATIVE, "ruby"])
+    expect(legs).to match_array(runners.flat_map do |platform, runner|
+      HyperPlatforms::RUBY_MINORS.map { |minor| [platform, runner, minor] }
+    end)
+    musl = gems_jobs.dig("smoke_musl", "strategy", "matrix", "include").map do |entry|
+      entry.values_at("image", "minor")
     end
-    expect(smoke.tally).to eq(%w[x86_64-linux ubuntu-24.04] => 2, %w[aarch64-linux ubuntu-24.04-arm] => 2)
-    musl = jobs.dig("hyper_smoke_musl", "strategy", "matrix", "include").map do |entry|
-      entry.values_at("platform", "runner", "image")
+    expect(musl.uniq).to contain_exactly(%w[ruby:3.4-alpine 3.4], %w[ruby:4.0-alpine 4.0])
+    smoke.each do |name|
+      job = gems_jobs.fetch(name)
+      expect(job.fetch("needs")).to eq("build")
+      expect(job.dig("strategy", "fail-fast")).to be(false)
+      expect(gems_step(name, "actions/download-artifact@").fetch("uses"))
+        .to eq("actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333")
+      expect(gems_commands.fetch(name).join("\n")).to match(/install_smoke\.rb|hyper:smoke:source/)
+        .and include("vendor/hyper/evidence/")
+      upload = gems_step(name, "actions/upload-artifact@").fetch("with")
+      expect(upload.fetch("name")).to start_with("hyper-smoke-")
+      expect(upload).to include("if-no-files-found" => "error")
+      expect(job.fetch("steps").last.fetch("run")).to include("git status --porcelain")
     end
-    expect(musl).to contain_exactly(%w[x86_64-linux-musl ubuntu-24.04 ruby:3.4-alpine],
-                                    %w[x86_64-linux-musl ubuntu-24.04 ruby:4.0-alpine],
-                                    %w[aarch64-linux-musl ubuntu-24.04-arm ruby:3.4-alpine],
-                                    %w[aarch64-linux-musl ubuntu-24.04-arm ruby:4.0-alpine])
-    %w[hyper_smoke_darwin hyper_windows].each do |name|
-      expect(jobs.fetch(name).fetch("continue-on-error")).to be(true)
+    expect(gems_commands.fetch("smoke_source").join("\n")).to include("mise run hyper:smoke:source --")
+  end
+
+  it "reports verified only when every other job succeeded, with no other conditional or non-gating job" do
+    verified = gems_jobs.fetch("verified")
+    others = gems_jobs.keys - ["verified"]
+    expect(verified.fetch("needs")).to match_array(others)
+    expect(verified.fetch("if")).to eq("always()")
+    expect(verified.dig("outputs", "verified")).to eq("${{ steps.check.outputs.verified }}")
+    check = verified.fetch("steps").find { |step| step["id"] == "check" }
+    expect(check.fetch("env")).to eq("NEEDS" => "${{ toJSON(needs) }}")
+    expect(check.fetch("run")).to include("jq -e", 'all(.[]; .result == "success")', *others.map { "\"#{it}\"" })
+    expect(check.fetch("run").lines.last.strip).to eq('echo "verified=true" >> "$GITHUB_OUTPUT"')
+    expect(gems_workflow.dig("on", "workflow_call", "outputs", "verified", "value") ||
+           gems_workflow.dig(true, "workflow_call", "outputs", "verified", "value"))
+      .to eq("${{ jobs.verified.outputs.verified }}")
+    gems_jobs.except("verified").each_value do |job|
+      expect(job).not_to have_key("continue-on-error")
+      expect(job).not_to have_key("if")
     end
-    %w[hyper hyper_msrv hyper_cross hyper_smoke hyper_smoke_musl].each do |name|
-      expect(jobs.fetch(name)).not_to have_key("continue-on-error")
-    end
-    expect(jobs.dig("hyper_smoke_darwin", "runs-on")).to eq("macos-15")
+    expect(gems_jobs.values.flat_map { |job| job.fetch("steps") }.filter_map { |step| step["if"] }.uniq)
+      .to eq(["always()"])
+  end
+
+  it "keeps the Windows spec job non-gating and every other hyper CI job gating" do
+    expect(jobs.fetch("hyper_windows").fetch("continue-on-error")).to be(true)
+    %w[hyper hyper_msrv hyper_gems].each { |name| expect(jobs.fetch(name)).not_to have_key("continue-on-error") }
     windows = commands.fetch("hyper_windows").join("\n")
-    expect(windows).to include("scripts/use_artifact.rb", "--tag \"~fork\"", "--tag \"~dns_shim\"",
-                               "--tag interop")
+    expect(windows).to include("scripts/install_smoke.rb", "scripts/use_artifact.rb", "--tag \"~fork\"",
+                               "--tag \"~dns_shim\"", "--tag interop")
   end
 
   it "keeps the hyper tool and peer contexts aligned between local and CI tasks" do
@@ -590,7 +649,9 @@ end
 
 RSpec.describe "Package bundle isolation in CI" do
   it "keeps jobs with a package Gemfile from reaching root setup through task dependencies" do
-    jobs = YAML.load_file(File.expand_path("../.github/workflows/ci.yml", __dir__)).fetch("jobs")
+    jobs = %w[ci.yml hyper-gems.yml].map do |name|
+      YAML.load_file(File.expand_path("../.github/workflows/#{name}", __dir__)).fetch("jobs")
+    end.reduce(:merge)
     output, error, status = Open3.capture3({ "MISE_ENV" => "ci" }, "mise", "tasks", "--json")
     expect(status.success?).to be(true), error
     depends = JSON.parse(output).to_h { |task| [task.fetch("name"), task.fetch("depends")] }
@@ -600,14 +661,15 @@ RSpec.describe "Package bundle isolation in CI" do
       depends.fetch(name).reduce(seen + [name]) { |visited, dependency| closure.call(dependency.split.first, visited) }
     end
     commands = jobs.flat_map do |job_name, job|
-      job.fetch("steps").flat_map do |step|
+      job.fetch("steps", []).flat_map do |step|
         gemfile = step.dig("env", "BUNDLE_GEMFILE") || job.dig("env", "BUNDLE_GEMFILE")
         next [] unless gemfile && step["run"]
 
         step["run"].scan(/mise run "?([^\s";&|]+)/).flatten.map { |task| "#{job_name}: #{task}" }
       end
     end
-    expect(commands).to include("async_interop: async:interop:grpc", "falcon_interop: falcon:interop:grpc")
+    expect(commands).to include("async_interop: async:interop:grpc", "falcon_interop: falcon:interop:grpc",
+                                "build: hyper:cross", "smoke_source: hyper:smoke:source")
     offenders = commands.select { |command| closure.call(command.split.last).include?("setup") }
     expect(offenders).to be_empty
   end
@@ -637,7 +699,7 @@ RSpec.shared_examples "Optional backend CI boundary" do |backend_name, label|
         "BUNDLE_USER_HOME" => "${{ github.workspace }}/vendor/#{backend_name}/bundler", "BUNDLE_COOLDOWN" => "3"
       )
     end
-    commands = jobs.transform_values { |job| job.fetch("steps").filter_map { |step| step["run"] } }
+    commands = jobs.transform_values { |job| job.fetch("steps", []).filter_map { |step| step["run"] } }
     expected = ["mise run #{backend_name}:test", "mise run #{backend_name}:package"]
     expect(commands.fetch("#{backend_name}_specs").first(2)).to eq(expected)
     expect(commands.fetch("#{backend_name}_specs")).to include("mise run #{backend_name}:conformance")
@@ -720,7 +782,7 @@ RSpec.describe "Optional Rack CI boundary" do
         "BUNDLE_USER_HOME" => "${{ github.workspace }}/vendor/rack/bundler", "BUNDLE_COOLDOWN" => "3"
       )
     end
-    commands = jobs.transform_values { |job| job.fetch("steps").filter_map { |step| step["run"] } }
+    commands = jobs.transform_values { |job| job.fetch("steps", []).filter_map { |step| step["run"] } }
     expect(commands.fetch("rack").first(3)).to eq(["mise run rack:test", "mise run rack:check",
                                                    "mise run rack:package"])
   end

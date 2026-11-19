@@ -745,7 +745,8 @@ compiler's include directory. Tasks:
 | `mise run hyper:package` | Build the source gem, fetch its locked crates into `vendor/hyper/cargo`, install it offline (`CARGO_NET_OFFLINE=true`) into a fresh GEM_HOME and run `scripts/smoke.rb`. |
 | `mise run hyper:verify` | All of the above. |
 | `mise run hyper:msrv` | Build the extension with Rust 1.85.0, the declared `rust-version`. |
-| `mise run hyper:cross -- <platform>` | Cross-build one platform gem (or `ruby` for the source gem) into `vendor/hyper/cross/<platform>/`; `PLATFORM=<platform>` also works. |
+| `mise run hyper:cross -- <platform>` | Cross-build one platform gem (or `ruby` for the source gem) into `vendor/hyper/cross/<platform>/`; `PLATFORM=<platform>` also works. `HYPER_CROSS_TWICE=1` rebuilds from empty caches and fails unless the SHA256 match. |
+| `mise run hyper:smoke:source -- vendor/hyper/cross/ruby [EVIDENCE.json]` | Install the built source gem into a fresh GEM_HOME, compiling with Rust 1.98.0 and fetching its locked crates, then smoke it. |
 | `mise run hyper:cargo:update` | `cargo update` (or `-- -p <crate>`), then regenerate `THIRD_PARTY_NOTICES.md`. |
 | `mise run canary:hyper` | Non-gating: the specs against `cargo update`'s newest crates. |
 
@@ -763,14 +764,23 @@ least seven days old, as for tools; the daily
 crate linked on any target with its license texts and ships in the gem; a
 stale file fails `hyper:check` and `hyper:package`.
 
-Cross builds use rb-sys-dock and the `rbsys/<platform>:0.9.130` images (Docker
-required, no host Rust). `hyper:cross` copies the package's tracked and
-unignored files into `vendor/hyper/cross-work/<platform>`, builds there for
-Ruby 3.4 and 4.0, checks the gem and moves it to `vendor/hyper/cross/`, so
-several platforms can build from one checkout and the checkout stays clean.
-`ruby gems/connectrpc-hyper/scripts/install_smoke.rb vendor/hyper/cross/<platform>`
+Cross builds use rb-sys-dock and the `rbsys/<platform>:0.9.130` images pinned
+by digest in `HyperPlatforms::IMAGES` (Docker required; the image compiles, and
+host Rust 1.98.0 only runs a `cargo metadata --locked` preflight). The image tag
+must equal the bundled rb_sys version, so update both together. `hyper:cross`
+copies the package's tracked and unignored files into
+`vendor/hyper/cross-work/<platform>`, builds there for Ruby 3.4 and 4.0, fails
+if the build changed `Cargo.toml`, `Cargo.lock` or the extension's
+`Cargo.toml`, checks the gem and moves it to `vendor/hyper/cross/`, so several
+platforms can build from one checkout and the checkout stays clean. With
+`HYPER_CROSS_TWICE=1` it rebuilds under `vendor/hyper/cross-fresh/<platform>`
+from an empty Cargo home and rb-sys-dock cache. The `ruby` leaf requires Ruby
+3.4.12 and the commit time as `SOURCE_DATE_EPOCH`, so its archive equals the
+release candidate's source gem.
+`ruby gems/connectrpc-hyper/scripts/install_smoke.rb vendor/hyper/cross/<platform> [EVIDENCE.json]`
 installs a built gem offline into a fresh GEM_HOME with a core gem built from
-the checkout and runs the smoke calls; CI uses it on each platform. The source
+the checkout, runs the smoke calls and optionally records release evidence; CI
+uses it on each platform. The source
 gem needs Rust 1.85+, libclang and a C compiler on the installing host. See the
 [package guide](../gems/connectrpc-hyper/README.md) and [the plan](plans/hyper.md).
 
