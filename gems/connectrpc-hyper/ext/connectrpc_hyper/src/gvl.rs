@@ -72,79 +72,6 @@ pub fn wait_bodies() -> (usize, usize) {
     )
 }
 
-// PROBE(#175): temporary Windows diagnostics; removed before review.
-pub static P_SKIP: AtomicUsize = AtomicUsize::new(0);
-pub static P_SKIP_PT: AtomicUsize = AtomicUsize::new(0);
-pub static P_CHECK_ERR: AtomicUsize = AtomicUsize::new(0);
-pub static P_UBF: AtomicUsize = AtomicUsize::new(0);
-pub static P_TIMEOUT: AtomicUsize = AtomicUsize::new(0);
-pub static P_DONE: AtomicUsize = AtomicUsize::new(0);
-pub static P_BODY_START: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-static P_EPOCH: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
-fn p_now() -> u64 {
-    P_EPOCH.get_or_init(Instant::now).elapsed().as_millis() as u64
-}
-pub fn probe_start() {
-    if std::env::var_os("CONNECTRPC_HYPER_PROBE").is_none() {
-        return;
-    }
-    p_now();
-    std::thread::spawn(|| {
-        let mut last = String::new();
-        loop {
-            std::thread::sleep(std::time::Duration::from_millis(100));
-            p_drain();
-            let running = RUNNING.load(Ordering::SeqCst);
-            let line = format!(
-                "entered={} running={} active={} skip={} skip_pending_or_trap={} check_err={} ubf={} resumed={} timeout={} done={}",
-                ENTERED.load(Ordering::SeqCst),
-                running,
-                ACTIVE.load(Ordering::SeqCst),
-                P_SKIP.load(Ordering::SeqCst),
-                P_SKIP_PT.load(Ordering::SeqCst),
-                P_CHECK_ERR.load(Ordering::SeqCst),
-                P_UBF.load(Ordering::SeqCst),
-                RESUMED.load(Ordering::SeqCst),
-                P_TIMEOUT.load(Ordering::SeqCst),
-                P_DONE.load(Ordering::SeqCst),
-            );
-            if line != last {
-                let body = if running > 0 {
-                    p_now().saturating_sub(P_BODY_START.load(Ordering::SeqCst))
-                } else {
-                    0
-                };
-                eprintln!("PROBE t={}ms {} body_for={}ms", p_now(), line, body);
-                last = line;
-            }
-        }
-    });
-}
-static P_EVENTS: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
-pub fn p_event(what: String) {
-    if std::env::var_os("CONNECTRPC_HYPER_PROBE").is_some() {
-        let line = format!(
-            "EV t={}ms thread={:?} {}",
-            p_now(),
-            std::thread::current().id(),
-            what
-        );
-        P_EVENTS.lock().unwrap().push(line);
-    }
-}
-pub fn p_drain() {
-    for line in P_EVENTS.lock().unwrap().drain(..) {
-        eprintln!("{line}");
-    }
-}
-fn p_skip() {
-    P_SKIP.fetch_add(1, Ordering::SeqCst);
-    // SAFETY: called with the GVL held on a Ruby thread.
-    if unsafe { rb_sys::rb_thread_interrupted(rb_sys::rb_thread_current()) } != 0 {
-        P_SKIP_PT.fetch_add(1, Ordering::SeqCst);
-    }
-}
-
 /// The `rb_nogvl` flags for every wait, set once by `init_flags`.
 ///
 /// RB_NOGVL_INTR_FAIL: with an interrupt already pending, rb_nogvl returns
@@ -228,7 +155,6 @@ impl Signal {
 }
 
 struct Data<F, R> {
-    caller: std::thread::ThreadId,
     func: Option<F>,
     out: Option<std::thread::Result<R>>,
 }
@@ -238,17 +164,10 @@ unsafe extern "C" fn call<F: FnOnce() -> R, R>(data: *mut c_void) -> *mut c_void
     // only this body touches it while the wait runs.
     let data = unsafe { &mut *(data as *mut Data<F, R>) };
     let func = data.func.take().expect("nogvl body runs once");
-    let inline = data.caller == std::thread::current().id();
-    p_event(format!(
-        "body enter {}",
-        if inline { "inline" } else { "offloaded" }
-    ));
     ENTERED.fetch_add(1, Ordering::SeqCst);
-    P_BODY_START.store(p_now(), Ordering::SeqCst);
     RUNNING.fetch_add(1, Ordering::SeqCst);
     data.out = Some(catch_unwind(AssertUnwindSafe(func)));
     RUNNING.fetch_sub(1, Ordering::SeqCst);
-    p_event("body exit".into());
     // Any non-null value tells the caller the body ran.
     std::ptr::dangling_mut::<c_void>()
 }
@@ -256,8 +175,6 @@ unsafe extern "C" fn call<F: FnOnce() -> R, R>(data: *mut c_void) -> *mut c_void
 unsafe extern "C" fn unblock(data: *mut c_void) {
     // SAFETY: `data` is the `Signal` the caller keeps alive across rb_nogvl.
     let signal = unsafe { &*(data as *const Signal) };
-    P_UBF.fetch_add(1, Ordering::SeqCst);
-    p_event("ubf".into());
     signal.fire();
 }
 
@@ -272,7 +189,6 @@ where
     WAITS.with(|waits| waits.set(waits.get() + 1));
     let _active = Active::enter();
     let mut data = Data {
-        caller: std::thread::current().id(),
         func: Some(func),
         out: None,
     };
@@ -295,13 +211,9 @@ where
         if ran != 0 {
             break;
         }
-        p_skip();
         // Deliver the pending interrupt. A masked one (Thread.handle_interrupt)
         // clears the flag without raising, and the body runs next time.
-        if let Err(e) = ruby.thread_check_ints() {
-            P_CHECK_ERR.fetch_add(1, Ordering::SeqCst);
-            return Err(e);
-        }
+        ruby.thread_check_ints()?;
     }
     let out = data.out.take().expect("nogvl body ran");
     ruby.thread_check_ints()?;
@@ -361,7 +273,6 @@ where
     let deadline = waits.deadline.map(tokio::time::Instant::from_std);
     loop {
         let interrupt = Signal::new();
-        p_event("drive wait".into());
         let wake = without_gvl(ruby, &interrupt, || {
             handle.block_on(async {
                 let expiry = async {
@@ -386,17 +297,11 @@ where
                 RESUMED.fetch_add(1, Ordering::SeqCst);
                 continue;
             }
-            Wake::Done(result) => {
-                P_DONE.fetch_add(1, Ordering::SeqCst);
-                result
-            }
+            Wake::Done(result) => result,
             Wake::Canceled => Err(Failure::new("canceled", "call canceled")),
             Wake::Aborted => Err(Failure::new("aborted", "exchange aborted")),
             Wake::Shutdown => Err(Failure::shutdown()),
-            Wake::Timeout => {
-                P_TIMEOUT.fetch_add(1, Ordering::SeqCst);
-                Err(Failure::new("timeout", "wait timed out"))
-            }
+            Wake::Timeout => Err(Failure::new("timeout", "wait timed out")),
         });
     }
 }
@@ -428,9 +333,7 @@ fn settled(waits: &Waits<'_>) -> Option<Failure> {
 pub fn wait_signal(ruby: &Ruby, signal: &Arc<Signal>) -> Option<Error> {
     let handle = runtime::handle();
     let mut raised: Option<Error> = None;
-    p_event("wait_signal start".into());
     while !signal.fired() {
-        p_event("wait_signal iteration".into());
         let interrupt = Signal::new();
         let (_, error) = without_gvl_deferred(ruby, &interrupt, || {
             handle.block_on(async {
@@ -445,7 +348,6 @@ pub fn wait_signal(ruby: &Ruby, signal: &Arc<Signal>) -> Option<Error> {
             raised.get_or_insert(error);
         }
     }
-    p_event(format!("wait_signal done raised={}", raised.is_some()));
     raised
 }
 
@@ -464,7 +366,6 @@ where
 {
     let _active = Active::enter();
     let mut data = Data {
-        caller: std::thread::current().id(),
         func: Some(func),
         out: None,
     };
@@ -485,17 +386,12 @@ where
             Ok(0) => {}
             Ok(_) => return (ran_output(&mut data), None),
             // A scheduler's cancellation drained the body, then raised.
-            Err(error) => {
-                p_event(format!("deferred protect err ran={}", data.out.is_some()));
-                return (ran_output(&mut data), Some(error));
-            }
+            Err(error) => return (ran_output(&mut data), Some(error)),
         }
-        p_skip();
         // An interrupt is pending. The caller masks thread interrupts around
         // close, so this usually only clears the flag; one that raises is
         // returned for the caller to hold.
         if let Err(error) = ruby.thread_check_ints() {
-            P_CHECK_ERR.fetch_add(1, Ordering::SeqCst);
             return (None, Some(error));
         }
     }
