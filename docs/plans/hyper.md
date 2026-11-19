@@ -238,13 +238,20 @@ stage and reset its stream.
   with `Thread#value` (io-event's `process_wait` pattern), so the wait takes
   neither the reactor thread nor a worker-pool worker and sibling fibers'
   calls can drain; an exception raised into the closer meanwhile (async's
-  `Task#stop`) is held until the helper returns. No interrupt mask spans that
-  join, because threads that sibling fibers start would copy it. The helper
-  records the published outcome itself; a closer that leaves before
-  publication (a killed fiber) records nothing, and the next closer waits on
-  the same teardown. If no helper thread can start (`ThreadError`), the closer
-  waits on its own thread. A closer inside `Fiber.blocking {}` waits on the
-  calling thread as without a scheduler. Forced teardown fails each call it
+  `Task#stop`) is held until the helper returns. That closer holds no
+  interrupt mask, because threads that sibling fibers start would copy it,
+  and waits for the transport lock only as a non-blocking fiber, because
+  `Mutex#unlock` wakes one waiter and a sibling woken through the scheduler
+  cannot run while a blocking wait sleeps the reactor thread. An exception
+  that lands while it reserves the close or starts the helper is held too,
+  and the closer retries; a lost helper reference can start a second helper,
+  which waits on the same teardown. The helper records the published outcome
+  itself; a closer that leaves before publication (a killed fiber or thread)
+  records nothing, and the next closer waits on the same teardown. If no
+  helper thread can start (`ThreadError`), the closer waits on its own
+  thread. A closer without a scheduler or inside `Fiber.blocking {}` waits on
+  the calling thread with thread interrupts deferred, so `Thread#kill` lands
+  after close returns. Forced teardown fails each call it
   ends `unavailable` with one of two phrases: the admission phrase if the
   call's own setup saw closing first, otherwise
   `HTTP transport failed: connection closed`. Which of the two is not
