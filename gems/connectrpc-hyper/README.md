@@ -401,8 +401,8 @@ fiber scheduler stops the closing task (async's `Task#stop`). Every closer, a
 concurrent one included, keeps waiting for the outcome and raises the
 exception after teardown. On Ruby 4.0 with async's worker pool that wait runs
 off the reactor thread, so sibling tasks still run and their calls can drain;
-on Ruby 3.4 it holds the reactor for the grace (see
-[fiber schedulers](#fiber-schedulers)).
+on Ruby 3.4 it holds the reactor until teardown publishes its outcome, so
+sibling tasks cannot drain meanwhile (see [fiber schedulers](#fiber-schedulers)).
 
 ## License
 
