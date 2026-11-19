@@ -227,18 +227,26 @@ stage and reset its stream.
   lazy exchanges and pending retries; lets in-flight calls finish within grace,
   then aborts the rest and waits for the owned connection tasks to end (no
   detached tasks); true when drained, false after forced teardown. Repeated and
-  concurrent calls share the first outcome. A transport closed before fork
-  stays closed. Teardown is a runtime task started by the first close, so it
-  completes however closers are interrupted; every closer, concurrent ones
-  included, waits in native close for the published outcome and raises a held
-  exception afterwards. Under a fiber scheduler, on Ruby 3.4 and 4.0 alike, a
-  closer on a non-blocking fiber runs native close on a helper thread joined
+  concurrent calls share the first call's grace (reserved when it starts
+  closing, so a later closer that reaches native close first still uses it)
+  and outcome. A transport closed before fork stays closed. Teardown is a
+  runtime task started by the first close, so it completes however closers
+  are interrupted; every closer, concurrent ones included, waits in native
+  close for the published outcome and raises a held exception afterwards.
+  Under a fiber scheduler, on Ruby 3.4 and 4.0 alike, a closer on a
+  non-blocking fiber runs native close on a helper thread joined
   with `Thread#value` (io-event's `process_wait` pattern), so the wait takes
   neither the reactor thread nor a worker-pool worker and sibling fibers'
   calls can drain; an exception raised into the closer meanwhile (async's
-  `Task#stop`) is held until the helper returns. Forced teardown fails each
-  call it ends `unavailable` with one of two phrases: the admission phrase if
-  the call's own setup saw closing first, otherwise
+  `Task#stop`) is held until the helper returns. No interrupt mask spans that
+  join, because threads that sibling fibers start would copy it. The helper
+  records the published outcome itself; a closer that leaves before
+  publication (a killed fiber) records nothing, and the next closer waits on
+  the same teardown. If no helper thread can start (`ThreadError`), the closer
+  waits on its own thread. A closer inside `Fiber.blocking {}` waits on the
+  calling thread as without a scheduler. Forced teardown fails each call it
+  ends `unavailable` with one of two phrases: the admission phrase if the
+  call's own setup saw closing first, otherwise
   `HTTP transport failed: connection closed`. Which of the two is not
   guaranteed, and no other phrase is possible; correction round 5
   replaced round 4's choice by whether a request was queued, which picked the
@@ -400,9 +408,10 @@ cause, abort in a masked `ensure`. Rust owns connections, streams and waits.
   D13); each needs its own evidence, not only the happy path.
 - Fiber scheduler without the worker pool (or Ruby 3.4): the call blocks the
   reactor thread; documented, PerCallTransport remains the reactor option.
-  `close` waits on a helper thread under any fiber scheduler, so it never
-  blocks the reactor. With the pool, async's default single worker runs
-  parked waits from different fibers one at a time; a larger
+  `close` on a non-blocking fiber under a fiber scheduler waits on a helper
+  thread, so it does not block the reactor; inside `Fiber.blocking {}` it
+  still waits on the calling thread. With the pool, async's default single
+  worker runs parked waits from different fibers one at a time; a larger
   `IO::Event::WorkerPool` is the documented remedy.
 - rustls strictness (CN-only, X.509 v1, single-label wildcard, CA as leaf,
   encrypted keys): `TLS verification failed` or `ArgumentError`; documented.
