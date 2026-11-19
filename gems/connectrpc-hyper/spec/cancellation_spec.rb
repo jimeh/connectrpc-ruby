@@ -86,15 +86,19 @@ RSpec.describe "Cancellation and deadlines" do
     accepted = Queue.new
     acceptor = Thread.new { loop { accepted << silent.accept } }
     transport = hyper
-    dialer, = canceled_call(ConnectRPC::CancellationSource.new) do |token|
-      client("http://127.0.0.1:#{port}", transport: transport).unary(MSG.new, timeout: 30, cancellation: token)
-    end
-    wait_until("SYN_SENT") { syn_sent?(port) }
-    wait_parked(dialer, "Native::")
-    # The second caller to the same origin waits behind the first one's dial.
-    source = ConnectRPC::CancellationSource.new
-    waiter, cancel_waiter = canceled_call(source) do |token|
-      client("http://127.0.0.1:#{port}", transport: transport).unary(MSG.new, timeout: 30, cancellation: token)
+    dialer, waiter, cancel_waiter = count_dial_joins(driver(transport)) do
+      dialer, = canceled_call(ConnectRPC::CancellationSource.new) do |token|
+        client("http://127.0.0.1:#{port}", transport: transport).unary(MSG.new, timeout: 30, cancellation: token)
+      end
+      wait_until("SYN_SENT") { syn_sent?(port) }
+      wait_parked(dialer, "Native::")
+      # The second caller to the same origin waits behind the first one's dial.
+      source = ConnectRPC::CancellationSource.new
+      waiter, cancel_waiter = canceled_call(source) do |token|
+        client("http://127.0.0.1:#{port}", transport: transport).unary(MSG.new, timeout: 30, cancellation: token)
+      end
+      wait_joined(driver(transport), 2)
+      [dialer, waiter, cancel_waiter]
     end
     wait_parked(waiter, "Native::")
     cancel_waiter.call

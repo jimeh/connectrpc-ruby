@@ -57,12 +57,17 @@ impl Holds {
         points.get(name).cloned()
     }
 
-    /// Parks the current task at `name` while it is armed.
+    /// Parks the current task at `name` while it is armed. A zero bound only
+    /// counts the arrival, without yielding: even a zero timeout waits for a
+    /// timer tick, which a worker parked at another point may be holding up.
     pub async fn reach(&self, name: &str) {
         let Some(point) = self.point(name) else {
             return;
         };
         point.reached.fetch_add(1, Ordering::SeqCst);
+        if point.bound.is_zero() {
+            return;
+        }
         let released = async {
             loop {
                 let notified = point.notify.notified();
@@ -79,12 +84,15 @@ impl Holds {
 
     /// Parks the calling thread itself at `name` while it is armed: for an
     /// ordering inside one poll or under a lock, where yielding would let
-    /// another branch of the same poll decide it.
+    /// another branch of the same poll decide it. A zero bound only counts.
     pub fn block(&self, name: &str) {
         let Some(point) = self.point(name) else {
             return;
         };
         point.reached.fetch_add(1, Ordering::SeqCst);
+        if point.bound.is_zero() {
+            return;
+        }
         let released = point.released.lock().unwrap_or_else(|e| e.into_inner());
         let _ = point
             .changed
@@ -100,24 +108,24 @@ impl Holds {
             changed: Condvar::new(),
             notify: Notify::new(),
         });
-        let replaced = self
-            .points
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .insert(name, point);
-        if replaced.is_none() {
+        let mut points = self.points.lock().unwrap_or_else(|e| e.into_inner());
+        if points.insert(name, point).is_none() {
             ARMED.fetch_add(1, Ordering::AcqRel);
         }
         self.armed.store(true, Ordering::Release);
     }
 
-    /// Releases every arrival at `name` and disarms it.
+    /// Releases every arrival at `name` and disarms it. A driver with no
+    /// armed point goes back to the one-load check.
     pub fn release(&self, name: &str) {
-        let point = self
-            .points
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .remove(name);
+        let point = {
+            let mut points = self.points.lock().unwrap_or_else(|e| e.into_inner());
+            let point = points.remove(name);
+            if points.is_empty() {
+                self.armed.store(false, Ordering::Release);
+            }
+            point
+        };
         if let Some(point) = point {
             ARMED.fetch_sub(1, Ordering::AcqRel);
             point.release();

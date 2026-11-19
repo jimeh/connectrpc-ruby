@@ -227,6 +227,9 @@ func main() {
 		// GOAWAY after 300 ms without active streams.
 		"grpc_idle": serveGRPCWith("idle", false, grpc.KeepaliveParams(keepalive.ServerParameters{
 			MaxConnectionIdle: 300 * time.Millisecond})),
+		// Static 64 KiB flow-control windows: grpc-go's BDP estimator never
+		// grows them, so a writer the handler does not read stays blocked.
+		"grpc_static": serveGRPCWith("static", false, grpc.StaticStreamWindowSize(65535)),
 		// GOAWAY 300 ms after accept; active streams then get 30 s to finish.
 		"grpc_age": serveGRPCWith("age", false, grpc.KeepaliveParams(keepalive.ServerParameters{
 			MaxConnectionAge: 300 * time.Millisecond, MaxConnectionAgeGrace: 30 * time.Second})),

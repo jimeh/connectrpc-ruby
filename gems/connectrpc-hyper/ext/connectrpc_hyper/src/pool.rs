@@ -582,7 +582,14 @@ impl DriverCore {
                             origin.clone(),
                             dial.clone(),
                         ));
+                        // Spec hold point: armed with a zero bound, it counts
+                        // the pool dials started.
+                        self.holds.reach("dial:started").await;
                     }
+                    // Spec hold point: armed with a zero bound, it counts the
+                    // callers that will get a pool dial's outcome. A thread
+                    // parked in a native wait may not have claimed yet.
+                    self.holds.reach("dial:joined").await;
                     dial
                 }
             };

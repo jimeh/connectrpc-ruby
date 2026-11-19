@@ -43,10 +43,19 @@ pub async fn unary(
             None => CallBody::Empty,
         };
         let request = spec.build(body, deadline, lease.is_h2())?;
-        let response = match send(&mut lease, request).await {
+        let sent = send(&mut lease, request);
+        // Spec hold point: armed with a zero bound, it counts the requests
+        // handed to hyper.
+        core.holds.block("request:queued");
+        let response = match sent.await {
             Ok(response) => response,
             Err(mut error) => {
                 let unsent = error.take_message().is_some();
+                if unsent {
+                    // Spec hold point: armed with a zero bound, it counts the
+                    // requests hyper handed back unsent.
+                    core.holds.reach("retry:unsent").await;
+                }
                 let replayable = unsent || Failure::refused_stream(error.error());
                 if replayable && exclude.is_none() {
                     exclude = Some(lease.id());

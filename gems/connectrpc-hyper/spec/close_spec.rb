@@ -295,16 +295,19 @@ RSpec.describe "Transport#close" do
     port, cleanup = full_backlog
     baseline = syn_sent(port)
     transport = hyper(connect_timeout: 30)
-    callers = %i[grpc connect].map do |protocol|
-      thread = Thread.new do
-        client("http://127.0.0.1:#{port}", transport: transport, protocol: protocol).unary(MSG.new, timeout: 30)
-      rescue ConnectRPC::Error => e
-        e.message
+    callers = count_dial_joins(driver(transport)) do
+      %i[grpc connect].each_with_index.map do |protocol, index|
+        thread = Thread.new do
+          client("http://127.0.0.1:#{port}", transport: transport, protocol: protocol).unary(MSG.new, timeout: 30)
+        rescue ConnectRPC::Error => e
+          e.message
+        end
+        wait_joined(driver(transport), index + 1)
+        thread
       end
-      wait_parked(thread, protocol == :grpc ? "Exchange#write" : "Driver#unary")
-      thread
     end
-    expect(syn_sent(port)).to eq(baseline + 1)
+    # The dial is its own task; it opens the socket after its starter joined.
+    wait_until("the pool dial's SYN") { syn_sent(port) == baseline + 1 }
     lazy = nil
     request = ConnectRPC::StreamRequest.new(url: URI("#{peer['grpc_h2c']}/connectrpc.grpcinterop.v1.Peer/Bidi"),
                                             http_method: "POST", headers: { "content-type" => ["application/grpc"] })

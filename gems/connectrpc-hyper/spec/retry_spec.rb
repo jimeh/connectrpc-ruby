@@ -4,37 +4,73 @@ RSpec.describe "Retries" do
   def requests(tag, from) = peer.since(from).grep(/\A#{tag} request /)
   def accepts(tag, from) = peer.count(/\A#{tag} accept /, from: from)
 
-  # The peer allows one stream per connection. With stream 1 held, one queued
-  # call waits inside hyper for a stream slot and the other stays queued; a
-  # GOAWAY then ends the connection's admission, and hyper hands the queued
-  # request back unsent. hyper reports the stream-slot waiter as failed.
-  { grpc: "Exchange#write", connect: "Driver#unary" }.each do |protocol, frame|
+  # The peer allows one stream per connection. With stream 1 held, a queued
+  # call either waits inside hyper for the stream slot or stays in hyper's
+  # request queue; a GOAWAY then ends the connection's admission. hyper hands
+  # a request still in its queue back unsent, and the transport sends it once
+  # more on a new connection; it reports the stream-slot waiter as failed.
+  # Whether hyper's connection task moved the first queued request into the
+  # slot wait before the GOAWAY arrived is its own scheduling, which nothing
+  # outside hyper observes, so either call or both may be handed back.
+  # The held stream's response head shows the client has applied the peer's
+  # SETTINGS, which precede it on the wire; until then h2 does not know the
+  # one-stream limit and would send the queued streams at once. The
+  # request:queued point shows every request reached hyper before the GOAWAY,
+  # and retry:unsent counts the ones it actually handed back: each of those,
+  # and no other call, succeeds, reaching the peer exactly once on one new
+  # connection.
+  %i[grpc connect].each do |protocol|
     it "sends a request hyper hands back unsent once more on a new connection (#{protocol})" do
       from = peer.mark
       transport = hyper
+      native_driver = driver(transport)
+      %w[request:queued retry:unsent].each { |point| native_driver.hold(point, 0) }
       origin = peer["raw_mcs1"]
       tag = "retry-unsent-#{protocol}"
-      held = Thread.new { raw_call(origin, "hold:#{tag}", transport: transport, timeout: 20).message }
-      peer.wait_event(/\Arawmcs1 request hold:#{tag} /, from: from)
-      queued = Array.new(2) do
-        Thread.new do
-          raw_call(origin, "ok", transport: transport, protocol: protocol, timeout: 20).message
-        rescue ConnectRPC::Error => e
-          e
+      head = Queue.new
+      held = Thread.new do
+        request = ConnectRPC::StreamRequest.new(
+          url: URI("#{origin}/raw.v1.Raw/Call"), http_method: "POST",
+          headers: { "content-type" => ["application/grpc"], "te" => ["trailers"], "x-scenario" => ["hold:#{tag}"] }
+        )
+        transport.open_grpc_stream(request) do |exchange|
+          exchange.write([0, 0].pack("CN"))
+          exchange.close_send
+          head << exchange.response_head(timeout: 20).status
+          nil while exchange.read(64, timeout: 20)
+          exchange.response_trailers
         end
       end
-      queued.each { |thread| wait_parked(thread, frame) }
+      expect(head.pop(timeout: 10)).to eq(200)
+      queued = %w[q0 q1].to_h do |name|
+        [name, Thread.new do
+          raw_call(origin, "ok:#{name}", transport: transport, protocol: protocol, timeout: 20).message
+        rescue ConnectRPC::Error => e
+          e
+        end]
+      end
+      # The held request and both queued ones; retries come only after GOAWAY.
+      wait_until("every request handed to hyper") { native_driver.reached("request:queued") == 3 }
       peer.command("raw-goaway rawmcs1")
-      succeeded, failed = queued.map(&:value).partition { |outcome| outcome.is_a?(MSG) }
-      expect(succeeded.size).to eq(1)
+      outcomes = queued.transform_values(&:value)
+      handed_back = native_driver.reached("retry:unsent")
+      succeeded = outcomes.select { |_, outcome| outcome.is_a?(MSG) }.keys
+      failed = outcomes.except(*succeeded).values
+      context = -> { "outcomes: #{outcomes.inspect}; events: #{peer.since(from).last(12).inspect}" }
+      expect(handed_back).to be_between(1, 2), context
+      expect(succeeded.size).to eq(handed_back), context
       expect(failed.map { |error| [error.code, error.message] })
-        .to eq([["unavailable", "HTTP transport failed: connection closed"]])
-      # Sent exactly once, as the first stream of a new connection.
-      peer.wait_event(/\Arawmcs1 request ok /, from: from)
-      expect(requests("rawmcs1", from).grep(/request ok /).map { |event| event[/n=\d+/] }).to eq(["n=1"])
+        .to eq(Array.new(failed.size, ["unavailable", "HTTP transport failed: connection closed"]))
+      # Each success sent exactly once, as a stream of one new connection.
+      peer.wait_count(/\Arawmcs1 request ok:/, succeeded.size, from: from)
+      sent = requests("rawmcs1", from).grep(/request ok:/).map { |event| event.split.values_at(2, 4) }
+      expect(sent.map(&:first).sort).to eq(succeeded.map { |name| "ok:#{name}" }.sort)
+      expect(sent.map(&:last)).to eq(Array.new(succeeded.size) { |index| "n=#{index + 1}" })
       expect(accepts("rawmcs1", from)).to eq(2)
       peer.command("release #{tag}")
-      expect(held.value).to eq(MSG.new)
+      expect(held.value).to include("grpc-status" => ["0"])
+    ensure
+      %w[request:queued retry:unsent].each { |point| native_driver&.release(point) }
     end
   end
 

@@ -55,9 +55,14 @@ RSpec.describe "Liveness and restart" do
 
   it "reconnects after the server is killed and restarted on the same port" do
     from = peer.mark
-    peer_client = client(peer["grpc_restart"], transport: hyper)
+    transport = hyper
+    peer_client = client(peer["grpc_restart"], transport: transport)
     expect(peer_client.unary(MSG.new(value: "before"), timeout: 5).message.value).to eq("before")
     peer.command("kill")
+    # The next call reconnects once the client has seen the reset, as in
+    # grpc-go; a call racing it is in flight and fails unavailable. The
+    # transport's tasks (connection, dispatcher, idle reaper) end with it.
+    wait_until("the client to see the reset") { stats(transport)[2].zero? }
     expect(peer_client.unary(MSG.new(value: "after"), timeout: 5).message.value).to eq("after")
     expect(peer.count(/\Arestart accept/, from: from)).to eq(2)
   end

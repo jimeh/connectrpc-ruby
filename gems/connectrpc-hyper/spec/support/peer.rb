@@ -41,7 +41,15 @@ class Peer
   def [](name) = @origins.fetch(name.to_s)
 
   def log = @lock.synchronize { @log.dup }
-  def mark = @lock.synchronize { @log.size }
+
+  # The log position after a barrier. An earlier example's events (a request
+  # or an accept the client already has the response to) can still be in the
+  # peer's output when the next example starts; without the barrier they
+  # would land after the position and count as this example's.
+  def mark
+    sync
+    size
+  end
 
   # Events since `mark`, after a barrier: the peer reports every event that
   # happened before this call ahead of the barrier's confirmation, even when
@@ -104,7 +112,7 @@ class Peer
 
   # Runs a control command and waits for the peer to confirm it ran.
   def command(line)
-    from = mark
+    from = size
     @stdin.puts(line)
     @stdin.flush
     wait_event(/\Acontrol done #{Regexp.escape(line)}\z/, from: from)
@@ -116,4 +124,8 @@ class Peer
     @reader.join
     FileUtils.rm_rf(@certs)
   end
+
+  private
+
+  def size = @lock.synchronize { @log.size }
 end
