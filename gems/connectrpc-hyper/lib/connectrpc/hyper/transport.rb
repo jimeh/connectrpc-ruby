@@ -130,8 +130,10 @@ module ConnectRPC
       # the scheduler's pool, so sibling tasks keep running and can drain. No
       # interrupt mask spans that yield, because Thread.new copies the
       # caller's mask into threads that sibling fibers start. Starting the
-      # helper is masked, and the helper records the outcome itself, so a
-      # closer that leaves early (Fiber#kill) still leaves it recorded. An
+      # helper is masked and runs as a blocking fiber, so waiting for a
+      # contended lock blocks this thread instead of yielding under the mask.
+      # The helper records the outcome itself, so a closer that is killed
+      # (Fiber#kill, Thread#kill) and leaves early still leaves it recorded. An
       # exception raised into the closer meanwhile (async's Task#stop) is
       # held, the first one winning, until the helper returned.
       # rubocop:disable-next Metrics/CyclomaticComplexity, Metrics/PerceivedComplexity
@@ -140,7 +142,9 @@ module ConnectRPC
         begin
           # Assigned inside the mask, so an interrupt landing as the mask lifts
           # cannot lose the helper.
-          Thread.handle_interrupt(Object => :never) { helper = start_close_helper(grace) } unless helper
+          unless helper
+            Thread.handle_interrupt(Object => :never) { helper = Fiber.blocking { start_close_helper(grace) } }
+          end
           outcome, error = helper.is_a?(Thread) ? helper.value : helper
         rescue Exception => e # rubocop:disable Lint/RescueException
           held ||= e
