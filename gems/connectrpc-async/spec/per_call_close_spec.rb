@@ -26,6 +26,36 @@ RSpec.describe "PerCallTransport connection close, close budget and outcome prec
     names
   end
 
+  # A recording raw peer that answers a Connect server stream with one
+  # message, "s".
+  def one_message_peer
+    threaded_recording_peer do |incoming|
+      body = Protocol::HTTP::Body::Writable.new
+      incoming.send_response(Protocol::HTTP::Response[200, { "content-type" => "application/connect+proto" }, body])
+      body.write(envelope(item("s")))
+      body.write([2, 2, "{}"].pack("CNa*"))
+      body.close_write
+    end
+  end
+
+  # The peer reads the client's frames in order, then its EOF, after which
+  # its connection is closed; a graceful close's GOAWAY would precede that.
+  def expect_raw_close(peer)
+    eventually("the peer to read the client's EOF") { peer.peer.connections.first&.closed? }
+    expect(peer.peer.goaways).to eq([])
+  end
+
+  # A Connect server stream for the given deadline, reduced to the names it
+  # received; the block runs after the messages, in the caller's fiber.
+  def watch_names(typed, deadline)
+    names = []
+    typed.watch(item("s"), deadline: deadline) do |reader|
+      reader.each { |message| names << message.name }
+      yield if block_given?
+    end
+    names
+  end
+
   PerCallHelpers::PATHS.each do |path|
     # The handler answers about 90 ms before the client's deadline, from a
     # peer that never sends FIN. The graceful close must leave the raw close
@@ -189,12 +219,13 @@ RSpec.describe "PerCallTransport connection close, close budget and outcome prec
     end
 
     # The deadline's clock fails while the close budget is computed, and only
-    # then. Teardown still runs, with a raw close, and the call keeps its own
-    # outcome: the stream's message, or the stream block's own exception.
+    # then. Teardown still runs, with a raw close and so no GOAWAY, and the
+    # call keeps its own outcome: the stream's message, or the stream block's
+    # own exception.
     %i[result block_error].each do |outcome|
-      it "tears down and keeps the #{outcome} when the deadline clock fails computing the close budget " \
+      it "tears down raw and keeps the #{outcome} when the deadline clock fails computing the close budget " \
          "on the #{path} path" do
-        peer = threaded_host(server: mixed_server)
+        peer = one_message_peer
         typed = mixed_client(per_call, "http://127.0.0.1:#{peer.peer.port}")
         planning = [false]
         trace = TracePoint.new(:call, :return) { |point| planning[0] = point.event == :call }
@@ -208,12 +239,7 @@ RSpec.describe "PerCallTransport connection close, close budget and outcome prec
 
               monotonic
             })
-            names = []
-            typed.watch(item("s"), deadline: deadline) do |reader|
-              reader.each { |message| names << message.name }
-              raise application, "from the block" if outcome == :block_error
-            end
-            names
+            watch_names(typed, deadline) { raise application, "from the block" if outcome == :block_error }
           end
           aggregate_failures do
             if outcome == :result
@@ -223,6 +249,7 @@ RSpec.describe "PerCallTransport connection close, close budget and outcome prec
             end
             expect_released(boundaries.take.first)
           end
+          expect_raw_close(peer)
         end
       ensure
         trace&.disable
@@ -260,21 +287,24 @@ RSpec.describe "PerCallTransport connection close, close budget and outcome prec
   end
 
   # The deadline's clock yields, and never returns, while the close budget is
-  # computed. Meanwhile the caller's own with_timeout fires, with Async's
-  # class or the caller's own StandardError class. The timeout is the
-  # caller's: it is raised once the raw close and every join have finished.
+  # computed in the caller's fiber. Meanwhile the caller's own with_timeout
+  # fires. With Async's class the timeout is the caller's: it is raised once
+  # the raw close and every join have finished. With the caller's own
+  # StandardError class it cannot be told from the clock's own failure, the
+  # documented limitation: the close is raw and the call keeps its outcome.
   { "Async::TimeoutError" => Async::TimeoutError, "a custom class" => Class.new(StandardError) }
     .each do |label, error_class|
-    it "re-raises a with_timeout (#{label}) that fires while a yielding deadline clock computes the close budget " \
-       "after teardown on the inline path" do
-      peer = threaded_host(server: mixed_server)
+    kept = error_class != Async::TimeoutError
+    it "#{kept ? 'keeps the outcome after' : 're-raises'} a with_timeout (#{label}) that fires while a yielding " \
+       "deadline clock computes the close budget, after a raw teardown, on the inline path" do
+      peer = one_message_peer
       typed = mixed_client(per_call, "http://127.0.0.1:#{peer.peer.port}")
       planning = [false]
       trace = TracePoint.new(:call, :return) { |point| planning[0] = point.event == :call }
       trace.enable(target: PerCallHelpers::PER_CALL.instance_method(:close_plan))
       with_boundaries do |boundaries|
         error, names = reactor do |task|
-          names = []
+          names = nil
           error = capture_error do
             task.with_timeout(5, error_class) do |timeout|
               clock = lambda do
@@ -285,22 +315,84 @@ RSpec.describe "PerCallTransport connection close, close budget and outcome prec
                 end
                 monotonic
               end
-              typed.watch(item("s"), deadline: ConnectRPC::Deadline.new(5, clock: clock)) do |reader|
-                reader.each { |message| names << message.name }
-              end
+              names = watch_names(typed, ConnectRPC::Deadline.new(5, clock: clock))
             end
           end
           [error, names]
         end
         aggregate_failures do
-          expect([error.class, error.message, names]).to eq([error_class, "execution expired", ["s"]])
+          if kept
+            expect([error, names]).to eq([nil, ["s"]])
+          else
+            expect([error.class, error&.message, names]).to eq([error_class, "execution expired", nil])
+          end
           expect_released(boundaries.take.first)
         end
+        expect_raw_close(peer)
       end
     ensure
       trace&.disable
       peer&.stop
     end
+  end
+
+  # An exception raised into the caller while the close budget is computed:
+  # with the default clock, which cannot fail, any exception is the caller's,
+  # and with a custom clock so is one that is not a StandardError. It is
+  # raised once the raw close and every join have finished.
+  custom_clock = -> { Process.clock_gettime(Process::CLOCK_MONOTONIC) }
+  { "a StandardError with the default clock" => [Class.new(StandardError), nil],
+    "a non-StandardError with a custom clock" => [Class.new(Exception), custom_clock] } # rubocop:disable Lint/InheritException
+    .each do |label, (interrupt, clock)|
+    it "re-raises #{label} raised into the caller while the close budget is computed, after a raw teardown, " \
+       "on the inline path" do
+      peer = one_message_peer
+      typed = mixed_client(per_call, "http://127.0.0.1:#{peer.peer.port}")
+      trace = TracePoint.new(:call) { raise interrupt, "while the budget is computed" }
+      with_boundaries do |boundaries|
+        error, names = reactor do
+          names = nil
+          deadline = clock ? ConnectRPC::Deadline.new(5, clock: clock) : ConnectRPC::Deadline.new(5)
+          error = capture_error do
+            names = watch_names(typed, deadline) do
+              trace.enable(target: PerCallHelpers::PER_CALL.instance_method(:close_plan))
+            end
+          end
+          [error, names]
+        end
+        aggregate_failures do
+          expect([error.class, error&.message, names]).to eq([interrupt, "while the budget is computed", nil])
+          expect_released(boundaries.take.first)
+        end
+        expect_raw_close(peer)
+      end
+    ensure
+      trace&.disable
+      peer&.stop
+    end
+  end
+
+  # The deadline's clock reads fiber-local state that the caller sets once
+  # the stream's messages are in: then 95 ms remain on the caller's clock,
+  # which leaves no time for a graceful close, while any other fiber's clock
+  # still reads the start, with almost 5 seconds left. The close budget comes
+  # from the caller's own fiber, so the close is raw.
+  it "computes the close budget from a fiber-local custom clock in the caller's fiber on the inline path" do
+    peer = one_message_peer
+    typed = mixed_client(per_call, "http://127.0.0.1:#{peer.peer.port}")
+    with_boundaries do |boundaries|
+      names = reactor do
+        deadline = ConnectRPC::Deadline.new(5, clock: -> { Thread.current[:per_call_clock] || 0.0 })
+        watch_names(typed, deadline) { Thread.current[:per_call_clock] = 4.905 }
+      ensure
+        Thread.current[:per_call_clock] = nil
+      end
+      expect(names).to eq(["s"])
+      expect_released(boundaries.take.first)
+      expect_raw_close(peer)
+    end
+  ensure
+    peer&.stop
   end
 
   # A Thread#raise lands while the deadline's clock computes the close budget.

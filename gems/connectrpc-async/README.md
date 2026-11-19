@@ -979,9 +979,14 @@ and bidi streaming before any I/O.
   that follows, so core's deadline check after the transport returns does not
   turn a result that arrived in time into `deadline_exceeded`. With 100 ms or
   less of the deadline left, the close is raw. A close failure never replaces
-  the call's result or a stream block's own exception. If a custom `Deadline`
-  clock raises while the call computes its close budget, the close is raw and
-  the call keeps its own outcome.
+  the call's result or a stream block's own exception. The close budget is
+  read from the deadline's clock in the caller's own thread or fiber. If a
+  custom `Deadline` clock raises while the call computes its close budget, the
+  close is raw and the call keeps its own outcome. An interrupt that lands
+  meanwhile is raised after the raw close and teardown. One limitation inside
+  a reactor: a `StandardError` raised into the caller while a custom clock
+  runs, such as a `with_timeout` with a custom error class, cannot be told
+  apart from the clock's own failure, so the call keeps its outcome.
 - Deadlines, `CancellationToken`s, `Timeout`, `Thread#raise` and `Thread#kill`
   behave as for `ThreadedTransport` outside a reactor, and task cancellation and
   `with_timeout` as for `Transport` inside one; an interrupted stream is reset
@@ -1013,13 +1018,16 @@ ConnectRPC::Async::PerCallTransport.new(proxy: "http://user:secret@proxy.interna
 ConnectRPC::Async::PerCallTransport.new(proxy: nil)         # Always direct.
 ```
 
-- `proxy: :environment`, the default, reads `HTTPS_PROXY` and `NO_PROXY` once,
-  at construction, and applies them as grpc-go does: every target, h2c or TLS,
-  is looked up as if it were `https://host:port` with the request URL's port
-  (80 for an `http` URL without one). `HTTP_PROXY` is never used, because
-  HTTP/2 always tunnels and grpc-go ignores it too. This differs from NetHTTP,
-  which sends `http://` URLs through `HTTP_PROXY`. `NO_PROXY`, `localhost` and
-  loopback addresses connect directly, and values are parsed exactly as for
+- `proxy: :environment`, the default, reads `HTTP_PROXY`, `HTTPS_PROXY`,
+  `NO_PROXY` and their lowercase forms once, at construction. The proxy is
+  chosen by the request URL's scheme, as NetHTTP, Go's `net/http` and
+  `connectrpc-hyper` choose it: an h2c target is `http://`, so it takes
+  `HTTP_PROXY`, and a TLS target takes `HTTPS_PROXY`. grpc-go instead looks
+  proxies up with an `https` scheme for every target, so it would use
+  `HTTPS_PROXY` for the same h2c target. In a CGI process (`REQUEST_METHOD`
+  set) `HTTP_PROXY` fails h2c calls instead of being trusted, as in NetHTTP.
+  `NO_PROXY`, `localhost` and loopback addresses connect directly, and values
+  are parsed exactly as for
   [NetHTTP](../../docs/unary.md#nethttp-tls-and-proxies).
 - A String or URI proxies every call, including loopback and `NO_PROXY` hosts;
   `nil` always connects directly. A value that is not a valid proxy raises
@@ -1041,11 +1049,11 @@ ConnectRPC::Async::PerCallTransport.new(proxy: nil)         # Always direct.
 - An unusable environment proxy fails the call closed, never going direct and
   before any socket opens. Proxy failures are `unavailable` with a fixed
   reason: `invalid proxy address`, `unsupported proxy scheme`,
-  `proxy authentication failed` (status 407), `proxy tunnel refused` (any other
-  status but 200), `proxy tunnel failed` (a malformed, truncated or oversized
-  reply, or bytes after a 200 reply to a TLS target) and
-  `proxy tunnel timed out`. Error messages never include proxy URLs,
-  credentials or reply text.
+  `proxy refused in CGI environment`, `proxy authentication failed` (status
+  407), `proxy tunnel refused` (any other status but 200),
+  `proxy tunnel failed` (a malformed, truncated or oversized reply, or bytes
+  after a 200 reply to a TLS target) and `proxy tunnel timed out`. Error
+  messages never include proxy URLs, credentials or reply text.
 
 ## Explicit HTTP/1.1 client
 

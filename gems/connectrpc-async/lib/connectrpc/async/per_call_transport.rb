@@ -129,8 +129,9 @@ module ConnectRPC
       end
       private_constant :Threaded
 
-      # proxy: :environment snapshots HTTPS_PROXY and NO_PROXY now, which
-      # apply to every target as grpc-go applies them. A String or URI is an
+      # proxy: :environment snapshots the proxy environment now; each call
+      # takes the proxy for its URL's scheme, as NetHTTP does: HTTP_PROXY for
+      # h2c and HTTPS_PROXY for TLS, minus NO_PROXY. A String or URI is an
       # http:// proxy for every call; nil connects directly.
       def initialize(ca_file: nil, certificate_chain: nil, private_key: nil, connect_timeout: 10,
                      proxy: :environment)
@@ -244,12 +245,19 @@ module ConnectRPC
 
       # A close failure is ignored. A caller interruption while the close
       # budget is computed, during close or during the join is retained until
-      # every task has finished, then returned.
+      # every task has finished, then returned. The budget is computed in the
+      # caller's own fiber, so a clock that reads fiber-local state sees the
+      # caller's; whatever it raises, the close is raw and still runs.
       def finish_inline(inner, scope, release, deadline)
         interruption = nil
         begin
           if inner
-            grace, interruption = inline_grace(scope, deadline)
+            begin
+              grace = close_plan(deadline).first
+            rescue Exception => e # rubocop:disable Lint/RescueException -- the caller re-raises its own interruption after teardown
+              grace = 0.0
+              interruption = e unless clock_failure?(deadline, e)
+            end
             closing = inner.close_retaining(grace)
             interruption ||= closing
           end
@@ -266,20 +274,17 @@ module ConnectRPC
         interruption
       end
 
-      # Returns the close budget and an exception raised into the caller's
-      # fiber while it was computed. A custom deadline clock can yield, so a
-      # planner task under the scope reads it: the planner never fails, so an
-      # exception at its wait is the caller's. The close is then raw, and the
-      # scope's join finishes the cancelled planner.
-      def inline_grace(scope, deadline)
-        return [Internal::CLEANUP_SECONDS, nil] unless deadline
+      # Whether an exception raised while the inline close budget was computed
+      # is the deadline clock's own failure rather than the caller's
+      # interruption. The default clock cannot fail, so with it, or with no
+      # deadline, the exception is the caller's. A custom clock's
+      # StandardError is its failure unless it is the caller's own Async
+      # timeout. A StandardError raised into the caller while a custom clock
+      # runs looks the same and is taken for a clock failure.
+      def clock_failure?(deadline, error)
+        return false unless deadline && !deadline.__send__(:clock).equal?(DEADLINE_CLOCK)
 
-        planner = ::Async::Task.new(scope, finished: false) { close_plan_or_raw(deadline).first }
-        planner.run
-        [planner.wait, nil]
-      rescue Exception => e # rubocop:disable Lint/RescueException -- the caller re-raises its own interruption after teardown
-        Internal.cancel(planner)
-        [0.0, e]
+        error.is_a?(StandardError) && !Internal.foreign_timeout?(error)
       end
 
       # Close runs with interrupts deferred; its own waits accept them and
