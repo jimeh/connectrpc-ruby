@@ -1208,6 +1208,7 @@
     "ConnectRPC::Hyper::Transport#proxy_resolver": {"kind":"method","visibility":"private","parameters":"option","classification":"internal"},
     "ConnectRPC::Hyper::Transport#proxy_route": {"kind":"method","visibility":"private","parameters":"url","classification":"internal"},
     "ConnectRPC::Hyper::Transport#record_close": {"kind":"method","visibility":"private","parameters":"outcome","classification":"internal"},
+    "ConnectRPC::Hyper::Transport#recorded_close": {"kind":"method","visibility":"private","parameters":"","classification":"internal"},
     "ConnectRPC::Hyper::Transport#reserve_close": {"kind":"method","visibility":"private","parameters":"grace","classification":"internal"},
     "ConnectRPC::Hyper::Transport#seconds": {"kind":"method","visibility":"private","parameters":"value, name, nil_allowed: false","classification":"internal"},
     "ConnectRPC::Hyper::Transport#start_close_helper": {"kind":"method","visibility":"private","parameters":"grace","classification":"internal"},

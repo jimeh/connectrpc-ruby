@@ -127,35 +127,43 @@ module ConnectRPC
       # On a fiber scheduler's non-blocking fiber, native close runs on a
       # helper thread joined with Thread#value, which yields to the
       # scheduler: the wait takes neither the reactor thread nor a worker of
-      # the scheduler's pool, so sibling tasks keep running and can drain. No
-      # interrupt mask spans that yield, because Thread.new copies the
-      # caller's mask into threads that sibling fibers start. Starting the
-      # helper is masked and runs as a blocking fiber, so waiting for a
-      # contended lock blocks this thread instead of yielding under the mask.
-      # The helper records the outcome itself, so a closer that is killed
-      # (Fiber#kill, Thread#kill) and leaves early still leaves it recorded. An
-      # exception raised into the closer meanwhile (async's Task#stop) is
-      # held, the first one winning, until the helper returned.
-      # rubocop:disable-next Metrics/CyclomaticComplexity, Metrics/PerceivedComplexity
+      # the scheduler's pool, so sibling tasks keep running and can drain.
+      # This path holds no interrupt mask, because Thread.new copies the
+      # caller's mask into threads that sibling fibers start, and waits for
+      # the lock only as a non-blocking fiber: Mutex#unlock wakes one waiter,
+      # and a sibling woken through the scheduler cannot run while a blocking
+      # wait sleeps the reactor thread. Instead, an exception raised into the
+      # closer while it reserves, starts or joins the helper (async's
+      # Task#stop, Thread#raise) is held, the first one winning, and the
+      # closer retries; once the transport is closing, reserving again returns
+      # the same driver and grace. The helper records the outcome itself, so
+      # a closer that is killed (Fiber#kill, Thread#kill) still leaves it
+      # recorded.
+      # rubocop:disable-next Metrics/AbcSize, Metrics/CyclomaticComplexity, Metrics/PerceivedComplexity
       def close_on_helper(grace) # rubocop:disable Metrics/MethodLength
         helper = held = nil
+        unstarted = 0
         begin
-          # Assigned inside the mask, so an interrupt landing as the mask lifts
-          # cannot lose the helper.
-          unless helper
-            Thread.handle_interrupt(Object => :never) { helper = Fiber.blocking { start_close_helper(grace) } }
-          end
+          # An exception landing between Thread.new and this assignment loses
+          # the reference, so the retry may start a second helper. That is
+          # harmless: teardown starts once, both helpers wait for the same
+          # published outcome, and recording it twice changes nothing.
+          helper ||= start_close_helper(grace)
           outcome, error = helper.is_a?(Thread) ? helper.value : helper
         rescue Exception => e # rubocop:disable Lint/RescueException
           held ||= e
-          # Only a running helper is worth waiting for; once it ended, the
-          # outcome is recorded (or the helper itself raised).
-          retry if helper.is_a?(Thread) && helper.alive?
+          unstarted += 1 unless helper
+          # Retry only while that can make progress: join a running helper,
+          # or start one again after one failed attempt. Each interrupt is
+          # raised once, so a second failure before any helper started counts
+          # as deterministic, and the closer raises instead of looping.
+          retry if helper ? helper.is_a?(Thread) && helper.alive? : unstarted < 2
         end
         raise held if held
         raise error if error
 
-        outcome
+        # A helper that was killed, or is gone after fork, returns nothing.
+        outcome.nil? ? recorded_close : outcome
       end
 
       # The helper thread, or [outcome, error] when there is nothing to wait
@@ -196,10 +204,12 @@ module ConnectRPC
           # A forked child that never built its own driver has nothing to drain.
           next finish_close(true) unless @driver_pid == Process.pid
 
+          # The state changes last, so an interrupt cannot leave the
+          # transport closing without its grace.
           if @state == :open
-            @state = :closing
-            @close_pid = Process.pid
             @close_grace = grace
+            @close_pid = Process.pid
+            @state = :closing
           end
           [@driver, @close_grace]
         end
@@ -224,6 +234,14 @@ module ConnectRPC
       # waits on the same teardown.
       def record_close(outcome)
         @lock.synchronize { finish_close(outcome) } unless outcome.nil?
+      end
+
+      # The published outcome, or nil while teardown has not published one.
+      def recorded_close
+        @lock.synchronize do
+          inherit_fork_state
+          @close_outcome if @state == :closed
+        end
       end
 
       def finish_close(outcome)

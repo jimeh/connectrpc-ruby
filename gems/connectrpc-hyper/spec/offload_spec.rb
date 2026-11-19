@@ -314,6 +314,96 @@ RSpec.describe "Inside an Async reactor" do
     expect(eval(output.lines.last)).to eq([["interrupted", true], "a"]) # rubocop:disable Security/Eval
   end
 
+  # Mutex#unlock wakes only the first waiter. A sibling fiber waits for the
+  # transport's lock before the closer does; a closer that waited as a
+  # blocking fiber would sleep the reactor thread, so the unlock's scheduler
+  # wake-up of the sibling could never run and the closer would never wake.
+  it "closes while a sibling fiber waits for the transport's lock" do
+    output, status = reactor_child(<<~RUBY, pool: false)
+      transport = ConnectRPC::Hyper::Transport.new
+      driver = transport.send(:driver)
+      lock = transport.instance_variable_get(:@lock)
+      held = Thread::Queue.new
+      closing = Thread::Queue.new
+      holder = Thread.new do
+        lock.synchronize do
+          held << true
+          reactor = closing.pop
+          # The closer waits for the lock by the time the reactor thread sleeps.
+          eventually { reactor.status == "sleep" } || raise("the reactor thread never slept")
+        end
+      end
+      held.pop
+      reactor = Thread.new do
+        Async do |task|
+          # Runs until it waits for the lock.
+          sibling = task.async do
+            transport.send(:driver).equal?(driver)
+          rescue ConnectRPC::Error => e
+            e.message
+          end
+          closing << Thread.current
+          closer = task.async { transport.close(grace: 1) }
+          [closer.wait, sibling.wait]
+        end.wait
+      end
+      if reactor.join(10)
+        p [reactor.value, holder.value]
+      else
+        p :hung
+        exit!(0)
+      end
+    RUBY
+    expect(status).to be_success
+    expect(eval(output.lines.last)).to eq([[true, true], true]) # rubocop:disable Security/Eval
+  end
+
+  # A closer that waits for a contended lock yields to its reactor, so a
+  # sibling fiber runs meanwhile; Thread.new copies the reactor thread's
+  # interrupt mask into the thread the sibling starts.
+  it "lets Thread#raise reach a thread a sibling fiber starts while a closer waits for the transport's lock" do
+    output, status = reactor_child(<<~RUBY, pool: false)
+      transport = ConnectRPC::Hyper::Transport.new
+      lock = transport.instance_variable_get(:@lock)
+      held = Thread::Queue.new
+      closing = Thread::Queue.new
+      checked = Thread::Queue.new
+      holder = Thread.new do
+        lock.synchronize do
+          held << true
+          reactor = closing.pop
+          # Released after the sibling's check, or once the reactor thread
+          # sleeps, so a closer that blocks the reactor thread cannot deadlock.
+          eventually { !checked.empty? || reactor.status == "sleep" } || raise("never released")
+        end
+      end
+      held.pop
+      outcome = Async do |task|
+        closing << Thread.current
+        closer = task.async { transport.close(grace: 1) }
+        sibling = task.async do
+          started = Thread::Queue.new
+          blocker = Thread.new do
+            started << true
+            Thread::Queue.new.pop(timeout: 5)
+            :not_interrupted
+          rescue RuntimeError => e
+            e.message
+          end
+          started.pop
+          blocker.raise("interrupted")
+          blocker.join(2) ? blocker.value : :still_blocked
+        ensure
+          checked << true
+        end
+        [closer.wait, sibling.wait]
+      end.wait
+      p [outcome, holder.value]
+    RUBY
+    expect(status).to be_success
+    expect(eval(output.lines.last)).to eq([[true, "interrupted"], true]) # rubocop:disable Security/Eval
+  end
+
   # A frozen ThreadGroup makes Thread.new raise ThreadError on the reactor
   # thread, so the closer waits on it instead, as without a scheduler.
   it "waits on the calling thread when a closer cannot start its helper thread" do
