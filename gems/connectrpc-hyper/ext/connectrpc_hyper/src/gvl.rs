@@ -4,10 +4,11 @@
 //! (Thread#raise, Thread#kill, signals, VM shutdown, a fiber scheduler's
 //! cancellation). The UBF only fires a signal; the wait returns, and pending
 //! interrupts are delivered by `rb_thread_check_ints` under `rb_protect`, so
-//! no longjmp crosses Rust frames. Rust never calls Ruby inside the body,
-//! which may run on a fiber scheduler's worker thread (RB_NOGVL_OFFLOAD_SAFE,
-//! on Ruby 4.0 and later; see `FLAGS`): everything the body touches is
-//! `Send`.
+//! no longjmp crosses Rust frames. Rust never calls Ruby inside the body.
+//! A call's body may run on a fiber scheduler's worker thread
+//! (RB_NOGVL_OFFLOAD_SAFE, on Ruby 4.0 and later; see `FLAGS`), so
+//! everything it touches is `Send`; the close wait always runs on the
+//! calling thread (see `wait_signal`).
 use std::cell::Cell;
 use std::ffi::c_void;
 use std::future::Future;
@@ -72,7 +73,8 @@ pub fn wait_bodies() -> (usize, usize) {
     )
 }
 
-/// The `rb_nogvl` flags for every wait, set once by `init_flags`.
+/// The `rb_nogvl` flags for a call's waits (`drive`), set once by
+/// `init_flags`. The close wait never offloads (`DEFERRED_FLAGS`).
 ///
 /// RB_NOGVL_INTR_FAIL: with an interrupt already pending, rb_nogvl returns
 /// NULL without running the body or raising.
@@ -87,6 +89,13 @@ pub fn wait_bodies() -> (usize, usize) {
 /// while that body still runs could unwind the waiting frame under it. The
 /// flag is passed only on Ruby 4.0 and later.
 static FLAGS: AtomicI32 = AtomicI32::new(rb_sys::RB_NOGVL_INTR_FAIL as i32);
+
+/// The `rb_nogvl` flags for the close wait: never RB_NOGVL_OFFLOAD_SAFE, so
+/// its body runs on the calling Ruby thread. Under a fiber scheduler Ruby
+/// calls close from a helper thread (`Transport#close`), so the wait takes
+/// neither the reactor thread nor one of a worker pool's workers, which a
+/// sibling fiber's draining call may need.
+const DEFERRED_FLAGS: i32 = rb_sys::RB_NOGVL_INTR_FAIL as i32;
 
 /// Sets `FLAGS` from the running Ruby's version, not the headers the
 /// extension was built against.
@@ -324,12 +333,11 @@ fn settled(waits: &Waits<'_>) -> Option<Failure> {
 
 /// Waits with the GVL released until `signal` fires, for an outcome that a
 /// runtime task publishes, such as a transport's teardown. A Ruby exception
-/// raised meanwhile (a thread interrupt or a fiber scheduler's cancellation,
-/// such as async's `Task#stop`) does not end the wait: the first one is held
-/// and returned once `signal` fired, for the caller to raise. Where waits
-/// offload (`FLAGS`), every entry, re-entry after a cancellation included,
-/// lets a fiber scheduler run the wait on a worker thread, so a waiter never
-/// blocks its reactor's siblings.
+/// raised meanwhile (a thread interrupt) does not end the wait: the first
+/// one is held and returned once `signal` fired, for the caller to raise.
+/// Every entry, re-entry after an interrupt included, waits on the calling
+/// thread (`DEFERRED_FLAGS`); `Transport#close` holds a fiber scheduler's
+/// cancellation, such as async's `Task#stop`, itself.
 pub fn wait_signal(ruby: &Ruby, signal: &Arc<Signal>) -> Option<Error> {
     let handle = runtime::handle();
     let mut raised: Option<Error> = None;
@@ -351,10 +359,9 @@ pub fn wait_signal(ruby: &Ruby, signal: &Arc<Signal>) -> Option<Error> {
     raised
 }
 
-/// Like `without_gvl`, but never raises: it returns the body's result, if
-/// the body ran, and any Ruby exception raised around it, for the caller to
-/// raise later. A fiber scheduler may run the body on a worker thread where
-/// waits offload.
+/// Like `without_gvl`, but never raises and never offloads: it returns the
+/// body's result, if the body ran, and any Ruby exception raised around it,
+/// for the caller to raise later. The body runs on the calling thread.
 fn without_gvl_deferred<F, R>(
     ruby: &Ruby,
     interrupt: &Arc<Signal>,
@@ -369,23 +376,24 @@ where
         func: Some(func),
         out: None,
     };
-    let flags = FLAGS.load(Ordering::SeqCst);
     loop {
         let data_ptr = &mut data as *mut Data<F, R> as *mut c_void;
         let signal_ptr = Arc::as_ptr(interrupt) as *mut c_void;
+        // With RB_NOGVL_INTR_FAIL and no offload, rb_nogvl returns without
+        // raising; rb_protect still keeps any raise from unwinding Rust
+        // frames.
         let ran = magnus::rb_sys::protect(|| unsafe {
             rb_sys::rb_nogvl(
                 Some(call::<F, R>),
                 data_ptr,
                 Some(unblock),
                 signal_ptr,
-                flags,
+                DEFERRED_FLAGS,
             ) as rb_sys::VALUE
         });
         match ran {
             Ok(0) => {}
             Ok(_) => return (ran_output(&mut data), None),
-            // A scheduler's cancellation drained the body, then raised.
             Err(error) => return (ran_output(&mut data), Some(error)),
         }
         // An interrupt is pending. The caller masks thread interrupts around

@@ -358,10 +358,10 @@ impl Driver {
     /// Stops admission, lets in-flight calls finish within `grace`, then
     /// aborts the rest and waits for every owned task to end. True when
     /// everything drained in time. The first close starts teardown on the
-    /// runtime; every closer waits for its published outcome, with offload
-    /// allowed throughout. An exception raised meanwhile (an interrupt or a
-    /// fiber scheduler's cancellation) is held and raised after the outcome
-    /// is published, so `close_outcome` reports it.
+    /// runtime; every closer waits for its published outcome on the calling
+    /// thread, never offloaded (under a fiber scheduler, Ruby calls this from
+    /// a helper thread). An interrupt raised meanwhile is held and raised
+    /// after the outcome is published, so `close_outcome` reports it.
     fn close(ruby: &Ruby, rb_self: &Self, grace: f64) -> Result<bool, Error> {
         if rb_self.core.inherited() {
             return Ok(true);
