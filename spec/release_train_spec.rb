@@ -9,12 +9,13 @@ require "yaml"
 require_relative "../scripts/release_train"
 require_relative "../scripts/release_candidate"
 require_relative "../scripts/release_preparation"
+require_relative "../gems/connectrpc-hyper/scripts/platforms"
 
 RSpec.describe ReleaseTrain do
   def captured_train
     Dir.mktmpdir("connectrpc-release-spec-") do |temporary|
       root = File.expand_path("..", __dir__)
-      owners = described_class::VERSIONED.map do |name|
+      owners = described_class::NAMES.map do |name|
         name == "connectrpc" ? "connectrpc.gemspec" : "gems/#{name}/#{name}.gemspec"
       end
       inputs = [*owners, *described_class::VERSION_FILES.values, *described_class::GUIDES,
@@ -78,16 +79,27 @@ RSpec.describe ReleaseTrain do
     expect(JSON.parse(stdout)).to eq(Array.new(12, train.version))
   end
 
-  # connectrpc-hyper follows the train's version before its release wiring
-  # exists, so only the candidate and publisher keep to the published set.
-  it "versions connectrpc-hyper with the train but leaves it out of the published set" do
+  # connectrpc-hyper publishes after core with one archive per platform; the
+  # candidate checks those archives and the publisher pushes them before the
+  # gem's source archive.
+  it "publishes connectrpc-hyper last, as its platform archives followed by its source gem" do
     train = described_class.new
-    expect(described_class::NAMES).not_to include("connectrpc-hyper")
-    expect(described_class::VERSIONED).to eq([*described_class::NAMES, "connectrpc-hyper"])
+    version = train.version
+    expect(described_class::NAMES.last).to eq("connectrpc-hyper")
     expect(train.specifications.map(&:name)).to eq(described_class::NAMES)
-    expect(train.specifications(described_class::VERSIONED).map(&:name)).to eq(described_class::VERSIONED)
+    expect(described_class::PLATFORMS).to eq("connectrpc-hyper" => HyperPlatforms::NATIVE)
     extra_files = JSON.parse(train.read(".github/release-please-config.json")).dig("packages", ".", "extra-files")
     expect(extra_files).to include("gems/connectrpc-hyper/lib/connectrpc/hyper/version.rb")
+
+    archives = train.archives
+    expect(archives.size).to eq(20)
+    expect(archives.first(11).map(&:file))
+      .to eq(described_class::NAMES.first(11).map { |name| "#{name}-#{version}.gem" })
+    hyper = HyperPlatforms::NATIVE.map do |platform|
+      ["connectrpc-hyper", platform, "connectrpc-hyper-#{version}-#{platform}.gem"]
+    end
+    expect(archives.drop(11).map { |archive| [archive.name, archive.platform, archive.file] })
+      .to eq([*hyper, ["connectrpc-hyper", "ruby", "connectrpc-hyper-#{version}.gem"]])
   end
 
   it "requires the connectrpc-hyper version file in the Release Please updater inventory" do
@@ -112,8 +124,8 @@ RSpec.describe ReleaseTrain do
   end
 
   def internal_requirements(train)
-    train.specifications(described_class::VERSIONED).flat_map(&:runtime_dependencies)
-         .select { |dep| described_class::VERSIONED.include?(dep.name) }
+    train.specifications.flat_map(&:runtime_dependencies)
+         .select { |dep| described_class::NAMES.include?(dep.name) }
          .map { |dep| dep.requirement.to_s }.uniq
   end
 
@@ -123,7 +135,7 @@ RSpec.describe ReleaseTrain do
       guides = described_class::GUIDES.to_h { |file| [file, train.read(file)] }
       propose_version(train, version)
       expect(train.check!).to equal(train)
-      expect(train.specifications(described_class::VERSIONED).map { |spec| spec.version.to_s }.uniq).to eq([version])
+      expect(train.specifications.map { |spec| spec.version.to_s }.uniq).to eq([version])
       expect(internal_requirements(train)).to eq(["~> #{version.split('.').first(2).join('.')}.0"])
       expect(described_class::GUIDES.to_h { |file| [file, train.read(file)] }).to eq(guides)
     end
@@ -274,9 +286,8 @@ RSpec.describe "Release workflow boundaries" do
     workflow, triggers = load_workflow("release.yml")
     expect(triggers).to eq("push" => { "tags" => ["v*"] }, "workflow_dispatch" => nil)
     expect(workflow.fetch("permissions")).to eq({})
-    expect(workflow.fetch("jobs").keys).to eq(["publish"])
+    expect(workflow.fetch("jobs").keys).to eq(%w[hyper_gems publish])
     job = workflow.fetch("jobs").fetch("publish")
-    expect(job.fetch("if")).to eq("startsWith(github.ref, 'refs/tags/v')")
     expect(job.fetch("environment")).to eq("release")
     expect(job.fetch("permissions")).to eq("contents" => "write", "id-token" => "write")
     expect(job.fetch("steps").filter_map { |step| step["run"] })
@@ -284,5 +295,36 @@ RSpec.describe "Release workflow boundaries" do
     expect(job.fetch("steps").last.fetch("env")).to include("RUBYGEMS_OWNER" => "jimeh")
     caches = job.fetch("steps").filter_map { |step| step["with"]&.slice("bundler-cache", "cache") }.reject(&:empty?)
     expect(caches).to eq([{ "cache" => false }])
+  end
+
+  # Platform archives come from unprivileged jobs in the same run; publish
+  # cannot start unless every one of them succeeded, and checks their bytes.
+  it "builds and tests the connectrpc-hyper archives without privileges before publish can run" do
+    workflow, = load_workflow("release.yml")
+    hyper = workflow.dig("jobs", "hyper_gems")
+    expect(hyper).to eq("name" => "Hyper gems", "if" => "startsWith(github.ref, 'refs/tags/v')",
+                        "uses" => "./.github/workflows/hyper-gems.yml", "permissions" => { "contents" => "read" })
+    job = workflow.dig("jobs", "publish")
+    expect(job.fetch("needs")).to eq("hyper_gems")
+    expect(job.fetch("if")).to eq("startsWith(github.ref, 'refs/tags/v') && needs.hyper_gems.result == 'success' && " \
+                                  "needs.hyper_gems.outputs.verified == 'true'")
+    expect(job.fetch("steps").to_s).not_to include("docker")
+
+    steps = job.fetch("steps")
+    downloads = steps.select { |step| step.fetch("uses", "").start_with?("actions/download-artifact@") }
+    expect(downloads.map { |step| step.fetch("with") }).to eq(
+      [{ "pattern" => "connectrpc-hyper-*", "path" => "vendor/hyper/release-artifacts", "merge-multiple" => true },
+       { "pattern" => "hyper-smoke-*", "path" => "vendor/hyper/release-evidence", "merge-multiple" => true }]
+    )
+    build = steps.find { |step| step["run"] == "mise run release:build" }
+    expect(build.fetch("env")).to eq("RELEASE_HYPER_ARTIFACTS" => "vendor/hyper/release-artifacts",
+                                     "RELEASE_HYPER_EVIDENCE" => "vendor/hyper/release-evidence")
+    expect(steps.index(downloads.last)).to be < steps.index(build)
+    # Evidence artifacts must not match the archive download pattern.
+    gems, = load_workflow("hyper-gems.yml")
+    names = gems.fetch("jobs").values.flat_map { |entry| entry.fetch("steps") }
+                .filter_map { |step| step.dig("with", "name") if step.fetch("uses", "").start_with?("actions/upload") }
+    expect(names.grep(/\Ahyper-smoke-/).size).to eq(5)
+    expect(names.grep(/\Aconnectrpc-hyper-/)).to eq(["connectrpc-hyper-${{ matrix.platform }}"])
   end
 end

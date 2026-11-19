@@ -105,25 +105,33 @@ connectrpc-hyper's prebuilt gems are the one exception, described next.
 ### connectrpc-hyper platforms
 
 Since 0.3.0, connectrpc-hyper ships a source gem and platform gems that carry
-its Rust extension for Ruby 3.4 and 4.0. CI cross-builds every platform gem in
-the pinned `rbsys/<platform>:0.9.130` images and treats each artifact as
-follows:
+its Rust extension for Ruby 3.4 and 4.0. CI and the release workflow
+cross-build every platform gem twice in digest-pinned `rbsys/<platform>:0.9.130`
+images and publish only archives that installed and passed smoke calls on a
+native runner for their OS and architecture with both MRI versions. Every row
+below gates the release:
 
 | Platform gem | Built | Installed and exercised |
 | --- | --- | --- |
-| `x86_64-linux` (glibc 2.29+) | CI | Offline install and smoke calls on Ubuntu 24.04 x86_64, both MRI versions; the full specs and interop run against source builds on the same image |
-| `aarch64-linux` (glibc 2.29+) | CI | Offline install and smoke calls on native Ubuntu 24.04 arm64 runners, both MRI versions |
+| `x86_64-linux` (glibc 2.29+) | CI | Offline install and smoke calls on Ubuntu 24.04 x86_64; the full specs and interop run against source builds on the same image |
+| `aarch64-linux` (glibc 2.29+) | CI | Offline install and smoke calls on native Ubuntu 24.04 arm64 runners |
 | `x86_64-linux-musl`, `aarch64-linux-musl` | CI | Offline install and smoke calls in the official `ruby:3.4-alpine` and `ruby:4.0-alpine` images on the matching architecture. musl hosts need `libgcc_s` |
-| `arm64-darwin` (macOS 11+) | CI | Offline install and smoke calls on a macOS 15 arm64 runner, both MRI versions; non-gating |
-| `x64-mingw-ucrt` | CI | Provisional: offline install, smoke calls, the specs that apply off Linux and a Go interop subset on Windows Server 2025, in a non-gating job |
-| `x86_64-darwin`, `aarch64-mingw-ucrt` | CI | Build only |
-| Source gem | CI | Offline build from the packaged `Cargo.lock` and a pre-fetched crate cache on Ubuntu 24.04 x86_64, both MRI versions; needs Rust 1.85+, libclang and a C compiler |
+| `arm64-darwin` (macOS 11+) | CI | Offline install and smoke calls on a macOS 15 arm64 runner |
+| `x86_64-darwin` | CI | Offline install and smoke calls on a macOS 15 Intel runner |
+| `x64-mingw-ucrt` | CI | Provisional: offline install and smoke calls on Windows Server 2025; the specs that apply off Linux and a Go interop subset also run there in a non-gating job |
+| `aarch64-mingw-ucrt` | CI | Provisional: offline install and smoke calls on Windows 11 arm64 |
+| Source gem | CI | The published source gem compiles at install time and passes smoke calls on Ubuntu 24.04 x86_64; an offline build from the packaged `Cargo.lock` and a pre-fetched crate cache is also checked. Needs Rust 1.85+, libclang and a C compiler |
 
 Smoke calls are real Connect unary calls over cleartext HTTP/1.1 and TLS
-against a local server. Windows x64 is a provisional platform for
+against a local server. The two Windows platforms are provisional for
 connectrpc-hyper only; every other package keeps the Ubuntu x86_64 profile.
-Expect it to change or be withdrawn without a minor release while its job is
-non-gating.
+Their full specs are not gating yet. The reactor-thread hangs the Windows spec
+job showed came from the spec harness's console output, not from
+connectrpc-hyper. [#175](https://github.com/jimeh/connectrpc-ruby/issues/175)
+is separately fixing a `close` wait on Ruby 4.0 with a single-worker async
+pool, which affects every platform, not only Windows. Expect the Windows
+platforms to change or be withdrawn without a minor release while they are
+provisional.
 
 The transport verifies TLS with rustls, not OpenSSL, so it is stricter than
 NetHTTP and the Async transports: server certificates that are CN-only, X.509
