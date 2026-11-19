@@ -677,12 +677,16 @@ Keepalive is off by default. Turn it on to detect half-open connections, for
 example behind a NAT or L4 load balancer that silently drops idle flows:
 
 ```ruby
-keepalive = ConnectRPC::Async::Keepalive.new(time: 300, timeout: 20, permit_without_calls: false)
+keepalive = ConnectRPC::Keepalive.new(time: 300, timeout: 20, permit_without_calls: false)
 policy = ConnectRPC::Async::ConnectionPolicy.new(keepalive: keepalive)
 ```
 
-`time` and `timeout` are finite positive seconds; `timeout` defaults to 20 and
-`permit_without_calls` to false. `time: 300` respects grpc-go's default server
+Since 0.3.0, `Keepalive` is core's `ConnectRPC::Keepalive`, loaded by
+`require "connectrpc"`, so connectrpc-hyper's transport takes the same value.
+`ConnectRPC::Async::Keepalive` remains an alias for the same class, so existing
+code and `ConnectionPolicy` checks are unchanged. `ServerKeepalive` stays in
+this package. `time` and `timeout` are finite positive seconds; `timeout`
+defaults to 20 and `permit_without_calls` to false. `time: 300` respects grpc-go's default server
 enforcement (PINGs at least 5 minutes apart, none without calls), so grpc-go
 servers do not answer it with `too_many_pings`.
 

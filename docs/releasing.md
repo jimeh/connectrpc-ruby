@@ -3,6 +3,8 @@
 The first release, **0.1.0**, shipped nine gems with alpha maturity;
 `connectrpc-health` and `connectrpc-sentry` join the train in a later release.
 Every release now includes all eleven gems at one version.
+`connectrpc-hyper` follows the same version but is not published yet; see
+[versioned but unpublished](#versioned-but-unpublished).
 Versions are numeric, such as `0.1.0`, not RubyGems prereleases such as `0.1.0.alpha`.
 It remains experimental and does not adopt the stronger
 [supported profile](support.md) or declare production readiness.
@@ -30,10 +32,22 @@ or verify command grants no release authority.
 
 One root Release Please Ruby component covers the whole repository, including
 changes confined to one optional gem. It updates the core version and uses
-explicit annotated extra files for the ten optional `version.rb` files. Each
+explicit annotated extra files for the eleven optional `version.rb` files,
+including connectrpc-hyper's. Each
 gemspec reads its owning static version without requiring runtime code. OTel uses
 its same owning constant for instrumentation. The root `CHANGELOG.md` describes the entire train.
 The tag convention is one `v0.x.y` tag, not eleven component tags.
+
+### Versioned but unpublished
+
+`ReleaseTrain::VERSIONED` is `ReleaseTrain::NAMES` plus `connectrpc-hyper`. It
+drives the version files, `release:check`'s version and dependency checks and
+the Release Please `extra-files` inventory, so connectrpc-hyper's version and
+its `connectrpc` requirement move with every release PR. `NAMES` stays the
+published set: `release:build` and `release:publish` build, hash and push only
+those eleven gems. Publishing connectrpc-hyper needs a release workflow that
+builds its platform gems and source gem on a matrix, checks them against the
+candidate and attests and pushes each archive; that is a separate change.
 
 `.github/.release-please-manifest.json` records the last released version, and
 each release PR updates it. The config's `initial-version` of `0.1.0` only

@@ -111,6 +111,18 @@ promotion, scope handling, propagation or exception capture. Inside
 Fiber hosts require `hub_isolation_level = :fiber`; keep the fail-closed check at
 start and every attach.
 
+Optional reactor-free client transport: `gems/connectrpc-hyper/` (Rust extension
+on hyper/h2/rustls/tokio via magnus and rb-sys). Read its README and
+[the plan](docs/plans/hyper.md) before changing waits, interrupts, fork,
+pooling, retries, TLS or proxies; keep unsafe FFI small with its invariants
+commented. `hyper:*` tasks use `vendor/hyper` and `coverage/hyper` with Rust
+1.98.0 (MSRV 1.85, `hyper:msrv`), libclang and a C compiler; specs need the Go
+peer (`hyper:peer`, Go 1.27.3). Commit `Cargo.lock` and build `--locked`; crate
+updates use `hyper:cargo:update` and the 7-day age rule, and regenerate
+`THIRD_PARTY_NOTICES.md` with `scripts/notices.rb`. `hyper:cross` builds one
+platform gem with rb-sys-dock in a disposable copy. The gem is versioned with
+the train (`ReleaseTrain::VERSIONED`) but not published yet (`NAMES`).
+
 Public API changes must update the owning gem's signatures, the supported/SPI
 inventory and focused caller evidence. Read [RBS guidance](docs/rbs.md) before
 changing those surfaces; run `rbs:check` for consumers, inventory and strict core

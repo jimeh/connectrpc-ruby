@@ -8,6 +8,13 @@
 /gems/connectrpc-yabeda/.bundle/
 /gems/connectrpc-health/.bundle/
 /gems/connectrpc-sentry/.bundle/
+/gems/connectrpc-hyper/.bundle/
+# Compiled connectrpc-hyper extension and Rust/rake-compiler build outputs.
+/gems/connectrpc-hyper/lib/connectrpc/hyper/**/*.so
+/gems/connectrpc-hyper/lib/connectrpc/hyper/**/*.bundle
+/gems/connectrpc-hyper/lib/connectrpc/hyper/**/*.dll
+/gems/connectrpc-hyper/target/
+/gems/connectrpc-hyper/tmp/
 
 /gems/connectrpc-falcon/.bundle/
 /vendor/

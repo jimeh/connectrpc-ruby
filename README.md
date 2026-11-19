@@ -188,6 +188,7 @@ integrations you use:
 | [`connectrpc-yabeda`](gems/connectrpc-yabeda/README.md) | You want the same metrics through Yabeda and any of its adapters | `connectrpc/yabeda` |
 | [`connectrpc-health`](gems/connectrpc-health/README.md) | You want the standard `grpc.health.v1` service (Check, List and Watch) for Kubernetes probes, `grpc_health_probe` and load balancers | `connectrpc/health` |
 | [`connectrpc-sentry`](gems/connectrpc-sentry/README.md) | You use the Sentry Ruby SDK and want one native Sentry transaction or span per RPC side, plus reports of unexpected handler exceptions | `connectrpc/sentry` |
+| [`connectrpc-hyper`](gems/connectrpc-hyper/README.md) | Since 0.3.0 (not yet published): you want a pooled HTTP/2 client for any thread, with every call shape and native gRPC, without an Async reactor. A Rust extension, with prebuilt platform gems | `connectrpc/hyper` |
 
 Use the same version of `connectrpc` and every ConnectRPC gem in an
 application. Their `~>` dependency ranges allow patch versions to differ, but the
@@ -203,7 +204,7 @@ what each host and transport supports.
 | Scenario | Add | How |
 | --- | --- | --- |
 | A Rails app serves RPCs | `connectrpc-on-rails` | [Rails controller usage](gems/connectrpc-on-rails/README.md#usage). Rails serves Connect and gRPC-Web unary only, not native gRPC or streaming. |
-| Puma or Sidekiq calls a Go service (connect-go or grpc-go) | `connectrpc-async` | [`ThreadedTransport`](gems/connectrpc-async/README.md#ordinary-threads) from any thread, with `protocol: :grpc` for grpc-go. Core's Net::HTTP transport is enough for Connect unary calls to connect-go. |
+| Puma or Sidekiq calls a Go service (connect-go or grpc-go) | `connectrpc-async` | [`ThreadedTransport`](gems/connectrpc-async/README.md#ordinary-threads) from any thread, with `protocol: :grpc` for grpc-go. Core's Net::HTTP transport is enough for Connect unary calls to connect-go. Since 0.3.0, [`connectrpc-hyper`](gems/connectrpc-hyper/README.md#which-transport) covers every call shape from any thread. |
 | You run a gRPC server | `connectrpc-async` | The [gRPC quick start](docs/grpc.md#quick-start) serves Connect and native gRPC from one Async `Host`. |
 | Kubernetes health checks | `connectrpc-health`, plus `connectrpc-async` or `connectrpc-falcon` | [Health hosts](gems/connectrpc-health/README.md#hosts). Kubernetes `grpc:` probes need native gRPC over HTTP/2. |
 | RPCs run next to a Rack or Rails app on Falcon | `connectrpc-falcon` | [Run a service](gems/connectrpc-falcon/README.md#run-a-service) with the app as the Rack fallback. |
@@ -230,6 +231,7 @@ streaming. H1 is HTTP/1.1 and H2 is HTTP/2.
 | Async `Transport` | U/SS/CS/bidi over H2 (h2c, TLS, mTLS) | U/SS/CS/bidi |
 | Async `ThreadedTransport` | U/SS over H2, callable from any thread | U/SS |
 | Async `HTTP1Transport` | U/SS/CS over H1 (TCP, TLS, mTLS) | No |
+| Hyper `Transport` (since 0.3.0) | U/SS/CS/bidi over H2 (h2c, TLS, mTLS), U/SS/CS over H1, from any thread | U/SS/CS/bidi |
 
 Connect is the default protocol. Connect supports binary protobuf
 (`application/proto`) and protobuf JSON (`application/json`), identity or
@@ -239,10 +241,12 @@ explicitly; there is no Ruby gRPC-Web client.
 
 These limits apply across the matrix:
 
-- Client and bidi streaming from ordinary threads are not implemented yet; see
-  [issue #29](https://github.com/jimeh/connectrpc-ruby/issues/29).
-  `ThreadedTransport` covers unary and server streaming, for Connect and
-  native gRPC.
+- connectrpc-async's `ThreadedTransport` covers unary and server streaming
+  from ordinary threads, for Connect and native gRPC; client and bidi
+  streaming there are tracked in
+  [issue #29](https://github.com/jimeh/connectrpc-ruby/issues/29). Since
+  0.3.0, connectrpc-hyper's `Transport` makes every call shape from any
+  thread.
 - The standalone Async `Host` is H2-only. Falcon is the Ruby H1 streaming host.
 - Native Connect streaming clients apply a provisional one-second HTTP tail
   policy, even without an RPC deadline. See the

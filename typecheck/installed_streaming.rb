@@ -123,7 +123,7 @@ Gem.loaded_specs.each_value do |spec|
     raise "Streaming library escaped installation: #{spec.name}"
   end
 end
-puts "Installed eleven-package composition: generated streaming network and custom SPI passed with no SDK"
+puts "Installed twelve-package composition: generated streaming network and custom SPI passed with no SDK"
 
 # Installed custom-host evidence exercises the explicit capability SPI without
 # relying on a backend, its private implementation, or checkout load paths.

@@ -40,8 +40,9 @@ puts "Runner: #{ENV.fetch('RUNNER_OS', 'unknown')}/#{ENV.fetch('RUNNER_ARCH', 'u
 case ARGV
 when []
   # Ruby-only jobs need no Go or task-local tool installation.
-when ["interop"], ["browser-reference"]
-  module_dir, cache_dir = ARGV == ["interop"] ? %w[interop interop] : %w[browser/reference browser/go]
+when ["interop"], ["browser-reference"], ["hyper"]
+  module_dir, cache_dir = { "interop" => %w[interop interop], "browser-reference" => %w[browser/reference browser/go],
+                            "hyper" => %w[gems/connectrpc-hyper/interop hyper/go] }.fetch(ARGV.first)
   go = which.call("go")
   check.call(under_cache.call(go), "Go is outside RUNNER_TOOL_CACHE")
   output, status = Open3.capture2(go, "env", "-json", "GOVERSION", "GOROOT", "GOMODCACHE", "GOCACHE",
@@ -59,5 +60,5 @@ when ["interop"], ["browser-reference"]
   }.each { |key, value| check.call(context.fetch(key) == value, "unexpected Go #{key}") }
   puts "Go: #{File.realpath(go)}; #{JSON.generate(context)}"
 else
-  abort "Usage: ruby scripts/ci_runtime.rb [interop|browser-reference]"
+  abort "Usage: ruby scripts/ci_runtime.rb [interop|browser-reference|hyper]"
 end

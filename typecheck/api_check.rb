@@ -3,7 +3,7 @@
 require_relative "harness"
 
 module APICheck
-  PACKAGES = %w[rack testing on-rails async falcon otel prometheus yabeda health sentry].freeze
+  PACKAGES = %w[rack testing on-rails async falcon otel prometheus yabeda health sentry hyper].freeze
   # Opt-in signature directories outside each package's discovered sig/.
   BRIDGES = { "on-rails" => "rbs/action_controller_8", "falcon" => "rbs/async_service_0_25",
               "health" => "rbs/grpc_health_v1" }.freeze
@@ -16,6 +16,10 @@ module APICheck
   REQUIRED_LIBRARIES = { "falcon" => %w[connectrpc-async] }.freeze
 
   def self.libraries(name) = ["connectrpc", *REQUIRED_LIBRARIES.fetch(name, []), "connectrpc-#{name}"]
+
+  def self.signature_directories(root)
+    [File.join(root, "sig"), *PACKAGES.map { File.join(root, "gems/connectrpc-#{it}/sig") }]
+  end
 
   def self.bridge_paths(root:, installed:)
     BRIDGES.map do |name, relative|
@@ -38,9 +42,7 @@ module APICheck
                         "connectrpc-#{name}"
                       end).map { |name| "library #{name.dump}" }.join("\n  ")
                     else
-                      signatures = [File.join(root, "sig"), *PACKAGES.map do |name|
-                        File.join(root, "gems/connectrpc-#{name}/sig")
-                      end]
+                      signatures = signature_directories(root)
                       paths = signatures.map do |directory|
                         "signature #{Pathname(directory).relative_path_from(Pathname(working)).to_s.dump}"
                       end.join("\n  ")
@@ -63,9 +65,7 @@ module APICheck
     if installed
       (["connectrpc"] + PACKAGES.map { |name| "connectrpc-#{name}" }).each { |name| rbs.push("-r", name) }
     else
-      [File.join(root, "sig"), *PACKAGES.map do |name|
-        File.join(root, "gems/connectrpc-#{name}/sig")
-      end].each do |directory|
+      signature_directories(root).each do |directory|
         rbs.push("-I", directory)
       end
       %w[uri openssl socket].each { |name| rbs.push("-r", name) }

@@ -724,3 +724,33 @@ TLS offers only `http/1.1`, accepts nil or H1 ALPN, and rejects other negotiatio
 before dispatch. Hostname/peer verification and mTLS remain enabled. The shared
 private TLS helper retains H2's existing default. H1 changes no server runtime
 policy, H2 connection ownership, or Web rejection behavior.
+
+## Reactor-free native client transport
+
+Since 0.3.0, the optional `connectrpc-hyper` package provides
+`ConnectRPC::Hyper::Transport`, a client transport for core's unary, streaming
+and native gRPC SPIs that needs no Async reactor. Core keeps every protocol
+decision: encoding, framing, headers, limits, deadlines, cancellation and error
+mapping. The transport only moves the encoded request and response over hyper,
+h2 and rustls in a Rust extension, so it adds no protocol code and core gains
+no dependency on it.
+
+Rust owns connections, streams, flow control and waits; Ruby owns option
+validation, TLS input validation (with OpenSSL, as core NetHTTP), fixed error
+phrases and the lifecycle hooks. Each native wait releases the GVL with an
+unblocking function that only signals, runs under `rb_protect`, and resumes the
+same operation after a wake without a pending interrupt, so `Thread#raise`,
+`Thread#kill`, deadlines and cancellation tokens land at every stage without
+repeating a side effect. Rust never calls Ruby from a worker thread. A
+process-wide tokio runtime with two workers is created lazily and checked
+against the owning PID, so a forked child builds its own runtime and
+connections and closes the inherited connection sockets it can identify.
+
+One admitting HTTP/2 connection per origin is shared by every thread; GOAWAY
+retires it while a new connection admits, and reconnection is lazy, without
+backoff or `wait_for_ready`. That connection policy is deliberately smaller
+than connectrpc-async's. Applications already on Async keep its transports;
+calls from inside a reactor block it unless Ruby 4.0 and async's worker pool
+offload the wait. The [package guide](../gems/connectrpc-hyper/README.md) owns
+its options, platform gems and rustls differences, and
+[the plan](plans/hyper.md) records the decisions.

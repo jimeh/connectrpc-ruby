@@ -387,9 +387,11 @@ run = "ruby typecheck/run.rb check"
 
 [tasks."rbs:package"]
 description = "Check installed RBS discovery and consumers outside the checkout"
-depends = ["rbs:runtime", "rbs:setup", "setup:generation", "rack:setup", "testing:setup", "setup:rails", "async:setup", "falcon:setup", "otel:setup", "prometheus:setup", "yabeda:setup", "health:setup", "sentry:setup"]
+depends = ["rbs:runtime", "rbs:setup", "setup:generation", "rack:setup", "testing:setup", "setup:rails", "async:setup", "falcon:setup", "otel:setup", "prometheus:setup", "yabeda:setup", "health:setup", "sentry:setup", "hyper:setup"]
 tools."aqua:protocolbuffers/protobuf/protoc" = "36.2"
 tools."aqua:bufbuild/buf" = "1.75.0"
+# The hyper source gem compiles offline at install time from pre-fetched locked crates.
+tools.rust = "1.98.0"
 run = "ruby typecheck/run.rb package"
 
 [tasks."rbs:runtime"]
@@ -654,6 +656,108 @@ run = "mise exec -- ruby gems/connectrpc-sentry/scripts/run.rb example"
 [tasks."sentry:verify"]
 description = "Verify Sentry specs, source and packages"
 depends = ["sentry:test", "sentry:check", "sentry:package", "sentry:example"]
+
+# Optional reactor-free Rust client transport; independent bundle, pinned Rust
+# 1.98.0 (the rb-sys-dock image's) and Rust lint tools.
+
+# mise resolves a task's tools before its run starts, so a toolchain installed
+# by the same task's run is not active there (a fresh runner would use its own
+# rustc). Install-only tasks run first, as setup:generation does for protoc.
+# rustup's profile decides which components a new toolchain gets (CI
+# runners use `minimal`), so rustfmt and clippy for hyper:check are added
+# explicitly to the pinned toolchain.
+[tasks."hyper:toolchain"]
+description = "Install the locked Rust 1.98.0 with rustfmt and clippy, cargo-deny and cargo-audit for connectrpc-hyper"
+run = [
+  "mise install --locked rust@1.98.0 aqua:EmbarkStudios/cargo-deny@0.20.2 aqua:rustsec/rustsec/cargo-audit@0.23.0",
+  "mise exec rust@1.98.0 -- rustup component add --toolchain 1.98.0 rustfmt clippy",
+]
+
+[tasks."hyper:toolchain:msrv"]
+description = "Install the locked MSRV Rust 1.85.0 for connectrpc-hyper"
+run = "mise install --locked rust@1.85.0"
+
+[tasks."hyper:toolchain:go"]
+description = "Install the locked Go 1.27.3 for the connectrpc-hyper peer"
+run = "mise install --locked go@1.27.3"
+
+[tasks."hyper:tools"]
+description = "Require pinned Rust, cargo-deny, cargo-audit, Ruby and Bundler for connectrpc-hyper"
+depends = ["hyper:toolchain"]
+dir = "{{config_root}}/gems/connectrpc-hyper"
+tools.rust = "1.98.0"
+tools."aqua:EmbarkStudios/cargo-deny" = "0.20.2"
+tools."aqua:rustsec/rustsec/cargo-audit" = "0.23.0"
+env = { BUNDLE_GEMFILE = "{{config_root}}/gems/connectrpc-hyper/Gemfile", BUNDLE_PATH = "{{config_root}}/vendor/hyper/bundle", BUNDLE_USER_HOME = "{{config_root}}/vendor/hyper/bundler", BUNDLE_COOLDOWN = "3" }
+run = "ruby scripts/tools.rb"
+
+[tasks."hyper:setup"]
+description = "Install the independent connectrpc-hyper bundle and compile the extension for the active Ruby"
+depends = ["hyper:tools"]
+tools.rust = "1.98.0"
+run = "ruby gems/connectrpc-hyper/scripts/run.rb setup"
+
+[tasks."hyper:peer"]
+description = "Build the disposable grpc-go/connect-go/raw HTTP/2 peer used by connectrpc-hyper specs"
+depends = ["hyper:toolchain:go"]
+tools.go = "1.27.3"
+dir = "{{config_root}}/gems/connectrpc-hyper/interop"
+env = { GOTOOLCHAIN = "local", GOWORK = "off", GOFLAGS = "-mod=readonly", GOMODCACHE = "{{config_root}}/vendor/hyper/go/mod", GOCACHE = "{{config_root}}/vendor/hyper/go/build" }
+run = ["go mod download all", "go mod verify", "go vet .", "go build -o ../../../vendor/hyper/peer ."]
+
+[tasks."hyper:test"]
+description = "Run connectrpc-hyper specs against local Go peers: interop, limits, interrupts, pooling, retries, liveness, fork, TLS and offload"
+depends = ["hyper:setup", "hyper:peer"]
+tools.rust = "1.98.0"
+run = "ruby gems/connectrpc-hyper/scripts/run.rb test"
+
+[tasks."hyper:check"]
+description = "Parse and lint connectrpc-hyper Ruby, then cargo fmt, clippy -D warnings, cargo deny, cargo audit and notices"
+depends = ["hyper:setup"]
+tools.rust = "1.98.0"
+tools."aqua:EmbarkStudios/cargo-deny" = "0.20.2"
+tools."aqua:rustsec/rustsec/cargo-audit" = "0.23.0"
+run = "ruby gems/connectrpc-hyper/scripts/run.rb check"
+
+[tasks."hyper:build"]
+description = "Build isolated core and connectrpc-hyper source archives"
+depends = ["hyper:setup"]
+run = "ruby gems/connectrpc-hyper/scripts/run.rb build"
+
+[tasks."hyper:package"]
+description = "Install the connectrpc-hyper source gem offline from a pre-fetched locked crate cache, outside the checkout, and smoke it"
+depends = ["hyper:build"]
+tools.rust = "1.98.0"
+run = "ruby gems/connectrpc-hyper/scripts/run.rb package"
+
+[tasks."hyper:interop"]
+description = "Verify the Go peer modules and run the connectrpc-hyper grpc-go/connect-go interop matrix"
+depends = ["hyper:setup", "hyper:peer"]
+tools.rust = "1.98.0"
+tools.go = "1.27.3"
+env = { GOTOOLCHAIN = "local", GOWORK = "off", GOFLAGS = "-mod=readonly", GOMODCACHE = "{{config_root}}/vendor/hyper/go/mod", GOCACHE = "{{config_root}}/vendor/hyper/go/build" }
+run = "ruby gems/connectrpc-hyper/scripts/run.rb interop"
+
+[tasks."hyper:cross"]
+description = "Cross-build one connectrpc-hyper gem with rb-sys-dock into vendor/hyper/cross/<platform> (PLATFORM or `-- <platform>`; `ruby` builds the source gem)"
+depends = ["hyper:tools"]
+run = "ruby gems/connectrpc-hyper/scripts/run.rb cross"
+
+[tasks."hyper:msrv"]
+description = "Build the extension with the declared rust-version (MSRV) toolchain and the locked crate graph"
+depends = ["hyper:toolchain:msrv"]
+tools.rust = "1.85.0"
+run = "ruby gems/connectrpc-hyper/scripts/msrv.rb"
+
+[tasks."hyper:cargo:update"]
+description = "Update connectrpc-hyper's Cargo.lock (all crates, or `-- -p <crate>`) and regenerate its third-party notices"
+depends = ["hyper:toolchain"]
+tools.rust = "1.98.0"
+run = "ruby gems/connectrpc-hyper/scripts/cargo_update.rb"
+
+[tasks."hyper:verify"]
+description = "Verify connectrpc-hyper specs, Ruby and Rust lint, supply-chain checks, interop and the offline source-gem install"
+depends = ["hyper:test", "hyper:check", "hyper:package", "hyper:interop"]
 
 [tasks."rbs:source"]
 description = "Strictly check all selected core implementation files and private state"
@@ -981,9 +1085,23 @@ run = [
   "mise exec -- ruby gems/connectrpc-sentry/scripts/run.rb package",
 ]
 
+[tasks."floors:hyper"]
+description = "Run connectrpc-hyper specs and package checks with runtime dependencies at their declared floors"
+depends = ["hyper:tools", "hyper:peer"]
+tools.rust = "1.98.0"
+env.CONNECTRPC_DEPENDENCY_FLOORS = "1"
+run = [
+  "rm -f gems/connectrpc-hyper/Gemfile.floors.lock",
+  "ruby gems/connectrpc-hyper/scripts/run.rb setup",
+  "ruby gems/connectrpc-hyper/scripts/run.rb floors",
+  "ruby gems/connectrpc-hyper/scripts/run.rb test",
+  "ruby gems/connectrpc-hyper/scripts/run.rb build",
+  "ruby gems/connectrpc-hyper/scripts/run.rb package",
+]
+
 [tasks.floors]
 description = "Run every lowest-allowed dependency lane (Ruby 3.4.12)"
-depends = ["floors:async", "floors:falcon", "floors:rack", "floors:rails", "floors:otel", "floors:prometheus", "floors:yabeda", "floors:health", "floors:sentry"]
+depends = ["floors:async", "floors:falcon", "floors:rack", "floors:rails", "floors:otel", "floors:prometheus", "floors:yabeda", "floors:health", "floors:sentry", "floors:hyper"]
 
 # Pins-lifted canary lane: non-gating, run daily by .github/workflows/canary.yml.
 # CONNECTRPC_DEPENDENCY_CANARY=1 makes the launcher use an ignored Gemfile.canary
@@ -1011,9 +1129,18 @@ run = [
   "mise exec -- ruby gems/connectrpc-falcon/scripts/run.rb canary",
 ]
 
+# The hyper canary lifts the committed Cargo.lock instead: `cargo update` in a
+# temporary copy of the package, then the specs against that build. The
+# tracked tree and the development extension stay unchanged.
+[tasks."canary:hyper"]
+description = "Non-gating newest-crates canary: cargo update in a temporary copy, rebuild and run connectrpc-hyper specs"
+depends = ["hyper:tools", "hyper:peer"]
+tools.rust = "1.98.0"
+run = "ruby gems/connectrpc-hyper/scripts/canary.rb"
+
 [tasks.canary]
-description = "Run both non-gating pins-lifted canary lanes (Ruby 3.4.12)"
-depends = ["canary:async", "canary:falcon"]
+description = "Run every non-gating canary lane (Ruby 3.4.12)"
+depends = ["canary:async", "canary:falcon", "canary:hyper"]
 
 # Long-running lifecycle campaign: non-gating, run nightly by .github/workflows/soak.yml.
 # scripts/soak.rb supervises each package's soak/ scenarios with a run deadline and
@@ -1035,7 +1162,7 @@ run = "mise exec -- ruby scripts/soak.rb async falcon"
 
 # Release preparation never tags, creates a GitHub release, or publishes gems.
 [tasks."release:check"]
-description = "Check eleven synchronized versions, installation guides and release guards offline"
+description = "Check twelve synchronized versions (eleven published), installation guides and release guards offline"
 run = "mise exec -- ruby scripts/release.rb check"
 
 [tasks."release:prepare"]

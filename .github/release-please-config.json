@@ -22,7 +22,8 @@
         "gems/connectrpc-prometheus/lib/connectrpc/prometheus/version.rb",
         "gems/connectrpc-yabeda/lib/connectrpc/yabeda/version.rb",
         "gems/connectrpc-health/lib/connectrpc/health/version.rb",
-        "gems/connectrpc-sentry/lib/connectrpc/sentry/version.rb"
+        "gems/connectrpc-sentry/lib/connectrpc/sentry/version.rb",
+        "gems/connectrpc-hyper/lib/connectrpc/hyper/version.rb"
       ]
     }
   }

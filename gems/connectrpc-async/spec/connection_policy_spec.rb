@@ -57,6 +57,12 @@ RSpec.describe ConnectRPC::Async::ConnectionPolicy do
     end
   end
 
+  it "keeps Keepalive as an alias of core's class" do
+    expect(ConnectRPC::Async::Keepalive).to equal(ConnectRPC::Keepalive)
+    expect(ConnectRPC::Async::ConnectionPolicy.new(keepalive: ConnectRPC::Keepalive.new(time: 1)).keepalive)
+      .to eq(ConnectRPC::Async::Keepalive.new(time: 1))
+  end
+
   it "builds a frozen comparable keepalive with grpc-go's timeout default" do
     keepalive = ConnectRPC::Async::Keepalive.new(time: 300)
     expect([keepalive.time, keepalive.timeout, keepalive.permit_without_calls]).to eq([300, 20, false])

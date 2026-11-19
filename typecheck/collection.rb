@@ -12,7 +12,7 @@ require_relative "harness"
 module RBSCollection
   NAMESPACES = { "rack" => "Rack", "testing" => "Testing", "on-rails" => "OnRails", "async" => "Async",
                  "falcon" => "Falcon", "otel" => "OTel", "prometheus" => "Prometheus", "yabeda" => "Yabeda",
-                 "health" => "Health", "sentry" => "Sentry" }.freeze
+                 "health" => "Health", "sentry" => "Sentry", "hyper" => "Hyper" }.freeze
   # Only the always-present gem and stdlib sources, so installation is offline.
   CONFIGURATION = "sources: []\npath: .gem_rbs_collection\n"
   STEEPFILE = <<~STEEP

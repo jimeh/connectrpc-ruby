@@ -24,33 +24,9 @@ module ConnectRPC
       def values = [@base, @multiplier, @jitter, @max]
     end
 
-    # Client HTTP/2 keepalive. After `time` seconds without reading a frame,
-    # the client sends a PING; only its matching ACK within `timeout` seconds
-    # proves the connection alive. Otherwise the connection retires and its
-    # calls fail with `unavailable`. Without calls in progress it pings only
-    # with `permit_without_calls`.
-    class Keepalive
-      attr_reader :time, :timeout, :permit_without_calls
-
-      def initialize(time:, timeout: 20, permit_without_calls: false)
-        @time = Internal.seconds(time, "time")
-        @timeout = Internal.seconds(timeout, "timeout")
-        unless [true, false].include?(permit_without_calls)
-          raise ArgumentError, "permit_without_calls must be true or false"
-        end
-
-        @permit_without_calls = permit_without_calls
-        freeze
-      end
-
-      def ==(other) = other.is_a?(Keepalive) && values == other.values
-      def eql?(other) = self == other
-      def hash = [Keepalive, *values].hash
-
-      protected
-
-      def values = [@time, @timeout, @permit_without_calls]
-    end
+    # Core's client HTTP/2 keepalive. The alias keeps existing callers and
+    # ConnectionPolicy checks unchanged.
+    Keepalive = ::ConnectRPC::Keepalive
 
     # Connection behavior for the HTTP/2 Transport. Every feature can be turned
     # off: `backoff: nil`, `max_pending_bytes: nil`, `retry_refused: false`,

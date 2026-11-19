@@ -123,15 +123,8 @@ module ConnectRPC
       def eql?: (untyped other) -> bool
       def hash: () -> Integer
     end
-    class Keepalive
-      def initialize: (time: Numeric, ?timeout: Numeric, ?permit_without_calls: bool) -> void
-      attr_reader time: Numeric
-      attr_reader timeout: Numeric
-      attr_reader permit_without_calls: bool
-      def ==: (untyped other) -> bool
-      def eql?: (untyped other) -> bool
-      def hash: () -> Integer
-    end
+    # Since 0.3.0 an alias of core's ConnectRPC::Keepalive.
+    class Keepalive = ::ConnectRPC::Keepalive
     class ConnectionPolicy
       def initialize: (?backoff: Backoff?, ?wait_for_ready: bool, ?max_pending_bytes: Integer?, ?retry_refused: bool, ?max_draining: Integer, ?drain_timeout: Numeric?, ?keepalive: Keepalive?) -> void
       attr_reader backoff: Backoff?

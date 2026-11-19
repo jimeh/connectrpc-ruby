@@ -44,6 +44,14 @@ module ConnectRPC
     private
     def earlier_than?: (Deadline other) -> bool
   end
+  class Keepalive
+    @time: Numeric
+    @timeout: Numeric
+    @permit_without_calls: bool
+    def values: () -> [Numeric, Numeric, bool]
+    private
+    def seconds: (untyped value, String name) -> Numeric
+  end
   class Context
     @cancellation: CallCancellation
     def commit!: () -> nil

@@ -117,3 +117,10 @@ context.cancellation_reason&.to_s
 context.cancelled?
 context.check!
 server.call(path: method.path, http_method: "POST", headers: {}, input: nil, cancellation: token)
+
+keepalive = ConnectRPC::Keepalive.new(time: 60, timeout: 20, permit_without_calls: true)
+(keepalive.time + keepalive.timeout).positive?
+keepalive.permit_without_calls.to_s
+(keepalive == ConnectRPC::Keepalive.new(time: 60)).to_s
+keepalive.eql?(keepalive).to_s
+keepalive.hash.succ

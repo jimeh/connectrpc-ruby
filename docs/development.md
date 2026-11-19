@@ -86,7 +86,7 @@ for final handoff; moved middleware specs have their own canonical gate.
 [CI](https://github.com/jimeh/connectrpc-ruby/blob/main/docs/ci.md) splits the same
 canonical component tasks into nine core, three Rails, four optional HTTP/2,
 two optional Rack, two optional testing, two optional RBS and four optional Falcon
-checks, plus the optional OTel, metrics, health and Sentry leaves, with syntax, specs, package isolation,
+checks, plus the optional OTel, metrics, health, Sentry and hyper leaves, with syntax, specs, package isolation,
 interop and official conformance on both Rubies. Hosted clean-environment and
 matrix results remain CI evidence; a local pass cannot establish them.
 
@@ -379,7 +379,8 @@ mise run floors:prometheus
 mise run floors:yabeda
 mise run floors:health
 mise run floors:sentry
-mise run floors         # all nine
+mise run floors:hyper   # rb_sys 0.9.130 for the source gem
+mise run floors         # all ten
 ```
 
 Floors do not apply to development tools or transitive-only dependencies. A
@@ -414,7 +415,8 @@ spec and suite, and reports which contract broke, before anyone bumps a pin:
 ```sh
 mise run canary:async
 mise run canary:falcon
-mise run canary         # both
+mise run canary:hyper   # cargo update in a temporary copy; see below
+mise run canary         # all three
 ```
 
 `CONNECTRPC_DEPENDENCY_CANARY=1` makes the launcher write an ignored
@@ -721,6 +723,56 @@ real Falcon workers and grpc-go's reference server. Core's `Context#on_cancel`
 is covered by `mise run test -- spec/context_on_cancel_spec.rb`. The vendored
 schema and generated files belong to `generation:build`/`generation:check`.
 See the [health guide](../gems/connectrpc-health/README.md).
+
+## Optional hyper development
+
+`gems/connectrpc-hyper/` is a Rust extension (hyper, h2, rustls with
+aws-lc-rs, tokio; bound with magnus and rb-sys). Besides the pinned Rubies it
+needs Rust 1.98.0 (the rb-sys-dock image's), which `hyper:toolchain` (a
+`hyper:tools` dependency) installs from `mise.lock` with rustfmt, clippy,
+cargo-deny 0.20.2 and cargo-audit 0.23.0; libclang for
+bindgen; a C compiler; and Go 1.27.3 for the peer. On distributions whose
+libclang lacks clang's resource headers, the launcher points bindgen at the C
+compiler's include directory. Tasks:
+
+| Command | Purpose |
+| --- | --- |
+| `mise run hyper:setup` | Install the bundle under `vendor/hyper/bundle` and compile the extension into `lib/connectrpc/hyper/<minor>/` (ignored), one per Ruby minor. |
+| `mise run hyper:peer` | Build the disposable grpc-go/connect-go/raw HTTP/2 Go peer into `vendor/hyper/peer`. |
+| `mise run hyper:test -- spec/pool_spec.rb` | Run specs (paths relative to the gem); coverage goes to `coverage/hyper/<Ruby>/`. |
+| `mise run hyper:check` | Ruby syntax and RuboCop, `cargo fmt --check`, `cargo clippy -D warnings`, `cargo deny check`, `cargo audit` and the third-party notices check. |
+| `mise run hyper:interop` | The grpc-go/connect-go interop matrix (`--tag interop`). |
+| `mise run hyper:package` | Build the source gem, fetch its locked crates into `vendor/hyper/cargo`, install it offline (`CARGO_NET_OFFLINE=true`) into a fresh GEM_HOME and run `scripts/smoke.rb`. |
+| `mise run hyper:verify` | All of the above. |
+| `mise run hyper:msrv` | Build the extension with Rust 1.85.0, the declared `rust-version`. |
+| `mise run hyper:cross -- <platform>` | Cross-build one platform gem (or `ruby` for the source gem) into `vendor/hyper/cross/<platform>/`; `PLATFORM=<platform>` also works. |
+| `mise run hyper:cargo:update` | `cargo update` (or `-- -p <crate>`), then regenerate `THIRD_PARTY_NOTICES.md`. |
+| `mise run canary:hyper` | Non-gating: the specs against `cargo update`'s newest crates. |
+
+Repeat a lane on the other Ruby with `MISE_RUBY_VERSION=4.0.9`. The offload
+specs need Ruby 4.0's fiber-scheduler blocking-operation hook and skip
+on 3.4.12; the DNS shim specs need Linux and glibc, and the fork specs skip
+where `fork` is unavailable.
+
+Cargo policy: `Cargo.lock` is committed and every build passes `--locked`,
+including `extconf.rb`, cross builds and the source gem's install. Update it
+only with `hyper:cargo:update`, and check that each new crate release is at
+least seven days old, as for tools; the daily
+[canary](ci.md#pins-lifted-canary) shows whether the newest crates still pass.
+`deny.toml` limits licenses and sources. `THIRD_PARTY_NOTICES.md` lists every
+crate linked on any target with its license texts and ships in the gem; a
+stale file fails `hyper:check` and `hyper:package`.
+
+Cross builds use rb-sys-dock and the `rbsys/<platform>:0.9.130` images (Docker
+required, no host Rust). `hyper:cross` copies the package's tracked and
+unignored files into `vendor/hyper/cross-work/<platform>`, builds there for
+Ruby 3.4 and 4.0, checks the gem and moves it to `vendor/hyper/cross/`, so
+several platforms can build from one checkout and the checkout stays clean.
+`ruby gems/connectrpc-hyper/scripts/install_smoke.rb vendor/hyper/cross/<platform>`
+installs a built gem offline into a fresh GEM_HOME with a core gem built from
+the checkout and runs the smoke calls; CI uses it on each platform. The source
+gem needs Rust 1.85+, libclang and a C compiler on the installing host. See the
+[package guide](../gems/connectrpc-hyper/README.md) and [the plan](plans/hyper.md).
 
 ## Optional Sentry development
 

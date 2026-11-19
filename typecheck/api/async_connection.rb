@@ -40,3 +40,7 @@ begin
 rescue ConnectRPC::Async::LifecycleError => e
   e.message.to_s
 end
+# The Async name is core's class, so either spelling satisfies the policy.
+ConnectRPC::Async::ConnectionPolicy.new(keepalive: ConnectRPC::Keepalive.new(time: 60)).keepalive&.timeout&.positive?
+core_keepalive = ConnectRPC::Async::Keepalive.new(time: 1) #: ConnectRPC::Keepalive
+core_keepalive.time.positive?

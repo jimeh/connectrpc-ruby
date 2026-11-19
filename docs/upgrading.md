@@ -124,6 +124,18 @@ These are additive; existing code keeps working once the rename above is done.
   `certificate_chain:` and `private_key:`, validated like the Async client
   transports' options, and `proxy:`. See
   [NetHTTP TLS and proxies](unary.md#nethttp-tls-and-proxies).
+- `ConnectRPC::Keepalive` is part of core and loads with `require
+  "connectrpc"`. It is the class connectrpc-async called
+  `ConnectRPC::Async::Keepalive`, with the same constructor, validation,
+  equality and freezing; that name remains an alias, so existing code needs no
+  change. Signatures that named `ConnectRPC::Async::Keepalive` keep working.
+- The new optional `connectrpc-hyper` gem adds `ConnectRPC::Hyper::Transport`,
+  a client transport on a Rust extension (hyper, h2, rustls and tokio) that
+  makes Connect and native gRPC calls of every shape from any thread without
+  an Async reactor. It is versioned with the train but not yet published. It
+  needs a matching `connectrpc` and a prebuilt platform gem, or Rust 1.85+,
+  libclang and a C compiler for the source gem. See the
+  [package guide](../gems/connectrpc-hyper/README.md).
 
 ### Behavior changes
 

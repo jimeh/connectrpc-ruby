@@ -14,7 +14,7 @@ RSpec.describe ReleaseTrain do
   def captured_train
     Dir.mktmpdir("connectrpc-release-spec-") do |temporary|
       root = File.expand_path("..", __dir__)
-      owners = described_class::NAMES.map do |name|
+      owners = described_class::VERSIONED.map do |name|
         name == "connectrpc" ? "connectrpc.gemspec" : "gems/#{name}/#{name}.gemspec"
       end
       inputs = [*owners, *described_class::VERSION_FILES.values, *described_class::GUIDES,
@@ -70,15 +70,50 @@ RSpec.describe ReleaseTrain do
                           ConnectRPC::Async::VERSION, ConnectRPC::Falcon::VERSION,
                           ConnectRPC::Testing::VERSION, ConnectRPC::OTel::VERSION,
                           ConnectRPC::Prometheus::VERSION, ConnectRPC::Yabeda::VERSION,
-                          ConnectRPC::Health::VERSION, ConnectRPC::Sentry::VERSION])
+                          ConnectRPC::Health::VERSION, ConnectRPC::Sentry::VERSION,
+                          ConnectRPC::Hyper::VERSION])
     RUBY
     stdout, stderr, status = Open3.capture3(RbConfig.ruby, "-e", command, *files)
     expect(status.success?).to be(true), stderr
-    expect(JSON.parse(stdout)).to eq(Array.new(11, train.version))
+    expect(JSON.parse(stdout)).to eq(Array.new(12, train.version))
+  end
+
+  # connectrpc-hyper follows the train's version before its release wiring
+  # exists, so only the candidate and publisher keep to the published set.
+  it "versions connectrpc-hyper with the train but leaves it out of the published set" do
+    train = described_class.new
+    expect(described_class::NAMES).not_to include("connectrpc-hyper")
+    expect(described_class::VERSIONED).to eq([*described_class::NAMES, "connectrpc-hyper"])
+    expect(train.specifications.map(&:name)).to eq(described_class::NAMES)
+    expect(train.specifications(described_class::VERSIONED).map(&:name)).to eq(described_class::VERSIONED)
+    extra_files = JSON.parse(train.read(".github/release-please-config.json")).dig("packages", ".", "extra-files")
+    expect(extra_files).to include("gems/connectrpc-hyper/lib/connectrpc/hyper/version.rb")
+  end
+
+  it "requires the connectrpc-hyper version file in the Release Please updater inventory" do
+    captured_train do |train|
+      edit(train, ".github/release-please-config.json") do |text|
+        config = JSON.parse(text)
+        config.dig("packages", ".", "extra-files").delete("gems/connectrpc-hyper/lib/connectrpc/hyper/version.rb")
+        JSON.pretty_generate(config)
+      end
+      expect { train.check! }.to raise_error(/Incomplete version updater inventory/)
+    end
+  end
+
+  it "holds connectrpc-hyper to the local dependency policy" do
+    captured_train do |train|
+      edit(train, "gems/connectrpc-hyper/connectrpc-hyper.gemspec") do |text|
+        text.sub('spec.add_dependency "connectrpc", local_requirement',
+                 "spec.add_dependency \"connectrpc\", \"~> #{train.version}\"")
+      end
+      expect { train.check! }.to raise_error(/Local dependency policy changed: connectrpc-hyper/)
+    end
   end
 
   def internal_requirements(train)
-    train.specifications.flat_map(&:runtime_dependencies).select { |dep| described_class::NAMES.include?(dep.name) }
+    train.specifications(described_class::VERSIONED).flat_map(&:runtime_dependencies)
+         .select { |dep| described_class::VERSIONED.include?(dep.name) }
          .map { |dep| dep.requirement.to_s }.uniq
   end
 
@@ -88,7 +123,7 @@ RSpec.describe ReleaseTrain do
       guides = described_class::GUIDES.to_h { |file| [file, train.read(file)] }
       propose_version(train, version)
       expect(train.check!).to equal(train)
-      expect(train.specifications.map { |spec| spec.version.to_s }.uniq).to eq([version])
+      expect(train.specifications(described_class::VERSIONED).map { |spec| spec.version.to_s }.uniq).to eq([version])
       expect(internal_requirements(train)).to eq(["~> #{version.split('.').first(2).join('.')}.0"])
       expect(described_class::GUIDES.to_h { |file| [file, train.read(file)] }).to eq(guides)
     end
@@ -128,7 +163,8 @@ RSpec.describe ReleaseTrain do
     "gems/connectrpc-falcon/lib/connectrpc/falcon/version.rb" => /Version mismatch: connectrpc-falcon/,
     "gems/connectrpc-otel/lib/connectrpc/otel/version.rb" => /Version mismatch: connectrpc-otel/,
     "gems/connectrpc-yabeda/lib/connectrpc/yabeda/version.rb" => /Version mismatch: connectrpc-yabeda/,
-    "gems/connectrpc-sentry/lib/connectrpc/sentry/version.rb" => /Version mismatch: connectrpc-sentry/
+    "gems/connectrpc-sentry/lib/connectrpc/sentry/version.rb" => /Version mismatch: connectrpc-sentry/,
+    "gems/connectrpc-hyper/lib/connectrpc/hyper/version.rb" => /Version mismatch: connectrpc-hyper/
   }.each do |file, failure|
     it "rejects a mismatched #{file} before building artifacts" do
       captured_train do |train|
