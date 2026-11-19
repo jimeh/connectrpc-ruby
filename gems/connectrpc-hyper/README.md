@@ -398,9 +398,11 @@ setup saw `close` first, and otherwise with
 not guaranteed, and it never gets another phrase. Teardown runs in the background
 once started, so it completes even if the closing thread is interrupted or a
 fiber scheduler stops the closing task (async's `Task#stop`). Every closer, a
-concurrent one included, keeps waiting for the outcome, off the reactor thread
-with async's worker pool, so sibling tasks still run and their calls can
-drain; the exception is raised after teardown.
+concurrent one included, keeps waiting for the outcome and raises the
+exception after teardown. On Ruby 4.0 with async's worker pool that wait runs
+off the reactor thread, so sibling tasks still run and their calls can drain;
+on Ruby 3.4 it holds the reactor for the grace (see
+[fiber schedulers](#fiber-schedulers)).
 
 ## License
 

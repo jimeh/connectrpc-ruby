@@ -227,9 +227,9 @@ stage and reset its stream.
   concurrent calls share the first outcome. A transport closed before fork
   stays closed. Teardown is a runtime task started by the first close, so it
   completes however closers are interrupted; every closer, concurrent ones
-  included, waits in native close for the published outcome with
-  fiber-scheduler offload allowed throughout and raises a held exception
-  afterwards. Forced teardown fails each call it ends `unavailable` with one
+  included, waits in native close for the published outcome (offloaded to a
+  fiber scheduler's worker pool on Ruby 4.0, per D4) and raises a held
+  exception afterwards. Forced teardown fails each call it ends `unavailable` with one
   of two phrases: the admission phrase if the call's own setup saw closing
   first, otherwise `HTTP transport failed: connection closed`. Which of the
   two is not guaranteed, and no other phrase is possible; correction round 5

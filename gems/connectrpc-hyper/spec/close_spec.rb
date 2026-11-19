@@ -152,6 +152,60 @@ RSpec.describe "Transport#close" do
     peer.wait_closed("grpc", from: from)
   end
 
+  # A pooled connection would keep its connection task, so close would wait
+  # out the grace and return false.
+  it "never pools a retry's own HTTP/2 connection that finishes dialing after close began" do
+    from = peer.mark
+    transport = hyper
+    native_driver = driver(transport)
+    origin = peer["raw"]
+    tag = "close-retry-#{rand(1 << 30)}"
+    # Connection A is pooled and stays usable, so the refused call's retry
+    # dials a connection of its own: the only handshake from here on.
+    raw_call(origin, "ok", transport: transport, protocol: :connect)
+    native_driver.hold("connect:handshaken", 10)
+    call = Thread.new do
+      raw_call(origin, "refuse-once:#{tag}", transport: transport, protocol: :connect, timeout: 20).message
+    rescue ConnectRPC::Error => e
+      [e.code, e.message]
+    end
+    wait_until("the retry's handshake") { native_driver.reached("connect:handshaken") == 1 }
+    closer = Thread.new { transport.close(grace: 3) }
+    wait_until("admission closed") { transport.inspect.include?("state=closing") }
+    wait_parked(closer, "Driver#close")
+    native_driver.release("connect:handshaken")
+    expect(call.value).to eq(MSG.new)
+    expect(closer.value).to be(true)
+    expect([stats(transport)[1..2], peer.count(/\Araw accept /, from: from)]).to eq([[0, 0], 2])
+  ensure
+    native_driver&.release("connect:handshaken")
+  end
+
+  # Without an idle timer (which closing also ends), a parked connection
+  # would keep its task until forced teardown.
+  it "never parks an HTTP/1.1 connection whose call ends cleanly after close began" do
+    arrived = Queue.new
+    go = Queue.new
+    server = TinyHTTP.new do |_request, socket|
+      arrived << true
+      go.pop
+      TinyHTTP.ok(socket)
+    end
+    transport = hyper(http2: false, idle_timeout: nil)
+    call = Thread.new { client(server.origin, transport: transport, protocol: :connect).unary(MSG.new, timeout: 20) }
+    expect(arrived.pop(timeout: 5)).to be(true)
+    closer = Thread.new { transport.close(grace: 3) }
+    wait_until("admission closed") { transport.inspect.include?("state=closing") }
+    wait_parked(closer, "Driver#close")
+    go << true
+    expect(call.value.message).to eq(MSG.new)
+    expect(closer.value).to be(true)
+    expect(stats(transport)[1..2]).to eq([0, 0])
+  ensure
+    go&.push(true)
+    server&.close
+  end
+
   it "aborts calls still running after grace, waits for its tasks and returns false" do
     from = peer.mark
     transport = hyper
