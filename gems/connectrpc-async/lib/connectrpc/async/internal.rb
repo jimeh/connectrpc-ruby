@@ -72,6 +72,7 @@ module ConnectRPC
           when Errno::EHOSTUNREACH, Errno::ENETUNREACH then "host unreachable"
           when ::Async::TimeoutError, Errno::ETIMEDOUT, ::IO::TimeoutError then "timed out"
           when ALPNError then "ALPN negotiation failed"
+          when ProxyFailure then error.message
           when OpenSSL::SSL::SSLError
             TLS_VERIFICATION.any? { |text| error.message.include?(text) } ? "TLS verification failed" : "TLS error"
           when *CONNECTION_CLOSED then "connection closed"

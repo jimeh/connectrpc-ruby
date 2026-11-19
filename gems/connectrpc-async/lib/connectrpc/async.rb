@@ -27,6 +27,7 @@ module ConnectRPC
 end
 
 require_relative "async/internal"
+require_relative "async/proxy_tunnel"
 require_relative "async/connection_policy"
 require_relative "async/server_keepalive"
 require_relative "async/tls"
@@ -44,6 +45,7 @@ require_relative "async/host"
 require_relative "async/transport"
 require_relative "async/threaded_transport"
 require_relative "async/threaded_stream"
+require_relative "async/per_call_transport"
 require_relative "async/http1_transport"
 require_relative "async/upstream_contract"
 

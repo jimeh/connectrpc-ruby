@@ -35,8 +35,7 @@ module ConnectRPC
         end
 
         if @origin.scheme == "https"
-          @snapshot = Internal::TLS.client(ca_file: ca_file, certificate_chain: certificate_chain,
-                                           private_key: private_key)
+          @snapshot = client_snapshot(ca_file: ca_file, certificate_chain: certificate_chain, private_key: private_key)
         end
         @calls = {}.compare_by_identity
         @acquiring = {}
@@ -339,8 +338,22 @@ module ConnectRPC
         request.lifecycle ? request.lifecycle.activate(&work) : work.call
       end
 
+      # A subclass may supply an already compiled snapshot instead.
+      def client_snapshot(ca_file:, certificate_chain:, private_key:)
+        Internal::TLS.client(ca_file: ca_file, certificate_chain: certificate_chain, private_key: private_key)
+      end
+
+      # Returns the connected TCP socket. The caller publishes it to the
+      # resource only after this returns.
+      def dial(host = @origin.hostname, port = @origin.port) = ::IO::Endpoint.tcp(host, port).connect
+
+      # Runs on the published socket before TLS, so abort_setup's shutdown
+      # wakes any I/O it blocks on. A direct connection has nothing to do.
+      def tunnel(_raw) = nil
+
       def setup_connection(resource)
-        resource.raw = ::IO::Endpoint.tcp(@origin.hostname, @origin.port).connect
+        resource.raw = dial
+        tunnel(resource.raw)
         socket = resource.raw
         if @snapshot
           socket = @snapshot.socket(resource.raw)

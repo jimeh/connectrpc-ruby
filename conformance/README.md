@@ -276,3 +276,23 @@ close always returns false, so the adapter drains instead. Library and transport
 scopes must run on the caller thread, and dispatch, operation and cleanup
 scopes on the owner thread. Both Ruby CI lanes run this gate after the other
 Async conformance tasks.
+
+## PerCallTransport client profiles
+
+`mise run async:conformance:per-call` runs the same four ThreadedTransport
+inventories and profiles through `ConnectRPC::Async::PerCallTransport` twice:
+from the adapter's plain thread, where each call runs on its own short-lived
+owner thread, and inside an Async task on the adapter's reactor. Each case
+builds a new transport with no origin, so every call dials the reference
+server's origin itself. There are no exclusions, expected failures or skips.
+
+`native_per_call_ledger.rb` applies the native client accounting and closed
+lifetimes to every inner transport the call built, captured as the transport
+call returned and without closing or joining anything afterwards: closed state,
+no calls, acquisitions, live tasks, open streams or unfinished resources, closed
+raw sockets, and exited owner threads or a finished scope task with no
+unfinished descendant. Each case that reached the transport must have built at
+least one inner transport, all on the selected path. Threaded
+runs keep the ThreadedTransport scope-thread rules; inline runs require every
+scope to run in the reactor. Both Ruby CI lanes run this gate after the
+ThreadedTransport profiles.

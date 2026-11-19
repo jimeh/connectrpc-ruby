@@ -258,7 +258,7 @@ run = "ruby gems/connectrpc-async/scripts/run.rb interop"
 
 [tasks."async:verify"]
 description = "Verify optional HTTP/2 specs, source, packages and Go interoperability"
-depends = ["async:test", "async:check", "async:package", "async:interop", "async:interop:streaming", "async:conformance", "async:conformance:grpc", "async:interop:grpc", "async:interop:keepalive", "async:conformance:http1", "async:conformance:threaded", "async:interop:http1"]
+depends = ["async:test", "async:check", "async:package", "async:interop", "async:interop:streaming", "async:conformance", "async:conformance:grpc", "async:interop:grpc", "async:interop:keepalive", "async:conformance:http1", "async:conformance:threaded", "async:conformance:per-call", "async:interop:http1"]
 
 [tasks."async:tools"]
 description = "Prepare exact Ruby/Bundler for the independent backend bundle"
@@ -965,6 +965,17 @@ run = [
   "CONNECTRPC_CONFORMANCE_GRPC=1 ruby gems/connectrpc-async/scripts/run.rb conformance async client",
 ]
 
+[tasks."async:conformance:per-call"]
+description = "Run the strict official Connect and gRPC unary/server-stream client profiles through PerCallTransport from plain threads and inside a reactor"
+depends = ["async:setup", "setup:conformance"]
+tools."github:connectrpc/conformance" = "1.0.6"
+run = [
+  "CONNECTRPC_CONFORMANCE_PER_CALL_CLIENT=threaded ruby gems/connectrpc-async/scripts/run.rb conformance async client",
+  "CONNECTRPC_CONFORMANCE_PER_CALL_CLIENT=threaded CONNECTRPC_CONFORMANCE_GRPC=1 ruby gems/connectrpc-async/scripts/run.rb conformance async client",
+  "CONNECTRPC_CONFORMANCE_PER_CALL_CLIENT=inline ruby gems/connectrpc-async/scripts/run.rb conformance async client",
+  "CONNECTRPC_CONFORMANCE_PER_CALL_CLIENT=inline CONNECTRPC_CONFORMANCE_GRPC=1 ruby gems/connectrpc-async/scripts/run.rb conformance async client",
+]
+
 [tasks."async:interop:http1"]
 description = "Run pinned connect-go HTTP/1.1-only listeners against the explicit Ruby client"
 depends = ["async:setup", "setup:interop"]
@@ -1154,7 +1165,7 @@ depends = ["canary:async", "canary:falcon", "canary:hyper"]
 # scripts/soak.rb supervises each package's soak/ scenarios with a run deadline and
 # cleanup budget; reports go to vendor/<pkg>/soak/<ruby>/. See docs/development.md.
 [tasks."async:soak"]
-description = "Run the Async H2 client/Host and ThreadedTransport lifecycle campaign (non-gating)"
+description = "Run the Async H2 client/Host, ThreadedTransport and PerCallTransport lifecycle campaign (non-gating)"
 depends = ["async:setup"]
 run = "mise exec -- ruby scripts/soak.rb async"
 

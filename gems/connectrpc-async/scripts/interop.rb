@@ -127,6 +127,30 @@ Dir.mktmpdir("interop-", File.join(root, "vendor/async")) do |fixtures|
       ensure
         threaded.close
       end
+
+      # The same cases through one PerCallTransport, each call on its own
+      # connection: from plain threads, then inside this reactor.
+      per_call = ConnectRPC::Async::PerCallTransport.new(**options.except(:origin))
+      message = AsyncHelpers::MESSAGE.new(name: "", count: 9_007_199_254_740_993, mood: :HAPPY, data: "\x00\xff".b)
+      probe = lambda do |codec, path|
+        typed = client(per_call, origin, codec: codec)
+        response = typed.echo(message, metadata: { "x-request" => %w[a b] })
+        unless response.message == message && response.metadata["x-echo"] == %w[a b] &&
+               response.trailers["x-tail"] == %w[three four]
+          raise "Per-call #{path} #{mode}/#{codec} response"
+        end
+
+        begin
+          typed.fail(message)
+          raise "Expected per-call typed error"
+        rescue ConnectRPC::Error => e
+          raise "Per-call typed error" unless e.code == "invalid_argument" && e.metadata["x-error"] == %w[a b]
+        end
+      end
+      %i[proto json].map { |codec| Thread.new { probe.call(codec, "thread") } }.each(&:join)
+      reactor { |task| %i[proto json].map { |codec| task.async { probe.call(codec, "reactor") } }.each(&:wait) }
+      puts "PASS generated Ruby->Go #{mode} proto/json unary through PerCallTransport " \
+           "from plain threads and inside a reactor"
     ensure
       input.close
       unless process.join(10)

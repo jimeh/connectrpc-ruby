@@ -146,6 +146,25 @@ Dir.mktmpdir("integration-", Dir.pwd) do |directory|
     puts "PASS installed generated ThreadedTransport #{tls ? 'mTLS h2' : 'h2c'} POST/GET proto/json from plain threads"
     puts "PASS installed generated ThreadedTransport #{tls ? 'mTLS h2' : 'h2c'} Connect SS proto/json and " \
          "gRPC unary/SS from plain threads"
+
+    # The same generated callers through one PerCallTransport, which opens a
+    # connection per call, from plain threads and inside a reactor.
+    per_call = ConnectRPC::Async::PerCallTransport.new(**options)
+    probe = lambda do
+      unary = [false, true].product(%i[proto json]).map do |get, codec|
+        client(per_call, origin, codec: codec, use_get: get).echo(message).message
+      end
+      streamed = [{ codec: :proto }, { codec: :json }, { protocol: :grpc }].map do |stream_options|
+        threaded_watch(per_call, origin, **stream_options)
+      end
+      unary.all?(message) && streamed == [%w[watch watch]] * 3 &&
+        client(per_call, origin, protocol: :grpc).echo(message).message == message
+    end
+    raise "Installed per-call generated caller from a plain thread" unless Thread.new { probe.call }.value
+    raise "Installed per-call generated caller inside a reactor" unless Sync { probe.call }
+
+    puts "PASS installed generated PerCallTransport #{tls ? 'mTLS h2' : 'h2c'} Connect POST/GET/SS and gRPC " \
+         "unary/SS from a plain thread and inside a reactor"
   ensure
     transport&.close
     stop&.<<(true)
