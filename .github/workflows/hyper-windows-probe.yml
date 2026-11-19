@@ -78,6 +78,7 @@ jobs:
       GOWORK: "off"
       GOFLAGS: -mod=readonly
       HYPER_PROBE: ${{ matrix.probe }}
+      CONSOLE_OUTPUT: Serialized
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -108,7 +109,7 @@ jobs:
         working-directory: gems/connectrpc-hyper
         run: |
           ruby scripts/use_artifact.rb ../../vendor/hyper/cross/${{ matrix.platform }}
-          bundle exec rspec spec/offload_spec.rb --format documentation -e PROBE
+          bundle exec rspec spec/offload_spec.rb --format documentation
 
   windows_arm:
     name: Probe aarch64-mingw-ucrt / Ruby ${{ matrix.ruby }}
@@ -130,6 +131,7 @@ jobs:
       GOWORK: "off"
       GOFLAGS: -mod=readonly
       HYPER_PROBE: "1"
+      CONSOLE_OUTPUT: Serialized
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -162,4 +164,4 @@ jobs:
         working-directory: gems/connectrpc-hyper
         run: |
           ruby scripts/use_artifact.rb ../../vendor/hyper/cross/aarch64-mingw-ucrt
-          bundle exec rspec spec/offload_spec.rb --format documentation -e PROBE
+          bundle exec rspec spec/offload_spec.rb --format documentation
