@@ -91,10 +91,10 @@ pub fn wait_bodies() -> (usize, usize) {
 static FLAGS: AtomicI32 = AtomicI32::new(rb_sys::RB_NOGVL_INTR_FAIL as i32);
 
 /// The `rb_nogvl` flags for the close wait: never RB_NOGVL_OFFLOAD_SAFE, so
-/// its body runs on the calling Ruby thread. Under a fiber scheduler Ruby
-/// calls close from a helper thread (`Transport#close`), so the wait takes
-/// neither the reactor thread nor one of a worker pool's workers, which a
-/// sibling fiber's draining call may need.
+/// its body runs on the calling Ruby thread. From a non-blocking fiber under
+/// a fiber scheduler Ruby calls close from a helper thread
+/// (`Transport#close`), so the wait takes neither the reactor thread nor one
+/// of a worker pool's workers, which a sibling fiber's draining call may need.
 const DEFERRED_FLAGS: i32 = rb_sys::RB_NOGVL_INTR_FAIL as i32;
 
 /// Sets `FLAGS` from the running Ruby's version, not the headers the

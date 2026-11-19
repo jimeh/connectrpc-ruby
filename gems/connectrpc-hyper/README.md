@@ -266,10 +266,12 @@ a plain proc, so a cancelled scheduler could unwind the call while its wait
 still runs on a worker; there calls always block the reactor, whatever the
 scheduler. Use connectrpc-async's transports for calls from inside a reactor.
 
-`close` is the exception. Under a fiber scheduler, on Ruby 3.4 and 4.0 alike,
-it waits for teardown on a helper thread, taking neither the reactor thread
-nor a worker of the pool, so sibling tasks keep running and their in-flight
-calls can drain within the grace.
+`close` is the exception. Called from a non-blocking fiber under a fiber
+scheduler, on Ruby 3.4 and 4.0 alike, it waits for teardown on a helper
+thread, taking neither the reactor thread nor a worker of the pool, so sibling
+tasks keep running and their in-flight calls can drain within the grace. A
+closer inside `Fiber.blocking {}` still waits on its own thread and holds the
+reactor until teardown ends.
 
 ## Fork
 
@@ -422,22 +424,25 @@ raise core's `deadline_exceeded` and `canceled` errors first.
 `close(grace: 5)` stops admission, lets in-flight calls finish within `grace`,
 then aborts the rest and waits for every connection task. It returns true when
 everything drained and false after forced teardown; repeated and concurrent
-calls share the first outcome. Callers waiting for the shared HTTP/2 dial fail
-with `HTTP transport admission is closed`, and the dial ends. A call admitted
-before `close` that is dialing its own connection (per-call mode, HTTP/1.1, a
-dial after an HTTP/1.1 outcome, or a retry's own dial) is in flight: it keeps
-dialing and runs within the grace, but its new connection is never pooled for
-other calls. Lazy exchanges that have not dispatched and pending retries fail
-with `HTTP transport admission is closed`. Forced teardown fails each call it
-ends `unavailable` with `HTTP transport admission is closed` if the call's own
-setup saw `close` first, and otherwise with
+calls share the first call's grace and outcome. Callers waiting for the shared
+HTTP/2 dial fail with `HTTP transport admission is closed`, and the dial ends.
+A call admitted before `close` that is dialing its own connection (per-call
+mode, HTTP/1.1, a dial after an HTTP/1.1 outcome, or a retry's own dial) is in
+flight: it keeps dialing and runs within the grace, but its new connection is
+never pooled for other calls. Lazy exchanges that have not dispatched and
+pending retries fail with `HTTP transport admission is closed`. Forced teardown
+fails each call it ends `unavailable` with `HTTP transport admission is closed`
+if the call's own setup saw `close` first, and otherwise with
 `HTTP transport failed: connection closed`. Which of the two a call gets is
-not guaranteed, and it never gets another phrase. Teardown runs in the background
-once started, so it completes even if the closing thread is interrupted or a
+not guaranteed, and it never gets another phrase. Teardown runs in the
+background once started, so it completes even if the closing thread is interrupted or a
 fiber scheduler stops the closing task (async's `Task#stop`). Every closer, a
 concurrent one included, keeps waiting for the outcome and raises the
-exception after teardown. Under a fiber scheduler that wait runs on a helper
-thread, so sibling tasks still run and their calls can drain (see
+exception after teardown. If a closer leaves before teardown ends, such as a
+killed fiber, later closers still wait for and return the published outcome.
+On a non-blocking fiber under a fiber scheduler that wait runs on a helper
+thread, so sibling tasks still run and their calls can drain, and threads that
+sibling tasks start meanwhile keep their usual interrupt handling (see
 [fiber schedulers](#fiber-schedulers)).
 
 ## License

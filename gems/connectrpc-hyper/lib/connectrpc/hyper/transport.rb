@@ -77,13 +77,15 @@ module ConnectRPC
       # phrase), lets in-flight calls finish within `grace`, then aborts the
       # rest and waits for every owned connection task. True when everything
       # drained; false after forced teardown. Repeated and concurrent calls
-      # share the first outcome.
+      # share the first call's grace and outcome.
       def close(grace: 5)
         unless grace.is_a?(Numeric) && grace.real? && grace.finite? && grace >= 0
           raise ArgumentError, "grace must be finite nonnegative seconds"
         end
 
-        Thread.handle_interrupt(Object => :never) { close_masked(grace) }
+        return close_on_helper(grace.to_f) if Fiber.scheduler && !Fiber.current.blocking?
+
+        Thread.handle_interrupt(Object => :never) { close_here(grace.to_f) }
       end
 
       private
@@ -117,68 +119,107 @@ module ConnectRPC
       end
 
       # Every closer in this process, concurrent ones included, waits for
-      # native close: it starts teardown once, gives every closer its
-      # published outcome and holds an interrupt or a fiber scheduler's
-      # cancellation until then. The lock covers only the state and the
-      # driver handoff.
-      def close_masked(grace) # rubocop:disable Metrics/MethodLength
-        driver = nil
-        @lock.synchronize do
-          inherit_fork_state
-          return @close_outcome if @state == :closed
-          # A forked child that never built its own driver has nothing to drain.
-          return finish_close(true) unless @driver_pid == Process.pid
-
-          @state = :closing
-          @close_pid = Process.pid
-          driver = @driver
-        end
-        outcome = nil
-        begin
-          outcome = await_close(driver, grace.to_f)
-        ensure
-          # Native close raises only after teardown published its outcome.
-          outcome = driver.close_outcome == true if outcome.nil?
-          @lock.synchronize { finish_close(outcome) }
-        end
-        outcome
-      end
-
+      # native close: it starts teardown once, with the grace the first
+      # closer reserved, gives every closer its published outcome and holds an
+      # interrupt or a fiber scheduler's cancellation until then. The lock
+      # covers only the state and the driver handoff.
+      #
       # On a fiber scheduler's non-blocking fiber, native close runs on a
       # helper thread joined with Thread#value, which yields to the
       # scheduler: the wait takes neither the reactor thread nor a worker of
-      # the scheduler's pool, so sibling tasks keep running and can drain.
-      # An exception raised into the closer meanwhile (async's Task#stop) is
-      # held until the helper returned, as native close holds one.
-      def await_close(driver, grace)
-        return driver.close(grace) unless Fiber.scheduler && !Fiber.current.blocking?
-
-        helper = Thread.new do
-          [driver.close(grace), nil]
+      # the scheduler's pool, so sibling tasks keep running and can drain. No
+      # interrupt mask spans that yield, because Thread.new copies the
+      # caller's mask into threads that sibling fibers start. Starting the
+      # helper is masked, and the helper records the outcome itself, so a
+      # closer that leaves early (Fiber#kill) still leaves it recorded. An
+      # exception raised into the closer meanwhile (async's Task#stop) is
+      # held, the first one winning, until the helper returned.
+      # rubocop:disable-next Metrics/CyclomaticComplexity, Metrics/PerceivedComplexity
+      def close_on_helper(grace) # rubocop:disable Metrics/MethodLength
+        helper = held = nil
+        begin
+          # Assigned inside the mask, so an interrupt landing as the mask lifts
+          # cannot lose the helper.
+          Thread.handle_interrupt(Object => :never) { helper = start_close_helper(grace) } unless helper
+          outcome, error = helper.is_a?(Thread) ? helper.value : helper
         rescue Exception => e # rubocop:disable Lint/RescueException
-          [nil, e]
+          held ||= e
+          # Only a running helper is worth waiting for; once it ended, the
+          # outcome is recorded (or the helper itself raised).
+          retry if helper.is_a?(Thread) && helper.alive?
         end
-        outcome, error = join_holding(helper)
+        raise held if held
         raise error if error
 
         outcome
       end
 
-      # The thread's value. An exception raised into the caller while it
-      # joins is held, the first one winning, and raised once the thread
-      # finished; the thread must not raise itself, so every exception from
-      # Thread#value comes from outside it.
-      def join_holding(thread)
-        held = nil
-        begin
-          value = thread.value
-        rescue Exception => e # rubocop:disable Lint/RescueException
-          held ||= e
-          retry
-        end
-        raise held if held
+      # The helper thread, or [outcome, error] when there is nothing to wait
+      # for or no thread could start (then the wait ran on this thread).
+      def start_close_helper(grace)
+        reserved = reserve_close(grace)
+        return [reserved, nil] unless reserved.is_a?(Array)
 
-        value
+        begin
+          Thread.new(*reserved) do |driver, reserved_grace|
+            Thread.current.report_on_exception = false
+            Thread.handle_interrupt(Object => :never) { await_teardown(driver, reserved_grace) }
+          end
+        rescue ThreadError
+          await_teardown(*reserved)
+        end
+      end
+
+      # Thread interrupts are deferred: native close holds the thread until
+      # teardown published its outcome.
+      def close_here(grace)
+        reserved = reserve_close(grace)
+        return reserved unless reserved.is_a?(Array)
+
+        outcome, error = await_teardown(*reserved)
+        raise error if error
+
+        outcome
+      end
+
+      # [driver, reserved grace] to wait on, or the recorded outcome when
+      # there is nothing to wait for. The first closer reserves its grace, so a
+      # later one that reaches native close first starts teardown with it.
+      def reserve_close(grace) # rubocop:disable Metrics/MethodLength
+        @lock.synchronize do
+          inherit_fork_state
+          next @close_outcome if @state == :closed
+          # A forked child that never built its own driver has nothing to drain.
+          next finish_close(true) unless @driver_pid == Process.pid
+
+          if @state == :open
+            @state = :closing
+            @close_pid = Process.pid
+            @close_grace = grace
+          end
+          [@driver, @close_grace]
+        end
+      end
+
+      # [outcome, nil] or [nil, the exception native close raised]. Native
+      # close raises only after teardown published its outcome.
+      def await_teardown(driver, grace)
+        outcome = nil
+        begin
+          outcome = driver.close(grace)
+          [outcome, nil]
+        rescue Exception => e # rubocop:disable Lint/RescueException
+          [nil, e]
+        ensure
+          record_close(outcome.nil? ? driver.close_outcome : outcome)
+        end
+      end
+
+      # Records a published outcome. A closer that leaves before publication
+      # records nothing and leaves the transport closing, so the next closer
+      # waits on the same teardown.
+      def record_close(outcome)
+        @lock.synchronize { finish_close(outcome) } unless outcome.nil?
       end
 
       def finish_close(outcome)

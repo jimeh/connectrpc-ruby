@@ -2,8 +2,8 @@
 
 # RB_NOGVL_OFFLOAD_SAFE lets async's worker pool (Ruby 4.0, io-event's
 # blocking-operation hook) run a call's native wait off the reactor thread.
-# Close waits on a helper thread under any fiber scheduler. Each case runs in
-# its own process, with or without the pool.
+# Close waits on a helper thread on a fiber scheduler's non-blocking fiber.
+# Each case runs in its own process, with or without the pool.
 RSpec.describe "Inside an Async reactor" do
   offload = Gem::Version.new(RUBY_VERSION) >= Gem::Version.new("4.0")
 
@@ -31,6 +31,13 @@ RSpec.describe "Inside an Async reactor" do
           sleep(0.001)
         end
       end
+      # Polls until the block is truthy or 10 seconds passed; the block's
+      # last value.
+      def eventually
+        deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + 10
+        sleep(0.001) until (met = yield) || Process.clock_gettime(Process::CLOCK_MONOTONIC) > deadline
+        met
+      end
       def ticks_during(task)
         ticks = 0
         ticker = task.async { loop { sleep 0.01; ticks += 1 } }
@@ -41,6 +48,25 @@ RSpec.describe "Inside an Async reactor" do
       #{code}
     RUBY
   end
+
+  # A thread's client stream keeps one call in flight, waiting in Ruby, until
+  # `release` has a value.
+  def held_call = <<~RUBY
+    transport = ConnectRPC::Hyper::Transport.new
+    driver = transport.instance_variable_get(:@driver)
+    sent = Queue.new
+    release = Queue.new
+    held = Thread.new do
+      client(#{peer['grpc_h2c'].dump}, transport).client_stream(timeout: 30) do |writer|
+        writer.send_message(MSG.new(value: "a"))
+        sent << true
+        release.pop
+      end.message.value
+    rescue ConnectRPC::Error => e
+      e.message
+    end
+    sent.pop
+  RUBY
 
   # Thread 1 closes a transport whose held stream outlasts the grace, then an
   # Async task on the main thread closes it too and is stopped while it
@@ -157,6 +183,7 @@ RSpec.describe "Inside an Async reactor" do
         outcome = Async do |task|
           sent = Thread::Queue.new
           release = Thread::Queue.new
+          order = []
           sibling = task.async do
             client(#{peer['grpc_h2c'].dump}, transport).client_stream(timeout: 30) do |writer|
               writer.send_message(MSG.new(value: "a"))
@@ -165,19 +192,26 @@ RSpec.describe "Inside an Async reactor" do
             end.message.value
           rescue ConnectRPC::Error => e
             e.message
+          ensure
+            order << :sibling
           end
           sent.pop
-          closer = task.async { transport.close(grace: 10) }
+          closer = task.async do
+            transport.close(grace: 10)
+          ensure
+            order << :closer
+          end
           # The close wait runs; a closer that held the reactor thread instead
           # has returned before this task resumes.
           running(done: closer)
           release << true
-          [closer.wait, sibling.wait]
+          [closer.wait, sibling.wait, order]
         end.wait
         p [outcome, transport.close(grace: 5), driver.stats[1..2]]
       RUBY
       expect(status).to be_success
-      expect(eval(output.lines.last)).to eq([[true, "a"], true, [0, 0]]) # rubocop:disable Security/Eval
+      expect(eval(output.lines.last)) # rubocop:disable Security/Eval
+        .to eq([[true, "a", %i[sibling closer]], true, [0, 0]])
     end
 
     # The held call is a sibling fiber on the closer's reactor, so it can only
@@ -220,6 +254,121 @@ RSpec.describe "Inside an Async reactor" do
     end
   end
 
+  # The held call is the only one in flight, so the close wait is the only
+  # native wait. Killing a closer's fiber while it waits on its helper thread
+  # must not record an outcome before teardown publishes one: a later closer
+  # waits for the same teardown and gets the published outcome, which the
+  # transport then keeps.
+  it "makes a later closer wait for the published outcome after a waiting closer's fiber is killed" do
+    output, status = reactor_child(<<~RUBY, pool: false)
+      #{held_call}
+      # A killed scheduled fiber hands control to the root fiber, so the root
+      # fiber kills it; a sibling task that killed it would never resume.
+      Fiber.set_scheduler(Async::Scheduler.new)
+      closer = Fiber.schedule { transport.close(grace: 10) }
+      running
+      closer.kill
+      Fiber.set_scheduler(nil)
+      returned = Queue.new
+      # Releases the held call once this thread waits in close too.
+      releaser = Thread.new do
+        eventually { wait_bodies[1] >= 2 || !returned.empty? }
+        release << true
+      end
+      later = [transport.close(grace: 5), driver.close_outcome]
+      returned << true
+      releaser.join
+      done = held.value
+      eventually { !driver.close_outcome.nil? }
+      p [later, done, transport.close(grace: 5), driver.close_outcome, driver.stats[1..2]]
+    RUBY
+    expect(status).to be_success
+    expect(eval(output.lines.last)).to eq([[true, true], "a", true, true, [0, 0]]) # rubocop:disable Security/Eval
+  end
+
+  # Thread interrupt masks are per thread and Thread.new copies them, so a
+  # closer must not hold one while its fiber yields to the reactor.
+  it "lets Thread#raise reach a thread a sibling fiber starts while another fiber waits in close" do
+    output, status = reactor_child(<<~RUBY, pool: false)
+      #{held_call}
+      outcome = Async do |task|
+        closer = task.async { transport.close(grace: 10) }
+        running(done: closer)
+        started = Thread::Queue.new
+        blocker = Thread.new do
+          started << true
+          Thread::Queue.new.pop(timeout: 5)
+          :not_interrupted
+        rescue RuntimeError => e
+          e.message
+        end
+        started.pop
+        blocker.raise("interrupted")
+        raised = blocker.join(2) ? blocker.value : :still_blocked
+        release << true
+        [raised, closer.wait]
+      end.wait
+      p [outcome, held.value]
+    RUBY
+    expect(status).to be_success
+    expect(eval(output.lines.last)).to eq([["interrupted", true], "a"]) # rubocop:disable Security/Eval
+  end
+
+  # A frozen ThreadGroup makes Thread.new raise ThreadError on the reactor
+  # thread, so the closer waits on it instead, as without a scheduler.
+  it "waits on the calling thread when a closer cannot start its helper thread" do
+    output, status = reactor_child(<<~RUBY, pool: false)
+      #{held_call}
+      releaser = Thread.new do
+        eventually { wait_bodies[1] >= 1 }
+        release << true
+      end
+      outcome = Async do
+        group = ThreadGroup.new
+        group.add(Thread.current)
+        group.freeze
+        transport.close(grace: 10)
+      rescue ThreadError => e
+        [:thread_error, e.message]
+      end.wait
+      releaser.join
+      p [outcome, driver.close_outcome, held.value]
+    RUBY
+    expect(status).to be_success
+    expect(eval(output.lines.last)).to eq([true, true, "a"]) # rubocop:disable Security/Eval
+  end
+
+  # The first closer's helper thread is held before native close until a
+  # later closer that asks for no grace waits in native close, so the later
+  # closer starts teardown. It must start it with the first closer's grace,
+  # and the held call drains.
+  it "starts teardown with the first closer's grace when a later closer reaches native close first" do
+    output, status = reactor_child(<<~RUBY, pool: false)
+      #{held_call}
+      graces = Thread::Queue.new
+      ConnectRPC::Hyper.const_get(:Native)::Driver.prepend(Module.new do
+        define_method(:close) do |grace|
+          first = graces.empty?
+          graces << grace
+          eventually { wait_bodies[1] >= 1 || !close_outcome.nil? } if first
+          super(grace)
+        end
+      end)
+      outcome = Async do |task|
+        first = task.async { transport.close(grace: 10) }
+        eventually { !graces.empty? } || raise("the first closer never reached native close")
+        later = Thread.new { transport.close(grace: 0) }
+        # Both closers wait in native close, or teardown already ended.
+        eventually { wait_bodies[1] >= 2 || !driver.close_outcome.nil? }
+        release << true
+        [first.wait, later.value]
+      end.wait
+      p [outcome, held.value, Array.new(graces.size) { graces.pop }]
+    RUBY
+    expect(status).to be_success
+    expect(eval(output.lines.last)).to eq([[true, true], "a", [10.0, 10.0]]) # rubocop:disable Security/Eval
+  end
+
   it "still forces teardown after the grace when Task#stop lands on a closing task" do
     from = peer.mark
     output, status = reactor_child(<<~RUBY, pool: true)
@@ -235,25 +384,29 @@ RSpec.describe "Inside an Async reactor" do
         [e.code, e.message]
       end
       parked(ready: ready)
+      driver = transport.instance_variable_get(:@driver)
       started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+      pending_at_stop = nil
       outcome = Async do |task|
+        # The grace leaves ample time to observe both waits and deliver the
+        # stop; the held stream outlasts it, so teardown is forced.
         closer = task.async do
-          transport.close(grace: 0.5)
+          transport.close(grace: 3)
         rescue Async::Stop
           :stopped
         end
         # The held read and the close wait on its helper thread.
         parked(2)
         closer.stop
+        pending_at_stop = driver.close_outcome.nil?
         closer.wait
       end.wait
       stopped_in = Process.clock_gettime(Process::CLOCK_MONOTONIC) - started
-      driver = transport.instance_variable_get(:@driver)
-      p [outcome, held.value, transport.close(grace: 5), driver.stats[1..2], stopped_in < 10]
+      p [outcome, pending_at_stop, held.value, transport.close(grace: 5), driver.stats[1..2], stopped_in < 15]
     RUBY
     expect(status).to be_success
     expect(eval(output.lines.last)).to eq( # rubocop:disable Security/Eval
-      [:stopped, ["unavailable", "HTTP transport failed: connection closed"], false, [0, 0], true]
+      [:stopped, true, ["unavailable", "HTTP transport failed: connection closed"], false, [0, 0], true]
     )
     peer.wait_event(/grpc ss-hold-done context canceled/, from: from)
   end
