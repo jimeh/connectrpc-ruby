@@ -214,20 +214,25 @@ stage and reset its stream.
   reached the socket and, when streaming, whose body yielded nothing; (b) a
   Connect unary `call`, before response headers, whose stream got a remote
   `REFUSED_STREAM` or whose stream id is above that last stream id
-  (RFC 9113 6.8: unprocessed). gRPC unary is not distinguishable from
-  streaming at `open_grpc_stream`, so it gets only (a). This matches the Async
-  transport's `retry_refused` scope. A stream at or below the last stream id,
-  or one whose error h2 raised for a frame it rejected, is never replayed
-  (#180). h2 exposes no last stream id and hyper no stream id, so `wire.rs`
-  derives both: a tap above TLS reads frame headers (each GOAWAY h2 accepts,
-  the highest client HEADERS id written) and a body's first `size_hint`, which
-  hyper 1.12's dispatch calls once right before h2 assigns the id, takes the
-  connection's next stream index. A CONNECT request or framing h2 would reject
-  disables it for the connection. Error kind alone cannot decide: hyper reports
-  a request dropped from its stream-slot wait, or failed right after
-  `send_request`, with the same error whether or not the stream reached the
-  wire. "Reached the socket" waits for h2's next flush only while a pending
-  write left encoded frames buffered. When the pooled connection that refused
+  (RFC 9113 6.8: unprocessed) and whose own error is h2's remote GOAWAY
+  error, so h2 read that frame (the tap reads ahead of h2). gRPC unary is not
+  distinguishable from streaming at `open_grpc_stream`, so it gets only (a).
+  This matches the Async transport's `retry_refused` scope. A stream at or
+  below the last stream id is never replayed after a GOAWAY (#180); a remote
+  `REFUSED_STREAM` still is, since RFC 9113 8.7 says that stream was not
+  processed, as grpc-go treats it. h2 exposes no last stream id and hyper no
+  stream id, so `wire.rs` derives both: a tap above TLS reads frame headers
+  (the lowest last stream id the peer's valid GOAWAYs name, the highest client
+  HEADERS id written, and HEADERS still in the unwritten part of the last
+  write, since h2's `FramedWrite` offers its whole buffer each time) and a
+  body's first `size_hint`, which hyper 1.12's dispatch calls once right
+  before h2 assigns the id, takes the connection's next stream index. A
+  CONNECT request or framing h2 would reject disables it for the connection.
+  Error kind alone cannot decide: hyper reports a request dropped from its
+  stream-slot wait, or failed right after `send_request`, with the same error
+  whether or not the stream reached the wire. A peer that sends a 1xx and then
+  disowns the stream contradicts RFC 9113 6.8 and is not guarded against, as in
+  grpc-go. When the pooled connection that refused
   or handed back the request still admits, it stays pooled and the retry dials
   a connection that serves only it (D5); an unusable one, including one that
   received GOAWAY, is evicted and the retry shares the pool dial.

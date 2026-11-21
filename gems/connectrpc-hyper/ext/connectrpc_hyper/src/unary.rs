@@ -57,9 +57,13 @@ pub async fn unary(
                     // requests hyper handed back unsent.
                     core.holds.reach("retry:unsent").await;
                 }
+                // Its stream is above a GOAWAY's last stream id and either h2
+                // failed it for that GOAWAY or it never reached the socket.
                 let unprocessed = !unsent
-                    && !Failure::local_protocol_error(error.error())
-                    && mark.as_ref().is_some_and(|mark| mark.unprocessed());
+                    && mark.as_ref().is_some_and(|mark| {
+                        mark.unprocessed()
+                            && (Failure::remote_go_away(error.error()) || mark.unsent())
+                    });
                 let replayable = unsent || unprocessed || Failure::refused_stream(error.error());
                 if replayable && exclude.is_none() {
                     if unprocessed {

@@ -16,7 +16,8 @@ RSpec.describe "Retries" do
   # passed the held request and the first queued one to h2, and
   # request:queued that the second reached hyper's queue, before the GOAWAY.
   # Each queued call succeeds, reaching the peer exactly once on one new
-  # connection.
+  # connection with its whole body: the peer answers only after the request
+  # ends and reports the bytes it received.
   %i[grpc connect].each do |protocol|
     it "replays queued requests once on a new connection after a GOAWAY (#{protocol})" do
       from = peer.mark
@@ -44,7 +45,10 @@ RSpec.describe "Retries" do
       queued = {}
       %w[q0 q1].each_with_index do |name, index|
         queued[name] = Thread.new do
-          raw_call(origin, "ok:#{name}", transport: transport, protocol: protocol, timeout: 20).message
+          message = MSG.new(value: "payload-#{name}")
+          core(origin, transport: transport, protocol: protocol)
+            .call(HyperHelpers::RAW_UNARY, message, metadata: { "x-scenario" => "await-ok:#{name}" }, timeout: 20)
+            .message
         rescue ConnectRPC::Error => e
           e
         end
@@ -58,10 +62,16 @@ RSpec.describe "Retries" do
       expect(outcomes.values).to all(eq(MSG.new)), context
       expect(%w[retry:unsent retry:unprocessed].map { |point| native_driver.reached(point) }).to eq([1, 1]), context
       # Each sent exactly once, as a stream of one new connection.
-      peer.wait_count(/\Arawmcs1 request ok:/, 2, from: from)
-      sent = requests("rawmcs1", from).grep(/request ok:/).map { |event| event.split.values_at(2, 4) }
-      expect(sent.map(&:first).sort).to eq(%w[ok:q0 ok:q1])
+      peer.wait_count(/\Arawmcs1 handled await-ok:/, 2, from: from)
+      sent = requests("rawmcs1", from).grep(/request await-ok:/).map { |event| event.split.values_at(2, 4) }
+      expect(sent.map(&:first).sort).to eq(%w[await-ok:q0 await-ok:q1])
       expect(sent.map(&:last)).to eq(%w[n=1 n=2])
+      framing = protocol == :grpc ? 5 : 0
+      bodies = peer.since(from).grep(/\Arawmcs1 handled await-ok:/).to_h do |event|
+        [event.split[2].delete_prefix("await-ok:"), event[/bytes=(\d+)/, 1].to_i]
+      end
+      sizes = %w[q0 q1].to_h { |name| [name, MSG.encode(MSG.new(value: "payload-#{name}")).bytesize + framing] }
+      expect(bodies).to eq(sizes)
       expect(accepts("rawmcs1", from)).to eq(2)
       peer.command("release #{tag}")
       expect(held.value).to include("grpc-status" => ["0"])

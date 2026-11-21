@@ -129,8 +129,10 @@ grpc-go channel:
   connection stops admitting and drains its open streams up to the GOAWAY's
   last stream id, which finish normally. The next call dials a new
   connection. A stream above the last stream id was never processed
-  (RFC 9113 section 6.8), so it is retried, as grpc-go retries it, within
-  the limits below.
+  (RFC 9113 section 6.8), so it is retried within the limits below, as
+  grpc-go retries it. A server that drains in two steps first names the
+  highest possible stream id, which disowns nothing; its streams are
+  retried once its final GOAWAY names a lower one.
 - After a hard kill, calls in flight fail `unavailable` with
   `HTTP transport failed: connection closed`. Once the transport has read
   the reset, the next call reconnects; a call that starts before then can
@@ -150,9 +152,12 @@ grpc-go channel:
   never closes a connection a caller has just checked out, and a connection
   closes only after a full `idle_timeout` without calls.
 - A request waiting inside hyper for a `SETTINGS_MAX_CONCURRENT_STREAMS`
-  slot when GOAWAY arrives already has a stream id above the last stream id
-  and never reached the wire, so it is retried on any call shape, as are
-  requests still in hyper's own queue (below).
+  slot already has a stream id but never reached the wire. When a GOAWAY's
+  last stream id falls below that id, it is retried on any call shape, as
+  are requests still in hyper's own queue (below). After a first GOAWAY that
+  names the highest possible stream id, hyper drops such a request, and it
+  fails `unavailable` (`HTTP transport failed: connection closed`), because
+  h2 may still have sent it when a slot freed.
 
 `connections: :per_call` dials a fresh connection for every call and closes it
 afterwards. With `http2: false`, each call dials its own connection, in
@@ -181,7 +186,9 @@ stream at or below the last stream id is never replayed, nor is a gRPC call
 whose HEADERS were sent, since `open_grpc_stream` cannot tell unary from
 streaming. hyper and h2 report neither stream ids nor the last stream id, so
 the transport reads them off the connection's HTTP/2 frame headers; a peer
-that breaks the framing rules gets no GOAWAY retries on that connection. When
+that breaks the framing rules gets no GOAWAY retries on that connection. A
+Connect unary call whose HEADERS were sent is replayed only when h2 itself
+failed its stream for the GOAWAY. When
 the pooled connection that refused or handed back the request still admits
 calls, it stays pooled for them and the retry dials a connection that serves
 only that call. A connection that received GOAWAY admits nothing more, so its

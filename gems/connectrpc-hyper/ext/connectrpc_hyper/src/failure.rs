@@ -108,13 +108,13 @@ impl Failure {
         false
     }
 
-    /// An HTTP/2 error h2 raised itself, for a frame it rejected: the peer
-    /// broke the protocol, so its GOAWAY vouches for nothing.
-    pub fn local_protocol_error(error: &hyper::Error) -> bool {
+    /// h2 failed the stream for a GOAWAY the peer sent: h2 read that frame,
+    /// whatever else the tap saw on the socket.
+    pub fn remote_go_away(error: &hyper::Error) -> bool {
         let mut source = error.source();
         while let Some(inner) = source {
             if let Some(h2e) = inner.downcast_ref::<h2::Error>() {
-                return (h2e.is_go_away() || h2e.is_reset()) && !h2e.is_remote();
+                return h2e.is_go_away() && h2e.is_remote();
             }
             source = inner.source();
         }

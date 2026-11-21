@@ -33,6 +33,14 @@ type rawConn struct {
 	encoder *hpack.Encoder
 	streams int
 	last    uint32
+	// awaiting holds await-ok streams until their request ends.
+	awaiting map[uint32]*awaitedRequest
+}
+
+type awaitedRequest struct {
+	scenario string
+	grpc     bool
+	bytes    int
 }
 
 // refusedOnce remembers the refuse-once and ignore-once keys already seen,
@@ -99,7 +107,8 @@ func handleRaw(tag string, conn net.Conn, options rawOptions) {
 		emit("%s bad-preface", tag)
 		return
 	}
-	c := &rawConn{tag: tag, conn: conn, framer: http2.NewFramer(conn, conn)}
+	c := &rawConn{tag: tag, conn: conn, framer: http2.NewFramer(conn, conn),
+		awaiting: map[uint32]*awaitedRequest{}}
 	c.encoder = hpack.NewEncoder(&c.block)
 	c.framer.ReadMetaHeaders = hpack.NewDecoder(4096, nil)
 	c.framer.MaxHeaderListSize = 1 << 24
@@ -155,6 +164,7 @@ func handleRaw(tag string, conn net.Conn, options rawOptions) {
 					return c.framer.WriteWindowUpdate(frame.StreamID, n)
 				})
 			}
+			c.data(frame)
 		case *http2.RSTStreamFrame:
 			emit("%s rst stream=%d code=%d", tag, frame.StreamID, uint32(frame.ErrCode))
 		case *http2.GoAwayFrame:
@@ -211,6 +221,34 @@ func padded(fields [][2]string, size int, first bool) [][2]string {
 		return append([][2]string{pad}, fields...)
 	}
 	return append(fields, pad)
+}
+
+// data counts an await-ok request's body and answers once it ends.
+func (c *rawConn) data(frame *http2.DataFrame) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	awaited, ok := c.awaiting[frame.StreamID]
+	if !ok {
+		return
+	}
+	awaited.bytes += len(frame.Data())
+	if frame.StreamEnded() {
+		delete(c.awaiting, frame.StreamID)
+		c.answer(frame.StreamID, awaited)
+	}
+}
+
+// answer reports an await-ok request's body size and answers it. Callers
+// hold c.mu.
+func (c *rawConn) answer(stream uint32, awaited *awaitedRequest) {
+	emit("%s handled %s stream=%d bytes=%d", c.tag, awaited.scenario, stream, awaited.bytes)
+	if !awaited.grpc {
+		c.headers(stream, [][2]string{{":status", "200"}, {"content-type", "application/proto"}}, true)
+		return
+	}
+	c.headers(stream, [][2]string{{":status", "200"}, {"content-type", "application/grpc"}}, false)
+	_ = c.framer.WriteData(stream, false, emptyMessage)
+	c.headers(stream, [][2]string{{"grpc-status", "0"}}, true)
 }
 
 func (c *rawConn) request(frame *http2.MetaHeadersFrame) {
@@ -279,6 +317,14 @@ func (c *rawConn) request(frame *http2.MetaHeadersFrame) {
 			_ = c.framer.WriteRSTStream(stream, http2.ErrCodeRefusedStream)
 		} else {
 			ok()
+		}
+	case "await-ok":
+		// Answers once the whole request body arrived, reporting its size.
+		awaited := &awaitedRequest{scenario: scenario, grpc: grpc}
+		if frame.StreamEnded() {
+			c.answer(stream, awaited)
+		} else {
+			c.awaiting[stream] = awaited
 		}
 	case "ignore-once":
 		// Leaves the first request carrying this key unanswered, on any

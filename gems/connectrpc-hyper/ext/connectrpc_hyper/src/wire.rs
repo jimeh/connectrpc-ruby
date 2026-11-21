@@ -4,9 +4,11 @@
 //!
 //! - `Tap` sits between hyper and the socket (above TLS, so it sees plaintext
 //!   frames) and reads only the 9-byte frame headers and a GOAWAY's last
-//!   stream id. It records the lowest last stream id of each GOAWAY that h2
-//!   accepts and the highest client stream id whose HEADERS frame header the
-//!   socket took.
+//!   stream id. It records the lowest last stream id the peer's GOAWAYs name
+//!   and the highest client stream id whose HEADERS frame header the socket
+//!   took. h2 0.4.20's `FramedWrite` offers its whole encoded buffer on each
+//!   write (DATA payloads aside), so a HEADERS frame the socket has not taken
+//!   yet sits in the part of the last offer that was not written.
 //! - A request body's first `size_hint` call takes the connection's next
 //!   stream index. In hyper 1.12.0 (`proto/h2/client.rs`, `ClientTask::poll`)
 //!   the dispatch task pops requests in order, skips one whose caller has
@@ -19,8 +21,11 @@
 //!   which never authorises a replay. A CONNECT request may be dropped after
 //!   `size_hint` without an id, so one disables the record for its connection.
 //!
-//! A stream above an accepted GOAWAY's last stream id was never processed
-//! (RFC 9113 6.8). Anything the record cannot vouch for answers "no".
+//! A stream above a GOAWAY's last stream id was never processed (RFC 9113
+//! 6.8). The tap reads ahead of h2, so a sent request is replayed only when
+//! h2 itself failed its stream for that GOAWAY; any other replay also needs
+//! proof that the request's HEADERS never reached the socket. Anything the
+//! record cannot vouch for answers "no".
 use std::io;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
@@ -28,7 +33,6 @@ use std::sync::{Arc, OnceLock};
 use std::task::{Context, Poll};
 
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
-use tokio::sync::Notify;
 
 use crate::holds::Holds;
 
@@ -39,7 +43,6 @@ const MAX_FRAME: usize = 16_384;
 const NONE: u32 = u32::MAX;
 
 const HEADERS: u8 = 0x1;
-const SETTINGS: u8 = 0x4;
 const PUSH_PROMISE: u8 = 0x5;
 const GOAWAY: u8 = 0x7;
 const CONTINUATION: u8 = 0x9;
@@ -54,14 +57,9 @@ pub struct Wire {
     goaway: AtomicU32,
     /// The highest client stream id whose HEADERS frame header was written.
     written: AtomicU32,
-    /// A socket write returned Pending since h2 last flushed. h2 buffers
-    /// encoded frames and calls `poll_flush` only once its buffer is empty,
-    /// so frames can wait in that buffer, unseen, only while this is set.
-    backlog: AtomicBool,
-    flushes: AtomicU64,
-    /// Woken by each flush and when the tap drops.
-    progress: Notify,
-    closed: AtomicBool,
+    /// The highest client stream id with a HEADERS frame header in the part
+    /// of the last write attempt the socket did not take.
+    queued: AtomicU32,
     holds: Arc<Holds>,
 }
 
@@ -72,10 +70,7 @@ impl Wire {
             disabled: AtomicBool::new(false),
             goaway: AtomicU32::new(NONE),
             written: AtomicU32::new(0),
-            backlog: AtomicBool::new(false),
-            flushes: AtomicU64::new(0),
-            progress: Notify::new(),
-            closed: AtomicBool::new(false),
+            queued: AtomicU32::new(0),
             holds,
         })
     }
@@ -84,7 +79,7 @@ impl Wire {
         self.disabled.store(true, Ordering::SeqCst);
     }
 
-    /// An accepted GOAWAY: the connection admits nothing more.
+    /// A GOAWAY arrived: the connection admits nothing more.
     pub fn going_away(&self) -> bool {
         self.goaway.load(Ordering::SeqCst) != NONE
     }
@@ -115,23 +110,11 @@ impl Wire {
         (last != NONE && stream > last).then_some(stream)
     }
 
-    /// Whether a HEADERS frame for `stream` may have reached the socket.
-    /// Waits only while h2 holds frames that a pending write left buffered.
-    async fn sent(&self, stream: u32) -> bool {
-        let flushes = self.flushes.load(Ordering::SeqCst);
-        loop {
-            let progress = self.progress.notified();
-            tokio::pin!(progress);
-            progress.as_mut().enable();
-            if !self.backlog.load(Ordering::SeqCst)
-                || self.flushes.load(Ordering::SeqCst) != flushes
-                || self.closed.load(Ordering::SeqCst)
-            {
-                break;
-            }
-            progress.await;
-        }
+    /// Whether a HEADERS frame for `stream` reached the socket or still
+    /// waits in h2's write buffer.
+    fn sent(&self, stream: u32) -> bool {
         self.written.load(Ordering::SeqCst) >= stream
+            || self.queued.load(Ordering::SeqCst) >= stream
     }
 }
 
@@ -159,23 +142,23 @@ impl Mark {
         });
     }
 
-    /// The peer never processed this request's stream (RFC 9113 6.8), so it
-    /// may be replayed where D12 allows a refused stream to be.
+    /// A GOAWAY names a last stream id below this request's stream.
     pub fn unprocessed(&self) -> bool {
         self.wire.unprocessed(self).is_some()
     }
 
-    /// Never processed, and its HEADERS never reached the socket: a request
-    /// that may be replayed on any call shape.
-    pub async fn unsent(&self) -> bool {
-        match self.wire.unprocessed(self) {
-            Some(stream) => !self.wire.sent(stream).await,
-            None => false,
-        }
+    /// Below the cutoff as above, and its HEADERS never reached the socket
+    /// and never will: h2 dropped the stream's queued frames when it failed
+    /// it. Asked after the request failed.
+    pub fn unsent(&self) -> bool {
+        self.wire
+            .unprocessed(self)
+            .is_some_and(|stream| !self.wire.sent(stream))
     }
 }
 
 /// Incremental frame-header reader for one direction.
+#[derive(Clone)]
 struct Frames {
     /// Bytes of the client preface still to pass (write side only).
     preface: usize,
@@ -185,7 +168,6 @@ struct Frames {
     remaining: usize,
     /// The current frame is a GOAWAY: its payload bytes seen so far.
     goaway: Option<([u8; 4], usize)>,
-    first: bool,
     in_block: bool,
     broken: bool,
 }
@@ -198,13 +180,12 @@ impl Frames {
             have: 0,
             remaining: 0,
             goaway: None,
-            first: true,
             in_block: false,
             broken: false,
         }
     }
 
-    /// Server frames: records each GOAWAY h2 accepts once its payload passed.
+    /// Server frames: records each valid GOAWAY once its payload passed.
     fn read(&mut self, wire: &Wire, mut bytes: &[u8]) {
         while !self.broken && !bytes.is_empty() {
             if self.remaining > 0 {
@@ -243,14 +224,12 @@ impl Frames {
         let (length, kind, flags, stream) = parse(&self.header);
         // h2 fails the connection on each of these; the record stops there.
         let valid = length <= MAX_FRAME
-            && (!self.first || kind == SETTINGS)
             && (!self.in_block || kind == CONTINUATION)
             && (kind != GOAWAY || (stream == 0 && length >= 8));
         if !valid {
             self.broken = true;
             return;
         }
-        self.first = false;
         if matches!(kind, HEADERS | PUSH_PROMISE | CONTINUATION) {
             self.in_block = flags & END_HEADERS == 0;
         }
@@ -267,9 +246,26 @@ impl Frames {
         }
     }
 
-    /// Client frames: records each new stream's HEADERS once its frame
-    /// header was written.
-    fn write(&mut self, wire: &Wire, mut bytes: &[u8]) {
+    /// Client frames: records the HEADERS frame headers written.
+    fn write(&mut self, wire: &Wire, bytes: &[u8]) {
+        self.walk(bytes, |stream| wire.record_headers(stream));
+        if self.broken {
+            wire.disable();
+        }
+    }
+
+    /// The highest stream id with a HEADERS frame header in `chunks`, which
+    /// follow what was written, without consuming them.
+    fn scan<'a>(&self, chunks: impl Iterator<Item = &'a [u8]>) -> u32 {
+        let mut ahead = self.clone();
+        let mut highest = 0;
+        for chunk in chunks {
+            ahead.walk(chunk, |stream| highest = highest.max(stream));
+        }
+        highest
+    }
+
+    fn walk(&mut self, mut bytes: &[u8], mut headers: impl FnMut(u32)) {
         while !self.broken && !bytes.is_empty() {
             if self.preface > 0 {
                 let take = self.preface.min(bytes.len());
@@ -298,12 +294,9 @@ impl Frames {
                 break;
             }
             if kind == HEADERS {
-                wire.record_headers(stream);
+                headers(stream);
             }
             self.remaining = length;
-        }
-        if self.broken {
-            wire.disable();
         }
     }
 }
@@ -332,29 +325,23 @@ impl<T> Tap<T> {
         }
     }
 
+    /// Commits the bytes the socket took and notes HEADERS in the rest.
     fn wrote(&mut self, result: &Poll<io::Result<usize>>, bufs: &[io::IoSlice<'_>]) {
-        match result {
-            Poll::Ready(Ok(n)) => {
-                let mut n = *n;
-                for buf in bufs {
-                    let take = n.min(buf.len());
-                    self.write.write(&self.wire, &buf[..take]);
-                    n -= take;
-                    if n == 0 {
-                        break;
-                    }
-                }
-            }
-            Poll::Pending => self.wire.backlog.store(true, Ordering::SeqCst),
-            Poll::Ready(Err(_)) => {}
+        let mut taken = match result {
+            Poll::Ready(Ok(n)) => *n,
+            Poll::Pending => 0,
+            // The connection is failing; h2 sends nothing more.
+            Poll::Ready(Err(_)) => return,
+        };
+        let mut rest = Vec::with_capacity(bufs.len());
+        for buf in bufs {
+            let take = taken.min(buf.len());
+            self.write.write(&self.wire, &buf[..take]);
+            taken -= take;
+            rest.push(&buf[take..]);
         }
-    }
-}
-
-impl<T> Drop for Tap<T> {
-    fn drop(&mut self) {
-        self.wire.closed.store(true, Ordering::SeqCst);
-        self.wire.progress.notify_waiters();
+        let queued = self.write.scan(rest.into_iter());
+        self.wire.queued.store(queued, Ordering::SeqCst);
     }
 }
 
@@ -402,13 +389,7 @@ impl<T: AsyncWrite + Unpin> AsyncWrite for Tap<T> {
     }
 
     fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
-        let this = self.get_mut();
-        // h2 flushes only with its own buffer empty: every frame it encoded
-        // has passed `poll_write` above.
-        this.wire.backlog.store(false, Ordering::SeqCst);
-        this.wire.flushes.fetch_add(1, Ordering::SeqCst);
-        this.wire.progress.notify_waiters();
-        Pin::new(&mut this.inner).poll_flush(cx)
+        Pin::new(&mut self.get_mut().inner).poll_flush(cx)
     }
 
     fn poll_shutdown(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {

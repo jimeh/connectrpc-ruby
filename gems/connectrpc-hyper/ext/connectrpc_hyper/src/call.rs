@@ -429,12 +429,7 @@ async fn respond(
             }
             None => {
                 let failure = Failure::from_hyper(error.error());
-                let unsent = match &mark {
-                    Some(mark) if !Failure::local_protocol_error(error.error()) => {
-                        until(deadline, mark.unsent()).await == Some(true)
-                    }
-                    _ => false,
-                };
+                let unsent = mark.as_ref().is_some_and(|mark| mark.unsent());
                 // hyper drops the body around the failure it reports; a
                 // body that yielded a frame never comes back.
                 let rx = match unsent {
