@@ -185,10 +185,12 @@ Nothing else is replayed, so a handler that started never runs twice. A
 stream at or below the last stream id is never replayed, nor is a gRPC call
 whose HEADERS were sent, since `open_grpc_stream` cannot tell unary from
 streaming. hyper and h2 report neither stream ids nor the last stream id, so
-the transport reads them off the connection's HTTP/2 frame headers; a peer
-that breaks the framing rules gets no GOAWAY retries on that connection. A
-Connect unary call whose HEADERS were sent is replayed only when h2 itself
-failed its stream for the GOAWAY. When
+the transport reads them off the connection's HTTP/2 frame headers. The
+server's GOAWAY is the authority on what it processed, as its
+`REFUSED_STREAM` is; a malformed GOAWAY, or one that raises the last stream
+id, ends GOAWAY retries on that connection. A Connect unary call whose
+HEADERS were sent is replayed only when h2 itself failed its stream for a
+GOAWAY. When
 the pooled connection that refused or handed back the request still admits
 calls, it stays pooled for them and the retry dials a connection that serves
 only that call. A connection that received GOAWAY admits nothing more, so its

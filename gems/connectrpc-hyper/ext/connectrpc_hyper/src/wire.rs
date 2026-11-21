@@ -23,10 +23,14 @@
 //!   `size_hint` without an id, so one disables the record for its connection.
 //!
 //! A stream above a GOAWAY's last stream id was never processed (RFC 9113
-//! 6.8). The tap reads ahead of h2, so a sent request is replayed only when
-//! h2 itself failed its stream for that GOAWAY; any other replay also needs
-//! proof that the request's HEADERS never reached the socket. Anything the
-//! record cannot vouch for answers "no".
+//! 6.8): the peer's GOAWAY is the authority on that, as its REFUSED_STREAM
+//! is. The tap follows frame lengths as h2 does, so each GOAWAY it reads is
+//! one the peer sent, whatever h2 makes of the frames around it; it does not
+//! repeat h2's validation. A peer that lies about what it processed can make
+//! any client replay a request. A sent request is also replayed only when h2
+//! itself failed its stream for a GOAWAY; any other replay needs proof that
+//! the request's HEADERS never reached the socket. Anything the record cannot
+//! vouch for answers "no".
 use std::io;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
@@ -39,27 +43,17 @@ use crate::holds::Holds;
 
 const PREFACE: usize = 24;
 const HEAD: usize = 9;
-/// hyper's local SETTINGS_MAX_FRAME_SIZE: h2 rejects larger frames.
-const MAX_FRAME: usize = 16_384;
 const NONE: u32 = u32::MAX;
 
-const DATA: u8 = 0x0;
 const HEADERS: u8 = 0x1;
-const PRIORITY: u8 = 0x2;
-const RST_STREAM: u8 = 0x3;
-const SETTINGS: u8 = 0x4;
-const PUSH_PROMISE: u8 = 0x5;
-const PING: u8 = 0x6;
 const GOAWAY: u8 = 0x7;
-const WINDOW_UPDATE: u8 = 0x8;
 const CONTINUATION: u8 = 0x9;
-const ACK: u8 = 0x1;
-const END_HEADERS: u8 = 0x4;
 
 pub struct Wire {
     next: AtomicU64,
-    /// Set when the record cannot be trusted: a CONNECT request, or frames
-    /// h2 would reject (it then fails the connection itself).
+    /// Set when the record cannot be trusted: a CONNECT request, a GOAWAY
+    /// that is malformed or raises the last stream id, or client frames the
+    /// reader cannot follow.
     disabled: AtomicBool,
     /// The lowest last stream id of the GOAWAYs read, or NONE.
     goaway: AtomicU32,
@@ -91,7 +85,7 @@ impl Wire {
 
     fn record_goaway(&self, last: u32) -> bool {
         let current = self.goaway.load(Ordering::SeqCst);
-        // h2 rejects a GOAWAY that raises the last stream id.
+        // RFC 9113 6.8 forbids raising it; h2 fails the connection.
         if current != NONE && last > current {
             return false;
         }
@@ -151,7 +145,7 @@ impl Mark {
         self.wire.unprocessed(self).is_some()
     }
 
-    /// Below the cutoff as above, and h2 never offered its HEADERS to the
+    /// Above the cutoff as above, and h2 never offered its HEADERS to the
     /// socket. Asked after the request failed. Once h2 has failed the stream
     /// for that GOAWAY, or for a connection error, it has dropped the
     /// stream's queued frames, so the HEADERS never go out. A request hyper
@@ -176,7 +170,6 @@ struct Frames {
     remaining: usize,
     /// The current frame is a GOAWAY: its payload bytes seen so far.
     goaway: Option<([u8; 4], usize)>,
-    in_block: bool,
     broken: bool,
 }
 
@@ -188,12 +181,11 @@ impl Frames {
             have: 0,
             remaining: 0,
             goaway: None,
-            in_block: false,
             broken: false,
         }
     }
 
-    /// Server frames: records each valid GOAWAY once its payload passed.
+    /// Server frames: records each GOAWAY once its payload passed.
     fn read(&mut self, wire: &Wire, mut bytes: &[u8]) {
         while !self.broken && !bytes.is_empty() {
             if self.remaining > 0 {
@@ -229,32 +221,11 @@ impl Frames {
     }
 
     fn server_header(&mut self) {
-        let (length, kind, flags, stream) = parse(&self.header);
-        // h2 fails the connection on each of these (`codec/framed_read.rs`
-        // and the frame loaders), so frames after one never reach it; the
-        // record stops there. Payload checks (HPACK, setting values, window
-        // increments) are h2's alone.
-        let valid = length <= MAX_FRAME
-            && (!self.in_block || kind == CONTINUATION)
-            && match kind {
-                DATA | HEADERS => stream != 0,
-                PRIORITY => length == 5 && stream != 0,
-                RST_STREAM => length == 4 && stream != 0,
-                SETTINGS => stream == 0 && length % 6 == 0 && (flags & ACK == 0 || length == 0),
-                // hyper's client disables server push.
-                PUSH_PROMISE => false,
-                PING => stream == 0 && length == 8,
-                GOAWAY => stream == 0 && length >= 8,
-                WINDOW_UPDATE => length == 4,
-                CONTINUATION => self.in_block,
-                _ => true,
-            };
-        if !valid {
+        let (length, kind, _, stream) = parse(&self.header);
+        if kind == GOAWAY && (stream != 0 || length < 8) {
+            // Not a GOAWAY anyone can read a last stream id from.
             self.broken = true;
             return;
-        }
-        if matches!(kind, HEADERS | CONTINUATION) {
-            self.in_block = flags & END_HEADERS == 0;
         }
         self.goaway = (kind == GOAWAY).then_some(([0; 4], 0));
         self.remaining = length;

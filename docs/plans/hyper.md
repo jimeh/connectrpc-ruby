@@ -215,19 +215,24 @@ stage and reset its stream.
   Connect unary `call`, before response headers, whose stream got a remote
   `REFUSED_STREAM` or whose stream id is above that last stream id
   (RFC 9113 6.8: unprocessed) and whose own error is h2's remote GOAWAY
-  error, so h2 read that frame (the tap reads ahead of h2). gRPC unary is not
+  error. gRPC unary is not
   distinguishable from streaming at `open_grpc_stream`, so it gets only (a).
   This matches the Async transport's `retry_refused` scope. A stream at or
   below the last stream id is never replayed after a GOAWAY (#180); a remote
   `REFUSED_STREAM` still is, since RFC 9113 8.7 says that stream was not
   processed, as grpc-go treats it. h2 exposes no last stream id and hyper no
   stream id, so `wire.rs` derives both: a tap above TLS reads frame headers
-  (the lowest last stream id the peer's valid GOAWAYs name, the highest client
-  HEADERS id written, and HEADERS still in the unwritten part of the last
-  write, since h2's `FramedWrite` offers its whole buffer each time) and a
-  body's first `size_hint`, which hyper 1.12's dispatch calls once right
-  before h2 assigns the id, takes the connection's next stream index. A
-  CONNECT request or framing h2 would reject disables it for the connection.
+  (the lowest last stream id the peer's GOAWAYs name, and the highest client
+  stream id whose HEADERS h2 offered to the socket, written or not, since h2's
+  `FramedWrite` offers its whole encoded buffer each time) and a body's first
+  `size_hint`, which hyper 1.12's dispatch calls once right before h2 assigns
+  the id, takes the connection's next stream index. The peer's GOAWAY is the
+  authority on what it processed, as its REFUSED_STREAM is: the tap follows
+  frame lengths as h2 does and does not repeat h2's frame validation, which
+  depends on payloads and stream state the tap cannot see; a peer that lies
+  about processing defeats any client anyway. A CONNECT request, or a GOAWAY
+  that is malformed or raises the last stream id, disables the record for the
+  connection.
   Error kind alone cannot decide: hyper reports a request dropped from its
   stream-slot wait, or failed right after `send_request`, with the same error
   whether or not the stream reached the wire. A peer that sends a 1xx and then
