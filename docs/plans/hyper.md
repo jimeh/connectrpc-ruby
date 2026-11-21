@@ -210,7 +210,7 @@ stage and reset its stream.
 - D12 Retry once, on a fresh connection, within the original deadline and with
   refreshed wire timeouts: (a) a request that never reached the wire, on any
   shape: one hyper hands back unsent from `try_send_request`, or one whose
-  stream id is above an accepted GOAWAY's last stream id, whose HEADERS never
+  stream id is above the last stream id of a GOAWAY the peer sent, whose HEADERS never
   reached the socket and, when streaming, whose body yielded nothing; (b) a
   Connect unary `call`, before response headers, whose stream got a remote
   `REFUSED_STREAM` or whose stream id is above that last stream id
@@ -237,7 +237,7 @@ stage and reset its stream.
   stream-slot wait, or failed right after `send_request`, with the same error
   whether or not the stream reached the wire. A peer that sends a 1xx and then
   disowns the stream contradicts RFC 9113 6.8 and is not guarded against, as in
-  grpc-go. When the pooled connection that refused
+  grpc-go. A call canceled before its retry is queued is never retried. When the pooled connection that refused
   or handed back the request still admits, it stays pooled and the retry dials
   a connection that serves only it (D5); an unusable one, including one that
   received GOAWAY, is evicted and the retry shares the pool dial.

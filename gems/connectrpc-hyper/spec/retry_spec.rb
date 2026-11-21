@@ -13,7 +13,10 @@ RSpec.describe "Retries" do
   # response head shows the client has applied the peer's SETTINGS, which
   # precede it on the wire; until then h2 does not know the one-stream limit
   # and would send the queued streams at once. request:indexed shows hyper
-  # passed the held request and the first queued one to h2, and
+  # passed the held request and the first queued one to h2 (it fires in the
+  # dispatch poll that hands q0 to h2's send_request, with no await between,
+  # so a GOAWAY overtakes it only if that thread stalls there; q0 then never
+  # gets a stream id, and the outcome is the same), and
   # request:queued that the second reached hyper's queue, before the GOAWAY.
   # Each queued call succeeds, reaching the peer exactly once on one new
   # connection with its whole body: the peer answers only after the request
@@ -78,6 +81,65 @@ RSpec.describe "Retries" do
     ensure
       points.each { |point| native_driver&.release(point) }
     end
+  end
+
+  # As above, a GOAWAY leaves a queued gRPC call unsent and the retry recovers
+  # its unread body, held at retry:unprocessed. The writer catches the
+  # cancellation inside the exchange, which stays open. The retry task ends
+  # while still held, so it never dispatches, and the peer never sees the call.
+  it "does not dispatch a GOAWAY retry for a call canceled while the retry waits" do
+    from = peer.mark
+    transport = hyper
+    native_driver = driver(transport)
+    native_driver.hold("request:indexed", 0)
+    native_driver.hold("retry:unprocessed", 20)
+    origin = peer["raw_mcs1"]
+    tag = "retry-cancel-#{rand(1 << 30)}"
+    grpc = { "content-type" => ["application/grpc"], "te" => ["trailers"] }
+    head = Queue.new
+    held = Thread.new do
+      request = ConnectRPC::StreamRequest.new(url: URI("#{origin}/raw.v1.Raw/Call"), http_method: "POST",
+                                              headers: grpc.merge("x-scenario" => ["hold:#{tag}"]))
+      transport.open_grpc_stream(request) do |exchange|
+        exchange.write([0, 0].pack("CN"))
+        exchange.close_send
+        head << exchange.response_head(timeout: 20).status
+        nil while exchange.read(64, timeout: 20)
+      end
+    end
+    expect(head.pop(timeout: 10)).to eq(200)
+    source = ConnectRPC::CancellationSource.new
+    caught = Queue.new
+    leave = Queue.new
+    call = Thread.new do
+      request = ConnectRPC::StreamRequest.new(url: URI("#{origin}/raw.v1.Raw/Call"), http_method: "POST",
+                                              headers: grpc.merge("x-scenario" => ["await-ok:#{tag}"]),
+                                              cancellation: source.token)
+      error_of do
+        transport.open_grpc_stream(request) do |exchange|
+          exchange.write([0, 0].pack("CN"))
+        rescue ConnectRPC::Error => e
+          caught << e.code
+          leave.pop(timeout: 20)
+        end
+      end
+    end
+    wait_until("the queued call passed to h2") { native_driver.reached("request:indexed") == 2 }
+    peer.command("raw-goaway rawmcs1")
+    wait_until("the retry held") { native_driver.reached("retry:unprocessed") == 1 }
+    tasks = stats(transport)[2]
+    source.cancel
+    expect(caught.pop(timeout: 10)).to eq("canceled")
+    wait_until("the retry task ended") { stats(transport)[2] < tasks }
+    native_driver.release("retry:unprocessed")
+    leave << true
+    expect(call.value&.code).to eq("canceled")
+    peer.command("release #{tag}")
+    held.value
+    expect(accepts("rawmcs1", from)).to eq(1)
+    expect(requests("rawmcs1", from).grep(/await-ok:/)).to be_empty
+  ensure
+    %w[request:indexed retry:unprocessed].each { |point| native_driver&.release(point) }
   end
 
   def streams(tag, from) = requests(tag, from).map { |event| event.split.values_at(2, 3, 4) }

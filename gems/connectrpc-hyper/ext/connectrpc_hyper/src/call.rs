@@ -218,6 +218,7 @@ impl CallState {
                 homed,
             },
             self.abort.clone(),
+            self.cancel.clone(),
             deliver,
         ));
         *state = Dispatch::Dispatched(Some(delivered));
@@ -404,6 +405,7 @@ async fn respond(
     spec: Arc<RequestSpec>,
     attempt: Attempt,
     abort: Arc<Signal>,
+    cancel: Arc<Signal>,
     deliver: oneshot::Sender<Delivered>,
 ) {
     let Attempt {
@@ -420,39 +422,49 @@ async fn respond(
             Ok(response) => return Ok((response, lease)),
             Err(error) => error,
         };
-        let body = match error.take_message() {
-            // Handed back unsent: the peer never saw it. Spec hold point:
-            // armed with a zero bound, it counts these retries.
-            Some(request) => {
-                core.holds.reach("retry:unsent").await;
-                request.into_body()
-            }
-            None => {
-                let failure = Failure::from_hyper(error.error());
-                let unsent = mark.as_ref().is_some_and(|mark| mark.unsent());
-                // hyper drops the body around the failure it reports; a
-                // body that yielded a frame never comes back.
-                let rx = match unsent {
-                    true => until(deadline, homed).await.and_then(Result::ok),
-                    false => None,
-                };
-                let Some(rx) = rx else {
-                    return Err(failure);
-                };
-                // Spec hold point: armed with a zero bound, it counts these
-                // retries.
-                core.holds.reach("retry:unprocessed").await;
-                // Retried at most once: this body has no receiver to return.
-                CallBody::stream(rx, ended, abort.clone(), oneshot::channel().0)
-            }
+        // A call canceled before its replacement is queued never sends it.
+        let retry = async {
+            let body = match error.take_message() {
+                // Handed back unsent: the peer never saw it. Spec hold point:
+                // armed with a zero bound, it counts these retries.
+                Some(request) => {
+                    core.holds.reach("retry:unsent").await;
+                    request.into_body()
+                }
+                None => {
+                    let failure = Failure::from_hyper(error.error());
+                    let unsent = mark.as_ref().is_some_and(|mark| mark.unsent());
+                    // hyper drops the body around the failure it reports; a
+                    // body that yielded a frame never comes back.
+                    let rx = match unsent {
+                        true => until(deadline, homed).await.and_then(Result::ok),
+                        false => None,
+                    };
+                    let Some(rx) = rx else {
+                        return Err(failure);
+                    };
+                    // Spec hold point: armed with a zero bound, it counts these
+                    // retries.
+                    core.holds.reach("retry:unprocessed").await;
+                    // Retried at most once: this body has no receiver to return.
+                    CallBody::stream(rx, ended, abort.clone(), oneshot::channel().0)
+                }
+            };
+            let exclude = lease.id();
+            drop(lease);
+            let mut lease = core
+                .acquire(&spec.origin, require_h2, Some(exclude), deadline)
+                .await?;
+            let request = spec.build(body, deadline, lease.is_h2())?;
+            let (sent, _) = send(&mut lease, request);
+            Ok((lease, sent))
         };
-        let exclude = lease.id();
-        drop(lease);
-        let mut lease = core
-            .acquire(&spec.origin, require_h2, Some(exclude), deadline)
-            .await?;
-        let request = spec.build(body, deadline, lease.is_h2())?;
-        match send(&mut lease, request).0.await {
+        let (lease, sent) = tokio::select! {
+            biased;
+            _ = cancel.wait() => return Err(Failure::new("canceled", "call canceled")),
+            retried = retry => retried?,
+        };
+        match sent.await {
             Ok(response) => Ok((response, lease)),
             Err(error) => Err(Failure::from_hyper(error.error())),
         }

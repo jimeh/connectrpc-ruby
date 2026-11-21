@@ -131,8 +131,8 @@ grpc-go channel:
   connection. A stream above the last stream id was never processed
   (RFC 9113 section 6.8), so it is retried within the limits below, as
   grpc-go retries it. A server that drains in two steps first names the
-  highest possible stream id, which disowns nothing; its streams are
-  retried once its final GOAWAY names a lower one.
+  highest possible stream id, which disowns nothing; its eligible streams
+  are retried once its final GOAWAY names a lower one.
 - After a hard kill, calls in flight fail `unavailable` with
   `HTTP transport failed: connection closed`. Once the transport has read
   the reset, the next call reconnects; a call that starts before then can
@@ -181,20 +181,22 @@ within the original deadline and with the wire timeout recomputed:
 - a Connect unary call, before response headers, that the server refused with
   `REFUSED_STREAM` or whose stream id is above a GOAWAY's last stream id.
 
-Nothing else is replayed, so a handler that started never runs twice. A
-stream at or below the last stream id is never replayed, nor is a gRPC call
-whose HEADERS were sent, since `open_grpc_stream` cannot tell unary from
-streaming. hyper and h2 report neither stream ids nor the last stream id, so
-the transport reads them off the connection's HTTP/2 frame headers. The
-server's GOAWAY is the authority on what it processed, as its
-`REFUSED_STREAM` is; a malformed GOAWAY, or one that raises the last stream
-id, ends GOAWAY retries on that connection. A Connect unary call whose
-HEADERS were sent is replayed only when h2 itself failed its stream for a
-GOAWAY. When
-the pooled connection that refused or handed back the request still admits
-calls, it stays pooled for them and the retry dials a connection that serves
-only that call. A connection that received GOAWAY admits nothing more, so its
-retries share the next pool dial.
+Nothing else is replayed, so a handler that started never runs twice. After
+a GOAWAY, a stream at or below its last stream id is never replayed; a
+`REFUSED_STREAM` refusal still is, since RFC 9113 section 8.7 says that
+stream was not processed. Nor is a gRPC call whose HEADERS were sent, since
+`open_grpc_stream` cannot tell unary from streaming. hyper and h2 report
+neither stream ids nor the last stream id, so the transport derives each
+request's stream id from the order hyper hands requests to h2 and reads the
+last stream id off the connection's HTTP/2 frame headers. The server's GOAWAY
+is the authority on what it processed, as its `REFUSED_STREAM` is; a
+malformed GOAWAY, or one that raises the last stream id, ends GOAWAY retries
+on that connection. A Connect unary call whose HEADERS were sent is replayed
+only when h2 itself failed its stream for a GOAWAY. A call canceled before
+its retry is queued is not retried. When the pooled connection that refused
+or handed back the request still admits calls, it stays pooled for them and
+the retry dials a connection that serves only that call. A connection that
+received GOAWAY admits nothing more, so its retries share the next pool dial.
 
 Hostnames resolve through tokio's blocking pool (`getaddrinfo`), capped at
 512 threads, close to Go's 500 cgo lookup threads. A stalled lookup keeps its
