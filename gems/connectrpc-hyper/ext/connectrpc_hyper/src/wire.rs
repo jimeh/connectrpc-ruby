@@ -5,10 +5,11 @@
 //! - `Tap` sits between hyper and the socket (above TLS, so it sees plaintext
 //!   frames) and reads only the 9-byte frame headers and a GOAWAY's last
 //!   stream id. It records the lowest last stream id the peer's GOAWAYs name
-//!   and the highest client stream id whose HEADERS frame header the socket
-//!   took. h2 0.4.20's `FramedWrite` offers its whole encoded buffer on each
-//!   write (DATA payloads aside), so a HEADERS frame the socket has not taken
-//!   yet sits in the part of the last offer that was not written.
+//!   and the highest client stream id whose HEADERS frame header h2 offered
+//!   to the socket, written or not. h2 0.4.20's `FramedWrite` encodes frames
+//!   into one buffer and offers all of it (DATA payloads aside) on each write
+//!   attempt, which follows every encode in the same poll, so a HEADERS frame
+//!   is offered before it can be written.
 //! - A request body's first `size_hint` call takes the connection's next
 //!   stream index. In hyper 1.12.0 (`proto/h2/client.rs`, `ClientTask::poll`)
 //!   the dispatch task pops requests in order, skips one whose caller has
@@ -42,10 +43,17 @@ const HEAD: usize = 9;
 const MAX_FRAME: usize = 16_384;
 const NONE: u32 = u32::MAX;
 
+const DATA: u8 = 0x0;
 const HEADERS: u8 = 0x1;
+const PRIORITY: u8 = 0x2;
+const RST_STREAM: u8 = 0x3;
+const SETTINGS: u8 = 0x4;
 const PUSH_PROMISE: u8 = 0x5;
+const PING: u8 = 0x6;
 const GOAWAY: u8 = 0x7;
+const WINDOW_UPDATE: u8 = 0x8;
 const CONTINUATION: u8 = 0x9;
+const ACK: u8 = 0x1;
 const END_HEADERS: u8 = 0x4;
 
 pub struct Wire {
@@ -55,11 +63,9 @@ pub struct Wire {
     disabled: AtomicBool,
     /// The lowest last stream id of the GOAWAYs read, or NONE.
     goaway: AtomicU32,
-    /// The highest client stream id whose HEADERS frame header was written.
-    written: AtomicU32,
-    /// The highest client stream id with a HEADERS frame header in the part
-    /// of the last write attempt the socket did not take.
-    queued: AtomicU32,
+    /// The highest client stream id whose HEADERS frame header h2 offered to
+    /// the socket. It only grows, so one read answers "may it be sent".
+    offered: AtomicU32,
     holds: Arc<Holds>,
 }
 
@@ -69,8 +75,7 @@ impl Wire {
             next: AtomicU64::new(0),
             disabled: AtomicBool::new(false),
             goaway: AtomicU32::new(NONE),
-            written: AtomicU32::new(0),
-            queued: AtomicU32::new(0),
+            offered: AtomicU32::new(0),
             holds,
         })
     }
@@ -95,7 +100,7 @@ impl Wire {
     }
 
     fn record_headers(&self, stream: u32) {
-        self.written.fetch_max(stream, Ordering::SeqCst);
+        self.offered.fetch_max(stream, Ordering::SeqCst);
     }
 
     /// The stream id of `mark`'s request if the peer's GOAWAY says it never
@@ -113,8 +118,7 @@ impl Wire {
     /// Whether a HEADERS frame for `stream` reached the socket or still
     /// waits in h2's write buffer.
     fn sent(&self, stream: u32) -> bool {
-        self.written.load(Ordering::SeqCst) >= stream
-            || self.queued.load(Ordering::SeqCst) >= stream
+        self.offered.load(Ordering::SeqCst) >= stream
     }
 }
 
@@ -147,9 +151,13 @@ impl Mark {
         self.wire.unprocessed(self).is_some()
     }
 
-    /// Below the cutoff as above, and its HEADERS never reached the socket
-    /// and never will: h2 dropped the stream's queued frames when it failed
-    /// it. Asked after the request failed.
+    /// Below the cutoff as above, and h2 never offered its HEADERS to the
+    /// socket. Asked after the request failed. Once h2 has failed the stream
+    /// for that GOAWAY, or for a connection error, it has dropped the
+    /// stream's queued frames, so the HEADERS never go out. A request hyper
+    /// dropped after an earlier GOAWAY that disowned nothing may still be
+    /// opened before h2 reads the GOAWAY the tap already saw; then RFC 9113
+    /// 6.8 keeps the peer from processing it.
     pub fn unsent(&self) -> bool {
         self.wire
             .unprocessed(self)
@@ -222,15 +230,30 @@ impl Frames {
 
     fn server_header(&mut self) {
         let (length, kind, flags, stream) = parse(&self.header);
-        // h2 fails the connection on each of these; the record stops there.
+        // h2 fails the connection on each of these (`codec/framed_read.rs`
+        // and the frame loaders), so frames after one never reach it; the
+        // record stops there. Payload checks (HPACK, setting values, window
+        // increments) are h2's alone.
         let valid = length <= MAX_FRAME
             && (!self.in_block || kind == CONTINUATION)
-            && (kind != GOAWAY || (stream == 0 && length >= 8));
+            && match kind {
+                DATA | HEADERS => stream != 0,
+                PRIORITY => length == 5 && stream != 0,
+                RST_STREAM => length == 4 && stream != 0,
+                SETTINGS => stream == 0 && length % 6 == 0 && (flags & ACK == 0 || length == 0),
+                // hyper's client disables server push.
+                PUSH_PROMISE => false,
+                PING => stream == 0 && length == 8,
+                GOAWAY => stream == 0 && length >= 8,
+                WINDOW_UPDATE => length == 4,
+                CONTINUATION => self.in_block,
+                _ => true,
+            };
         if !valid {
             self.broken = true;
             return;
         }
-        if matches!(kind, HEADERS | PUSH_PROMISE | CONTINUATION) {
+        if matches!(kind, HEADERS | CONTINUATION) {
             self.in_block = flags & END_HEADERS == 0;
         }
         self.goaway = (kind == GOAWAY).then_some(([0; 4], 0));
@@ -325,23 +348,32 @@ impl<T> Tap<T> {
         }
     }
 
-    /// Commits the bytes the socket took and notes HEADERS in the rest.
+    /// Commits the bytes the socket took; HEADERS in the rest count as
+    /// offered too.
     fn wrote(&mut self, result: &Poll<io::Result<usize>>, bufs: &[io::IoSlice<'_>]) {
         let mut taken = match result {
             Poll::Ready(Ok(n)) => *n,
-            Poll::Pending => 0,
-            // The connection is failing; h2 sends nothing more.
-            Poll::Ready(Err(_)) => return,
+            // A failed TLS write may still have sent part of the offer.
+            Poll::Pending | Poll::Ready(Err(_)) => 0,
         };
-        let mut rest = Vec::with_capacity(bufs.len());
-        for buf in bufs {
+        let mut split = (bufs.len(), 0);
+        for (index, buf) in bufs.iter().enumerate() {
             let take = taken.min(buf.len());
             self.write.write(&self.wire, &buf[..take]);
             taken -= take;
-            rest.push(&buf[take..]);
+            if take < buf.len() {
+                split = (index, take);
+                break;
+            }
         }
-        let queued = self.write.scan(rest.into_iter());
-        self.wire.queued.store(queued, Ordering::SeqCst);
+        let (index, offset) = split;
+        let rest = bufs
+            .get(index)
+            .map(|buf| &buf[offset..])
+            .into_iter()
+            .chain(bufs.iter().skip(index + 1).map(|buf| &buf[..]));
+        let ahead = self.write.scan(rest);
+        self.wire.record_headers(ahead);
     }
 }
 

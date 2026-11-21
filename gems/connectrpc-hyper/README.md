@@ -154,10 +154,10 @@ grpc-go channel:
 - A request waiting inside hyper for a `SETTINGS_MAX_CONCURRENT_STREAMS`
   slot already has a stream id but never reached the wire. When a GOAWAY's
   last stream id falls below that id, it is retried on any call shape, as
-  are requests still in hyper's own queue (below). After a first GOAWAY that
-  names the highest possible stream id, hyper drops such a request, and it
-  fails `unavailable` (`HTTP transport failed: connection closed`), because
-  h2 may still have sent it when a slot freed.
+  are requests still in hyper's own queue (below). hyper drops such a request
+  on a server's first GOAWAY, which may name the highest possible stream id.
+  Unless the final GOAWAY's lower last stream id has already arrived by then,
+  it fails `unavailable` (`HTTP transport failed: connection closed`).
 
 `connections: :per_call` dials a fresh connection for every call and closes it
 afterwards. With `http2: false`, each call dials its own connection, in
