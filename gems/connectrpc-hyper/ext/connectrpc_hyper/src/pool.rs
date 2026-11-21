@@ -50,6 +50,7 @@ use crate::gvl::Signal;
 use crate::holds::Holds;
 use crate::runtime::{self, Task, Tracker};
 use crate::tls::{TlsInputs, native_roots};
+use crate::wire::{Mark, Wire};
 
 /// Go's DefaultMaxIdleConnsPerHost.
 const MAX_IDLE_H1: usize = 2;
@@ -179,11 +180,14 @@ struct H2Conn {
     sender: http2::SendRequest<CallBody>,
     shared: Arc<ConnShared>,
     local_port: u16,
+    wire: Arc<Wire>,
 }
 
 impl H2Conn {
+    /// A GOAWAY read on the socket retires the connection at once, before
+    /// hyper's dispatcher notices it, so retries do not each dial past it.
     fn usable(&self) -> bool {
-        !self.sender.is_closed() && !self.shared.closed.fired()
+        !self.sender.is_closed() && !self.shared.closed.fired() && !self.wire.going_away()
     }
 }
 
@@ -232,6 +236,7 @@ pub enum Lease {
         sender: http2::SendRequest<CallBody>,
         local_port: u16,
         id: u64,
+        wire: Arc<Wire>,
         _active: Option<Active>,
     },
     H1 {
@@ -257,6 +262,20 @@ impl Lease {
 
     pub fn is_h2(&self) -> bool {
         matches!(self, Lease::H2 { .. })
+    }
+
+    /// A mark for the next request on an HTTP/2 connection.
+    pub fn mark(&self) -> Option<Arc<Mark>> {
+        match self {
+            Lease::H2 { wire, .. } => Some(Mark::new(wire.clone())),
+            Lease::H1 { .. } => None,
+        }
+    }
+
+    pub fn disable_wire(&self) {
+        if let Lease::H2 { wire, .. } = self {
+            wire.disable();
+        }
     }
 }
 
@@ -635,10 +654,15 @@ impl DriverCore {
             let outcome = match connected {
                 Err(failure) => Outcome::Failed(failure),
                 Ok(connected) => match connected.handshake {
-                    Handshake::H2 { sender, closed } => {
+                    Handshake::H2 {
+                        sender,
+                        closed,
+                        wire,
+                    } => {
                         let id = self.next_id();
                         let port = connected.local_port;
-                        let pooled = self.pool_h2(&publish.entry, sender, closed, port, id, 0);
+                        let pooled =
+                            self.pool_h2(&publish.entry, sender, closed, wire, port, id, 0);
                         if pooled.is_none() && self.is_closing() {
                             return;
                         }
@@ -711,6 +735,7 @@ impl DriverCore {
                     sender: conn.sender.clone(),
                     local_port: conn.local_port,
                     id: conn.shared.id,
+                    wire: conn.wire.clone(),
                     _active: Some(Active {
                         shared: conn.shared.clone(),
                     }),
@@ -758,16 +783,22 @@ impl DriverCore {
         let local_port = connected.local_port;
         match connected.handshake {
             // Without an entry (per-call mode) it serves only this call.
-            Handshake::H2 { sender, closed } => {
+            Handshake::H2 {
+                sender,
+                closed,
+                wire,
+            } => {
                 let active = entry
                     .and_then(|entry| {
-                        self.pool_h2(entry, sender.clone(), closed, local_port, id, 1)
+                        let (sender, wire) = (sender.clone(), wire.clone());
+                        self.pool_h2(entry, sender, closed, wire, local_port, id, 1)
                     })
                     .map(|shared| Active { shared });
                 Ok(Lease::H2 {
                     sender,
                     local_port,
                     id,
+                    wire,
                     _active: active,
                 })
             }
@@ -802,11 +833,13 @@ impl DriverCore {
     /// (an unshared dial after an HTTP/1.1 outcome may still get h2 from TLS,
     /// and a retry dials past a connection that still admits): replacing it
     /// would retire a working connection with streams in flight.
+    #[allow(clippy::too_many_arguments)]
     fn pool_h2(
         self: &Arc<Self>,
         entry: &Arc<OriginEntry>,
         sender: http2::SendRequest<CallBody>,
         closed: Arc<Signal>,
+        wire: Arc<Wire>,
         local_port: u16,
         id: u64,
         active: usize,
@@ -828,6 +861,7 @@ impl DriverCore {
                 sender,
                 shared: shared.clone(),
                 local_port,
+                wire,
             }));
         }
         if let Some(timeout) = self.config.idle_timeout {

@@ -35,8 +35,8 @@ type rawConn struct {
 	last    uint32
 }
 
-// refusedOnce remembers the refuse-once keys already refused, across
-// connections: a retry on a fresh connection then succeeds.
+// refusedOnce remembers the refuse-once and ignore-once keys already seen,
+// across connections: a retry on a fresh connection then succeeds.
 var refusedOnce = struct {
 	sync.Mutex
 	keys map[string]bool
@@ -61,17 +61,34 @@ func serveRaw(tag string, options rawOptions) string {
 	return fmt.Sprintf("http://%s", listener.Addr())
 }
 
-// rawGoaway sends GOAWAY(NO_ERROR) naming the last stream each connection of
-// the listener has seen: queued streams beyond it are never processed.
-func rawGoaway(tag string) {
+// rawGoaway sends GOAWAY(NO_ERROR) on each connection the listener has open,
+// naming the last stream that connection has seen, or `last` when it is not
+// negative: streams beyond it are never processed. With `closeAfter` it then
+// ends that connection's write side (FIN, no reset), so its streams at or
+// below the last stream id end without a response; connections accepted
+// later are untouched.
+func rawGoaway(tag string, last int64, closeAfter bool) {
 	rawConns.Lock()
 	conns := append([]*rawConn(nil), rawConns.byTag[tag]...)
 	rawConns.Unlock()
 	for _, c := range conns {
 		c.mu.Lock()
-		_ = c.framer.WriteGoAway(c.last, http2.ErrCodeNo, nil)
+		id := c.last
+		if last >= 0 {
+			id = uint32(last)
+		}
+		_ = c.framer.WriteGoAway(id, http2.ErrCodeNo, nil)
+		if closeAfter {
+			conn := c.conn
+			if wrapped, ok := conn.(*eventConn); ok {
+				conn = wrapped.Conn
+			}
+			if tcp, ok := conn.(*net.TCPConn); ok {
+				_ = tcp.CloseWrite()
+			}
+		}
 		c.mu.Unlock()
-		emit("%s goaway-sent last=%d", c.tag, c.last)
+		emit("%s goaway-sent last=%d", c.tag, id)
 	}
 }
 
@@ -212,6 +229,7 @@ func (c *rawConn) request(frame *http2.MetaHeadersFrame) {
 		values["grpc-timeout"]+values["connect-timeout-ms"])
 	head := [][2]string{{":status", "200"}, {"content-type", "application/grpc"}}
 	ok := func() {
+		emit("%s handled %s stream=%d", c.tag, scenario, stream)
 		if !grpc {
 			c.headers(stream, [][2]string{{":status", "200"}, {"content-type", "application/proto"}}, true)
 			return
@@ -262,6 +280,21 @@ func (c *rawConn) request(frame *http2.MetaHeadersFrame) {
 		} else {
 			ok()
 		}
+	case "ignore-once":
+		// Leaves the first request carrying this key unanswered, on any
+		// connection: a GOAWAY naming an earlier stream then disowns it.
+		refusedOnce.Lock()
+		first := !refusedOnce.keys["ignore:"+argument]
+		refusedOnce.keys["ignore:"+argument] = true
+		refusedOnce.Unlock()
+		if first {
+			emit("%s ignored stream=%d", c.tag, stream)
+		} else {
+			ok()
+		}
+	case "stall":
+		// Starts handling and never answers.
+		emit("%s handler-start stream=%d", c.tag, stream)
 	case "refuse-always":
 		_ = c.framer.WriteRSTStream(stream, http2.ErrCodeRefusedStream)
 	case "disconnect":

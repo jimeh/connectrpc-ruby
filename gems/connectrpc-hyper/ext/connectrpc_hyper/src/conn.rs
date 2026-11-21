@@ -21,6 +21,7 @@ use crate::failure::Failure;
 use crate::gvl::Signal;
 use crate::holds::Holds;
 use crate::runtime::{Task, TrackedExec, Tracker};
+use crate::wire::{Tap, Wire};
 use proxy::{Mode, Route};
 
 /// Go's net.Dialer FallbackDelay for RFC 6555 dual-stack dialing.
@@ -193,6 +194,7 @@ pub enum Handshake {
         /// Fires when hyper's dispatcher ends: the connection admits no more
         /// requests (GOAWAY, error or close).
         closed: Arc<Signal>,
+        wire: Arc<Wire>,
     },
     H1 {
         sender: http1::SendRequest<CallBody>,
@@ -397,9 +399,10 @@ pub async fn connect(
         // Cleartext HTTP/2 is prior knowledge (h2c), as gRPC clients use.
         None => (Box::new(socket), settings.http2),
     };
-    let io = TokioIo::new(io);
     let exec = TrackedExec(tracker.clone());
     if h2 {
+        let wire = Wire::new(holds.clone());
+        let io = TokioIo::new(Tap::new(io, wire.clone()));
         let mut builder = http2::Builder::new(exec);
         builder
             .timer(TokioTimer::new())
@@ -426,10 +429,15 @@ pub async fn connect(
             let _ = connection.await;
         });
         Ok(Connected {
-            handshake: Handshake::H2 { sender, closed },
+            handshake: Handshake::H2 {
+                sender,
+                closed,
+                wire,
+            },
             local_port,
         })
     } else {
+        let io = TokioIo::new(io);
         let (sender, connection) = http1::Builder::new()
             .max_buf_size(MAX_H1_HEAD)
             .max_header_size(MAX_H1_HEAD)

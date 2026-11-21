@@ -126,8 +126,11 @@ grpc-go channel:
 - An idle connection answers server PINGs and processes GOAWAY without a call
   in flight.
 - After a graceful GOAWAY (a server restart or `MaxConnectionAge`), the
-  connection stops admitting and drains its open streams, which finish
-  normally. The next call dials a new connection.
+  connection stops admitting and drains its open streams up to the GOAWAY's
+  last stream id, which finish normally. The next call dials a new
+  connection. A stream above the last stream id was never processed
+  (RFC 9113 section 6.8), so it is retried, as grpc-go retries it, within
+  the limits below.
 - After a hard kill, calls in flight fail `unavailable` with
   `HTTP transport failed: connection closed`. Once the transport has read
   the reset, the next call reconnects; a call that starts before then can
@@ -146,13 +149,10 @@ grpc-go channel:
   calls in flight. The timer claims the exact connection it saw idle, so it
   never closes a connection a caller has just checked out, and a connection
   closes only after a full `idle_timeout` without calls.
-- A request queued inside hyper for a `SETTINGS_MAX_CONCURRENT_STREAMS` slot
-  when GOAWAY arrives fails `unavailable` with
-  `HTTP transport failed: connection closed`. It never reached the wire, and
-  grpc-go retries such a stream transparently, but hyper reports it like a
-  stream the server may have processed and does not hand the request back, so
-  it is not replayed. Requests still waiting in hyper's own queue are handed
-  back and retried (below).
+- A request waiting inside hyper for a `SETTINGS_MAX_CONCURRENT_STREAMS`
+  slot when GOAWAY arrives already has a stream id above the last stream id
+  and never reached the wire, so it is retried on any call shape, as are
+  requests still in hyper's own queue (below).
 
 `connections: :per_call` dials a fresh connection for every call and closes it
 afterwards. With `http2: false`, each call dials its own connection, in
@@ -166,13 +166,26 @@ shared dial again. Pooling keeps at most two idle keep-alive connections per
 origin (Go's `DefaultMaxIdleConnsPerHost`); only a connection whose request
 and response both completed returns to the pool.
 
-Two requests are retried once on a fresh connection, within the original
-deadline and with the wire timeout recomputed: a request hyper hands back
-unsent, on any call shape, and a Connect unary call that the server refused
-with `REFUSED_STREAM` before response headers. Nothing else is replayed, so a
-handler that started never runs twice. When the pooled connection that refused
-or handed back the request still admits calls, it stays pooled for them and
-the retry dials a connection that serves only that call.
+Requests the server never processed are retried once on a fresh connection,
+within the original deadline and with the wire timeout recomputed:
+
+- on any call shape, a request that never reached the wire: one hyper hands
+  back unsent, or one whose stream id is above a GOAWAY's last stream id and
+  whose HEADERS never reached the socket (a streaming request also needs its
+  body unread);
+- a Connect unary call, before response headers, that the server refused with
+  `REFUSED_STREAM` or whose stream id is above a GOAWAY's last stream id.
+
+Nothing else is replayed, so a handler that started never runs twice. A
+stream at or below the last stream id is never replayed, nor is a gRPC call
+whose HEADERS were sent, since `open_grpc_stream` cannot tell unary from
+streaming. hyper and h2 report neither stream ids nor the last stream id, so
+the transport reads them off the connection's HTTP/2 frame headers; a peer
+that breaks the framing rules gets no GOAWAY retries on that connection. When
+the pooled connection that refused or handed back the request still admits
+calls, it stays pooled for them and the retry dials a connection that serves
+only that call. A connection that received GOAWAY admits nothing more, so its
+retries share the next pool dial.
 
 Hostnames resolve through tokio's blocking pool (`getaddrinfo`), capped at
 512 threads, close to Go's 500 cgo lookup threads. A stalled lookup keeps its

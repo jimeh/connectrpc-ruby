@@ -107,6 +107,19 @@ impl Failure {
         }
         false
     }
+
+    /// An HTTP/2 error h2 raised itself, for a frame it rejected: the peer
+    /// broke the protocol, so its GOAWAY vouches for nothing.
+    pub fn local_protocol_error(error: &hyper::Error) -> bool {
+        let mut source = error.source();
+        while let Some(inner) = source {
+            if let Some(h2e) = inner.downcast_ref::<h2::Error>() {
+                return (h2e.is_go_away() || h2e.is_reset()) && !h2e.is_remote();
+            }
+            source = inner.source();
+        }
+        false
+    }
 }
 
 /// Ruby's `Errno` number for an OS error code. Windows reports socket errors

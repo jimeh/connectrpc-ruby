@@ -208,16 +208,29 @@ stage and reset its stream.
   and let the first `write` or `response_head` connect). Streaming keeps
   per-operation waits.
 - D12 Retry once, on a fresh connection, within the original deadline and with
-  refreshed wire timeouts: (a) a request hyper hands back unsent from
-  `try_send_request`, on any shape; (b) a Connect unary `call` whose stream got
-  a remote `REFUSED_STREAM` before response headers. A generic GOAWAY or
-  connection-close error never authorises a replay (h2 exposes no last stream
-  id), and gRPC unary is not distinguishable from streaming at
-  `open_grpc_stream`, so it gets only (a). This matches the Async transport's
-  `retry_refused` scope. When the pooled connection that refused or handed
-  back the request still admits, it stays pooled and the retry dials a
-  connection that serves only it (D5); an unusable one is evicted and the
-  retry shares the pool dial.
+  refreshed wire timeouts: (a) a request that never reached the wire, on any
+  shape: one hyper hands back unsent from `try_send_request`, or one whose
+  stream id is above an accepted GOAWAY's last stream id, whose HEADERS never
+  reached the socket and, when streaming, whose body yielded nothing; (b) a
+  Connect unary `call`, before response headers, whose stream got a remote
+  `REFUSED_STREAM` or whose stream id is above that last stream id
+  (RFC 9113 6.8: unprocessed). gRPC unary is not distinguishable from
+  streaming at `open_grpc_stream`, so it gets only (a). This matches the Async
+  transport's `retry_refused` scope. A stream at or below the last stream id,
+  or one whose error h2 raised for a frame it rejected, is never replayed
+  (#180). h2 exposes no last stream id and hyper no stream id, so `wire.rs`
+  derives both: a tap above TLS reads frame headers (each GOAWAY h2 accepts,
+  the highest client HEADERS id written) and a body's first `size_hint`, which
+  hyper 1.12's dispatch calls once right before h2 assigns the id, takes the
+  connection's next stream index. A CONNECT request or framing h2 would reject
+  disables it for the connection. Error kind alone cannot decide: hyper reports
+  a request dropped from its stream-slot wait, or failed right after
+  `send_request`, with the same error whether or not the stream reached the
+  wire. "Reached the socket" waits for h2's next flush only while a pending
+  write left encoded frames buffered. When the pooled connection that refused
+  or handed back the request still admits, it stays pooled and the retry dials
+  a connection that serves only it (D5); an unusable one, including one that
+  received GOAWAY, is evicted and the retry shares the pool dial.
 - D13 `Transport#close(grace: 5) -> bool`, as the Async transports: stops
   admission (later calls fail `unavailable` with
   `HTTP transport admission is closed`), including callers waiting on a dial,
@@ -328,7 +341,8 @@ the spike:
   `lib.rs` into `runtime.rs`, `gvl.rs`, `conn.rs` (DNS with Go-style
   dual-stack fallback, TCP, TLS, handshakes, failure classification), `tls.rs`,
   `pool.rs` (per-origin entries, closed-sender pruning, idle timeout, retry),
-  `call.rs` (streaming exchange), `unary.rs` (fast path), `lib.rs` (init).
+  `call.rs` (streaming exchange), `unary.rs` (fast path), `wire.rs` (stream
+  ids and GOAWAY cutoffs for D12), `lib.rs` (init).
 - `lib/connectrpc/hyper.rb`, `lib/connectrpc/hyper/{version,transport,
   exchange,errors,tls}.rb` (split as convenient). Core gains
   `lib/connectrpc/keepalive.rb` (D17).
@@ -424,7 +438,7 @@ cause, abort in a masked `ensure`. Rust owns connections, streams and waits.
 | Resolver | Several parked lookups, then cancellation, then a lookup of another origin succeeds; GC and exit do not wait |
 | Liveness and restart | Idle pooled connection answers server PINGs; reconnect after idle GOAWAY; GOAWAY with an active stream: the sibling finishes on the draining connection while a new call uses a new one; hard kill and restart on the same port; keepalive: withheld ACK retires the connection and fails in-flight calls `unavailable`, `permit_without_calls` on and off, behaviour with buffered DATA and with BDP pings |
 | Pool | Concurrent first callers share one connection; callers before, during and after the pool dial pools its connection share one accept; a pool dial outlives the call that started it and splits `connect_timeout` alone; a failed dial fails every waiter alike and is not cached; an `http/1.1` outcome serves each waiter on a free pooled or idle connection, the dialed one included, or else its own dial, and fails a streaming waiter; close fails pool-dial waiters and ends the dial; `per_call` opens one each; idle timeout closes an idle connection and the next call reconnects; idle eviction racing a checkout never fails the call; HTTP/1.1: two-idle cap, reuse, and an interrupted upload or incomplete response never returns its socket |
-| Retry | Unsent request on a closing connection succeeds once on a new connection; refused Connect unary retried once; a refusal from a pooled connection that still admits retries on a connection of its own while siblings and later calls keep the pooled one; no second retry; an ambiguous disconnect after the handler started is not replayed (the handler runs once) |
+| Retry | With one stream slot held, a GOAWAY replays both the request waiting in h2's slot and the one hyper hands back, each once on a new connection (Connect and gRPC); a Connect unary stream above a GOAWAY's last stream id succeeds once on a new connection while one at or below it fails without a replay; a gRPC stream whose HEADERS were sent is not replayed; refused Connect unary retried once; a refusal from a pooled connection that still admits retries on a connection of its own while siblings and later calls keep the pooled one; no second retry; an ambiguous disconnect after the handler started is not replayed (the handler runs once) |
 | Fork | Subprocess with an in-flight stream in another thread, h2c and TLS: child calls work, parent stream intact, parent reuses its connection; fork while the runtime or root cache initialises; parent closes while a long-lived child stays alive (the peer sees the close, or the documented limitation); a transport closed before fork stays closed in the child; a child that inherits a pending close, or never built its own driver, closes at once with `true` and then fails calls with the closed phrase |
 | TLS parity | ca_file appended to native roots; `SSL_CERT_FILE` override; chain/key validation errors name only the input, without a leaking cause; mTLS; name mismatch and IP SAN; provider-rejected identity (Ed448); TLS options on `http://` raise; rustls rejections pinned (CN-only, v1, single-label wildcard, CA as leaf, encrypted key) |
 | Errors | Fixed phrases for refused, DNS, TLS verify, closed, ALPN mismatch, deadline; server RST_STREAM with each mapped code |

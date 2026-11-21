@@ -12,6 +12,7 @@ mod pool;
 mod runtime;
 mod tls;
 mod unary;
+mod wire;
 
 use std::sync::Arc;
 use std::time::{Duration, Instant};

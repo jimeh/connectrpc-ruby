@@ -4,27 +4,26 @@ RSpec.describe "Retries" do
   def requests(tag, from) = peer.since(from).grep(/\A#{tag} request /)
   def accepts(tag, from) = peer.count(/\A#{tag} accept /, from: from)
 
-  # The peer allows one stream per connection. With stream 1 held, a queued
-  # call either waits inside hyper for the stream slot or stays in hyper's
-  # request queue; a GOAWAY then ends the connection's admission. hyper hands
-  # a request still in its queue back unsent, and the transport sends it once
-  # more on a new connection; it reports the stream-slot waiter as failed.
-  # Whether hyper's connection task moved the first queued request into the
-  # slot wait before the GOAWAY arrived is its own scheduling, which nothing
-  # outside hyper observes, so either call or both may be handed back.
-  # The held stream's response head shows the client has applied the peer's
-  # SETTINGS, which precede it on the wire; until then h2 does not know the
-  # one-stream limit and would send the queued streams at once. The
-  # request:queued point shows every request reached hyper before the GOAWAY,
-  # and retry:unsent counts the ones it actually handed back: each of those,
-  # and no other call, succeeds, reaching the peer exactly once on one new
+  # The peer allows one stream per connection. With stream 1 held, the first
+  # queued call waits inside h2 for the stream slot, its stream id already
+  # assigned, and hyper keeps the second in its request queue. A GOAWAY naming
+  # stream 1 then ends the connection's admission: hyper hands the second back
+  # unsent, and the first, whose stream id is above the last stream id and
+  # whose HEADERS never reached the socket, is replayed too. The held stream's
+  # response head shows the client has applied the peer's SETTINGS, which
+  # precede it on the wire; until then h2 does not know the one-stream limit
+  # and would send the queued streams at once. request:indexed shows hyper
+  # passed the held request and the first queued one to h2, and
+  # request:queued that the second reached hyper's queue, before the GOAWAY.
+  # Each queued call succeeds, reaching the peer exactly once on one new
   # connection.
   %i[grpc connect].each do |protocol|
-    it "sends a request hyper hands back unsent once more on a new connection (#{protocol})" do
+    it "replays queued requests once on a new connection after a GOAWAY (#{protocol})" do
       from = peer.mark
       transport = hyper
       native_driver = driver(transport)
-      %w[request:queued retry:unsent].each { |point| native_driver.hold(point, 0) }
+      points = %w[request:queued request:indexed retry:unsent retry:unprocessed]
+      points.each { |point| native_driver.hold(point, 0) }
       origin = peer["raw_mcs1"]
       tag = "retry-unsent-#{protocol}"
       head = Queue.new
@@ -42,36 +41,106 @@ RSpec.describe "Retries" do
         end
       end
       expect(head.pop(timeout: 10)).to eq(200)
-      queued = %w[q0 q1].to_h do |name|
-        [name, Thread.new do
+      queued = {}
+      %w[q0 q1].each_with_index do |name, index|
+        queued[name] = Thread.new do
           raw_call(origin, "ok:#{name}", transport: transport, protocol: protocol, timeout: 20).message
         rescue ConnectRPC::Error => e
           e
-        end]
+        end
+        wait_until("#{name} handed to hyper") { native_driver.reached("request:queued") == index + 2 }
+        # q0 reaches h2's stream-slot wait; q1 then stays in hyper's queue.
+        wait_until("q0 passed to h2") { native_driver.reached("request:indexed") == 2 } if index.zero?
       end
-      # The held request and both queued ones; retries come only after GOAWAY.
-      wait_until("every request handed to hyper") { native_driver.reached("request:queued") == 3 }
       peer.command("raw-goaway rawmcs1")
       outcomes = queued.transform_values(&:value)
-      handed_back = native_driver.reached("retry:unsent")
-      succeeded = outcomes.select { |_, outcome| outcome.is_a?(MSG) }.keys
-      failed = outcomes.except(*succeeded).values
       context = -> { "outcomes: #{outcomes.inspect}; events: #{peer.since(from).last(12).inspect}" }
-      expect(handed_back).to be_between(1, 2), context
-      expect(succeeded.size).to eq(handed_back), context
-      expect(failed.map { |error| [error.code, error.message] })
-        .to eq(Array.new(failed.size, ["unavailable", "HTTP transport failed: connection closed"]))
-      # Each success sent exactly once, as a stream of one new connection.
-      peer.wait_count(/\Arawmcs1 request ok:/, succeeded.size, from: from)
+      expect(outcomes.values).to all(eq(MSG.new)), context
+      expect(%w[retry:unsent retry:unprocessed].map { |point| native_driver.reached(point) }).to eq([1, 1]), context
+      # Each sent exactly once, as a stream of one new connection.
+      peer.wait_count(/\Arawmcs1 request ok:/, 2, from: from)
       sent = requests("rawmcs1", from).grep(/request ok:/).map { |event| event.split.values_at(2, 4) }
-      expect(sent.map(&:first).sort).to eq(succeeded.map { |name| "ok:#{name}" }.sort)
-      expect(sent.map(&:last)).to eq(Array.new(succeeded.size) { |index| "n=#{index + 1}" })
+      expect(sent.map(&:first).sort).to eq(%w[ok:q0 ok:q1])
+      expect(sent.map(&:last)).to eq(%w[n=1 n=2])
       expect(accepts("rawmcs1", from)).to eq(2)
       peer.command("release #{tag}")
       expect(held.value).to include("grpc-status" => ["0"])
     ensure
-      %w[request:queued retry:unsent].each { |point| native_driver&.release(point) }
+      points.each { |point| native_driver&.release(point) }
     end
+  end
+
+  def streams(tag, from) = requests(tag, from).map { |event| event.split.values_at(2, 3, 4) }
+
+  # The peer answers stream 1, leaves stream 3 unanswered, then sends a
+  # GOAWAY naming stream 1: it never processed stream 3, so the call goes
+  # once more to a new connection, where the peer handles it.
+  it "replays a Connect unary stream above a GOAWAY's last stream id once, on a new connection" do
+    from = peer.mark
+    transport = hyper
+    native_driver = driver(transport)
+    native_driver.hold("retry:unprocessed", 0)
+    origin = peer["raw_goaway"]
+    key = "cutoff-#{rand(1 << 30)}"
+    expect(raw_call(origin, "ok", transport: transport, protocol: :connect).message).to eq(MSG.new)
+    call = Thread.new do
+      raw_call(origin, "ignore-once:#{key}", transport: transport, protocol: :connect, timeout: 20).message
+    end
+    peer.wait_event(/\Arawgo ignored stream=3\z/, from: from)
+    peer.command("raw-goaway rawgo 1")
+    expect(call.value).to eq(MSG.new)
+    expect(native_driver.reached("retry:unprocessed")).to eq(1)
+    expect(streams("rawgo", from)).to eq([%w[ok stream=1 n=1], ["ignore-once:#{key}", "stream=3", "n=2"],
+                                          ["ignore-once:#{key}", "stream=1", "n=1"]])
+    expect(peer.count(/\Arawgo handled ignore-once:#{key} /, from: from)).to eq(1)
+    expect(accepts("rawgo", from)).to eq(2)
+  ensure
+    native_driver&.release("retry:unprocessed")
+  end
+
+  # Streams 1 and 3 are in flight when the GOAWAY names stream 1 and the peer
+  # then closes its side. Stream 3 is replayed; stream 1, which the peer may
+  # have processed, fails and is never sent again.
+  it "never replays a stream at or below a GOAWAY's last stream id" do
+    from = peer.mark
+    transport = hyper
+    origin = peer["raw_goaway"]
+    key = "below-#{rand(1 << 30)}"
+    stalled = Thread.new do
+      error_of { raw_call(origin, "stall", transport: transport, protocol: :connect, timeout: 20) }
+    end
+    peer.wait_event(/\Arawgo handler-start stream=1\z/, from: from)
+    above = Thread.new do
+      raw_call(origin, "ignore-once:#{key}", transport: transport, protocol: :connect, timeout: 20).message
+    end
+    peer.wait_event(/\Arawgo ignored stream=3\z/, from: from)
+    peer.command("raw-goaway rawgo 1 close")
+    expect(above.value).to eq(MSG.new)
+    error = stalled.value
+    expect([error.code, error.message]).to eq(["unavailable", "HTTP transport failed: connection closed"])
+    expect(streams("rawgo", from)).to eq([%w[stall stream=1 n=1], ["ignore-once:#{key}", "stream=3", "n=2"],
+                                          ["ignore-once:#{key}", "stream=1", "n=1"]])
+  end
+
+  # The gRPC stream's HEADERS reached the peer before the GOAWAY disowned
+  # it. open_grpc_stream cannot tell unary from streaming, so only a request
+  # that never reached the socket is replayed, even with its body unread.
+  it "does not replay a gRPC stream whose HEADERS reached the socket, even above the last stream id" do
+    from = peer.mark
+    transport = hyper
+    origin = peer["raw_goaway"]
+    key = "sent-#{rand(1 << 30)}"
+    request = ConnectRPC::StreamRequest.new(
+      url: URI("#{origin}/raw.v1.Raw/Call"), http_method: "POST",
+      headers: { "content-type" => ["application/grpc"], "te" => ["trailers"], "x-scenario" => ["ignore-once:#{key}"] }
+    )
+    call = Thread.new do
+      error_of { transport.open_grpc_stream(request) { |exchange| exchange.response_head(timeout: 20) } }
+    end
+    peer.wait_event(/\Arawgo ignored stream=1\z/, from: from)
+    peer.command("raw-goaway rawgo 0")
+    expect(call.value&.code).to eq("unavailable")
+    expect(streams("rawgo", from)).to eq([["ignore-once:#{key}", "stream=1", "n=1"]])
   end
 
   it "retries a Connect unary call refused with REFUSED_STREAM once, on a fresh connection" do
