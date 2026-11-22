@@ -228,8 +228,8 @@ RSpec.describe "Fork", :fork do
     RUBY
     expect(status).to be_success
     expect(eval(output.lines.last)).to eq([child_closed, true]) # rubocop:disable Security/Eval
-    # The held stream ends with the child Ruby; wait for the peer to log it
-    # so its unkeyed ss-hold-done never lands in a later example.
+    # Killing the holder resets the held stream; wait for the peer to log its
+    # end so its unkeyed ss-hold-done never lands in a later example.
     peer.wait_event(/grpc ss-hold-done/, from: from)
   end
 
