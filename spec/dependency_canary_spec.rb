@@ -403,13 +403,22 @@ RSpec.describe CanaryDriver do
     # A zombie has already exited. Without procfs, a pid that still accepts
     # signals counts as alive.
     def gone?(pid)
-      Process.kill(0, pid)
+      return true unless signalable?(pid)
       return false unless File.directory?("/proc/self")
 
-      File.read("/proc/#{pid}/stat").split[2] == "Z"
-    rescue Errno::ESRCH, Errno::ENOENT
-      # ENOENT: the reaper collected the zombie after the signal check (#132).
+      # The state follows the parenthesised command name, which may hold spaces.
+      File.read("/proc/#{pid}/stat").rpartition(")").last.split.first == "Z"
+    rescue Errno::ENOENT
+      # The reaper collected the zombie after the signal check (#132), or this
+      # procfs belongs to another PID namespace. Only a failed signal proves exit.
+      !signalable?(pid)
+    end
+
+    def signalable?(pid)
+      Process.kill(0, pid)
       true
+    rescue Errno::ESRCH
+      false
     end
 
     def expect_gone(pid, what)
