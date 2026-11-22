@@ -650,8 +650,8 @@ module KeepaliveInterop
 
   # The `async` and `falcon` entry points.
   module Run
-    # Every mode and case at once: the documented client's 40 seconds of PINGs
-    # bound the wall time. The first failure stops the rest.
+    # Every mode and case at once: unloaded, the documented client's 40 seconds
+    # of PINGs bound the wall time. The first failure stops the rest.
     def self.async(wire, **)
       barrier = Async::Barrier.new
       %w[h2c tls mtls].each do |mode|
