@@ -631,9 +631,10 @@ RSpec.describe "Hyper CI mapping" do
       .to eq(["always()"])
   end
 
-  it "keeps the Windows spec job non-gating and every other hyper CI job gating" do
-    expect(jobs.fetch("hyper_windows").fetch("continue-on-error")).to be(true)
-    %w[hyper hyper_msrv hyper_gems].each { |name| expect(jobs.fetch(name)).not_to have_key("continue-on-error") }
+  it "keeps every hyper CI job gating, the Windows spec job included" do
+    %w[hyper hyper_msrv hyper_gems hyper_windows].each do |name|
+      expect(jobs.fetch(name)).not_to have_key("continue-on-error")
+    end
     windows = commands.fetch("hyper_windows").join("\n")
     expect(windows).to include("scripts/install_smoke.rb", "scripts/use_artifact.rb", "--tag \"~fork\"",
                                "--tag \"~dns_shim\"", "--tag interop")

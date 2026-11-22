@@ -255,13 +255,24 @@ sibling task, until it finishes. On Ruby 4.0 with async's opt-in worker pool
 (`ASYNC_SCHEDULER_WORKER_POOL=true` or
 `Async::Scheduler.new(worker_pool: true)`), the wait moves to a worker thread:
 sibling tasks keep running, and `Task#stop`, cancellation, deadlines,
-`Thread#raise` and `Thread#kill` still land. Waits offer a fiber scheduler's
-`blocking_operation_wait` hook only on Ruby 4.0 and later, whose
-blocking-operation API lets io-event finish a running wait before it raises a
-cancellation. Ruby 3.4 hands the hook a plain proc, so a cancelled scheduler
-could unwind the call while its wait still runs on a worker; there calls always
-block the reactor, whatever the scheduler. Use connectrpc-async's transports
-for calls from inside a reactor.
+`Thread#raise` and `Thread#kill` still land. async creates io-event's worker
+pool with one worker by default, so parked waits from different tasks run one
+at a time: a second task's wait queues until the first one's ends. Pass
+`Async::Scheduler.new(worker_pool: IO::Event::WorkerPool.new(maximum_worker_count: N))`
+for more workers. Waits offer a fiber scheduler's `blocking_operation_wait`
+hook only on Ruby 4.0 and later, whose blocking-operation API lets io-event
+finish a running wait before it raises a cancellation. Ruby 3.4 hands the hook
+a plain proc, so a cancelled scheduler could unwind the call while its wait
+still runs on a worker; there calls always block the reactor, whatever the
+scheduler. Use connectrpc-async's transports for calls from inside a reactor.
+
+`close` is the exception. Called from a non-blocking fiber under a fiber
+scheduler, on Ruby 3.4 and 4.0 alike, it waits for teardown on a helper
+thread, taking neither the reactor thread nor a worker of the pool, so sibling
+tasks keep running and their in-flight calls can drain within the grace. A
+closer inside `Fiber.blocking {}`, or one whose helper thread cannot start
+(`ThreadError`), waits on its own thread and holds the reactor until teardown
+ends.
 
 ## Fork
 
@@ -414,24 +425,28 @@ raise core's `deadline_exceeded` and `canceled` errors first.
 `close(grace: 5)` stops admission, lets in-flight calls finish within `grace`,
 then aborts the rest and waits for every connection task. It returns true when
 everything drained and false after forced teardown; repeated and concurrent
-calls share the first outcome. Callers waiting for the shared HTTP/2 dial fail
-with `HTTP transport admission is closed`, and the dial ends. A call admitted
-before `close` that is dialing its own connection (per-call mode, HTTP/1.1, a
-dial after an HTTP/1.1 outcome, or a retry's own dial) is in flight: it keeps
-dialing and runs within the grace, but its new connection is never pooled for
-other calls. Lazy exchanges that have not dispatched and pending retries fail
-with `HTTP transport admission is closed`. Forced teardown fails each call it
-ends `unavailable` with `HTTP transport admission is closed` if the call's own
-setup saw `close` first, and otherwise with
+calls share the first call's grace and outcome. Callers waiting for the shared
+HTTP/2 dial fail with `HTTP transport admission is closed`, and the dial ends.
+A call admitted before `close` that is dialing its own connection (per-call
+mode, HTTP/1.1, a dial after an HTTP/1.1 outcome, or a retry's own dial) is in
+flight: it keeps dialing and runs within the grace, but its new connection is
+never pooled for other calls. Lazy exchanges that have not dispatched and
+pending retries fail with `HTTP transport admission is closed`. Forced teardown
+fails each call it ends `unavailable` with `HTTP transport admission is closed`
+if the call's own setup saw `close` first, and otherwise with
 `HTTP transport failed: connection closed`. Which of the two a call gets is
-not guaranteed, and it never gets another phrase. Teardown runs in the background
-once started, so it completes even if the closing thread is interrupted or a
+not guaranteed, and it never gets another phrase. Teardown runs in the
+background once started, so it completes even if the closing thread is interrupted or a
 fiber scheduler stops the closing task (async's `Task#stop`). Every closer, a
 concurrent one included, keeps waiting for the outcome and raises the
-exception after teardown. On Ruby 4.0 with async's worker pool that wait runs
-off the reactor thread, so sibling tasks still run and their calls can drain;
-on Ruby 3.4 it holds the reactor until teardown publishes its outcome, so
-sibling tasks cannot drain meanwhile (see [fiber schedulers](#fiber-schedulers)).
+exception after teardown. On a non-blocking fiber under a fiber scheduler that
+wait runs on a helper thread, so sibling tasks still run and their calls can
+drain, and threads that sibling tasks start meanwhile keep their usual
+interrupt handling (see [fiber schedulers](#fiber-schedulers)). Such a closer
+stops waiting if it is killed (`Fiber#kill` or `Thread#kill`); teardown still
+completes, and later closers wait for and return the published outcome.
+Without a fiber scheduler, or on a blocking fiber, a closer defers
+`Thread#kill` until `close` returns.
 
 ## License
 

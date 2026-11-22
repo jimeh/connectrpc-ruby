@@ -118,20 +118,16 @@ below gates the release:
 | `x86_64-linux-musl`, `aarch64-linux-musl` | CI | Offline install and smoke calls in the official `ruby:3.4-alpine` and `ruby:4.0-alpine` images on the matching architecture. musl hosts need `libgcc_s` |
 | `arm64-darwin` (macOS 11+) | CI | Offline install and smoke calls on a macOS 15 arm64 runner |
 | `x86_64-darwin` | CI | Offline install and smoke calls on a macOS 15 Intel runner |
-| `x64-mingw-ucrt` | CI | Provisional: offline install and smoke calls on Windows Server 2025; the specs that apply off Linux and a Go interop subset also run there in a non-gating job |
-| `aarch64-mingw-ucrt` | CI | Provisional: offline install and smoke calls on Windows 11 arm64 |
+| `x64-mingw-ucrt` | CI | Provisional: offline install and smoke calls on Windows Server 2025; the specs that apply off Linux and a Go interop subset also run there and gate CI |
+| `aarch64-mingw-ucrt` | CI | Provisional: offline install and smoke calls on Windows 11 arm64; the specs that apply off Linux and a Go interop subset also run there and gate CI |
 | Source gem | CI | The published source gem compiles at install time and passes smoke calls on Ubuntu 24.04 x86_64; an offline build from the packaged `Cargo.lock` and a pre-fetched crate cache is also checked. Needs Rust 1.85+, libclang and a C compiler |
 
 Smoke calls are real Connect unary calls over cleartext HTTP/1.1 and TLS
 against a local server. The two Windows platforms are provisional for
 connectrpc-hyper only; every other package keeps the Ubuntu x86_64 profile.
-Their full specs are not gating yet. The reactor-thread hangs the Windows spec
-job showed came from the spec harness's console output, not from
-connectrpc-hyper. [#175](https://github.com/jimeh/connectrpc-ruby/issues/175)
-is separately fixing a `close` wait on Ruby 4.0 with a single-worker async
-pool, which affects every platform, not only Windows. Expect the Windows
-platforms to change or be withdrawn without a minor release while they are
-provisional.
+Their install and smoke calls gate the release, and their spec and interop job
+gates CI. Expect the Windows platforms to change or be withdrawn without a minor
+release while they are provisional.
 
 The transport verifies TLS with rustls, not OpenSSL, so it is stricter than
 NetHTTP and the Async transports: server certificates that are CN-only, X.509
