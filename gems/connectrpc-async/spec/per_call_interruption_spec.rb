@@ -423,6 +423,46 @@ RSpec.describe "PerCallTransport deadlines, cancellation and interrupts" do
       pause&.disable
     end
 
+    # A second interrupt lands as the unwinding call starts cancelling its
+    # scope, so the guard left without a watcher is not yet cancelled. The
+    # join still cancels it and finishes, then raises the later interrupt.
+    it "finishes the scope when a second interrupt lands while a cut-short construction unwinds" do
+      first = Class.new(StandardError)
+      second = Class.new(StandardError)
+      method = ConnectRPC::Async::Transport.instance_method(:install_owner_guard)
+      file, start = method.source_location
+      watcher = start + File.readlines(file).drop(start - 1).index do |line|
+        line.strip == "@owner_watcher = @owner.async do |watcher|"
+      end
+      caller_task = nil
+      raised = false
+      pause = TracePoint.new(:line) { |point| raise first, "during construction" if point.lineno == watcher }
+      # Only the cancel of the call's scope, the caller task's one child.
+      again = TracePoint.new(:call) do |point|
+        next if raised || !point.binding.local_variable_get(:task)&.parent.equal?(caller_task)
+
+        raised = true
+        raise second, "while unwinding"
+      end
+      pause.enable(target: method)
+      again.enable(target: AsyncHelpers::INTERNAL.method(:cancel))
+      with_boundaries do |boundaries|
+        error = reactor do |task|
+          caller_task = task
+          children = task.children.to_a
+          error = capture_error { per_call.call(request("http://127.0.0.1:1/construct")) }
+          expect(task.children.to_a).to eq(children)
+          error
+        end
+        expect([raised, error.class, error.message, error.cause&.class]).to eq([true, second, "while unwinding", first])
+        observation = boundaries.take.first
+        expect(observation.values_at(:scope_finished, :attached, :live, :sockets)).to eq([true, false, [], []])
+      end
+    ensure
+      again&.disable
+      pause&.disable
+    end
+
     # The stream block fails and the transport's stream cleanup task is held
     # as it starts, so the caller's task is cancelled while it waits for that
     # cleanup. Core keeps the block's own exception over the cancellation.

@@ -982,11 +982,12 @@ and bidi streaming before any I/O.
   the call's result or a stream block's own exception. The close budget is
   read from the deadline's clock in the caller's own thread or fiber. If a
   custom `Deadline` clock raises while the call computes its close budget, the
-  close is raw and the call keeps its own outcome. An interrupt that lands
-  meanwhile is raised after the raw close and teardown. One limitation inside
-  a reactor: a `StandardError` raised into the caller while a custom clock
-  runs, such as a `with_timeout` with a custom error class, cannot be told
-  apart from the clock's own failure, so the call keeps its outcome.
+  close is raw and the call keeps its own outcome. Outside a reactor,
+  interrupts wait until the budget is computed. Inside one, an interrupt that
+  lands meanwhile is raised after a raw close and teardown. One limitation
+  inside a reactor: a `StandardError` raised into the caller while a custom
+  clock runs, such as a `with_timeout` with a custom error class, cannot be
+  told apart from the clock's own failure, so the call keeps its outcome.
 - Deadlines, `CancellationToken`s, `Timeout`, `Thread#raise` and `Thread#kill`
   behave as for `ThreadedTransport` outside a reactor, and task cancellation and
   `with_timeout` as for `Transport` inside one; an interrupted stream is reset

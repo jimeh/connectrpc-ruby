@@ -31,9 +31,10 @@ RSpec.describe "PerCallTransport calls, origins and validation" do
       .to raise_error(ArgumentError, "Invalid TLS client configuration: ca_file")
     expect { per_call(certificate_chain: ["bad"], private_key: "bad") }
       .to raise_error(ArgumentError, "Invalid TLS client configuration: certificate_chain")
-    threads = Thread.list.size
+    # Other examples' threads may finish meanwhile; construction starts none.
+    threads = Thread.list
     transport = with_ca { |ca_file| per_call(ca_file: ca_file, connect_timeout: 2) }
-    expect([transport.frozen?, Thread.list.size]).to eq([true, threads])
+    expect([transport.frozen?, Thread.list - threads]).to eq([true, []])
     expect(transport.inspect).to eq("#<ConnectRPC::Async::PerCallTransport connect_timeout=2 proxy=environment>")
     expect([transport.streaming_capabilities, transport.grpc_capabilities])
       .to eq([%i[server_stream], %i[unary server_stream]])

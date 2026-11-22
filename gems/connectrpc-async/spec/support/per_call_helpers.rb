@@ -91,7 +91,11 @@ module PerCallHelpers
 
   # Never closes an accepted connection itself, so the peer sends no FIN
   # after the client's GOAWAY and EOF; stopping the peer closes its sockets.
+  # `close_requests` lists each connection whose reader ended, which is where
+  # the peer would have closed it.
   class FinWithholdingServer < ConnectionPeer::RecordingServer
+    def close_requests = (@close_requests ||= [])
+
     def stop
       @stopping = true
       super
@@ -103,6 +107,7 @@ module PerCallHelpers
       peer = self
       super.tap do |connection|
         connection.define_singleton_method(:close) do |*arguments|
+          peer.close_requests << index unless peer.close_requests.include?(index)
           super(*arguments) if peer.instance_variable_get(:@stopping)
         end
       end

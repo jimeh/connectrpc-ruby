@@ -39,10 +39,15 @@ RSpec.describe "PerCallTransport connection close, close budget and outcome prec
   end
 
   # The peer reads the client's frames in order, then its EOF, after which
-  # its connection is closed; a graceful close's GOAWAY would precede that.
+  # it closes its connection, or, withholding its FIN, would have closed it;
+  # a graceful close's GOAWAY would precede that.
   def expect_raw_close(peer)
-    eventually("the peer to read the client's EOF") { peer.peer.connections.first&.closed? }
-    expect(peer.peer.goaways).to eq([])
+    server = peer.peer
+    withholding = server.is_a?(PerCallHelpers::FinWithholdingServer)
+    eventually("the peer to read the client's EOF") do
+      withholding ? server.close_requests.any? : server.connections.first&.closed?
+    end
+    expect(server.goaways).to eq([])
   end
 
   # A Connect server stream for the given deadline, reduced to the names it
@@ -212,7 +217,8 @@ RSpec.describe "PerCallTransport connection close, close budget and outcome prec
         error = on_path(path) { transport.call(request("#{origin}/late", deadline: deadline)) }
         expect([error.class, error.code]).to eq([ConnectRPC::Error, "deadline_exceeded"])
         expect_released(boundaries.take.first)
-        expect([peer.peer.accepted, peer.peer.goaways]).to eq([1, []])
+        expect(peer.peer.accepted).to eq(1)
+        expect_raw_close(peer)
       end
     ensure
       peer&.stop
@@ -255,6 +261,33 @@ RSpec.describe "PerCallTransport connection close, close budget and outcome prec
         trace&.disable
         peer&.stop
       end
+    end
+
+    # The clock leaves by throw, which no rescue sees, while the close budget
+    # is computed. The throw still reaches its catch, after a raw close and
+    # the full teardown.
+    it "tears down raw when the deadline clock throws computing the close budget on the #{path} path" do
+      peer = one_message_peer
+      typed = mixed_client(per_call, "http://127.0.0.1:#{peer.peer.port}")
+      planning = [false]
+      trace = TracePoint.new(:call, :return) { |point| planning[0] = point.event == :call }
+      trace.enable(target: PerCallHelpers::PER_CALL.instance_method(:close_plan))
+      with_boundaries do |boundaries|
+        result = on_path(path) do
+          deadline = ConnectRPC::Deadline.new(5, clock: lambda {
+            throw :clock_left, :thrown if planning.first
+
+            monotonic
+          })
+          catch(:clock_left) { watch_names(typed, deadline) }
+        end
+        expect(result).to eq(:thrown)
+        expect_released(boundaries.take.first)
+        expect_raw_close(peer)
+      end
+    ensure
+      trace&.disable
+      peer&.stop
     end
 
     it "never lets a close failure replace the result or a stream block's own exception on the #{path} path" do
