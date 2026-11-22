@@ -171,7 +171,11 @@ func keepaliveBDP(origin, mode, dir string) {
 	connection := keepaliveDial(origin, mode, dir)
 	defer connection.Close()
 	client := pb.NewPeerClient(connection)
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	// A liveness guard, not a throughput bound: the checks are the BDP PING
+	// evidence. With the host process pinned to 1/11 of a CPU, its 3 MiB
+	// download and four 1 MiB echoes progressed steadily and took about 22 s
+	// (#132).
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 	payload := bytes.Repeat([]byte{0xA5}, 1<<20)
 	ss, err := client.ServerStream(ctx, &pb.Message{Value: "bdp", Payload: payload})
