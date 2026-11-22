@@ -35,6 +35,8 @@ type rawConn struct {
 	last    uint32
 	// awaiting holds await-ok streams until their request ends.
 	awaiting map[uint32]*awaitedRequest
+	// unread holds noread streams, whose DATA never reopens their window.
+	unread map[uint32]bool
 }
 
 type awaitedRequest struct {
@@ -108,7 +110,7 @@ func handleRaw(tag string, conn net.Conn, options rawOptions) {
 		return
 	}
 	c := &rawConn{tag: tag, conn: conn, framer: http2.NewFramer(conn, conn),
-		awaiting: map[uint32]*awaitedRequest{}}
+		awaiting: map[uint32]*awaitedRequest{}, unread: map[uint32]bool{}}
 	c.encoder = hpack.NewEncoder(&c.block)
 	c.framer.ReadMetaHeaders = hpack.NewDecoder(4096, nil)
 	c.framer.MaxHeaderListSize = 1 << 24
@@ -158,7 +160,7 @@ func handleRaw(tag string, conn net.Conn, options rawOptions) {
 		case *http2.DataFrame:
 			if n := uint32(len(frame.Data())); n > 0 {
 				c.locked(func() error {
-					if err := c.framer.WriteWindowUpdate(0, n); err != nil {
+					if err := c.framer.WriteWindowUpdate(0, n); err != nil || c.unread[frame.StreamID] {
 						return err
 					}
 					return c.framer.WriteWindowUpdate(frame.StreamID, n)
@@ -307,6 +309,21 @@ func (c *rawConn) request(frame *http2.MetaHeadersFrame) {
 	case "reset-before":
 		code, _ := strconv.Atoi(argument)
 		_ = c.framer.WriteRSTStream(stream, http2.ErrCode(code))
+	case "reset-on":
+		// reset-on:<gate>:<code> resets the stream without a response once
+		// "release <gate>" arrives, as grpc-go's server resets a call whose
+		// deadline expired.
+		gateName, code, _ := strings.Cut(argument, ":")
+		reset, _ := strconv.Atoi(code)
+		go func() {
+			<-gate(gateName)
+			c.locked(func() error { return c.framer.WriteRSTStream(stream, http2.ErrCode(reset)) })
+		}()
+	case "noread":
+		// Never answers and never reopens the stream's flow-control window,
+		// so the client's writes block once it is spent; nor does it reset
+		// the stream at the deadline it was sent.
+		c.unread[stream] = true
 	case "refuse-once":
 		// Refuses the first request carrying this key, on any connection.
 		refusedOnce.Lock()

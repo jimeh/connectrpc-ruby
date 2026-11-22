@@ -20,7 +20,9 @@ RSpec.describe "Transport failures" do
     error = failure("http://127.0.0.1:#{closing.addr[1]}", protocol: :connect)
     expect([error.code, error.message]).to eq(["unavailable", "HTTP transport failed: connection closed"])
 
-    error = failure(peer["grpc_h2c"], value: "hang", timeout: 0.2)
+    # The raw peer never resets a stalled call at its deadline, as grpc-go's
+    # server can first, so the client's deadline ends it.
+    error = error_of { raw_call(peer["raw"], "stall", transport: hyper, timeout: 0.2) }
     expect([error.code, error.message, error.cause]).to eq(["deadline_exceeded", "Deadline exceeded", nil])
   ensure
     closer&.kill

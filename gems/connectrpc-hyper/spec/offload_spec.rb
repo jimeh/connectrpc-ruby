@@ -38,6 +38,22 @@ RSpec.describe "Inside an Async reactor" do
         sleep(0.001) until (met = yield) || Process.clock_gettime(Process::CLOCK_MONOTONIC) > deadline
         met
       end
+      RAW_UNARY = ConnectRPC::Method.new(service: "raw.v1.Raw", name: "Call", request_type: MSG, response_type: MSG)
+      RAW_SERVER_STREAM = ConnectRPC::ServerStreamMethod.new(service: "raw.v1.Raw", name: "Stream",
+                                                             request_type: MSG, response_type: MSG)
+      def raw_client
+        ConnectRPC::Client.new(base_url: #{peer['raw'].dump}, transport: ConnectRPC::Hyper::Transport.new,
+                               protocol: :grpc, binding: ConnectRPC::Bindings::GoogleProtobuf.new)
+      end
+      # A gRPC call the raw peer never answers. grpc-go's server resets a
+      # call with RST_STREAM(CANCEL) when the deadline it was sent expires by
+      # its own clock, and that timer can fire before the client's deadline
+      # (on Windows Go reads the coarse interrupt time, so it can fire up to a
+      # clock tick early), ending the call canceled. The raw peer never resets
+      # at a deadline, so only the client's own deadline ends this call.
+      def stall(client, timeout:)
+        client.call(RAW_UNARY, MSG.new, metadata: { "x-scenario" => "stall" }, timeout: timeout)
+      end
       def ticks_during(task)
         ticks = 0
         ticker = task.async { loop { sleep 0.01; ticks += 1 } }
@@ -116,12 +132,12 @@ RSpec.describe "Inside an Async reactor" do
 
   it "#{offload ? 'lets sibling tasks run' : 'blocks the reactor'} while a call waits, with the worker pool" do
     output, status = reactor_child(<<~RUBY, pool: true)
-      peer_client = client(#{peer['grpc_h2c'].dump}, ConnectRPC::Hyper::Transport.new)
+      stalled = raw_client
       Async do |task|
         result = nil
         ticks = ticks_during(task) do
           result = begin
-            task.async { peer_client.unary(MSG.new(value: "hang"), timeout: 0.3) }.wait
+            task.async { stall(stalled, timeout: 0.3) }.wait
           rescue ConnectRPC::Error => e
             e.code
           end
@@ -159,12 +175,12 @@ RSpec.describe "Inside an Async reactor" do
 
   it "blocks the reactor without the worker pool" do
     output, status = reactor_child(<<~RUBY, pool: false)
-      peer_client = client(#{peer['grpc_h2c'].dump}, ConnectRPC::Hyper::Transport.new)
+      stalled = raw_client
       Async do |task|
         result = nil
         ticks = ticks_during(task) do
           result = begin
-            task.async { peer_client.unary(MSG.new(value: "hang"), timeout: 0.3) }.wait
+            task.async { stall(stalled, timeout: 0.3) }.wait
           rescue ConnectRPC::Error => e
             e.code
           end
@@ -700,6 +716,10 @@ RSpec.describe "Inside an Async reactor" do
       from = peer.mark
       output, status = reactor_child(<<~RUBY, pool: true)
         peer_client = client(#{peer['grpc_h2c'].dump}, ConnectRPC::Hyper::Transport.new)
+        # Warm, as peer_client is by the deadline case, so the expired
+        # stream's 0.2 s budget covers its own exchange and not a dial.
+        raw = raw_client
+        raw.call(RAW_UNARY, MSG.new, metadata: { "x-scenario" => "ok" }, timeout: 5)
         # Parks in a read of a held stream once its first message arrived.
         hold = lambda do |ready, timeout: 20, **options|
           peer_client.server_stream(MSG.new(value: "hold"), timeout: timeout, **options) do |reader|
@@ -730,10 +750,20 @@ RSpec.describe "Inside an Async reactor" do
           parked(ready: ready)
           source.cancel
           results << canceled.wait
+          # The raw peer sends one message and then nothing, and never resets
+          # the stream at its deadline as grpc-go's can first (see `stall`),
+          # so the second read parks until the client's own deadline. The
+          # first message's arrival shows the deadline landed in that read.
+          first = Queue.new
           expired = task.async do
-            hold.call(Queue.new, timeout: 0.2)
+            raw.server_stream(RAW_SERVER_STREAM, MSG.new, metadata: { "x-scenario" => "silent-data" },
+                                                          timeout: 0.2) do |reader|
+              reader.receive
+              first << true
+              reader.receive
+            end
           rescue ConnectRPC::Error => e
-            e.code
+            [e.code, !first.empty?]
           end
           results << expired.wait
         end
@@ -760,10 +790,14 @@ RSpec.describe "Inside an Async reactor" do
       RUBY
       expect(status).to be_success
       expect(eval(output.lines.last)).to eq( # rubocop:disable Security/Eval
-        [:stopped, "canceled", "deadline_exceeded", ["RuntimeError", :ensure], [:ensure], "after"]
+        [:stopped, "canceled", ["deadline_exceeded", true], ["RuntimeError", :ensure], [:ensure], "after"]
       )
-      # Every parked stream reached the peer as cancellation or its deadline.
-      peer.wait_count(/grpc ss-hold-done context (canceled|deadline exceeded)/, 5, from: from)
+      # Every parked stream reached its peer as cancellation or its deadline.
+      peer.wait_count(/grpc ss-hold-done context (canceled|deadline exceeded)/, 4, from: from)
+      expired = peer.wait_event(/\Araw request silent-data /, from: from)[/ stream=(\d+) /, 1]
+      peer.wait_event(/\Araw rst stream=#{expired} code=8\z/, from: from)
+      # The expired stream reused the warmed connection.
+      expect(peer.count(/\Araw accept /, from: from)).to eq(1)
     end
 
     # async's default worker pool has one worker, which runs parked waits one

@@ -101,13 +101,17 @@ RSpec.describe "Header, body and streaming limits" do
       expect(sent).to be_between(read, read + ((16 << 20) / 1024) + 64)
     end
 
+    # The raw peer, unlike grpc-go's, never resets the stream at the deadline
+    # it was sent, a reset that can land before the client's deadline and
+    # release the blocked writer early.
     it "blocks writes to a peer that never reads until the deadline" do
       from = peer.mark
       written = 0
       started = monotonic
+      metadata = { "x-scenario" => "noread" }
       error = error_of do
-        client(peer["grpc_h2c"], transport: hyper)
-          .client_stream(metadata: { "x-mode" => "noread" }, timeout: 1) do |writer|
+        core(peer["raw"], transport: hyper)
+          .client_stream(HyperHelpers::RAW_CLIENT_STREAM, metadata: metadata, timeout: 1) do |writer|
           loop do
             writer.send_message(MSG.new(payload: "x".b * 65_536))
             written += 1
@@ -118,9 +122,8 @@ RSpec.describe "Header, body and streaming limits" do
       expect(monotonic - started).to be >= 0.9
       # The stream window plus h2's bounded send buffer, then the writer blocks.
       expect(written).to be < 40
-      # The handler shares the client's deadline, so it may see its own
-      # deadline before the client's reset arrives; either ends the stream.
-      peer.wait_event(/grpc cs-noread-done context (canceled|deadline exceeded)/, from: from)
+      unread = peer.wait_event(/\Araw request noread /, from: from)[/ stream=(\d+) /, 1]
+      peer.wait_event(/\Araw rst stream=#{unread} code=8\z/, from: from)
     end
   end
 end
