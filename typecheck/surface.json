@@ -537,6 +537,8 @@
     "ConnectRPC::Async::PerCallTransport::Threaded#close_joined": {"kind":"method","visibility":"public","parameters":"grace, cutoff","classification":"internal"},
     "ConnectRPC::Async::PerCallTransport::Threaded#initialize": {"kind":"method","visibility":"public","parameters":"snapshot:, proxy:, **","classification":"internal"},
     "ConnectRPC::Async::PerCallTransport::Threaded#join_owners": {"kind":"method","visibility":"private","parameters":"","classification":"internal"},
+    "ConnectRPC::Async::PerCallTransport::Threaded#owner_stalled?": {"kind":"method","visibility":"private","parameters":"cutoff","classification":"internal"},
+    "ConnectRPC::Async::PerCallTransport::Threaded#owner_wait": {"kind":"method","visibility":"private","parameters":"","classification":"internal"},
     "ConnectRPC::Async::PerCallTransport::Threaded::Tunnelled#initialize": {"kind":"method","visibility":"public","parameters":"proxy:, **","classification":"internal"},
     "ConnectRPC::Async::PerCallTransport::Tunnelling#dial": {"kind":"method","visibility":"private","parameters":"","classification":"internal"},
     "ConnectRPC::Async::PerCallTransport::Tunnelling#tunnel": {"kind":"method","visibility":"private","parameters":"raw","classification":"internal"}
