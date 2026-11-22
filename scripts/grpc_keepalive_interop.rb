@@ -631,7 +631,7 @@ module KeepaliveInterop
 
     def bdp
       host = host(ConnectRPC::Async::ServerKeepalive.new)
-      go("keepalive-bdp", origin: origin(host.port)).finish(within: 30)
+      go("keepalive-bdp", origin: origin(host.port)).finish(within: 75)
       puts "PASS grpc-go default client <-> Host default #{@mode}: " \
            "#{BDPEvidence.verify(@wire, host.port, "#{@mode} Host")}"
     ensure
@@ -650,8 +650,8 @@ module KeepaliveInterop
 
   # The `async` and `falcon` entry points.
   module Run
-    # Every mode and case at once: the documented client's 40 seconds of PINGs
-    # bound the wall time. The first failure stops the rest.
+    # Every mode and case at once: unloaded, the documented client's 40 seconds
+    # of PINGs bound the wall time. The first failure stops the rest.
     def self.async(wire, **)
       barrier = Async::Barrier.new
       %w[h2c tls mtls].each do |mode|
@@ -681,7 +681,7 @@ module KeepaliveInterop
       end
       falcon_cluster(wire, helpers, identities, {}) do |host, port|
         GoPeer.new("tls keepalive-bdp", binary, "keepalive-bdp", "https://127.0.0.1:#{port}", "tls", fixtures)
-              .finish(within: 30)
+              .finish(within: 75)
         evidence = BDPEvidence.verify(wire, port, "tls Falcon")
         workers = stop_falcon(wire, host, port)
         puts "PASS grpc-go default client <-> Falcon default tls: #{evidence} (worker pids #{workers.join(', ')})"

@@ -400,18 +400,34 @@ RSpec.describe CanaryDriver do
       expect(out.string).to eq(outcome.output)
     end
 
+    # A zombie has already exited. Without procfs, a pid that still accepts
+    # signals counts as alive.
     def gone?(pid)
+      return true unless signalable?(pid)
+      return false unless File.directory?("/proc/self")
+
+      # The state follows the parenthesised command name, which may hold spaces.
+      File.read("/proc/#{pid}/stat").rpartition(")").last.split.first == "Z"
+    rescue Errno::ENOENT, Errno::ESRCH
+      # The reaper collected the zombie after the signal check or the stat
+      # file's open (#132), or this procfs belongs to another PID namespace.
+      # Only a failed signal proves exit.
+      !signalable?(pid)
+    end
+
+    def signalable?(pid)
       Process.kill(0, pid)
-      File.read("/proc/#{pid}/stat").split[2] == "Z" if File.exist?("/proc/#{pid}/stat")
-    rescue Errno::ESRCH, Errno::ENOENT
       true
+    rescue Errno::ESRCH
+      false
     end
 
     def expect_gone(pid, what)
-      # An orphan is reaped asynchronously after the group KILL.
+      # An orphan is reaped asynchronously after the group KILL. Assert the
+      # observation that ended the wait: a second check can race the reaper.
       deadline = described_class::Bounded.monotonic + 10
-      sleep 0.05 until gone?(pid) || described_class::Bounded.monotonic > deadline
-      expect(gone?(pid)).to be(true), "#{what} #{pid} survived the group kill"
+      sleep 0.05 until (gone = gone?(pid)) || described_class::Bounded.monotonic > deadline
+      expect(gone).to be(true), "#{what} #{pid} survived the group kill"
     end
 
     it "kills the whole process group of a command that outlives its deadline" do
