@@ -48,12 +48,13 @@ impl Point {
         *self.released.lock().unwrap_or_else(|e| e.into_inner()) = true;
         self.changed.notify_all();
         self.notify.notify_waiters();
-        for waker in self
-            .wakers
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .drain(..)
-        {
+        self.wake_stalled();
+    }
+
+    /// Wakes the polls stalled here, so each looks at its point again.
+    fn wake_stalled(&self) {
+        let wakers = std::mem::take(&mut *self.wakers.lock().unwrap_or_else(|e| e.into_inner()));
+        for waker in wakers {
             waker.wake();
         }
     }
@@ -146,9 +147,9 @@ impl Holds {
         });
         let mut points = self.points.lock().unwrap_or_else(|e| e.into_inner());
         match points.insert(name, point) {
-            // Re-arming releases what the old point held, stalled polls
-            // included, which have no bound of their own.
-            Some(replaced) => replaced.release(),
+            // Polls stalled on the old point have no bound: they look again
+            // and stall on this one. Arrivals parked there keep their bound.
+            Some(replaced) => replaced.wake_stalled(),
             None => {
                 ARMED.fetch_add(1, Ordering::AcqRel);
             }
