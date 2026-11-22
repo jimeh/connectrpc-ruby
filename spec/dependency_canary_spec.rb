@@ -408,9 +408,10 @@ RSpec.describe CanaryDriver do
 
       # The state follows the parenthesised command name, which may hold spaces.
       File.read("/proc/#{pid}/stat").rpartition(")").last.split.first == "Z"
-    rescue Errno::ENOENT
-      # The reaper collected the zombie after the signal check (#132), or this
-      # procfs belongs to another PID namespace. Only a failed signal proves exit.
+    rescue Errno::ENOENT, Errno::ESRCH
+      # The reaper collected the zombie after the signal check or the stat
+      # file's open (#132), or this procfs belongs to another PID namespace.
+      # Only a failed signal proves exit.
       !signalable?(pid)
     end
 
