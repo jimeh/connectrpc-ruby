@@ -1211,7 +1211,7 @@
     "ConnectRPC::Hyper::Transport#recorded_close": {"kind":"method","visibility":"private","parameters":"","classification":"internal"},
     "ConnectRPC::Hyper::Transport#reserve_close": {"kind":"method","visibility":"private","parameters":"grace","classification":"internal"},
     "ConnectRPC::Hyper::Transport#seconds": {"kind":"method","visibility":"private","parameters":"value, name, nil_allowed: false","classification":"internal"},
-    "ConnectRPC::Hyper::Transport#start_close_helper": {"kind":"method","visibility":"private","parameters":"grace","classification":"internal"},
+    "ConnectRPC::Hyper::Transport#start_close_helper": {"kind":"method","visibility":"private","parameters":"driver, grace","classification":"internal"},
     "ConnectRPC::Hyper::Transport#state": {"kind":"method","visibility":"private","parameters":"","classification":"internal"},
     "ConnectRPC::Hyper::Transport#streaming_capabilities": {"kind":"method","visibility":"public","parameters":"","classification":"supported"},
     "ConnectRPC::Hyper::Transport#tunnel_limits": {"kind":"method","visibility":"private","parameters":"","classification":"internal"},

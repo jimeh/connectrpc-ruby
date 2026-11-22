@@ -261,14 +261,16 @@ stage and reset its stream.
   with `Thread#value` (io-event's `process_wait` pattern), so the wait takes
   neither the reactor thread nor a worker-pool worker and sibling fibers'
   calls can drain; an exception raised into the closer meanwhile (async's
-  `Task#stop`) is held until the helper returns. That closer holds no
-  interrupt mask, because threads that sibling fibers start would copy it,
-  and waits for the transport lock only as a non-blocking fiber, because
-  `Mutex#unlock` wakes one waiter and a sibling woken through the scheduler
-  cannot run while a blocking wait sleeps the reactor thread. An exception
-  that lands while it reserves the close or starts the helper is held too,
-  and the closer retries; a lost helper reference can start a second helper,
-  which waits on the same teardown. The helper records the published outcome
+  `Task#stop`) is held until the helper returns. That closer waits for the
+  transport lock as a non-blocking fiber with no interrupt mask, because
+  threads that sibling fibers start would copy a mask, and `Mutex#unlock`
+  wakes one waiter, which a sibling woken through the scheduler cannot take
+  while a blocking wait sleeps the reactor thread. Under the lock, where
+  nothing yields, interrupts are deferred across reserving the close,
+  starting the helper and storing its reference, so no interrupt separates
+  them and the helper starts with interrupts deferred. An exception that
+  lands while the closer waits for the lock is held too, and the closer
+  retries once before a helper runs. The helper records the published outcome
   itself; a closer that leaves before publication (a killed fiber or thread)
   records nothing, and the next closer waits on the same teardown. If no
   helper thread can start (`ThreadError`), the closer waits on its own
@@ -444,6 +446,15 @@ cause, abort in a masked `ensure`. Rust owns connections, streams and waits.
   still waits on the calling thread. With the pool, async's default single
   worker runs parked waits from different fibers one at a time; a larger
   `IO::Event::WorkerPool` is the documented remedy.
+- Helper-path close interrupt windows (accepted): a second thread interrupt
+  that lands while the closer handles a first one can escape before
+  publication; two exceptions before any helper starts make the closer raise
+  early; a `Thread#kill` that lands on a closer whose `Thread.new` raised
+  `ThreadError` leaves the transport closing until the next close; and a
+  `Thread#raise` or `Thread#kill` aimed at the reactor thread lands on
+  whichever fiber runs. Teardown that a helper started always finishes and
+  records its outcome. #181 tracks a native runtime that fails to start
+  during the first close.
 - rustls strictness (CN-only, X.509 v1, single-label wildcard, CA as leaf,
   encrypted keys): `TLS verification failed` or `ArgumentError`; documented.
 - Server RST_STREAM codes map as the Async transport does (3 and 11

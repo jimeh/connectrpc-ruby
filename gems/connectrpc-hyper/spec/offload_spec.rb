@@ -404,6 +404,147 @@ RSpec.describe "Inside an Async reactor" do
     expect(eval(output.lines.last)).to eq([[true, "interrupted"], true]) # rubocop:disable Security/Eval
   end
 
+  # Task#stop lands while the closer waits for a contended lock, before it
+  # reserved anything. The closer must still reserve its grace and start
+  # teardown, so the held call drains, and raise the stop only once teardown
+  # published its outcome.
+  it "holds Task#stop that lands while a closer waits for the transport's lock until close is published" do
+    output, status = reactor_child(<<~RUBY, pool: false)
+      #{held_call}
+      lock = transport.instance_variable_get(:@lock)
+      locked = Thread::Queue.new
+      unlock = Thread::Queue.new
+      holder = Thread.new do
+        lock.synchronize do
+          locked << true
+          unlock.pop
+        end
+      end
+      locked.pop
+      outcome = Async do |task|
+        # Runs until it waits for the lock.
+        closer = task.async do
+          transport.close(grace: 10)
+        rescue Async::Stop
+          [:stopped, driver.close_outcome]
+        end
+        closer.stop
+        unlock << true
+        # Teardown waits for the held call, which the closer's grace lets drain.
+        running(done: closer)
+        release << true
+        closer.wait
+      end.wait
+      holder.join
+      p [outcome, held.value, transport.close(grace: 0), driver.stats[1..2]]
+    RUBY
+    expect(status).to be_success
+    expect(eval(output.lines.last)).to eq([[:stopped, true], "a", true, [0, 0]]) # rubocop:disable Security/Eval
+  end
+
+  # The closer raises an exception into itself as Thread.new returns its
+  # helper. Interrupts stay deferred until the helper is stored, so the
+  # closer joins that one helper and raises the exception after publication,
+  # and a ThreadError is not mistaken for Thread.new failing.
+  [ThreadError, RuntimeError].each do |error|
+    it "holds a #{error} raised into a closer as its helper thread starts until close is published" do
+      output, status = reactor_child(<<~RUBY, pool: false)
+        #{held_call}
+        helpers = []
+        Thread.singleton_class.prepend(Module.new do
+          define_method(:new) do |*args, &body|
+            thread = super(*args, &body)
+            if caller_locations.any? { |location| location.label.to_s.end_with?("start_close_helper") }
+              helpers << thread
+              Thread.current.raise(#{error}, "injected") if helpers.size == 1
+            end
+            thread
+          end
+        end)
+        outcome = Async do |task|
+          closer = task.async do
+            transport.close(grace: 10)
+          rescue #{error} => e
+            [e.message, driver.close_outcome]
+          end
+          running(done: closer)
+          release << true
+          closer.wait
+        end.wait
+        p [outcome, helpers.size, held.value]
+      RUBY
+      expect(status).to be_success
+      expect(eval(output.lines.last)).to eq([["injected", true], 1, "a"]) # rubocop:disable Security/Eval
+    end
+  end
+
+  # Another thread kills the closer's thread after the closer reserved but
+  # before Thread.new starts its helper. The kill stays pending until the
+  # helper is stored, so teardown runs and publishes without a later close.
+  it "starts teardown when a closer's thread is killed as it starts its helper thread" do
+    output, status = reactor_child(<<~RUBY, pool: false)
+      #{held_call}
+      helpers = []
+      Thread.singleton_class.prepend(Module.new do
+        define_method(:new) do |*args, &body|
+          helper = caller_locations.any? { |location| location.label.to_s.end_with?("start_close_helper") }
+          if helper && helpers.empty?
+            closer = Thread.current
+            killer = super() { closer.kill }
+            deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + 10
+            # Thread.pass checks interrupts, and the kill is pending once the
+            # killer finished.
+            Thread.pass while killer.alive? && Process.clock_gettime(Process::CLOCK_MONOTONIC) < deadline
+          end
+          thread = super(*args, &body)
+          helpers << thread if helper
+          thread
+        end
+      end)
+      closer = Thread.new { Async { transport.close(grace: 10) }.wait }
+      closer.join(10) || raise("the closer's thread was never killed")
+      # Teardown waits for the held call, or never started.
+      eventually { wait_bodies[1] >= 1 }
+      release << true
+      eventually { !driver.close_outcome.nil? }
+      # The helper records the published outcome after native close returns.
+      helpers.first&.join(10)
+      p [closer.status, helpers.size, driver.close_outcome, transport.send(:state), held.value]
+    RUBY
+    expect(status).to be_success
+    expect(eval(output.lines.last)).to eq([false, 1, true, :closed, "a"]) # rubocop:disable Security/Eval
+  end
+
+  # The closer's thread kills its helper as soon as Thread.new returns it. The
+  # helper starts with interrupts deferred, so it still waits for teardown
+  # and the closer returns the published outcome.
+  it "returns the published outcome when another thread kills a closer's helper as it starts" do
+    output, status = reactor_child(<<~RUBY, pool: false)
+      #{held_call}
+      helpers = []
+      Thread.singleton_class.prepend(Module.new do
+        define_method(:new) do |*args, &body|
+          thread = super(*args, &body)
+          if caller_locations.any? { |location| location.label.to_s.end_with?("start_close_helper") }
+            helpers << thread
+            thread.kill
+          end
+          thread
+        end
+      end)
+      outcome = Async do |task|
+        closer = task.async { transport.close(grace: 10) }
+        # Teardown waits for the held call, or never started.
+        eventually { wait_bodies[1] >= 1 }
+        release << true
+        closer.wait
+      end.wait
+      p [outcome, helpers.size, held.value]
+    RUBY
+    expect(status).to be_success
+    expect(eval(output.lines.last)).to eq([true, 1, "a"]) # rubocop:disable Security/Eval
+  end
+
   # A frozen ThreadGroup makes Thread.new raise ThreadError on the reactor
   # thread, so the closer waits on it instead, as without a scheduler.
   it "waits on the calling thread when a closer cannot start its helper thread" do
