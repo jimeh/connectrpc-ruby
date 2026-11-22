@@ -258,7 +258,11 @@ RSpec.describe "Retries" do
   # GOAWAY naming stream 1 then disowns the call, whose body is still unread.
   # Its HEADERS may yet reach the socket, so it is not replayed. This depends
   # on h2 offering every encoded frame on its next write (wire.rs); a release
-  # that buffers HEADERS unseen breaks this spec.
+  # that buffers HEADERS unseen breaks this spec. Once released, the HEADERS
+  # can reach the peer after the example ends, landing in the next example's
+  # log as stream 3 of a connection it never opened. The peer logs a
+  # connection's close only after reading its last frame, so the example ends
+  # once its connection is closed.
   it "does not replay a gRPC stream whose HEADERS are still waiting for the socket" do
     from = peer.mark
     transport = hyper
@@ -279,6 +283,9 @@ RSpec.describe "Retries" do
     expect(call.value&.code).to eq("unavailable")
     expect(native_driver.reached("retry:unprocessed")).to eq(0)
     expect(accepts("rawgo", from)).to eq(1)
+    native_driver.release("socket:write")
+    transport.close(grace: 0)
+    peer.wait_closed("rawgo", from: from)
   ensure
     %w[socket:write wire:headers-queued retry:unprocessed].each { |point| native_driver&.release(point) }
   end
