@@ -31,15 +31,10 @@ RSpec.describe "Connect H1 adversarial wire lifecycle" do
       reactor do |task|
         _, cs, = methods
         calls = 0
-        entered = Async::Queue.new
+        owners = Async::Queue.new
         owner_type = ConnectRPC::Falcon.const_get(:HTTP1StreamInput)
         allow(owner_type).to receive(:new).and_wrap_original do |constructor, *args, **options|
-          constructor.call(*args, **options).tap do |owner|
-            allow(owner).to receive(:discard).and_wrap_original do |discard|
-              entered.enqueue(owner)
-              discard.call
-            end
-          end
+          constructor.call(*args, **options).tap { |owner| owners.enqueue(owner) }
         end
         handler = lambda { |*|
           calls += 1
@@ -47,22 +42,22 @@ RSpec.describe "Connect H1 adversarial wire lifecycle" do
         }
         with_host(target({ cs.path => handler }), secure) do |host, peer, _|
           peer.write(request_head(cs, framing, length: 400_000))
-          expect(peer.head.first).to eq(200)
-          expect(peer.body).to include("early")
-          owner = entered.dequeue
-          # Supply more than the allowance, followed by a real second request.
+          owner = owners.dequeue
+          # Supply more than the read limit, followed by a real second request.
           sending = task.async do
             peer.write(upload("x" * 400_000, framing, finish: true) + request_head(cs, :fixed, length: 0))
           rescue IOError, SystemCallError, OpenSSL::SSL::SSLError
             nil
           end
+          expect(peer.head.first).to eq(200)
+          expect(peer.body).to include("early")
           session = host.instance_variable_get(:@session)
           wait_until(task, "retirement releases admission and connection") do
             session.instance_variable_get(:@admitted).empty? &&
               session.instance_variable_get(:@resources).all?(&:finished?)
           end
           sending.wait
-          expect(owner.instance_variable_get(:@discarded)).to be <= 262_144
+          expect(owner.instance_variable_get(:@discarded)).to be < 262_144 + 65_536
           expect(calls).to eq(1)
           expect(session.instance_variable_get(:@resources)).to all(be_finished)
         end
@@ -70,24 +65,22 @@ RSpec.describe "Connect H1 adversarial wire lifecycle" do
     end
 
     %i[abort drain].each do |stop|
-      it "retains ownership until #{stop} interrupts #{label} hygiene, leaving other peers healthy" do
+      it "retains ownership until #{stop} interrupts the #{label} remainder read, leaving other peers healthy" do
         reactor do |task|
           _, cs, = methods
           entered = Async::Queue.new
           owner_type = ConnectRPC::Falcon.const_get(:HTTP1StreamInput)
           allow(owner_type).to receive(:new).and_wrap_original do |constructor, *args, **options|
             constructor.call(*args, **options).tap do |owner|
-              allow(owner).to receive(:discard).and_wrap_original do |discard|
+              allow(owner).to receive(:read_remainder).and_wrap_original do |read|
                 entered.enqueue(owner)
-                discard.call
+                read.call
               end
             end
           end
           handler = ->(*) { AsyncHelpers::MESSAGE.new(name: "early") }
           with_host(target({ cs.path => handler }), secure) do |host, peer, origin|
             peer.write(request_head(cs, framing))
-            expect(peer.head.first).to eq(200)
-            expect(peer.body).to include("early")
             entered.dequeue
             session = host.instance_variable_get(:@session)
             expect(session.instance_variable_get(:@admitted).size).to eq(1)
@@ -116,15 +109,15 @@ RSpec.describe "Connect H1 adversarial wire lifecycle" do
       truncated_chunk: "9\r\nx",
       truncated_fixed: "x"
     }.each do |kind, payload|
-      it "preserves delivered response across #{kind} hygiene failure over #{secure ? 'TLS' : 'TCP'}" do
+      it "delivers the response after #{kind} input fails the remainder read over #{secure ? 'TLS' : 'TCP'}" do
         reactor do |task|
           _, cs, = methods
           errors = []
           owner_type = ConnectRPC::Falcon.const_get(:HTTP1StreamInput)
           allow(owner_type).to receive(:new).and_wrap_original do |constructor, *args, **options|
             constructor.call(*args, **options).tap do |owner|
-              allow(owner).to receive(:discard).and_wrap_original do |discard|
-                discard.call
+              allow(owner.instance_variable_get(:@body)).to receive(:read).and_wrap_original do |read|
+                read.call
               rescue StandardError => e
                 errors << e
                 raise
@@ -135,13 +128,16 @@ RSpec.describe "Connect H1 adversarial wire lifecycle" do
             AsyncHelpers::MESSAGE.new(name: "delivered")
           } }), secure) do |host, peer, _|
             framing = kind == :truncated_fixed ? :fixed : :chunked
-            peer.write(request_head(cs, framing))
-            expect(peer.head.first).to eq(200)
+            peer.write(request_head(cs, framing) + payload)
+            # EOF ends only the upload, so the response can still arrive. A raw
+            # TCP FIN would truncate TLS, which fails the session for writing too.
+            if kind.to_s.start_with?("truncated")
+              secure ? peer.socket.close_write : peer.raw.shutdown(Socket::SHUT_WR)
+            end
+            status, fields = peer.head
+            expect(status).to eq(200)
+            expect(fields["connection"]).to eq(["close"])
             expect(peer.body).to include("delivered")
-            peer.write(payload)
-            # TLS close_notify would end both directions; the completed HTTP
-            # response is already observed, so raw EOF is the intended boundary.
-            peer.raw.shutdown(Socket::SHUT_WR) if kind.to_s.start_with?("truncated")
             session = host.instance_variable_get(:@session)
             wait_until(task, "malformed input retirement completed") do
               session.instance_variable_get(:@admitted).empty?
@@ -153,32 +149,24 @@ RSpec.describe "Connect H1 adversarial wire lifecycle" do
       end
     end
 
-    it "bounds continuing trickle by absolute elapsed time over #{secure ? 'TLS' : 'TCP'}" do
+    it "bounds a continuing trickle with the Connect deadline over #{secure ? 'TLS' : 'TCP'}" do
       reactor do |task|
         _, cs, = methods
         progress = Async::Queue.new
-        retired = Async::Queue.new
+        owners = Async::Queue.new
         owner_type = ConnectRPC::Falcon.const_get(:HTTP1StreamInput)
         allow(owner_type).to receive(:new).and_wrap_original do |constructor, *args, **options|
           constructor.call(*args, **options).tap do |owner|
-            allow(owner).to receive(:discard).and_wrap_original do |discard|
-              body = owner.instance_variable_get(:@body)
-              allow(body).to receive(:read).and_wrap_original do |read|
-                read.call.tap { progress.enqueue(true) }
-              end
-              start = AsyncHelpers::INTERNAL.now
-              begin
-                discard.call
-              ensure
-                retired.enqueue(AsyncHelpers::INTERNAL.now - start)
-              end
+            allow(owner.instance_variable_get(:@body)).to receive(:read).and_wrap_original do |read|
+              read.call.tap { progress.enqueue(true) }
             end
+            owners.enqueue(owner)
           end
         end
         with_host(target({ cs.path => ->(*) { AsyncHelpers::MESSAGE.new(name: "early") } }), secure) do |_host, peer, _|
-          peer.write(request_head(cs, :chunked, extra: "grpc-timeout: 1n\r\n"))
-          expect(peer.head.first).to eq(200)
-          expect(peer.body).to include("early")
+          started = AsyncHelpers::INTERNAL.now
+          peer.write(request_head(cs, :chunked, extra: "connect-timeout-ms: 200\r\n"))
+          owner = owners.dequeue
           sender = task.async do
             loop do
               peer.write("1\r\nx\r\n")
@@ -190,8 +178,11 @@ RSpec.describe "Connect H1 adversarial wire lifecycle" do
           rescue IOError, SystemCallError, OpenSSL::SSL::SSLError
             nil
           end
-          elapsed = retired.dequeue
-          expect(elapsed).to be_between(0.07, 0.3)
+          expect(peer.head.first).to eq(200)
+          expect(AsyncHelpers::INTERNAL.now - started).to be_between(0.15, 0.6)
+          expect(peer.body).to include("early")
+          # Progress never extends the deadline, unlike request_body_timeout.
+          expect(owner.instance_variable_get(:@discarded)).to be > 1
         ensure
           AsyncHelpers::INTERNAL.cancel(sender)
           AsyncHelpers::INTERNAL.join(sender)
@@ -201,7 +192,7 @@ RSpec.describe "Connect H1 adversarial wire lifecycle" do
   end
 
   [false, true].product(%i[fixed chunked]).each do |secure, framing|
-    it "never parses a pipeline after completing original #{framing} hygiene, TLS #{secure}" do
+    it "never parses a pipeline after the #{framing} remainder read completes, TLS #{secure}" do
       reactor do |task|
         _, cs, = methods
         calls = 0
@@ -209,23 +200,35 @@ RSpec.describe "Connect H1 adversarial wire lifecycle" do
           calls += 1
           AsyncHelpers::MESSAGE.new(name: "early")
         }
+        parsed = 0
+        resource_type = ConnectRPC::Falcon.const_get(:HTTP1Resource)
+        allow(resource_type).to receive(:new).and_wrap_original do |constructor, *args, **options|
+          constructor.call(*args, **options).tap do |resource|
+            allow(resource.connection).to receive(:read_request).and_wrap_original do |read, *args, &block|
+              parsed += 1
+              read.call(*args, &block)
+            end
+          end
+        end
         with_host(target({ cs.path => handler }), secure) do |host, peer, _|
-          peer.write(request_head(cs, framing, length: 1))
-          expect(peer.head.first).to eq(200)
+          # The remainder read completes framing; the pipelined request is never parsed.
+          peer.write(request_head(cs, framing, length: 1) + upload("x", framing, finish: true) +
+                     request_head(cs, :fixed, length: 0))
+          status, fields = peer.head
+          expect(status).to eq(200)
+          expect(fields["connection"]).to eq(["close"])
           expect(peer.body).to include("early")
           session = host.instance_variable_get(:@session)
-          resource = session.instance_variable_get(:@resources).first
-          expect(resource.connection).not_to receive(:read_request)
-          peer.write(upload("x", framing, finish: true) + request_head(cs, :fixed, length: 0))
           wait_until(task, "connection retired after original framing completes") do
             session.instance_variable_get(:@resources).all?(&:finished?)
           end
           expect(calls).to eq(1)
+          expect(parsed).to eq(1)
         end
       end
     end
 
-    it "renders a bounded oversized-envelope error before #{framing} upload finishes, TLS #{secure}" do
+    it "renders a bounded oversized-envelope error after reading the #{framing} upload, TLS #{secure}" do
       reactor do
         _, cs, = methods
         implementation = target({ cs.path => ->(reader, _) { reader.receive } }, request_limit: 16)
@@ -233,7 +236,11 @@ RSpec.describe "Connect H1 adversarial wire lifecycle" do
         with_host(implementation, secure) do |_host, peer, _|
           prefix = [0, 32].pack("CN")
           peer.write(request_head(cs, framing) + upload(prefix, framing))
-          expect(peer.head.first).to eq(200)
+          # Like the official request-exceeds-server-limit client, finish the upload first.
+          peer.write(upload("x" * (100_000 - prefix.bytesize), framing, finish: true))
+          status, fields = peer.head
+          expect(status).to eq(200)
+          expect(fields["connection"]).to eq(["close"])
           expect(peer.body).to include('"code":"resource_exhausted"')
         end
       end
@@ -241,7 +248,7 @@ RSpec.describe "Connect H1 adversarial wire lifecycle" do
   end
 
   [false, true].each do |secure|
-    it "joins an actual deadline input child before H1 hygiene, TLS #{secure}" do
+    it "joins an actual deadline input child before the H1 remainder read, TLS #{secure}" do
       reactor do
         _, cs, = methods
         readers = []
@@ -258,11 +265,12 @@ RSpec.describe "Connect H1 adversarial wire lifecycle" do
         owner_type = ConnectRPC::Falcon.const_get(:HTTP1StreamInput)
         allow(owner_type).to receive(:new).and_wrap_original do |constructor, *args, **options|
           constructor.call(*args, **options).tap do |owner|
-            allow(owner).to receive(:discard).and_wrap_original do |discard|
+            # The expired deadline skips the read itself; eligibility is still checked.
+            allow(owner).to receive(:read_needed?).and_wrap_original do |needed|
               expect(readers).not_to be_empty
               expect(readers).to all(be_finished)
               checked.enqueue(true)
-              discard.call
+              needed.call
             end
           end
         end

@@ -12,25 +12,30 @@ module ConnectRPC
     # after EOF or HEAD therefore marks the final flush, before close callbacks.
     # EOF tracking never inspects application payload bytes.
     class HTTP1ResponseBody < ::Protocol::HTTP::Body::Wrapper
-      def initialize(body, head:, &final_flush)
+      def initialize(body, head:, retirement:)
         super(body)
         @head = head
-        @final_flush = final_flush
+        @retirement = retirement
       end
 
       # The writer rescues only StandardError, so cancellation during the final
       # flush closes with a nil error. Grace may start, but write_body raises
       # and the owner is closed undelivered, which ignores grace.
       def close(error = nil)
-        final_flush = @final_flush
-        @final_flush = nil
-        final_flush.call if final_flush && error.nil? && (@eof || @head)
+        retirement = @retirement
+        @retirement = nil
+        retirement.final_flushed if retirement && error.nil? && (@eof || @head)
       ensure
         super
       end
 
+      # Output drained during the input read comes first. A head published
+      # before any output could not wait for the input remainder, so it is
+      # read once the first output chunk, or EOF, shows processing has
+      # stopped reading input.
       def read
-        chunk = super
+        chunk = @retirement&.prefetched? ? @retirement.next_prefetched : super
+        chunk = @retirement.read_first(chunk) if @retirement
         @eof = true if chunk.nil?
         chunk
       end
@@ -45,7 +50,8 @@ module ConnectRPC
 
     class HTTP1Connection < ::Async::HTTP::Protocol::HTTP1::Server
       attr_accessor :resource
-      attr_writer :rejected_input, :retiring_raw
+      attr_writer :rejected_input
+      attr_reader :request_fields
 
       def close_read
         # The framing parser can close input itself before raising EOFError.
@@ -55,7 +61,6 @@ module ConnectRPC
         # state ends here.
         return end_read if @resource&.send(:raw_failed?)
 
-        @retiring_raw.close if @retiring_raw && !@retiring_raw.closed?
         super
       end
 
@@ -63,6 +68,7 @@ module ConnectRPC
         return if @resource.draining || @resource.finished?
 
         request = super
+        @request_fields = request&.headers&.header
         if request
           fields = request.headers.header
           if fields.any? do |key, value|
@@ -98,6 +104,7 @@ module ConnectRPC
       def write_response(version, status, headers, reason = nil)
         raise Unsupported, "Protocol switching is unsupported" if Integer(status, exception: false) == 101
 
+        @resource.input_retirement&.read_first
         super
       end
 
@@ -107,8 +114,12 @@ module ConnectRPC
         super
       end
 
-      def each(...)
-        super
+      def each(task: ::Async::Task.current)
+        super do |request, connection|
+          response = yield(request, connection)
+          @resource.input_retirement&.response_body = response&.body
+          response
+        end
       rescue Exception => e # rubocop:disable Lint/RescueException -- cancellation also ends the exchange
         error = e
         raise
@@ -134,7 +145,7 @@ module ConnectRPC
       # rubocop:disable-next Style/OptionalBooleanParameter
       def write_body(version, body, head = false, trailer = nil, *rest)
         if (retirement = @resource.input_retirement) && body
-          body = HTTP1ResponseBody.new(body, head: head) { retirement.final_flushed }
+          body = HTTP1ResponseBody.new(body, head: head, retirement: retirement)
         end
         super
         # write_empty_body flushes a nil body but has no body to close.
@@ -176,14 +187,28 @@ module ConnectRPC
     # Connect-only transfer from the original processor to the connection task.
     # Framing completion never relies on empty?, which also becomes true on error.
     class HTTP1StreamInput
-      attr_writer :input
+      # net/http's maxPostHandlerReadBytes.
+      READ_LIMIT = 262_144
 
-      def initialize(body, raw:, connection:, resource: nil)
+      attr_writer :input, :response_body
+
+      def initialize(body, raw:, connection:, resource: nil, fields: nil, request_body_timeout: nil)
         @body = body
         @framed = body&.body
         @raw = raw
         @connection = connection
         @resource = resource
+        @request_body_timeout = request_body_timeout
+        @discarded = 0
+        fields ||= []
+        # net/http never reads the body of an Expect: 100-continue request it
+        # has not answered, and this server never sends 100 Continue.
+        @expect_continue = fields.any? { |key, value| key.casecmp?("expect") && value.strip.casecmp?("100-continue") }
+        timeouts = fields.filter_map { |key, value| value if key.casecmp?("connect-timeout-ms") }
+        # Core rejects an invalid timeout itself; only a valid one bounds the read.
+        return unless timeouts.size == 1 && /\A[0-9]{1,10}\z/.match?(timeouts.first) && timeouts.first.to_i.positive?
+
+        @expires = now + (timeouts.first.to_i / 1000.0)
       end
 
       def on_close(&completion)
@@ -202,14 +227,40 @@ module ConnectRPC
       def head_resolved(status)
         @retiring = status == 505 || !framed_complete?
         @connection.persistent = false if @retiring
+        # A bidi 505 peer may wait for the response before sending more, as
+        # net/http leaves a full-duplex body unread.
+        @read_pending = @retiring && status != 505 && !@expect_continue
       end
 
       def processor_finished
-        @discarded = @input&.release_remainder || 0
+        @input&.release_remainder
         @input = nil
         @body&.close if framed_complete?
         @processed = true
       end
+
+      # Reads the unread remainder before the response, as net/http does
+      # before writing its head, so a client that finishes its upload before
+      # reading neither deadlocks nor fails a late write on close. Only the
+      # connection task reads here, once the original processor has stopped
+      # reading: it has finished, or it has produced response output, which
+      # core does only after a handler's last input read. A head published
+      # without output, such as early client-stream headers, is written
+      # first, and the read waits for the first output chunk or EOF, which
+      # is returned unchanged.
+      def read_first(output = nil)
+        return output unless @read_pending && (@processed || output || output_queued?)
+
+        @read_pending = false
+        return output unless read_needed?
+
+        @processed ? read_remainder : drain_output { read_remainder }
+        output
+      end
+
+      def prefetched? = !!@prefetched&.any?
+
+      def next_prefetched = @prefetched.shift
 
       def final_flushed
         return if @close_expires
@@ -246,39 +297,46 @@ module ConnectRPC
 
       private
 
+      # Like net/http's rstAvoidanceDelay, the half-closed connection waits
+      # without reading, so later input stays unread until the close.
       def retire
         # HTTP completion is already observed. TLS cleanup must not precede
         # this raw TCP half-close or extend the one final-flush budget.
         @raw.shutdown(Socket::SHUT_WR)
-        begin
-          remaining = @close_expires - now
-          ::Async::Task.current.with_timeout(remaining) { discard } if remaining.positive?
-        rescue StandardError
-          # A late framing/timeout failure cannot revise completed delivery.
-          nil
-        end
         remaining = @close_expires - now
         ::Async::Task.current.sleep(remaining) if remaining.positive? && !@raw.closed? && !forced?
       end
 
-      def discard
-        # Chunked EOF closes the buffered/TLS read side before raising. Guard
-        # only post-delivery reads, without recursively closing the connection.
-        @connection.retiring_raw = @raw
-        expires = now + 0.1
-        until framed_complete?
-          return if 262_144 - @discarded < 65_536
+      # A declared remainder at or above the limit is not read, as on net/http.
+      def read_needed?
+        return false if forced? || framed_complete?
+        return false if @framed.is_a?(::Protocol::HTTP1::Body::Fixed) && @framed.remaining >= READ_LIMIT
 
-          remaining = expires - now
-          return if remaining <= 0
+        !(@expires && @expires <= now)
+      end
 
-          # protocol-http1's framed reads have no length argument and return <=64 KiB.
-          # Reserve a whole block before each read, including adapter remainder.
-          chunk = ::Async::Task.current.with_timeout(remaining) { @body.read }
-          @discarded += chunk.bytesize if chunk
+      # request_body_timeout bounds each read wait and the Connect deadline
+      # bounds the whole read, as ReadTimeout does for net/http. Reads stop
+      # once they reach the limit. A chunked read returns at most 64 KiB, so
+      # the last one can pass the limit by less than that.
+      def read_remainder
+        until framed_complete? || @discarded >= READ_LIMIT
+          wait = @request_body_timeout
+          if @expires
+            remaining = @expires - now
+            return if remaining <= 0
+
+            wait = wait ? [wait, remaining].min : remaining
+          end
+          chunk = wait ? ::Async::Task.current.with_timeout(wait) { @body.read } : @body.read
+          return unless chunk
+
+          @discarded += chunk.bytesize
         end
-      ensure
-        @connection.retiring_raw = nil
+      rescue StandardError
+        # A stalled, expired or malformed remainder still receives the
+        # response, and the connection retires after it, as on net/http.
+        nil
       end
 
       # Forced retirement has already failed raw TCP and closes it once every
@@ -295,6 +353,45 @@ module ConnectRPC
       end
 
       def forced? = !!@resource&.send(:raw_failed?)
+
+      # The processor's output write blocks until its queued fragment is
+      # read, and its RPC deadline would then fail it mid-message. Drain that
+      # output into memory while the input read runs. Once processing has
+      # stopped reading input, its remaining output is the response message
+      # and terminal it already holds: H1 serves no bidi, and core reads a
+      # server stream's input to EOF before its handler runs, so only a
+      # client stream's single result or an error terminal can remain. The drain reads Async's OutputBody
+      # itself, so it never waits for processing completion or lifecycle
+      # observers; the wrappers above it only observe close. A failed output
+      # raises again from the response body's next live read.
+      def drain_output
+        source = output_body
+        return yield unless source
+
+        @prefetched ||= []
+        drain = ::Async::Task.current.async do
+          while (chunk = source.read)
+            @prefetched << chunk
+          end
+        rescue StandardError
+          nil
+        end
+        begin
+          yield
+        ensure
+          # A pending OutputBody#read takes no fragment until it wakes.
+          drain.stop
+        end
+      end
+
+      def output_body
+        body = @response_body
+        body = body.body while body.is_a?(::Protocol::HTTP::Body::Wrapper)
+        body if body.respond_to?(:queued_bytes)
+      end
+
+      # Async's OutputBody holds one fragment until the connection task reads it.
+      def output_queued? = !!output_body&.queued_bytes&.positive?
 
       def now = Process.clock_gettime(Process::CLOCK_MONOTONIC)
     end
@@ -367,7 +464,8 @@ module ConnectRPC
       attr_accessor :raw, :socket, :task, :snapshot, :ready, :draining, :active, :exchange, :input_retirement
       attr_reader :connection, :generation, :progress, :activity_at
 
-      def initialize(stream, progress:, generation:)
+      def initialize(stream, progress:, generation:, request_body_timeout: nil)
+        @request_body_timeout = request_body_timeout
         @connection = HTTP1Connection.new(stream, "HTTP/1.1")
         @connection.resource = self
         @shared_progress = progress
@@ -407,7 +505,9 @@ module ConnectRPC
       end
 
       def prepare_stream_input(body)
-        @input_retirement = HTTP1StreamInput.new(body, raw: @raw, connection: @connection, resource: self)
+        @input_retirement = HTTP1StreamInput.new(body, raw: @raw, connection: @connection, resource: self,
+                                                       fields: @connection.request_fields,
+                                                       request_body_timeout: @request_body_timeout)
       end
 
       def abort

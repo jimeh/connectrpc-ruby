@@ -421,8 +421,9 @@ Since 0.3.0, `max_concurrent_streams:` (default 100) and `request_body_timeout:`
 `Host`: a stream over the connection's limit or over full `max_requests`
 admission is refused with `REFUSED_STREAM` while its HEADERS are read, before
 any of its DATA, and a stalled request body other than a client or bidi stream
-is reset with `CANCEL`. A refusal for full admission counts once in
-`requests_total`. See [Stream
+is reset with `CANCEL`. On HTTP/1.1, `request_body_timeout` bounds only the
+[read of unread input](#http11-input-retirement) before a Connect response. A
+refusal for full admission counts once in `requests_total`. See [Stream
 admission](../connectrpc-async/README.md#stream-admission). HTTP/1 requests keep
 the bare 503 when admission is full.
 
@@ -476,38 +477,57 @@ Transport remain H2-only. The explicit `ConnectRPC::Async::HTTP1Transport`
 supports Connect unary, safe GET, server streaming and client streaming in an
 application-owned reactor.
 
-The streaming guide defines Falcon's cooperative 500 ms total final-close budget
-and unchanged 100 ms / 256 KiB discard limits. Native Connect streaming clients
-have a separate, provisional one-second absolute HTTP tail policy. It applies
-even with a nil RPC deadline and can reject otherwise valid late EOF or slow
-intermediaries.
+The streaming guide defines how Falcon reads unread HTTP/1.1 input before its
+response and its cooperative 500 ms final-close budget. Native Connect streaming
+clients have a separate, provisional one-second absolute HTTP tail policy. It
+applies even with a nil RPC deadline and can reject otherwise valid late EOF or
+slow intermediaries.
 
 ### HTTP/1.1 input retirement
 
-Incomplete H1 uploads disable reuse at response-head resolution. Falcon delivers
-the full response and HTTP EOF after original processor cleanup, then half-closes
-raw TCP writes. One absolute final-close expiry starts at the actual final HTTP
-flush plus 500 ms, before body callbacks or lifecycle observation. Original-input
-discard retains one absolute 100 ms allowance and 256 KiB cap, including adapter
-remainders and full 64 KiB read reservations. After discard stops, Falcon waits
-only the remaining part of the original 500 ms budget, without further reads.
+Incomplete H1 uploads disable reuse at response-head resolution. Since 0.3.0,
+Falcon then reads the unread body before it writes the response head, as Go's
+`net/http` server does, so a client that sends its whole upload before reading
+neither deadlocks nor loses the response to a reset on its late write:
+
+- Falcon reads at most 256 KiB, and leaves a declared `Content-Length`
+  remainder of 256 KiB or more unread. A chunked read returns at most 64 KiB,
+  so the last one can pass the limit by less than that. An input adapter's
+  readahead remainder is released, not counted.
+- `request_body_timeout` (default 60 seconds) bounds each read wait, and the
+  Connect deadline bounds the whole read. With neither, a stalled client holds
+  the connection until owner shutdown, as `net/http` without `ReadTimeout` does.
+- A stalled, expired or malformed remainder still receives the response.
+- While the read runs, Falcon holds the original processor's remaining output
+  (its response message and terminal) in memory, so processing never waits on
+  the read or delivers a truncated message at its deadline.
+- A head published before any output, such as client-stream headers sent
+  before the handler reads its input, is written at once, and the remainder is
+  read before the first output chunk.
+- A bidi 505 and an unanswered `Expect: 100-continue` request skip the read.
+  Falcon never sends `100 Continue`.
+
+One absolute final-close expiry is anchored at the actual final HTTP flush plus
+500 ms, before body callbacks or lifecycle observation. After those, Falcon
+half-closes raw TCP writes and waits without reading until that expiry, like
+`net/http`'s `rstAvoidanceDelay`.
 Following pipelined requests are never parsed or dispatched. Admission/socket
 ownership lasts until retirement and original processing join. Earlier owner
 shutdown can shorten either phase; failed delivery receives no success grace.
 
-Both timers are cooperative and may overshoot under scheduler delay. Holding
-admission during remaining grace increases resource retention. This is best
-effort reset avoidance, with no arbitrary network-delivery guarantee. The
-[support contract](../../docs/support.md#falcon-connect-h1-retirement) promises
-this behavior and treats the 500 ms, 100 ms, 256 KiB and 64 KiB values as
-provisional tuning values.
+Timers are cooperative and may overshoot under scheduler delay. Holding
+admission during the read and the remaining grace increases resource retention.
+This is best effort reset avoidance, with no arbitrary network-delivery
+guarantee. The [support
+contract](../../docs/support.md#falcon-connect-h1-retirement) promises this
+behavior and treats the 256 KiB and 500 ms values as provisional tuning values.
 
 ### Streaming conformance
 
-The separate `falcon:conformance:http1` production profiles pass 174/174
-identity and 160/160 gzip cases on Ruby 3.4.12 and 4.0.9 with unchanged
+CI requires the separate `falcon:conformance:http1` production profiles to pass
+all 174 identity and 160 gzip cases on Ruby 3.4.12 and 4.0.9, with unchanged
 assertions and inventories. Web rejection-head ordering is repaired separately,
-with its gate excluded from Connect response-first delivery. Historical Web
+with its gate excluded from Connect delivery. Historical Web
 failures and the baseline repair remain recorded in the
 [conformance status](../../conformance/README.md#connect-http11-server-profiles).
 

@@ -44,7 +44,10 @@ module ConnectRPC
           handshake_timeout: handshake_timeout, idle_timeout: idle_timeout,
           refresh_interval: refresh_interval, refresh_jitter: refresh_jitter,
           refresh_timeout: refresh_timeout, on_tls_error: on_tls_error,
-          alpn_protocols: %w[h2 http/1.1], http1: HTTP1Resource.method(:new),
+          alpn_protocols: %w[h2 http/1.1],
+          http1: lambda { |stream, **options|
+            HTTP1Resource.new(stream, request_body_timeout: request_body_timeout, **options)
+          },
           stop_accepting: method(:stop_accepting), on_request_rejected: -> { @request_total.increment },
           keepalive: keepalive, max_concurrent_streams: max_concurrent_streams,
           request_body_timeout: request_body_timeout, response_body_timeout: response_body_timeout,
