@@ -104,11 +104,12 @@ module ConnectRPC
         # started, including one that stopped before the close began. The
         # close's expiry never passes `cutoff`, so the close stops waiting for
         # a stalled owner one cleanup allowance after it, and that owner exits
-        # once it resumes. A cutoff already past only stands once a wait of
-        # the call has spent the owner's allowance; otherwise the owner still
-        # has an allowance from the start of the close, however late that
-        # start is. An interrupt of the close wait still joins the owners,
-        # within the same bound, before it propagates.
+        # once it resumes. A cutoff already past only stands when the call's
+        # last owner wait spent the owner's allowance, by expiring or being
+        # interrupted; otherwise the owner still has an allowance from the
+        # start of the close, however late that start is. An interrupt of the
+        # close wait still joins the owners, within the same bound, before it
+        # propagates.
         def close_joined(grace, cutoff)
           @cutoff = cutoff && !@owner_unresponsive ? [cutoff, Internal.now].max : cutoff
           close(grace: grace)
@@ -118,9 +119,18 @@ module ConnectRPC
 
         private
 
-        def await(...) = super.tap { |status| @owner_unresponsive = true if EXPIRED.include?(status) }
+        # An owner wait counts as spending the owner's allowance until it
+        # returns with the owner's outcome, so an interrupted wait keeps the
+        # mark and a later outcome clears it.
+        def await(...)
+          @owner_unresponsive = true
+          super.tap { |status| @owner_unresponsive = EXPIRED.include?(status) }
+        end
 
-        def await_stream(...) = super.tap { |(status)| @owner_unresponsive = true if EXPIRED.include?(status) }
+        def await_stream(...)
+          @owner_unresponsive = true
+          super.tap { |(status)| @owner_unresponsive = EXPIRED.include?(status) }
+        end
 
         def build_inner(**) = Tunnelled.new(proxy: @proxy, **)
 

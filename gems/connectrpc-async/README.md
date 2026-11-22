@@ -1001,13 +1001,14 @@ and bidi streaming before any I/O.
   an interrupt ends the close's own wait, and the call still joins its owner
   threads, within the close's bound, before raising it. If the owner thread is
   stalled, for example by native code, the call returns at its deadline plus
-  one 100 ms allowance, and the owner exits once it resumes. An owner that
-  has not stalled is joined even when the close starts long after the
-  deadline. An owner that has already published its outcome and is exiting,
-  for example while it waits for the GVL, is still joined, which can take up
-  to another 100 ms. With a custom
-  `Deadline` clock the close cannot place the deadline in monotonic time, so a
-  stalled owner can cost up to two more 100 ms allowances.
+  one 100 ms allowance, and the owner exits once it resumes. The owner is
+  joined even when the close starts long after the deadline, unless the
+  call's last wait for it expired or was interrupted unanswered. An owner
+  that has already published its outcome and is exiting, for example while
+  it waits for the GVL, is still joined, which can take up to another
+  100 ms. With a custom `Deadline` clock the close cannot place the deadline
+  in monotonic time, so a stalled owner can cost up to two more 100 ms
+  allowances.
 - Inside a reactor, a `Thread#raise` from another thread is best-effort, as
   for `Transport`: it lands in whichever fiber is running, and one that lands
   in the caller's fiber at certain points of its teardown can return before
