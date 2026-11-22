@@ -133,10 +133,17 @@ impl Mark {
     /// Called from the body's `size_hint`, in hyper's dispatch task.
     pub fn take_index(&self) {
         self.index.get_or_init(|| {
-            // Spec hold point: armed with a zero bound, it counts the requests
-            // hyper's dispatch task passed to h2.
-            self.wire.holds.block("request:indexed");
-            self.wire.next.fetch_add(1, Ordering::SeqCst)
+            // Spec hold points: armed with a zero bound, they count the
+            // requests hyper's dispatch task passed to h2, and each stream id
+            // derived for one, so a spec can compare them with the ids h2 put
+            // on the wire.
+            let holds = &self.wire.holds;
+            holds.block("request:indexed");
+            let index = self.wire.next.fetch_add(1, Ordering::SeqCst);
+            if holds.armed() {
+                holds.block(&format!("request:stream:{}", 2 * index + 1));
+            }
+            index
         });
     }
 
@@ -345,6 +352,11 @@ impl<T> Tap<T> {
             .chain(bufs.iter().skip(index + 1).map(|buf| &buf[..]));
         let ahead = self.write.scan(rest);
         self.wire.record_headers(ahead);
+        if ahead > 0 {
+            // Spec hold point: armed with a zero bound, it counts writes that
+            // left a HEADERS frame offered but not yet taken.
+            self.wire.holds.block("wire:headers-queued");
+        }
     }
 }
 

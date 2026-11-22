@@ -20,7 +20,9 @@ RSpec.describe "Retries" do
   # request:queued that the second reached hyper's queue, before the GOAWAY.
   # Each queued call succeeds, reaching the peer exactly once on one new
   # connection with its whole body: the peer answers only after the request
-  # ends and reports the bytes it received.
+  # ends and reports the bytes it received. Once the held stream ends, h2
+  # closes the old connection; the queued request whose stream h2 failed never
+  # reaches it, because h2 dropped that stream's queued HEADERS.
   %i[grpc connect].each do |protocol|
     it "replays queued requests once on a new connection after a GOAWAY (#{protocol})" do
       from = peer.mark
@@ -78,9 +80,65 @@ RSpec.describe "Retries" do
       expect(accepts("rawmcs1", from)).to eq(2)
       peer.command("release #{tag}")
       expect(held.value).to include("grpc-status" => ["0"])
+      old = Regexp.escape(peer.since(from).grep(/\Arawmcs1 accept /).first.split.last)
+      peer.wait_event(/\Arawmcs1 conn-closed #{old}\z/, from: from)
+      expect(requests("rawmcs1", from).grep(/request await-ok:/).size).to eq(2)
     ensure
-      points.each { |point| native_driver&.release(point) }
+      points&.each { |point| native_driver&.release(point) }
     end
+  end
+
+  # The GOAWAY retry derives each request's stream id from the order hyper's
+  # dispatch passes requests to h2 (wire.rs): one index per request, taken in
+  # the body's size_hint right before h2's send_request, and none for a request
+  # whose caller left while it waited in hyper's queue. With one stream slot
+  # held, q0 waits in h2 and q1 in hyper's queue; q1's caller cancels. Once the
+  # slot frees, h2 opens q0 and hyper skips q1, so q2 gets the next stream.
+  # request:stream:N counts each derived id; the peer reports the real ones. A
+  # hyper or h2 release that changes this dispatch breaks this spec.
+  it "derives each request's stream id from hyper's dispatch order" do
+    from = peer.mark
+    transport = hyper
+    native_driver = driver(transport)
+    points = %w[request:queued request:indexed] + [1, 3, 5, 7].map { |id| "request:stream:#{id}" }
+    points.each { |point| native_driver.hold(point, 0) }
+    origin = peer["raw_mcs1"]
+    tag = "stream-ids-#{rand(1 << 30)}"
+    head = Queue.new
+    held = Thread.new do
+      request = ConnectRPC::StreamRequest.new(
+        url: URI("#{origin}/raw.v1.Raw/Call"), http_method: "POST",
+        headers: { "content-type" => ["application/grpc"], "te" => ["trailers"], "x-scenario" => ["hold:#{tag}"] }
+      )
+      transport.open_grpc_stream(request) do |exchange|
+        exchange.write([0, 0].pack("CN"))
+        exchange.close_send
+        head << exchange.response_head(timeout: 20).status
+        nil while exchange.read(64, timeout: 20)
+      end
+    end
+    expect(head.pop(timeout: 10)).to eq(200)
+    call = lambda do |name, **options|
+      raw_call(origin, "await-ok:#{name}", transport: transport, protocol: :connect, timeout: 20, **options)
+    end
+    q0 = Thread.new { call.call("q0").message }
+    wait_until("q0 passed to h2") { native_driver.reached("request:indexed") == 2 }
+    source = ConnectRPC::CancellationSource.new
+    q1 = Thread.new { error_of { call.call("q1", cancellation: source.token) } }
+    wait_until("q1 queued in hyper") { native_driver.reached("request:queued") == 3 }
+    source.cancel
+    expect(q1.value&.code).to eq("canceled")
+    peer.command("release #{tag}")
+    expect(q0.value).to eq(MSG.new)
+    expect(call.call("q2").message).to eq(MSG.new)
+    held.value
+    expect(native_driver.reached("request:indexed")).to eq(3)
+    expect([1, 3, 5, 7].map { |id| native_driver.reached("request:stream:#{id}") }).to eq([1, 1, 1, 0])
+    expect(streams("rawmcs1", from).map { |scenario, stream, _| [scenario, stream] })
+      .to eq([["hold:#{tag}", "stream=1"], %w[await-ok:q0 stream=3], %w[await-ok:q2 stream=5]])
+    expect(accepts("rawmcs1", from)).to eq(1)
+  ensure
+    points&.each { |point| native_driver&.release(point) }
   end
 
   # As above, a GOAWAY leaves a queued gRPC call unsent and the retry recovers
@@ -192,6 +250,37 @@ RSpec.describe "Retries" do
     expect([error.code, error.message]).to eq(["unavailable", "HTTP transport failed: connection closed"])
     expect(streams("rawgo", from)).to eq([%w[stall stream=1 n=1], ["ignore-once:#{key}", "stream=3", "n=2"],
                                           ["ignore-once:#{key}", "stream=1", "n=1"]])
+  end
+
+  # Socket writes are held back after stream 1, as a full send buffer would
+  # hold them. h2 encodes the gRPC call's HEADERS and offers them to the
+  # socket, which takes nothing (wire:headers-queued counts that offer). A
+  # GOAWAY naming stream 1 then disowns the call, whose body is still unread.
+  # Its HEADERS may yet reach the socket, so it is not replayed. This depends
+  # on h2 offering every encoded frame on its next write (wire.rs); a release
+  # that buffers HEADERS unseen breaks this spec.
+  it "does not replay a gRPC stream whose HEADERS are still waiting for the socket" do
+    from = peer.mark
+    transport = hyper
+    native_driver = driver(transport)
+    origin = peer["raw_goaway"]
+    expect(raw_call(origin, "ok", transport: transport, protocol: :connect).message).to eq(MSG.new)
+    %w[wire:headers-queued retry:unprocessed].each { |point| native_driver.hold(point, 0) }
+    native_driver.hold("socket:write", 20)
+    request = ConnectRPC::StreamRequest.new(
+      url: URI("#{origin}/raw.v1.Raw/Call"), http_method: "POST",
+      headers: { "content-type" => ["application/grpc"], "te" => ["trailers"], "x-scenario" => ["ok"] }
+    )
+    call = Thread.new do
+      error_of { transport.open_grpc_stream(request) { |exchange| exchange.response_head(timeout: 20) } }
+    end
+    wait_until("the HEADERS offered and held back") { native_driver.reached("wire:headers-queued") >= 1 }
+    peer.command("raw-goaway rawgo 1")
+    expect(call.value&.code).to eq("unavailable")
+    expect(native_driver.reached("retry:unprocessed")).to eq(0)
+    expect(accepts("rawgo", from)).to eq(1)
+  ensure
+    %w[socket:write wire:headers-queued retry:unprocessed].each { |point| native_driver&.release(point) }
   end
 
   # The gRPC stream's HEADERS reached the peer before the GOAWAY disowned

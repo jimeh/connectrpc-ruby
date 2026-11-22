@@ -155,7 +155,11 @@ impl AsyncWrite for Socket {
         cx: &mut Context<'_>,
         buf: &[u8],
     ) -> Poll<io::Result<usize>> {
-        Pin::new(&mut self.get_mut().stream).poll_write(cx, buf)
+        let this = self.get_mut();
+        // Spec hold point: armed, it holds every write back until released,
+        // as a socket whose send buffer is full would.
+        std::task::ready!(this.holds.poll_stall("socket:write", cx));
+        Pin::new(&mut this.stream).poll_write(cx, buf)
     }
 
     fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
@@ -171,7 +175,9 @@ impl AsyncWrite for Socket {
         cx: &mut Context<'_>,
         bufs: &[io::IoSlice<'_>],
     ) -> Poll<io::Result<usize>> {
-        Pin::new(&mut self.get_mut().stream).poll_write_vectored(cx, bufs)
+        let this = self.get_mut();
+        std::task::ready!(this.holds.poll_stall("socket:write", cx));
+        Pin::new(&mut this.stream).poll_write_vectored(cx, bufs)
     }
 
     fn is_write_vectored(&self) -> bool {

@@ -11,6 +11,7 @@
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
+use std::task::{Context, Poll, Waker};
 use std::time::Duration;
 
 use tokio::sync::Notify;
@@ -34,6 +35,8 @@ struct Point {
     released: Mutex<bool>,
     changed: Condvar,
     notify: Notify,
+    /// Polls stalled at the point (`poll_stall`), woken on release.
+    wakers: Mutex<Vec<Waker>>,
 }
 
 impl Point {
@@ -45,6 +48,14 @@ impl Point {
         *self.released.lock().unwrap_or_else(|e| e.into_inner()) = true;
         self.changed.notify_all();
         self.notify.notify_waiters();
+        for waker in self
+            .wakers
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .drain(..)
+        {
+            waker.wake();
+        }
     }
 }
 
@@ -99,6 +110,28 @@ impl Holds {
             .wait_timeout_while(released, point.bound, |released| !*released);
     }
 
+    /// Whether any point is armed on this driver: callers that build a
+    /// point's name check this first.
+    pub fn armed(&self) -> bool {
+        self.armed.load(Ordering::Acquire)
+    }
+
+    /// Stalls a poll at `name` while it is armed and not released, for an
+    /// IO operation a spec holds back; the bound does not apply. Each
+    /// stalled poll counts an arrival.
+    pub fn poll_stall(&self, name: &str, cx: &mut Context<'_>) -> Poll<()> {
+        let Some(point) = self.point(name) else {
+            return Poll::Ready(());
+        };
+        let mut wakers = point.wakers.lock().unwrap_or_else(|e| e.into_inner());
+        if point.is_released() {
+            return Poll::Ready(());
+        }
+        point.reached.fetch_add(1, Ordering::SeqCst);
+        wakers.push(cx.waker().clone());
+        Poll::Pending
+    }
+
     /// Arms `name`; each arrival parks for at most `bound`.
     pub fn arm(&self, name: String, bound: Duration) {
         let point = Arc::new(Point {
@@ -107,6 +140,7 @@ impl Holds {
             released: Mutex::new(false),
             changed: Condvar::new(),
             notify: Notify::new(),
+            wakers: Mutex::new(Vec::new()),
         });
         let mut points = self.points.lock().unwrap_or_else(|e| e.into_inner());
         if points.insert(name, point).is_none() {
