@@ -289,7 +289,7 @@ stage and reset its stream.
   hyper-only platform; otherwise it moves to a follow-up.
   `aarch64-mingw-ucrt` was build-only at first. Since #174 its install and
   smoke calls on Windows 11 arm64 gate CI and the release; since #175 the specs
-  and the Go interop subset also run there in the non-gating Windows job.
+  and the Go interop subset also run there, and the Windows job gates CI.
 - D15 Release wiring: the gem's version must follow the train (its gemspec
   derives the `connectrpc` requirement from it). `ReleaseTrain#check_configuration!`
   requires Release Please `extra-files` to equal the version files of
@@ -499,7 +499,7 @@ cause, abort in a masked `ensure`. Rust owns connections, streams and waits.
 | Fast path | Connect unary passes all unary specs and does one native wait (spec on an internal counter or a GVL-contention probe) |
 | Package | Source gem builds and installs in a clean GEM_HOME and runs a smoke call; exact manifest, MIT plus third-party notice, push host, MFA |
 | Cross | All platform gems build in CI as artifacts; Linux gems smoke-tested on their arch (native arm64 runner) and libc (Alpine containers); arm64-darwin smoke on a macOS runner (non-gating); x86_64-darwin is build-only, and `docs/support.md` says which artifacts were built, installed and exercised. Since #174 every platform gem and the source gem builds twice and smokes on a native runner for both Rubies, gating, including x86_64-darwin on macOS Intel |
-| Windows | Non-gating job runs specs and a Go interop subset against the x64-mingw-ucrt and aarch64-mingw-ucrt gems on x64 and arm64 runners, both Rubies |
+| Windows | Gating job (since #175) runs specs and a Go interop subset against the x64-mingw-ucrt and aarch64-mingw-ucrt gems on x64 and arm64 runners, both Rubies |
 | Types | `rbs:check` (inventory, consumers, caller evidence) and `rbs:package` |
 | Repository | `hyper:verify`, `mise run verify`, `mise run rack:verify`, `mise run check`, `mise run rbs:check`, `mise run rbs:package` before Ready |
 
@@ -515,8 +515,9 @@ environment ignored with an explicit proxy, and the User-Agent on the wire.
   workflow artifact; plus the MSRV build.
 - `hyper_smoke` (needs `hyper_cross`): install and smoke each Linux gem on its
   arch and libc for both Rubies.
-- `hyper_windows` (non-gating): x64 on `windows-2025` and aarch64 on
-  `windows-11-arm`, both Rubies, against the cross-built gems.
+- `hyper_windows`: x64 on `windows-2025` and aarch64 on `windows-11-arm`,
+  both Rubies, against the cross-built gems. Non-gating until #175 made it
+  gate.
 - Since #174, `hyper_cross` and `hyper_smoke` are replaced by `hyper_gems`,
   which calls the reusable hyper-gems workflow that `release.yml` also calls:
   build jobs per archive, smoke jobs per platform and Ruby on native runners,
@@ -547,7 +548,8 @@ ordering naturally, and Linux reproduced it by delaying the sibling. Close now
 waits on a helper thread under a fiber scheduler (D13), and the offload cases
 run on every platform. `hyper_windows` runs the specs and the Go interop
 subset against the x64 and aarch64 gems on `windows-2025` and
-`windows-11-arm`, for both Rubies.
+`windows-11-arm`, for both Rubies. After four consecutive green heads it
+gates CI, and its four checks join the main ruleset once #178 merges.
 
 ## Follow-ups
 

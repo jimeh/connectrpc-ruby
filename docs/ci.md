@@ -2,14 +2,13 @@
 
 The workflow runs on pull requests, pushes to `main`, manual dispatch and a
 daily schedule (04:37 UTC), on Ubuntu 24.04 unless a row names another runner.
-It has 83 checks: nine core, three optional Rails, four optional HTTP/2, two
+It has 85 checks: nine core, three optional Rails, four optional HTTP/2, two
 optional Rack, two optional in-process testing, two optional RBS, four Falcon,
 two OpenTelemetry, two Prometheus, two Yabeda, two health, two Sentry, two
 browser gRPC-Web, ten lowest-allowed dependency checks, one runnable-examples
-check and 34 [hyper transport](#optional-hyper-lanes) checks, two of them
-non-gating. There is no serial cache primer or aggregate job; only the hyper
-archive workflow's smoke, candidate and `Verified` jobs and the Windows job wait
-for the cross-built gems:
+check and 36 [hyper transport](#optional-hyper-lanes) checks. There is no
+serial cache primer or aggregate job; only the hyper archive workflow's smoke,
+candidate and `Verified` jobs and the Windows job wait for the cross-built gems:
 
 | Check | Ruby | Canonical commands |
 | --- | --- | --- |
@@ -45,7 +44,7 @@ for the cross-built gems:
 | Hyper gems / Smoke, source gem | 3.4.12, 4.0.9 | `mise run hyper:smoke:source` (Rust 1.98.0) |
 | Hyper gems / Check the release candidate | 3.4.12 | `mise run release:build` against every downloaded archive and smoke record |
 | Hyper gems / Verified | none | Fails unless every build, smoke and candidate job succeeded |
-| Hyper x64-mingw-ucrt, Windows Server 2025 (non-gating) | 3.4, 4.0 | Install smoke, then the applicable specs and Go interop subset against the artifact |
+| Hyper gem x64-mingw-ucrt and aarch64-mingw-ucrt on Windows (Windows Server 2025 x64, Windows 11 arm64) | 3.4, 4.0 | Install smoke, then the applicable specs and Go interop subset against the artifact |
 
 Each matrix has `fail-fast: false`. Every check runs its commands on cache
 hits too. Package isolation still installs cached `.gem` artifacts offline and
@@ -452,8 +451,8 @@ checks. All of these jobs gate. Every smoke job needs the whole build matrix,
 so one failing build leg skips every smoke leg, the candidate job and the
 release publish job, and `Verified` fails.
 
-`hyper_windows` (Windows Server 2025) needs `hyper_gems` and sets
-`continue-on-error`, so it reports without gating. It places the artifact's
+`hyper_windows` (x64 on `windows-2025`, aarch64 on `windows-11-arm`) needs
+`hyper_gems`, and a failing leg fails the run. It places the artifact's
 extension into the checkout, builds the Go peer and runs the specs that apply
 off Linux, excluding the tags `fork`, `dns_shim` (the `LD_PRELOAD` shim) and
 `linux_only` (`/proc` and accept-backlog probes), then the interop subset.

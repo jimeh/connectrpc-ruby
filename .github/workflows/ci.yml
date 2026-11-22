@@ -1020,10 +1020,9 @@ jobs:
   # against it. Tags exclude fork, the LD_PRELOAD DNS shim and /proc or
   # accept-backlog probes.
   hyper_windows:
-    name: Hyper gem ${{ matrix.platform }} on Windows / Ruby ${{ matrix.ruby }} (non-gating)
+    name: Hyper gem ${{ matrix.platform }} on Windows / Ruby ${{ matrix.ruby }}
     needs: hyper_gems
     runs-on: ${{ matrix.runner }}
-    continue-on-error: true
     strategy:
       fail-fast: false
       matrix:
