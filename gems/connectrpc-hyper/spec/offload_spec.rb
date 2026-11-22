@@ -716,6 +716,10 @@ RSpec.describe "Inside an Async reactor" do
       from = peer.mark
       output, status = reactor_child(<<~RUBY, pool: true)
         peer_client = client(#{peer['grpc_h2c'].dump}, ConnectRPC::Hyper::Transport.new)
+        # Warm, as peer_client is by the deadline case, so the expired
+        # stream's 0.2 s budget covers its own exchange and not a dial.
+        raw = raw_client
+        raw.call(RAW_UNARY, MSG.new, metadata: { "x-scenario" => "ok" }, timeout: 5)
         # Parks in a read of a held stream once its first message arrived.
         hold = lambda do |ready, timeout: 20, **options|
           peer_client.server_stream(MSG.new(value: "hold"), timeout: timeout, **options) do |reader|
@@ -752,8 +756,8 @@ RSpec.describe "Inside an Async reactor" do
           # first message's arrival shows the deadline landed in that read.
           first = Queue.new
           expired = task.async do
-            raw_client.server_stream(RAW_SERVER_STREAM, MSG.new, metadata: { "x-scenario" => "silent-data" },
-                                                                 timeout: 0.2) do |reader|
+            raw.server_stream(RAW_SERVER_STREAM, MSG.new, metadata: { "x-scenario" => "silent-data" },
+                                                          timeout: 0.2) do |reader|
               reader.receive
               first << true
               reader.receive
@@ -792,6 +796,8 @@ RSpec.describe "Inside an Async reactor" do
       peer.wait_count(/grpc ss-hold-done context (canceled|deadline exceeded)/, 4, from: from)
       expired = peer.wait_event(/\Araw request silent-data /, from: from)[/ stream=(\d+) /, 1]
       peer.wait_event(/\Araw rst stream=#{expired} code=8\z/, from: from)
+      # The expired stream reused the warmed connection.
+      expect(peer.count(/\Araw accept /, from: from)).to eq(1)
     end
 
     # async's default worker pool has one worker, which runs parked waits one
