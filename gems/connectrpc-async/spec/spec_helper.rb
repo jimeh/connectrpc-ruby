@@ -24,6 +24,11 @@ require_relative "support/rejected_media_body"
 require_relative "support/connection_peer"
 require_relative "support/threaded_helpers"
 
+# Ruby warns once per process on first IO::Buffer use, which io-stream's
+# buffered reads trigger. Warn here, so the warning never lands in whichever
+# example's captured stderr runs first (#132).
+IO::Buffer.new(1).free
+
 RSpec.configure do |config|
   config.include AsyncHelpers
   config.include AsyncHostingHelpers

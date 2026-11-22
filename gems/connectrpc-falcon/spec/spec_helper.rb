@@ -20,6 +20,11 @@ require "echo_connect"
 require_relative "../../connectrpc-async/spec/support/helpers"
 require_relative "support/helpers"
 
+# Ruby warns once per process on first IO::Buffer use, which io-stream's
+# buffered reads trigger. Warn here, so the warning never lands in whichever
+# example's captured stderr runs first (#132).
+IO::Buffer.new(1).free
+
 RSpec.configure do |config|
   config.include AsyncHelpers
   config.include FalconHelpers
