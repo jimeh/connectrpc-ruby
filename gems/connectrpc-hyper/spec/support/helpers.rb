@@ -5,6 +5,8 @@ module HyperHelpers # rubocop:disable Metrics/ModuleLength
   RAW_UNARY = ConnectRPC::Method.new(service: "raw.v1.Raw", name: "Call", request_type: MSG, response_type: MSG)
   RAW_SERVER_STREAM = ConnectRPC::ServerStreamMethod.new(service: "raw.v1.Raw", name: "Stream", request_type: MSG,
                                                          response_type: MSG)
+  RAW_CLIENT_STREAM = ConnectRPC::ClientStreamMethod.new(service: "raw.v1.Raw", name: "Upload", request_type: MSG,
+                                                         response_type: MSG)
   SHIM_SOURCE = File.expand_path("stall_dns.c", __dir__)
   SHIM = File.join(ROOT, "vendor/hyper/shim/stall_dns.so")
 
