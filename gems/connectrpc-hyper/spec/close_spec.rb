@@ -262,10 +262,13 @@ RSpec.describe "Transport#close" do
     expect([stats(transport)[2], closer.alive?]).to eq([1, true])
     native_driver.release("socket:drop")
     expect(closer.value).to be(false)
-    expect(stats(transport)[1..2]).to eq([0, 0])
+    expect(stats(transport)[2]).to eq(0)
     # With grace 0 the waiter may see the forced teardown before it sees
     # close, so it fails with either forced phrase.
     expect([dialing.value.code, dialing.value.message]).to match(["unavailable", forced_phrase])
+    # A forced close does not wait for calls to unwind: the call leaves the
+    # in-flight count only as it returns.
+    expect(stats(transport)[1..2]).to eq([0, 0])
   ensure
     %w[connect:handshaken socket:drop force:sealed].each { |name| native_driver&.release(name) }
   end

@@ -1,5 +1,7 @@
 # frozen_string_literal: true
 
+require "English"
+
 RSpec.describe "Retries" do
   def requests(tag, from) = peer.since(from).grep(/\A#{tag} request /)
   def accepts(tag, from) = peer.count(/\A#{tag} accept /, from: from)
@@ -258,13 +260,19 @@ RSpec.describe "Retries" do
   # GOAWAY naming stream 1 then disowns the call, whose body is still unread.
   # Its HEADERS may yet reach the socket, so it is not replayed. This depends
   # on h2 offering every encoded frame on its next write (wire.rs); a release
-  # that buffers HEADERS unseen breaks this spec.
+  # that buffers HEADERS unseen breaks this spec. Once released, the HEADERS
+  # can reach the peer after the example ends, landing in the next example's
+  # log as stream 3 of a connection it never opened. The peer logs each
+  # request from the connection's read loop and its close only after that
+  # loop ends, so the example, passing or failing, ends once its connection
+  # is closed; a failed wait never replaces the example's own failure.
   it "does not replay a gRPC stream whose HEADERS are still waiting for the socket" do
     from = peer.mark
     transport = hyper
     native_driver = driver(transport)
     origin = peer["raw_goaway"]
     expect(raw_call(origin, "ok", transport: transport, protocol: :connect).message).to eq(MSG.new)
+    connected = true
     %w[wire:headers-queued retry:unprocessed].each { |point| native_driver.hold(point, 0) }
     native_driver.hold("socket:write", 20)
     request = ConnectRPC::StreamRequest.new(
@@ -280,7 +288,16 @@ RSpec.describe "Retries" do
     expect(native_driver.reached("retry:unprocessed")).to eq(0)
     expect(accepts("rawgo", from)).to eq(1)
   ensure
+    failure = $ERROR_INFO
     %w[socket:write wire:headers-queued retry:unprocessed].each { |point| native_driver&.release(point) }
+    if connected
+      transport.close(grace: 0)
+      begin
+        peer.wait_closed("rawgo", from: from)
+      rescue StandardError
+        raise unless failure
+      end
+    end
   end
 
   # The gRPC stream's HEADERS reached the peer before the GOAWAY disowned
