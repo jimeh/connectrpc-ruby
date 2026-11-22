@@ -26,8 +26,9 @@ fn content_length(headers: &http::HeaderMap) -> Option<u64> {
 }
 
 /// Retries once, on a fresh connection and with a refreshed wire timeout: a
-/// request hyper hands back unsent, or a stream the server refused with
-/// REFUSED_STREAM before response headers. Nothing else is replayed.
+/// request hyper hands back unsent, or, before response headers, a stream the
+/// server refused with REFUSED_STREAM or that its GOAWAY says it never
+/// processed (a stream id above the last stream id). Nothing else is replayed.
 pub async fn unary(
     core: Arc<DriverCore>,
     spec: RequestSpec,
@@ -39,11 +40,11 @@ pub async fn unary(
     loop {
         let mut lease = core.acquire(&spec.origin, false, exclude, deadline).await?;
         let body = match &payload {
-            Some(bytes) => CallBody::Full(Some(bytes.clone())),
-            None => CallBody::Empty,
+            Some(bytes) => CallBody::full(bytes.clone()),
+            None => CallBody::empty(),
         };
         let request = spec.build(body, deadline, lease.is_h2())?;
-        let sent = send(&mut lease, request);
+        let (sent, mark) = send(&mut lease, request);
         // Spec hold point: armed with a zero bound, it counts the requests
         // handed to hyper.
         core.holds.block("request:queued");
@@ -56,8 +57,20 @@ pub async fn unary(
                     // requests hyper handed back unsent.
                     core.holds.reach("retry:unsent").await;
                 }
-                let replayable = unsent || Failure::refused_stream(error.error());
+                // Its stream is above a GOAWAY's last stream id and either h2
+                // failed it for that GOAWAY or it never reached the socket.
+                let unprocessed = !unsent
+                    && mark.as_ref().is_some_and(|mark| {
+                        mark.unprocessed()
+                            && (Failure::remote_go_away(error.error()) || mark.unsent())
+                    });
+                let replayable = unsent || unprocessed || Failure::refused_stream(error.error());
                 if replayable && exclude.is_none() {
+                    if unprocessed {
+                        // Spec hold point: armed with a zero bound, it counts
+                        // the requests replayed after a GOAWAY.
+                        core.holds.reach("retry:unprocessed").await;
+                    }
                     exclude = Some(lease.id());
                     continue;
                 }

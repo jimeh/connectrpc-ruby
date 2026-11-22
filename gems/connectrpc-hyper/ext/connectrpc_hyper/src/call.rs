@@ -20,6 +20,7 @@ use crate::body::CallBody;
 use crate::failure::Failure;
 use crate::gvl::Signal;
 use crate::pool::{DriverCore, Inflight, Lease, RequestSpec};
+use crate::wire::Mark;
 
 pub type Sent = Pin<
     Box<
@@ -30,15 +31,23 @@ pub type Sent = Pin<
 >;
 
 /// Enqueues the request on the leased connection now; the returned future
-/// resolves with the response head or hands back an unsent request.
-pub fn send(lease: &mut Lease, request: hyper::Request<CallBody>) -> Sent {
-    match lease {
+/// resolves with the response head or hands back an unsent request. On
+/// HTTP/2 the mark learns the request's stream id (see wire.rs).
+pub fn send(lease: &mut Lease, mut request: hyper::Request<CallBody>) -> (Sent, Option<Arc<Mark>>) {
+    if request.method() == http::Method::CONNECT {
+        // hyper may drop a CONNECT request after taking its index.
+        lease.disable_wire();
+    }
+    let mark = lease.mark();
+    request.body_mut().set_mark(mark.clone());
+    let sent: Sent = match lease {
         Lease::H2 { sender, .. } => Box::pin(sender.try_send_request(request)),
         Lease::H1 { conn, .. } => {
             let conn = conn.as_mut().expect("HTTP/1.1 lease holds its connection");
             Box::pin(conn.sender.try_send_request(request))
         }
-    }
+    };
+    (sent, mark)
 }
 
 type Delivered = Result<(hyper::Response<Incoming>, Lease), Failure>;
@@ -180,7 +189,8 @@ impl CallState {
             .unwrap_or_else(|e| e.into_inner())
             .take()
             .expect("request body is dispatched once");
-        let body = CallBody::stream(rx, self.ended.clone(), self.abort.clone());
+        let (home, homed) = oneshot::channel();
+        let body = CallBody::stream(rx, self.ended.clone(), self.abort.clone(), home);
         let request = match self.spec.build(body, self.deadline, lease.is_h2()) {
             Ok(request) => request,
             Err(failure) => {
@@ -190,7 +200,7 @@ impl CallState {
         };
         self.local_port.store(lease.local_port(), Ordering::SeqCst);
         self.h2.store(lease.is_h2(), Ordering::SeqCst);
-        let sent = send(&mut lease, request);
+        let (sent, mark) = send(&mut lease, request);
         // Spec hold point: armed with a zero bound, it counts the requests
         // handed to hyper. `block` keeps this section free of awaits.
         self.core.holds.block("request:queued");
@@ -198,11 +208,17 @@ impl CallState {
         self.core.tracker.spawn(respond(
             self.core.clone(),
             self.spec.clone(),
-            self.require_h2,
-            self.deadline,
-            lease,
-            sent,
+            Attempt {
+                require_h2: self.require_h2,
+                deadline: self.deadline,
+                ended: self.ended.clone(),
+                lease,
+                sent,
+                mark,
+                homed,
+            },
             self.abort.clone(),
+            self.cancel.clone(),
             deliver,
         ));
         *state = Dispatch::Dispatched(Some(delivered));
@@ -368,40 +384,89 @@ impl CallState {
     }
 }
 
+/// The first dispatch of a streaming call, as `respond` retries it.
+struct Attempt {
+    require_h2: bool,
+    deadline: Option<Instant>,
+    ended: Arc<AtomicBool>,
+    lease: Lease,
+    sent: Sent,
+    mark: Option<Arc<Mark>>,
+    /// The request body's receiver, back if hyper dropped the body unread.
+    homed: oneshot::Receiver<mpsc::Receiver<Bytes>>,
+}
+
 /// Owns the response future so an unsent request can be retried once on a
-/// fresh connection even while the caller is blocked in a write.
-#[allow(clippy::too_many_arguments)]
+/// fresh connection even while the caller is blocked in a write: one hyper
+/// handed back, or one the peer's GOAWAY says it never processed whose
+/// HEADERS never reached the socket and whose body yielded nothing.
 async fn respond(
     core: Arc<DriverCore>,
     spec: Arc<RequestSpec>,
-    require_h2: bool,
-    deadline: Option<Instant>,
-    lease: Lease,
-    sent: Sent,
+    attempt: Attempt,
     abort: Arc<Signal>,
+    cancel: Arc<Signal>,
     deliver: oneshot::Sender<Delivered>,
 ) {
+    let Attempt {
+        require_h2,
+        deadline,
+        ended,
+        lease,
+        sent,
+        mark,
+        homed,
+    } = attempt;
     let work = async {
-        match sent.await {
-            Ok(response) => Ok((response, lease)),
-            Err(mut error) => {
-                let Some(request) = error.take_message() else {
-                    return Err(Failure::from_hyper(error.error()));
-                };
+        let mut error = match sent.await {
+            Ok(response) => return Ok((response, lease)),
+            Err(error) => error,
+        };
+        // A call canceled before its replacement is queued never sends it.
+        let retry = async {
+            let body = match error.take_message() {
                 // Handed back unsent: the peer never saw it. Spec hold point:
                 // armed with a zero bound, it counts these retries.
-                core.holds.reach("retry:unsent").await;
-                let exclude = lease.id();
-                drop(lease);
-                let mut lease = core
-                    .acquire(&spec.origin, require_h2, Some(exclude), deadline)
-                    .await?;
-                let request = spec.build(request.into_body(), deadline, lease.is_h2())?;
-                match send(&mut lease, request).await {
-                    Ok(response) => Ok((response, lease)),
-                    Err(error) => Err(Failure::from_hyper(error.error())),
+                Some(request) => {
+                    core.holds.reach("retry:unsent").await;
+                    request.into_body()
                 }
-            }
+                None => {
+                    let failure = Failure::from_hyper(error.error());
+                    let unsent = mark.as_ref().is_some_and(|mark| mark.unsent());
+                    // hyper drops the body around the failure it reports; a
+                    // body that yielded a frame never comes back.
+                    let rx = match unsent {
+                        true => until(deadline, homed).await.and_then(Result::ok),
+                        false => None,
+                    };
+                    let Some(rx) = rx else {
+                        return Err(failure);
+                    };
+                    // Spec hold point: armed with a zero bound, it counts these
+                    // retries.
+                    core.holds.reach("retry:unprocessed").await;
+                    // Retried at most once: this body has no receiver to return.
+                    CallBody::stream(rx, ended, abort.clone(), oneshot::channel().0)
+                }
+            };
+            let exclude = lease.id();
+            drop(lease);
+            let mut lease = core
+                .acquire(&spec.origin, require_h2, Some(exclude), deadline)
+                .await?;
+            let request = spec.build(body, deadline, lease.is_h2())?;
+            let (sent, _) = send(&mut lease, request);
+            Ok((lease, sent))
+        };
+        let (lease, sent) = tokio::select! {
+            biased;
+            _ = cancel.wait() => return Err(Failure::new("canceled", "call canceled")),
+            retried = retry => retried?,
+        };
+        match sent.await {
+            Ok(response) => Ok((response, lease)),
+            Err(error) => Err(Failure::from_hyper(error.error())),
         }
     };
     let delivered = tokio::select! {
@@ -410,4 +475,12 @@ async fn respond(
         _ = core.shutdown.wait() => Err(Failure::shutdown()),
     };
     let _ = deliver.send(delivered);
+}
+
+/// `future`'s output, or None once `deadline` passes.
+async fn until<F: Future>(deadline: Option<Instant>, future: F) -> Option<F::Output> {
+    match deadline {
+        Some(deadline) => tokio::time::timeout_at(deadline.into(), future).await.ok(),
+        None => Some(future.await),
+    }
 }

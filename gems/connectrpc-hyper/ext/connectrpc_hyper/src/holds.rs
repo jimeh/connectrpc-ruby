@@ -11,6 +11,7 @@
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
+use std::task::{Context, Poll, Waker};
 use std::time::Duration;
 
 use tokio::sync::Notify;
@@ -34,6 +35,17 @@ struct Point {
     released: Mutex<bool>,
     changed: Condvar,
     notify: Notify,
+    /// Polls stalled at the point (`poll_stall`), woken on release or when
+    /// a re-arm retires the point.
+    stalled: Mutex<Stalled>,
+}
+
+#[derive(Default)]
+struct Stalled {
+    wakers: Vec<Waker>,
+    /// A re-arm replaced the point: a poll that finds this looks up the
+    /// current point instead of stalling here.
+    retired: bool,
 }
 
 impl Point {
@@ -45,6 +57,20 @@ impl Point {
         *self.released.lock().unwrap_or_else(|e| e.into_inner()) = true;
         self.changed.notify_all();
         self.notify.notify_waiters();
+        self.wake_stalled(false);
+    }
+
+    /// Wakes the polls stalled here, so each looks at its point again;
+    /// `retire` also turns away polls that have not registered yet.
+    fn wake_stalled(&self, retire: bool) {
+        let wakers = {
+            let mut stalled = self.stalled.lock().unwrap_or_else(|e| e.into_inner());
+            stalled.retired |= retire;
+            std::mem::take(&mut stalled.wakers)
+        };
+        for waker in wakers {
+            waker.wake();
+        }
     }
 }
 
@@ -99,6 +125,41 @@ impl Holds {
             .wait_timeout_while(released, point.bound, |released| !*released);
     }
 
+    /// Whether any point is armed on this driver: callers that build a
+    /// point's name check this first.
+    pub fn armed(&self) -> bool {
+        self.armed.load(Ordering::Acquire)
+    }
+
+    /// Stalls a poll at `name` while it is armed and not released, for an
+    /// IO operation a spec holds back; the bound does not apply. Each
+    /// stalled poll counts an arrival.
+    pub fn poll_stall(&self, name: &str, cx: &mut Context<'_>) -> Poll<()> {
+        loop {
+            let Some(point) = self.point(name) else {
+                return Poll::Ready(());
+            };
+            // Registering under the lock a release or re-arm drains with
+            // means neither can miss this poll.
+            let mut stalled = point.stalled.lock().unwrap_or_else(|e| e.into_inner());
+            if stalled.retired {
+                continue;
+            }
+            if point.is_released() {
+                return Poll::Ready(());
+            }
+            point.reached.fetch_add(1, Ordering::SeqCst);
+            if !stalled
+                .wakers
+                .iter()
+                .any(|waker| waker.will_wake(cx.waker()))
+            {
+                stalled.wakers.push(cx.waker().clone());
+            }
+            return Poll::Pending;
+        }
+    }
+
     /// Arms `name`; each arrival parks for at most `bound`.
     pub fn arm(&self, name: String, bound: Duration) {
         let point = Arc::new(Point {
@@ -107,10 +168,16 @@ impl Holds {
             released: Mutex::new(false),
             changed: Condvar::new(),
             notify: Notify::new(),
+            stalled: Mutex::new(Stalled::default()),
         });
         let mut points = self.points.lock().unwrap_or_else(|e| e.into_inner());
-        if points.insert(name, point).is_none() {
-            ARMED.fetch_add(1, Ordering::AcqRel);
+        match points.insert(name, point) {
+            // Polls stalled on the old point have no bound: they look again
+            // and stall on this one. Arrivals parked there keep their bound.
+            Some(replaced) => replaced.wake_stalled(true),
+            None => {
+                ARMED.fetch_add(1, Ordering::AcqRel);
+            }
         }
         self.armed.store(true, Ordering::Release);
     }

@@ -107,6 +107,19 @@ impl Failure {
         }
         false
     }
+
+    /// h2 failed the stream for a GOAWAY the peer sent: h2 read that frame,
+    /// whatever else the tap saw on the socket.
+    pub fn remote_go_away(error: &hyper::Error) -> bool {
+        let mut source = error.source();
+        while let Some(inner) = source {
+            if let Some(h2e) = inner.downcast_ref::<h2::Error>() {
+                return h2e.is_go_away() && h2e.is_remote();
+            }
+            source = inner.source();
+        }
+        false
+    }
 }
 
 /// Ruby's `Errno` number for an OS error code. Windows reports socket errors

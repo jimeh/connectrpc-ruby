@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -187,7 +188,17 @@ func control(restart *restartable) {
 		case "release":
 			release(fields[1])
 		case "raw-goaway":
-			rawGoaway(fields[1])
+			// raw-goaway TAG [LAST] [close]
+			last := int64(-1)
+			closeAfter := false
+			for _, field := range fields[2:] {
+				if field == "close" {
+					closeAfter = true
+				} else if n, err := strconv.ParseInt(field, 10, 32); err == nil && n >= 0 {
+					last = n
+				}
+			}
+			rawGoaway(fields[1], last, closeAfter)
 		case "kill":
 			restart.kill()
 			restart.start()
@@ -218,6 +229,7 @@ func main() {
 		"raw":            serveRaw("raw", rawOptions{ack: true}),
 		"raw_noack":      serveRaw("rawnoack", rawOptions{ack: false}),
 		"raw_mcs1":       serveRaw("rawmcs1", rawOptions{ack: true, maxStreams: 1}),
+		"raw_goaway":     serveRaw("rawgo", rawOptions{ack: true}),
 		"grpc_restart":   "http://" + restart.address,
 		"proxy":          serveProxy(),
 		// Server PINGs every 100 ms; the connection closes when an ACK does not

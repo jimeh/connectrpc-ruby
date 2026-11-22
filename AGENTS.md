@@ -119,7 +119,9 @@ commented. `hyper:*` tasks use `vendor/hyper` and `coverage/hyper` with Rust
 1.98.0 (MSRV 1.85, `hyper:msrv`), libclang and a C compiler; specs need the Go
 peer (`hyper:peer`, Go 1.27.3). Commit `Cargo.lock` and build `--locked`; crate
 updates use `hyper:cargo:update` and the 7-day age rule, and regenerate
-`THIRD_PARTY_NOTICES.md` with `scripts/notices.rb`. `hyper:cross` builds one
+`THIRD_PARTY_NOTICES.md` with `scripts/notices.rb`. GOAWAY retries depend on
+hyper and h2 internals `wire.rs` documents; `retry_spec.rb`'s stream-id and
+waiting-HEADERS specs fail when an update breaks them. `hyper:cross` builds one
 platform gem with rb-sys-dock in a disposable copy (digest-pinned images,
 `HYPER_CROSS_TWICE=1` for the reproducibility check).
 `.github/workflows/hyper-gems.yml` builds and smokes all nine archives for CI

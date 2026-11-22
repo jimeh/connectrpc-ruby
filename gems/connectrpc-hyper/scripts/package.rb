@@ -23,7 +23,7 @@ expected = (%w[LICENSE README.md THIRD_PARTY_NOTICES.md Cargo.toml Cargo.lock ex
                ext/connectrpc_hyper/extconf.rb lib/connectrpc/hyper.rb lib/connectrpc/hyper/errors.rb
                lib/connectrpc/hyper/exchange.rb lib/connectrpc/hyper/tls.rb lib/connectrpc/hyper/transport.rb
                lib/connectrpc/hyper/version.rb sig/connectrpc-hyper.rbs sig/manifest.yaml] + sources).sort
-expected_sources = %w[body call conn failure gvl holds lib pool runtime tls unary].map do |name|
+expected_sources = %w[body call conn failure gvl holds lib pool runtime tls unary wire].map do |name|
   "ext/connectrpc_hyper/src/#{name}.rs"
 end
 abort "Native source set changed: #{sources.sort}" unless sources.sort == expected_sources

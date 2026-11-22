@@ -33,10 +33,18 @@ type rawConn struct {
 	encoder *hpack.Encoder
 	streams int
 	last    uint32
+	// awaiting holds await-ok streams until their request ends.
+	awaiting map[uint32]*awaitedRequest
 }
 
-// refusedOnce remembers the refuse-once keys already refused, across
-// connections: a retry on a fresh connection then succeeds.
+type awaitedRequest struct {
+	scenario string
+	grpc     bool
+	bytes    int
+}
+
+// refusedOnce remembers the refuse-once and ignore-once keys already seen,
+// across connections: a retry on a fresh connection then succeeds.
 var refusedOnce = struct {
 	sync.Mutex
 	keys map[string]bool
@@ -61,17 +69,34 @@ func serveRaw(tag string, options rawOptions) string {
 	return fmt.Sprintf("http://%s", listener.Addr())
 }
 
-// rawGoaway sends GOAWAY(NO_ERROR) naming the last stream each connection of
-// the listener has seen: queued streams beyond it are never processed.
-func rawGoaway(tag string) {
+// rawGoaway sends GOAWAY(NO_ERROR) on each connection the listener has open,
+// naming the last stream that connection has seen, or `last` when it is not
+// negative: streams beyond it are never processed. With `closeAfter` it then
+// ends that connection's write side (FIN, no reset), so its streams at or
+// below the last stream id end without a response; connections accepted
+// later are untouched.
+func rawGoaway(tag string, last int64, closeAfter bool) {
 	rawConns.Lock()
 	conns := append([]*rawConn(nil), rawConns.byTag[tag]...)
 	rawConns.Unlock()
 	for _, c := range conns {
 		c.mu.Lock()
-		_ = c.framer.WriteGoAway(c.last, http2.ErrCodeNo, nil)
+		id := c.last
+		if last >= 0 {
+			id = uint32(last)
+		}
+		_ = c.framer.WriteGoAway(id, http2.ErrCodeNo, nil)
+		if closeAfter {
+			conn := c.conn
+			if wrapped, ok := conn.(*eventConn); ok {
+				conn = wrapped.Conn
+			}
+			if tcp, ok := conn.(*net.TCPConn); ok {
+				_ = tcp.CloseWrite()
+			}
+		}
 		c.mu.Unlock()
-		emit("%s goaway-sent last=%d", c.tag, c.last)
+		emit("%s goaway-sent last=%d", c.tag, id)
 	}
 }
 
@@ -82,7 +107,8 @@ func handleRaw(tag string, conn net.Conn, options rawOptions) {
 		emit("%s bad-preface", tag)
 		return
 	}
-	c := &rawConn{tag: tag, conn: conn, framer: http2.NewFramer(conn, conn)}
+	c := &rawConn{tag: tag, conn: conn, framer: http2.NewFramer(conn, conn),
+		awaiting: map[uint32]*awaitedRequest{}}
 	c.encoder = hpack.NewEncoder(&c.block)
 	c.framer.ReadMetaHeaders = hpack.NewDecoder(4096, nil)
 	c.framer.MaxHeaderListSize = 1 << 24
@@ -138,6 +164,7 @@ func handleRaw(tag string, conn net.Conn, options rawOptions) {
 					return c.framer.WriteWindowUpdate(frame.StreamID, n)
 				})
 			}
+			c.data(frame)
 		case *http2.RSTStreamFrame:
 			emit("%s rst stream=%d code=%d", tag, frame.StreamID, uint32(frame.ErrCode))
 		case *http2.GoAwayFrame:
@@ -196,6 +223,34 @@ func padded(fields [][2]string, size int, first bool) [][2]string {
 	return append(fields, pad)
 }
 
+// data counts an await-ok request's body and answers once it ends.
+func (c *rawConn) data(frame *http2.DataFrame) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	awaited, ok := c.awaiting[frame.StreamID]
+	if !ok {
+		return
+	}
+	awaited.bytes += len(frame.Data())
+	if frame.StreamEnded() {
+		delete(c.awaiting, frame.StreamID)
+		c.answer(frame.StreamID, awaited)
+	}
+}
+
+// answer reports an await-ok request's body size and answers it. Callers
+// hold c.mu.
+func (c *rawConn) answer(stream uint32, awaited *awaitedRequest) {
+	emit("%s handled %s stream=%d bytes=%d", c.tag, awaited.scenario, stream, awaited.bytes)
+	if !awaited.grpc {
+		c.headers(stream, [][2]string{{":status", "200"}, {"content-type", "application/proto"}}, true)
+		return
+	}
+	c.headers(stream, [][2]string{{":status", "200"}, {"content-type", "application/grpc"}}, false)
+	_ = c.framer.WriteData(stream, false, emptyMessage)
+	c.headers(stream, [][2]string{{"grpc-status", "0"}}, true)
+}
+
 func (c *rawConn) request(frame *http2.MetaHeadersFrame) {
 	values := map[string]string{}
 	for _, field := range frame.Fields {
@@ -212,6 +267,7 @@ func (c *rawConn) request(frame *http2.MetaHeadersFrame) {
 		values["grpc-timeout"]+values["connect-timeout-ms"])
 	head := [][2]string{{":status", "200"}, {"content-type", "application/grpc"}}
 	ok := func() {
+		emit("%s handled %s stream=%d", c.tag, scenario, stream)
 		if !grpc {
 			c.headers(stream, [][2]string{{":status", "200"}, {"content-type", "application/proto"}}, true)
 			return
@@ -262,6 +318,29 @@ func (c *rawConn) request(frame *http2.MetaHeadersFrame) {
 		} else {
 			ok()
 		}
+	case "await-ok":
+		// Answers once the whole request body arrived, reporting its size.
+		awaited := &awaitedRequest{scenario: scenario, grpc: grpc}
+		if frame.StreamEnded() {
+			c.answer(stream, awaited)
+		} else {
+			c.awaiting[stream] = awaited
+		}
+	case "ignore-once":
+		// Leaves the first request carrying this key unanswered, on any
+		// connection: a GOAWAY naming an earlier stream then disowns it.
+		refusedOnce.Lock()
+		first := !refusedOnce.keys["ignore:"+argument]
+		refusedOnce.keys["ignore:"+argument] = true
+		refusedOnce.Unlock()
+		if first {
+			emit("%s ignored stream=%d", c.tag, stream)
+		} else {
+			ok()
+		}
+	case "stall":
+		// Starts handling and never answers.
+		emit("%s handler-start stream=%d", c.tag, stream)
 	case "refuse-always":
 		_ = c.framer.WriteRSTStream(stream, http2.ErrCodeRefusedStream)
 	case "disconnect":
