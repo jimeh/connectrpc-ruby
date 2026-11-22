@@ -307,6 +307,16 @@ func (c *rawConn) request(frame *http2.MetaHeadersFrame) {
 	case "reset-before":
 		code, _ := strconv.Atoi(argument)
 		_ = c.framer.WriteRSTStream(stream, http2.ErrCode(code))
+	case "reset-on":
+		// reset-on:<gate>:<code> resets the stream without a response once
+		// "release <gate>" arrives, as grpc-go's server resets a call whose
+		// deadline expired.
+		name, code, _ := strings.Cut(argument, ":")
+		reset, _ := strconv.Atoi(code)
+		go func() {
+			<-gate(name)
+			c.locked(func() error { return c.framer.WriteRSTStream(stream, http2.ErrCode(reset)) })
+		}()
 	case "refuse-once":
 		// Refuses the first request carrying this key, on any connection.
 		refusedOnce.Lock()

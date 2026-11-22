@@ -38,6 +38,19 @@ RSpec.describe "Inside an Async reactor" do
         sleep(0.001) until (met = yield) || Process.clock_gettime(Process::CLOCK_MONOTONIC) > deadline
         met
       end
+      RAW_UNARY = ConnectRPC::Method.new(service: "raw.v1.Raw", name: "Call", request_type: MSG, response_type: MSG)
+      def raw_client
+        ConnectRPC::Client.new(base_url: #{peer['raw'].dump}, transport: ConnectRPC::Hyper::Transport.new,
+                               protocol: :grpc, binding: ConnectRPC::Bindings::GoogleProtobuf.new)
+      end
+      # A gRPC call the raw peer never answers. grpc-go's server resets a
+      # call with RST_STREAM(CANCEL) when the deadline it was sent expires by
+      # its own clock, which can run ahead of the client's (Go reads the coarse
+      # interrupt time on Windows) and end the call canceled first. The raw
+      # peer never does, so only the client's own deadline ends this call.
+      def stall(client, timeout:)
+        client.call(RAW_UNARY, MSG.new, metadata: { "x-scenario" => "stall" }, timeout: timeout)
+      end
       def ticks_during(task)
         ticks = 0
         ticker = task.async { loop { sleep 0.01; ticks += 1 } }
@@ -116,12 +129,12 @@ RSpec.describe "Inside an Async reactor" do
 
   it "#{offload ? 'lets sibling tasks run' : 'blocks the reactor'} while a call waits, with the worker pool" do
     output, status = reactor_child(<<~RUBY, pool: true)
-      peer_client = client(#{peer['grpc_h2c'].dump}, ConnectRPC::Hyper::Transport.new)
+      stalled = raw_client
       Async do |task|
         result = nil
         ticks = ticks_during(task) do
           result = begin
-            task.async { peer_client.unary(MSG.new(value: "hang"), timeout: 0.3) }.wait
+            task.async { stall(stalled, timeout: 0.3) }.wait
           rescue ConnectRPC::Error => e
             e.code
           end
@@ -159,12 +172,12 @@ RSpec.describe "Inside an Async reactor" do
 
   it "blocks the reactor without the worker pool" do
     output, status = reactor_child(<<~RUBY, pool: false)
-      peer_client = client(#{peer['grpc_h2c'].dump}, ConnectRPC::Hyper::Transport.new)
+      stalled = raw_client
       Async do |task|
         result = nil
         ticks = ticks_during(task) do
           result = begin
-            task.async { peer_client.unary(MSG.new(value: "hang"), timeout: 0.3) }.wait
+            task.async { stall(stalled, timeout: 0.3) }.wait
           rescue ConnectRPC::Error => e
             e.code
           end

@@ -60,24 +60,44 @@ RSpec.describe "Cancellation and deadlines" do
     peer.wait_event(/connect ss-hold-done context canceled/, from: from)
   end
 
+  # grpc-go's server resets a call with RST_STREAM(CANCEL) when the deadline
+  # it was sent expires by its own clock, which can run ahead of the client's
+  # (Go reads the coarse interrupt time on Windows). The raw peer's stalled
+  # call never ends that way, so only the client's own deadline ends it.
   it "applies a per-call deadline to one call on a shared connection" do
     from = peer.mark
     transport = hyper
-    peer_client = client(peer["grpc_h2c"], transport: transport)
-    peer_client.bidi(timeout: 20) do |sibling|
-      sibling.send_message(MSG.new(value: "a"))
-      sibling.receive
-      started = monotonic
-      error = error_of { peer_client.unary(MSG.new(value: "hang"), timeout: 0.3) }
-      expect([error.code, monotonic - started]).to match(["deadline_exceeded", be_between(0.29, 1.5)])
-      peer.wait_event(/grpc unary-hang-done context deadline exceeded|grpc unary-hang-done context canceled/,
-                      from: from)
-      sibling.send_message(MSG.new(value: "b"))
-      expect(sibling.receive.value).to eq("b")
-      sibling.close_send
-      sibling.receive
+    tag = "deadline-sibling-#{rand(1 << 30)}"
+    sibling = Thread.new { raw_call(peer["raw"], "hold:#{tag}", transport: transport, timeout: 20).message }
+    peer.wait_event(/\Araw request hold:#{tag} /, from: from)
+    started = monotonic
+    error = error_of { raw_call(peer["raw"], "stall", transport: transport, timeout: 0.3) }
+    expect([error.code, error.message, monotonic - started])
+      .to match(["deadline_exceeded", "Deadline exceeded", be_between(0.29, 1.5)])
+    stalled = peer.wait_event(/\Araw request stall /, from: from)[/ stream=(\d+) /, 1]
+    peer.wait_event(/\Araw rst stream=#{stalled} code=8\z/, from: from)
+    peer.command("release #{tag}")
+    expect(sibling.value).to eq(MSG.new)
+    expect(peer.count(/\Araw accept /, from: from)).to eq(1)
+  end
+
+  # grpc-go's client reports a peer's RST_STREAM(CANCEL) as DeadlineExceeded
+  # once the call's own deadline passed, and as Canceled before it (the
+  # "maps gRPC reset code 8" spec). The deadline's clock passes it while the
+  # peer holds the reset, so the native wait cannot end first.
+  it "reports a peer's CANCEL reset after the call's deadline as deadline_exceeded" do
+    from = peer.mark
+    tag = "reset-late-#{rand(1 << 30)}"
+    now = 0.0
+    deadline = ConnectRPC::Deadline.new(20, clock: -> { now })
+    call = Thread.new do
+      error_of { raw_call(peer["raw"], "reset-on:#{tag}:8", transport: hyper, timeout: nil, deadline: deadline) }
     end
-    expect(peer.count(/\Agrpc accept/, from: from)).to eq(1)
+    peer.wait_event(/\Araw request reset-on:#{tag}:8 /, from: from)
+    now = 20.0
+    peer.command("release #{tag}")
+    error = call.value
+    expect([error.code, error.message, error.cause]).to eq(["deadline_exceeded", "Deadline exceeded", nil])
   end
 
   it "cancels a token during TCP connect, TLS and while waiting behind another caller's dial", :linux_only do
