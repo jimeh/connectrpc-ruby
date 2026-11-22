@@ -264,9 +264,10 @@ RSpec.describe "PerCallTransport connection close, close budget and outcome prec
     end
 
     # The clock leaves by throw, which no rescue sees, while the close budget
-    # is computed. The throw still reaches its catch, after a raw close and
-    # the full teardown.
-    it "tears down raw when the deadline clock throws computing the close budget on the #{path} path" do
+    # is computed, and only after running past the cleanup allowance, so a
+    # fallback cutoff sampled before it ran would already have expired. The
+    # throw still reaches its catch, after a raw close and the full teardown.
+    it "tears down raw when a slow deadline clock throws computing the close budget on the #{path} path" do
       peer = one_message_peer
       typed = mixed_client(per_call, "http://127.0.0.1:#{peer.peer.port}")
       planning = [false]
@@ -275,7 +276,11 @@ RSpec.describe "PerCallTransport connection close, close budget and outcome prec
       with_boundaries do |boundaries|
         result = on_path(path) do
           deadline = ConnectRPC::Deadline.new(5, clock: lambda {
-            throw :clock_left, :thrown if planning.first
+            if planning.first
+              # The clock's own running time is the condition under test.
+              sleep(AsyncHelpers::INTERNAL::CLEANUP_SECONDS * 2)
+              throw :clock_left, :thrown
+            end
 
             monotonic
           })

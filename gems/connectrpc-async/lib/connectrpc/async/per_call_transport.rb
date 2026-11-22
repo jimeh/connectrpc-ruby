@@ -263,17 +263,28 @@ module ConnectRPC
           end
         ensure
           release.resolve(nil)
-          # A construction cut short can leave a guard without its watcher,
-          # which only a cancel ends. The join retains an interrupt that cuts
-          # the cancel short and cancels once more before it waits.
-          cancel = -> { Internal.cancel(scope) } unless inner
           begin
-            Internal.join_complete(scope, on_interrupt: cancel) { cancel&.call }
+            # A construction cut short can leave a guard without its watcher,
+            # which only a cancel ends; the join retains what the cancel raises.
+            Internal.join_complete(scope) { cancel_retaining(scope) unless inner }
           rescue Exception => e # rubocop:disable Lint/RescueException -- the join already finished every task
             interruption ||= e
           end
         end
         interruption
+      end
+
+      # Cancels the scope even when interrupts cut the cancel short, then
+      # raises the first of them.
+      def cancel_retaining(scope)
+        interruption = nil
+        begin
+          Internal.cancel(scope)
+        rescue Exception => e # rubocop:disable Lint/RescueException -- the cancel must finish before the caller's interrupt propagates
+          interruption ||= e
+          retry
+        end
+        raise interruption if interruption
       end
 
       # Whether an exception raised while the inline close budget was computed
@@ -300,11 +311,12 @@ module ConnectRPC
         Thread.handle_interrupt(Object => :never) do
           Thread.handle_interrupt(Object => :immediate) { yield inner }
         ensure
-          plan = [0.0, Internal.now]
+          plan = nil
           begin
             plan = close_plan_or_raw(request.deadline)
           ensure
-            inner.close_joined(*plan)
+            # Sampled after the clock, however long it ran.
+            inner.close_joined(*(plan || [0.0, Internal.now]))
           end
         end
       end

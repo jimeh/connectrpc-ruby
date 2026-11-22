@@ -423,10 +423,11 @@ RSpec.describe "PerCallTransport deadlines, cancellation and interrupts" do
       pause&.disable
     end
 
-    # A second interrupt lands as the unwinding call starts cancelling its
-    # scope, so the guard left without a watcher is not yet cancelled. The
-    # join still cancels it and finishes, then raises the later interrupt.
-    it "finishes the scope when a second interrupt lands while a cut-short construction unwinds" do
+    # Two more interrupts land as the unwinding call starts cancelling its
+    # scope, each before the cancel runs, so the guard left without a watcher
+    # is not yet cancelled. The cancel still finishes and so does the join,
+    # which then raises the first later interrupt.
+    it "finishes the scope when more interrupts land while a cut-short construction unwinds" do
       first = Class.new(StandardError)
       second = Class.new(StandardError)
       method = ConnectRPC::Async::Transport.instance_method(:install_owner_guard)
@@ -435,14 +436,14 @@ RSpec.describe "PerCallTransport deadlines, cancellation and interrupts" do
         line.strip == "@owner_watcher = @owner.async do |watcher|"
       end
       caller_task = nil
-      raised = false
+      raised = 0
       pause = TracePoint.new(:line) { |point| raise first, "during construction" if point.lineno == watcher }
       # Only the cancel of the call's scope, the caller task's one child.
       again = TracePoint.new(:call) do |point|
-        next if raised || !point.binding.local_variable_get(:task)&.parent.equal?(caller_task)
+        next if raised == 2 || !point.binding.local_variable_get(:task)&.parent.equal?(caller_task)
 
-        raised = true
-        raise second, "while unwinding"
+        raised += 1
+        raise second, "while unwinding #{raised}"
       end
       pause.enable(target: method)
       again.enable(target: AsyncHelpers::INTERNAL.method(:cancel))
@@ -454,7 +455,7 @@ RSpec.describe "PerCallTransport deadlines, cancellation and interrupts" do
           expect(task.children.to_a).to eq(children)
           error
         end
-        expect([raised, error.class, error.message, error.cause&.class]).to eq([true, second, "while unwinding", first])
+        expect([raised, error.class, error.message, error.cause&.class]).to eq([2, second, "while unwinding 1", first])
         observation = boundaries.take.first
         expect(observation.values_at(:scope_finished, :attached, :live, :sockets)).to eq([true, false, [], []])
       end
