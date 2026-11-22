@@ -263,36 +263,39 @@ RSpec.describe "PerCallTransport connection close, close budget and outcome prec
       end
     end
 
-    # The clock leaves by throw, which no rescue sees, while the close budget
-    # is computed, and only after running past the cleanup allowance, so a
-    # fallback cutoff sampled before it ran would already have expired. The
-    # throw still reaches its catch, after a raw close and the full teardown.
-    it "tears down raw when a slow deadline clock throws computing the close budget on the #{path} path" do
-      peer = one_message_peer
-      typed = mixed_client(per_call, "http://127.0.0.1:#{peer.peer.port}")
-      planning = [false]
-      trace = TracePoint.new(:call, :return) { |point| planning[0] = point.event == :call }
-      trace.enable(target: PerCallHelpers::PER_CALL.instance_method(:close_plan))
-      with_boundaries do |boundaries|
-        result = on_path(path) do
-          deadline = ConnectRPC::Deadline.new(5, clock: lambda {
-            if planning.first
+    # While the close budget is computed, the clock runs past the cleanup
+    # allowance and then either leaves by throw, which no rescue sees, or
+    # reports the deadline expired. A cutoff sampled before it ran would
+    # already have passed, leaving no time for the close or the owner join.
+    # Either way the close is raw and the full teardown runs; the throw then
+    # reaches its catch, and the reported expiry leaves the stream's message.
+    { throws: :thrown, expires: ["s"] }.each do |exit, outcome|
+      it "tears down raw when a slow deadline clock #{exit} computing the close budget on the #{path} path" do
+        peer = one_message_peer
+        typed = mixed_client(per_call, "http://127.0.0.1:#{peer.peer.port}")
+        planning = [false]
+        trace = TracePoint.new(:call, :return) { |point| planning[0] = point.event == :call }
+        trace.enable(target: PerCallHelpers::PER_CALL.instance_method(:close_plan))
+        with_boundaries do |boundaries|
+          result = on_path(path) do
+            deadline = ConnectRPC::Deadline.new(5, clock: lambda {
+              next monotonic unless planning.first
+
               # The clock's own running time is the condition under test.
               sleep(AsyncHelpers::INTERNAL::CLEANUP_SECONDS * 2)
-              throw :clock_left, :thrown
-            end
-
-            monotonic
-          })
-          catch(:clock_left) { watch_names(typed, deadline) }
+              throw :clock_left, :thrown if exit == :throws
+              monotonic + 1000
+            })
+            catch(:clock_left) { watch_names(typed, deadline) }
+          end
+          expect(result).to eq(outcome)
+          expect_released(boundaries.take.first)
+          expect_raw_close(peer)
         end
-        expect(result).to eq(:thrown)
-        expect_released(boundaries.take.first)
-        expect_raw_close(peer)
+      ensure
+        trace&.disable
+        peer&.stop
       end
-    ensure
-      trace&.disable
-      peer&.stop
     end
 
     it "never lets a close failure replace the result or a stream block's own exception on the #{path} path" do

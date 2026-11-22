@@ -94,7 +94,12 @@ module PerCallHelpers
   # `close_requests` lists each connection whose reader ended, which is where
   # the peer would have closed it.
   class FinWithholdingServer < ConnectionPeer::RecordingServer
-    def close_requests = (@close_requests ||= [])
+    attr_reader :close_requests
+
+    def initialize(...)
+      @close_requests = []
+      super
+    end
 
     def stop
       @stopping = true

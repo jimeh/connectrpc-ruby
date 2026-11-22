@@ -205,12 +205,13 @@ module ConnectRPC
       # no time: on the default clock, which Internal.now also reads, the
       # cutoff is its expiry; a custom clock's expiry has no monotonic
       # instant, so the cutoff is now and a stalled owner gets its allowance
-      # from the start of the close.
+      # from the start of the close. The time is read after the clock, so a
+      # slow clock shortens the budget rather than leaving it already spent.
       def close_plan(deadline)
         return [Internal::CLEANUP_SECONDS, nil] unless deadline
 
-        now = Internal.now
         remaining = deadline.remaining
+        now = Internal.now
         cutoff = if remaining.positive? then now + remaining
                  elsif deadline.__send__(:clock).equal?(DEADLINE_CLOCK) then deadline.__send__(:expires_at)
                  else now
@@ -263,28 +264,20 @@ module ConnectRPC
           end
         ensure
           release.resolve(nil)
+          joining = false
           begin
             # A construction cut short can leave a guard without its watcher,
-            # which only a cancel ends; the join retains what the cancel raises.
-            Internal.join_complete(scope) { cancel_retaining(scope) unless inner }
-          rescue Exception => e # rubocop:disable Lint/RescueException -- the join already finished every task
+            # which only a cancel ends.
+            Internal.cancel(scope) unless inner
+            Internal.join_complete(scope) { joining = true }
+          rescue Exception => e # rubocop:disable Lint/RescueException -- the caller re-raises its own interruption after teardown
             interruption ||= e
+            # Raised before the join took over, as during the cancel, so the
+            # scope may still run: cancel again and join.
+            retry unless joining || scope.finished?
           end
         end
         interruption
-      end
-
-      # Cancels the scope even when interrupts cut the cancel short, then
-      # raises the first of them.
-      def cancel_retaining(scope)
-        interruption = nil
-        begin
-          Internal.cancel(scope)
-        rescue Exception => e # rubocop:disable Lint/RescueException -- the cancel must finish before the caller's interrupt propagates
-          interruption ||= e
-          retry
-        end
-        raise interruption if interruption
       end
 
       # Whether an exception raised while the inline close budget was computed

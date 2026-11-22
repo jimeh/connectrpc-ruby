@@ -423,13 +423,15 @@ RSpec.describe "PerCallTransport deadlines, cancellation and interrupts" do
       pause&.disable
     end
 
-    # Two more interrupts land as the unwinding call starts cancelling its
-    # scope, each before the cancel runs, so the guard left without a watcher
-    # is not yet cancelled. The cancel still finishes and so does the join,
-    # which then raises the first later interrupt.
+    # More interrupts land as the unwinding call cancels and joins its scope:
+    # two as the cancel starts, before it runs, so the guard left without a
+    # watcher is not yet cancelled, and one as the join starts, before it
+    # protects itself. The cancel and the join still finish, and the call
+    # then raises the first later interrupt.
     it "finishes the scope when more interrupts land while a cut-short construction unwinds" do
       first = Class.new(StandardError)
       second = Class.new(StandardError)
+      entry = Class.new(StandardError)
       method = ConnectRPC::Async::Transport.instance_method(:install_owner_guard)
       file, start = method.source_location
       watcher = start + File.readlines(file).drop(start - 1).index do |line|
@@ -439,14 +441,24 @@ RSpec.describe "PerCallTransport deadlines, cancellation and interrupts" do
       raised = 0
       pause = TracePoint.new(:line) { |point| raise first, "during construction" if point.lineno == watcher }
       # Only the cancel of the call's scope, the caller task's one child.
+      scope = nil
       again = TracePoint.new(:call) do |point|
         next if raised == 2 || !point.binding.local_variable_get(:task)&.parent.equal?(caller_task)
 
+        scope = point.binding.local_variable_get(:task)
         raised += 1
         raise second, "while unwinding #{raised}"
       end
+      entered = false
+      joining = TracePoint.new(:call) do |point|
+        next if entered || !point.binding.local_variable_get(:task).equal?(scope)
+
+        entered = true
+        raise entry, "as the join starts"
+      end
       pause.enable(target: method)
       again.enable(target: AsyncHelpers::INTERNAL.method(:cancel))
+      joining.enable(target: AsyncHelpers::INTERNAL.const_get(:CompletionJoin).method(:call))
       with_boundaries do |boundaries|
         error = reactor do |task|
           caller_task = task
@@ -455,13 +467,44 @@ RSpec.describe "PerCallTransport deadlines, cancellation and interrupts" do
           expect(task.children.to_a).to eq(children)
           error
         end
-        expect([raised, error.class, error.message, error.cause&.class]).to eq([2, second, "while unwinding 1", first])
+        expect([raised, entered]).to eq([2, true])
+        expect([error.class, error.message, error.cause&.class]).to eq([second, "while unwinding 1", first])
         observation = boundaries.take.first
         expect(observation.values_at(:scope_finished, :attached, :live, :sockets)).to eq([true, false, [], []])
       end
     ensure
+      joining&.disable
       again&.disable
       pause&.disable
+    end
+
+    # An interrupt lands as a completed call's scope join starts, before the
+    # join protects itself. The call still joins every task, then raises it.
+    it "joins the scope when an interrupt lands as a completed call's join starts" do
+      peer = threaded_recording_peer
+      origin = "http://127.0.0.1:#{peer.peer.port}"
+      entry = Class.new(StandardError)
+      caller_task = nil
+      entered = false
+      # Only the join of the call's scope, the caller task's one child.
+      joining = TracePoint.new(:call) do |point|
+        next if entered || !point.binding.local_variable_get(:task)&.parent.equal?(caller_task)
+
+        entered = true
+        raise entry, "as the join starts"
+      end
+      joining.enable(target: AsyncHelpers::INTERNAL.const_get(:CompletionJoin).method(:call))
+      with_boundaries do |boundaries|
+        error = reactor do |task|
+          caller_task = task
+          capture_error { per_call.call(request("#{origin}/joined")) }
+        end
+        expect([entered, error.class, error.message]).to eq([true, entry, "as the join starts"])
+        expect_released(boundaries.take.first)
+      end
+    ensure
+      joining&.disable
+      peer&.stop
     end
 
     # The stream block fails and the transport's stream cleanup task is held
