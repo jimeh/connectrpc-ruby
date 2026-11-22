@@ -184,11 +184,12 @@ RSpec.describe "Connect H1 read-first input retirement" do
     end
   end
 
-  it "reads the remainder before the final chunk when the head was published during processing" do
+  it "reads the remainder before the first output chunk when the head was published during processing" do
     reactor do
       _, cs, = methods
       events, owners = observe_wire
       received = Async::Queue.new
+      entered = Async::Queue.new
       handler = lambda do |reader, context|
         context.send_headers(metadata: { "x-early" => "yes" })
         received.enqueue(reader.receive.name)
@@ -201,14 +202,111 @@ RSpec.describe "Connect H1 read-first input retirement" do
         expect(status).to eq(200)
         expect(headers["x-early"]).to eq(["yes"])
         owner = owners.dequeue
+        allow(owner).to receive(:read_remainder).and_wrap_original do |read|
+          entered.enqueue(true)
+          read.call
+        end
         peer.write(first)
         expect(received.dequeue).to eq("first")
+        entered.dequeue
+        # The server is now blocked reading the remainder, so no response
+        # chunk can have been written before that read started.
+        expect(peer.socket.read_nonblock(1, exception: false)).to eq(:wait_readable)
         peer.write("x" * 50_000)
         expect(peer.body).to include("early")
         expect(peer_eof?(peer)).to be(true)
-        # No read follows delivery, so the whole remainder preceded the final chunk.
         expect(owner.instance_variable_get(:@discarded)).to eq(50_000)
         expect(events.count { |kind,| kind == :head }).to eq(1)
+      end
+    end
+  end
+
+  it "does not deadlock a client that uploads everything before reading a large early-head result" do
+    reactor do
+      _, cs, = methods
+      handler = lambda do |reader, context|
+        context.send_headers(metadata: { "x-early" => "yes" })
+        reader.receive
+        AsyncHelpers::MESSAGE.new(name: "y" * 1_048_576)
+      end
+      with_host(target({ cs.path => handler }), false) do |host, peer, _|
+        # Small buffers keep the result and the upload larger than the kernel
+        # can hold, as in net/http Issue 15527. The response direction keeps
+        # 64 KiB so delayed ACKs do not pace the 1 MiB read.
+        peer.raw.setsockopt(Socket::SOL_SOCKET, Socket::SO_RCVBUF, 65_536)
+        peer.raw.setsockopt(Socket::SOL_SOCKET, Socket::SO_SNDBUF, 16_384)
+        first = frame("first")
+        # More than both 16 KiB buffers and the 64 KiB input readahead hold.
+        rest = 200_000
+        peer.write(request_head(cs, :fixed, length: first.bytesize + rest))
+        status, headers = peer.head
+        expect(status).to eq(200)
+        expect(headers["x-early"]).to eq(["yes"])
+        resource = host.instance_variable_get(:@session).instance_variable_get(:@resources).first
+        resource.raw.setsockopt(Socket::SOL_SOCKET, Socket::SO_SNDBUF, 65_536)
+        resource.raw.setsockopt(Socket::SOL_SOCKET, Socket::SO_RCVBUF, 16_384)
+        # The whole upload completes before the client reads any response bytes.
+        peer.write(first + ("x" * rest))
+        expect(peer.body.bytesize).to be > 1_048_576
+        expect(peer_eof?(peer)).to be(true)
+      end
+    end
+  end
+
+  it "delivers a large result in full when the stalled read runs to the deadline" do
+    reactor do
+      _, cs, = methods
+      handler = ->(*) { AsyncHelpers::MESSAGE.new(name: "z" * 131_072) }
+      with_host(target({ cs.path => handler }), false) do |_, peer, _|
+        peer.write(request_head(cs, :fixed, length: 100_000, extra: "Connect-Timeout-Ms: 300\r\n"))
+        peer.write("x" * 1000)
+        status, headers = peer.head
+        expect(status).to eq(200)
+        expect(headers["connection"]).to eq(["close"])
+        body = peer.body
+        flags, size = body.unpack("CN")
+        expect(flags).to eq(0)
+        message = AsyncHelpers::MESSAGE.decode(body.byteslice(5, size))
+        expect(message.name.bytesize).to eq(131_072)
+        expect(body.byteslice(5 + size, 1).unpack1("C")).to eq(2)
+        expect(body.byteslice((10 + size)..)).to eq('{"metadata":{}}')
+        expect(peer_eof?(peer)).to be(true)
+      end
+    end
+  end
+
+  [100_000, 300_000].each do |length|
+    it "writes the head without waiting for processing observers, declared remainder #{length}" do
+      reactor do
+        _, cs, = methods
+        head_seen = Async::Queue.new
+        observed = Async::Queue.new
+        subscriber = Object.new
+        subscriber.define_singleton_method(:start) do |_call|
+          Object.new.tap do |observer|
+            observer.define_singleton_method(:processing_finished) do |_outcome|
+              observed.enqueue(true)
+              # A synchronous observer that waits for the client's response head.
+              head_seen.dequeue
+            end
+          end
+        end
+        instrumentation = ConnectRPC::Instrumentation.new(subscribers: [subscriber])
+        handler = ->(*) { AsyncHelpers::MESSAGE.new(name: "observed") }
+        with_host(target({ cs.path => handler }, instrumentation: instrumentation), false) do |_, peer, _|
+          peer.write(request_head(cs, :fixed, length: length))
+          # Below the limit the remainder is read first; at or above it, not at all.
+          peer.write("x" * length) if length < 262_144
+          observed.dequeue
+          status, headers = peer.head
+          expect(status).to eq(200)
+          expect(headers["connection"]).to eq(["close"])
+          head_seen.enqueue(true)
+          expect(peer.body).to include("observed")
+          expect(peer_eof?(peer)).to be(true)
+        ensure
+          head_seen.enqueue(true)
+        end
       end
     end
   end

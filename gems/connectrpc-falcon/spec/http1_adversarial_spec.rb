@@ -265,11 +265,12 @@ RSpec.describe "Connect H1 adversarial wire lifecycle" do
         owner_type = ConnectRPC::Falcon.const_get(:HTTP1StreamInput)
         allow(owner_type).to receive(:new).and_wrap_original do |constructor, *args, **options|
           constructor.call(*args, **options).tap do |owner|
-            allow(owner).to receive(:read_remainder).and_wrap_original do |read|
+            # The expired deadline skips the read itself; eligibility is still checked.
+            allow(owner).to receive(:read_needed?).and_wrap_original do |needed|
               expect(readers).not_to be_empty
               expect(readers).to all(be_finished)
               checked.enqueue(true)
-              read.call
+              needed.call
             end
           end
         end

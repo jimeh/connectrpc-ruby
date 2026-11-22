@@ -96,7 +96,8 @@ RSpec.describe "Connect H1 framed input retirement bounds" do
 
   it "bounds the whole read by the Connect deadline despite repeated progress" do
     reactor do
-      allow_any_instance_of(owner_type).to receive(:now).and_return(10.0, 10.01, 10.06, 10.101)
+      # Construction, the eligibility check, then one reading per read wait.
+      allow_any_instance_of(owner_type).to receive(:now).and_return(10.0, 10.0, 10.01, 10.06, 10.101)
       owner, _body, events = fixture(:chunked, fields: [%w[connect-timeout-ms 100]])
       owner.head_resolved(200)
       owner.processor_finished

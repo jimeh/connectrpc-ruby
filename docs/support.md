@@ -418,23 +418,25 @@ server to trigger. A later release may relax it toward grpc-go.
 
 ### Falcon Connect H1 retirement
 
-Since 0.3.0, Falcon reads the remainder of incomplete original Connect H1 input
-before it writes the response, as Go's `net/http` server does:
+Since 0.3.0, Falcon reads the remainder of incomplete original Connect H1
+server- and client-streaming input before it writes the response, as Go's
+`net/http` server does:
 
 1. Incomplete input disables connection reuse. Before writing the response
    head, Falcon reads up to 256 KiB of the unread body
    (`maxPostHandlerReadBytes`). A declared `Content-Length` remainder of
-   256 KiB or more is not read. Each read wait is bounded by
-   `request_body_timeout` and the whole read by the Connect deadline, as
-   `ReadTimeout` bounds it for `net/http`. A stalled, expired or malformed
-   remainder still receives the response. While the original processor is
-   still writing its response, Falcon first buffers up to 64 KiB of that output
-   so processing can finish before the read.
+   256 KiB or more is not read. A chunked read returns at most 64 KiB, so the
+   last one can pass the limit by less than that; `net/http` stops at 256 KiB
+   plus one byte. Each read wait is bounded by `request_body_timeout` and the
+   whole read by the Connect deadline, as `ReadTimeout` bounds it for
+   `net/http`. A stalled, expired or malformed remainder still receives the
+   response. While the read runs, Falcon holds the original processor's
+   remaining output in memory, so processing never waits on the read.
 2. A head published before any response output, such as client-stream headers
    sent before the handler reads its input, is written first, and the
-   remainder is read before the final chunk. A bidi 505 and an unanswered
-   `Expect: 100-continue` request are answered without the read, as `net/http`
-   leaves full-duplex and unanswered expect-continue bodies unread.
+   remainder is read before the first output chunk. A bidi 505 and an
+   unanswered `Expect: 100-continue` request are answered without the read, as
+   `net/http` leaves full-duplex and unanswered expect-continue bodies unread.
 3. Original processing finishes, for any RPC outcome, and Falcon delivers the
    full response. It then half-closes raw TCP writes and waits without reading
    until **500 ms after the actual final HTTP flush** (`rstAvoidanceDelay`).
@@ -447,17 +449,17 @@ separate: original input cleanup gates its staged terminal and incomplete-upload
 rejection head with its own 100 ms allowance.
 
 The behavior is **promised**: reading the remainder before the response head (or
-before the final chunk after an early head), no reuse after incomplete input, no
-pipelined dispatch on a retiring connection, and admission and socket ownership
-through retirement. The budgets are **provisional** tuning values: the 256 KiB
-read limit, the 64 KiB of response output buffered while the processor finishes,
-the 500 ms close delay, and Falcon Web's 100 ms rejected-input cleanup
-allowance. The Connect values follow Go's `net/http` server. Two differences
-remain: Falcon never reuses a connection after incomplete input, even when the
-read reaches EOF, and it also reads when the client sent `Connection: close`,
-which `net/http` skips. Before 0.3.0 Falcon wrote the response first and
-discarded input for at most 100 ms afterwards, so a client that paused its
-upload past the 500 ms close could fail its late write and lose the response.
+before the first output chunk after an early head), no reuse after incomplete
+input, no pipelined dispatch on a retiring connection, and admission and socket
+ownership through retirement. The budgets are **provisional** tuning values: the
+256 KiB read limit, the 500 ms close delay, and Falcon Web's 100 ms
+rejected-input cleanup allowance. The Connect values follow Go's `net/http`
+server. Besides the chunked overshoot above, two differences remain: Falcon
+never reuses a connection after incomplete input, even when the read reaches
+EOF, and it also reads when the client sent `Connection: close`, which
+`net/http` skips. Before 0.3.0 Falcon wrote the response first and discarded
+input for at most 100 ms afterwards, so a client that paused its upload past the
+500 ms close could fail its late write and lose the response.
 
 ### HTTP/2 keepalive and connection age
 

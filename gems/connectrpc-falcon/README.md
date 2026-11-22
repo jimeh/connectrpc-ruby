@@ -498,18 +498,19 @@ neither deadlocks nor loses the response to a reset on its late write:
   Connect deadline bounds the whole read. With neither, a stalled client holds
   the connection until owner shutdown, as `net/http` without `ReadTimeout` does.
 - A stalled, expired or malformed remainder still receives the response.
-- While the original processor is still writing its response, Falcon first
-  buffers up to 64 KiB of that output, so processing finishes before the read.
-  Output beyond that waits for the read.
+- While the read runs, Falcon holds the original processor's remaining output
+  (its response message and terminal) in memory, so processing never waits on
+  the read or delivers a truncated message at its deadline.
 - A head published before any output, such as client-stream headers sent
   before the handler reads its input, is written at once, and the remainder is
-  read before the final chunk.
+  read before the first output chunk.
 - A bidi 505 and an unanswered `Expect: 100-continue` request skip the read.
   Falcon never sends `100 Continue`.
 
-After the full response and HTTP EOF, Falcon half-closes raw TCP writes and
-waits without reading until 500 ms after the actual final HTTP flush, before
-body callbacks or lifecycle observation, like `net/http`'s `rstAvoidanceDelay`.
+One absolute final-close expiry is anchored at the actual final HTTP flush plus
+500 ms, before body callbacks or lifecycle observation. After those, Falcon
+half-closes raw TCP writes and waits without reading until that expiry, like
+`net/http`'s `rstAvoidanceDelay`.
 Following pipelined requests are never parsed or dispatched. Admission/socket
 ownership lasts until retirement and original processing join. Earlier owner
 shutdown can shorten either phase; failed delivery receives no success grace.
@@ -519,8 +520,7 @@ admission during the read and the remaining grace increases resource retention.
 This is best effort reset avoidance, with no arbitrary network-delivery
 guarantee. The [support
 contract](../../docs/support.md#falcon-connect-h1-retirement) promises this
-behavior and treats the 256 KiB, 64 KiB and 500 ms values as provisional tuning
-values.
+behavior and treats the 256 KiB and 500 ms values as provisional tuning values.
 
 ### Streaming conformance
 

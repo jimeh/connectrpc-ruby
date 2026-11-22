@@ -41,17 +41,19 @@ H1 peer EOF does not synthesize Context cancellation.
 When original framed input is incomplete at response-head resolution, Falcon
 disables reuse and, since 0.3.0, reads the unread body before it writes the
 response head, as Go's `net/http` server does (`maxPostHandlerReadBytes`). It
-reads at most 256 KiB and leaves a declared remainder of 256 KiB or more unread.
+reads at most 256 KiB, though the last chunked read can pass that by less than
+64 KiB, and leaves a declared remainder of 256 KiB or more unread.
 `request_body_timeout` bounds each read wait and the Connect deadline bounds the
 whole read; progress never extends the deadline, and `grpc-timeout` does not
 apply. A stalled, expired or malformed remainder still receives the response.
 Only the connection task reads, once the original processor has stopped reading
-input: it has finished, or it has queued response output, which core produces
-only after a handler's last input read. Falcon then buffers up to 64 KiB of that
-output, so processing finishes before the read. A head published before any
-output, such as headers sent during CS input reads, is written at once, and the
-remainder is read before the final chunk. A bidi 505 and an unanswered
-`Expect: 100-continue` request skip the read.
+input: it has finished, or it has produced response output, which core does
+only after a handler's last input read. During the read a separate task drains
+that output into memory, so processing never blocks on it; the drain never
+waits for processing completion or lifecycle observers. A head published before
+any output, such as headers sent during CS input reads, is written at once, and
+the remainder is read before the first output chunk. A bidi 505 and an
+unanswered `Expect: 100-continue` request skip the read.
 
 A successfully delivered response on a retiring connection uses one absolute
 final-close expiry at the actual final HTTP flush plus 500 ms. On a successful

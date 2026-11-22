@@ -29,15 +29,14 @@ module ConnectRPC
         super
       end
 
-      # Output buffered before the input read comes first. A head published
+      # Output drained during the input read comes first. A head published
       # before any output could not wait for the input remainder, so it is
-      # read at EOF, before the final chunk.
+      # read once the first output chunk, or EOF, shows processing has
+      # stopped reading input.
       def read
         chunk = @retirement&.prefetched? ? @retirement.next_prefetched : super
-        if chunk.nil?
-          @eof = true
-          @retirement&.read_first
-        end
+        chunk = @retirement.read_first(chunk) if @retirement
+        @eof = true if chunk.nil?
         chunk
       end
 
@@ -190,8 +189,6 @@ module ConnectRPC
     class HTTP1StreamInput
       # net/http's maxPostHandlerReadBytes.
       READ_LIMIT = 262_144
-      # Response output buffered so the processor can finish before the read.
-      PREFETCH_LIMIT = 65_536
 
       attr_writer :input, :response_body
 
@@ -246,25 +243,24 @@ module ConnectRPC
       # before writing its head, so a client that finishes its upload before
       # reading neither deadlocks nor fails a late write on close. Only the
       # connection task reads here, once the original processor has stopped
-      # reading: it has finished, or it has queued response output, which
-      # core produces only after a handler's last input read. A head
-      # published without output, such as early client-stream headers, is
-      # written first and the remainder is read before the final chunk.
-      def read_first
-        return unless @read_pending && (@processed || output_queued?)
+      # reading: it has finished, or it has produced response output, which
+      # core does only after a handler's last input read. A head published
+      # without output, such as early client-stream headers, is written
+      # first, and the read waits for the first output chunk or EOF, which
+      # is returned unchanged.
+      def read_first(output = nil)
+        return output unless @read_pending && (@processed || output || output_queued?)
 
         @read_pending = false
-        prefetch unless @processed
-        read_remainder
+        return output unless read_needed?
+
+        @processed ? read_remainder : drain_output { read_remainder }
+        output
       end
 
-      def prefetched? = !!@prefetched
+      def prefetched? = !!@prefetched&.any?
 
-      def next_prefetched
-        chunk = @prefetched.shift
-        @prefetched = nil if @prefetched.empty? && !@prefetched_eof
-        chunk
-      end
+      def next_prefetched = @prefetched.shift
 
       def final_flushed
         return if @close_expires
@@ -311,15 +307,19 @@ module ConnectRPC
         ::Async::Task.current.sleep(remaining) if remaining.positive? && !@raw.closed? && !forced?
       end
 
-      # request_body_timeout bounds each read wait and the Connect deadline
-      # bounds the whole read, as ReadTimeout does for net/http. A declared
-      # remainder at or above the limit is not read, and reads stop once they
-      # reach it. A chunked read returns at most 64 KiB, so the last one can
-      # pass the limit by less than that.
-      def read_remainder
-        return if forced? || framed_complete?
-        return if @framed.is_a?(::Protocol::HTTP1::Body::Fixed) && @framed.remaining >= READ_LIMIT
+      # A declared remainder at or above the limit is not read, as on net/http.
+      def read_needed?
+        return false if forced? || framed_complete?
+        return false if @framed.is_a?(::Protocol::HTTP1::Body::Fixed) && @framed.remaining >= READ_LIMIT
 
+        !(@expires && @expires <= now)
+      end
+
+      # request_body_timeout bounds each read wait and the Connect deadline
+      # bounds the whole read, as ReadTimeout does for net/http. Reads stop
+      # once they reach the limit. A chunked read returns at most 64 KiB, so
+      # the last one can pass the limit by less than that.
+      def read_remainder
         until framed_complete? || @discarded >= READ_LIMIT
           wait = @request_body_timeout
           if @expires
@@ -355,31 +355,41 @@ module ConnectRPC
       def forced? = !!@resource&.send(:raw_failed?)
 
       # The processor's output write blocks until its queued fragment is
-      # read, and an RPC deadline would then fail it mid-message. Buffer its
-      # remaining output, so it finishes before the input read starts. Output
-      # beyond the limit waits for the read, as a net/http handler's Flush
-      # waits for net/http's.
-      def prefetch
-        @prefetched = []
-        size = 0
-        while size < PREFETCH_LIMIT
-          chunk = @response_body.read
-          unless chunk
-            @prefetched_eof = true
-            break
+      # read, and its RPC deadline would then fail it mid-message. Drain that
+      # output into memory while the input read runs. Once processing has
+      # stopped reading input, its remaining output is the response message
+      # and terminal it already holds. The drain reads Async's OutputBody
+      # itself, so it never waits for processing completion or lifecycle
+      # observers; the wrappers above it only observe close. A failed output
+      # raises again from the response body's next live read.
+      def drain_output
+        source = output_body
+        return yield unless source
+
+        @prefetched ||= []
+        drain = ::Async::Task.current.async do
+          while (chunk = source.read)
+            @prefetched << chunk
           end
-          @prefetched << chunk
-          size += chunk.bytesize
+        rescue StandardError
+          nil
         end
-        @prefetched = nil if @prefetched.empty? && !@prefetched_eof
+        begin
+          yield
+        ensure
+          # A pending OutputBody#read takes no fragment until it wakes.
+          drain.stop
+        end
+      end
+
+      def output_body
+        body = @response_body
+        body = body.body while body.is_a?(::Protocol::HTTP::Body::Wrapper)
+        body if body.respond_to?(:queued_bytes)
       end
 
       # Async's OutputBody holds one fragment until the connection task reads it.
-      def output_queued?
-        body = @response_body
-        body = body.body while body.is_a?(::Protocol::HTTP::Body::Wrapper)
-        body.respond_to?(:queued_bytes) && body.queued_bytes.positive?
-      end
+      def output_queued? = !!output_body&.queued_bytes&.positive?
 
       def now = Process.clock_gettime(Process::CLOCK_MONOTONIC)
     end
