@@ -88,12 +88,14 @@ RSpec.describe "Inside an Async reactor" do
         e.message
       end
       parked(ready: ready)
-      first = Thread.new { transport.close(grace: 2) }
+      # The grace outlasts any scheduling delay before all three waits park;
+      # the held stream outlasts it, so teardown is forced.
+      first = Thread.new { transport.close(grace: 5) }
       # The held read and the first closer's wait.
       parked(2)
       second = Async do |task|
         closer = task.async do
-          transport.close(grace: 2)
+          transport.close(grace: 5)
         rescue Async::Stop
           [:stopped, driver.close_outcome]
         end
@@ -372,9 +374,10 @@ RSpec.describe "Inside an Async reactor" do
         lock.synchronize do
           held << true
           reactor = closing.pop
-          # Released after the sibling's check, or once the reactor thread
-          # sleeps, so a closer that blocks the reactor thread cannot deadlock.
-          eventually { !checked.empty? || reactor.status == "sleep" } || raise("never released")
+          # Released only after the sibling's check. A closer that blocks the
+          # reactor thread keeps the sibling from running, so the holder
+          # raises (releasing the lock) and holder.value fails the example.
+          eventually { !checked.empty? } || raise("never released")
         end
       end
       held.pop
@@ -577,11 +580,13 @@ RSpec.describe "Inside an Async reactor" do
     output, status = reactor_child(<<~RUBY, pool: false)
       #{held_call}
       graces = Thread::Queue.new
+      checkpoint = Thread::Queue.new
       ConnectRPC::Hyper.const_get(:Native)::Driver.prepend(Module.new do
         define_method(:close) do |grace|
           first = graces.empty?
           graces << grace
-          eventually { wait_bodies[1] >= 1 || !close_outcome.nil? } if first
+          # The later closer waits in native close, or teardown it started ended.
+          checkpoint << eventually { wait_bodies[1] >= 1 || !close_outcome.nil? } if first
           super(grace)
         end
       end)
@@ -594,10 +599,10 @@ RSpec.describe "Inside an Async reactor" do
         release << true
         [first.wait, later.value]
       end.wait
-      p [outcome, held.value, Array.new(graces.size) { graces.pop }]
+      p [outcome, held.value, Array.new(graces.size) { graces.pop }, checkpoint.pop]
     RUBY
     expect(status).to be_success
-    expect(eval(output.lines.last)).to eq([[true, true], "a", [10.0, 10.0]]) # rubocop:disable Security/Eval
+    expect(eval(output.lines.last)).to eq([[true, true], "a", [10.0, 10.0], true]) # rubocop:disable Security/Eval
   end
 
   it "still forces teardown after the grace when Task#stop lands on a closing task" do
@@ -624,7 +629,7 @@ RSpec.describe "Inside an Async reactor" do
         closer = task.async do
           transport.close(grace: 3)
         rescue Async::Stop
-          :stopped
+          [:stopped, driver.close_outcome]
         end
         # The held read and the close wait on its helper thread.
         parked(2)
@@ -637,7 +642,7 @@ RSpec.describe "Inside an Async reactor" do
     RUBY
     expect(status).to be_success
     expect(eval(output.lines.last)).to eq( # rubocop:disable Security/Eval
-      [:stopped, true, ["unavailable", "HTTP transport failed: connection closed"], false, [0, 0], true]
+      [[:stopped, false], true, ["unavailable", "HTTP transport failed: connection closed"], false, [0, 0], true]
     )
     peer.wait_event(/grpc ss-hold-done context canceled/, from: from)
   end
