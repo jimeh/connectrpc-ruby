@@ -148,43 +148,34 @@ RSpec.describe "Connect HTTP/1 original processor SDK ownership" do
     end
   end
 
-  it "keeps completed SDK delivery after later invalid-trailer hygiene failure" do
+  it "keeps completed SDK delivery after an invalid trailer fails the remainder read" do
     provider, exporter, bus = tracing
     reactor do |task|
       _, cs, = methods
-      entered = Async::Queue.new
-      finished = Async::Queue.new
+      errors = []
       type = ConnectRPC::Falcon.const_get(:HTTP1StreamInput)
       allow(type).to receive(:new).and_wrap_original do |constructor, *args, **options|
         constructor.call(*args, **options).tap do |owner|
-          allow(owner).to receive(:discard).and_wrap_original do |discard|
-            error = nil
-            entered.enqueue(true)
-            begin
-              discard.call
-            rescue StandardError => e
-              error = e
-              raise
-            ensure
-              finished.enqueue(error)
-            end
+          allow(owner.instance_variable_get(:@body)).to receive(:read).and_wrap_original do |read|
+            read.call
+          rescue StandardError => e
+            errors << e
+            raise
           end
         end
       end
       with_host(target({ cs.path => lambda { |*|
         AsyncHelpers::MESSAGE.new(name: "early")
       } }, instrumentation: bus), false) do |host, peer, _|
-        peer.write(request_head(cs, :chunked))
+        # The remainder read before the head fails on the trailer; the response still goes out.
+        peer.write("#{request_head(cs, :chunked)}0\r\ncontent-length: 9\r\n\r\n")
         expect(peer.head.first).to eq(200)
         expect(peer.body).to include("early")
-        entered.dequeue
-        expect(rpc_spans(exporter).size).to eq(1)
+        expect(errors.first).to be_a(Protocol::HTTP::InvalidTrailerError)
+        wait_until(task, "SDK completion after delivery") { rpc_spans(exporter).size == 1 }
         span = rpc_spans(exporter).first
         expect(span.attributes["connectrpc.delivery"]).to eq("completed")
-        expect(host.instance_variable_get(:@session).instance_variable_get(:@admitted).size).to eq(1)
-        peer.write("0\r\ncontent-length: 9\r\n\r\n")
-        expect(finished.dequeue).to be_a(Protocol::HTTP::InvalidTrailerError)
-        wait_until(task, "hygiene retires admission") do
+        wait_until(task, "retirement releases admission") do
           host.instance_variable_get(:@session).instance_variable_get(:@admitted).empty?
         end
         expect(rpc_spans(exporter)).to eq([span])
@@ -203,20 +194,30 @@ RSpec.describe "Connect HTTP/1 original processor SDK ownership" do
         _, cs, = methods
         waiting = Async::Queue.new
         release = Async::Queue.new
+        type = ConnectRPC::Falcon.const_get(:HTTP1StreamInput)
+        allow(type).to receive(:new).and_wrap_original do |constructor, *args, **options|
+          constructor.call(*args, **options).tap do |owner|
+            # Fail only the connection owner's remaining wait after delivery. No
+            # read precedes that wait, so stub it from retirement itself.
+            allow(owner).to receive(:retire).and_wrap_original do |retire|
+              allow(Async::Task.current).to receive(:sleep) do |remaining|
+                waiting.enqueue(remaining)
+                release.dequeue
+                raise IOError, "late grace wait failure"
+              end
+              retire.call
+            end
+          end
+        end
+        # The stalled remainder read stops at request_body_timeout.
         with_host(target({ cs.path => lambda { |*|
           AsyncHelpers::MESSAGE.new(name: "delivered")
-        } }, instrumentation: bus), secure) do |host, peer, _|
+        } }, instrumentation: bus), secure, request_body_timeout: 0.05) do |host, peer, _|
           peer.write(request_head(cs, :chunked))
           expect(peer.head.first).to eq(200)
           expect(peer.body).to include("delivered")
           session = host.instance_variable_get(:@session)
           resource = session.instance_variable_get(:@resources).first
-          # Fail only the connection owner's remaining wait, after real discard.
-          allow(resource.task).to receive(:sleep) do |remaining|
-            waiting.enqueue(remaining)
-            release.dequeue
-            raise IOError, "late grace wait failure"
-          end
           expect(waiting.dequeue).to be_between(0.25, 0.5)
           expect(resource.raw).not_to be_closed
           expect(session.instance_variable_get(:@admitted).size).to eq(1)
