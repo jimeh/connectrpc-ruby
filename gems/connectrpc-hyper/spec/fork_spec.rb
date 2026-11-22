@@ -42,6 +42,9 @@ RSpec.describe "Fork", :fork do
       expect(status).to be_success
       child, child_success, parent = eval(output.lines.last) # rubocop:disable Security/Eval
       expect([child, child_success, parent]).to eq(["[true, true]", true, [true, true, true]])
+      # The peer logs the held stream's end only once it sees the reset,
+      # which can come after the child Ruby exited.
+      peer.wait_event(/#{tag} ss-hold-done/, from: from)
       events = peer.since(from)
       # The parent dialed once and reused its connection after the fork; the
       # child dialed its own, which closed when the child exited.
@@ -198,6 +201,7 @@ RSpec.describe "Fork", :fork do
   # child has neither the parent's closer thread nor its teardown, so it must
   # not wait for either.
   it "closes at once in a child that inherits the parent's pending close" do
+    from = peer.mark
     output, status = ruby_child(<<~RUBY)
       #{child_close}
       transport = ConnectRPC::Hyper::Transport.new
@@ -224,6 +228,9 @@ RSpec.describe "Fork", :fork do
     RUBY
     expect(status).to be_success
     expect(eval(output.lines.last)).to eq([child_closed, true]) # rubocop:disable Security/Eval
+    # The held stream ends with the child Ruby; wait for the peer to log it
+    # so its unkeyed ss-hold-done never lands in a later example.
+    peer.wait_event(/grpc ss-hold-done/, from: from)
   end
 
   # The child never built a driver of its own, so its close has nothing to

@@ -74,6 +74,7 @@ RSpec.describe "Inside an Async reactor" do
   # task waits on a helper thread, so the stop lands while it waits and is
   # raised only after the outcome is published.
   def concurrent_closers(pool:)
+    from = peer.mark
     output, status = reactor_child(<<~RUBY, pool: pool)
       transport = ConnectRPC::Hyper::Transport.new
       driver = transport.instance_variable_get(:@driver)
@@ -107,6 +108,9 @@ RSpec.describe "Inside an Async reactor" do
       p [second, first.value, transport.close(grace: 5), held.value, driver.stats[1..2]]
     RUBY
     expect(status).to be_success
+    # The forced close ends the held stream; wait for the peer to log it so
+    # its unkeyed ss-hold-done never lands in a later example.
+    peer.wait_event(/grpc ss-hold-done/, from: from)
     eval(output.lines.last) # rubocop:disable Security/Eval
   end
 

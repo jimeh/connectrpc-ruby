@@ -237,6 +237,10 @@ RSpec.describe "Transport#close" do
     expect(closers.map(&:value)).to eq([false, false, false])
     expect(transport.close(grace: 5)).to be(false)
     held.join
+    # The peer logs the held stream's end only once it sees the reset, which
+    # can come after the call returned. Its unkeyed ss-hold-done must not
+    # land in a later example that waits for its own.
+    peer.wait_event(/grpc ss-hold-done/, from: from)
     expect(hyper.close).to be(true)
   end
 
