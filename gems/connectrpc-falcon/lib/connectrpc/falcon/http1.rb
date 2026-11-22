@@ -358,7 +358,9 @@ module ConnectRPC
       # read, and its RPC deadline would then fail it mid-message. Drain that
       # output into memory while the input read runs. Once processing has
       # stopped reading input, its remaining output is the response message
-      # and terminal it already holds. The drain reads Async's OutputBody
+      # and terminal it already holds: H1 serves no bidi, and core reads a
+      # server stream's input to EOF before its handler runs, so only a
+      # client stream's single result or an error terminal can remain. The drain reads Async's OutputBody
       # itself, so it never waits for processing completion or lifecycle
       # observers; the wrappers above it only observe close. A failed output
       # raises again from the response body's next live read.

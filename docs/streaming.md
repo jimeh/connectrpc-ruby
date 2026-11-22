@@ -80,8 +80,9 @@ response delivery under arbitrary network or peer failure. The
 [support contract](support.md#falcon-connect-h1-retirement) promises this
 behavior and treats its budgets as provisional tuning values.
 
-The production official H1 profiles pass 174/174 identity and 160/160 gzip cases
-on both pinned Rubies, including the original oversized CS cases over TCP/TLS.
+CI requires the production official H1 profiles to pass all 174 identity and 160
+gzip cases on both pinned Rubies, including the original oversized CS cases over
+TCP/TLS.
 No official assertion or inventory changed. Unlike `net/http`, Falcon never
 reuses a connection after incomplete input, and it also reads when the client
 sent `Connection: close`. Native H1 Web retains its separate policy: original

@@ -247,7 +247,11 @@ RSpec.describe "Connect H1 read-first input retirement" do
         resource.raw.setsockopt(Socket::SOL_SOCKET, Socket::SO_RCVBUF, 16_384)
         # The whole upload completes before the client reads any response bytes.
         peer.write(first + ("x" * rest))
-        expect(peer.body.bytesize).to be > 1_048_576
+        body = peer.body
+        flags, size = body.unpack("CN")
+        expect(flags).to eq(0)
+        expect(AsyncHelpers::MESSAGE.decode(body.byteslice(5, size)).name).to eq("y" * 1_048_576)
+        expect(body.byteslice((5 + size)..)).to eq("#{[2, 15].pack('CN')}{\"metadata\":{}}")
         expect(peer_eof?(peer)).to be(true)
       end
     end
@@ -256,6 +260,7 @@ RSpec.describe "Connect H1 read-first input retirement" do
   it "delivers a large result in full when the stalled read runs to the deadline" do
     reactor do
       _, cs, = methods
+      _, owners = observe_wire
       handler = ->(*) { AsyncHelpers::MESSAGE.new(name: "z" * 131_072) }
       with_host(target({ cs.path => handler }), false) do |_, peer, _|
         peer.write(request_head(cs, :fixed, length: 100_000, extra: "Connect-Timeout-Ms: 300\r\n"))
@@ -271,6 +276,7 @@ RSpec.describe "Connect H1 read-first input retirement" do
         expect(body.byteslice(5 + size, 1).unpack1("C")).to eq(2)
         expect(body.byteslice((10 + size)..)).to eq('{"metadata":{}}')
         expect(peer_eof?(peer)).to be(true)
+        expect(owners.dequeue.instance_variable_get(:@discarded)).to eq(1000)
       end
     end
   end
@@ -292,6 +298,7 @@ RSpec.describe "Connect H1 read-first input retirement" do
           end
         end
         instrumentation = ConnectRPC::Instrumentation.new(subscribers: [subscriber])
+        _, owners = observe_wire
         handler = ->(*) { AsyncHelpers::MESSAGE.new(name: "observed") }
         with_host(target({ cs.path => handler }, instrumentation: instrumentation), false) do |_, peer, _|
           peer.write(request_head(cs, :fixed, length: length))
@@ -304,6 +311,7 @@ RSpec.describe "Connect H1 read-first input retirement" do
           head_seen.enqueue(true)
           expect(peer.body).to include("observed")
           expect(peer_eof?(peer)).to be(true)
+          expect(owners.dequeue.instance_variable_get(:@discarded)).to eq(length < 262_144 ? length : 0)
         ensure
           head_seen.enqueue(true)
         end

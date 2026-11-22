@@ -524,8 +524,8 @@ behavior and treats the 256 KiB and 500 ms values as provisional tuning values.
 
 ### Streaming conformance
 
-The separate `falcon:conformance:http1` production profiles pass 174/174
-identity and 160/160 gzip cases on Ruby 3.4.12 and 4.0.9 with unchanged
+CI requires the separate `falcon:conformance:http1` production profiles to pass
+all 174 identity and 160 gzip cases on Ruby 3.4.12 and 4.0.9, with unchanged
 assertions and inventories. Web rejection-head ordering is repaired separately,
 with its gate excluded from Connect delivery. Historical Web
 failures and the baseline repair remain recorded in the
