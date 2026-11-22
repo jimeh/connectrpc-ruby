@@ -87,11 +87,16 @@ module ConnectRPC
         end
         private_constant :Tunnelled
 
+        # Owner waits that end without the owner's outcome.
+        EXPIRED = %i[deadline canceled timeout].freeze
+        private_constant :EXPIRED
+
         def initialize(snapshot:, proxy:, **)
           @compiled_snapshot = snapshot
           @proxy = proxy
           @engines = []
           @cutoff = nil
+          @owner_unresponsive = false
           super(**)
         end
 
@@ -99,16 +104,23 @@ module ConnectRPC
         # started, including one that stopped before the close began. The
         # close's expiry never passes `cutoff`, so the close stops waiting for
         # a stalled owner one cleanup allowance after it, and that owner exits
-        # once it resumes. An interrupt of the close wait still joins the
-        # owners, within the same bound, before it propagates.
+        # once it resumes. A cutoff already past only stands once a wait of
+        # the call has spent the owner's allowance; otherwise the owner still
+        # has an allowance from the start of the close, however late that
+        # start is. An interrupt of the close wait still joins the owners,
+        # within the same bound, before it propagates.
         def close_joined(grace, cutoff)
-          @cutoff = cutoff
+          @cutoff = cutoff && !@owner_unresponsive ? [cutoff, Internal.now].max : cutoff
           close(grace: grace)
         ensure
           join_owners
         end
 
         private
+
+        def await(...) = super.tap { |status| @owner_unresponsive = true if EXPIRED.include?(status) }
+
+        def await_stream(...) = super.tap { |(status)| @owner_unresponsive = true if EXPIRED.include?(status) }
 
         def build_inner(**) = Tunnelled.new(proxy: @proxy, **)
 
@@ -203,10 +215,9 @@ module ConnectRPC
       # with less time left the close is raw. On the default clock, which
       # Internal.now also reads, the cutoff is the deadline's expiry, live or
       # past. A custom clock has no monotonic instant, so a live deadline
-      # places the cutoff by its remaining time, and past its expiry the
-      # cutoff is now, giving a stalled owner its allowance from the start of
-      # the close. The time is read after a custom clock, so a slow clock
-      # shortens the budget rather than leaving it already spent.
+      # places the cutoff by its remaining time, read after the clock so a
+      # slow clock shortens the budget rather than leaving it already spent,
+      # and past its expiry the cutoff is now.
       def close_plan(deadline)
         return [Internal::CLEANUP_SECONDS, nil] unless deadline
 

@@ -224,6 +224,28 @@ RSpec.describe "PerCallTransport connection close, close budget and outcome prec
       peer&.stop
     end
 
+    # The close starts well after a default-clock deadline has passed, as for
+    # a caller delayed after its exchange. The close is raw, and the owner
+    # still gets its cleanup allowance from the start of the close.
+    it "closes raw and joins every task when the close starts long after the deadline on the #{path} path" do
+      peer = threaded_recording_peer
+      origin = "http://127.0.0.1:#{peer.peer.port}"
+      deadline = ConnectRPC::Deadline.new(0.2)
+      # The caller's delay past the deadline is the condition under test: the
+      # close starts two cleanup allowances after it.
+      late = TracePoint.new(:call) { sleep(deadline.remaining + (AsyncHelpers::INTERNAL::CLEANUP_SECONDS * 2)) }
+      late.enable(target: PerCallHelpers::PER_CALL.instance_method(:close_plan))
+      with_boundaries do |boundaries|
+        response = on_path(path) { per_call.call(request("#{origin}/late", deadline: deadline)) }
+        expect(response.status).to eq(200)
+        expect_released(boundaries.take.first)
+        expect_raw_close(peer)
+      end
+    ensure
+      late&.disable
+      peer&.stop
+    end
+
     # The deadline's clock fails while the close budget is computed, and only
     # then. Teardown still runs, with a raw close and so no GOAWAY, and the
     # call keeps its own outcome: the stream's message, or the stream block's

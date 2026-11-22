@@ -19,6 +19,10 @@ RSpec.describe "PerCallTransport deadlines, cancellation and interrupts" do
     }))
   end
 
+  # The line in Threaded#close_joined before its close; a pause there holds
+  # the caller just before the close begins.
+  def close_cutoff_line = "@cutoff = cutoff && !@owner_unresponsive ? [cutoff, Internal.now].max : cutoff"
+
   def expect_peer_cancel(contexts, name, reasons = [:canceled])
     eventually("actual peer CANCEL reached the #{name} handler Context") { contexts.fetch(name).cancelled? }
     expect(reasons).to include(contexts.fetch(name).cancellation_reason)
@@ -194,7 +198,7 @@ RSpec.describe "PerCallTransport deadlines, cancellation and interrupts" do
             capture_error { transport.call(request("#{origin}/closing")) }
           end
           close_joined = threaded_class.instance_method(:close_joined)
-          pause = ThreadedHelpers::LinePause.new(close_joined, victim, "@cutoff = cutoff")
+          pause = ThreadedHelpers::LinePause.new(close_joined, victim, close_cutoff_line)
           start << true
           pop_within(pause.held, "the caller to reach its close")
           count.times { |index| victim.raise(interrupt, "interrupt #{index}") }
@@ -232,7 +236,7 @@ RSpec.describe "PerCallTransport deadlines, cancellation and interrupts" do
         capture_error { mixed_client(per_call, origin).watch(item("exit")) { |reader| reader.each { nil } } }
       end
       pause = ThreadedHelpers::LinePause.new(threaded_class.instance_method(:close_joined), victim,
-                                             "@cutoff = cutoff")
+                                             close_cutoff_line)
       start << true
       owner = pop_within(held, "the owner's stream cleanup")
       expect(owner).not_to equal(victim)

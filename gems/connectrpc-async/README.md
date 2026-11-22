@@ -988,10 +988,11 @@ and bidi streaming before any I/O.
   when the clock raises a `StandardError` other than `Async::TimeoutError`.
   Any other exception from the clock, such as `Interrupt`, counts as an
   interrupt: it is raised after the raw close and teardown, as is an
-  interrupt that lands meanwhile. One limitation inside a reactor: a
-  `StandardError` raised into the caller while a custom clock runs, such as a
-  `with_timeout` with a custom error class, cannot be told apart from the
-  clock's own failure, so the call keeps its outcome.
+  interrupt that lands meanwhile. One limitation inside a reactor: unless it
+  is an `Async::TimeoutError`, a `StandardError` raised into the caller while
+  a custom clock runs cannot be told apart from the clock's own failure, so
+  the call keeps its outcome. A `with_timeout` whose custom error class does
+  not inherit from `Async::TimeoutError` is one such case.
 - Deadlines, `CancellationToken`s, `Timeout`, `Thread#raise` and `Thread#kill`
   behave as for `ThreadedTransport` outside a reactor, and task cancellation and
   `with_timeout` as for `Transport` inside one; an interrupted stream is reset
@@ -1000,9 +1001,11 @@ and bidi streaming before any I/O.
   an interrupt ends the close's own wait, and the call still joins its owner
   threads, within the close's bound, before raising it. If the owner thread is
   stalled, for example by native code, the call returns at its deadline plus
-  one 100 ms allowance, and the owner exits once it resumes. An owner that has
-  already published its outcome and is exiting, for example while it waits for
-  the GVL, is still joined, which can take up to another 100 ms. With a custom
+  one 100 ms allowance, and the owner exits once it resumes. An owner that
+  has not stalled is joined even when the close starts long after the
+  deadline. An owner that has already published its outcome and is exiting,
+  for example while it waits for the GVL, is still joined, which can take up
+  to another 100 ms. With a custom
   `Deadline` clock the close cannot place the deadline in monotonic time, so a
   stalled owner can cost up to two more 100 ms allowances.
 - Inside a reactor, a `Thread#raise` from another thread is best-effort, as
