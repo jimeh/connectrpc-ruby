@@ -128,7 +128,9 @@ impl Holds {
             return Poll::Ready(());
         }
         point.reached.fetch_add(1, Ordering::SeqCst);
-        wakers.push(cx.waker().clone());
+        if !wakers.iter().any(|waker| waker.will_wake(cx.waker())) {
+            wakers.push(cx.waker().clone());
+        }
         Poll::Pending
     }
 
@@ -143,8 +145,13 @@ impl Holds {
             wakers: Mutex::new(Vec::new()),
         });
         let mut points = self.points.lock().unwrap_or_else(|e| e.into_inner());
-        if points.insert(name, point).is_none() {
-            ARMED.fetch_add(1, Ordering::AcqRel);
+        match points.insert(name, point) {
+            // Re-arming releases what the old point held, stalled polls
+            // included, which have no bound of their own.
+            Some(replaced) => replaced.release(),
+            None => {
+                ARMED.fetch_add(1, Ordering::AcqRel);
+            }
         }
         self.armed.store(true, Ordering::Release);
     }
