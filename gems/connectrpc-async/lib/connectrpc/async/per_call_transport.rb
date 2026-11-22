@@ -200,22 +200,24 @@ module ConnectRPC
       # time. Core checks the deadline again once the transport returns, so
       # the wait for the peer's FIN ends one cleanup allowance before the
       # deadline, which leaves that allowance for the raw close and the joins;
-      # with less time left the close is raw. A live deadline places the
-      # cutoff by its own remaining time. Past its expiry a Deadline reports
-      # no time: on the default clock, which Internal.now also reads, the
-      # cutoff is its expiry; a custom clock's expiry has no monotonic
-      # instant, so the cutoff is now and a stalled owner gets its allowance
-      # from the start of the close. The time is read after the clock, so a
-      # slow clock shortens the budget rather than leaving it already spent.
+      # with less time left the close is raw. On the default clock, which
+      # Internal.now also reads, the cutoff is the deadline's expiry, live or
+      # past. A custom clock has no monotonic instant, so a live deadline
+      # places the cutoff by its remaining time, and past its expiry the
+      # cutoff is now, giving a stalled owner its allowance from the start of
+      # the close. The time is read after a custom clock, so a slow clock
+      # shortens the budget rather than leaving it already spent.
       def close_plan(deadline)
         return [Internal::CLEANUP_SECONDS, nil] unless deadline
 
-        remaining = deadline.remaining
-        now = Internal.now
-        cutoff = if remaining.positive? then now + remaining
-                 elsif deadline.__send__(:clock).equal?(DEADLINE_CLOCK) then deadline.__send__(:expires_at)
-                 else now
-                 end
+        if deadline.__send__(:clock).equal?(DEADLINE_CLOCK)
+          now = Internal.now
+          cutoff = deadline.__send__(:expires_at)
+        else
+          remaining = deadline.remaining
+          now = Internal.now
+          cutoff = remaining.positive? ? now + remaining : now
+        end
         [(cutoff - now - Internal::CLEANUP_SECONDS).clamp(0.0, Internal::CLEANUP_SECONDS), cutoff]
       end
 

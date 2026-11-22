@@ -425,9 +425,10 @@ RSpec.describe "PerCallTransport deadlines, cancellation and interrupts" do
 
     # More interrupts land as the unwinding call cancels and joins its scope:
     # two as the cancel starts, before it runs, so the guard left without a
-    # watcher is not yet cancelled, and one as the join starts, before it
-    # protects itself. The cancel and the join still finish, and the call
-    # then raises the first later interrupt.
+    # watcher is not yet cancelled and the cancel is retried. The third
+    # cancel finishes the scope, so the interrupt that then lands as the join
+    # starts finds nothing left to join. The call then raises the first later
+    # interrupt. A retried join of a running scope is covered below.
     it "finishes the scope when more interrupts land while a cut-short construction unwinds" do
       first = Class.new(StandardError)
       second = Class.new(StandardError)

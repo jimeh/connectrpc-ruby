@@ -985,13 +985,13 @@ and bidi streaming before any I/O.
   close is raw and teardown still runs. Outside a reactor, the call keeps its
   own outcome whatever the clock raises, and interrupts from other threads
   wait until the budget is computed. Inside one, the call keeps its outcome
-  when the clock raises a `StandardError`. Any other exception from the
-  clock, such as `Interrupt`, counts as an interrupt: it is raised after the
-  raw close and teardown, as is an interrupt that lands meanwhile. One
-  limitation inside a reactor: a `StandardError` raised into the caller while
-  a custom clock runs, such as a `with_timeout` with a custom error class,
-  cannot be told apart from the clock's own failure, so the call keeps its
-  outcome.
+  when the clock raises a `StandardError` other than `Async::TimeoutError`.
+  Any other exception from the clock, such as `Interrupt`, counts as an
+  interrupt: it is raised after the raw close and teardown, as is an
+  interrupt that lands meanwhile. One limitation inside a reactor: a
+  `StandardError` raised into the caller while a custom clock runs, such as a
+  `with_timeout` with a custom error class, cannot be told apart from the
+  clock's own failure, so the call keeps its outcome.
 - Deadlines, `CancellationToken`s, `Timeout`, `Thread#raise` and `Thread#kill`
   behave as for `ThreadedTransport` outside a reactor, and task cancellation and
   `with_timeout` as for `Transport` inside one; an interrupted stream is reset
@@ -1005,6 +1005,13 @@ and bidi streaming before any I/O.
   the GVL, is still joined, which can take up to another 100 ms. With a custom
   `Deadline` clock the close cannot place the deadline in monotonic time, so a
   stalled owner can cost up to two more 100 ms allowances.
+- Inside a reactor, a `Thread#raise` from another thread is best-effort, as
+  for `Transport`: it lands in whichever fiber is running, and one that lands
+  in the caller's fiber at certain points of its teardown can return before
+  the call's tasks have been joined. Task cancellation and `with_timeout` are
+  the supported interrupts there.
+  [#185](https://github.com/jimeh/connectrpc-ruby/issues/185) tracks
+  hardening this across the Async transports.
 - After fork, the transport holds no inherited state; a child's calls are
   independent. A call in progress during fork stays the parent's.
 
