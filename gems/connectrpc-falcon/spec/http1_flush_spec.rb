@@ -62,7 +62,7 @@ RSpec.describe "Connect H1 final flush ownership" do
         next unless body
 
         expect(clock.first).to be > flush_at + 0.5
-        expect(owner).not_to receive(:discard)
+        expect(owner).not_to receive(:read_remainder)
         expect(Async::Task.current).not_to receive(:sleep)
         allow(owner).to receive(:close).and_call_original
         owner.close(true)
@@ -109,16 +109,16 @@ RSpec.describe "Connect H1 final flush ownership" do
     end
   end
 
-  it "spends delayed callback and discard time within one total 500 ms budget" do
+  it "spends delayed callback time within one total 500 ms budget, without reads" do
     reactor do |task|
       connection, owner, body, events, clock, = writer_fixture(callback_delay: 0.2)
       allow(owner).to receive(:close)
       connection.write_body("HTTP/1.1", body)
       expires = owner.instance_variable_get(:@close_expires)
       allow(owner).to receive(:close).and_call_original
-      expect(owner).to receive(:discard) { clock[0] += 0.1 }
+      expect(owner).not_to receive(:read_remainder)
       expect(task).to receive(:sleep) do |remaining|
-        expect(remaining).to be_within(0.00001).of(0.2)
+        expect(remaining).to be_within(0.00001).of(0.3)
         clock[0] += remaining
       end
       owner.close(true)

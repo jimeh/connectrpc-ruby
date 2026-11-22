@@ -384,6 +384,23 @@ and [Accept errors](../gems/connectrpc-async/README.md#accept-errors).
   its handle is created after the refusal. See
   [Stream admission](../gems/connectrpc-async/README.md#stream-admission).
 
+These affect Falcon's native HTTP/1.1 Connect server and client streaming. See
+[HTTP/1.1 input retirement](../gems/connectrpc-falcon/README.md#http11-input-retirement).
+
+- When a response is ready before its request body has been read, Falcon reads
+  up to 256 KiB of the unread body before it writes the response head, as Go's
+  `net/http` server does, and still closes the connection after the reply.
+  Before 0.3.0 it wrote the response first, discarded input for at most 100 ms
+  and closed 500 ms after the final flush, so a client that paused its upload
+  past that close could fail its late write and lose the response. Such early
+  responses now wait for the client's upload, bounded per read by
+  `request_body_timeout` (default 60 seconds, which now also applies to this
+  HTTP/1.1 read) and in total by the Connect deadline. A declared
+  `Content-Length` remainder of 256 KiB or more is not read. Lower
+  `request_body_timeout` to answer stalled uploads sooner.
+- After delivery, Falcon no longer reads further input during the 500 ms close
+  delay.
+
 These affect `connectrpc-sentry` client propagation. See
 [Propagation](../gems/connectrpc-sentry/README.md#propagation).
 

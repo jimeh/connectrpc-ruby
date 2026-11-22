@@ -62,20 +62,15 @@ RSpec.describe "Falcon Connect HTTP/1.1 streaming" do
     end
 
     [false, true].each do |error|
-      it "delivers complete early #{error ? 'error' : 'success'} before unread #{label} hygiene ends" do
+      it "delivers complete early #{error ? 'error' : 'success'} before unread #{label} input retires" do
         reactor do |task|
           _, cs, = methods
           retired = {}
           owners = []
-          hygiene = Async::Queue.new
           owner = ConnectRPC::Falcon.const_get(:HTTP1StreamInput)
           allow(owner).to receive(:new).and_wrap_original do |constructor, *args, **options|
             constructor.call(*args, **options).tap do |instance|
               owners << instance
-              allow(instance).to receive(:discard).and_wrap_original do |discard|
-                hygiene.enqueue(true)
-                discard.call
-              end
               allow(instance).to receive(:close).and_wrap_original do |close, *values|
                 close.call(*values)
               ensure
@@ -88,14 +83,15 @@ RSpec.describe "Falcon Connect HTTP/1.1 streaming" do
 
             AsyncHelpers::MESSAGE.new(name: "early")
           end
-          with_host(target({ cs.path => handler }), secure, max_requests: 1) do |host, peer, origin|
+          # The stalled remainder read stops at request_body_timeout.
+          options = { max_requests: 1, request_body_timeout: 0.05 }
+          with_host(target({ cs.path => handler }), secure, **options) do |host, peer, origin|
             peer.write(request_head(cs, framing))
             status, headers = peer.head
             expect(status).to eq(200)
             expect(headers["connection"]).to eq(["close"])
             bytes = peer.body
             expect(bytes).to include(error ? '"code":"invalid_argument"' : "early")
-            hygiene.dequeue
             expect(retired.fetch(owners.first, false)).to be(false)
             expect(host.instance_variable_get(:@session).instance_variable_get(:@admitted).size).to eq(1)
             # Unrelated connection can make progress while this one retires.

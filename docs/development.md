@@ -812,14 +812,15 @@ and its limits.
 
 ## Native streaming verification
 
-`async:test` and `falcon:test` include the incremental shape/codec/coding/security
-matrix, bounded output/ingress, healthy same-connection siblings and cancellation.
-`otel:test` includes actual SDK processor-task identity, mTLS peer identity,
-codec/handler cleanup and separate processing/HTTP completion evidence.
-Falcon H1 focused specs distinguish the unchanged absolute 100 ms / 256 KiB
-discard (adapter remainder and full 64 KiB read reservations) from the cooperative
-500 ms total final-close expiry anchored at actual final HTTP flush. They check
-EOF before hygiene, delayed callbacks spending the same budget, no reads or
+`async:test` and `falcon:test` include the incremental
+shape/codec/coding/security matrix, bounded output/ingress, healthy
+same-connection siblings and cancellation. `otel:test` includes actual SDK
+processor-task identity, mTLS peer identity, codec/handler cleanup and separate
+processing/HTTP completion evidence. Falcon H1 focused specs distinguish the
+read of up to 256 KiB of unread input before the response head, bounded by
+`request_body_timeout` and the Connect deadline, from the cooperative 500 ms
+total final-close expiry anchored at actual final HTTP flush. They check the
+read before the head, delayed callbacks spending the same budget, no reads or
 pipeline parsing during remaining grace, admission joins before host cleanup,
 owner interruption and real worker shutdown. Timings may overshoot under reactor
 delay; they are not hard real-time bounds. SDK specs preserve completed delivery

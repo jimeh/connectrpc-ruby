@@ -6,11 +6,11 @@ boundary and the remaining adoption gates.
 The gem implements typed Connect RPCs and native HTTP/2 gRPC in all four RPC shapes.
 Falcon also serves Connect HTTP/1.1 server/client streaming. The explicit Async
 HTTP1Transport supports Connect unary and server/client streaming; standalone
-Async Host remains H2-only. The streaming guide records
-the response-first discard limits and cooperative 500 ms total final-close
-policy. Shared protocol code is independent of HTTP hosting and concrete
-protobuf classes. The public require is `connectrpc`, and the Ruby namespace is
-`ConnectRPC`. The API is experimental.
+Async Host remains H2-only. The streaming guide records the read of unread input
+before the response and the cooperative 500 ms total final-close policy. Shared
+protocol code is independent of HTTP hosting and concrete protobuf classes. The
+public require is `connectrpc`, and the Ruby namespace is `ConnectRPC`. The API
+is experimental.
 
 ## Shared boundaries
 
@@ -473,10 +473,11 @@ and callback boundaries during retirement. On a successful write,
 protocol-http1 closes the body only after the final flush. A private
 response-body wrapper establishes one absolute 500 ms final-close expiry at
 that error-free close after EOF or HEAD, before the body's close callbacks. A
-response without a body anchors when the writer returns. Successfully delivered
-retiring Connect responses half-close raw TCP writes, retain the original
-100 ms / 256 KiB bounded discard, then wait only the remaining total budget
-without further reads. Admission/socket ownership joins original processing and
+response without a body anchors when the writer returns. Retiring Connect
+requests read up to 256 KiB of unread input before the response head, as
+net/http does. Successfully delivered retiring responses half-close raw TCP
+writes, then wait only the remaining total budget without further reads.
+Admission/socket ownership joins original processing and
 retirement; owner shutdown can shorten either phase. These cooperative timers
 can overshoot under scheduler delay and do not guarantee peer receipt. The
 independent Web rejected-input policy is unchanged. Only explicit Rack fallback

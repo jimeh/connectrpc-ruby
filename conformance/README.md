@@ -204,14 +204,16 @@ first-request-size-limit CS cases also passed over plain TCP and TLS on both
 lanes. The original assertions, inventories and strict ledgers are unchanged;
 no case is waived, excluded or counted as an expected failure.
 
-Retiring delivered Connect H1 responses use a cooperative 500 ms total budget
-from the actual final HTTP flush, with raw TCP write-side half-close. Response
-EOF precedes the unchanged absolute 100 ms / 256 KiB discard; no further reads
-occur during the remaining wait. Scheduler overshoot and admission/socket
-retention are accepted. This is best effort reset avoidance, not a guarantee
-under arbitrary network/peer failure. Go is a comparison: connect-go may consume
-the full declared oversized message, while net/http may drain before flush or
-reuse. Ruby remains response-first and bounded. The official runner stays
+Since 0.3.0, Falcon reads up to 256 KiB of unread Connect H1 input before the
+response head, as net/http does, bounded by `request_body_timeout` and the
+Connect deadline. Delivered retiring responses then use a cooperative 500 ms
+total budget from the actual final HTTP flush, with raw TCP write-side
+half-close and no further reads. Before 0.3.0, Falcon wrote the response first
+and discarded input for at most 100 ms, and the TLS
+"request-exceeds-server-limit" case failed intermittently in CI when the Go
+client paused its upload past the close (#132, #186). Scheduler overshoot and
+admission/socket retention are accepted. This is best effort reset avoidance,
+not a guarantee under arbitrary network/peer failure. The official runner stays
 connectconformance 1.0.6 (embedded connect-go 1.21.0, Go 1.27.2); the separate
 repository peer remains connect-go 1.21.1.
 
@@ -250,8 +252,8 @@ accepted while malformed status tokens, upgrades and ambiguous framing fail.
 `async:interop:http1` separately exercises the repository's pinned connect-go
 1.21.1 peer in H1-only TCP, TLS and mTLS modes with actual HTTP/1.1 and ALPN
 checks. Generated Ruby clients also exercise the merged Falcon H1 server in its
-own bundle. These checks do not change the server's response-first total grace
-or discard policy. Historical failed qualification artifacts remain evidence,
+own bundle. These checks do not change the server's input read or total grace
+policy. Historical failed qualification artifacts remain evidence,
 not successful new-head results.
 
 ## ThreadedTransport client profiles

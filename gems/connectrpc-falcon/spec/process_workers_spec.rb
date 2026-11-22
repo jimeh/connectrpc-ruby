@@ -76,7 +76,7 @@ RSpec.describe "Real Falcon process-worker lifecycle" do
     end
   end
 
-  %i[discard remaining_grace].each do |phase|
+  %i[remainder_read remaining_grace].each do |phase|
     it "shuts down a real worker while Connect H1 #{phase} owns admission" do
       reactor do
         reader, writer = IO.pipe
@@ -95,11 +95,11 @@ RSpec.describe "Real Falcon process-worker lifecycle" do
         prepare = lambda do
           # Reuse the existing worker event pipe to observe the actual phase.
           Thread.current[:h1_hygiene_trace] = TracePoint.new(:call, :return) do |event|
-            pending = if phase == :discard
+            pending = if phase == :remainder_read
                         event.event == :call && event.method_id == :read &&
                           event.defined_class == Protocol::HTTP1::Body::Fixed
                       else
-                        event.event == :return && event.method_id == :discard &&
+                        event.event == :call && event.method_id == :retire &&
                           event.defined_class == ConnectRPC::Falcon.const_get(:HTTP1StreamInput)
                       end
             next unless pending
@@ -112,14 +112,22 @@ RSpec.describe "Real Falcon process-worker lifecycle" do
                                       phase: phase))
           end.enable
         end
-        config = configuration(writer, make_core: make_core, prepare: prepare, count: 1)
+        # A stalled remainder read is an unanswered request, so only the
+        # managed stop's grace ends it, as net/http's Shutdown waits for it.
+        close_grace = 0.2 if phase == :remainder_read
+        config = configuration(writer, make_core: make_core, prepare: prepare, count: 1, close_grace: close_grace)
         cluster = FalconProcessFixtures::FalconProcessCluster.new(config, reader, writer)
         pid = cluster.event(:running).fetch("pid")
         peer = ConnectH1Wire.new("http://127.0.0.1:#{cluster.service.port}")
+        # A remainder below 256 KiB is read before the head; a larger declared
+        # one is left unread, so the response arrives and retirement waits.
+        length = phase == :remainder_read ? 100_000 : 300_000
         peer.write("POST #{declaration.path} HTTP/1.1\r\nHost: localhost\r\n" \
-                   "Content-Type: application/connect+proto\r\nContent-Length: 100000\r\n\r\n")
-        expect(peer.head.first).to eq(200)
-        expect(peer.body).to include("early")
+                   "Content-Type: application/connect+proto\r\nContent-Length: #{length}\r\n\r\n")
+        unless phase == :remainder_read
+          expect(peer.head.first).to eq(200)
+          expect(peer.body).to include("early")
+        end
         expect(cluster.event(:hygiene_read)).to include("pid" => pid, "admitted" => 1,
                                                         "raw_closed" => false, "phase" => phase.to_s)
         cluster.stop

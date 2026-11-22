@@ -39,11 +39,19 @@ propagation exclude actual chunked trailers, including `connect-timeout-ms`.
 H1 peer EOF does not synthesize Context cancellation.
 
 When original framed input is incomplete at response-head resolution, Falcon
-disables reuse and delivers the complete response before best-effort input
-hygiene. Hygiene has one absolute 100 ms allowance and a 256 KiB entity-byte cap,
-including the adapter remainder. Every additional framed read reserves a full
-64 KiB, so retirement can stop below the cap. Progress never restarts the timer;
-Connect does not use `grpc-timeout`.
+disables reuse and, since 0.3.0, reads the unread body before it writes the
+response head, as Go's `net/http` server does (`maxPostHandlerReadBytes`). It
+reads at most 256 KiB and leaves a declared remainder of 256 KiB or more unread.
+`request_body_timeout` bounds each read wait and the Connect deadline bounds the
+whole read; progress never extends the deadline, and `grpc-timeout` does not
+apply. A stalled, expired or malformed remainder still receives the response.
+Only the connection task reads, once the original processor has stopped reading
+input: it has finished, or it has queued response output, which core produces
+only after a handler's last input read. Falcon then buffers up to 64 KiB of that
+output, so processing finishes before the read. A head published before any
+output, such as headers sent during CS input reads, is written at once, and the
+remainder is read before the final chunk. A bidi 505 and an unanswered
+`Expect: 100-continue` request skip the read.
 
 A successfully delivered response on a retiring connection uses one absolute
 final-close expiry at the actual final HTTP flush plus 500 ms. On a successful
@@ -55,12 +63,10 @@ observation. A response without a body anchors when the writer returns. Payload
 bytes cannot trigger it. Cancellation can also close the body without an error, but
 the response is then undelivered and ignores the expiry. Delayed callbacks
 consume the same total budget. After completed delivery, Falcon half-closes raw
-TCP writes and performs bounded discard. When discard stops,
-Falcon waits only the remaining part of that original 500 ms budget, without
-reading more. It does not add another 500 ms after discard. Earlier owner
-abort/shutdown can shorten either phase. Failed or incomplete delivery gets no
-success grace. Late hygiene/grace failures preserve completed processing and
-delivery facts.
+TCP writes and waits for the rest of that budget without reading, like
+`net/http`'s `rstAvoidanceDelay`. Earlier owner abort/shutdown can shorten
+either phase. Failed or incomplete delivery gets no success grace. Late
+hygiene/grace failures preserve completed processing and delivery facts.
 
 Admission and socket ownership remain held until retirement and original
 processing join. Retirement never parses or dispatches a pipelined request,
@@ -70,19 +76,18 @@ Both timers are cooperative and can overshoot under scheduler delay. Remaining
 grace retains resources and is best effort reset avoidance, not a guarantee of
 response delivery under arbitrary network or peer failure. The
 [support contract](support.md#falcon-connect-h1-retirement) promises this
-response-first behavior and treats its budgets as provisional tuning values.
+behavior and treats its budgets as provisional tuning values.
 
 The production official H1 profiles pass 174/174 identity and 160/160 gzip cases
 on both pinned Rubies, including the original oversized CS cases over TCP/TLS.
-No official assertion or inventory changed. This is a bounded, response-first variant of
-Go's conditional reset avoidance: connect-go may consume the full oversized
-declared message, and net/http may drain before flushing or reuse a connection.
-Literal Go parity is not claimed. Native H1 Web retains its separate policy:
-original input cleanup gates the staged Web terminal, and an incomplete upload
-also gates a rejection head to avoid stopping the client's upload. This Web-only
-gate never delays Connect response delivery. The historical Web TCP/TLS failures,
-diagnosis and separate baseline repair are recorded in the
-[conformance status](../conformance/README.md#connect-http11-server-profiles).
+No official assertion or inventory changed. Unlike `net/http`, Falcon never
+reuses a connection after incomplete input, and it also reads when the client
+sent `Connection: close`. Native H1 Web retains its separate policy: original
+input cleanup gates the staged Web terminal, and an incomplete upload also gates
+a rejection head to avoid stopping the client's upload, with its own 100 ms
+allowance. The historical Web TCP/TLS failures, diagnosis and separate baseline
+repair are recorded in the [conformance
+status](../conformance/README.md#connect-http11-server-profiles).
 
 ## Completion policy
 

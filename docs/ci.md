@@ -490,13 +490,13 @@ existing conformance tasks. The required H1 server identity/gzip profiles retain
 their strict inventories: 174 identity and 160 gzip cases must all pass,
 including the original oversized CS assertions. There is no allowed-failure
 setting. Production local runs pass both profiles on both pinned Rubies using
-the cooperative total 500 ms final-close policy, with unchanged 100 ms / 256 KiB
-discard caps. Local results do not establish clean-environment or exact-head CI
-success. Historical Web failures were diagnosed as an early-head/upload race
-and addressed by the separate baseline repair #42. The integrated branch must
-still pass both strict hosted Web lanes, with the Web publication gate excluded
-from Connect response-first retirement.
-See the [H1 conformance status](../conformance/README.md#connect-http11-server-profiles).
+the read of up to 256 KiB of unread input before the response and the
+cooperative total 500 ms final-close policy. Local results do not establish
+clean-environment or exact-head CI success. Historical Web failures were
+diagnosed as an early-head/upload race and addressed by the separate baseline
+repair #42. The integrated branch must still pass both strict hosted Web lanes,
+with the Web publication gate excluded from Connect retirement. See the [H1
+conformance status](../conformance/README.md#connect-http11-server-profiles).
 
 The existing backend Go jobs additionally run `async:interop:streaming` and
 `falcon:interop:streaming`. The latter exercises real process workers. Original
