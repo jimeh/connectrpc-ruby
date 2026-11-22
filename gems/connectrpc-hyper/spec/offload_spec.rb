@@ -714,7 +714,6 @@ RSpec.describe "Inside an Async reactor" do
 
     it "lands Task#stop, cancellation, the deadline, Thread#raise and Thread#kill on a parked call" do
       from = peer.mark
-      tag = "offload-expired-#{rand(1 << 30)}"
       output, status = reactor_child(<<~RUBY, pool: true)
         peer_client = client(#{peer['grpc_h2c'].dump}, ConnectRPC::Hyper::Transport.new)
         # Parks in a read of a held stream once its first message arrived.
@@ -747,14 +746,20 @@ RSpec.describe "Inside an Async reactor" do
           parked(ready: ready)
           source.cancel
           results << canceled.wait
-          # The raw peer holds this stream without resetting it at its
-          # deadline, as grpc-go's can first (see `stall`), so the read parks
-          # until the client's own deadline.
+          # The raw peer sends one message and then nothing, and never resets
+          # the stream at its deadline as grpc-go's can first (see `stall`),
+          # so the second read parks until the client's own deadline. The
+          # first message's arrival shows the deadline landed in that read.
+          first = Queue.new
           expired = task.async do
-            raw_client.server_stream(RAW_SERVER_STREAM, MSG.new, metadata: { "x-scenario" => "hold:#{tag}" },
-                                                                 timeout: 0.2) { |reader| reader.receive }
+            raw_client.server_stream(RAW_SERVER_STREAM, MSG.new, metadata: { "x-scenario" => "silent-data" },
+                                                                 timeout: 0.2) do |reader|
+              reader.receive
+              first << true
+              reader.receive
+            end
           rescue ConnectRPC::Error => e
-            e.code
+            [e.code, !first.empty?]
           end
           results << expired.wait
         end
@@ -781,11 +786,11 @@ RSpec.describe "Inside an Async reactor" do
       RUBY
       expect(status).to be_success
       expect(eval(output.lines.last)).to eq( # rubocop:disable Security/Eval
-        [:stopped, "canceled", "deadline_exceeded", ["RuntimeError", :ensure], [:ensure], "after"]
+        [:stopped, "canceled", ["deadline_exceeded", true], ["RuntimeError", :ensure], [:ensure], "after"]
       )
       # Every parked stream reached its peer as cancellation or its deadline.
       peer.wait_count(/grpc ss-hold-done context (canceled|deadline exceeded)/, 4, from: from)
-      expired = peer.wait_event(/\Araw request hold:#{tag} /, from: from)[/ stream=(\d+) /, 1]
+      expired = peer.wait_event(/\Araw request silent-data /, from: from)[/ stream=(\d+) /, 1]
       peer.wait_event(/\Araw rst stream=#{expired} code=8\z/, from: from)
     end
 

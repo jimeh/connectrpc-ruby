@@ -77,11 +77,11 @@ RSpec.describe "Cancellation and deadlines" do
         .client_stream(HyperHelpers::RAW_CLIENT_STREAM, metadata: metadata, timeout: 20) do |writer|
         writer.send_message(MSG.new(value: "a"))
         sent << true
-        resume.pop
+        resume.pop(timeout: 10) || raise("never resumed")
         writer.send_message(MSG.new(value: "b"))
       end.message
     end
-    sent.pop
+    expect(sent.pop(timeout: 10)).to be(true)
     peer.wait_event(/\Araw request await-ok:#{tag} /, from: from)
     started = monotonic
     error = error_of { raw_call(peer["raw"], "stall", transport: transport, timeout: 0.3) }
