@@ -157,16 +157,15 @@ module HyperHelpers # rubocop:disable Metrics/ModuleLength
     [certificate, key]
   end
 
-  # Runs Ruby code in a child process with this bundle; returns [stdout,
-  # status]. The child's stderr is reported when it fails, and what it wrote
-  # so far when it times out.
-  #
   # Children log through console (async's task warnings) in its serialized
   # format. Under GitHub Actions console otherwise picks its XTerm output even
   # for a pipe, whose IO#winsize raises Errno::EBADF on Windows; the warning
   # then replaces the task's own error and can leave a reactor running.
   CHILD_ENV = { "CONSOLE_OUTPUT" => "Serialized" }.freeze
 
+  # Runs Ruby code in a child process with this bundle; returns [stdout,
+  # status]. The child's stderr is reported when it fails, and what it wrote
+  # so far when it times out.
   def ruby_child(code, env: {}, timeout: 60)
     env = CHILD_ENV.merge(env)
     preamble = <<~RUBY

@@ -499,7 +499,7 @@ cause, abort in a masked `ensure`. Rust owns connections, streams and waits.
 | Fast path | Connect unary passes all unary specs and does one native wait (spec on an internal counter or a GVL-contention probe) |
 | Package | Source gem builds and installs in a clean GEM_HOME and runs a smoke call; exact manifest, MIT plus third-party notice, push host, MFA |
 | Cross | All platform gems build in CI as artifacts; Linux gems smoke-tested on their arch (native arm64 runner) and libc (Alpine containers); arm64-darwin smoke on a macOS runner (non-gating); x86_64-darwin is build-only, and `docs/support.md` says which artifacts were built, installed and exercised. Since #174 every platform gem and the source gem builds twice and smokes on a native runner for both Rubies, gating, including x86_64-darwin on macOS Intel |
-| Windows | Gating job (since #175) runs specs and a Go interop subset against the x64-mingw-ucrt and aarch64-mingw-ucrt gems on x64 and arm64 runners, both Rubies |
+| Windows | Gating job (since #175) runs the specs minus fork and the Linux DNS shim, and a Go interop subset, against the x64-mingw-ucrt and aarch64-mingw-ucrt gems on x64 and arm64 runners, both Rubies |
 | Types | `rbs:check` (inventory, consumers, caller evidence) and `rbs:package` |
 | Repository | `hyper:verify`, `mise run verify`, `mise run rack:verify`, `mise run check`, `mise run rbs:check`, `mise run rbs:package` before Ready |
 
@@ -548,8 +548,9 @@ ordering naturally, and Linux reproduced it by delaying the sibling. Close now
 waits on a helper thread under a fiber scheduler (D13), and the offload cases
 run on every platform. `hyper_windows` runs the specs and the Go interop
 subset against the x64 and aarch64 gems on `windows-2025` and
-`windows-11-arm`, for both Rubies. After four consecutive green heads it
-gates CI, and its four checks join the main ruleset once #178 merges.
+`windows-11-arm`, for both Rubies. It gates CI since #175, after four
+consecutive green heads; its four checks join the main ruleset once #178
+merges.
 
 ## Follow-ups
 

@@ -270,8 +270,9 @@ scheduler. Use connectrpc-async's transports for calls from inside a reactor.
 scheduler, on Ruby 3.4 and 4.0 alike, it waits for teardown on a helper
 thread, taking neither the reactor thread nor a worker of the pool, so sibling
 tasks keep running and their in-flight calls can drain within the grace. A
-closer inside `Fiber.blocking {}` still waits on its own thread and holds the
-reactor until teardown ends.
+closer inside `Fiber.blocking {}`, or one whose helper thread cannot start
+(`ThreadError`), waits on its own thread and holds the reactor until teardown
+ends.
 
 ## Fork
 
