@@ -70,8 +70,8 @@ pub async fn unary(
                 let replayable = unsent || unprocessed || Failure::refused_stream(error.error());
                 if replayable && exclude.is_none() {
                     if unprocessed {
-                        // Spec hold point: armed with a zero bound, it counts
-                        // the requests replayed after a GOAWAY.
+                        // Spec hold point: it parks, or with a zero bound
+                        // counts, the requests replayed after a GOAWAY.
                         core.holds.reach("retry:unprocessed").await;
                     }
                     exclude = Some(lease.id());

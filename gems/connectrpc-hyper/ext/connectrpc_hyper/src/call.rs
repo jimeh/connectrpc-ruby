@@ -448,8 +448,8 @@ async fn respond(
                     let Some(rx) = rx else {
                         return Err(failure);
                     };
-                    // Spec hold point: armed with a zero bound, it counts these
-                    // retries.
+                    // Spec hold point: it parks, or with a zero bound counts,
+                    // these retries.
                     core.holds.reach("retry:unprocessed").await;
                     // Retried at most once: this body has no receiver to return.
                     CallBody::stream(rx, ended, abort.clone(), oneshot::channel().0)
