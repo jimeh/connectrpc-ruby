@@ -188,25 +188,29 @@ RSpec.describe "PerCallTransport connection close, close budget and outcome prec
       peer&.stop
     end
 
-    it "keeps a successful result when the peer withholds FIN, bounded by the cleanup allowance, on the #{path} path" do
-      peer = withholding_peer
-      origin = "http://127.0.0.1:#{peer.peer.port}"
-      transport = per_call
-      with_boundaries do |boundaries|
-        response, elapsed = on_path(path) do
-          started = monotonic
-          [transport.call(request("#{origin}/ok", deadline: ConnectRPC::Deadline.new(5))), monotonic - started]
+    [5, nil].each do |timeout|
+      it "keeps a successful result when the peer withholds FIN, bounded by the cleanup allowance, " \
+         "with #{timeout ? 'a' : 'no'} deadline on the #{path} path" do
+        peer = withholding_peer
+        origin = "http://127.0.0.1:#{peer.peer.port}"
+        transport = per_call
+        with_boundaries do |boundaries|
+          response, elapsed = on_path(path) do
+            started = monotonic
+            deadline = timeout && ConnectRPC::Deadline.new(timeout)
+            [transport.call(request("#{origin}/ok", deadline: deadline)), monotonic - started]
+          end
+          expect([response.status, response.body]).to eq([200, "ok"])
+          # The drain waited its whole one-allowance budget for a FIN that never came.
+          expect(elapsed).to be_between(allowance, allowance + 0.9)
+          expect_released(boundaries.take.first)
+          # The peer records the GOAWAY on its own reader, which can trail the call's return.
+          eventually("the peer to record the GOAWAY") { peer.peer.goaways.any? }
+          expect(peer.peer.goaways).to eq([no_error_goaway])
         end
-        expect([response.status, response.body]).to eq([200, "ok"])
-        # The drain waited its whole one-allowance budget for a FIN that never came.
-        expect(elapsed).to be_between(allowance, allowance + 0.9)
-        expect_released(boundaries.take.first)
-        # The peer records the GOAWAY on its own reader, which can trail the call's return.
-        eventually("the peer to record the GOAWAY") { peer.peer.goaways.any? }
-        expect(peer.peer.goaways).to eq([no_error_goaway])
+      ensure
+        peer&.stop
       end
-    ensure
-      peer&.stop
     end
 
     it "closes raw, without GOAWAY, once the deadline has passed on the #{path} path" do
@@ -441,17 +445,18 @@ RSpec.describe "PerCallTransport connection close, close budget and outcome prec
   end
 
   # The deadline's clock reads fiber-local state that the caller sets once
-  # the stream's messages are in: then 95 ms remain on the caller's clock,
-  # which leaves no time for a graceful close, while any other fiber's clock
-  # still reads the start, with almost 5 seconds left. The close budget comes
-  # from the caller's own fiber, so the close is raw.
+  # the stream's messages are in: then half an allowance remains on the
+  # caller's clock, less than the reserve, which leaves no time for a graceful
+  # close, while any other fiber's clock still reads the start, with almost 5
+  # seconds left. The close budget comes from the caller's own fiber, so the
+  # close is raw.
   it "computes the close budget from a fiber-local custom clock in the caller's fiber on the inline path" do
     peer = one_message_peer
     typed = mixed_client(per_call, "http://127.0.0.1:#{peer.peer.port}")
     with_boundaries do |boundaries|
       names = reactor do
         deadline = ConnectRPC::Deadline.new(5, clock: -> { Thread.current[:per_call_clock] || 0.0 })
-        watch_names(typed, deadline) { Thread.current[:per_call_clock] = 4.905 }
+        watch_names(typed, deadline) { Thread.current[:per_call_clock] = 5 - (allowance / 2) }
       ensure
         Thread.current[:per_call_clock] = nil
       end

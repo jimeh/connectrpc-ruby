@@ -975,12 +975,12 @@ and bidi streaming before any I/O.
   call off resends on a second connection, as grpc-go's transparent retry does.
 - After the exchange, the call closes its connection gracefully: GOAWAY, a
   half-close, then the peer's FIN. The wait for that FIN lasts at most one
-  [cleanup allowance](#cleanup-allowance), 1 second, and ends one allowance
-  before the RPC deadline. That leaves time for the raw close that follows, so
-  core's deadline check after the transport returns does not turn a result
-  that arrived in time into `deadline_exceeded`. With one allowance or less of
-  the deadline left, the close is raw. A close failure never replaces
-  the call's result or a stream block's own exception. The close budget is
+  [cleanup allowance](#cleanup-allowance), 1 second, and with a deadline ends
+  no later than one allowance before it. That leaves time for the raw close
+  that follows, so core's deadline check after the transport returns does not
+  turn a result that arrived in time into `deadline_exceeded`. With one
+  allowance or less of the deadline left, the close is raw. A close failure
+  never replaces the call's result or a stream block's own exception. The close budget is
   read from the deadline's clock in the caller's own thread or fiber. If a
   custom `Deadline` clock fails while the call computes its close budget, the
   close is raw and teardown still runs. Outside a reactor, the call keeps its
