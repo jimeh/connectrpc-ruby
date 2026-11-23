@@ -884,7 +884,9 @@ each wait suspends only that task. For calls inside a reactor, `Transport` or
   Since 0.3.0, the transport neither defers interrupts around such a caller's
   bookkeeping nor reopens them around its waits and stream blocks, so an
   enclosing `Thread.handle_interrupt` region of the application applies
-  throughout. A cancelled `close` leaves the transport open.
+  throughout. A `close` cancelled before the owner accepts it leaves the
+  transport open; one cancelled later ends only its own wait while the owner
+  drains.
 
 ### Streams from ordinary threads
 

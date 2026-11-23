@@ -146,8 +146,8 @@ RSpec.describe "ThreadedTransport callers inside a reactor" do
     end
   end
 
-  # Runs the block as a task on its own reactor thread. Once it suspends in
-  # +at+, reports whether a Thread#raise into that thread reaches a sibling
+  # Runs the block as a task on its own reactor thread. Once it suspends with
+  # every frame in +at+ on its stack, reports whether a Thread#raise into that thread reaches a sibling
   # task's Ruby code at once (:raised) or stays pending (:deferred). Besides
   # Async's SignalException mask, only the caller's masks and +outer+ are on
   # the thread's mask stack. Returns the outcome and the reactor thread.
@@ -159,9 +159,11 @@ RSpec.describe "ThreadedTransport callers inside a reactor" do
       run = lambda do
         Sync do |task|
           caller = task.async { capture_error(&work) }
-          eventually("the caller suspended in #{at}") { frames(caller.fiber&.backtrace).include?(at) }
-          ready << true
-          result << sibling_outcome(probe)
+          eventually("the caller suspended in #{at}") do
+            trace = frames(caller.fiber&.backtrace)
+            Array(at).all? { |frame| trace.include?(frame) }
+          end
+          result << sibling_outcome(probe, ready)
           caller.stop
         end
       end
@@ -175,10 +177,12 @@ RSpec.describe "ThreadedTransport callers inside a reactor" do
     [pop_within(result, "the sibling's probe"), reactor]
   end
 
-  # Runs Ruby code until +probe+ is raised here or pending.
-  def sibling_outcome(probe)
+  # Runs Ruby code until +probe+ is raised here or pending. Readiness is
+  # published inside the rescue, so the probe cannot arrive outside it.
+  def sibling_outcome(probe, ready)
     expires = monotonic + 5
     begin
+      ready << true
       true until Thread.pending_interrupt? || monotonic > expires
     rescue probe
       return :raised
@@ -233,7 +237,8 @@ RSpec.describe "ThreadedTransport callers inside a reactor" do
     origin = "http://127.0.0.1:#{peer.peer.port}"
     transport = threaded(origin: origin)
     typed = mixed_client(transport, origin)
-    outcome, reactor = sibling_probe(at: "#await_stream", outer: true) do
+    # The second read, not the open's wait for the owner's first reply.
+    outcome, reactor = sibling_probe(at: %w[#stream_operation #await_stream], outer: true) do
       typed.watch(item("probe"), timeout: nil) do |reader|
         reader.receive
         reader.receive
@@ -245,6 +250,18 @@ RSpec.describe "ThreadedTransport callers inside a reactor" do
     value_within(reactor, "the probe reactor") if reactor
     transport&.close(grace: 0)
     peer&.stop
+  end
+
+  it "leaves no reopened interrupts on the reactor thread while close waits for the owner" do
+    transport = threaded(origin: "http://127.0.0.1:9")
+    transport.send(:live_engine)
+    gate = hold_owner(transport)
+    outcome, reactor = sibling_probe(at: "#wait_closed", outer: true) { transport.close(grace: 30) }
+    expect(outcome).to eq(:deferred)
+  ensure
+    gate&.<<(true)
+    value_within(reactor, "the probe reactor") if reactor
+    transport&.close(grace: 0)
   end
 
   it "stops a caller waiting for the contended admission lock at once and admits nothing" do
