@@ -567,6 +567,50 @@ and [Rack specification](https://github.com/rack/rack/blob/v3.2.7/SPEC.rdoc).
 
 See the optional [in-process testing package](../gems/connectrpc-testing/README.md) for real encoded client/server round trips without sockets.
 
+## Async teardown and interrupts
+
+New and changed code in the Async and Falcon packages follows five rules for
+close, abort, retirement and interrupts. Each guarantee should protect the
+wire, a descriptor or a documented result. Precision beyond that costs more
+than it returns. async-http, grpc-go and net/http keep teardown similarly
+simple: grpc-go returns a cancelled stream at once and cleans up on the
+connection's writer, and net/http's `Shutdown(ctx)` returns when its context
+ends and leaves the remaining connections to `Close`.
+
+1. Interrupts end waits, not work. Teardown runs in a task the resource owns.
+   Grace bounds the connection drain, after which teardown forces retirement,
+   which still waits for cooperative tasks to leave (see the package guide's
+   cleanup allowance and task joins). A caller that is cancelled, times out or
+   is interrupted gets its exception promptly while teardown continues on its
+   own. A later close joins it, and `close(grace: 0)` forces it.
+2. Inside a reactor, only cooperative cancellation is supported: deadlines,
+   `CancellationToken`s, Async task cancellation, `with_timeout` and
+   `Timeout.timeout` called from an Async task, which Ruby routes through the
+   fiber scheduler. These land only where a fiber suspends. `Thread#raise` and
+   `Thread#kill` from another thread into a reactor thread are unsupported.
+   Ruby delivers them to whichever fiber is running, Async's own scheduler
+   included, and `Thread.handle_interrupt` masks are per thread, so no library
+   mask can confine them to one task. A caller on a thread that runs no
+   reactor, such as a `ThreadedTransport` caller or `PerCallTransport` outside
+   a reactor, can use them.
+3. Joins exist for descriptor safety: a connection's descriptor closes only
+   after every fiber that might touch it has left. Listener shutdown is an
+   existing exception: it closes listening sockets before it cancels and joins
+   their accept loops.
+4. Teardown failures don't become caller outcomes. A close reports whether it
+   drained or forced.
+5. Wire behavior keeps its precision: the two-phase GOAWAY,
+   `RST_STREAM(CANCEL)`, the cleanup allowance, write watchdogs and raw-first
+   retirement. Whether a drain succeeded should depend on whether its streams
+   finished in time, not on how the peer left afterwards.
+
+Some code predates rules 1, 4 and 5: an interrupted server close escalates to
+a forced abort and joins it, joins rank interruptions against stored failures,
+`Host` raises a failed teardown's error, and a drain whose streams finished
+still reports false when the peer's EOF doesn't arrive within its grace. Rule
+3 may let most of the private completion join go.
+[#200](https://github.com/jimeh/connectrpc-ruby/issues/200) tracks these.
+
 ## RPC lifecycle observation
 
 `Instrumentation.new(subscribers:, on_error: nil)` freezes a copied subscriber

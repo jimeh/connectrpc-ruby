@@ -186,6 +186,15 @@ These affect the core `Net::HTTP` transport.
   with a share of the remaining deadline, and the other family starts 300 ms
   later.
 
+`Thread#raise` and `Thread#kill` from another thread into a thread that runs
+a reactor, as Rack::Timeout does, are documented as unsupported for the Async
+client transports and the Async and Falcon hosts. Earlier docs called them
+best-effort for the client transports. Inside a reactor, use RPC deadlines,
+Async task cancellation, `with_timeout`, or `Timeout.timeout` from an Async
+task. Callers on threads that run no reactor, such as `ThreadedTransport` and
+`PerCallTransport` callers outside a reactor, are not affected. See
+[Interrupts inside a reactor](../gems/connectrpc-async/README.md#interrupts-inside-a-reactor).
+
 These affect the Async HTTP/2 and HTTP/1 client transports and the core
 `Net::HTTP` transport. Error codes are unchanged.
 
@@ -377,6 +386,10 @@ and [Accept errors](../gems/connectrpc-async/README.md#accept-errors).
   `close_on_exec: false` to `Endpoint#bound` to keep the old behavior.
 - `Host.new(port: 0)` binds every resolved address on one port, so
   `host.port` is the port of every entry in `host.addresses`.
+- When a terminal listener failure's session abort or a listener close fails,
+  `Host#wait` raises that failure. It used to wait forever, because the
+  failure skipped resolving the host's completion, and a failed listener close
+  left the later listeners open.
 - A unary, client-streaming or fallback HTTP/2 response that waits 60 seconds
   for flow-control credit is reset with `RST_STREAM(CANCEL)` and its admission
   slot is released. Before 0.3.0 it waited until a deadline or `close`. Raise

@@ -92,6 +92,31 @@ Async reactor, authorization and lifecycle. Using an object from the wrong
 reactor, thread or state raises `ConnectRPC::Async::LifecycleError`. Since
 0.3.0, that constant is public, so applications can rescue it by name.
 
+### Interrupts inside a reactor
+
+Inside a reactor, stop work with RPC deadlines, `CancellationToken`s, Async
+task cancellation, `with_timeout`, or `Timeout.timeout` called from an Async
+task, where Ruby routes it through the fiber scheduler. Each of these acts
+only on the call or task it targets, at a point where that work suspends, so
+hosts and transports can finish their teardown around it. Ruby uses the
+scheduler only in a nonblocking fiber, as every Async task is. In a blocking
+fiber, `Timeout.timeout` falls back to a watchdog thread that uses
+`Thread#raise`.
+
+`Thread#raise` and `Thread#kill` from another thread into a thread that runs
+a reactor are not supported. A watchdog thread such as Rack::Timeout's does
+this. Ruby delivers the exception to whichever fiber is running at that
+moment, which can be an unrelated request, a teardown or Async's own
+scheduler. `Thread.handle_interrupt` masks apply to the whole thread, not to
+one fiber, so neither this package nor Async can confine the exception to the
+work it was meant to stop. It can end the reactor or leave a connection's
+teardown unfinished until its owner exits. A caller on a thread that runs no
+reactor can use them, as a [`ThreadedTransport`](#ordinary-threads) or
+[`PerCallTransport`](#one-off-calls) caller does, because the reactor doing
+its work runs on another thread. A `ThreadedTransport` caller that is itself
+on a reactor thread follows the rules above
+([#201](https://github.com/jimeh/connectrpc-ruby/issues/201)).
+
 ## Host
 
 `Host.new(server:, host: "127.0.0.1", port: 0, tls: nil, tls_provider: nil,
@@ -331,8 +356,11 @@ boolean drain outcome; resource-owned calls can return nil while shutdown is
 pending, as described in [Close results](#close-results). Terminal listener
 failure instead makes `wait` raise the identical original exception after
 cooperative session abort, listener joins and actual finalization of its stored
-private exit task. Repeated/concurrent waits share that outcome; cancelling a
-waiter does not close the Host. Like other lifecycle operations, `wait`
+private exit task. If that cleanup itself fails, `wait` raises the cleanup's
+first failure instead, as described in
+[Terminal failure and startup](#terminal-failure-and-startup).
+Repeated/concurrent waits share that outcome; cancelling a waiter does not
+close the Host. Like other lifecycle operations, `wait`
 requires the owning reactor and thread.
 
 ### Accept errors
@@ -365,6 +393,13 @@ cancellation; `wait` joins its actual finalization before reporting the cause.
 Ordinary owner cancellation stops accepting and resolves ordinary waits after
 listener finalization, while session retirement may still be running. `close`
 retains its drain result and does not raise the stored listener cause.
+If the session abort or a listener close fails, the exit task still attempts
+every listener close, cancels and joins every listener, and resolves
+completion. A listener whose close failed may stay open. `start` raises the
+first such failure instead of the listener cause or startup error, so rescue
+`StandardError` rather than only the accept error you expect. After a
+terminal listener failure, `wait` raises that cleanup failure too; after a
+startup error with no listener cause, it returns nil.
 
 A terminal cause already observed during startup is raised by `start` after
 cleanup; bind/initial setup errors remain synchronous and subsequent `wait`
@@ -831,8 +866,8 @@ configuration errors raise at boot. `call`, `open_stream`, `open_grpc_stream`,
   `Thread#kill` even inside an enclosing
   `Thread.handle_interrupt(... => :never)` region, because Ruby cannot read the
   caller's mask. Core NetHTTP defers those interrupts inside such a region.
-  The reactor-owned `Transport` does not reliably defer them either, because
-  masks are per fiber and the reactor delivers them to other fibers.
+  Inside a reactor, `Thread#raise` and `Thread#kill` from another thread are
+  not supported; see [Interrupts inside a reactor](#interrupts-inside-a-reactor).
 
 ### Streams from ordinary threads
 
@@ -1017,13 +1052,9 @@ and bidi streaming before any I/O.
   clock, each wait converts the remaining time it reads when it starts to
   monotonic time, so the bounds hold against that reading rather than the
   custom clock.
-- Inside a reactor, a `Thread#raise` from another thread is best-effort, as
-  for `Transport`: it lands in whichever fiber is running, and one that lands
-  in the caller's fiber at certain points of its teardown can return before
-  the call's tasks have been joined. Task cancellation and `with_timeout` are
-  the supported interrupts there.
-  [#185](https://github.com/jimeh/connectrpc-ruby/issues/185) tracks
-  hardening this across the Async transports.
+- Inside a reactor, `Thread#raise` and `Thread#kill` from another thread are
+  not supported, as for `Transport`; see
+  [Interrupts inside a reactor](#interrupts-inside-a-reactor).
 - After fork, the transport holds no inherited state; a child's calls are
   independent. A call in progress during fork stays the parent's.
 

@@ -209,22 +209,26 @@ module ConnectRPC
         @closing = true
         # Store identity before eager execution; callers never own this sequence.
         @exit_task = ::Async::Task.new(@owner, transient: true, finished: false) do
-          @session.abort if force
-          stop_accepting
+          # A failed step never skips a later one or completion, so waiters
+          # never hang on it; joins of this task then raise the first failure.
+          failures = [force ? Internal::Teardown.capture { @session.abort } : nil]
+          failures << Internal::Teardown.capture { stop_accepting }
           @completion.resolve(@failure)
+          failure = Internal::Teardown.first(failures)
+          raise failure if failure
         end
       end
 
-      def join_listeners
-        @listeners.each { |listener| Internal.join_complete(listener) }
-      end
-
+      # Closes, cancels and joins every listener even when one step fails, then
+      # raises the first failure.
       def stop_accepting
         @closing = true
-        @bound&.close
-        @listeners.each { |listener| Internal.cancel(listener) }
-        join_listeners
+        failures = (@bound&.sockets || []).map { |socket| Internal::Teardown.capture { socket.close } }
+        failures.concat(@listeners.map { |listener| Internal::Teardown.capture { Internal.cancel(listener) } })
+        failures.concat(@listeners.map { |listener| Internal::Teardown.capture { Internal.join_complete(listener) } })
         @completion.resolve(nil) unless @failure || @starting
+        failure = Internal::Teardown.first(failures)
+        raise failure if failure
       end
     end
   end

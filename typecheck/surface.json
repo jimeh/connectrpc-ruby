@@ -333,7 +333,6 @@
     "ConnectRPC::Async::Host#exit_task": {"kind":"method","visibility":"private","parameters":"","classification":"internal"},
     "ConnectRPC::Async::Host#initialize": {"kind":"method","visibility":"public","parameters":"server:, host: \"127.0.0.1\", port: 0, tls: nil, tls_provider: nil, max_connections: 1024, max_requests: 128, handshake_timeout: 10, idle_timeout: 60, refresh_interval: 60, refresh_jitter: 0.1, refresh_timeout: 10, on_tls_error: nil, keepalive: ServerKeepalive.new, fallback: nil, max_concurrent_streams: 100, request_body_timeout: 60, response_body_timeout: 60, frame_write_timeout: 60, stream_receive_window: 65_536, connection_receive_window: 16_777_216, dynamic_receive_windows: true, max_receive_window: MAX_RECEIVE_WINDOW","classification":"supported"},
     "ConnectRPC::Async::Host#inspect": {"kind":"method","visibility":"public","parameters":"","classification":"internal"},
-    "ConnectRPC::Async::Host#join_listeners": {"kind":"method","visibility":"private","parameters":"","classification":"internal"},
     "ConnectRPC::Async::Host#peer_certificate": {"kind":"method","visibility":"public","parameters":"","classification":"supported"},
     "ConnectRPC::Async::Host#port": {"kind":"attribute","visibility":"public","classification":"supported"},
     "ConnectRPC::Async::Host#refresh_tls": {"kind":"method","visibility":"public","parameters":"","classification":"supported"},

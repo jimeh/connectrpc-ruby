@@ -74,9 +74,7 @@ RSpec.describe ConnectRPC::Async::Host do
 
   def two_listeners(host)
     bounds = 2.times.map { IO::Endpoint.tcp("127.0.0.1", 0).bound }
-    bound = Struct.new(:sockets, :bounds) do
-      def close = bounds.each(&:close)
-    end.new(bounds.flat_map(&:sockets), bounds)
+    bound = Struct.new(:sockets, :bounds).new(bounds.flat_map(&:sockets), bounds)
     host.define_singleton_method(:bind) { bound }
     bound.sockets
   end
@@ -194,6 +192,88 @@ RSpec.describe ConnectRPC::Async::Host do
           host.close(grace: 0)
         end
       end
+    end
+  end
+
+  # The session aborts fully, then raises, as a failed retirement does.
+  def failing_abort(host, failure)
+    allow(host_session(host)).to receive(:abort).and_wrap_original do |abort|
+      abort.call
+      raise failure
+    end
+  end
+
+  it "resolves completion when the session abort fails after a terminal cause in startup" do
+    reactor do
+      host = described_class.new(server: server)
+      sockets = two_listeners(host)
+      failure = RuntimeError.new("session abort failed")
+      failing_abort(host, failure)
+      faults = AcceptFaults.new { |index, _attempt| raise IOError, "first accept" if index.zero? }
+      faults.enable do
+        expect { host.start }.to(raise_error { |error| expect(error).to equal(failure) })
+        expect(sockets).to all(be_closed)
+        expect(faults.tasks).to all(be_finished)
+        expect(host.instance_variable_get(:@completion)).to be_resolved
+        expect(wait_error(host)).to equal(failure)
+      ensure
+        host.close(grace: 0)
+      end
+    end
+  end
+
+  # Fails listener zero after start while a waiter is already blocked, and
+  # returns that waiter once the exit task has finished.
+  def terminal_after_start(task, host)
+    trigger = Async::Queue.new
+    faults = AcceptFaults.new do |index, _attempt|
+      next unless index.zero?
+
+      trigger.dequeue
+      raise IOError, "terminal after start"
+    end
+    faults.enable do
+      host.start
+      waiter = task.async { wait_error(host) }
+      trigger.enqueue(true)
+      wait_until(task, "the exit task to finish") { host.instance_variable_get(:@exit_task)&.finished? }
+      yield waiter, faults
+    end
+  end
+
+  it "wakes a blocked wait when the session abort fails after a terminal cause" do
+    reactor do |task|
+      host = described_class.new(server: server)
+      sockets = two_listeners(host)
+      failure = RuntimeError.new("session abort failed")
+      failing_abort(host, failure)
+      terminal_after_start(task, host) do |waiter, faults|
+        expect(host.instance_variable_get(:@completion)).to be_resolved
+        expect(sockets).to all(be_closed)
+        expect(faults.tasks).to all(be_finished)
+        expect(waiter.wait).to equal(failure)
+      end
+    ensure
+      host&.close(grace: 0)
+    end
+  end
+
+  it "closes the other listeners and wakes a blocked wait when one listener fails to close" do
+    reactor do |task|
+      host = described_class.new(server: server)
+      sockets = two_listeners(host)
+      failure = Errno::EBADF.new("listener close failed")
+      close = sockets.first.method(:close)
+      sockets.first.define_singleton_method(:close) { raise failure }
+      terminal_after_start(task, host) do |waiter, faults|
+        expect(host.instance_variable_get(:@completion)).to be_resolved
+        expect(sockets.last).to be_closed
+        expect(faults.tasks).to all(be_finished)
+        expect(waiter.wait).to equal(failure)
+      end
+    ensure
+      close&.call
+      host&.close(grace: 0)
     end
   end
 

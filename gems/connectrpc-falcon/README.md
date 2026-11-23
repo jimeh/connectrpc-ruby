@@ -163,6 +163,14 @@ ensure
 end
 ```
 
+### Interrupts
+
+Handlers and the Rack fallback app run as fibers in the worker's reactor. Stop
+their work with RPC deadlines, Async task cancellation, `with_timeout`, or
+`Timeout.timeout` from inside the request's task. `Thread#raise` from a
+watchdog thread, as Rack::Timeout uses, is not supported. See
+[Interrupts inside a reactor](../connectrpc-async/README.md#interrupts-inside-a-reactor).
+
 ## Routing and protocols
 
 The native application owns each registered service prefix, including unknown
