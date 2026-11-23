@@ -87,8 +87,9 @@ module ConnectRPC
       end
 
       # One resource per reserved slot, including setup and destructive joins.
+      # `forward` is the proxy an http:// origin's requests go through.
       class HTTP1Resource
-        attr_accessor :raw, :socket, :connection, :setup
+        attr_accessor :raw, :socket, :connection, :setup, :forward
 
         def finished? = !!@finished
         def finish! = @finished = true

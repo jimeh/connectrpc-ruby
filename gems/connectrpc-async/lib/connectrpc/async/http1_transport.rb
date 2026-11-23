@@ -11,7 +11,7 @@ module ConnectRPC
       include Internal::Affinity
 
       def initialize(origin:, ca_file: nil, certificate_chain: nil, private_key: nil, connection_limit: 4,
-                     max_requests: 128, connect_timeout: 10)
+                     max_requests: 128, connect_timeout: 10, proxy: :environment)
         initialize_affinity
         @origin = parse_origin(origin)
         @connection_limit = Internal.positive_integer(connection_limit, "connection_limit")
@@ -21,6 +21,7 @@ module ConnectRPC
           raise ArgumentError, "TLS options require an HTTPS origin"
         end
 
+        @proxy = Internal::ProxyTunnel.resolver(proxy)
         if @origin.scheme == "https"
           @snapshot = Internal::TLS.client(ca_file: ca_file, certificate_chain: certificate_chain,
                                            private_key: private_key, alpn_protocols: ["http/1.1"])
@@ -32,7 +33,8 @@ module ConnectRPC
         install_owner_guard
       end
 
-      def inspect = "#<#{self.class} state=#{@state} origin=#{@origin}>"
+      # Never shows proxy URLs or credentials.
+      def inspect = "#<#{self.class} state=#{@state} origin=#{@origin} proxy=#{Internal::ProxyTunnel.mode(@proxy)}>"
       def streaming_capabilities = %i[server_stream client_stream].freeze
 
       def call(request)
@@ -270,8 +272,7 @@ module ConnectRPC
           activate(request) do
             check_request!(request)
             check_operation!(operation)
-            resource.raw = ::IO::Endpoint.tcp(@origin.hostname, @origin.port).connect
-            check_operation!(operation)
+            dial(operation, resource)
             socket = resource.raw
             if @snapshot
               socket = resource.socket = @snapshot.socket(resource.raw)
@@ -294,6 +295,23 @@ module ConnectRPC
         Internal.wait(resource.setup, expires)
       end
 
+      # Publishes the raw socket to the origin or its proxy. An https://
+      # origin tunnels through the proxy with CONNECT before its TLS; an
+      # http:// origin's requests are forwarded to it. A proxy that cannot be
+      # used fails before any socket opens.
+      def dial(operation, resource)
+        proxy = Internal::ProxyTunnel.select(@proxy, @origin)
+        host, port = proxy ? [proxy.host, proxy.port] : [@origin.hostname, @origin.port]
+        resource.raw = ::IO::Endpoint.tcp(host, port).connect
+        check_operation!(operation)
+        return unless proxy
+        return resource.forward = proxy unless @snapshot
+
+        # The raw socket is published, so an abort wakes the exchange.
+        Internal::ProxyTunnel.establish(resource.raw, @origin.hostname, @origin.port, proxy, tls: true)
+        check_operation!(operation)
+      end
+
       def dispatch(operation, streaming: false)
         request = operation.fetch(:request)
         resource = acquire(operation)
@@ -303,6 +321,15 @@ module ConnectRPC
         check_operation!(operation)
         headers = request.headers.dup
         headers["connect-timeout-ms"] = [request.deadline.timeout_ms] if request.deadline
+        target = request.url.request_uri
+        if (forward = resource.forward)
+          # Net::HTTP and Go net/http send an http:// request to its proxy in
+          # absolute form, with Proxy-Authorization on every request.
+          target = "http://#{@origin.authority}#{target}"
+          if forward.user
+            headers["proxy-authorization"] = ["Basic #{["#{forward.user}:#{forward.password}"].pack('m0')}"]
+          end
+        end
         check_operation!(operation)
         dispatched = ::Async::Promise.new
         body = if streaming
@@ -318,7 +345,7 @@ module ConnectRPC
           activate(request) do
             check_operation!(operation)
             connection.write_request(@origin.authority, streaming ? "POST" : request.http_method,
-                                     request.url.request_uri, "HTTP/1.1", Internal.fields(headers))
+                                     target, "HTTP/1.1", Internal.fields(headers))
             if !streaming && request.http_method == "GET"
               # The native write_body(nil) adds content-length: 0, which a
               # bodyless GET should not send (RFC 9110 section 8.6).
@@ -351,7 +378,9 @@ module ConnectRPC
         return operation[:head] if operation[:head]
 
         operate(operation, timeout: timeout) do
-          head, body = operation.fetch(:connection).read_head(operation.fetch(:request).http_method || "POST")
+          head, body = forwarded(operation) do
+            operation.fetch(:connection).read_head(operation.fetch(:request).http_method || "POST")
+          end
           operation[:head] = head
           operation[:input_body] = body
           operation[:input] = Internal::Input.new(body)
@@ -362,7 +391,7 @@ module ConnectRPC
       def read(operation, length, timeout: nil)
         response_head(operation, timeout: timeout)
         operate(operation, timeout: timeout) do
-          bytes = operation.fetch(:input).read(length)
+          bytes = forwarded(operation) { operation.fetch(:input).read(length) }
           operation[:eof] = true if bytes.nil?
           bytes
         end
@@ -375,7 +404,8 @@ module ConnectRPC
         raise Error.new(:resource_exhausted, "Response exceeds byte limit") if length && length > limit
 
         bytes = +"".b
-        while (chunk = operation.fetch(:input).read([16_384, limit + 1 - bytes.bytesize].min))
+        input = operation.fetch(:input)
+        while (chunk = forwarded(operation) { input.read([16_384, limit + 1 - bytes.bytesize].min) })
           check_request!(request)
           check_operation!(operation)
           bytes << chunk
@@ -385,6 +415,18 @@ module ConnectRPC
         raise Error.new(:internal, "Content-Length does not match response") if length && bytes.bytesize != length
 
         bytes
+      end
+
+      # A forward proxy writes an http:// call's response, and the parser's
+      # BadRequest messages quote it, so they may carry the proxy's URL or
+      # credentials. Other protocol-http1 failures have fixed messages, and
+      # EOF and reset stay connection failures, so a stale GET still resends.
+      def forwarded(operation)
+        yield
+      rescue ::Protocol::HTTP1::BadRequest
+        raise unless operation[:resource]&.forward
+
+        raise Internal::ProxyFailure, "malformed response", cause: nil
       end
 
       def write(operation, bytes)

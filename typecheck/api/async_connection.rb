@@ -34,6 +34,11 @@ transport = ConnectRPC::Async::Transport.new(
 state = transport.connection_state
 state.to_s
 ConnectRPC::Async::Transport.new(origin: "http://example.invalid", connection_observer: APIConnectionObserver.new)
+# Since 0.3.0, connections tunnel through an explicit or environment http:// proxy.
+ConnectRPC::Async::Transport.new(origin: "https://example.invalid", proxy: "http://proxy.invalid:3128").inspect.size
+ConnectRPC::Async::Transport.new(origin: "http://example.invalid", proxy: URI("http://proxy.invalid:3128"))
+ConnectRPC::Async::Transport.new(origin: "http://example.invalid", proxy: nil)
+ConnectRPC::Async::Transport.new(origin: "http://example.invalid", proxy: :environment)
 transport.close(grace: 0)
 begin
   transport.close

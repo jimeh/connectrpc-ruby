@@ -560,9 +560,11 @@ runs the age drain and the BDP case through real Falcon workers.
 connection_limit: 1, max_requests: 128, connect_timeout: 10,
 connection_policy: ConnectionPolicy.new, connection_observer: nil,
 stream_receive_window: 4_194_304, connection_receive_window: 16_777_216,
-dynamic_receive_windows: true, max_receive_window: 16_777_216)` implements
-core's transport seam for HTTP/2. Since 0.3.0, the receive windows size
-response downloads; see [Flow-control windows](#flow-control-windows).
+dynamic_receive_windows: true, max_receive_window: 16_777_216,
+proxy: :environment)` implements core's transport seam for HTTP/2. Since 0.3.0,
+the receive windows size response downloads; see
+[Flow-control windows](#flow-control-windows), and connections go through an
+`http://` proxy chosen by `proxy:`; see [Proxies](#proxies).
 
 - Origins contain only scheme/host/port; a bare trailing `/` is accepted.
   Request paths, including core's base prefix, remain intact.
@@ -583,8 +585,9 @@ response downloads; see [Flow-control windows](#flow-control-windows).
   `ALPN negotiation failed`, `TLS error`, `connection closed` or `HTTP/2
   protocol error`; an unclassified failure has no reason. Messages never
   include the origin, addresses or certificate details. `HTTP1Transport` uses
-  the same reasons with `HTTP/1`, plus `malformed response`.
-- No redirects, proxy environment routing or HTTP/1 fallback.
+  the same reasons with `HTTP/1`, plus `malformed response`. Since 0.3.0, a
+  proxy hop adds the fixed [proxy](#proxies) reasons.
+- No redirects or HTTP/1 fallback.
 - The transport carries opaque encoded bytes; core owns compression and
   negotiation.
 
@@ -639,6 +642,14 @@ nil or finite positive seconds, `keepalive` is nil or a `Keepalive`, and
   stops waiting without cancelling the attempt; the attempt continues until
   `connect_timeout` or `close`, and a connection that becomes ready stays for
   the next call. No attempt starts without a waiting call.
+- Since 0.3.0, a proxied attempt includes the [proxy](#proxies) dial and its
+  `CONNECT` exchange, so `connect_timeout` bounds them and a proxy failure is
+  an ordinary failed attempt that backs off. Its `:attempt_finished` outcome
+  is `:refused` when the proxy refuses the connection, `:timeout` at
+  `connect_timeout` and `:other` for a proxy failure reason such as
+  `proxy authentication failed`. A fail-fast call that joined the attempt
+  sees that reason; a later call during the backoff sees the transient
+  failure.
 
 ### Backoff and waiting calls
 
@@ -831,7 +842,10 @@ RPC.close(grace: 5)                                                  # Shutdown,
 It takes the same options as `Transport`, and they behave the same, including
 the [connection policy](#client-connection-management). The constructor
 validates them and compiles the TLS snapshot on the calling thread, so
-configuration errors raise at boot. `call`, `open_stream`, `open_grpc_stream`,
+configuration errors raise at boot. Since 0.3.0, the constructor also takes the
+[proxy](#proxies) environment snapshot on the calling thread; every owner
+thread, including one that replaces a stopped owner or starts after fork,
+reuses it and never reads the environment itself. `call`, `open_stream`, `open_grpc_stream`,
 `close(grace: 5)`, `connection_state` and `inspect` work from any thread,
 including an Async task on a reactor thread such as a Falcon handler's, where
 each wait suspends only that task. For calls inside a reactor, `Transport` or
@@ -1082,43 +1096,66 @@ same call facts, outcomes and completions as the other HTTP/2 clients.
 
 ### Proxies
 
-Since 0.3.0, `PerCallTransport` can reach its origins through an `http://`
-proxy. The pooled `Transport`, `ThreadedTransport` and `HTTP1Transport` take no
-`proxy:` option and never read the proxy environment.
+Since 0.3.0, every client transport can reach its origins through an `http://`
+proxy. `Transport`, `ThreadedTransport`, `HTTP1Transport` and
+`PerCallTransport` all take `proxy:`, resolved the same way.
 
 ```ruby
+ConnectRPC::Async::Transport.new(origin: origin)            # proxy: :environment
+ConnectRPC::Async::ThreadedTransport.new(origin: origin, proxy: "http://user:secret@proxy.internal:3128")
+ConnectRPC::Async::HTTP1Transport.new(origin: origin, proxy: nil) # Always direct.
 ConnectRPC::Async::PerCallTransport.new                     # proxy: :environment
-ConnectRPC::Async::PerCallTransport.new(proxy: "http://user:secret@proxy.internal:3128")
-ConnectRPC::Async::PerCallTransport.new(proxy: nil)         # Always direct.
 ```
 
 - `proxy: :environment`, the default, reads `HTTP_PROXY`, `HTTPS_PROXY`,
-  `NO_PROXY` and their lowercase forms once, at construction. The proxy is
-  chosen by the request URL's scheme, as NetHTTP, Go's `net/http` and
-  `connectrpc-hyper` choose it: an h2c target is `http://`, so it takes
+  `NO_PROXY` and their lowercase forms once, at construction and on the
+  constructing thread. The proxy is chosen by the scheme of the origin, or of
+  each request URL for `PerCallTransport`, as NetHTTP, Go's `net/http` and
+  `connectrpc-hyper` choose it: an h2c or `http://` HTTP/1 target takes
   `HTTP_PROXY`, and a TLS target takes `HTTPS_PROXY`. grpc-go instead looks
   proxies up with an `https` scheme for every target, so it would use
   `HTTPS_PROXY` for the same h2c target. In a CGI process (`REQUEST_METHOD`
-  set) `HTTP_PROXY` fails h2c calls instead of being trusted, as in NetHTTP.
-  `NO_PROXY`, `localhost` and loopback addresses connect directly, and values
-  are parsed exactly as for
-  [NetHTTP](../../docs/unary.md#nethttp-tls-and-proxies).
+  set) `HTTP_PROXY` fails `http://` calls instead of being trusted, as in
+  NetHTTP. `NO_PROXY`, `localhost` and loopback addresses connect directly,
+  and values are parsed exactly as for
+  [NetHTTP](../../docs/unary.md#nethttp-tls-and-proxies). The runnable
+  [examples](../../examples) keep this default; their default loopback
+  origins always connect directly.
 - A String or URI proxies every call, including loopback and `NO_PROXY` hosts;
   `nil` always connects directly. A value that is not a valid proxy raises
   `ArgumentError` (`Invalid proxy configuration`), and an `https://` or
   `socks5://` proxy raises `ArgumentError` (`Unsupported proxy scheme`), both
   with no `cause`. `inspect` shows only `proxy=environment`, `explicit` or
   `direct`.
-- Every proxied call opens one TCP connection to the proxy and sends
-  `CONNECT host:port` with a matching `Host` field, since HTTP/2 cannot use a
-  forward proxy. Proxy URL userinfo is percent-decoded and sent as
+- HTTP/2 cannot use a forward proxy, so every proxied HTTP/2 connection, h2c
+  or TLS, opens one TCP connection to the proxy and sends `CONNECT host:port`
+  with a matching `Host` field. An `HTTP1Transport` with an `https://` origin
+  tunnels the same way. Proxy URL userinfo is percent-decoded and sent as
   `Proxy-Authorization: Basic`. The `CONNECT` request carries no
   `User-Agent`. After a 200 reply, TLS verifies the target host, with its SNI
-  and ALPN `h2`, or h2c starts, exactly as without a proxy. Bytes an h2c server
-  sends right after the reply stay in the connection.
-- The `CONNECT` exchange is part of the call's one setup attempt, so
-  `connect_timeout` bounds it, and so does Go's 60-second `CONNECT` cap. A
-  deadline or cancellation while it is pending ends the call with its own
+  and ALPN (`h2`, or `http/1.1` for `HTTP1Transport`), or h2c starts, exactly
+  as without a proxy. Bytes an h2c server sends right after the reply stay in
+  the connection.
+- An `HTTP1Transport` with an `http://` origin does what NetHTTP and Go's
+  `net/http` do: it sends each request to the proxy in absolute form
+  (`POST http://host:port/path`, with the origin's `Host`), with
+  `Proxy-Authorization` on every request when the proxy URL has userinfo. A
+  well-formed proxy reply, such as a 407 or 502, is the call's HTTP response,
+  which core maps to an error. A reply the parser rejects fails with
+  `malformed response` and no proxy bytes in its message, cause or recorded
+  failures.
+- The pooled transports keep connections through the proxy as they keep
+  direct ones: one `CONNECT`, or one forwarding connection, per pooled
+  connection rather than per call. A dropped tunnel is replaced by a new
+  connection and a new `CONNECT`. `PerCallTransport` opens one per call.
+- The proxy hop is part of the connection's one setup attempt, so
+  `connect_timeout` bounds it, and so does Go's 60-second `CONNECT` cap. For
+  `Transport` and `ThreadedTransport` it is a
+  [connection attempt](#connection-attempts) that runs under the transport: a
+  call whose deadline or cancellation fires stops waiting while the attempt
+  continues for other calls, and `connect_timeout` or `close` closes the
+  proxy connection. For `HTTP1Transport` and `PerCallTransport`, a deadline or
+  cancellation while the exchange is pending ends the call with its own
   outcome and closes the proxy connection.
 - An unusable environment proxy fails the call closed, never going direct and
   before any socket opens. Proxy failures are `unavailable` with a fixed
@@ -1127,7 +1164,13 @@ ConnectRPC::Async::PerCallTransport.new(proxy: nil)         # Always direct.
   407), `proxy tunnel refused` (any other status but 200),
   `proxy tunnel failed` (a malformed, truncated or oversized reply, or bytes
   after a 200 reply to a TLS target) and `proxy tunnel timed out`. Error
-  messages never include proxy URLs, credentials or reply text.
+  messages never include proxy URLs, credentials or reply text. A refused or
+  unreachable proxy keeps the native socket error as the `cause`, as for a
+  direct dial, so the cause names the proxy's address but not its URL or
+  credentials.
+- Bytes a proxy sends after its 200 reply to a TLS target are detected only
+  when they arrive with the end of the reply. Later ones fail the TLS
+  handshake instead, as `TLS error`.
 
 ## Explicit HTTP/1.1 client
 
@@ -1146,8 +1189,9 @@ end.wait
 ```
 
 `HTTP1Transport.new(origin:, ca_file: nil, certificate_chain: nil, private_key:
-nil, connection_limit: 4, max_requests: 128, connect_timeout: 10)` is an explicit
-Connect H1 client. Pass it through the existing core/generated client's
+nil, connection_limit: 4, max_requests: 128, connect_timeout: 10, proxy:
+:environment)` is an explicit Connect H1 client. Since 0.3.0 it reaches its
+origin through an `http://` proxy chosen by `proxy:`; see [Proxies](#proxies). Pass it through the existing core/generated client's
 `transport:` option inside an application-owned Async reactor. It supports safe
 unary GET, both codecs and identity/gzip through core, and SS/CS through the
 existing streaming SPI. It has no gRPC or bidi capability. Standalone Async Host

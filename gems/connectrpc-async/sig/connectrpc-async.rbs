@@ -153,8 +153,12 @@ module ConnectRPC
     interface _ConnectionObserver
       def call: (ConnectionEvent) -> void
     end
+    # proxy: (since 0.3.0) defaults to a snapshot of the proxy environment,
+    # chosen by the origin's scheme as NetHTTP chooses it; a String or URI is
+    # an http:// proxy; nil connects directly. h2c and TLS origins tunnel
+    # through it with CONNECT.
     class Transport
-      def initialize: (origin: String, ?ca_file: String?, ?certificate_chain: Array[String]?, ?private_key: String?, ?connection_limit: Integer, ?max_requests: Integer, ?connect_timeout: Numeric, ?connection_policy: ConnectionPolicy, ?connection_observer: (_ConnectionObserver | ^(ConnectionEvent) -> void)?, ?stream_receive_window: Integer, ?connection_receive_window: Integer, ?dynamic_receive_windows: bool, ?max_receive_window: Integer) -> void
+      def initialize: (origin: String, ?ca_file: String?, ?certificate_chain: Array[String]?, ?private_key: String?, ?connection_limit: Integer, ?max_requests: Integer, ?connect_timeout: Numeric, ?connection_policy: ConnectionPolicy, ?connection_observer: (_ConnectionObserver | ^(ConnectionEvent) -> void)?, ?stream_receive_window: Integer, ?connection_receive_window: Integer, ?dynamic_receive_windows: bool, ?max_receive_window: Integer, ?proxy: :environment | String | URI::Generic | nil) -> void
       def connection_state: () -> connection_state
       def grpc_capabilities: () -> Array[grpc_cardinality]
     def open_grpc_stream: [T] (StreamRequest) { (_GRPCStreamExchange) -> T } -> T
@@ -166,9 +170,11 @@ module ConnectRPC
     # Connect unary and server streaming, and native gRPC unary and server
     # streaming, from any thread through one owner thread per process. Stream
     # blocks run on the caller's thread. call, the stream methods, exchange
-    # operations and close raise LifecycleError on that owner thread.
+    # operations and close raise LifecycleError on that owner thread. proxy:
+    # (since 0.3.0) is resolved as Transport resolves it, with the environment
+    # snapshot taken on the constructing thread.
     class ThreadedTransport
-      def initialize: (origin: String, ?ca_file: String?, ?certificate_chain: Array[String]?, ?private_key: String?, ?connection_limit: Integer, ?max_requests: Integer, ?connect_timeout: Numeric, ?connection_policy: ConnectionPolicy, ?connection_observer: (_ConnectionObserver | ^(ConnectionEvent) -> void)?, ?stream_receive_window: Integer, ?connection_receive_window: Integer, ?dynamic_receive_windows: bool, ?max_receive_window: Integer) -> void
+      def initialize: (origin: String, ?ca_file: String?, ?certificate_chain: Array[String]?, ?private_key: String?, ?connection_limit: Integer, ?max_requests: Integer, ?connect_timeout: Numeric, ?connection_policy: ConnectionPolicy, ?connection_observer: (_ConnectionObserver | ^(ConnectionEvent) -> void)?, ?stream_receive_window: Integer, ?connection_receive_window: Integer, ?dynamic_receive_windows: bool, ?max_receive_window: Integer, ?proxy: :environment | String | URI::Generic | nil) -> void
       def connection_state: () -> connection_state
       def call: (TransportRequest) -> TransportResponse
       def streaming_capabilities: () -> Array[:server_stream]
@@ -191,8 +197,11 @@ module ConnectRPC
       def grpc_capabilities: () -> Array[:unary | :server_stream]
       def open_grpc_stream: [T] (StreamRequest) { (_GRPCStreamExchange) -> T } -> T
     end
+    # proxy: (since 0.3.0) is resolved as Transport resolves it. An https://
+    # origin tunnels through the proxy with CONNECT; an http:// origin sends
+    # absolute-form requests to it, as NetHTTP does.
     class HTTP1Transport
-      def initialize: (origin: String, ?ca_file: String?, ?certificate_chain: Array[String]?, ?private_key: String?, ?connection_limit: Integer, ?max_requests: Integer, ?connect_timeout: Numeric) -> void
+      def initialize: (origin: String, ?ca_file: String?, ?certificate_chain: Array[String]?, ?private_key: String?, ?connection_limit: Integer, ?max_requests: Integer, ?connect_timeout: Numeric, ?proxy: :environment | String | URI::Generic | nil) -> void
       def streaming_capabilities: () -> Array[:server_stream | :client_stream]
       def open_stream: [T] (StreamRequest) { (_StreamExchange) -> T } -> T
       def call: (TransportRequest) -> TransportResponse
