@@ -41,75 +41,210 @@ RSpec.describe "ThreadedTransport callers inside a reactor" do
 
   # The child runs the reactor on its main thread, where Ruby's default SIGINT
   # handler raises Interrupt; RSpec traps SIGINT in this process.
-  def sigint_child = <<~RUBY
+  def sigint_child = <<~'RUBY'
     $stdout.sync = true
     require "connectrpc/async"
     kind = ARGV.fetch(0).to_sym
+    monotonic = -> { Process.clock_gettime(Process::CLOCK_MONOTONIC) }
     url = URI("http://127.0.0.1:9/svc/Method")
     transport = ConnectRPC::Async::ThreadedTransport.new(origin: "http://127.0.0.1:9")
     engine = transport.send(:live_engine)
     held = Thread::Queue.new
     gate = Thread::Queue.new
+    # Lock kinds hold the owner inside the admission lock; :await holds only
+    # the owner, so the admitted call waits for its reply.
     engine.run_on_owner(lambda {
-      engine.admission.lock.synchronize do
+      hold = lambda do
         held << true
         Fiber.blocking { gate.pop }
       end
+      kind == :await ? hold.call : engine.admission.lock.synchronize(&hold)
     })
     held.pop
+    # Whether SIGINT waits for Async's loop or lands in the task running Ruby
+    # code differs by Ruby version. A suspended caller must not change it.
+    sibling = lambda do |label|
+      Process.kill(:INT, Process.pid)
+      expires = monotonic.call + 5
+      true until Thread.pending_interrupt? || monotonic.call > expires
+      puts "#{label}=#{Thread.pending_interrupt? ? 'deferred' : 'none'}"
+    rescue Exception => e
+      puts "#{label}=#{e.class}"
+      raise
+    end
+    begin
+      Sync { sibling.call("baseline") }
+    rescue Interrupt
+      nil
+    end
     begin
       Sync do |task|
         caller = task.async do
           case kind
-          when :unary
+          when :unary, :await
             transport.call(ConnectRPC::TransportRequest.new(url: url, http_method: "POST", headers: {}, body: "x",
                                                             response_limit: 100))
           when :stream
             transport.open_stream(ConnectRPC::StreamRequest.new(url: url, http_method: "POST", headers: {})) { nil }
           else
-            transport.close(grace: 0)
+            transport.close(grace: 1)
           end
         end
-        # Async runs the new task until it first suspends: on the held lock.
-        frame = caller.fiber.backtrace.find { |line| line.include?("Mutex#synchronize") }
-        index = caller.fiber.backtrace.index(frame)
-        puts "suspended=\#{caller.fiber.backtrace[index + 1][/Engine#\\w+/]}"
-        Process.kill(:INT, Process.pid)
+        # Async runs the new task until it first suspends.
+        trace = caller.fiber.backtrace
+        frame = trace[trace.index { |line| line.include?("Mutex#synchronize") } + 1]
+        puts "suspended=#{frame[/\w+#\w+(?=')/]}"
+        sibling.call("sibling")
         caller.wait
       end
       puts "outcome=returned"
     rescue Interrupt
       puts "outcome=Interrupt"
     rescue Exception => e
-      puts "outcome=\#{e.class}: \#{e.message}"
+      puts "outcome=#{e.class}: #{e.message}"
     ensure
       gate << true
     end
-    puts "admitted=\#{engine.admission.lock.synchronize { engine.admission.count }}"
-    transport.close(grace: 0)
-    puts "closed"
+    expires = monotonic.call + 5
+    admitted = nil
+    until (admitted = engine.admission.lock.synchronize { engine.admission.count }).zero? || monotonic.call > expires
+      sleep 0.005 # Poll interval only; the deadline bounds the wait.
+    end
+    puts "admitted=#{admitted}"
+    closed = transport.close(grace: 1)
+    puts "closed=#{closed} owner=#{engine.thread.join(5) ? 'exited' : 'alive'}"
   RUBY
 
   def run_child(kind, timeout: 30)
     Open3.popen3(RbConfig.ruby, "-e", sigint_child, kind.to_s) do |stdin, stdout, stderr, wait|
       stdin.close
+      readers = [stdout, stderr].map { |io| Thread.new { io.read } }
       unless wait.join(timeout)
         Process.kill(:KILL, wait.pid)
-        raise "SIGINT child #{kind} timed out; stdout: #{stdout.read.inspect}"
+        wait.join
+        raise "SIGINT child #{kind} timed out; output: #{readers.map(&:value).inspect}"
       end
-      [stdout.read, stderr.read, wait.value]
+      [*readers.map(&:value), wait.value]
     end
   end
 
   {
-    unary: "Engine#admit", stream: "Engine#admit", close: "Engine#request_close"
-  }.each do |kind, frame|
-    it "ends Sync with Interrupt on SIGINT while a #{kind} caller waits for the contended admission lock" do
+    unary: ["for the contended admission lock", "Engine#admit"],
+    stream: ["for the contended admission lock", "Engine#admit"],
+    close: ["for the contended admission lock", "Engine#request_close"],
+    await: ["for its reply", "ThreadedTransport#await"]
+  }.each do |kind, (phase, frame)|
+    it "ends Sync with Interrupt on SIGINT while a #{kind} caller waits #{phase}" do
       output, errors, status = run_child(kind)
-      expect([output.lines(chomp: true), status.success?]).to eq(
-        [["suspended=#{frame}", "outcome=Interrupt", "admitted=0", "closed"], true]
+      lines = output.lines(chomp: true)
+      baseline = lines.first.to_s[/\Abaseline=(.+)\z/, 1]
+      expect([lines, status.success?]).to eq(
+        [["baseline=#{baseline}", "suspended=#{frame}", "sibling=#{baseline}", "outcome=Interrupt", "admitted=0",
+          "closed=true owner=exited"], true]
       ), "stderr: #{errors}"
+      expect(baseline).not_to be_nil
     end
+  end
+
+  # Runs the block as a task on its own reactor thread. Once it suspends in
+  # +at+, reports whether a Thread#raise into that thread reaches a sibling
+  # task's Ruby code at once (:raised) or stays pending (:deferred). Besides
+  # Async's SignalException mask, only the caller's masks and +outer+ are on
+  # the thread's mask stack. Returns the outcome and the reactor thread.
+  def sibling_probe(at:, outer: false, &work)
+    probe = Class.new(StandardError)
+    ready = Thread::Queue.new
+    result = Thread::Queue.new
+    reactor = Thread.new do
+      run = lambda do
+        Sync do |task|
+          caller = task.async { capture_error(&work) }
+          eventually("the caller suspended in #{at}") { frames(caller.fiber&.backtrace).include?(at) }
+          ready << true
+          result << sibling_outcome(probe)
+          caller.stop
+        end
+      end
+      outer ? Thread.handle_interrupt(probe => :never) { run.call } : run.call
+    rescue probe
+      nil
+    end
+    reactor.report_on_exception = false
+    pop_within(ready, "the caller to suspend in #{at}")
+    reactor.raise(probe)
+    [pop_within(result, "the sibling's probe"), reactor]
+  end
+
+  # Runs Ruby code until +probe+ is raised here or pending.
+  def sibling_outcome(probe)
+    expires = monotonic + 5
+    begin
+      true until Thread.pending_interrupt? || monotonic > expires
+    rescue probe
+      return :raised
+    end
+    return :none unless Thread.pending_interrupt?
+
+    # Take the deferred probe now: a pending interrupt stops Async's loop.
+    Thread.handle_interrupt(probe => :immediate) { nil }
+    :deferred
+  rescue probe
+    :deferred
+  end
+
+  def gated_watch_host(contexts, entered, release)
+    threaded_host(server: mixed_server(watch: lambda { |message, writer, context|
+      contexts[message.name] = context
+      writer.send_message(message)
+      entered << message.name
+      release.pop
+      writer.send_message(item("#{message.name}-last"))
+    }))
+  end
+
+  it "leaves no mask on the reactor thread while a stream operation waits for the admission lock" do
+    entered = Thread::Queue.new
+    release = Thread::Queue.new
+    peer = gated_watch_host({}, entered, release)
+    origin = "http://127.0.0.1:#{peer.peer.port}"
+    transport = threaded(origin: origin)
+    typed = mixed_client(transport, origin)
+    gates = Thread::Queue.new
+    outcome, reactor = sibling_probe(at: "#begin_operation") do
+      typed.watch(item("probe"), timeout: nil) do |reader|
+        reader.receive
+        gates << hold_admission(transport)
+        reader.receive
+      end
+    end
+    expect(outcome).to eq(:raised)
+  ensure
+    gates&.pop(timeout: 0)&.<<(true)
+    release&.<<(true)
+    value_within(reactor, "the probe reactor") if reactor
+    transport&.close(grace: 0)
+    peer&.stop
+  end
+
+  it "leaves no reopened interrupts on the reactor thread while a stream read waits for the owner" do
+    entered = Thread::Queue.new
+    release = Thread::Queue.new
+    peer = gated_watch_host({}, entered, release)
+    origin = "http://127.0.0.1:#{peer.peer.port}"
+    transport = threaded(origin: origin)
+    typed = mixed_client(transport, origin)
+    outcome, reactor = sibling_probe(at: "#await_stream", outer: true) do
+      typed.watch(item("probe"), timeout: nil) do |reader|
+        reader.receive
+        reader.receive
+      end
+    end
+    expect(outcome).to eq(:deferred)
+  ensure
+    release&.<<(true)
+    value_within(reactor, "the probe reactor") if reactor
+    transport&.close(grace: 0)
+    peer&.stop
   end
 
   it "stops a caller waiting for the contended admission lock at once and admits nothing" do
@@ -246,6 +381,7 @@ RSpec.describe "ThreadedTransport callers inside a reactor" do
       reader.each { |reply| names << reply.name }
     end
     expect(names).to eq(%w[next next-last])
+    expect(peer.peer.accepts.size).to eq(1)
   ensure
     2.times { release&.<<(true) }
     transport&.close(grace: 0)

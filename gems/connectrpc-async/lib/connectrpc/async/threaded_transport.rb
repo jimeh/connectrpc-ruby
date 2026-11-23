@@ -369,7 +369,7 @@ module ConnectRPC
         Internal.seconds(grace, "grace", zero: true)
         check_owner!
         expires = Internal.now + grace
-        caller_masked do
+        caller_mask(:never) do
           begin_close(expires)
           wait_closed
         end
@@ -377,16 +377,18 @@ module ConnectRPC
 
       private
 
-      # Caller bookkeeping defers Thread#raise and Thread#kill, so they never
-      # leave a call half settled or admission half released. A fiber that can
-      # suspend through a scheduler, such as an Async task, skips the mask: the
-      # mask covers the whole thread while the fiber waits for a lock, so a
-      # signal never reaches the reactor (#201). Those interrupts are
-      # unsupported on a reactor thread, and Async's Fiber#raise ignores masks.
-      def caller_masked(&)
+      # Caller bookkeeping defers Thread#raise and Thread#kill (:never), so
+      # they never leave a call half settled or admission half released, and
+      # waits reopen them (:immediate). A fiber that can suspend through a
+      # scheduler, such as an Async task, skips both: Ruby applies a mask to
+      # the whole thread while the fiber is suspended, so :never kept a signal
+      # from the reactor and :immediate let one land in any other task (#201).
+      # Those interrupts are unsupported on a reactor thread, and Async's
+      # cancellation uses Fiber#raise, which masks do not affect.
+      def caller_mask(mode, &)
         return yield if Fiber.scheduler && !Fiber.blocking?
 
-        Thread.handle_interrupt(Object => :never, &)
+        Thread.handle_interrupt(Object => mode, &)
       end
 
       def perform(request)
@@ -394,7 +396,7 @@ module ConnectRPC
 
         check_request!(request)
         call = prepare(request)
-        caller_masked do
+        caller_mask(:never) do
           admit(call)
           taken = false
           registration = nil
@@ -494,7 +496,7 @@ module ConnectRPC
               return call.cancel_expires && call.cancel_expires <= Internal.now ? :canceled : :deadline
             end
 
-            Thread.handle_interrupt(Object => :immediate) do
+            caller_mask(:immediate) do
               call.signal.wait(lock, remaining && [remaining, Internal::MAX_WAIT].min)
             end
           end
@@ -543,11 +545,14 @@ module ConnectRPC
           inherit_fork_state
           next unless @state == :open
 
+          # The owner is asked first: an Async cancellation while request_close
+          # waits for the admission lock then leaves the transport open.
+          engine = @engine if @engine&.pid == Process.pid
+          requested = engine&.request_close(expires)
           @state = :closing
           @close_expires = expires
           @close_pid = Process.pid
-          engine = @engine if @engine&.pid == Process.pid
-          if engine&.request_close(expires)
+          if requested
             @closing_engine = engine
           else
             finish_close(true)
@@ -567,7 +572,7 @@ module ConnectRPC
               finish_close(false)
               break
             end
-            Thread.handle_interrupt(Object => :immediate) { @closed.wait(@lock, remaining) }
+            caller_mask(:immediate) { @closed.wait(@lock, remaining) }
           end
         end
         if stalled
@@ -576,7 +581,7 @@ module ConnectRPC
           # The owner published its outcome last; join its exit within the allowance.
           thread = @closing_engine.thread
           remaining = @close_expires + Internal::CLEANUP_SECONDS - Internal.now
-          Thread.handle_interrupt(Object => :immediate) { thread.join([remaining, Internal::CLEANUP_SECONDS].max) }
+          caller_mask(:immediate) { thread.join([remaining, Internal::CLEANUP_SECONDS].max) }
         end
         @close_outcome
       end
