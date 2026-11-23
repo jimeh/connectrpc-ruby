@@ -84,10 +84,20 @@ RSpec.describe "Interrupted Host close" do
   it "forces the drain at its original grace after every close caller left" do
     reactor do |task|
       with_held_call(task) do |host, handler, call, _release, _transport|
+        session = host_session(host)
+        expires = forced_at = nil
+        allow(session).to receive(:close_owned).and_wrap_original do |close_owned, expiry|
+          expires = expiry
+          close_owned.call(expiry)
+        end
+        allow(session).to receive(:retire_session).and_wrap_original do |retire|
+          forced_at = AsyncHelpers::INTERNAL.now
+          retire.call
+        end
         expect { task.with_timeout(0.01) { host.close(grace: 0.2) } }.to raise_error(Async::TimeoutError)
         expect_drain_pending(host, handler)
-        session = host_session(host)
         AsyncHelpers::INTERNAL.join_complete(session.instance_variable_get(:@closer))
+        expect(forced_at).to be >= expires
         expect(session.instance_variable_get(:@state)).to eq(:closed)
         expect(session.instance_variable_get(:@close_outcome)).to be(false)
         expect(handler).to be_finished

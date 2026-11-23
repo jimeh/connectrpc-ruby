@@ -408,8 +408,9 @@ and [Accept errors](../gems/connectrpc-async/README.md#accept-errors).
   an interrupted `close` forced raw-first retirement, waited for it and then
   raised, and an interrupted `abort` raised only after retirement finished.
   A later `close` joins the running drain. To force it, call
-  `close(grace: 0)` or `abort`: a repeated `close(grace: 0)` now forces a
-  drain whose outcome is not yet decided, where it used to join it.
+  `close(grace: 0)`, or `abort` on `ServerSession` and Falcon's `Server`: a
+  repeated `close(grace: 0)` now forces a drain whose outcome is not yet
+  decided while a connection is still open, where it used to join it.
   Cancelling the task that created the host still forces teardown, and that
   task finishes only after retirement, but `Task#wait` on it can now return
   before retirement completes. See

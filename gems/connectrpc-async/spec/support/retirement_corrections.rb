@@ -343,11 +343,15 @@ RSpec.shared_examples "retirement close corrections" do |protocol|
           end
           stop.call
         end
-        started = AsyncHelpers::INTERNAL.now
+        expires = nil
+        allow(session).to receive(:close_owned).and_wrap_original do |close_owned, expiry|
+          expires = expiry
+          close_owned.call(expiry)
+        end
         joiner = task.async(finished: false) { session.close(grace: 0.01) }
         entered.dequeue
         joiner.cancel
-        wait_until(task, "the first close's grace to run out") { AsyncHelpers::INTERNAL.now >= started + 0.01 }
+        wait_until(task, "the first close's grace to run out") { AsyncHelpers::INTERNAL.now >= expires }
         expect(resource.instance_variable_get(:@drain_task)).to be_nil
         forcer = task.async(finished: false) { session.close(grace: 0) }
         expect(resource.send(:raw_failed?)).to be(true), "zero grace must force before the stalled drain starts"
@@ -410,6 +414,7 @@ RSpec.shared_examples "retirement close corrections" do |protocol|
         expect(retirement_complete?(resource)).to be(true)
       ensure
         state.fetch(:gate).release
+        state.fetch(:session)&.abort
       end
     end
   end

@@ -1318,9 +1318,10 @@ end
 A later `close` with a positive grace joins the running drain and returns its
 result, keeping the first close's expiry. `close(grace: 0)` forces the drain,
 unless its outcome is already decided or every connection has retired, and
-returns false once retirement finishes, as `abort` does. A handler's own
-zero-grace close forces it too and returns nil. Before 0.3.0 a repeated
-`close(grace: 0)` joined the drain instead.
+returns false once the forced retirement finishes. `ServerSession#abort`
+forces it too and returns the session. A handler's own zero-grace close
+forces it and returns nil. Before 0.3.0 a repeated `close(grace: 0)` joined
+the drain instead.
 
 Cancelling the session owner still forces teardown. Async cancels the drain's
 task with its owner; that task and the session's lifetime guard then force
