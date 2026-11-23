@@ -95,10 +95,12 @@ reactor, thread or state raises `ConnectRPC::Async::LifecycleError`. Since
 ### Interrupts inside a reactor
 
 Inside a reactor, stop work with RPC deadlines, `CancellationToken`s, Async
-task cancellation, `with_timeout` or `Timeout.timeout`, which Ruby routes
-through the fiber scheduler. Each of these acts only on the call or task it
-targets, at a point where that work suspends, so hosts and transports can
-finish their teardown around it.
+task cancellation, `with_timeout`, or `Timeout.timeout` called from an Async
+task, where Ruby routes it through the fiber scheduler. Each of these acts
+only on the call or task it targets, at a point where that work suspends, so
+hosts and transports can finish their teardown around it. Outside a task, for
+example in a blocking fiber, `Timeout.timeout` falls back to a watchdog thread
+that uses `Thread#raise`.
 
 `Thread#raise` and `Thread#kill` from another thread into a thread that runs
 a reactor are not supported. A watchdog thread such as Rack::Timeout's does
@@ -107,10 +109,12 @@ moment, which can be an unrelated request, a teardown or Async's own
 scheduler. `Thread.handle_interrupt` masks apply to the whole thread, not to
 one fiber, so neither this package nor Async can confine the exception to the
 work it was meant to stop. It can end the reactor or leave a connection's
-teardown unfinished until its owner exits. Callers on ordinary threads, such
-as [`ThreadedTransport`](#ordinary-threads) callers and
-[`PerCallTransport`](#one-off-calls) outside a reactor, support these
-interrupts fully because the reactor runs on another thread.
+teardown unfinished until its owner exits. A caller on a thread that runs no
+reactor can use them, as a [`ThreadedTransport`](#ordinary-threads) or
+[`PerCallTransport`](#one-off-calls) caller does, because the reactor doing
+its work runs on another thread. A `ThreadedTransport` caller that is itself
+on a reactor thread follows the rules above
+([#201](https://github.com/jimeh/connectrpc-ruby/issues/201)).
 
 ## Host
 
@@ -351,8 +355,11 @@ boolean drain outcome; resource-owned calls can return nil while shutdown is
 pending, as described in [Close results](#close-results). Terminal listener
 failure instead makes `wait` raise the identical original exception after
 cooperative session abort, listener joins and actual finalization of its stored
-private exit task. Repeated/concurrent waits share that outcome; cancelling a
-waiter does not close the Host. Like other lifecycle operations, `wait`
+private exit task. If that cleanup itself fails, `wait` raises the cleanup's
+first failure instead, as described in
+[Terminal failure and startup](#terminal-failure-and-startup).
+Repeated/concurrent waits share that outcome; cancelling a waiter does not
+close the Host. Like other lifecycle operations, `wait`
 requires the owning reactor and thread.
 
 ### Accept errors
@@ -385,8 +392,10 @@ cancellation; `wait` joins its actual finalization before reporting the cause.
 Ordinary owner cancellation stops accepting and resolves ordinary waits after
 listener finalization, while session retirement may still be running. `close`
 retains its drain result and does not raise the stored listener cause.
-If the session abort itself fails, the exit task still stops the listeners and
-resolves completion, and `start` or `wait` raises that failure.
+If the session abort or a listener close fails, the exit task still closes,
+cancels and joins every listener and resolves completion. `start` and `wait`
+then raise the first such failure instead of the listener cause or startup
+error, so rescue `StandardError` rather than only the accept error you expect.
 
 A terminal cause already observed during startup is raised by `start` after
 cleanup; bind/initial setup errors remain synchronous and subsequent `wait`
