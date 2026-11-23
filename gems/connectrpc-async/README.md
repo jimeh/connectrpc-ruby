@@ -1151,7 +1151,8 @@ ConnectRPC::Async::PerCallTransport.new                     # proxy: :environmen
   (`Protocol::HTTP::InvalidHeaderError`, such as a repeated singleton field or
   a forbidden trailer), fails with `malformed response`, and its message,
   cause and recorded failures carry no proxy bytes. A closed or reset proxy
-  connection stays `connection closed`.
+  connection stays a connection failure, as on a direct connection, not
+  `malformed response`.
 - The pooled transports keep connections through the proxy as they keep
   direct ones: one `CONNECT`, or one forwarding connection, per pooled
   connection rather than per call. A dropped tunnel is replaced by a new

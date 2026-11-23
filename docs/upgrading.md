@@ -199,11 +199,12 @@ These affect the Async `Transport`, `ThreadedTransport` and `HTTP1Transport`.
   loopback addresses. In a CGI process (`REQUEST_METHOD` set), a set
   `HTTP_PROXY` fails `http://` calls with `unavailable` before `NO_PROXY`,
   `localhost` or loopback is considered, as in NetHTTP. Before 0.3.0 they
-  ignored the environment and always connected directly. A process whose environment sets a proxy for other tools now sends
-  these connections through it, and an environment proxy with a scheme other
-  than `http://` fails affected calls with `unavailable`. Pass `proxy: nil` to
-  connect directly as before. `ThreadedTransport` reads the environment on
-  the thread that constructs it.
+  ignored the environment and always connected directly. A process whose
+  environment sets a proxy for other tools now sends these connections
+  through it, and an environment proxy with a scheme other than `http://`
+  fails affected calls with `unavailable`. Pass `proxy: nil` to connect
+  directly as before. `ThreadedTransport` reads the environment on the thread
+  that constructs it.
 - Their `inspect` now ends with `proxy=environment`, `proxy=explicit` or
   `proxy=direct`.
 

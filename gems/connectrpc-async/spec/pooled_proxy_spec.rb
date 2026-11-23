@@ -200,6 +200,22 @@ RSpec.describe "Pooled transport proxies" do
     end
   end
 
+  # RFC 9112 section 6.1 makes transfer coding in an HTTP/1.0 message faulty
+  # framing, so the connection must not return to the pool.
+  it "fails a forward proxy's chunked HTTP/1.0 reply and never reuses its connection" do
+    reply = "HTTP/1.0 200 OK\r\nConnection: keep-alive\r\nTransfer-Encoding: chunked\r\n\r\n2\r\nok\r\n0\r\n\r\n"
+    proxy = ForwardProxy.new { reply }
+    origin = "http://#{target}:8080"
+    errors = with_pooled(:http1, -> { pooled(:http1, origin: origin, proxy: proxy.url) }) do |h1|
+      2.times.map { capture_error { h1.call(request("#{origin}/x")) } }
+    end
+    expect(errors.map { |error| [error.class, error.code, error.message] })
+      .to eq([[ConnectRPC::Error, "unavailable", "HTTP/1 transport failed: malformed response"]] * 2)
+    expect(proxy.accepted).to eq(2)
+  ensure
+    proxy&.stop
+  end
+
   it "returns a forward proxy's well-formed HTTP error reply as the HTTP/1 call's response" do
     reply = "HTTP/1.1 407 Proxy Authentication Required\r\nContent-Length: 4\r\n\r\ndeny"
     proxy = ForwardProxy.new { reply }
@@ -479,7 +495,10 @@ RSpec.describe "Pooled transport proxies" do
                                       "Content-Length: 0\r\n\r\n",
     # Content-Type may not be a trailer field.
     "an invalid trailer" => "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n2\r\nok\r\n0\r\n" \
-                            "Content-Type: secret-hunter2\r\n\r\n"
+                            "Content-Type: secret-hunter2\r\n\r\n",
+    # protocol-http converts the range with Integer, whose ArgumentError
+    # quotes the value.
+    "an unconvertible Range field" => "HTTP/1.1 200 OK\r\nRange: bytes=08-\r\nContent-Length: 0\r\n\r\n"
   }.each do |label, reply|
     it "replaces #{label} from a forward proxy with a fixed failure in the message, causes and lifecycle" do
       proxy = ForwardProxy.new { reply }

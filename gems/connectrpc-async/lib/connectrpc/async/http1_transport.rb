@@ -419,12 +419,14 @@ module ConnectRPC
       end
 
       # A forward proxy writes an http:// call's response. protocol-http1 and
-      # protocol-http parser and header errors can quote it, so they may carry
-      # the proxy's URL or credentials; all of them become one fixed failure.
-      # EOF and reset stay connection failures, so a stale GET still resends.
+      # protocol-http parser and header errors, and the ArgumentError of a
+      # field value conversion such as Integer("08"), can quote it, so they
+      # may carry the proxy's URL or credentials; all of them become one fixed
+      # failure. EOF and reset stay connection failures, so a stale GET still
+      # resends.
       def forwarded(operation)
         yield
-      rescue ::Protocol::HTTP1::Error, ::Protocol::HTTP::InvalidHeaderError
+      rescue ::Protocol::HTTP1::Error, ::Protocol::HTTP::InvalidHeaderError, ArgumentError
         raise unless operation[:resource]&.forward
 
         raise Internal::ProxyFailure, "malformed response", cause: nil

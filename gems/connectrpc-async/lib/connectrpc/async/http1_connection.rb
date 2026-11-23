@@ -31,6 +31,11 @@ module ConnectRPC
             headers = read_headers
             leading = snapshot(headers)
             validate_framing!(leading)
+            # RFC 9112 section 6.1: transfer coding in an HTTP/1.0 message is
+            # faulty framing, so the connection never returns to the pool.
+            if @response_version == "HTTP/1.0" && leading.key?("transfer-encoding")
+              raise HTTP1ResponseError, "Unsupported HTTP transfer framing"
+            end
             raise HTTP1ResponseError, "HTTP upgrade is unsupported" if status == 101
 
             # protocol-http1's parser compares the transfer token literally.
