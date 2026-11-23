@@ -20,36 +20,14 @@ module ConnectRPC
       DEADLINE_CLOCK = Deadline.const_get(:MONOTONIC)
       private_constant :POLICY, :INVALID_URL, :DEADLINE_CLOCK
 
-      # Dials the call's proxy, when it has one, and tunnels to the origin
-      # through it once the socket is published. A proxy that cannot be used
-      # fails the setup attempt before any socket opens.
-      module Tunnelling
-        private
-
-        def dial
-          @tunnel_proxy = Internal::ProxyTunnel.select(@proxy, @origin)
-          @tunnel_proxy ? super(@tunnel_proxy.host, @tunnel_proxy.port) : super
-        end
-
-        def tunnel(raw)
-          return unless @tunnel_proxy
-
-          Internal::ProxyTunnel.establish(raw, @origin.hostname, @origin.port, @tunnel_proxy,
-                                          tls: @origin.scheme == "https")
-        end
-      end
-      private_constant :Tunnelling
-
       # The H2 Transport for one inline call. The wrapper's scope task, rather
       # than the caller's task, owns its guard, watcher, closer and every
       # connection task, so the wrapper can join all of them.
       class Inline < Transport
-        include Tunnelling
-
         def initialize(scope:, snapshot:, proxy:, **)
           @scope = scope
           @compiled_snapshot = snapshot
-          @proxy = proxy
+          @compiled_proxy = proxy
           super(**)
         end
 
@@ -71,25 +49,15 @@ module ConnectRPC
         end
 
         def client_snapshot(**) = @compiled_snapshot
+        def proxy_resolver(_option) = @compiled_proxy
       end
       private_constant :Inline
 
       # The ThreadedTransport for one call from an ordinary thread.
       class Threaded < ThreadedTransport
-        # The owner thread's inner Transport.
-        class Tunnelled < Inner
-          include Tunnelling
-
-          def initialize(proxy:, **)
-            @proxy = proxy
-            super(**)
-          end
-        end
-        private_constant :Tunnelled
-
         def initialize(snapshot:, proxy:, **)
           @compiled_snapshot = snapshot
-          @proxy = proxy
+          @compiled_proxy = proxy
           @engines = []
           @cutoff = nil
           super(**)
@@ -111,8 +79,6 @@ module ConnectRPC
 
         private
 
-        def build_inner(**) = Tunnelled.new(proxy: @proxy, **)
-
         # A start that fails can replace a stopped engine; each one is joined.
         def build_engine(admission) = super.tap { |engine| @engines << engine }
 
@@ -127,6 +93,7 @@ module ConnectRPC
         end
 
         def client_snapshot(**) = @compiled_snapshot
+        def proxy_resolver(_option) = @compiled_proxy
       end
       private_constant :Threaded
 
@@ -145,11 +112,8 @@ module ConnectRPC
         # every HTTPS call.
         @snapshot = Internal::TLS.client(ca_file: ca_file, certificate_chain: certificate_chain,
                                          private_key: private_key)
-        @proxy_mode = { environment: "environment", nil => "direct" }.fetch(proxy, "explicit")
-        @proxy = Proxy.resolver(proxy)
-        fixed = @proxy.is_a?(Proxy::Static) ? @proxy.endpoint : nil
-        raise ArgumentError, "Unsupported proxy scheme", cause: nil if fixed && fixed.scheme != "http"
-
+        @proxy = Internal::ProxyTunnel.resolver(proxy)
+        @proxy_mode = Internal::ProxyTunnel.mode(@proxy)
         freeze
       end
 

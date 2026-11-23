@@ -4,72 +4,12 @@ $LOAD_PATH.unshift(File.expand_path("../../../spec/fixtures/generation/ruby", __
 require "generation/streaming_connect"
 require_relative "support/threaded_stream_helpers"
 require_relative "support/per_call_helpers"
-require_relative "support/connect_proxy"
+require_relative "support/proxy_helpers"
 
 RSpec.describe "PerCallTransport proxies" do
   include ThreadedStreamHelpers
   include PerCallHelpers
-
-  def target = ConnectProxy::TARGET
-
-  around do |example|
-    keys = %w[HTTP_PROXY http_proxy HTTPS_PROXY https_proxy NO_PROXY no_proxy REQUEST_METHOD]
-    saved = keys.to_h { |key| [key, ENV.fetch(key, nil)] }
-    keys.each { |key| ENV.delete(key) }
-    example.run
-  ensure
-    saved.each { |key, value| value.nil? ? ENV.delete(key) : ENV[key] = value }
-  end
-
-  # The environment is set only while a transport takes its snapshot.
-  def with_env(values)
-    values.each { |key, value| ENV[key] = value }
-    yield
-  ensure
-    values.each_key { |key| ENV.delete(key) }
-  end
-
-  def mixed_host(**)
-    threaded_host(server: mixed_server(watch: lambda { |message, writer, _|
-      2.times { |index| writer.send_message(item("#{message.name}-#{index}")) }
-    }), **)
-  end
-
-  def streamed(typed, name)
-    names = []
-    typed.watch(item(name)) { |reader| reader.each { |message| names << message.name } }
-    names
-  end
-
-  # Host TLS for the target name, issued by the shared test root.
-  def target_tls
-    @target_tls ||= begin
-      root_certificate, root_key = tls_material.fetch(:root)
-      key = OpenSSL::PKey::RSA.new(2048)
-      certificate = OpenSSL::X509::Certificate.new
-      certificate.version = 2
-      certificate.serial = 301
-      certificate.subject = OpenSSL::X509::Name.parse("/CN=#{target}")
-      certificate.issuer = root_certificate.subject
-      certificate.public_key = key
-      certificate.not_before = Time.now - 60
-      certificate.not_after = Time.now + 3600
-      factory = OpenSSL::X509::ExtensionFactory.new
-      factory.subject_certificate = certificate
-      factory.issuer_certificate = root_certificate
-      certificate.add_extension(factory.create_extension("basicConstraints", "CA:FALSE", true))
-      certificate.add_extension(factory.create_extension("keyUsage", "digitalSignature,keyEncipherment", true))
-      certificate.add_extension(factory.create_extension("extendedKeyUsage", "serverAuth"))
-      certificate.add_extension(factory.create_extension("subjectAltName", "DNS:#{target}"))
-      certificate.sign(root_key, "SHA256")
-      host_tls([certificate, key])
-    end
-  end
-
-  def connect_head(authority, credentials = nil)
-    auth = credentials ? "Proxy-Authorization: Basic #{[credentials].pack('m0')}\r\n" : ""
-    "CONNECT #{authority} HTTP/1.1\r\nHost: #{authority}\r\n#{auth}\r\n"
-  end
+  include ProxyHelpers
 
   def failure_of(path, transport, request)
     error = on_path(path) { capture_error { transport.call(request) } }
@@ -98,17 +38,6 @@ RSpec.describe "PerCallTransport proxies" do
     raise "Expected SETTINGS first, got #{frame.inspect}" unless frame.getbyte(3) == 4
 
     frame << upstream.read((frame.getbyte(0) << 16) | frame.unpack1("@1n")).to_s
-  end
-
-  # Records each dial's host and port, then stops it before any socket opens.
-  def stop_dials
-    dials = Thread::Queue.new
-    stop = Class.new(StandardError)
-    allow(IO::Endpoint).to receive(:tcp).and_wrap_original do |_original, host, port, *|
-      dials << [host, port]
-      raise stop, "stopped before connecting"
-    end
-    dials
   end
 
   %i[h2c tls mtls].each do |mode|
@@ -442,24 +371,5 @@ RSpec.describe "PerCallTransport proxies" do
                                          "#<ConnectRPC::Async::PerCallTransport connect_timeout=10 proxy=direct>",
                                          "#<ConnectRPC::Async::PerCallTransport connect_timeout=2 proxy=environment>"
                                        ])
-  end
-
-  # Only PerCallTransport reads the proxy environment in this release.
-  it "leaves pooled transports direct whatever the proxy environment" do
-    dials = stop_dials
-    origin = "http://#{target}:8080"
-    with_env("HTTPS_PROXY" => "http://proxy.invalid:3128", "HTTP_PROXY" => "http://proxy.invalid:3128") do
-      reactor do
-        [ConnectRPC::Async::Transport, ConnectRPC::Async::HTTP1Transport].each do |transport_class|
-          transport = transport_class.new(origin: origin)
-          capture_error { transport.call(request("#{origin}/x")) }
-          transport.close(grace: 0)
-        end
-      end
-      threaded = threaded(origin: origin)
-      capture_error { threaded.call(request("#{origin}/x")) }
-      threaded.close(grace: 0)
-    end
-    expect(3.times.map { pop_within(dials, "a pooled dial") }).to eq([[target, 8080]] * 3)
   end
 end

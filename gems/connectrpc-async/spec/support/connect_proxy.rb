@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "socket"
+require_relative "http1_wire"
 
 # A local HTTP CONNECT proxy on plain threads. Each accepted connection reads
 # its request head, records it in `heads`, then runs the handler with the
@@ -70,6 +71,12 @@ class ConnectProxy
     end
   rescue IOError, SystemCallError
     @closed << true unless @stopping
+  end
+
+  # Closes every connection the proxy holds, as a proxy that drops its
+  # tunnels does, and keeps accepting new ones.
+  def drop
+    @lock.synchronize { @sockets.each { |socket| socket.close unless socket.closed? } }
   end
 
   def stop

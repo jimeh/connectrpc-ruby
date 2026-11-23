@@ -15,7 +15,7 @@ module ConnectRPC
                      max_requests: 128, connect_timeout: 10, connection_policy: ConnectionPolicy.new,
                      connection_observer: nil, stream_receive_window: 4_194_304,
                      connection_receive_window: 16_777_216, dynamic_receive_windows: true,
-                     max_receive_window: MAX_RECEIVE_WINDOW)
+                     max_receive_window: MAX_RECEIVE_WINDOW, proxy: :environment)
         initialize_affinity
         @origin = parse_origin(origin)
         @connection_limit = Internal.positive_integer(connection_limit, "connection_limit")
@@ -34,6 +34,7 @@ module ConnectRPC
           raise ArgumentError, "TLS options require an HTTPS origin"
         end
 
+        @proxy = proxy_resolver(proxy)
         if @origin.scheme == "https"
           @snapshot = client_snapshot(ca_file: ca_file, certificate_chain: certificate_chain, private_key: private_key)
         end
@@ -48,7 +49,11 @@ module ConnectRPC
         )
       end
 
-      def inspect = "#<#{self.class} state=#{@state} connection_state=#{@manager&.state} origin=#{@origin}>"
+      # Never shows proxy URLs or credentials.
+      def inspect
+        "#<#{self.class} state=#{@state} connection_state=#{@manager&.state} origin=#{@origin} " \
+          "proxy=#{Internal::ProxyTunnel.mode(@proxy)}>"
+      end
 
       # A published observation, not a promise that the next call succeeds.
       def connection_state = @manager.state
@@ -343,17 +348,28 @@ module ConnectRPC
         Internal::TLS.client(ca_file: ca_file, certificate_chain: certificate_chain, private_key: private_key)
       end
 
+      # A subclass may supply an already built resolver instead, so the
+      # environment snapshot is taken where the public transport was built.
+      def proxy_resolver(option) = Internal::ProxyTunnel.resolver(option)
+
       # Returns the connected TCP socket. The caller publishes it to the
       # resource only after this returns.
       def dial(host = @origin.hostname, port = @origin.port) = ::IO::Endpoint.tcp(host, port).connect
 
+      # HTTP/2 has no forward proxying, so h2c and TLS origins both tunnel.
       # Runs on the published socket before TLS, so abort_setup's shutdown
-      # wakes any I/O it blocks on. A direct connection has nothing to do.
-      def tunnel(_raw) = nil
+      # wakes any I/O it blocks on.
+      def tunnel(raw, proxy)
+        Internal::ProxyTunnel.establish(raw, @origin.hostname, @origin.port, proxy, tls: @origin.scheme == "https")
+      end
 
+      # The proxy hop is part of this one setup attempt: connect_timeout bounds
+      # it, and a proxy that cannot be used fails the attempt before any
+      # socket opens.
       def setup_connection(resource)
-        resource.raw = dial
-        tunnel(resource.raw)
+        proxy = Internal::ProxyTunnel.select(@proxy, @origin)
+        resource.raw = proxy ? dial(proxy.host, proxy.port) : dial
+        tunnel(resource.raw, proxy) if proxy
         socket = resource.raw
         if @snapshot
           socket = @snapshot.socket(resource.raw)

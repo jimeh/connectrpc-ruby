@@ -36,7 +36,9 @@ module Conformance
 
     def native_transport_options(request, directory)
       scheme = request.server_tls_cert.empty? ? "http" : "https"
-      options = { origin: "#{scheme}://#{request.host}:#{request.port}" }
+      # Every native lane dials the runner directly, whatever proxy
+      # environment the shell that started it has.
+      options = { origin: "#{scheme}://#{request.host}:#{request.port}", proxy: nil }
       unless request.server_tls_cert.empty?
         ca_file = File.join(directory, "ca.pem")
         File.write(ca_file, request.server_tls_cert)

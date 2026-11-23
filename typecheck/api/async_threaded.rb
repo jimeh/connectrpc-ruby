@@ -20,6 +20,12 @@ response.status.succ
 # @type var state: ConnectRPC::Async::connection_state
 state = transport.connection_state
 state.to_s
+# Since 0.3.0, the constructing thread snapshots the proxy environment.
+proxied = ConnectRPC::Async::ThreadedTransport.new(origin: "https://example.invalid", proxy: "http://proxy.invalid:3128")
+proxied.inspect.size
+ConnectRPC::Async::ThreadedTransport.new(origin: "http://example.invalid", proxy: URI("http://proxy.invalid:3128"))
+ConnectRPC::Async::ThreadedTransport.new(origin: "http://example.invalid", proxy: nil)
+ConnectRPC::Async::ThreadedTransport.new(origin: "http://example.invalid", proxy: :environment)
 ConnectRPC::Async::ThreadedTransport.new(origin: "http://example.invalid", connection_observer: lambda { |event|
   event.type.to_s
   nil

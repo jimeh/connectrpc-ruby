@@ -10,24 +10,32 @@ module ConnectRPC
       class HTTP1ResponseError < IOError; end
 
       class HTTP1Connection < ::Protocol::HTTP1::Connection
-        STATUS = %r{\AHTTP/1\.1 ([0-9]{3}) [\x09\x20-\x7e\x80-\xff]*\z}n
+        STATUS = %r{\A(HTTP/1\.1) ([0-9]{3}) [\x09\x20-\x7e\x80-\xff]*\z}n
+        # A forward proxy may answer in HTTP/1.0, as Net::HTTP and Go net/http
+        # accept; its version then decides persistence.
+        FORWARD_STATUS = %r{\A(HTTP/1\.[01]) ([0-9]{3}) [\x09\x20-\x7e\x80-\xff]*\z}n
 
         attr_reader :response_version
 
-        def read_head(method)
+        def read_head(method, forward: false)
           raise IOError, "HTTP/1 connection is not open" unless open? || half_closed_local?
 
           interim = 0
           loop do
             line = read_line
-            match = STATUS.match(line)
+            match = (forward ? FORWARD_STATUS : STATUS).match(line)
             raise HTTP1ResponseError, "Invalid HTTP/1.1 status line" unless match
 
-            @response_version = "HTTP/1.1"
-            status = match[1].to_i
+            @response_version = match[1]
+            status = match[2].to_i
             headers = read_headers
             leading = snapshot(headers)
             validate_framing!(leading)
+            # RFC 9112 section 6.1: transfer coding in an HTTP/1.0 message is
+            # faulty framing, so the connection never returns to the pool.
+            if @response_version == "HTTP/1.0" && leading.key?("transfer-encoding")
+              raise HTTP1ResponseError, "Unsupported HTTP transfer framing"
+            end
             raise HTTP1ResponseError, "HTTP upgrade is unsupported" if status == 101
 
             # protocol-http1's parser compares the transfer token literally.
@@ -87,8 +95,9 @@ module ConnectRPC
       end
 
       # One resource per reserved slot, including setup and destructive joins.
+      # `forward` is the proxy an http:// origin's requests go through.
       class HTTP1Resource
-        attr_accessor :raw, :socket, :connection, :setup
+        attr_accessor :raw, :socket, :connection, :setup, :forward
 
         def finished? = !!@finished
         def finish! = @finished = true

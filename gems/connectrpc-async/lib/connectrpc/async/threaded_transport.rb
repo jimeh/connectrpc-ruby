@@ -80,11 +80,13 @@ module ConnectRPC
       end
       private_constant :LifecycleProxy
 
-      # The H2 Transport, given the front's compiled TLS snapshot so the owner
-      # never rereads TLS files or builds another client context.
+      # The H2 Transport, given the front's compiled TLS snapshot and proxy
+      # resolver so the owner never rereads TLS files, builds another client
+      # context or reads the proxy environment.
       class Inner < Transport
-        def initialize(snapshot:, **)
+        def initialize(snapshot:, proxy:, **)
           @compiled_snapshot = snapshot
+          @compiled_proxy = proxy
           super(**)
         end
 
@@ -100,6 +102,7 @@ module ConnectRPC
         private
 
         def client_snapshot(**) = @compiled_snapshot
+        def proxy_resolver(_option) = @compiled_proxy
       end
       private_constant :Inner
 
@@ -108,12 +111,13 @@ module ConnectRPC
         attr_reader :pid, :admission, :calls, :thread, :inner
         attr_accessor :state
 
-        def initialize(front, admission, origin:, snapshot:, options:)
+        def initialize(front, admission, origin:, snapshot:, proxy:, options:)
           @front = front
           @pid = admission.pid
           @admission = admission
           @origin = origin
           @snapshot = snapshot
+          @proxy = proxy
           @options = options
           @inbox = Thread::Queue.new
           @calls = {}.compare_by_identity
@@ -227,7 +231,7 @@ module ConnectRPC
 
         def run_reactor
           Sync do |task|
-            @inner = @front.send(:build_inner, origin: @origin.to_s, snapshot: @snapshot, **@options)
+            @inner = @front.send(:build_inner, origin: @origin.to_s, snapshot: @snapshot, proxy: @proxy, **@options)
             dispatch(task)
           ensure
             # The reactor returns only after every child finishes. Cancelling the
@@ -292,7 +296,7 @@ module ConnectRPC
                      max_requests: 128, connect_timeout: 10, connection_policy: ConnectionPolicy.new,
                      connection_observer: nil, stream_receive_window: 4_194_304,
                      connection_receive_window: 16_777_216, dynamic_receive_windows: true,
-                     max_receive_window: MAX_RECEIVE_WINDOW)
+                     max_receive_window: MAX_RECEIVE_WINDOW, proxy: :environment)
         @origin = parse_origin(origin)
         @max_requests = Internal.positive_integer(max_requests, "max_requests")
         options = {
@@ -313,6 +317,9 @@ module ConnectRPC
           raise ArgumentError, "TLS options require an HTTPS origin"
         end
 
+        # Snapshotted on the constructing thread; every owner, including one
+        # that replaces a stopped owner or starts after fork, reuses it.
+        @proxy = proxy_resolver(proxy)
         if @origin.scheme == "https"
           @snapshot = client_snapshot(ca_file: ca_file, certificate_chain: certificate_chain, private_key: private_key)
         end
@@ -329,7 +336,11 @@ module ConnectRPC
         @engine = nil
       end
 
-      def inspect = "#<#{self.class} state=#{front_state} connection_state=#{connection_state} origin=#{@origin}>"
+      # Never shows proxy URLs or credentials.
+      def inspect
+        "#<#{self.class} state=#{front_state} connection_state=#{connection_state} origin=#{@origin} " \
+          "proxy=#{Internal::ProxyTunnel.mode(@proxy)}>"
+      end
 
       # A published observation, not a promise that the next call succeeds.
       def connection_state
@@ -471,7 +482,7 @@ module ConnectRPC
       end
 
       def build_engine(admission)
-        Engine.new(self, admission, origin: @origin, snapshot: @snapshot, options: @options).start
+        Engine.new(self, admission, origin: @origin, snapshot: @snapshot, proxy: @proxy, options: @options).start
       end
 
       # Runs on the owner thread. A subclass may build the inner transport
@@ -482,6 +493,9 @@ module ConnectRPC
       def client_snapshot(ca_file:, certificate_chain:, private_key:)
         Internal::TLS.client(ca_file: ca_file, certificate_chain: certificate_chain, private_key: private_key)
       end
+
+      # A subclass may supply an already built resolver instead.
+      def proxy_resolver(option) = Internal::ProxyTunnel.resolver(option)
 
       def await(call, request)
         expires = Internal.now + request.deadline.remaining + Internal::CLEANUP_SECONDS if request.deadline

@@ -28,7 +28,7 @@ RSpec.describe "Client transport origins, admission messages and lifecycle error
       origin = "http://127.0.0.1:#{host.port}"
       transport = ConnectRPC::Async::Transport.new(origin: "#{origin}/")
       http1 = ConnectRPC::Async::HTTP1Transport.new(origin: "#{origin}/")
-      [transport, http1].each { |accepted| expect(accepted.inspect).to end_with("origin=#{origin}>") }
+      [transport, http1].each { |accepted| expect(accepted.inspect).to end_with("origin=#{origin} proxy=environment>") }
       expect(client(transport, origin).echo(AsyncHelpers::MESSAGE.new(name: "root")).message.name).to eq("root")
       [ConnectRPC::Async::Transport, ConnectRPC::Async::HTTP1Transport].each do |kind|
         expect { kind.new(origin: "#{origin}/prefix") }
@@ -43,7 +43,7 @@ RSpec.describe "Client transport origins, admission messages and lifecycle error
 
   it "accepts a ThreadedTransport origin with a bare root path" do
     transport = threaded(origin: "http://127.0.0.1:1/")
-    expect(transport.inspect).to include("origin=http://127.0.0.1:1>")
+    expect(transport.inspect).to include("origin=http://127.0.0.1:1 proxy=environment>")
   ensure
     transport&.close
   end

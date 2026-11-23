@@ -12,10 +12,11 @@ module ConnectRPC
 
       # One HTTP CONNECT exchange through an http:// proxy, for a client
       # transport that owns the socket. HTTP/2 cannot use a forward proxy, so
-      # every proxied target, h2c or TLS, tunnels. Go net/http bounds the
-      # exchange by one minute and its response head by MaxResponseHeaderBytes'
-      # default. Failures raise ProxyFailure with a fixed message that never
-      # contains the proxy URL, credentials or proxy-supplied bytes.
+      # every proxied HTTP/2 target, h2c or TLS, tunnels; HTTP/1 tunnels only
+      # to TLS targets. Go net/http bounds the exchange by one minute and its
+      # response head by MaxResponseHeaderBytes' default. Failures raise
+      # ProxyFailure with a fixed message that never contains the proxy URL,
+      # credentials or proxy-supplied bytes.
       module ProxyTunnel
         TIMEOUT = 60
         MAX_HEAD = 10 * 1024 * 1024
@@ -23,6 +24,25 @@ module ConnectRPC
         STATUS = %r{\AHTTP/1\.[01] ([0-9]{3})(?: [^\r\n]*)?\z}n
         FIELD = /\A[!#$%&'*+\-.^_`|~0-9A-Za-z]+:/n
         UNUSABLE = { cgi: "proxy refused in CGI environment", invalid_address: "invalid proxy address" }.freeze
+
+        # The resolver for a transport's proxy: option. :environment snapshots
+        # the proxy environment on the calling thread; a String or URI is an
+        # http:// proxy for every call; nil connects directly. An explicit
+        # proxy this module cannot use fails here, without echoing it.
+        def self.resolver(option)
+          resolver = Proxy.resolver(option)
+          fixed = resolver.is_a?(Proxy::Static) ? resolver.endpoint : nil
+          raise ArgumentError, "Unsupported proxy scheme", cause: nil if fixed && fixed.scheme != "http"
+
+          resolver
+        end
+
+        # The resolver's kind for inspect, which never shows the proxy itself.
+        def self.mode(resolver)
+          return "environment" if resolver.is_a?(Proxy::Environment)
+
+          resolver.endpoint ? "explicit" : "direct"
+        end
 
         # The proxy for an origin, or nil, chosen by the origin's scheme as Go
         # net/http chooses it: an environment resolver applies HTTP_PROXY to

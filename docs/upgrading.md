@@ -145,6 +145,11 @@ These are additive; existing code keeps working once the rename above is done.
   minus `NO_PROXY`. Pass `proxy: nil` to always connect directly. See
   [one-off calls](../gems/connectrpc-async/README.md#one-off-calls) and
   [its proxies](../gems/connectrpc-async/README.md#proxies).
+- `ConnectRPC::Async::Transport`, `ThreadedTransport` and `HTTP1Transport`
+  accept the same `proxy:` option, chosen by the origin's scheme. HTTP/2
+  connections and `https://` HTTP/1 origins tunnel with `CONNECT`; `http://`
+  HTTP/1 origins send absolute-form requests to the proxy, as NetHTTP does.
+  See [proxies](../gems/connectrpc-async/README.md#proxies).
 
 ### Behavior changes
 
@@ -185,6 +190,23 @@ These affect the core `Net::HTTP` transport.
   `TCPSocket` Happy Eyeballs: addresses of one family are tried in order, each
   with a share of the remaining deadline, and the other family starts 300 ms
   later.
+
+These affect the Async `Transport`, `ThreadedTransport` and `HTTP1Transport`.
+
+- They use the proxy environment by default, as `PerCallTransport` and the
+  core `Net::HTTP` transport do: `HTTPS_PROXY` for `https://` origins and
+  `HTTP_PROXY` for `http://` origins, minus `NO_PROXY`, `localhost` and
+  loopback addresses. In a CGI process (`REQUEST_METHOD` set), a set
+  `HTTP_PROXY` fails `http://` calls with `unavailable` before `NO_PROXY`,
+  `localhost` or loopback is considered, as in NetHTTP. Before 0.3.0 they
+  ignored the environment and always connected directly. A process whose
+  environment sets a proxy for other tools now sends these connections
+  through it, and an environment proxy with a scheme other than `http://`
+  fails affected calls with `unavailable`. Pass `proxy: nil` to connect
+  directly as before. `ThreadedTransport` reads the environment on the thread
+  that constructs it.
+- Their `inspect` now ends with `proxy=environment`, `proxy=explicit` or
+  `proxy=direct`.
 
 `Thread#raise` and `Thread#kill` from another thread into a thread that runs
 a reactor, as Rack::Timeout does, are documented as unsupported for the Async
