@@ -7,8 +7,9 @@ require_relative "http1_wire"
 # requests itself, as a proxy that relays them appears to its client. Every
 # request head is recorded in `heads`. The block builds each reply from the
 # head, the body, the request's number on its connection and the connection's
-# number; a nil reply closes the connection without answering. A client that ends its connection
-# is reported in `closed`.
+# number; a nil reply closes the connection without answering, and
+# `[reply, :close]` closes it after answering, ending a close-delimited body.
+# A client that ends its connection is reported in `closed`.
 class ForwardProxy < ConnectProxy
   def initialize(&respond)
     @connections = 0
@@ -22,10 +23,12 @@ class ForwardProxy < ConnectProxy
     count = 0
     loop do
       count += 1
-      reply = respond.call(head, HTTP1Wire.read_body(client, head), count, connection)
+      reply, after = respond.call(head, HTTP1Wire.read_body(client, head), count, connection)
       return client.close unless reply
 
       client.write(reply)
+      return client.close if after == :close
+
       head = HTTP1Wire.read_head(client)
       break unless head
 

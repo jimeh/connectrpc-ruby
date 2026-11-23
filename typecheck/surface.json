@@ -346,7 +346,7 @@
     "ConnectRPC::Async::Host::FallbackGuard#initialize": {"kind":"method","visibility":"public","parameters":"fallback","classification":"internal"}
   },
   "gems/connectrpc-async/lib/connectrpc/async/http1_connection.rb": {
-    "ConnectRPC::Async::Internal::HTTP1Connection#read_head": {"kind":"method","visibility":"public","parameters":"method","classification":"internal"},
+    "ConnectRPC::Async::Internal::HTTP1Connection#read_head": {"kind":"method","visibility":"public","parameters":"method, forward: false","classification":"internal"},
     "ConnectRPC::Async::Internal::HTTP1Connection#response_version": {"kind":"attribute","visibility":"public","classification":"internal"},
     "ConnectRPC::Async::Internal::HTTP1Connection#snapshot": {"kind":"method","visibility":"private","parameters":"headers","classification":"internal"},
     "ConnectRPC::Async::Internal::HTTP1Connection#validate_framing!": {"kind":"method","visibility":"private","parameters":"headers","classification":"internal"},

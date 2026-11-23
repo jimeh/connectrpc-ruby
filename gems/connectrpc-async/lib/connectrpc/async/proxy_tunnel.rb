@@ -13,10 +13,10 @@ module ConnectRPC
       # One HTTP CONNECT exchange through an http:// proxy, for a client
       # transport that owns the socket. HTTP/2 cannot use a forward proxy, so
       # every proxied HTTP/2 target, h2c or TLS, tunnels; HTTP/1 tunnels only
-      # to TLS targets. Go net/http bounds the
-      # exchange by one minute and its response head by MaxResponseHeaderBytes'
-      # default. Failures raise ProxyFailure with a fixed message that never
-      # contains the proxy URL, credentials or proxy-supplied bytes.
+      # to TLS targets. Go net/http bounds the exchange by one minute and its
+      # response head by MaxResponseHeaderBytes' default. Failures raise
+      # ProxyFailure with a fixed message that never contains the proxy URL,
+      # credentials or proxy-supplied bytes.
       module ProxyTunnel
         TIMEOUT = 60
         MAX_HEAD = 10 * 1024 * 1024

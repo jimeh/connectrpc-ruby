@@ -58,6 +58,16 @@ RSpec.describe "Pooled transport proxies" do
     chain
   end
 
+  # The values of a head's field, matching its name case-insensitively.
+  def field_values(head, name)
+    head.split("\r\n").drop(1).filter_map do |line|
+      field, value = line.split(":", 2)
+      value.strip if value && field.casecmp?(name)
+    end
+  end
+
+  def basic(credentials) = "Basic #{[credentials].pack('m0')}"
+
   %i[transport threaded].each do |kind|
     it "tunnels h2c through an HTTP_PROXY snapshot and TLS through HTTPS_PROXY with basic auth, one CONNECT per " \
        "pooled connection, on #{kind}" do
@@ -129,15 +139,65 @@ RSpec.describe "Pooled transport proxies" do
     end
     expect(names).to eq(["one", "two", ["ss"]])
     heads = 3.times.map { pop_within(proxy.heads, "a forwarded request head") }
-    authorization = proxy_authorization("us:er:p@ss+").chomp
     heads.each do |head|
       expect(head).to start_with("POST http://#{target}:8080/")
-      lines = head.split("\r\n").map(&:downcase)
-      expect(lines).to include("host: #{target}:8080", authorization.downcase)
+      expect([field_values(head, "host"), field_values(head, "proxy-authorization")])
+        .to eq([["#{target}:8080"], [basic("us:er:p@ss+")]])
     end
     expect([proxy.accepted, pop_within(proxy.closed, "the client to end its proxy connection")]).to eq([1, true])
   ensure
     proxy&.stop
+  end
+
+  it "forwards to an http origin on the default port with no port in the absolute target or Host, as " \
+     "Net::HTTP does" do
+    proxy = ForwardProxy.new { http1_ok }
+    origin = "http://#{target}"
+    body = with_pooled(:http1, -> { pooled(:http1, origin: origin, proxy: proxy.url) }) do |h1|
+      h1.call(request("#{origin}/x?y=1")).body
+    end
+    head = pop_within(proxy.heads, "a forwarded request head")
+    expect([body, head.lines.first, field_values(head, "host")])
+      .to eq(["ok", "POST http://#{target}/x?y=1 HTTP/1.1\r\n", [target]])
+  ensure
+    proxy&.stop
+  end
+
+  {
+    "a 407 with a framed body" => ["HTTP/1.0 407 Proxy Authentication Required\r\nContent-Length: 4\r\n\r\ndeny",
+                                   407, "unknown"],
+    "a close-delimited 502" => [["HTTP/1.0 502 Bad Gateway\r\nContent-Type: text/html\r\n\r\n<html>502</html>",
+                                 :close], 502, "unavailable"]
+  }.each do |label, (reply, status, code)|
+    it "maps a forward proxy's HTTP/1.0 #{label} as an HTTP error and opens a new proxy connection for the next " \
+       "call" do
+      proxy = ForwardProxy.new { reply }
+      origin = "http://#{target}:8080"
+      errors = with_pooled(:http1, -> { pooled(:http1, origin: origin, proxy: proxy.url) }) do |h1|
+        typed = mixed_client(h1, origin)
+        2.times.map { capture_error { typed.lookup(item("x")) } }
+      end
+      expect(errors.map { |error| [error.class, error.code, error.message] })
+        .to eq([[ConnectRPC::Error, code, "HTTP #{status}"]] * 2)
+      # The client retires a connection after any HTTP error reply.
+      expect([proxy.accepted, 2.times.map { pop_within(proxy.heads, "a forwarded request head")[/\A\S+/] }])
+        .to eq([2, %w[POST POST]])
+    ensure
+      proxy&.stop
+    end
+  end
+
+  it "reuses a forward proxy's HTTP/1.0 connection only when its reply asks for keep-alive" do
+    { "" => 2, "Connection: keep-alive\r\n" => 1 }.each do |field, connections|
+      proxy = ForwardProxy.new { "HTTP/1.0 200 OK\r\n#{field}Content-Length: 2\r\n\r\nok" }
+      origin = "http://#{target}:8080"
+      bodies = with_pooled(:http1, -> { pooled(:http1, origin: origin, proxy: proxy.url) }) do |h1|
+        2.times.map { h1.call(request("#{origin}/x")).body }
+      end
+      expect([field, bodies, proxy.accepted]).to eq([field, %w[ok ok], connections])
+    ensure
+      proxy&.stop
+    end
   end
 
   it "returns a forward proxy's well-formed HTTP error reply as the HTTP/1 call's response" do
@@ -390,8 +450,7 @@ RSpec.describe "Pooled transport proxies" do
       expect(bodies).to eq(%w[ok ok])
       heads = 3.times.map { pop_within(proxy.heads, "a forwarded GET head") }
       expect(heads.map { |head| head.lines.first }).to eq(["GET http://#{target}:8080/get?message=x HTTP/1.1\r\n"] * 3)
-      authorization = proxy_authorization("user:secret").chomp.downcase
-      expect(heads.map { |head| head.split("\r\n").map(&:downcase).include?(authorization) }).to eq([true] * 3)
+      expect(heads.map { |head| field_values(head, "proxy-authorization") }).to eq([[basic("user:secret")]] * 3)
       expect(proxy.accepted).to eq(2)
     ensure
       proxy&.stop
@@ -414,7 +473,13 @@ RSpec.describe "Pooled transport proxies" do
 
   {
     "a malformed head" => "HTTP/1.1 200 OK\r\nsecret field hunter2\r\n\r\n",
-    "a malformed chunk" => "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\nsecret-hunter2\r\n"
+    "a malformed chunk" => "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\nsecret-hunter2\r\n",
+    # protocol-http indexes the fields and rejects a repeated singleton.
+    "a duplicate singleton header" => "HTTP/1.1 200 OK\r\nServer: secret\r\nServer: hunter2\r\n" \
+                                      "Content-Length: 0\r\n\r\n",
+    # Content-Type may not be a trailer field.
+    "an invalid trailer" => "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n2\r\nok\r\n0\r\n" \
+                            "Content-Type: secret-hunter2\r\n\r\n"
   }.each do |label, reply|
     it "replaces #{label} from a forward proxy with a fixed failure in the message, causes and lifecycle" do
       proxy = ForwardProxy.new { reply }
@@ -429,7 +494,9 @@ RSpec.describe "Pooled transport proxies" do
       expect(causes(error).map { |cause| [cause.class, cause.message] })
         .to eq([[AsyncHelpers::INTERNAL::ProxyFailure, "malformed response"]])
       expect(recorded).not_to be_empty
-      texts = [error, *causes(error), *recorded].flat_map { |entry| [entry.message, entry.inspect] }.join
+      texts = [error, *causes(error), *recorded].flat_map do |entry|
+        [entry.message, entry.inspect, entry.detailed_message]
+      end.join
       expect(texts).not_to include("secret", "hunter2")
     ensure
       proxy&.stop

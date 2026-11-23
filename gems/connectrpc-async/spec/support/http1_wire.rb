@@ -22,14 +22,16 @@ module HTTP1Wire
       io.read(Integer(length)).to_s
     elsif head.match?(/^transfer-encoding: *chunked\r$/i)
       body = +""
-      while (size = Integer(io.gets("\r\n").to_s.strip, 16)).positive?
+      while (size = Integer(line(io).strip, 16)).positive?
         body << io.read(size).to_s
         io.read(2)
       end
-      nil until io.gets("\r\n") == "\r\n"
+      nil until line(io) == "\r\n"
       body
     else
       ""
     end
   end
+
+  def self.line(io) = io.gets("\r\n") || raise(EOFError, "Truncated HTTP/1 chunked body")
 end

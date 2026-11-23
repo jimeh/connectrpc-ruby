@@ -2,22 +2,10 @@
 
 require_relative "forward_proxy"
 
-# Shared proxy example support. Including groups run every example with the
-# proxy environment cleared; `with_env` sets it only while a transport takes
-# its snapshot.
+# Shared proxy example support. spec_helper clears the proxy environment
+# around every example; `with_env` sets it only while a transport takes its
+# snapshot.
 module ProxyHelpers
-  PROXY_ENV = %w[HTTP_PROXY http_proxy HTTPS_PROXY https_proxy NO_PROXY no_proxy REQUEST_METHOD].freeze
-
-  def self.included(group)
-    group.around do |example|
-      saved = PROXY_ENV.to_h { |key| [key, ENV.fetch(key, nil)] }
-      PROXY_ENV.each { |key| ENV.delete(key) }
-      example.run
-    ensure
-      saved.each { |key, value| value.nil? ? ENV.delete(key) : ENV[key] = value }
-    end
-  end
-
   # An HTTP/1.1 peer on plain threads, optionally TLS for the proxy target
   # name, that answers each request with `respond.call(head, body)`.
   # `requests` receives every [head, body].

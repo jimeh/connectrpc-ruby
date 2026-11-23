@@ -1115,12 +1115,14 @@ ConnectRPC::Async::PerCallTransport.new                     # proxy: :environmen
   `HTTP_PROXY`, and a TLS target takes `HTTPS_PROXY`. grpc-go instead looks
   proxies up with an `https` scheme for every target, so it would use
   `HTTPS_PROXY` for the same h2c target. In a CGI process (`REQUEST_METHOD`
-  set) `HTTP_PROXY` fails `http://` calls instead of being trusted, as in
-  NetHTTP. `NO_PROXY`, `localhost` and loopback addresses connect directly,
-  and values are parsed exactly as for
+  set) a set `HTTP_PROXY` fails every `http://` call instead of being
+  trusted, as in NetHTTP, before `NO_PROXY`, `localhost` or loopback is
+  considered. Otherwise `NO_PROXY`, `localhost` and loopback addresses connect
+  directly, and values are parsed exactly as for
   [NetHTTP](../../docs/unary.md#nethttp-tls-and-proxies). The runnable
   [examples](../../examples) keep this default; their default loopback
-  origins always connect directly.
+  origins connect directly, except that their `http://` origins fail in a CGI
+  process with `HTTP_PROXY` set.
 - A String or URI proxies every call, including loopback and `NO_PROXY` hosts;
   `nil` always connects directly. A value that is not a valid proxy raises
   `ArgumentError` (`Invalid proxy configuration`), and an `https://` or
@@ -1139,11 +1141,17 @@ ConnectRPC::Async::PerCallTransport.new                     # proxy: :environmen
 - An `HTTP1Transport` with an `http://` origin does what NetHTTP and Go's
   `net/http` do: it sends each request to the proxy in absolute form
   (`POST http://host:port/path`, with the origin's `Host`), with
-  `Proxy-Authorization` on every request when the proxy URL has userinfo. A
-  well-formed proxy reply, such as a 407 or 502, is the call's HTTP response,
-  which core maps to an error. A reply the parser rejects fails with
-  `malformed response` and no proxy bytes in its message, cause or recorded
-  failures.
+  `Proxy-Authorization` on every request when the proxy URL has userinfo. The
+  proxy may answer in HTTP/1.0 or HTTP/1.1, and an HTTP/1.0 reply keeps the
+  connection only with `Connection: keep-alive`; a direct origin must still
+  answer in HTTP/1.1. A well-formed proxy reply, such as a 407 or 502, is the
+  call's HTTP response, which core maps to an error. A reply that fails the
+  transport's status-line and framing checks, or raises a protocol-http1
+  error (`Protocol::HTTP1::Error`) or a protocol-http field error
+  (`Protocol::HTTP::InvalidHeaderError`, such as a repeated singleton field or
+  a forbidden trailer), fails with `malformed response`, and its message,
+  cause and recorded failures carry no proxy bytes. A closed or reset proxy
+  connection stays `connection closed`.
 - The pooled transports keep connections through the proxy as they keep
   direct ones: one `CONNECT`, or one forwarding connection, per pooled
   connection rather than per call. A dropped tunnel is replaced by a new

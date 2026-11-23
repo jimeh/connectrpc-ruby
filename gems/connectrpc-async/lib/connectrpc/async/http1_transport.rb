@@ -379,7 +379,8 @@ module ConnectRPC
 
         operate(operation, timeout: timeout) do
           head, body = forwarded(operation) do
-            operation.fetch(:connection).read_head(operation.fetch(:request).http_method || "POST")
+            operation.fetch(:connection).read_head(operation.fetch(:request).http_method || "POST",
+                                                   forward: !operation.fetch(:resource).forward.nil?)
           end
           operation[:head] = head
           operation[:input_body] = body
@@ -417,13 +418,13 @@ module ConnectRPC
         bytes
       end
 
-      # A forward proxy writes an http:// call's response, and the parser's
-      # BadRequest messages quote it, so they may carry the proxy's URL or
-      # credentials. Other protocol-http1 failures have fixed messages, and
+      # A forward proxy writes an http:// call's response. protocol-http1 and
+      # protocol-http parser and header errors can quote it, so they may carry
+      # the proxy's URL or credentials; all of them become one fixed failure.
       # EOF and reset stay connection failures, so a stale GET still resends.
       def forwarded(operation)
         yield
-      rescue ::Protocol::HTTP1::BadRequest
+      rescue ::Protocol::HTTP1::Error, ::Protocol::HTTP::InvalidHeaderError
         raise unless operation[:resource]&.forward
 
         raise Internal::ProxyFailure, "malformed response", cause: nil

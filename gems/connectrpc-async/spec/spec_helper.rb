@@ -29,6 +29,11 @@ require_relative "support/threaded_helpers"
 # example's captured stderr runs first (#132).
 IO::Buffer.new(1).free
 
+# Transports read the proxy environment at construction. Every example starts
+# with it cleared, so a developer's proxy settings never reroute direct dials;
+# proxy specs set what they need while a transport takes its snapshot.
+PROXY_ENV = %w[HTTP_PROXY http_proxy HTTPS_PROXY https_proxy NO_PROXY no_proxy REQUEST_METHOD].freeze
+
 RSpec.configure do |config|
   config.include AsyncHelpers
   config.include AsyncHostingHelpers
@@ -36,4 +41,11 @@ RSpec.configure do |config|
   config.include ThreadedHelpers
   config.order = :random
   config.disable_monkey_patching!
+  config.around do |example|
+    saved = PROXY_ENV.to_h { |key| [key, ENV.fetch(key, nil)] }
+    PROXY_ENV.each { |key| ENV.delete(key) }
+    example.run
+  ensure
+    saved.each { |key, value| value.nil? ? ENV.delete(key) : ENV[key] = value }
+  end
 end
