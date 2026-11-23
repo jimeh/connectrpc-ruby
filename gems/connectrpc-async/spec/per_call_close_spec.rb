@@ -666,6 +666,7 @@ RSpec.describe "PerCallTransport connection close, close budget and outcome prec
     peer = threaded_recording_peer { |_incoming| unanswered.pop(timeout: 5) }
     origin = "http://127.0.0.1:#{peer.peer.port}"
     failure = Class.new(StandardError)
+    interrupted = false
     with_boundaries do |boundaries|
       deadline = ConnectRPC::Deadline.new(0.4)
       error = on_path(:threaded) do
@@ -673,7 +674,7 @@ RSpec.describe "PerCallTransport connection close, close budget and outcome prec
           begin
             Timeout.timeout(0.05) { exchange.response_head }
           rescue Timeout::Error
-            nil
+            interrupted = deadline.remaining.positive?
           end
           # The caller's work past the deadline and its allowance is the
           # condition under test.
@@ -681,8 +682,9 @@ RSpec.describe "PerCallTransport connection close, close budget and outcome prec
           raise failure, "after the deadline"
         end
       end
-      # Core reports the deadline, which passed before the block failed.
-      expect([error.class, error.code]).to eq([ConnectRPC::Error, "deadline_exceeded"])
+      # The interrupt reached the block before the deadline; core reports the
+      # deadline, which passed before the block failed.
+      expect([interrupted, error.class, error.code]).to eq([true, ConnectRPC::Error, "deadline_exceeded"])
       expect_released(boundaries.take.first)
     end
   ensure

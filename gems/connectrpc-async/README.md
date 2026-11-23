@@ -999,16 +999,19 @@ and bidi streaming before any I/O.
   with `RST_STREAM(CANCEL)`. An interrupt that lands while the call closes its
   connection is raised once that teardown has finished. Outside a reactor such
   an interrupt ends the close's own wait, and the call still joins its owner
-  threads, within the close's bound, before raising it. The close always
-  gives the owner one cleanup allowance (100 ms) from the later of the
-  deadline and the start of the close, so an owner that responds is joined
-  even when the close starts long after the deadline, for example after a
-  stream block that kept working past it. If the owner thread is stalled, for
-  example by native code, the call returns at most two allowances after its
-  deadline: one while it waits for the owner's outcome, and one from the
-  close. The owner exits once it resumes. An owner that has already
-  published its outcome and is exiting, for example while it waits for the
-  GVL, is still joined, which can take up to another allowance.
+  threads, within the close's bound, before raising it. Each wait for the
+  owner, the close included, ends at most one cleanup allowance (100 ms)
+  after the later of the deadline and the wait's start, and the close always
+  gives the owner at least one allowance from its start. An owner that
+  responds is therefore joined even when the close starts long after the
+  deadline, for example after a stream block that kept working past it. A
+  stalled owner, for example blocked in native code, holds the call one
+  allowance past the deadline for each such wait: two for a unary call, or
+  for a stream whose block ends when its deadline error arrives. A stream
+  block that rescues that error and returns normally adds the stream's own
+  terminal wait, a third. The owner exits once it resumes. An owner that has
+  already published its outcome and is exiting, for example while it waits
+  for the GVL, is still joined, which can take up to another allowance.
 - Inside a reactor, a `Thread#raise` from another thread is best-effort, as
   for `Transport`: it lands in whichever fiber is running, and one that lands
   in the caller's fiber at certain points of its teardown can return before
