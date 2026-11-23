@@ -445,11 +445,12 @@ admission, the inbox wait, acquisition, connection setup, wire I/O and decoding.
   existing transport enforces the deadline and cancellation through its
   cross-thread Promise path, which resets the stream and keeps healthy siblings
   alive (`gems/connectrpc-async/lib/connectrpc/async/transport.rb:165-207`). If
-  cleanup does not finish within the 100 ms allowance, for example because a
+  cleanup does not finish within the cleanup allowance (1 s since 0.3.0, 100 ms
+  before; #187), for example because a
   stuck frame keeps the stream's output from retiring, the transport aborts the
   whole connection, which also fails its siblings.
 - **Caller side.** With a finite deadline, the caller waits for the reply for
-  the remaining time plus the transport's 100 ms cleanup allowance. If no
+  the remaining time plus the transport's cleanup allowance. If no
   reply arrives by then, the reactor is stalled, for example by blocking native
   code. The caller fires the interrupt signal and raises `deadline_exceeded`.
   With a nil deadline, the caller waits until the reply, its cancellation token,
@@ -514,7 +515,7 @@ initializer and first using it in a worker is the intended pattern.
   outcome, and concurrent callers share it. A transport that never started
   returns `true`. Closed is terminal.
 - **Stalled owner during close.** The closing caller waits for the outcome until
-  the grace plus the 100 ms cleanup allowance has passed. If the owner has not
+  the grace plus the cleanup allowance has passed. If the owner has not
   finished by then, because native code or a non-yielding operation blocks the
   reactor, close fires every pending call's interrupt signal, records the
   outcome `false`, and returns without joining the thread. The owner aborts with
@@ -576,7 +577,7 @@ Each proxy method posts one command and waits for its result.
 - **Exceptional block exit.** The caller fires the interrupt signal, posts
   `abort`, abandons the mailbox and re-raises its original exception unchanged,
   without waiting for cleanup. Admission stays held until the engine finishes
-  retiring the stream. The 100 ms cleanup allowance triggers destructive
+  retiring the stream. The cleanup allowance triggers destructive
   cleanup and does not mean retirement is complete, so the caller never treats
   it as a completion signal.
 - **Error after a finished stream.** Core raises remote errors from inside the

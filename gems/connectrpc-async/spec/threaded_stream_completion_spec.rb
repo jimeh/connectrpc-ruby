@@ -5,6 +5,9 @@ require "generation/streaming_connect"
 require_relative "support/threaded_stream_helpers"
 
 RSpec.describe "ThreadedTransport stream completion outcome" do
+  # The client cleanup allowance, which stalled-owner and stuck-frame bounds extend by.
+  allowance = AsyncHelpers::INTERNAL::CLEANUP_SECONDS
+
   include ThreadedStreamHelpers
 
   def recording_bus(outcomes, completions)
@@ -334,7 +337,7 @@ RSpec.describe "ThreadedTransport stream completion outcome" do
       expect([outcome.class, outcome.message]).to eq([failure, "application"]) unless kind == :finished_throw
       expect(outcome).to be_nil if kind == :finished_throw
       if waits
-        expect(waited).to be_between(0.1, 0.1 + 0.5)
+        expect(waited).to be_between(allowance, allowance + 0.5)
       else
         expect(waited).to be < 0.1
       end

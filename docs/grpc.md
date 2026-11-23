@@ -164,8 +164,9 @@ Send-I/O terminal recovery has one absolute 100ms budget and allows at most
 262,144 additional body bytes, with separate finite header limits. It skips
 messages without decoding or inflating them and cannot take over an active
 reader. Only a validated remote error can replace an unhandled send failure;
-remote success cannot. The existing destructive cleanup has a separate 100ms
-budget. A stuck frame can fail its connection and siblings during that cleanup.
+remote success cannot. The existing destructive cleanup has a separate 1-second
+[allowance](../gems/connectrpc-async/README.md#cleanup-allowance). A stuck frame
+can fail its connection and siblings during that cleanup.
 
 Only actual peer CANCEL resets signal server Context cancellation. Half-close,
 EOF, other resets, connection loss and shutdown do not. No retry or replay occurs.

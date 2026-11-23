@@ -314,6 +314,7 @@ RSpec.describe "HTTP/2 refused Connect unary retry" do
       joining = %i[deadline cancellation].include?(ending)
       # These calls end while the retry joins the held output, so that join's
       # allowance must outlast them.
+      usual = AsyncHelpers::INTERNAL::CLEANUP_SECONDS
       stub_const("ConnectRPC::Async::Internal::CLEANUP_SECONDS", 30) if joining
       reactor do |task|
         bound = IO::Endpoint.tcp("127.0.0.1", 0).bound
@@ -341,7 +342,7 @@ RSpec.describe "HTTP/2 refused Connect unary retry" do
             current[:response].nil? && current[:refused_output]
           end
           # Whole-operation cleanup keeps its usual allowance.
-          stub_const("ConnectRPC::Async::Internal::CLEANUP_SECONDS", 0.1)
+          stub_const("ConnectRPC::Async::Internal::CLEANUP_SECONDS", usual)
           source.cancel if ending == :cancellation
         end
         expect { call.wait }.to raise_error(ConnectRPC::Error) { |error| expect(error.code).to eq(code) }

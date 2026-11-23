@@ -113,7 +113,7 @@ steal a live reader or resume normal reading after discarding data. Only a valid
 remote error with verified HTTP tail can replace the generic write failure.
 Remote success cannot erase an unhandled send failure; an application may handle
 a send failure and complete its normal response path. Recovery and the existing
-100 ms destructive cleanup stage are separate, up to 200 ms together. Native or
+1-second destructive cleanup allowance are separate allowances. Native or
 application code that blocks the reactor remains outside hard timing guarantees.
 
 ## Clients and declarations
@@ -449,7 +449,7 @@ error; the transport does not decode terminals or invent early success.
 Unhandled send failures still win over remote success under core's policy.
 
 The supplied completion timeout and original RPC deadline also cover cleanup;
-cleanup has at most its existing 100 ms allowance. Destructive retirement closes
+cleanup has at most its existing 1-second allowance. Destructive retirement closes
 raw TCP before canceling/joining writers/readers and buffered/TLS cleanup. Abort
 after successful finish is harmless; abandonment otherwise retires the lease.
 TLS offers only `http/1.1` and accepts absent ALPN as legacy H1, with peer and

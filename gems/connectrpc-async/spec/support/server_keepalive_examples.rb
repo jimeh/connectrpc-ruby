@@ -382,7 +382,7 @@ RSpec.shared_examples "HTTP/2 server keepalive" do
       end
     end
 
-    it "aborts within the cleanup allowance when the too_many_pings GOAWAY is stuck behind a held frame" do
+    it "aborts within its 100 ms bound when the too_many_pings GOAWAY is stuck behind a held frame" do
       reactor do |task|
         with_keepalive_host(task, keepalive: server_keepalive(time: nil)) do |fixture|
           client = fixture.client
@@ -1185,7 +1185,7 @@ RSpec.shared_examples "HTTP/2 server keepalive" do
         with_keepalive_host(task, keepalive: server_keepalive(time: nil)) do |fixture|
           fixture.client.wire.ack_pings = false
           resource = fixture.resource
-          cleanup = AsyncHelpers::INTERNAL::CLEANUP_SECONDS
+          bound = AsyncHelpers::INTERNAL::CONTROL_WRITE_SECONDS
           release = hold_post_delivery(fixture)
           closing = task.async { fixture.host.close(grace: 5) }
           await_due(task, fixture.clock, 5)
@@ -1196,9 +1196,9 @@ RSpec.shared_examples "HTTP/2 server keepalive" do
           expect(later).to be_resolved
           expect(later.value).to be(false)
           resource.upkeep.send(:violate)
-          await_due(task, fixture.clock, cleanup)
+          await_due(task, fixture.clock, bound)
           expect(resource).not_to be_finished
-          fixture.clock.advance(cleanup)
+          fixture.clock.advance(bound)
           wait_until(task, "too_many_pings bound") { resource.finished? }
           expect(closing.wait).to be(false)
         ensure

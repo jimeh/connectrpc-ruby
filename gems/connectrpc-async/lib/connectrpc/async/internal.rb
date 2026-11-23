@@ -6,7 +6,7 @@ require_relative "teardown"
 module ConnectRPC
   module Async
     module Internal
-      CLEANUP_SECONDS = 0.1
+      CLEANUP_SECONDS = 1.0 # Spans several 100 ms GVL time slices; see the README (#187).
       MAX_WAIT = 86_400
 
       # Retained by the host through response output, independent of handler tasks.

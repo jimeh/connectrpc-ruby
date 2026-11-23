@@ -125,7 +125,8 @@ all operation-owned tasks before reuse. Late writer/listener/cleanup must have n
 path to a resource leased to a newer call. Setup abort includes the existing Ruby 4
 shutdown(SHUT_RDWR) wake before raw close for blocked SSL handshake. Destructive
 retirement closes raw TCP first, then cancels/joins operation tasks, then
-buffered/TLS cleanup. Keep the existing single 100 ms cleanup allowance; force
+buffered/TLS cleanup. Keep the existing single cleanup allowance (100 ms then, 1 s
+since 0.3.0; #187); force
 retirement on cleanup expiry/failure, and preserve the owner failure in observation
 and result where required. Healthy other leases continue.
 

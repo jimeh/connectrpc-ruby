@@ -70,7 +70,7 @@ RSpec.describe "gRPC owned cleanup outcome" do
           allow(operation.fetch(:request).deadline).to receive(:remaining).and_return(0.0) if expire
           raise original if failure == :close
 
-          # Hold the owned close until the real 100ms cleanup budget expires.
+          # Hold the owned close until the real cleanup allowance expires.
           Async::Queue.new.dequeue if failure == :timeout
         end
       end
