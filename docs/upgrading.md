@@ -401,6 +401,17 @@ and [Accept errors](../gems/connectrpc-async/README.md#accept-errors).
   `Host#wait` raises that failure. It used to wait forever, because the
   failure skipped resolving the host's completion, and a failed listener close
   left the later listeners open.
+- A `close` or `abort` caller on `Host`, `ServerSession` or
+  `ConnectRPC::Falcon::Server` that is cancelled, times out or is otherwise
+  interrupted gets its exception at once, and the drain keeps running under
+  its original grace. Before 0.3.0 an interrupted `close` forced raw-first
+  retirement, waited for it and then raised, and an interrupted `abort`
+  raised only after retirement finished. A later `close` joins the running
+  drain. To force it, call `close(grace: 0)` or `abort`: a repeated
+  `close(grace: 0)` now forces a drain whose grace has not run out, where it
+  used to join it. Cancelling the task that created the host still forces
+  teardown. See
+  [Interrupted server close](../gems/connectrpc-async/README.md#interrupted-server-close).
 - A unary, client-streaming or fallback HTTP/2 response that waits 60 seconds
   for flow-control credit is reset with `RST_STREAM(CANCEL)` and its admission
   slot is released. Before 0.3.0 it waited until a deadline or `close`. Raise

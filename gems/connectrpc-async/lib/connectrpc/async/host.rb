@@ -211,7 +211,9 @@ module ConnectRPC
         @exit_task = ::Async::Task.new(@owner, transient: true, finished: false) do
           # A failed step never skips a later one or completion, so waiters
           # never hang on it; joins of this task then raise the first failure.
-          failures = [force ? Internal::Teardown.capture { @session.abort } : nil]
+          # The exit task owns the abort, so it joins retirement through
+          # interruption, unlike an external abort caller.
+          failures = [force ? Internal::Teardown.capture { @session.send(:abort_owned) } : nil]
           failures << Internal::Teardown.capture { stop_accepting }
           @completion.resolve(@failure)
           failure = Internal::Teardown.first(failures)

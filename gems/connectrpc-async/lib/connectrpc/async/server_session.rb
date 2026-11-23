@@ -112,11 +112,18 @@ module ConnectRPC
 
         owned = resource_owned_task?
         launch = @state != :closing
+        # A zero-grace close forces a drain that an earlier close started and
+        # whose grace has not run out. Any other repeated close joins it.
+        force = !launch && grace.zero? && @close_expires && Internal.now < @close_expires
         if launch
           @state = :closing
+          @close_expires = Internal.now + grace
+          # The session owner, not the caller, owns the drain: it continues
+          # under its own grace when an interrupted caller leaves, and owner
+          # cancellation forces it.
           @closer = ::Async::Task.new(@owner, finished: false) do
             begin
-              close_owned(Internal.now + grace)
+              close_owned(@close_expires)
             ensure
               abort_owned
             end
@@ -125,18 +132,20 @@ module ConnectRPC
         end
         if owned
           @closer.run if launch
+          abort_owned if force
           return @state == :closed ? @close_outcome : nil
         end
 
+        abort_owned(interruptible: true) if force
         waiter = @closer || @cleanup
-        Internal.join_complete(waiter, failure: true, on_interrupt: method(:abort_owned)) { @closer.run if launch }
+        Internal.join_complete(waiter, failure: true, interruptible: true) { @closer.run if launch }
         @close_outcome
       end
 
       def abort
         check_affinity!
         @tls.send(:check_recursion!)
-        abort_owned
+        abort_owned(interruptible: true)
         self
       end
 
@@ -656,7 +665,10 @@ module ConnectRPC
         @close_outcome = outcome
       end
 
-      def abort_owned
+      # The closer and the lifetime guard own retirement, so they join it
+      # through interruption. An external caller's join is interruptible: it
+      # raises at once and leaves retirement to finish on its own.
+      def abort_owned(interruptible: false)
         return if @cleanup&.current?
 
         owned = resource_owned_task?
@@ -670,7 +682,7 @@ module ConnectRPC
         if owned
           @cleanup.run if launch
         else
-          Internal.join_complete(@cleanup, failure: true) { @cleanup.run if launch }
+          Internal.join_complete(@cleanup, failure: true, interruptible: interruptible) { @cleanup.run if launch }
         end
       end
 

@@ -271,11 +271,10 @@ RSpec.describe "Retirement lifecycle coordinators" do
   include RetirementHelpers
 
   %i[abort close].each do |operation|
-    it "retains the first external session #{operation} interruption until publication" do
+    it "raises an external session #{operation} interruption at once and leaves retirement running" do
       reactor do |task|
         with_retirement_connection(task) do |state|
           first = RuntimeError.new("first session interruption")
-          second = Async::Cancel.new("second session interruption")
           joiner = task.async(finished: false) do
             operation == :abort ? state.fetch(:session).abort : state.fetch(:host).close(grace: 0)
           rescue Exception => e # rubocop:disable Lint/RescueException -- assert the exact escaping interruption
@@ -284,14 +283,15 @@ RSpec.describe "Retirement lifecycle coordinators" do
           state.fetch(:gate).entered.dequeue
           competitor = task.async(finished: false) { state.fetch(:host).close(grace: 0) }
           Fiber.scheduler.raise(joiner.fiber, first)
-          Fiber.scheduler.raise(joiner.fiber, second)
-          expect(joiner).not_to be_finished
+          expect(joiner).to be_finished
+          expect(joiner.result).to equal(first)
           expect(competitor).not_to be_finished
+          expect(retirement_complete?(state.fetch(:resource))).to be(false)
           expect(state.fetch(:session).instance_variable_get(:@state)).to eq(:closing)
           state.fetch(:gate).release
-          join_retirement_tasks(task, joiner, competitor)
-          expect(joiner.result).to equal(first)
+          join_retirement_tasks(task, competitor)
           expect(competitor.result).to be(false)
+          expect(retirement_complete?(state.fetch(:resource))).to be(true)
         end
       end
     end

@@ -16,36 +16,30 @@ RSpec.describe "Internal completion preemption" do
   it_behaves_like "completion progress observation"
 end
 
-RSpec.describe "Internal completion latch interruption" do
-  it "runs on_interrupt once for the first latch-wait interruption" do
+RSpec.describe "Internal interruptible completion join" do
+  it "raises the joiner's interruption at once and leaves the target running" do
     reactor do |task|
       reader, writer = Socket.pair(:UNIX, :STREAM, 0)
-      started = Async::Promise.new
+      child = nil
       root = task.async(finished: false) do |parent|
-        parent.async(finished: false) { reader.readpartial(1) }
-        started.resolve(true)
-        Async::Condition.new.wait
+        child = parent.async(finished: false) { reader.readpartial(1) }
       end
-      started.wait
-      first = RuntimeError.new("first latch interruption")
-      requests = []
-      joiner = Async::Task.new(task, finished: false) do
-        AsyncHelpers::INTERNAL.join_complete(root, on_interrupt: -> { requests << first }) { root.cancel }
+      first = RuntimeError.new("interruptible join interruption")
+      # The joiner suspends on the root's live child before this returns.
+      joiner = task.async(finished: false) do
+        AsyncHelpers::INTERNAL.join_complete(root, interruptible: true)
       rescue StandardError => e
         e
       end
-      waiter = task.async(finished: false) do
-        root.wait
-        state = root.instance_variable_get(:@connectrpc_async_completion)
-        expect(state).not_to be_nil
-        expect(state).not_to be_terminal
-        expect(root).to be_alive
-        Fiber.scheduler.raise(joiner.fiber, first)
-      end
-      joiner.run
-      expect(joiner.wait).to equal(first)
-      expect(requests).to eq([first])
-      expect([root, joiner, waiter]).to all(be_finished)
+      expect(joiner).not_to be_finished
+      Fiber.scheduler.raise(joiner.fiber, first)
+      expect(joiner).to be_finished
+      expect(joiner.result).to equal(first)
+      expect(root).not_to be_finished
+      expect(child).to be_alive
+      writer.write("x")
+      AsyncHelpers::INTERNAL.join_complete(root)
+      expect([root, child]).to all(be_finished)
     ensure
       reader&.close
       writer&.close

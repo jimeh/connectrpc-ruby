@@ -195,10 +195,11 @@ RSpec.describe ConnectRPC::Async::Host do
     end
   end
 
-  # The session aborts fully, then raises, as a failed retirement does.
+  # The session aborts fully, then raises, as a failed retirement does. The
+  # exit task aborts through the session's private owned abort.
   def failing_abort(host, failure)
-    allow(host_session(host)).to receive(:abort).and_wrap_original do |abort|
-      abort.call
+    allow(host_session(host)).to receive(:abort_owned).and_wrap_original do |abort, **options|
+      abort.call(**options)
       raise failure
     end
   end
@@ -787,7 +788,8 @@ RSpec.describe ConnectRPC::Async::Host do
         expect(faults.tasks).to all(be_finished)
         expect(closer).not_to be_finished
         expect(host_session(host).instance_variable_get(:@state)).to eq(:closing)
-        second = task.async { host.close(grace: 0) }
+        # A repeated positive-grace close joins; only zero grace forces.
+        second = task.async { host.close(grace: 1) }
         expect(second).not_to be_finished
         release.enqueue(true)
         expect(pending.wait.message.name).to eq("held")

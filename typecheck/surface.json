@@ -24,7 +24,7 @@
     "ConnectRPC::Async::Internal::BDPEstimator#starts_sample?": {"kind":"method","visibility":"public","parameters":"bytes","classification":"internal"}
   },
   "gems/connectrpc-async/lib/connectrpc/async/completion_join.rb": {
-    "ConnectRPC::Async::Internal::CompletionJoin.call": {"kind":"method","visibility":"public","parameters":"task, failure: false, on_interrupt: nil","classification":"internal"},
+    "ConnectRPC::Async::Internal::CompletionJoin.call": {"kind":"method","visibility":"public","parameters":"task, failure: false, interruptible: false","classification":"internal"},
     "ConnectRPC::Async::Internal::CompletionJoin.children": {"kind":"method","visibility":"public","parameters":"target","classification":"internal"},
     "ConnectRPC::Async::Internal::CompletionJoin.observation": {"kind":"method","visibility":"public","parameters":"target","classification":"internal"},
     "ConnectRPC::Async::Internal::CompletionJoin.pending?": {"kind":"method","visibility":"public","parameters":"target, seen = {}.compare_by_identity","classification":"internal"},
@@ -563,7 +563,7 @@
   },
   "gems/connectrpc-async/lib/connectrpc/async/server_session.rb": {
     "ConnectRPC::Async::ServerSession#abort": {"kind":"method","visibility":"public","parameters":"","classification":"spi"},
-    "ConnectRPC::Async::ServerSession#abort_owned": {"kind":"method","visibility":"private","parameters":"","classification":"internal"},
+    "ConnectRPC::Async::ServerSession#abort_owned": {"kind":"method","visibility":"private","parameters":"interruptible: false","classification":"internal"},
     "ConnectRPC::Async::ServerSession#accept": {"kind":"method","visibility":"public","parameters":"raw","classification":"spi"},
     "ConnectRPC::Async::ServerSession#accept_raw": {"kind":"method","visibility":"private","parameters":"listener, backoff","classification":"internal"},
     "ConnectRPC::Async::ServerSession#bound_input": {"kind":"method","visibility":"private","parameters":"request","classification":"internal"},
