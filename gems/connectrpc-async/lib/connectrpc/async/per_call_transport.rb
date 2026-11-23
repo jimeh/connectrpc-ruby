@@ -87,70 +87,29 @@ module ConnectRPC
         end
         private_constant :Tunnelled
 
-        # Owner waits that end with the owner's outcome, and those that run
-        # out of time without it.
-        ANSWERED = %i[result reply].freeze
-        EXPIRED = %i[deadline canceled timeout].freeze
-        private_constant :ANSWERED, :EXPIRED
-
         def initialize(snapshot:, proxy:, **)
           @compiled_snapshot = snapshot
           @proxy = proxy
           @engines = []
           @cutoff = nil
-          @waits = Mutex.new
-          @answered_at = @expired_at = @interrupted_at = nil
           super(**)
         end
 
         # Closes within `grace`, then joins every owner thread this call
         # started, including one that stopped before the close began. The
-        # close's expiry never passes `cutoff`, so the close stops waiting for
-        # a stalled owner one cleanup allowance after it, and that owner exits
-        # once it resumes. A cutoff already past stands only for a stalled
-        # owner; any other owner gets an allowance from the start of the
-        # close, however late that start is. An interrupt of the close wait
+        # close's expiry never passes `cutoff`, or the start of the close if
+        # that is later, so the owner always has one cleanup allowance from
+        # that point: the close stops waiting for a stalled owner then, and
+        # that owner exits once it resumes. An interrupt of the close wait
         # still joins the owners, within the same bound, before it propagates.
         def close_joined(grace, cutoff)
-          @cutoff = cutoff && !owner_stalled?(cutoff) ? [cutoff, Internal.now].max : cutoff
+          @cutoff = cutoff && [cutoff, Internal.now].max
           close(grace: grace)
         ensure
           join_owners
         end
 
         private
-
-        def await(...) = owner_wait { super }
-
-        def await_stream(...) = owner_wait { super }
-
-        # Records when an owner wait ended with the owner's outcome, ran out
-        # of time, or was interrupted. Waits can run on several threads.
-        def owner_wait
-          status = nil
-          yield.tap { |result| status = Array(result).first }
-        ensure
-          now = Internal.now
-          @waits.synchronize do
-            if status.nil? then @interrupted_at = [@interrupted_at, now].compact.max
-            elsif ANSWERED.include?(status) then @answered_at = [@answered_at, now].compact.max
-            elsif EXPIRED.include?(status) then @expired_at = [@expired_at, now].compact.max
-            end
-          end
-        end
-
-        # Whether the owner left its allowance unanswered: an expired wait's
-        # allowance began one cleanup allowance before it ended, and an
-        # interrupted wait's at the cutoff, if the interrupt came after it. An
-        # earlier interrupt says nothing about the owner. Any answer since the
-        # latest such start shows the owner still responds.
-        def owner_stalled?(cutoff)
-          @waits.synchronize do
-            started = [(@expired_at - Internal::CLEANUP_SECONDS if @expired_at),
-                       (cutoff if @interrupted_at && @interrupted_at >= cutoff)].compact.max
-            started && !(@answered_at && @answered_at >= started)
-          end
-        end
 
         def build_inner(**) = Tunnelled.new(proxy: @proxy, **)
 

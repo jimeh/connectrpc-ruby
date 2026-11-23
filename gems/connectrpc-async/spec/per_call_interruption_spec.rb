@@ -21,7 +21,7 @@ RSpec.describe "PerCallTransport deadlines, cancellation and interrupts" do
 
   # The line in Threaded#close_joined before its close; a pause there holds
   # the caller just before the close begins.
-  def close_cutoff_line = "@cutoff = cutoff && !owner_stalled?(cutoff) ? [cutoff, Internal.now].max : cutoff"
+  def close_cutoff_line = "@cutoff = cutoff && [cutoff, Internal.now].max"
 
   def expect_peer_cancel(contexts, name, reasons = [:canceled])
     eventually("actual peer CANCEL reached the #{name} handler Context") { contexts.fetch(name).cancelled? }

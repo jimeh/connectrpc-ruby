@@ -566,11 +566,10 @@ RSpec.describe "PerCallTransport connection close, close budget and outcome prec
   end
 
   # The owner thread is stalled in native-style blocking while it dials. The
-  # caller's wait returns at its deadline plus the allowance; the close, whose
-  # expiry is that deadline, then gives up on the stalled owner at once
-  # rather than adding a second allowance, and the owner exits by itself once
-  # released.
-  it "returns at the deadline plus one allowance while the owner is stalled and lets the owner exit once released" do
+  # caller's wait returns at its deadline plus the allowance; the close then
+  # gives the owner one more allowance from its start before giving up on it,
+  # and the owner exits by itself once released.
+  it "returns two allowances after the deadline while the owner is stalled and lets the owner exit once released" do
     peer = threaded_host(server: server)
     origin = "http://127.0.0.1:#{peer.peer.port}"
     held = Thread::Queue.new
@@ -592,9 +591,9 @@ RSpec.describe "PerCallTransport connection close, close budget and outcome prec
     owner = pop_within(held, "the owner to stall in dial")
     error, started, returned = value_within(caller, "the stalled caller")
     expect([error.class, error.code]).to eq([ConnectRPC::Error, "deadline_exceeded"])
-    # The close after the caller's wait adds no allowance of its own.
-    expect(returned - pop_within(awaited, "the caller's wait to return")).to be < 0.05
-    expect(returned - started).to be_between(0.3 + 0.1, 0.3 + 0.1 + 0.09)
+    # The close after the caller's wait adds one allowance of its own.
+    expect(returned - pop_within(awaited, "the caller's wait to return")).to be_between(0.1, 0.1 + 0.05)
+    expect(returned - started).to be_between(0.3 + 0.2, 0.3 + 0.2 + 0.09)
     expect(owner).to be_alive
     trace.disable
     gate << true
@@ -607,47 +606,10 @@ RSpec.describe "PerCallTransport connection close, close budget and outcome prec
     peer&.stop
   end
 
-  # Timeout interrupts the caller's wait partway through the owner's cleanup
-  # allowance while the owner stays stalled in dial. The interrupted wait has
-  # spent that allowance, so the close keeps the deadline as its expiry and
-  # adds no second allowance.
-  it "adds no second allowance for a stalled owner after an interrupted wait" do
-    peer = threaded_recording_peer
-    origin = "http://127.0.0.1:#{peer.peer.port}"
-    held = Thread::Queue.new
-    release = Thread::Queue.new
-    expiry = Thread::Queue.new
-    stall = TracePoint.new(:call) do
-      held << Thread.current
-      Fiber.blocking { release.pop(timeout: 5) }
-    end
-    stall.enable(target: ConnectRPC::Async::Transport.instance_method(:dial))
-    close = TracePoint.new(:return) { |point| expiry << point.self.instance_variable_get(:@close_expires) }
-    close.enable(target: ConnectRPC::Async::ThreadedTransport.instance_method(:begin_close))
-    transport = per_call
-    deadline = ConnectRPC::Deadline.new(0.3)
-    caller = Thread.new do
-      # Half an allowance past the deadline, measured from the deadline itself.
-      within = deadline.remaining + (AsyncHelpers::INTERNAL::CLEANUP_SECONDS / 2)
-      capture_error { Timeout.timeout(within) { transport.call(request("#{origin}/interrupted", deadline: deadline)) } }
-    end
-    owner = pop_within(held, "the owner to stall in dial")
-    error = value_within(caller, "the interrupted caller")
-    expect(error).to be_a(Timeout::Error)
-    expect(owner).to be_alive
-    expect(pop_within(expiry, "the close expiry")).to eq(deadline.__send__(:expires_at))
-  ensure
-    stall&.disable
-    close&.disable
-    release&.push(true)
-    owner&.join(5)
-    peer&.stop
-  end
-
   # A stream operation times out while the owner is stalled; the owner then
-  # recovers and publishes the stream's outcome, and the caller works on past
-  # the deadline before its close. The recovered owner still gets an
-  # allowance from the start of that late close and is joined.
+  # recovers, and the caller works on past the deadline and leaves the block
+  # with an error, so no later wait sees the owner answer. The recovered owner
+  # still gets an allowance from the start of that late close and is joined.
   it "joins an owner that recovered after an expired wait when the close starts late" do
     peer = threaded_recording_peer
     origin = "http://127.0.0.1:#{peer.peer.port}"
@@ -680,10 +642,12 @@ RSpec.describe "PerCallTransport connection close, close budget and outcome prec
           # The caller's work past the deadline and its allowance is the
           # condition under test.
           sleep(deadline.remaining + (AsyncHelpers::INTERNAL::CLEANUP_SECONDS * 1.2))
+          raise "after the deadline"
         end
       end
+      # Core reports the deadline, which passed before the block failed.
       expect([error.class, error.code]).to eq([ConnectRPC::Error, "deadline_exceeded"])
-      expect(Array.new(waits.size) { waits.pop }).to eq(%i[reply timeout result])
+      expect(Array.new(waits.size) { waits.pop }).to eq(%i[reply timeout])
       expect_released(boundaries.take.first)
     end
   ensure
@@ -723,145 +687,6 @@ RSpec.describe "PerCallTransport connection close, close budget and outcome prec
     end
   ensure
     unanswered&.push(true)
-    peer&.stop
-  end
-
-  # Waits for one stream can run on several threads. Here the stream's
-  # terminal wait expires against a stalled owner, and an operation waiting
-  # on another thread then wakes because the caller retired the stream, not
-  # because the owner answered. The owner stays stalled, so the close keeps
-  # the deadline as its expiry.
-  it "keeps a stalled owner to one allowance when another wait wakes on retirement" do
-    peer = threaded_recording_peer
-    origin = "http://127.0.0.1:#{peer.peer.port}"
-    front_type = ConnectRPC::Async::ThreadedTransport
-    engine_type = front_type.const_get(:Engine)
-    operation_waiting = Thread::Queue.new
-    owner_stalled = Thread::Queue.new
-    planning = Thread::Queue.new
-    expiry = Thread::Queue.new
-    waits = Thread::Queue.new
-    release_operation = Thread::Queue.new
-    release_owner = Thread::Queue.new
-    release_close = Thread::Queue.new
-    wait_trace = TracePoint.new(:call, :return) do |point|
-      seq = point.binding.local_variable_get(:seq)
-      if point.event == :call && seq&.positive?
-        operation_waiting << true
-        release_operation.pop(timeout: 5) or raise "operation release missing"
-      elsif point.event == :return
-        waits << [seq, point.return_value&.first]
-      end
-    end
-    wait_trace.enable(target: front_type.instance_method(:await_stream))
-    stall = TracePoint.new(:call) do |point|
-      next unless point.binding.local_variable_get(:name) == :response_head
-
-      owner_stalled << Thread.current
-      Fiber.blocking { release_owner.pop(timeout: 5) or raise "owner release missing" }
-    end
-    stall.enable(target: engine_type.instance_method(:forward))
-    plan = TracePoint.new(:call) do
-      planning << true
-      release_close.pop(timeout: 5) or raise "close release missing"
-    end
-    plan.enable(target: PerCallHelpers::PER_CALL.instance_method(:close_plan_or_raw))
-    close = TracePoint.new(:return) { |point| expiry << point.self.instance_variable_get(:@close_expires) }
-    close.enable(target: front_type.instance_method(:begin_close))
-    transport = per_call
-    deadline = ConnectRPC::Deadline.new(0.6)
-    owner = operation = nil
-    scope = Thread.new do
-      capture_error do
-        transport.open_stream(stream_request(origin, "/retired", deadline: deadline)) do |exchange|
-          operation = Thread.new { capture_error { exchange.response_head } }
-          pop_within(operation_waiting, "the operation to enter its wait")
-          owner = pop_within(owner_stalled, "the owner to stall in response_head")
-        end
-      end
-    end
-    pop_within(planning, "the close to begin after the terminal wait expired")
-    expect(Array.new(2) { pop_within(waits, "a wait to return") }).to eq([[0, :reply], [nil, :deadline]])
-    release_operation << true
-    expect(value_within(operation, "the retired operation").code).to eq("deadline_exceeded")
-    expect(pop_within(waits, "the operation's wait to return")).to eq([1, :retired])
-    release_close << true
-    expect(value_within(scope, "the stream's caller").code).to eq("deadline_exceeded")
-    expect(owner).to be_alive
-    expect(pop_within(expiry, "the close expiry")).to eq(deadline.__send__(:expires_at))
-  ensure
-    [wait_trace, stall, plan, close].each { |trace| trace&.disable }
-    [release_operation, release_close, release_owner].each { |gate| gate&.push(true) }
-    [scope, operation, owner].each { |thread| thread&.join(5) }
-    peer&.stop
-  end
-
-  # An operation on another thread gets the owner's reply after the stream's
-  # terminal wait began, and the owner then stalls. The terminal wait is
-  # interrupted after the deadline. The reply came before the owner's
-  # allowance began, so it does not count as an answer, and the close keeps
-  # the deadline as its expiry.
-  it "keeps a stalled owner to one allowance when another wait's reply came before the deadline" do
-    peer = threaded_recording_peer
-    origin = "http://127.0.0.1:#{peer.peer.port}"
-    front_type = ConnectRPC::Async::ThreadedTransport
-    engine_type = front_type.const_get(:Engine)
-    operation_waiting = Thread::Queue.new
-    terminal_waiting = Thread::Queue.new
-    owner_stalled = Thread::Queue.new
-    expiry = Thread::Queue.new
-    release_operation = Thread::Queue.new
-    release_owner = Thread::Queue.new
-    wait_trace = TracePoint.new(:call) do |point|
-      seq = point.binding.local_variable_get(:seq)
-      if seq == 1
-        operation_waiting << true
-        release_operation.pop(timeout: 5) or raise "operation release missing"
-      elsif seq.nil?
-        terminal_waiting << true
-      end
-    end
-    wait_trace.enable(target: front_type.instance_method(:await_stream))
-    stall = TracePoint.new(:return) do |point|
-      next unless point.binding.local_variable_get(:seq) == 1
-
-      owner_stalled << Thread.current
-      Fiber.blocking { release_owner.pop(timeout: 5) or raise "owner release missing" }
-    end
-    stall.enable(target: engine_type.instance_method(:post))
-    close = TracePoint.new(:return) { |point| expiry << point.self.instance_variable_get(:@close_expires) }
-    close.enable(target: front_type.instance_method(:begin_close))
-    transport = per_call
-    deadline = ConnectRPC::Deadline.new(0.6)
-    interrupt = Class.new(Exception) # rubocop:disable Lint/InheritException -- not rescued by the stream's own handling
-    owner = operation = nil
-    scope = Thread.new do
-      capture_error do
-        transport.open_stream(stream_request(origin, "/reply", deadline: deadline)) do |exchange|
-          operation = Thread.new do
-            capture_error_or_value do
-              exchange.write(envelope(item("request")))
-              :wrote
-            end
-          end
-          pop_within(operation_waiting, "the operation to enter its wait")
-          owner = pop_within(owner_stalled, "the owner to publish the reply and then stall")
-        end
-      end
-    end
-    pop_within(terminal_waiting, "the terminal wait to start")
-    release_operation << true
-    expect(value_within(operation, "the answered operation")).to eq(:wrote)
-    # The interrupt must land inside the owner's allowance after the deadline.
-    sleep(deadline.remaining + (AsyncHelpers::INTERNAL::CLEANUP_SECONDS / 3))
-    scope.raise(interrupt, "after the deadline")
-    expect(value_within(scope, "the stream's caller")).to be_a(interrupt)
-    expect(owner).to be_alive
-    expect(pop_within(expiry, "the close expiry")).to eq(deadline.__send__(:expires_at))
-  ensure
-    [wait_trace, stall, close].each { |trace| trace&.disable }
-    [release_operation, release_owner].each { |gate| gate&.push(true) }
-    [scope, operation, owner].each { |thread| thread&.join(5) }
     peer&.stop
   end
 end

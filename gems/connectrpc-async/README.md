@@ -999,18 +999,16 @@ and bidi streaming before any I/O.
   with `RST_STREAM(CANCEL)`. An interrupt that lands while the call closes its
   connection is raised once that teardown has finished. Outside a reactor such
   an interrupt ends the close's own wait, and the call still joins its owner
-  threads, within the close's bound, before raising it. If the owner thread is
-  stalled, for example by native code, the call returns at its deadline plus
-  one 100 ms allowance, and the owner exits once it resumes. A close that
-  starts later than that, for example after a stream block that kept working
-  past the deadline, gives the owner one allowance from its start and joins
-  it if it responds in time, unless the owner has already left a wait
-  unanswered since its allowance began; then the close adds no allowance.
-  An owner that has already published its outcome and is exiting, for
-  example while it waits for the GVL, is still joined, which can take up to
-  another 100 ms. With a custom `Deadline` clock the close cannot place the
-  deadline in monotonic time, so a stalled owner can cost up to two more
-  100 ms allowances.
+  threads, within the close's bound, before raising it. The close always
+  gives the owner one cleanup allowance (100 ms) from the later of the
+  deadline and the start of the close, so an owner that responds is joined
+  even when the close starts long after the deadline, for example after a
+  stream block that kept working past it. If the owner thread is stalled, for
+  example by native code, the call returns at most two allowances after its
+  deadline: one while it waits for the owner's outcome, and one from the
+  close. The owner exits once it resumes. An owner that has already
+  published its outcome and is exiting, for example while it waits for the
+  GVL, is still joined, which can take up to another allowance.
 - Inside a reactor, a `Thread#raise` from another thread is best-effort, as
   for `Transport`: it lands in whichever fiber is running, and one that lands
   in the caller's fiber at certain points of its teardown can return before
