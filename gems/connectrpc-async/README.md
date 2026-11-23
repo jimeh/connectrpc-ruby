@@ -114,7 +114,12 @@ teardown unfinished until its owner exits. A caller on a thread that runs no
 reactor can use them, as a [`ThreadedTransport`](#ordinary-threads) or
 [`PerCallTransport`](#one-off-calls) caller does, because the reactor doing
 its work runs on another thread. A `ThreadedTransport` caller that is itself
-on a reactor thread follows the rules above
+on a reactor thread follows the rules above. Since 0.3.0, such a caller in a
+nonblocking fiber, as every Async task is, skips the transport's own
+interrupt masks. Ruby applies a mask to the whole thread, so a masked caller
+that waited for a lock held by the owner thread deferred a signal such as
+`SIGINT` for every task, and `Sync` then failed with `Closing scheduler with
+blocked operations!` instead of raising `Interrupt`
 ([#201](https://github.com/jimeh/connectrpc-ruby/issues/201)).
 
 ## Host
@@ -825,7 +830,10 @@ It takes the same options as `Transport`, and they behave the same, including
 the [connection policy](#client-connection-management). The constructor
 validates them and compiles the TLS snapshot on the calling thread, so
 configuration errors raise at boot. `call`, `open_stream`, `open_grpc_stream`,
-`close(grace: 5)`, `connection_state` and `inspect` work from any thread.
+`close(grace: 5)`, `connection_state` and `inspect` work from any thread,
+including an Async task on a reactor thread such as a Falcon handler's, where
+each wait suspends only that task. For calls inside a reactor, `Transport` or
+`PerCallTransport` avoid the hop to the owner thread.
 
 ### The owner thread
 
@@ -866,8 +874,12 @@ configuration errors raise at boot. `call`, `open_stream`, `open_grpc_stream`,
   `Thread#kill` even inside an enclosing
   `Thread.handle_interrupt(... => :never)` region, because Ruby cannot read the
   caller's mask. Core NetHTTP defers those interrupts inside such a region.
-  Inside a reactor, `Thread#raise` and `Thread#kill` from another thread are
+- Inside a reactor, `Thread#raise` and `Thread#kill` from another thread are
   not supported; see [Interrupts inside a reactor](#interrupts-inside-a-reactor).
+  There, Async task cancellation and `with_timeout` end a call's or stream
+  operation's wait, reset its stream with `RST_STREAM(CANCEL)` and release its
+  admission once the owner finishes the stream, as `Timeout` does on a thread.
+  Since 0.3.0, the transport's bookkeeping is not masked for such a caller.
 
 ### Streams from ordinary threads
 
@@ -931,9 +943,9 @@ each `response_head`, `read`, `write`, `close_send`, `finish` and, for gRPC,
   parent's stream or admission.
 - The block runs with interrupts enabled even inside an enclosing
   `Thread.handle_interrupt(... => :never)` region, extending the same rule for
-  waits above to application code in the block. This is deliberate: the
-  transport's own bookkeeping stays masked, so an interrupt can never skip the
-  stream's cancellation or leak its admission.
+  waits above to application code in the block. This is deliberate: on an
+  ordinary thread the transport's own bookkeeping stays masked, so an
+  interrupt can never skip the stream's cancellation or leak its admission.
 
 ### Closing
 

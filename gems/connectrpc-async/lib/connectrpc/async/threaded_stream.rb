@@ -203,7 +203,7 @@ module ConnectRPC
 
         check_request!(request)
         stream = prepare_stream(request, grpc)
-        Thread.handle_interrupt(Object => :never) do
+        caller_masked do
           stream.proxy&.resume
           admit(stream)
           registration = nil
@@ -213,7 +213,7 @@ module ConnectRPC
             exchange = (grpc ? GRPCStreamProxy : StreamProxy).new(self, stream, request)
             begin
               # The block runs interruptible even inside a caller's never-interrupt
-              # region; this method's bookkeeping stays masked.
+              # region; this method's bookkeeping stays caller_masked.
               value = Thread.handle_interrupt(Object => :immediate) { yield exchange }
             rescue Error
               # Only a remote error core raises after finish waits; a Timeout or
@@ -318,7 +318,7 @@ module ConnectRPC
         raise Error.new(:unavailable, RETIRED), cause: nil unless owned?(stream)
 
         check_owner!
-        Thread.handle_interrupt(Object => :never) do
+        caller_masked do
           seq = begin_operation(stream, request, command)
           answered = false
           begin

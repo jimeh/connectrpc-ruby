@@ -778,6 +778,7 @@
     "ConnectRPC::Async::ThreadedTransport#build_engine": {"kind":"method","visibility":"private","parameters":"admission","classification":"internal"},
     "ConnectRPC::Async::ThreadedTransport#build_inner": {"kind":"method","visibility":"private","parameters":"**","classification":"internal"},
     "ConnectRPC::Async::ThreadedTransport#call": {"kind":"method","visibility":"public","parameters":"request","classification":"supported"},
+    "ConnectRPC::Async::ThreadedTransport#caller_masked": {"kind":"method","visibility":"private","parameters":"&","classification":"internal"},
     "ConnectRPC::Async::ThreadedTransport#cancel_requested": {"kind":"method","visibility":"private","parameters":"call","classification":"internal"},
     "ConnectRPC::Async::ThreadedTransport#check_owner!": {"kind":"method","visibility":"private","parameters":"","classification":"internal"},
     "ConnectRPC::Async::ThreadedTransport#check_request!": {"kind":"method","visibility":"private","parameters":"request","classification":"internal"},

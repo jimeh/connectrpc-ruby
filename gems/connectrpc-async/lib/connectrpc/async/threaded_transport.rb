@@ -369,7 +369,7 @@ module ConnectRPC
         Internal.seconds(grace, "grace", zero: true)
         check_owner!
         expires = Internal.now + grace
-        Thread.handle_interrupt(Object => :never) do
+        caller_masked do
           begin_close(expires)
           wait_closed
         end
@@ -377,12 +377,24 @@ module ConnectRPC
 
       private
 
+      # Caller bookkeeping defers Thread#raise and Thread#kill, so they never
+      # leave a call half settled or admission half released. A fiber that can
+      # suspend through a scheduler, such as an Async task, skips the mask: the
+      # mask covers the whole thread while the fiber waits for a lock, so a
+      # signal never reaches the reactor (#201). Those interrupts are
+      # unsupported on a reactor thread, and Async's Fiber#raise ignores masks.
+      def caller_masked(&)
+        return yield if Fiber.scheduler && !Fiber.blocking?
+
+        Thread.handle_interrupt(Object => :never, &)
+      end
+
       def perform(request)
         raise ArgumentError, "Request URL must match the transport origin" unless same_origin?(request.url)
 
         check_request!(request)
         call = prepare(request)
-        Thread.handle_interrupt(Object => :never) do
+        caller_masked do
           admit(call)
           taken = false
           registration = nil

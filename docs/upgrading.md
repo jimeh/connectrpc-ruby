@@ -195,6 +195,13 @@ task. Callers on threads that run no reactor, such as `ThreadedTransport` and
 `PerCallTransport` callers outside a reactor, are not affected. See
 [Interrupts inside a reactor](../gems/connectrpc-async/README.md#interrupts-inside-a-reactor).
 
+A `ThreadedTransport` call, stream operation or `close` from an Async task no
+longer defers `Thread#raise` and `Thread#kill` around its bookkeeping. Ruby
+applies that deferral to the whole thread, so while such a caller waited for a
+lock held by the owner thread, `SIGINT` ended `Sync` with `RuntimeError:
+Closing scheduler with blocked operations!` instead of `Interrupt`. Callers on
+ordinary threads keep the deferral.
+
 These affect the Async HTTP/2 and HTTP/1 client transports and the core
 `Net::HTTP` transport. Error codes are unchanged.
 
