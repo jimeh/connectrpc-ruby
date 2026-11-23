@@ -192,7 +192,7 @@ client transports and the Async and Falcon hosts. Earlier docs called them
 best-effort for the client transports. Inside a reactor, use RPC deadlines,
 Async task cancellation, `with_timeout`, or `Timeout.timeout` from an Async
 task. Callers on threads that run no reactor, such as `ThreadedTransport` and
-`PerCallTransport` callers, are not affected. See
+`PerCallTransport` callers outside a reactor, are not affected. See
 [Interrupts inside a reactor](../gems/connectrpc-async/README.md#interrupts-inside-a-reactor).
 
 These affect the Async HTTP/2 and HTTP/1 client transports and the core

@@ -74,9 +74,7 @@ RSpec.describe ConnectRPC::Async::Host do
 
   def two_listeners(host)
     bounds = 2.times.map { IO::Endpoint.tcp("127.0.0.1", 0).bound }
-    bound = Struct.new(:sockets, :bounds) do
-      def close = bounds.each(&:close)
-    end.new(bounds.flat_map(&:sockets), bounds)
+    bound = Struct.new(:sockets, :bounds).new(bounds.flat_map(&:sockets), bounds)
     host.define_singleton_method(:bind) { bound }
     bound.sockets
   end

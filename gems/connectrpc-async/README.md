@@ -98,9 +98,10 @@ Inside a reactor, stop work with RPC deadlines, `CancellationToken`s, Async
 task cancellation, `with_timeout`, or `Timeout.timeout` called from an Async
 task, where Ruby routes it through the fiber scheduler. Each of these acts
 only on the call or task it targets, at a point where that work suspends, so
-hosts and transports can finish their teardown around it. Outside a task, for
-example in a blocking fiber, `Timeout.timeout` falls back to a watchdog thread
-that uses `Thread#raise`.
+hosts and transports can finish their teardown around it. Ruby uses the
+scheduler only in a nonblocking fiber, as every Async task is. In a blocking
+fiber, `Timeout.timeout` falls back to a watchdog thread that uses
+`Thread#raise`.
 
 `Thread#raise` and `Thread#kill` from another thread into a thread that runs
 a reactor are not supported. A watchdog thread such as Rack::Timeout's does
@@ -392,10 +393,13 @@ cancellation; `wait` joins its actual finalization before reporting the cause.
 Ordinary owner cancellation stops accepting and resolves ordinary waits after
 listener finalization, while session retirement may still be running. `close`
 retains its drain result and does not raise the stored listener cause.
-If the session abort or a listener close fails, the exit task still closes,
-cancels and joins every listener and resolves completion. `start` and `wait`
-then raise the first such failure instead of the listener cause or startup
-error, so rescue `StandardError` rather than only the accept error you expect.
+If the session abort or a listener close fails, the exit task still attempts
+every listener close, cancels and joins every listener, and resolves
+completion. A listener whose close failed may stay open. `start` raises the
+first such failure instead of the listener cause or startup error, so rescue
+`StandardError` rather than only the accept error you expect. After a
+terminal listener failure, `wait` raises that cleanup failure too; after a
+startup error with no listener cause, it returns nil.
 
 A terminal cause already observed during startup is raised by `start` after
 cleanup; bind/initial setup errors remain synchronous and subsequent `wait`

@@ -578,7 +578,7 @@ connection's writer, and net/http's `Shutdown(ctx)` returns when its context
 ends and leaves the remaining connections to `Close`.
 
 1. Interrupts end waits, not work. Teardown runs in a task the resource owns.
-   Grace bounds the graceful part, after which teardown forces retirement,
+   Grace bounds the connection drain, after which teardown forces retirement,
    which still waits for cooperative tasks to leave (see the package guide's
    cleanup allowance and task joins). A caller that is cancelled, times out or
    is interrupted gets its exception promptly while teardown continues on its
@@ -593,8 +593,10 @@ ends and leaves the remaining connections to `Close`.
    mask can confine them to one task. A caller on a thread that runs no
    reactor, such as a `ThreadedTransport` caller or `PerCallTransport` outside
    a reactor, can use them.
-3. Joins exist for descriptor safety: a descriptor closes only after every
-   fiber that might touch it has left.
+3. Joins exist for descriptor safety: a connection's descriptor closes only
+   after every fiber that might touch it has left. Listener shutdown is an
+   existing exception: it closes listening sockets before it cancels and joins
+   their accept loops.
 4. Teardown failures don't become caller outcomes. A close reports whether it
    drained or forced.
 5. Wire behavior keeps its precision: the two-phase GOAWAY,
