@@ -114,7 +114,14 @@ teardown unfinished until its owner exits. A caller on a thread that runs no
 reactor can use them, as a [`ThreadedTransport`](#ordinary-threads) or
 [`PerCallTransport`](#one-off-calls) caller does, because the reactor doing
 its work runs on another thread. A `ThreadedTransport` caller that is itself
-on a reactor thread follows the rules above
+on a reactor thread follows the rules above. Since 0.3.0, such a caller in a
+nonblocking fiber, as every Async task is, skips the transport's own
+interrupt masks. Ruby applies a mask to the whole thread while the caller is
+suspended. A caller that waited for a lock held by the owner thread deferred
+a signal such as `SIGINT` for every task, so `Sync` failed with `Closing
+scheduler with blocked operations!` instead of raising `Interrupt`. A caller
+waiting for its reply reopened interrupts for every task, so the signal could
+land in another task's code instead of at Async's loop
 ([#201](https://github.com/jimeh/connectrpc-ruby/issues/201)).
 
 ## Host
@@ -825,7 +832,10 @@ It takes the same options as `Transport`, and they behave the same, including
 the [connection policy](#client-connection-management). The constructor
 validates them and compiles the TLS snapshot on the calling thread, so
 configuration errors raise at boot. `call`, `open_stream`, `open_grpc_stream`,
-`close(grace: 5)`, `connection_state` and `inspect` work from any thread.
+`close(grace: 5)`, `connection_state` and `inspect` work from any thread,
+including an Async task on a reactor thread such as a Falcon handler's, where
+each wait suspends only that task. For calls inside a reactor, `Transport` or
+`PerCallTransport` avoid the hop to the owner thread.
 
 ### The owner thread
 
@@ -862,12 +872,21 @@ configuration errors raise at boot. `call`, `open_stream`, `open_grpc_stream`,
   Either way the call's admission is released once the owner finishes the
   stream, and siblings and the connection survive. Core may still report an
   already accepted cancellation or deadline instead, as with every transport.
-- The waits in `call` and `close` accept `Timeout`, `Thread#raise` and
-  `Thread#kill` even inside an enclosing
+- On an ordinary thread, the waits in `call` and `close` accept `Timeout`,
+  `Thread#raise` and `Thread#kill` even inside an enclosing
   `Thread.handle_interrupt(... => :never)` region, because Ruby cannot read the
   caller's mask. Core NetHTTP defers those interrupts inside such a region.
-  Inside a reactor, `Thread#raise` and `Thread#kill` from another thread are
+- Inside a reactor, `Thread#raise` and `Thread#kill` from another thread are
   not supported; see [Interrupts inside a reactor](#interrupts-inside-a-reactor).
+  There, Async task cancellation and `with_timeout` end a call's or stream
+  operation's wait, reset its stream with `RST_STREAM(CANCEL)` and release its
+  admission once the owner finishes the stream, as `Timeout` does on a thread.
+  Since 0.3.0, the transport neither defers interrupts around such a caller's
+  bookkeeping nor reopens them around its waits and stream blocks, so an
+  enclosing `Thread.handle_interrupt` region of the application applies
+  throughout. A `close` cancelled before the owner accepts it leaves the
+  transport open; one cancelled later ends only its own wait while the owner
+  drains.
 
 ### Streams from ordinary threads
 
@@ -929,11 +948,11 @@ each `response_head`, `read`, `write`, `close_send`, `finish` and, for gRPC,
   leaves an inherited block gets that error for a normal return, or its own
   exception, at once; it never waits on the parent's owner or touches the
   parent's stream or admission.
-- The block runs with interrupts enabled even inside an enclosing
-  `Thread.handle_interrupt(... => :never)` region, extending the same rule for
-  waits above to application code in the block. This is deliberate: the
-  transport's own bookkeeping stays masked, so an interrupt can never skip the
-  stream's cancellation or leak its admission.
+- On an ordinary thread, the block runs with interrupts enabled even inside an
+  enclosing `Thread.handle_interrupt(... => :never)` region, extending the same
+  rule for waits above to application code in the block. This is deliberate:
+  the transport's own bookkeeping stays masked, so an interrupt can never skip
+  the stream's cancellation or leak its admission.
 
 ### Closing
 

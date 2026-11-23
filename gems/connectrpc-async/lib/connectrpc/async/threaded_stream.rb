@@ -203,7 +203,7 @@ module ConnectRPC
 
         check_request!(request)
         stream = prepare_stream(request, grpc)
-        Thread.handle_interrupt(Object => :never) do
+        caller_mask(:never) do
           stream.proxy&.resume
           admit(stream)
           registration = nil
@@ -212,9 +212,10 @@ module ConnectRPC
             await_open(stream, request)
             exchange = (grpc ? GRPCStreamProxy : StreamProxy).new(self, stream, request)
             begin
-              # The block runs interruptible even inside a caller's never-interrupt
-              # region; this method's bookkeeping stays masked.
-              value = Thread.handle_interrupt(Object => :immediate) { yield exchange }
+              # On an ordinary thread the block runs interruptible even inside a
+              # caller's never-interrupt region, while this method's bookkeeping
+              # stays masked.
+              value = caller_mask(:immediate) { yield exchange }
             rescue Error
               # Only a remote error core raises after finish waits; a Timeout or
               # other interrupt keeps the no-wait path below.
@@ -318,7 +319,7 @@ module ConnectRPC
         raise Error.new(:unavailable, RETIRED), cause: nil unless owned?(stream)
 
         check_owner!
-        Thread.handle_interrupt(Object => :never) do
+        caller_mask(:never) do
           seq = begin_operation(stream, request, command)
           answered = false
           begin
@@ -436,7 +437,7 @@ module ConnectRPC
             return [:timeout] if expires && expires <= now
 
             limit = [deadline, expires, stream.cancel_expires].compact.min
-            Thread.handle_interrupt(Object => :immediate) do
+            caller_mask(:immediate) do
               stream.signal.wait(lock, limit && [limit - now, Internal::MAX_WAIT].min)
             end
           end
