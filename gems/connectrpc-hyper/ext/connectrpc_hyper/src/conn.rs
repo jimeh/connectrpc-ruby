@@ -458,8 +458,7 @@ pub async fn connect(
         )
         .await?;
     }
-    let fault = Arc::new(TlsFault::default());
-    let (io, h2): (Box<dyn Io>, bool) = match tls {
+    let (io, h2, fault): (Box<dyn Io>, bool, Arc<TlsFault>) = match tls {
         Some(config) => {
             // An IP literal becomes ServerName::IpAddress: no SNI (RFC 6066).
             let name = ServerName::try_from(origin.host.clone())
@@ -469,14 +468,15 @@ pub async fn connect(
                 .await
                 .map_err(|e| tls_failure(&e))?;
             let h2 = stream.get_ref().1.alpn_protocol() == Some(b"h2");
+            let fault = Arc::new(TlsFault::new(h2));
             let stream = Recorded {
                 inner: stream,
                 fault: fault.clone(),
             };
-            (Box::new(stream), h2)
+            (Box::new(stream), h2, fault)
         }
         // Cleartext HTTP/2 is prior knowledge (h2c), as gRPC clients use.
-        None => (Box::new(socket), settings.http2),
+        None => (Box::new(socket), settings.http2, Arc::default()),
     };
     let exec = TrackedExec(tracker.clone());
     if h2 {

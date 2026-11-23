@@ -135,25 +135,36 @@ impl Failure {
 /// rustls error. A call that then fails with a bare connection loss reports
 /// this failure instead.
 #[derive(Default)]
-pub struct TlsFault(OnceLock<Failure>);
+pub struct TlsFault {
+    failure: OnceLock<Failure>,
+    http2: bool,
+}
 
 impl TlsFault {
+    pub fn new(http2: bool) -> Self {
+        Self {
+            failure: OnceLock::new(),
+            http2,
+        }
+    }
+
     /// Keeps `error`'s TLS failure if it is the first on the connection.
     pub fn record(&self, error: &std::io::Error) {
-        if self.0.get().is_none() {
+        if self.failure.get().is_none() {
             if let Some(failure) = Failure::rustls(error) {
-                let _ = self.0.set(failure);
+                let _ = self.failure.set(failure);
             }
         }
     }
 
-    /// A call's failure on this connection: a connection loss (closed, or a
-    /// protocol error, which is how h2 reports rustls's `InvalidData`) becomes
-    /// the recorded TLS failure. Resets, GOAWAYs, limits and timeouts pass
-    /// through.
+    /// A call's failure on this connection: a connection loss becomes the
+    /// recorded TLS failure. That is a closed connection, or on HTTP/2 a
+    /// protocol error, which is how h2 reports rustls's `InvalidData`; an
+    /// HTTP/1.1 protocol error is hyper's own decoding and stays. Resets,
+    /// GOAWAYs, limits and timeouts pass through.
     pub fn resolve(&self, failure: Failure) -> Failure {
-        let lost = matches!(failure.kind, "closed" | "protocol");
-        match self.0.get() {
+        let lost = failure.kind == "closed" || (self.http2 && failure.kind == "protocol");
+        match self.failure.get() {
             Some(tls) if lost => tls.clone(),
             _ => failure,
         }
