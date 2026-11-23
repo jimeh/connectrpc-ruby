@@ -45,7 +45,7 @@ use tokio::sync::Notify;
 
 use crate::body::CallBody;
 use crate::conn::{self, Connected, Handshake, Origin, Settings};
-use crate::failure::Failure;
+use crate::failure::{Failure, TlsFault};
 use crate::gvl::Signal;
 use crate::holds::Holds;
 use crate::runtime::{self, Task, Tracker};
@@ -181,6 +181,7 @@ struct H2Conn {
     shared: Arc<ConnShared>,
     local_port: u16,
     wire: Arc<Wire>,
+    fault: Arc<TlsFault>,
 }
 
 impl H2Conn {
@@ -221,6 +222,7 @@ pub struct H1Conn {
     task: Task,
     id: u64,
     pub local_port: u16,
+    fault: Arc<TlsFault>,
 }
 
 impl H1Conn {
@@ -237,6 +239,7 @@ pub enum Lease {
         local_port: u16,
         id: u64,
         wire: Arc<Wire>,
+        fault: Arc<TlsFault>,
         _active: Option<Active>,
     },
     H1 {
@@ -269,6 +272,24 @@ impl Lease {
         match self {
             Lease::H2 { wire, .. } => Some(Mark::new(wire.clone())),
             Lease::H1 { .. } => None,
+        }
+    }
+
+    /// The connection's TLS failure record; None once an HTTP/1.1 lease
+    /// released its connection.
+    pub fn fault(&self) -> Option<&Arc<TlsFault>> {
+        match self {
+            Lease::H2 { fault, .. } => Some(fault),
+            Lease::H1 { conn, .. } => conn.as_ref().map(|c| &c.fault),
+        }
+    }
+
+    /// A call failure for `error` on this lease's connection, reporting a
+    /// TLS failure that ended the connection as such.
+    pub fn failure(&self, error: &hyper::Error) -> Failure {
+        match self.fault() {
+            Some(fault) => fault.failure(error),
+            None => Failure::from_hyper(error),
         }
     }
 
@@ -661,8 +682,9 @@ impl DriverCore {
                     } => {
                         let id = self.next_id();
                         let port = connected.local_port;
+                        let fault = connected.fault;
                         let pooled =
-                            self.pool_h2(&publish.entry, sender, closed, wire, port, id, 0);
+                            self.pool_h2(&publish.entry, sender, closed, wire, fault, port, id, 0);
                         if pooled.is_none() && self.is_closing() {
                             return;
                         }
@@ -677,6 +699,7 @@ impl DriverCore {
                             task,
                             id: self.next_id(),
                             local_port: connected.local_port,
+                            fault: connected.fault,
                         };
                         self.park_h1(publish.entry.clone(), conn);
                         if self.is_closing() {
@@ -736,6 +759,7 @@ impl DriverCore {
                     local_port: conn.local_port,
                     id: conn.shared.id,
                     wire: conn.wire.clone(),
+                    fault: conn.fault.clone(),
                     _active: Some(Active {
                         shared: conn.shared.clone(),
                     }),
@@ -781,6 +805,7 @@ impl DriverCore {
     ) -> Result<Lease, Failure> {
         let id = self.next_id();
         let local_port = connected.local_port;
+        let fault = connected.fault;
         match connected.handshake {
             // Without an entry (per-call mode) it serves only this call.
             Handshake::H2 {
@@ -790,8 +815,8 @@ impl DriverCore {
             } => {
                 let active = entry
                     .and_then(|entry| {
-                        let (sender, wire) = (sender.clone(), wire.clone());
-                        self.pool_h2(entry, sender, closed, wire, local_port, id, 1)
+                        let (sender, wire, fault) = (sender.clone(), wire.clone(), fault.clone());
+                        self.pool_h2(entry, sender, closed, wire, fault, local_port, id, 1)
                     })
                     .map(|shared| Active { shared });
                 Ok(Lease::H2 {
@@ -799,6 +824,7 @@ impl DriverCore {
                     local_port,
                     id,
                     wire,
+                    fault,
                     _active: active,
                 })
             }
@@ -808,6 +834,7 @@ impl DriverCore {
                     task,
                     id,
                     local_port,
+                    fault,
                 };
                 if require_h2 {
                     // ALPN chose HTTP/1.1: fail before any request is queued.
@@ -840,6 +867,7 @@ impl DriverCore {
         sender: http2::SendRequest<CallBody>,
         closed: Arc<Signal>,
         wire: Arc<Wire>,
+        fault: Arc<TlsFault>,
         local_port: u16,
         id: u64,
         active: usize,
@@ -862,6 +890,7 @@ impl DriverCore {
                 shared: shared.clone(),
                 local_port,
                 wire,
+                fault,
             }));
         }
         if let Some(timeout) = self.config.idle_timeout {
