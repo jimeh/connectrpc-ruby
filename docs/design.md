@@ -332,7 +332,7 @@ Async foreign-thread listeners only resolve a tagged Promise. Its owner reactor
 arbitrates, stops private operation/setup tasks and performs bounded cleanup.
 Promise resolution order does not decide the RPC outcome. Healthy stream reset
 preserves the shared connection and siblings; a stuck deferred frame retains the one
-100 ms cleanup budget and raw-first whole-connection fallback.
+1-second cleanup budget and raw-first whole-connection fallback.
 
 Native HTTP/2 creates a request cancellation source before processing,
 independently of instrumentation. Only peer RST_STREAM with CANCEL (0x8) signals
@@ -410,7 +410,7 @@ required. Full TLS snapshots enable required client authentication, same-listene
 credential reload and older-generation retirement. The exact-task client leaf
 accessor is the optional authorization seam; peer-presented chains are not
 claimed to be verified chains. See the package guide for session isolation,
-cleanup's 100ms allowance and deliberate whole-connection failure for a stuck
+cleanup's 1-second allowance and deliberate whole-connection failure for a stuck
 frame. Native streaming uses the same ingress and cleanup boundaries. No production daemon claim is made.
 The H2 client's private, reactor-owned connection manager runs shared connection
 attempts outside every RPC lifecycle and owns stream accounting, capped jittered

@@ -102,7 +102,7 @@ and age with graceful GOAWAY, so clients behind L4 load balancers rebalance.
 - **Server PINGs** use the client's probe code, regardless of streams.
 - **Enforcement.** `ServerConnection#receive_ping` evaluates strikes first,
   without yielding, then hands the ACK (and, on violation, the GOAWAY) to a
-  supervised control writer bounded by the cleanup allowance, so a held
+  supervised control writer bounded by its own 100 ms write bound, so a held
   outbound frame cannot block the reader. Strike reset on server HEADERS/DATA
   writes. On violation: GOAWAY(ENHANCE_YOUR_CALM, "too_many_pings", cutoff),
   half-close, bounded discard to EOF, raw-first abort.

@@ -3,13 +3,19 @@
 module ConnectRPC
   module Async
     module Internal
+      # Bounds a server control frame's own write, once it holds the frame
+      # guard, and the too_many_pings GOAWAY. A small control frame write
+      # finishes without yielding unless the send buffer is full, so a reactor
+      # stall alone cannot expire it, unlike the client CLEANUP_SECONDS.
+      CONTROL_WRITE_SECONDS = 0.1
+
       # Writes one server connection's control frames (PING ACKs, GOAWAYs,
       # drain PINGs, refusals, connection credit and receive-window growth)
       # off its reader, so the reader never blocks
       # writing its own replies. Frames queue without yielding and are written
       # in order. Each must be written within `timeout` of being queued,
       # including any wait behind another writer's frame, and its own write,
-      # once it holds the frame guard, within the cleanup allowance. Otherwise
+      # once it holds the frame guard, within CONTROL_WRITE_SECONDS. Otherwise
       # the connection fails raw-first. A frame write that `writes` times
       # keeps its own bound: a control frame waiting behind it fails the
       # connection no earlier than that write's deadline. The frames queued
@@ -35,7 +41,7 @@ module ConnectRPC
           # The queued frames' deadlines, oldest first.
           @queued = []
           @resumed = nil
-          @stall = WriteWatchdog.new(resource, clock: clock, timeout: CLEANUP_SECONDS,
+          @stall = WriteWatchdog.new(resource, clock: clock, timeout: CONTROL_WRITE_SECONDS,
                                                message: "HTTP/2 control frame write stalled")
           @step = [timeout, writes&.timeout].compact.min
           # The frame being delivered, if any: its number and when the watch
@@ -557,7 +563,7 @@ module ConnectRPC
         end
 
         # Like grpc-go, the GOAWAY ends the connection even while streams run.
-        # It must be written within the cleanup allowance of this decision.
+        # It must be written within CONTROL_WRITE_SECONDS of this decision.
         # Its supervisor keeps that bound and the EOF bound below even when a
         # session drain takes over and stops ordinary upkeep.
         def violate
@@ -566,7 +572,7 @@ module ConnectRPC
           written = @writer.write(goaway(@cutoff, ::Protocol::HTTP2::Error::ENHANCE_YOUR_CALM, "too_many_pings"))
           maintain(supervisor: true) do |task|
             timer = ::Async::Task.new(task, finished: false) do
-              @clock.sleep(CLEANUP_SECONDS)
+              @clock.sleep(CONTROL_WRITE_SECONDS)
               @resource.abort(IOError.new("HTTP/2 too_many_pings GOAWAY was not written"))
             end
             timer.run

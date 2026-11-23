@@ -215,6 +215,15 @@ These affect the Async HTTP/2 and HTTP/1 client transports and the core
   transports explicitly for a graceful drain.
 - `HTTP1Transport` sends a unary GET once more when its reused keep-alive
   connection closed before any response head arrived.
+- The client cleanup allowance is 1 second instead of 100 ms. A reactor stall
+  of up to about that long during a call's cleanup, for example from other Ruby
+  threads holding the GVL, no longer fails the connection and its siblings. A
+  call whose frame write is really stuck now returns its error up to 1 second
+  after its deadline or cancellation, then fails the connection as before.
+  `ThreadedTransport` callers likewise wait up to 1 second past a deadline,
+  cancellation or close grace for a stalled owner thread. Server connections
+  keep their 100 ms bounds. See the
+  [cleanup allowance](../gems/connectrpc-async/README.md#cleanup-allowance).
 
 These affect native HTTP/2 connections of the Async `Transport`,
 `ThreadedTransport`, `Host` and `ServerSession` and the Falcon server.

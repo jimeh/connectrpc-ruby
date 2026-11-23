@@ -1,6 +1,9 @@
 # frozen_string_literal: true
 
 RSpec.shared_examples "HTTP/2 deadlines and stream isolation" do
+  # The client cleanup allowance, which stalled-owner and stuck-frame bounds extend by.
+  allowance = AsyncHelpers::INTERNAL::CLEANUP_SECONDS
+
   it "retains core default/nil and huge logical deadlines without overflowing scheduler timers" do
     reactor do
       observed = []
@@ -193,7 +196,7 @@ RSpec.shared_examples "HTTP/2 deadlines and stream isolation" do
           writer_tasks = resource.connection.writers.keys
           expect(writer_tasks).not_to be_empty
           expect { stuck.wait }.to raise_error(ConnectRPC::Error) { |e| expect(e.code).to eq("deadline_exceeded") }
-          expect(AsyncHelpers::INTERNAL.now - started).to be < 0.4
+          expect(AsyncHelpers::INTERNAL.now - started).to be < 0.03 + allowance + 0.27
           expect { sibling.wait }.to raise_error(ConnectRPC::Error) { |e| expect(e.code).to eq("unavailable") }
           expect(resource.raw).to be_closed
           expect(writer_tasks).to all(be_finished)

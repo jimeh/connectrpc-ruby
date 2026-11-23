@@ -447,8 +447,8 @@ nonnegative or nil and requires `max_connection_age`.
   replies. The reader can still stall at its next buffer refill, which flushes
   pending output, behind an outbound write that does not finish. Each control
   frame must be written within `timeout` seconds of being queued, including any
-  wait behind another stream's stuck frame, and its own write within the 100 ms
-  cleanup allowance; otherwise the connection is aborted. Since 0.3.0, a stuck
+  wait behind another stream's stuck frame, and its own write within 100 ms;
+  otherwise the connection is aborted. Since 0.3.0, a stuck
   frame write that `frame_write_timeout` bounds is the exception: control frames
   waiting behind it wait for its bound, and their deadlines count again from
   when it finishes. At most 1024 control frames wait; a peer that outruns the
@@ -667,7 +667,7 @@ nil or finite positive seconds, `keepalive` is nil or a `Keepalive`, and
   The pinned protocol-http2 raises it only for streams the server provably never
   processed: `RST_STREAM(REFUSED_STREAM)` and streams above a GOAWAY's last
   stream id (RFC 9113 sections 6.8 and 8.7). The resend first retires the
-  refused stream's output within the 100ms cleanup allowance, then goes back
+  refused stream's output within the [cleanup allowance](#cleanup-allowance), then goes back
   through ordinary acquisition with the same admission and deadline, so it may
   reuse a healthy connection or wait for capacity. A second refusal, or a
   refused output frame that stays stuck, fails the call with `unavailable`.
@@ -819,7 +819,7 @@ configuration errors raise at boot. `call`, `open_stream`, `open_grpc_stream`,
   `:admission_rejected` on the owner thread.
 - A finite deadline also bounds the caller's wait: if the owner is stalled, for
   example by native code, the caller fails with `deadline_exceeded` after the
-  deadline plus the 100 ms cleanup allowance and the call is cancelled once the
+  deadline plus the 1-second [cleanup allowance](#cleanup-allowance) and the call is cancelled once the
   owner resumes. A nil deadline waits for the reply, its cancellation token or
   an interruption. `Timeout` and `Thread#raise` cancel the call's stream (the
   server sees `RST_STREAM(CANCEL)`) and their exception reaches the caller
@@ -851,7 +851,7 @@ each `response_head`, `read`, `write`, `close_send`, `finish` and, for gRPC,
   behind response EOF. Header maps reach the caller as their own frozen copies,
   and each chunk is a new string the caller owns.
 - An operation's wait is bounded by the deadline and by its own timeout, each
-  plus the 100 ms allowance. If the owner is stalled past that, the operation
+  plus the 1-second allowance. If the owner is stalled past that, the operation
   fails with `deadline_exceeded`, or with `unavailable` for its own timeout, and
   the stream is reset when the owner resumes.
 - A normal block exit waits for the owner's actual outcome, bounded only by the
@@ -869,7 +869,7 @@ each `response_head`, `read`, `write`, `close_send`, `finish` and, for gRPC,
 - Core raises a remote error, such as `not_found`, from inside the block after
   the exchange's `finish` returned. So when a `ConnectRPC::Error` leaves the
   block after a successful `finish`, the owner finishes the stream normally and the
-  caller waits for its outcome, for at most the 100 ms allowance and never past
+  caller waits for its outcome, for at most the 1-second allowance and never past
   the deadline or an accepted cancellation plus the allowance. Admission is
   released before the error returns, and a late gRPC cleanup failure is
   reported to instrumentation as an aborted delivery, as with `Transport`. The
@@ -1182,7 +1182,8 @@ Timers use at most 86400-second waits without shortening logical deadlines.
 
 ### Cleanup allowance
 
-Client cleanup uses one total internal 100ms allowance. Ordinary cancellation
+Client cleanup uses one total internal allowance of 1 second, since 0.3.0
+(100 ms before). Ordinary cancellation
 resets its stream. A frame that cannot finish within cleanup deliberately fails
 the whole connection and siblings. One exception: when the peer has already
 reset a Connect or gRPC stream (anything except Connect unary `call`), cleanup
@@ -1199,8 +1200,34 @@ These are cooperative bounds, not arbitrary native/application interruption
 guarantees.
 
 H2 connection release, acquisition or close can therefore wait beyond an RPC
-deadline for actual retirement. The 100 ms fallback allowance triggers
-destructive cleanup; it is not a hard deadline for that cleanup.
+deadline for actual retirement. The fallback allowance triggers destructive
+cleanup; it is not a hard deadline for that cleanup.
+
+The allowance covers HTTP/2 cleanup after a call ends, the refused-stream
+output retirement before a resend, HTTP/1 cleanup (also capped by the RPC
+deadline), the cleanup of a timed read, and the `ThreadedTransport` waits past
+a deadline, cancellation or close grace for a stalled owner thread. Server
+connections keep their own 100 ms bound for a control frame's own write and the
+`too_many_pings` GOAWAY; see [Server keepalive](#server-keepalive).
+
+grpc-go 1.85.0 has no such client budget. A cancelled stream queues a cleanup
+item for the connection's single writer goroutine, which drops the stream's
+queued data, writes `RST_STREAM` and returns the stream's quota. The caller
+returns at once, and a stuck socket write holds that quota and the connection
+until keepalive (which also sets `TCP_USER_TIMEOUT`) or the operating system
+gives up. Go's `x/net/http2` client is similar: `RoundTrip` returns when its
+context ends, and the reset waits for the connection's write lock, bounded only
+by `WriteByteTimeout`, which is off by default. This transport keeps a bound
+because an Async task cannot stop a frame write partway without corrupting the
+connection, and cleanup runs in the caller's fiber: without one, a stuck frame
+would hold the caller and the connection indefinitely. The allowance is generous
+for a Ruby-specific hazard. A reactor thread can wait one 100 ms GVL time slice
+for each CPU-bound Ruby thread before it runs at all (see [Latency under CPU
+load](#latency-under-cpu-load)), and a stall that lands inside cleanup, after
+its expiry was computed, used to replace a healthy connection and fail its
+siblings once it passed 100 ms (#187). The cost is that a call whose frame is
+really stuck returns its error up to 1 second after its deadline or
+cancellation, and only then fails the connection.
 
 ### Forced teardown and retirement
 
@@ -1728,8 +1755,8 @@ The Async transport accepts foreign-thread cancellation through a Promise;
 only the owner reactor stops private SDK tasks and performs stream cleanup.
 Cancellation, an expired deadline or a stopped caller task resets the call's
 stream with `RST_STREAM(CANCEL)`, including while its upload waits for
-flow-control credit. Healthy multiplexed siblings survive. A stuck frame retains the one 100 ms
-raw-first whole-connection cleanup fallback. Native HTTP/2 Context observes
+flow-control credit. Healthy multiplexed siblings survive. A stuck frame retains the one
+[cleanup allowance](#cleanup-allowance) and raw-first whole-connection fallback. Native HTTP/2 Context observes
 only an actual peer RST_STREAM(CANCEL), before input teardown. Other resets,
 normal half-close, connection loss and host shutdown do not fabricate explicit
 cancellation. Processing completion detaches the source independently of delivery.

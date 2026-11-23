@@ -3,6 +3,9 @@
 require "rbconfig"
 
 RSpec.describe "ThreadedTransport close, owner failure and recovery" do
+  # The client cleanup allowance, which stalled-owner and stuck-frame bounds extend by.
+  allowance = AsyncHelpers::INTERNAL::CLEANUP_SECONDS
+
   def gated(entered, release)
     server(echo: lambda { |message, _|
       entered << message.name
@@ -65,7 +68,7 @@ RSpec.describe "ThreadedTransport close, owner failure and recovery" do
     eventually("caller admitted and waiting") { admitted(transport) == 1 && blocked?(pending) }
     started = monotonic
     expect(transport.close(grace: 0.2)).to be(false)
-    expect(monotonic - started).to be_between(0.3, 1.0)
+    expect(monotonic - started).to be_between(0.2 + allowance, 0.2 + allowance + 0.7)
     error = value_within(pending, "the stalled caller")
     expect([error.class, error.code]).to eq([ConnectRPC::Error, "unavailable"])
     expect(owner).to be_alive

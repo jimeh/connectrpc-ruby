@@ -5,6 +5,9 @@ require "generation/streaming_connect"
 require_relative "support/threaded_stream_helpers"
 
 RSpec.describe "ThreadedTransport streams with stalled consumers, owners and close" do
+  # The client cleanup allowance, which stalled-owner and stuck-frame bounds extend by.
+  allowance = AsyncHelpers::INTERNAL::CLEANUP_SECONDS
+
   include ThreadedStreamHelpers
 
   def gated_host(entered, release)
@@ -91,7 +94,7 @@ RSpec.describe "ThreadedTransport streams with stalled consumers, owners and clo
     gate = hold_owner(transport)
     error = value_within(caller, "the stalled read")
     expect([error.class, error.code]).to eq([ConnectRPC::Error, "deadline_exceeded"])
-    expect(monotonic - started).to be_between(0.6, 0.6 + 0.1 + 0.5)
+    expect(monotonic - started).to be_between(0.6, 0.6 + allowance + 0.5)
     expect(admitted(transport)).to eq(1)
     gate << true
     eventually("admission released after the owner resumes") { admitted(transport).zero? }
@@ -122,7 +125,7 @@ RSpec.describe "ThreadedTransport streams with stalled consumers, owners and clo
       end
     end
     gate = pop_within(gates, "the owner held inside the block")
-    expect(pop_within(gates, "the timed operation")).to be_between(0.2, 0.2 + 0.1 + 0.5)
+    expect(pop_within(gates, "the timed operation")).to be_between(0.2, 0.2 + allowance + 0.5)
     error = value_within(caller, "the expired operation")
     expect([error.class, error.code, error.message])
       .to eq([ConnectRPC::Error, "unavailable", "HTTP/2 transport failed"])
@@ -155,7 +158,7 @@ RSpec.describe "ThreadedTransport streams with stalled consumers, owners and clo
     value_within(Thread.new { source.cancel }, "the cancelling thread")
     error = value_within(caller, "the cancelled read")
     expect([error.class, error.code]).to eq([ConnectRPC::Error, "canceled"])
-    expect(monotonic - started).to be < 1
+    expect(monotonic - started).to be < allowance + 0.9
     expect(admitted(transport)).to eq(1)
     gate << true
     eventually("admission released") { admitted(transport).zero? }
@@ -386,7 +389,7 @@ RSpec.describe "ThreadedTransport streams with stalled consumers, owners and clo
     gate = hold_owner(transport)
     started = monotonic
     expect(transport.close(grace: 0.2)).to be(false)
-    expect(monotonic - started).to be_between(0.3, 1.0)
+    expect(monotonic - started).to be_between(0.2 + allowance, 0.2 + allowance + 0.7)
     error = value_within(caller, "the stalled stream")
     expect([error.class, error.code]).to eq([ConnectRPC::Error, "unavailable"])
     gate << true
