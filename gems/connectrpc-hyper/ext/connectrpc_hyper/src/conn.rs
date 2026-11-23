@@ -17,7 +17,7 @@ use tokio::net::TcpStream;
 use tokio::time::Instant;
 
 use crate::body::CallBody;
-use crate::failure::Failure;
+use crate::failure::{Failure, TlsFault};
 use crate::gvl::Signal;
 use crate::holds::Holds;
 use crate::runtime::{Task, TrackedExec, Tracker};
@@ -185,6 +185,72 @@ impl AsyncWrite for Socket {
     }
 }
 
+/// A TLS stream that records the first TLS failure any read or write on it
+/// returns (see `TlsFault`), and is otherwise transparent.
+struct Recorded<T> {
+    inner: T,
+    fault: Arc<TlsFault>,
+}
+
+impl<T> Recorded<T> {
+    fn record<R>(&self, result: Poll<io::Result<R>>) -> Poll<io::Result<R>> {
+        if let Poll::Ready(Err(error)) = &result {
+            self.fault.record(error);
+        }
+        result
+    }
+}
+
+impl<T: AsyncRead + Unpin> AsyncRead for Recorded<T> {
+    fn poll_read(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut ReadBuf<'_>,
+    ) -> Poll<io::Result<()>> {
+        let this = self.get_mut();
+        let result = Pin::new(&mut this.inner).poll_read(cx, buf);
+        this.record(result)
+    }
+}
+
+impl<T: AsyncWrite + Unpin> AsyncWrite for Recorded<T> {
+    fn poll_write(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &[u8],
+    ) -> Poll<io::Result<usize>> {
+        let this = self.get_mut();
+        let result = Pin::new(&mut this.inner).poll_write(cx, buf);
+        this.record(result)
+    }
+
+    fn poll_write_vectored(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        bufs: &[io::IoSlice<'_>],
+    ) -> Poll<io::Result<usize>> {
+        let this = self.get_mut();
+        let result = Pin::new(&mut this.inner).poll_write_vectored(cx, bufs);
+        this.record(result)
+    }
+
+    fn is_write_vectored(&self) -> bool {
+        self.inner.is_write_vectored()
+    }
+
+    fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        let this = self.get_mut();
+        let result = Pin::new(&mut this.inner).poll_flush(cx);
+        this.record(result)
+    }
+
+    fn poll_shutdown(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        let this = self.get_mut();
+        let result = Pin::new(&mut this.inner).poll_shutdown(cx);
+        this.record(result)
+    }
+}
+
 pub trait Io: AsyncRead + AsyncWrite + Unpin + Send {}
 impl<T: AsyncRead + AsyncWrite + Unpin + Send> Io for T {}
 
@@ -221,6 +287,8 @@ impl Drop for FireOnDrop {
 pub struct Connected {
     pub handshake: Handshake,
     pub local_port: u16,
+    /// Never filled on a cleartext connection.
+    pub fault: Arc<TlsFault>,
 }
 
 async fn resolve(host: &str, port: u16) -> Result<Vec<SocketAddr>, Failure> {
@@ -390,6 +458,7 @@ pub async fn connect(
         )
         .await?;
     }
+    let fault = Arc::new(TlsFault::default());
     let (io, h2): (Box<dyn Io>, bool) = match tls {
         Some(config) => {
             // An IP literal becomes ServerName::IpAddress: no SNI (RFC 6066).
@@ -400,6 +469,10 @@ pub async fn connect(
                 .await
                 .map_err(|e| tls_failure(&e))?;
             let h2 = stream.get_ref().1.alpn_protocol() == Some(b"h2");
+            let stream = Recorded {
+                inner: stream,
+                fault: fault.clone(),
+            };
             (Box::new(stream), h2)
         }
         // Cleartext HTTP/2 is prior knowledge (h2c), as gRPC clients use.
@@ -441,6 +514,7 @@ pub async fn connect(
                 wire,
             },
             local_port,
+            fault,
         })
     } else {
         let io = TokioIo::new(io);
@@ -460,6 +534,7 @@ pub async fn connect(
         Ok(Connected {
             handshake: Handshake::H1 { sender, task },
             local_port,
+            fault,
         })
     }
 }

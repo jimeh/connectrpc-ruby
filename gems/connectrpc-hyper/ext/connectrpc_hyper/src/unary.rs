@@ -44,6 +44,9 @@ pub async fn unary(
             None => CallBody::empty(),
         };
         let request = spec.build(body, deadline, lease.is_h2())?;
+        // Spec hold point: parks the call before it hands its request to
+        // hyper, while the runtime keeps driving the connection.
+        core.holds.reach("request:send").await;
         let (sent, mark) = send(&mut lease, request);
         // Spec hold point: armed with a zero bound, it counts the requests
         // handed to hyper.
@@ -74,7 +77,7 @@ pub async fn unary(
                     exclude = Some(lease.id());
                     continue;
                 }
-                return Err(Failure::from_hyper(error.error()));
+                return Err(lease.failure(error.error()));
             }
         };
         let (parts, mut incoming) = response.into_parts();
@@ -86,7 +89,7 @@ pub async fn unary(
         }
         let mut body = BytesMut::new();
         while let Some(frame) = incoming.frame().await {
-            let frame = frame.map_err(|error| Failure::from_hyper(&error))?;
+            let frame = frame.map_err(|error| lease.failure(&error))?;
             if let Ok(data) = frame.into_data() {
                 if body.len() + data.len() > limit {
                     return Err(Failure::new(

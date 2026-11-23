@@ -410,7 +410,7 @@ failure as `cause`:
 | `HTTP transport failed: connection refused` | TCP refused |
 | `HTTP transport failed: host unreachable` / `connection failed` | Other connect errors |
 | `HTTP transport failed: timed out` | `connect_timeout` |
-| `HTTP transport failed: TLS verification failed` / `TLS error` | Certificate or handshake failure |
+| `HTTP transport failed: TLS verification failed` / `TLS error` | Certificate or handshake failure, or a TLS rejection the server sends after the handshake (such as for a missing client certificate) once the transport has read it; a write that fails before that read reports `connection closed`, as grpc-go reports a write error |
 | `HTTP transport failed: ALPN negotiation failed` | Streaming call on an HTTP/1.1 TLS connection |
 | `HTTP transport failed: connection closed` | The connection closed, retired or received GOAWAY |
 | `HTTP transport failed: malformed response` | Protocol error |

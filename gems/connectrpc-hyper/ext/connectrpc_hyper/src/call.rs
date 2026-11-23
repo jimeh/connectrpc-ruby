@@ -17,7 +17,7 @@ use hyper::client::conn::TrySendError;
 use tokio::sync::{mpsc, oneshot};
 
 use crate::body::CallBody;
-use crate::failure::Failure;
+use crate::failure::{Failure, TlsFault};
 use crate::gvl::Signal;
 use crate::pool::{DriverCore, Inflight, Lease, RequestSpec};
 use crate::wire::Mark;
@@ -72,6 +72,8 @@ pub struct RecvHalf {
     buffer: Bytes,
     pub trailers: Option<http::HeaderMap>,
     done: bool,
+    /// The response's connection's TLS failure record, for body errors.
+    fault: Arc<TlsFault>,
 }
 
 pub struct SendHalf {
@@ -260,6 +262,9 @@ impl CallState {
                 drop(lease);
                 return Err(Failure::new("aborted", "exchange aborted"));
             }
+            if let Some(fault) = lease.fault() {
+                recv.fault = fault.clone();
+            }
             *slot = Some(lease);
         }
         let (parts, body) = response.into_parts();
@@ -302,7 +307,7 @@ impl CallState {
                         }
                     }
                 },
-                Some(Err(error)) => return Err(Failure::from_hyper(&error)),
+                Some(Err(error)) => return Err(recv.fault.failure(&error)),
             }
         }
     }
@@ -432,7 +437,7 @@ async fn respond(
                     request.into_body()
                 }
                 None => {
-                    let failure = Failure::from_hyper(error.error());
+                    let failure = lease.failure(error.error());
                     let unsent = mark.as_ref().is_some_and(|mark| mark.unsent());
                     // hyper drops the body around the failure it reports; a
                     // body that yielded a frame never comes back.
@@ -466,7 +471,7 @@ async fn respond(
         };
         match sent.await {
             Ok(response) => Ok((response, lease)),
-            Err(error) => Err(Failure::from_hyper(error.error())),
+            Err(error) => Err(lease.failure(error.error())),
         }
     };
     let delivered = tokio::select! {

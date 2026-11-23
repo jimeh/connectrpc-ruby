@@ -73,6 +73,36 @@ RSpec.describe "TLS parity" do
                                                                                "HTTP transport failed: TLS error"])
   end
 
+  # A TLS 1.3 server rejects a missing client identity after the client's
+  # handshake completes. Each attempt parks before handing hyper its request
+  # until the server's alert has ended its connection (the socket dropped), so
+  # the first send and the one retry both meet a closed connection; the call
+  # still reports the alert the connection read. HTTP/2 has no such example:
+  # h2 may write after the server's reset and end on that write error before
+  # it reads the alert, and the call then reports the write's lost connection.
+  it "reports a missing client identity as a TLS error when the alert closes an idle connection" do
+    root = authority
+    server = tls_server(*leaf(root), client_ca: authority("client CA").first)
+    transport = hyper(ca_file: ca_file(root.first), http2: false)
+    native_driver = driver(transport)
+    native_driver.hold("request:send", 10)
+    native_driver.hold("socket:drop", 0)
+    call = Thread.new { failure(server.origin, transport) }
+    held = -> { %w[request:send socket:drop].map { |point| native_driver.reached(point) } }
+    wait_until("the first connection closed by the alert") { held.call == [1, 1] }
+    native_driver.hold("retry:unsent", 10)
+    native_driver.release("request:send")
+    wait_until("the request handed back unsent") { native_driver.reached("retry:unsent") == 1 }
+    # Re-arming replaces the point, so its count starts again from zero.
+    native_driver.hold("request:send", 10)
+    native_driver.release("retry:unsent")
+    wait_until("the retry's connection closed by the alert") { held.call == [1, 2] }
+    native_driver.release("request:send")
+    expect(call.value).to eq(["unavailable", "HTTP transport failed: TLS error"])
+  ensure
+    %w[request:send socket:drop retry:unsent].each { |point| native_driver&.release(point) }
+  end
+
   it "accepts a leaf-first chain with an intermediate" do
     root = authority
     intermediate = credentials("intermediate CA", issuer: root, authority: true)

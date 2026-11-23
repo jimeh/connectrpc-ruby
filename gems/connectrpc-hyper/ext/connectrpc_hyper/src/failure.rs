@@ -1,6 +1,7 @@
 //! Native failures. Ruby maps each `kind` to core's fixed phrases; the detail
 //! is diagnostic only and never carries paths or key material.
 use std::error::Error as _;
+use std::sync::OnceLock;
 
 #[derive(Debug, Clone)]
 pub struct Failure {
@@ -36,14 +37,8 @@ impl Failure {
     /// chunk, or trailers past the field or byte cap) as `InvalidData` or
     /// `InvalidInput`, kinds a socket failure never has.
     pub fn transport_io(error: &std::io::Error) -> Self {
-        match error
-            .get_ref()
-            .and_then(|inner| inner.downcast_ref::<rustls::Error>())
-        {
-            Some(rustls::Error::InvalidCertificate(_)) => {
-                Self::new("tls_verify", "certificate verification failed")
-            }
-            Some(_) => Self::new("tls", "TLS failure"),
+        match Self::rustls(error) {
+            Some(failure) => failure,
             None if matches!(
                 error.kind(),
                 std::io::ErrorKind::InvalidData | std::io::ErrorKind::InvalidInput
@@ -52,6 +47,16 @@ impl Failure {
                 Self::new("protocol", "malformed response")
             }
             None => Self::io("closed", error),
+        }
+    }
+
+    /// The TLS failure an I/O error carries, when rustls raised it.
+    fn rustls(error: &std::io::Error) -> Option<Self> {
+        match error.get_ref()?.downcast_ref::<rustls::Error>()? {
+            rustls::Error::InvalidCertificate(_) => {
+                Some(Self::new("tls_verify", "certificate verification failed"))
+            }
+            _ => Some(Self::new("tls", "TLS failure")),
         }
     }
 
@@ -119,6 +124,43 @@ impl Failure {
             source = inner.source();
         }
         false
+    }
+}
+
+/// The first TLS failure rustls reported on one connection, whatever call was
+/// running. hyper's HTTP/1.1 dispatcher returns an error that arrives with no
+/// request queued (such as a TLS 1.3 server's `certificate_required` alert on
+/// an idle connection) as its own output, so the next request only learns the
+/// connection closed; h2 keeps only an I/O error's kind and text, losing the
+/// rustls error. A call that then fails with a bare connection loss reports
+/// this failure instead.
+#[derive(Default)]
+pub struct TlsFault(OnceLock<Failure>);
+
+impl TlsFault {
+    /// Keeps `error`'s TLS failure if it is the first on the connection.
+    pub fn record(&self, error: &std::io::Error) {
+        if self.0.get().is_none() {
+            if let Some(failure) = Failure::rustls(error) {
+                let _ = self.0.set(failure);
+            }
+        }
+    }
+
+    /// A call's failure on this connection: a connection loss (closed, or a
+    /// protocol error without a reset code) becomes the recorded TLS failure.
+    /// Resets, GOAWAYs, limits and timeouts pass through.
+    pub fn resolve(&self, failure: Failure) -> Failure {
+        let lost =
+            failure.kind == "closed" || (failure.kind == "protocol" && failure.reset.is_none());
+        match self.0.get() {
+            Some(tls) if lost => tls.clone(),
+            _ => failure,
+        }
+    }
+
+    pub fn failure(&self, error: &hyper::Error) -> Failure {
+        self.resolve(Failure::from_hyper(error))
     }
 }
 
