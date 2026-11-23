@@ -365,15 +365,17 @@ overrides.
 `Server#close` returns `bool?`:
 
 - External callers join actual cleanup and receive the final boolean, true for
-  drained or false for forced teardown.
+  drained or false for forced teardown, unless they are interrupted first.
 - A resource-owned handler initiating positive-grace close starts the ordinary
   asynchronous drain and returns nil while pending. Admitted siblings keep their
   grace and can continue processing.
 - Owned repeated requests and cleanup/close coordinator reentry also return nil
   while pending, without joining cleanup that must join them. Nil neither
   decides the outcome nor publishes completion.
-- Repeated requests retain the first closer and expiry even when passed a
-  different grace.
+- Repeated requests with a positive grace retain the first closer and expiry
+  even when passed a different grace. Since 0.3.0 a repeated zero-grace
+  request forces the drain unless its outcome is decided or every connection
+  has retired.
 - Once closed, all calls return that same boolean, including coordinator
   reentry.
 - Zero grace still forces teardown; explicit abort and already-decided outcomes
@@ -387,12 +389,18 @@ disposal. Owned tasks initiating or reentering abort request retirement without
 waiting on cleanup that must join them. A session accepted handle's existing
 `wait_closed` operation uses this same boundary, so the active connection metric
 and server connection slot remain retained until cleanup completes. Each
-external abort/close joiner retains its own first interruption through the join.
+external private connection abort joiner retains its own first interruption
+through the join.
 
-An external close caller interrupted during a nonzero graceful drain requests
-forced session retirement, joins actual cleanup, then raises its identical first
-exception. Competitors keep their own result or exception, and an
-already-decided outcome remains unchanged.
+Since 0.3.0, a `Server#close` or `Server#abort` caller that is cancelled, times
+out or is otherwise interrupted gets its exception at once. The drain keeps its
+original grace, or the forced retirement keeps running, in a task the worker's
+session owner holds. Before 0.3.0 an interrupted close forced retirement and
+joined it before raising. A later `close` joins the drain, `close(grace: 0)`
+forces it, and cancelling the session owner still forces it. A managed worker
+stop that is cancelled while it closes therefore forces the drain when the
+worker's task ends. See
+[Interrupted server close](../connectrpc-async/README.md#interrupted-server-close).
 
 Private task joins distinguish a resolved result from actual finalization. They
 block on required children and task-local progress/finalization notifications,

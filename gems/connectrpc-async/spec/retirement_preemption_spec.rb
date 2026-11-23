@@ -16,8 +16,39 @@ RSpec.describe "Internal completion preemption" do
   it_behaves_like "completion progress observation"
 end
 
-RSpec.describe "Internal completion latch interruption" do
-  it "runs on_interrupt once for the first latch-wait interruption" do
+RSpec.describe "Internal interruptible completion join" do
+  it "raises the joiner's interruption at once and leaves the target running" do
+    reactor do |task|
+      reader, writer = Socket.pair(:UNIX, :STREAM, 0)
+      child = nil
+      root = task.async(finished: false) do |parent|
+        child = parent.async(finished: false) { reader.readpartial(1) }
+      end
+      first = RuntimeError.new("interruptible join interruption")
+      # The joiner suspends on the root's live child before this returns.
+      joiner = task.async(finished: false) do
+        AsyncHelpers::INTERNAL.join_complete(root, interruptible: true)
+      rescue StandardError => e
+        e
+      end
+      expect(joiner).not_to be_finished
+      Fiber.scheduler.raise(joiner.fiber, first)
+      expect(joiner).to be_finished
+      expect(joiner.result).to equal(first)
+      expect(root).not_to be_finished
+      expect(child).to be_alive
+      writer.write("x")
+      AsyncHelpers::INTERNAL.join_complete(root)
+      expect([root, child]).to all(be_finished)
+    ensure
+      reader&.close
+      writer&.close
+    end
+  end
+
+  # The target's block has finished but its finalization is still pending, so
+  # the joiner waits on the completion latch rather than on a task.
+  it "raises a latch-wait interruption at once" do
     reactor do |task|
       reader, writer = Socket.pair(:UNIX, :STREAM, 0)
       started = Async::Promise.new
@@ -27,10 +58,9 @@ RSpec.describe "Internal completion latch interruption" do
         Async::Condition.new.wait
       end
       started.wait
-      first = RuntimeError.new("first latch interruption")
-      requests = []
+      first = RuntimeError.new("latch interruption")
       joiner = Async::Task.new(task, finished: false) do
-        AsyncHelpers::INTERNAL.join_complete(root, on_interrupt: -> { requests << first }) { root.cancel }
+        AsyncHelpers::INTERNAL.join_complete(root, interruptible: true) { root.cancel }
       rescue StandardError => e
         e
       end
@@ -39,12 +69,14 @@ RSpec.describe "Internal completion latch interruption" do
         state = root.instance_variable_get(:@connectrpc_async_completion)
         expect(state).not_to be_nil
         expect(state).not_to be_terminal
-        expect(root).to be_alive
         Fiber.scheduler.raise(joiner.fiber, first)
+        expect(joiner).to be_finished
+        expect(state).not_to be_terminal
       end
       joiner.run
       expect(joiner.wait).to equal(first)
-      expect(requests).to eq([first])
+      waiter.wait
+      AsyncHelpers::INTERNAL.join_complete(root)
       expect([root, joiner, waiter]).to all(be_finished)
     ensure
       reader&.close

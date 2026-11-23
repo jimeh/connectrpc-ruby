@@ -204,7 +204,8 @@ RSpec.describe "HTTP/2 ownership and setup bounds" do
       expect(record.raw).not_to be_closed
       first_close = task.async { host.close(grace: 1) }
       wait_until(task, "closing host") { host_session(host).instance_variable_get(:@state) == :closing }
-      second_close = task.async { host.close(grace: 0) }
+      # A repeated positive-grace close joins; only zero grace forces.
+      second_close = task.async { host.close(grace: 0.5) }
       release.enqueue(true)
       expect(call.wait.message.name).to eq("held")
       expect(first_close.wait).to be(true)

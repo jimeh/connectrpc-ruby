@@ -87,7 +87,7 @@ RSpec.shared_examples "owned pending close" do |protocol|
           first_expiry = expiries.first
           commands.enqueue(lambda {
             expect(host.close(grace: 3600)).to be_nil
-            expect(session.close(grace: 0)).to be_nil
+            expect(session.close(grace: 1)).to be_nil
             expect(session.instance_variable_get(:@closer)).to equal(closer)
           })
           progressed.dequeue
@@ -114,22 +114,28 @@ RSpec.shared_examples "owned pending close" do |protocol|
           # forced outcome is decided but before cleanup is released.
           reentries = []
           allow(gate).to receive(:hold).and_wrap_original do |hold, error|
-            reentries << session.close(grace: 0)
+            reentries << session.close(grace: 1)
             hold.call(error)
           end
           case outcome
           when :normal then commands.enqueue(nil)
           when :abort then aborter = task.async(finished: false) { session.abort }
-          when :interrupted then Fiber.scheduler.raise(external.fiber, first)
+          when :interrupted
+            # The interrupted caller leaves at once; the drain keeps its grace.
+            Fiber.scheduler.raise(external.fiber, first)
+            expect(external).to be_finished
+            expect(sibling).to be_alive
+            expect(session.instance_variable_get(:@close_decided)).to be_nil
+            commands.enqueue(nil)
           end
           expect(gate.entered.dequeue).to equal(sibling)
           expect(reentries).to eq([nil])
-          expect(external).not_to be_finished
+          expect(external.finished?).to be(outcome == :interrupted)
           expect(session.instance_variable_get(:@state)).to eq(:closing)
           expect(resources.any? { |resource| !retirement_complete?(resource) }).to be(true)
           gate.release
           join_retirement_tasks(task, sibling_call, initiating_call, external, aborter, sibling, initiator, closer)
-          final = outcome == :normal
+          final = %i[normal interrupted].include?(outcome)
           expect(external.result).to equal(outcome == :interrupted ? first : final)
           expect(sibling_call.result.message.name).to eq("sibling") if final
           expect(sibling_call.result).to be_a(ConnectRPC::Error) unless final

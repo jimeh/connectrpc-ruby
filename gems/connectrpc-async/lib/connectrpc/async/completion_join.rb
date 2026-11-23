@@ -168,12 +168,17 @@ module ConnectRPC
                            "status=#{target.status}; attached_children=#{attached.inspect}")
         end
 
-        def self.call(task, failure: false, on_interrupt: nil)
+        # A join retains its caller's first interruption until the target has
+        # actually finished, then raises it. An interruptible join raises it at
+        # once and leaves the target running on its own.
+        def self.call(task, failure: false, interruptible: false)
           interruption = stored_failure = nil
           pending = [[task, false, {}.compare_by_identity]]
           begin
             yield if block_given?
           rescue Exception => e # rubocop:disable Lint/RescueException -- finish the join before propagating caller interruption
+            raise if interruptible
+
             interruption = e
           end
           while (entry = pending.last)
@@ -181,11 +186,6 @@ module ConnectRPC
             raise ArgumentError, "Cannot join the current task" if target.current?
 
             begin
-              if interruption && on_interrupt
-                request = on_interrupt
-                on_interrupt = nil
-                request.call
-              end
               target.wait unless known
               entry[1] = true
             rescue Exception => e # rubocop:disable Lint/RescueException -- repeated interruption cannot abandon retirement
@@ -193,6 +193,8 @@ module ConnectRPC
                 stored_failure ||= e if (failure && target.equal?(task)) || !e.is_a?(StandardError)
                 entry[1] = true
               else
+                raise if interruptible
+
                 interruption ||= e
               end
               next
@@ -235,6 +237,8 @@ module ConnectRPC
             begin
               signal.wait
             rescue Exception => e # rubocop:disable Lint/RescueException -- latch interruption owns no completion credit
+              raise if interruptible
+
               interruption ||= e
             end
           end

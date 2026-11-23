@@ -112,8 +112,15 @@ module ConnectRPC
 
         owned = resource_owned_task?
         launch = @state != :closing
+        # A zero-grace close forces a drain that an earlier close started,
+        # unless its outcome is decided or no connection is left to force.
+        # Any other repeated close joins it.
+        force = !launch && grace.zero? && !@close_decided && retiring_resources?
         if launch
           @state = :closing
+          # The session owner, not the caller, owns the drain: it continues
+          # under its own grace when an interrupted caller leaves, and owner
+          # cancellation forces it.
           @closer = ::Async::Task.new(@owner, finished: false) do
             begin
               close_owned(Internal.now + grace)
@@ -125,18 +132,20 @@ module ConnectRPC
         end
         if owned
           @closer.run if launch
+          abort_owned if force
           return @state == :closed ? @close_outcome : nil
         end
 
+        abort_owned(interruptible: true) if force
         waiter = @closer || @cleanup
-        Internal.join_complete(waiter, failure: true, on_interrupt: method(:abort_owned)) { @closer.run if launch }
+        Internal.join_complete(waiter, failure: true, interruptible: true) { @closer.run if launch }
         @close_outcome
       end
 
       def abort
         check_affinity!
         @tls.send(:check_recursion!)
-        abort_owned
+        abort_owned(interruptible: true)
         self
       end
 
@@ -198,8 +207,10 @@ module ConnectRPC
           @session.send(:serve, @resource) { |resource| @resource = resource }
         end
 
+        # An interrupted caller leaves at once; the connection's cleanup task
+        # finishes retirement, which wait_closed still observes.
         def close
-          @resource.abort unless @resource.finishing?
+          @resource.abort(interruptible: true) unless @resource.finishing?
         end
 
         def wait_closed
@@ -230,6 +241,10 @@ module ConnectRPC
       def capacity?
         @resources.reject! { |resource| resource.send(:retirement_completed?) }
         @resources.size < @max_connections
+      end
+
+      def retiring_resources?
+        @resources.any? { |resource| !resource.send(:retirement_completed?) }
       end
 
       # Resources signal the shared progress condition when they change and
@@ -656,7 +671,10 @@ module ConnectRPC
         @close_outcome = outcome
       end
 
-      def abort_owned
+      # The closer and the lifetime guard own retirement, so they join it
+      # through interruption. An external caller's join is interruptible: it
+      # raises at once and leaves retirement to finish on its own.
+      def abort_owned(interruptible: false)
         return if @cleanup&.current?
 
         owned = resource_owned_task?
@@ -670,7 +688,7 @@ module ConnectRPC
         if owned
           @cleanup.run if launch
         else
-          Internal.join_complete(@cleanup, failure: true) { @cleanup.run if launch }
+          Internal.join_complete(@cleanup, failure: true, interruptible: interruptible) { @cleanup.run if launch }
         end
       end
 

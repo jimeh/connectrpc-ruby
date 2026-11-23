@@ -604,11 +604,10 @@ ends and leaves the remaining connections to `Close`.
    retirement. Whether a drain succeeded should depend on whether its streams
    finished in time, not on how the peer left afterwards.
 
-Some code predates rules 1, 4 and 5: an interrupted server close escalates to
-a forced abort and joins it, joins rank interruptions against stored failures,
-`Host` raises a failed teardown's error, and a drain whose streams finished
-still reports false when the peer's EOF doesn't arrive within its grace. Rule
-3 may let most of the private completion join go.
+Some code predates rules 1, 4 and 5: joins rank interruptions against stored
+failures, `Host` raises a failed teardown's error, and a drain whose streams
+finished still reports false when the peer's EOF doesn't arrive within its
+grace. Rule 3 may let most of the private completion join go.
 [#200](https://github.com/jimeh/connectrpc-ruby/issues/200) tracks these.
 
 ## RPC lifecycle observation
