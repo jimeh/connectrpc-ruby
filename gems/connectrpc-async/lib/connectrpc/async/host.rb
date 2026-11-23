@@ -209,9 +209,12 @@ module ConnectRPC
         @closing = true
         # Store identity before eager execution; callers never own this sequence.
         @exit_task = ::Async::Task.new(@owner, transient: true, finished: false) do
-          @session.abort if force
+          # A failed abort still stops accepting and resolves completion, so
+          # waiters never hang on it; joins of this task then raise it.
+          failure = Internal::Teardown.capture { @session.abort } if force
           stop_accepting
           @completion.resolve(@failure)
+          raise failure if failure
         end
       end
 

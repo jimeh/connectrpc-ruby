@@ -197,6 +197,60 @@ RSpec.describe ConnectRPC::Async::Host do
     end
   end
 
+  # The session aborts fully, then raises, as a failed retirement does.
+  def failing_abort(host, failure)
+    allow(host_session(host)).to receive(:abort).and_wrap_original do |abort|
+      abort.call
+      raise failure
+    end
+  end
+
+  it "resolves completion when the session abort fails after a terminal cause in startup" do
+    reactor do
+      host = described_class.new(server: server)
+      sockets = two_listeners(host)
+      failure = RuntimeError.new("session abort failed")
+      failing_abort(host, failure)
+      faults = AcceptFaults.new { |index, _attempt| raise IOError, "first accept" if index.zero? }
+      faults.enable do
+        expect { host.start }.to(raise_error { |error| expect(error).to equal(failure) })
+        expect(sockets).to all(be_closed)
+        expect(faults.tasks).to all(be_finished)
+        expect(host.instance_variable_get(:@completion)).to be_resolved
+        expect(wait_error(host)).to equal(failure)
+      ensure
+        host.close(grace: 0)
+      end
+    end
+  end
+
+  it "resolves wait when the session abort fails after a terminal cause" do
+    reactor do |task|
+      host = described_class.new(server: server)
+      sockets = two_listeners(host)
+      failure = RuntimeError.new("session abort failed")
+      failing_abort(host, failure)
+      trigger = Async::Queue.new
+      faults = AcceptFaults.new do |index, _attempt|
+        next unless index.zero?
+
+        trigger.dequeue
+        raise IOError, "terminal after start"
+      end
+      faults.enable do
+        host.start
+        trigger.enqueue(true)
+        wait_until(task, "the exit task to finish") { host.instance_variable_get(:@exit_task)&.finished? }
+        expect(host.instance_variable_get(:@completion)).to be_resolved
+        expect(sockets).to all(be_closed)
+        expect(faults.tasks).to all(be_finished)
+        expect(wait_error(host)).to equal(failure)
+      ensure
+        host.close(grace: 0)
+      end
+    end
+  end
+
   it "restarts the resource-error backoff after each successful raw accept" do
     reactor do |task|
       host = described_class.new(server: server, idle_timeout: nil)
