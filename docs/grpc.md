@@ -83,7 +83,9 @@ The generated file loads the Google protobuf binding, so neither side passes
 `handlers_for` maps each RPC to the object's method of the same snake-case name.
 
 Code that already runs in a reactor task can use `ConnectRPC::Async::Transport`
-with the same options instead. Other gRPC clients, such as grpc-go, can call
+with the same options instead. Since 0.3.0, `ConnectRPC::Async::PerCallTransport`
+suits occasional calls to many servers: it takes no origin and opens one
+connection per call, from a plain thread or inside a reactor. Other gRPC clients, such as grpc-go, can call
 the same server. The [Async guide](../gems/connectrpc-async/README.md) covers
 TLS, mTLS, keepalive and connection management.
 

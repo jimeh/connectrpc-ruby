@@ -65,6 +65,15 @@ Dir.mktmpdir("streaming-interop-", File.join(root, "vendor/async")) do |fixtures
       ensure
         threaded.close(grace: 0)
       end
+      per_call = ConnectRPC::Async::PerCallTransport.new(**options)
+      %i[proto json].product(%i[identity gzip]).each do |codec, coding|
+        core = ConnectRPC::Client.new(base_url: origin, binding: StreamingInterop::BINDING,
+                                      transport: per_call, codec: codec, encoding: coding)
+        Thread.new { StreamingInterop::PerCallClientProbe.new(core).run }.join
+        helpers.reactor { StreamingInterop::PerCallClientProbe.new(core).run }
+        puts "PASS Ruby->Go streaming #{mode}/#{codec}/#{coding} SS incremental/error/bounds/cancel " \
+             "through PerCallTransport from a plain thread and inside a reactor"
+      end
     ensure
       input.close
       unless process.join(5)

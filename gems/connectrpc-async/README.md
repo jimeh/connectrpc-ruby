@@ -27,6 +27,7 @@ Pick the component that matches what you need:
 | [`Host`](#host) | Serve RPCs from a standalone HTTP/2 listener (h2c, TLS or mTLS) inside your Async reactor |
 | [`Transport`](#transport) | Call HTTP/2 services from inside an Async reactor, with pooled, multiplexed connections, streaming and gRPC |
 | [`ThreadedTransport`](#ordinary-threads) | Call Connect unary and server-streaming services, or native gRPC unary and server-streaming services, over HTTP/2 from ordinary threads, such as Puma or Sidekiq workers, without running a reactor yourself |
+| [`PerCallTransport`](#one-off-calls) | Since 0.3.0, make occasional Connect or native gRPC unary and server-streaming calls to many origins over one HTTP/2 connection per call, from any thread or inside a reactor, keeping no connections between calls |
 | [`HTTP1Transport`](#explicit-http11-client) | Call Connect services that only speak HTTP/1.1, including unary, server streaming and client streaming |
 | [`Application`, `ServerSession`](#native-application-and-managed-tls) | Build another host on the native application and session, as [connectrpc-falcon](../connectrpc-falcon/README.md) does |
 
@@ -76,7 +77,10 @@ servers and HTTP/1.1 and HTTP/2 clients, with mutual TLS.
 The application owns a long-lived reactor task. Construction, networking and
 lifecycle operations must use its reactor and thread. There is no hidden
 synchronous reactor thread; [`ThreadedTransport`](#ordinary-threads) is the
-explicit, separate object for ordinary threads.
+explicit, separate object for ordinary threads. Since 0.3.0,
+[`PerCallTransport`](#one-off-calls) owns nothing between calls: each call
+runs inline on the caller's reactor, or on its own short-lived owner thread
+outside one, and has finished with it before returning.
 
 Scheduler-compatible I/O yields; CPU, native codecs and native DNS may block.
 Ensure graceful close before the owner exits. Owner cancellation aborts only
@@ -910,6 +914,169 @@ re-raises its own exception while the others still get the outcome.
 MRI hands the GVL to a thread waking from I/O only after the running thread's
 time slice, 100 ms by default, so CPU-bound threads delay the owner thread.
 Lowering `RUBY_THREAD_TIMESLICE`, for example to 10, reduces that latency.
+
+## One-off calls
+
+Since 0.3.0, `PerCallTransport` opens one HTTP/2 connection per call, runs the
+exchange and closes the connection before the call returns. It suits a process
+that calls many origins occasionally, such as a Rails action that makes one
+gRPC call to one of hundreds of devices, where pooled connections, keepalive
+and an owner thread per origin cost more than a connection setup per call. For
+repeated calls to a few origins, use `ThreadedTransport` or `Transport`, which
+reuse their connections.
+
+```ruby
+require "connectrpc/async"
+
+# Boot, for example in an initializer. No thread or socket starts here.
+DEVICES = ConnectRPC::Async::PerCallTransport.new(ca_file: "devices-ca.pem")
+
+client = ConnectRPC::Client.new(base_url: "https://device-17.internal:8443", binding: binding,
+                                transport: DEVICES, protocol: :grpc)
+client.call(method, message, timeout: 2) # Any thread, or inside an Async task.
+```
+
+`PerCallTransport.new(ca_file: nil, certificate_chain: nil, private_key: nil,
+connect_timeout: 10, proxy: :environment)` validates its options, compiles one
+TLS snapshot at construction, with the system roots plus the optional
+`ca_file`, takes its [proxy](#proxies) snapshot and holds only frozen
+configuration. It has no `origin:` and no `close`: every call dials the scheme,
+host and port of its request URL, or tunnels to them through a proxy, so one
+instance serves every origin from any number of threads. `http` URLs use h2c
+with prior knowledge and `https` URLs use TLS with ALPN `h2`. The request URL,
+including core's path
+prefix and a GET query, reaches the server unchanged. A URL that is not HTTP(S),
+has no host or carries userinfo, and TLS options with an `http` URL, raise
+`ArgumentError` before any socket opens; the transport never falls back to
+plaintext.
+
+It supports Connect unary (POST and safe GET) and server streaming, and native
+gRPC unary and server streaming: `streaming_capabilities` is `[:server_stream]`
+and `grpc_capabilities` is `[:unary, :server_stream]`, so core rejects client
+and bidi streaming before any I/O.
+
+- Inside an Async task, the call runs inline on the caller's reactor, as with
+  `Transport`, and starts no thread. Its connection tasks belong to a private
+  task under the caller's task, which the call joins before it returns.
+  Scheduler-compatible I/O yields to sibling tasks; native DNS can block the
+  reactor, as for every Async client.
+- Elsewhere, such as in Puma, Unicorn, Passenger, Sidekiq or `Thread.new`, the
+  call runs on its own owner thread with its own reactor, as with
+  `ThreadedTransport`, and joins that thread before it returns. A stream's
+  block still runs on the caller's thread.
+- Each call makes one setup attempt bounded by `connect_timeout`, with no
+  backoff, keepalive, connection observer or byte budget, and no cap on
+  concurrent calls. A failed attempt fails the call with the same `unavailable`
+  reasons as `Transport`, such as `connection refused` or `TLS verification
+  failed`.
+- One connection per call is the ordinary case. A Connect unary call that the
+  server provably never processed is resent once, as with `Transport`: a plain
+  `REFUSED_STREAM` resends on the same connection, while a GOAWAY that cuts the
+  call off resends on a second connection, as grpc-go's transparent retry does.
+- After the exchange, the call closes its connection gracefully: GOAWAY, a
+  half-close, then the peer's FIN. The wait for that FIN lasts at most 100 ms
+  and ends 100 ms before the RPC deadline. That leaves time for the raw close
+  that follows, so core's deadline check after the transport returns does not
+  turn a result that arrived in time into `deadline_exceeded`. With 100 ms or
+  less of the deadline left, the close is raw. A close failure never replaces
+  the call's result or a stream block's own exception. The close budget is
+  read from the deadline's clock in the caller's own thread or fiber. If a
+  custom `Deadline` clock fails while the call computes its close budget, the
+  close is raw and teardown still runs. Outside a reactor, the call keeps its
+  own outcome whatever the clock raises, and interrupts from other threads
+  wait until the budget is computed. Inside one, the call keeps its outcome
+  when the clock raises a `StandardError` other than `Async::TimeoutError`.
+  Any other exception from the clock, such as `Interrupt`, counts as an
+  interrupt: it is raised after the raw close and teardown, as is an
+  interrupt that lands meanwhile. One limitation inside a reactor: unless it
+  is an `Async::TimeoutError`, a `StandardError` raised into the caller while
+  a custom clock runs cannot be told apart from the clock's own failure, so
+  the call keeps its outcome. A `with_timeout` whose custom error class does
+  not inherit from `Async::TimeoutError` is one such case.
+- Deadlines, `CancellationToken`s, `Timeout`, `Thread#raise` and `Thread#kill`
+  behave as for `ThreadedTransport` outside a reactor, and task cancellation and
+  `with_timeout` as for `Transport` inside one; an interrupted stream is reset
+  with `RST_STREAM(CANCEL)`. An interrupt that lands while the call closes its
+  connection is raised once that teardown has finished. Outside a reactor such
+  an interrupt ends the close's own wait, and the call still joins its owner
+  threads, within the close's bound, before raising it. With a deadline,
+  each wait for the owner's outcome, the close included, ends at most one
+  cleanup allowance (100 ms) after the later of the deadline and the wait's
+  start, and the close always gives the owner at least one allowance from
+  its start. An owner that responds is therefore joined even when the close
+  starts long after the deadline, for example after a stream block that
+  kept working past it. A stalled owner, for example blocked in native code,
+  holds the call one allowance past the deadline for each such wait: two for
+  a unary call, or for a stream whose block ends when its deadline error
+  arrives. A stream block that rescues that error and returns at once adds
+  the stream's own terminal wait, up to a third. The owner exits once it
+  resumes. Beyond those bounds, an owner that has already published its
+  outcome and is exiting, for example while it waits for the GVL, is still
+  joined, which can take up to another allowance. With a custom `Deadline`
+  clock, each wait converts the remaining time it reads when it starts to
+  monotonic time, so the bounds hold against that reading rather than the
+  custom clock.
+- Inside a reactor, a `Thread#raise` from another thread is best-effort, as
+  for `Transport`: it lands in whichever fiber is running, and one that lands
+  in the caller's fiber at certain points of its teardown can return before
+  the call's tasks have been joined. Task cancellation and `with_timeout` are
+  the supported interrupts there.
+  [#185](https://github.com/jimeh/connectrpc-ruby/issues/185) tracks
+  hardening this across the Async transports.
+- After fork, the transport holds no inherited state; a child's calls are
+  independent. A call in progress during fork stays the parent's.
+
+Instrumentation reports `PerCallTransport` as the transport class, with the
+same call facts, outcomes and completions as the other HTTP/2 clients.
+
+### Proxies
+
+Since 0.3.0, `PerCallTransport` can reach its origins through an `http://`
+proxy. The pooled `Transport`, `ThreadedTransport` and `HTTP1Transport` take no
+`proxy:` option and never read the proxy environment.
+
+```ruby
+ConnectRPC::Async::PerCallTransport.new                     # proxy: :environment
+ConnectRPC::Async::PerCallTransport.new(proxy: "http://user:secret@proxy.internal:3128")
+ConnectRPC::Async::PerCallTransport.new(proxy: nil)         # Always direct.
+```
+
+- `proxy: :environment`, the default, reads `HTTP_PROXY`, `HTTPS_PROXY`,
+  `NO_PROXY` and their lowercase forms once, at construction. The proxy is
+  chosen by the request URL's scheme, as NetHTTP, Go's `net/http` and
+  `connectrpc-hyper` choose it: an h2c target is `http://`, so it takes
+  `HTTP_PROXY`, and a TLS target takes `HTTPS_PROXY`. grpc-go instead looks
+  proxies up with an `https` scheme for every target, so it would use
+  `HTTPS_PROXY` for the same h2c target. In a CGI process (`REQUEST_METHOD`
+  set) `HTTP_PROXY` fails h2c calls instead of being trusted, as in NetHTTP.
+  `NO_PROXY`, `localhost` and loopback addresses connect directly, and values
+  are parsed exactly as for
+  [NetHTTP](../../docs/unary.md#nethttp-tls-and-proxies).
+- A String or URI proxies every call, including loopback and `NO_PROXY` hosts;
+  `nil` always connects directly. A value that is not a valid proxy raises
+  `ArgumentError` (`Invalid proxy configuration`), and an `https://` or
+  `socks5://` proxy raises `ArgumentError` (`Unsupported proxy scheme`), both
+  with no `cause`. `inspect` shows only `proxy=environment`, `explicit` or
+  `direct`.
+- Every proxied call opens one TCP connection to the proxy and sends
+  `CONNECT host:port` with a matching `Host` field, since HTTP/2 cannot use a
+  forward proxy. Proxy URL userinfo is percent-decoded and sent as
+  `Proxy-Authorization: Basic`. The `CONNECT` request carries no
+  `User-Agent`. After a 200 reply, TLS verifies the target host, with its SNI
+  and ALPN `h2`, or h2c starts, exactly as without a proxy. Bytes an h2c server
+  sends right after the reply stay in the connection.
+- The `CONNECT` exchange is part of the call's one setup attempt, so
+  `connect_timeout` bounds it, and so does Go's 60-second `CONNECT` cap. A
+  deadline or cancellation while it is pending ends the call with its own
+  outcome and closes the proxy connection.
+- An unusable environment proxy fails the call closed, never going direct and
+  before any socket opens. Proxy failures are `unavailable` with a fixed
+  reason: `invalid proxy address`, `unsupported proxy scheme`,
+  `proxy refused in CGI environment`, `proxy authentication failed` (status
+  407), `proxy tunnel refused` (any other status but 200),
+  `proxy tunnel failed` (a malformed, truncated or oversized reply, or bytes
+  after a 200 reply to a TLS target) and `proxy tunnel timed out`. Error
+  messages never include proxy URLs, credentials or reply text.
 
 ## Explicit HTTP/1.1 client
 

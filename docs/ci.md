@@ -20,7 +20,7 @@ candidate and `Verified` jobs and the Windows job wait for the cross-built gems:
 | Rails 8.0 | 3.4.12 | `mise run test:rails`, `generation:check:rails`, `check:package:rails` with `RAILS_LANE=8.0` |
 | Rails 8.1 | 3.4.12, 4.0.9 | Same Rails commands with `RAILS_LANE=8.1` |
 | Lowest allowed async, falcon, rack, rails, otel, prometheus, yabeda, health, sentry, hyper | 3.4.12 | `mise run floors:<leaf>` |
-| Async specs/package | 3.4.12, 4.0.9 | `mise run async:test`, `mise run async:package`, `mise run async:conformance`, `async:conformance:grpc`, `async:conformance:http1`, `async:conformance:threaded` |
+| Async specs/package | 3.4.12, 4.0.9 | `mise run async:test`, `mise run async:package`, `mise run async:conformance`, `async:conformance:grpc`, `async:conformance:http1`, `async:conformance:threaded`, `async:conformance:per-call` |
 | Async Go interoperability | 3.4.12, 4.0.9 | `mise run async:interop`, `mise run async:interop:streaming`, `async:interop:http1`, `async:interop:grpc`, `async:interop:keepalive` |
 | Rack specs/check/package | 3.4.12, 4.0.9 | `mise run rack:test`, `mise run rack:check`, `mise run rack:package` |
 | In-process testing | 3.4.12, 4.0.9 | `mise run testing:verify` |

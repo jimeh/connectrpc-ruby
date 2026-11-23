@@ -25,7 +25,8 @@ RSpec.describe HTTP2InteropDiagnostics do
 
       expect(output.string.lines.size).to eq(1)
       diagnostic = JSON.parse(output.string.delete_prefix("HTTP/2 interop failure "))
-      expect(diagnostic).to include("mode" => "h2c", "codec" => "proto", "phase" => "setup_connection",
+      # The TCP dial is the innermost transport frame of a refused setup.
+      expect(diagnostic).to include("mode" => "h2c", "codec" => "proto", "phase" => "dial",
                                     "method" => AsyncHelpers::ECHO::ECHO.path, "code" => "unavailable")
       expect(diagnostic.fetch("original_error")).to include("class" => "Errno::ECONNREFUSED")
       expect(diagnostic.dig("original_error", "backtrace")).not_to be_empty

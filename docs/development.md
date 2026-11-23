@@ -845,6 +845,9 @@ aggregate and the existing two-Ruby CI jobs. No test results are cached.
 `async:conformance:threaded` adds separate Connect and gRPC unary/server-stream
 client profiles through `ThreadedTransport` from plain threads; see
 [conformance](../conformance/README.md#threadedtransport-client-profiles).
+`async:conformance:per-call` runs the same inventories through `PerCallTransport`
+from plain threads and inside a reactor; see
+[conformance](../conformance/README.md#percalltransport-client-profiles).
 The Falcon-only `falcon:conformance:http1` leaf adds separate SS/CS server
 profiles requiring 174 identity and 160 gzip passes. Root `verify` includes this
 complete H1 gate, so use that pass for full-profile confirmation. Fresh exact
@@ -864,7 +867,7 @@ servers through connection churn and faults, then checks that everything they
 own retires. It is non-gating and belongs to no `test` or `verify` task:
 
 ```sh
-mise run async:soak     # Async H2 Transport, ThreadedTransport and Host
+mise run async:soak     # Async H2 Transport, ThreadedTransport, PerCallTransport and Host
 mise run falcon:soak    # Falcon HTTP/2 and HTTP/1.1 (HTTP1Transport, Net::HTTP)
 mise run soak           # both, Async then Falcon
 ```
