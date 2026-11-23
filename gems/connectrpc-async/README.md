@@ -974,11 +974,12 @@ and bidi streaming before any I/O.
   `REFUSED_STREAM` resends on the same connection, while a GOAWAY that cuts the
   call off resends on a second connection, as grpc-go's transparent retry does.
 - After the exchange, the call closes its connection gracefully: GOAWAY, a
-  half-close, then the peer's FIN. The wait for that FIN lasts at most 100 ms
-  and ends 100 ms before the RPC deadline. That leaves time for the raw close
-  that follows, so core's deadline check after the transport returns does not
-  turn a result that arrived in time into `deadline_exceeded`. With 100 ms or
-  less of the deadline left, the close is raw. A close failure never replaces
+  half-close, then the peer's FIN. The wait for that FIN lasts at most one
+  [cleanup allowance](#cleanup-allowance), 1 second, and ends one allowance
+  before the RPC deadline. That leaves time for the raw close that follows, so
+  core's deadline check after the transport returns does not turn a result
+  that arrived in time into `deadline_exceeded`. With one allowance or less of
+  the deadline left, the close is raw. A close failure never replaces
   the call's result or a stream block's own exception. The close budget is
   read from the deadline's clock in the caller's own thread or fiber. If a
   custom `Deadline` clock fails while the call computes its close budget, the
@@ -1001,7 +1002,7 @@ and bidi streaming before any I/O.
   an interrupt ends the close's own wait, and the call still joins its owner
   threads, within the close's bound, before raising it. With a deadline,
   each wait for the owner's outcome, the close included, ends at most one
-  cleanup allowance (100 ms) after the later of the deadline and the wait's
+  cleanup allowance (1 second) after the later of the deadline and the wait's
   start, and the close always gives the owner at least one allowance from
   its start. An owner that responds is therefore joined even when the close
   starts long after the deadline, for example after a stream block that
@@ -1205,8 +1206,10 @@ cleanup; it is not a hard deadline for that cleanup.
 
 The allowance covers HTTP/2 cleanup after a call ends, the refused-stream
 output retirement before a resend, HTTP/1 cleanup (also capped by the RPC
-deadline), the cleanup of a timed read, and the `ThreadedTransport` waits past
-a deadline, cancellation or close grace for a stalled owner thread. Timed reads
+deadline), the cleanup of a timed read, the `ThreadedTransport` waits past
+a deadline, cancellation or close grace for a stalled owner thread, and
+`PerCallTransport`'s close budget, its reserve before the deadline and its
+owner waits (see [One-off calls](#one-off-calls)). Timed reads
 include a server handler's request-body reads, so a read the server cancels
 also has 1 second to unwind before its connection is aborted. Server
 connections keep their own 100 ms bound for a control frame's own write and the

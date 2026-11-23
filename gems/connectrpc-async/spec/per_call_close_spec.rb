@@ -9,6 +9,9 @@ RSpec.describe "PerCallTransport connection close, close budget and outcome prec
   include ThreadedStreamHelpers
   include PerCallHelpers
 
+  # The client cleanup allowance, which is also the close's reserve before the deadline.
+  allowance = AsyncHelpers::INTERNAL::CLEANUP_SECONDS
+
   def no_error_goaway = [0, 0, Protocol::HTTP2::Error::NO_ERROR, ""]
 
   # A raw peer's Connect unary proto reply for Mixed.Lookup.
@@ -98,28 +101,29 @@ RSpec.describe "PerCallTransport connection close, close budget and outcome prec
       end
     end
 
-    # About 150 ms of the deadline remain when the reply leaves a peer that
-    # never sends FIN. The FIN wait takes all but the 100 ms reserve, so the
-    # call returns with the reserve, and no more, still on its deadline.
-    it "waits for FIN until one reserve before the deadline when 100 to 200 ms remain on the #{path} path" do
+    # About 50 ms more than the reserve, one cleanup allowance, remains of the
+    # deadline when the reply leaves a peer that never sends FIN. The FIN wait
+    # takes all but the reserve, so the call returns with the reserve, and no
+    # more, still on its deadline.
+    it "waits for FIN until one reserve before the deadline when just over one reserve remains on the #{path} path" do
       deadline = [nil]
       left_at_reply = Thread::Queue.new
       peer = withholding_peer do |incoming|
-        # Wall-clock positioning is the scenario: the reply leaves about 150 ms before the deadline.
-        sleep([deadline.first.remaining - 0.15, 0].max)
+        # Wall-clock positioning is the scenario: the reply leaves about 50 ms before the reserve starts.
+        sleep([deadline.first.remaining - allowance - 0.05, 0].max)
         left_at_reply << deadline.first.remaining
         incoming.send_response(proto_reply("u"))
       end
       typed = mixed_client(per_call, "http://127.0.0.1:#{peer.peer.port}")
       with_boundaries do |boundaries|
         result, left = on_path(path) do
-          deadline[0] = ConnectRPC::Deadline.new(0.5)
+          deadline[0] = ConnectRPC::Deadline.new(allowance + 0.4)
           [typed.lookup(item("u"), deadline: deadline.first).message.name, deadline.first.remaining]
         end
         expect(result).to eq("u")
-        expect(pop_within(left_at_reply, "the reply")).to be_between(0.1, 0.2)
+        expect(pop_within(left_at_reply, "the reply")).to be_between(allowance, allowance + 0.1)
         # A wait that ended any earlier or later would leave more or less than the reserve.
-        expect(left).to be_between(0.06, AsyncHelpers::INTERNAL::CLEANUP_SECONDS + 0.01)
+        expect(left).to be_between(allowance - 0.04, allowance + 0.01)
         expect_released(boundaries.take.first)
         # The peer records the GOAWAY on its own reader, which can trail the call's return.
         eventually("the peer to record the GOAWAY") { peer.peer.goaways.any? }
@@ -136,7 +140,8 @@ RSpec.describe "PerCallTransport connection close, close budget and outcome prec
     # call still has most of its time on its own clock, so the close follows
     # that time: it stays graceful and joins the owner before the call returns.
     it "closes gracefully and joins the call while a slow custom deadline clock has time left on the #{path} path" do
-      timeout = 0.2
+      # Over one reserve, so the close stays graceful on the deadline's own clock.
+      timeout = allowance + 0.2
       peer = threaded_recording_peer do |incoming|
         body = Protocol::HTTP::Body::Writable.new
         incoming.send_response(Protocol::HTTP::Response[200, { "content-type" => "application/connect+proto" }, body])
@@ -193,8 +198,8 @@ RSpec.describe "PerCallTransport connection close, close budget and outcome prec
           [transport.call(request("#{origin}/ok", deadline: ConnectRPC::Deadline.new(5))), monotonic - started]
         end
         expect([response.status, response.body]).to eq([200, "ok"])
-        # The drain waited its whole 100 ms budget for a FIN that never came.
-        expect(elapsed).to be_between(AsyncHelpers::INTERNAL::CLEANUP_SECONDS, 1)
+        # The drain waited its whole one-allowance budget for a FIN that never came.
+        expect(elapsed).to be_between(allowance, allowance + 0.9)
         expect_released(boundaries.take.first)
         # The peer records the GOAWAY on its own reader, which can trail the call's return.
         eventually("the peer to record the GOAWAY") { peer.peer.goaways.any? }
@@ -233,7 +238,7 @@ RSpec.describe "PerCallTransport connection close, close budget and outcome prec
       deadline = ConnectRPC::Deadline.new(0.2)
       # The caller's delay past the deadline is the condition under test: the
       # close starts two cleanup allowances after it.
-      late = TracePoint.new(:call) { sleep(deadline.remaining + (AsyncHelpers::INTERNAL::CLEANUP_SECONDS * 2)) }
+      late = TracePoint.new(:call) { sleep(deadline.remaining + (allowance * 2)) }
       late.enable(target: PerCallHelpers::PER_CALL.instance_method(:close_plan))
       with_boundaries do |boundaries|
         response = on_path(path) { per_call.call(request("#{origin}/late", deadline: deadline)) }
@@ -304,7 +309,7 @@ RSpec.describe "PerCallTransport connection close, close budget and outcome prec
               next monotonic unless planning.first
 
               # The clock's own running time is the condition under test.
-              sleep(AsyncHelpers::INTERNAL::CLEANUP_SECONDS * 2)
+              sleep(allowance * 2)
               throw :clock_left, :thrown if exit == :throws
               monotonic + 1000
             })
@@ -592,8 +597,8 @@ RSpec.describe "PerCallTransport connection close, close budget and outcome prec
     error, started, returned = value_within(caller, "the stalled caller")
     expect([error.class, error.code]).to eq([ConnectRPC::Error, "deadline_exceeded"])
     # The close after the caller's wait adds one allowance of its own.
-    expect(returned - pop_within(awaited, "the caller's wait to return")).to be_between(0.1, 0.1 + 0.05)
-    expect(returned - started).to be_between(0.3 + 0.2, 0.3 + 0.2 + 0.09)
+    expect(returned - pop_within(awaited, "the caller's wait to return")).to be_between(allowance, allowance + 0.05)
+    expect(returned - started).to be_between(0.3 + (2 * allowance), 0.3 + (2 * allowance) + 0.09)
     expect(owner).to be_alive
     trace.disable
     gate << true
@@ -628,7 +633,8 @@ RSpec.describe "PerCallTransport connection close, close budget and outcome prec
     wait_trace = TracePoint.new(:return) { |point| waits << point.return_value.first }
     wait_trace.enable(target: ConnectRPC::Async::ThreadedTransport.instance_method(:await_stream))
     with_boundaries do |boundaries|
-      deadline = ConnectRPC::Deadline.new(0.6)
+      # The operation's wait, its zero timeout plus one allowance, expires first.
+      deadline = ConnectRPC::Deadline.new(allowance + 0.5)
       error = on_path(:threaded) do
         per_call.open_stream(stream_request(origin, "/recover", deadline: deadline)) do |exchange|
           exchange.response_head(timeout: 0)
@@ -641,7 +647,7 @@ RSpec.describe "PerCallTransport connection close, close budget and outcome prec
           pop_within(heartbeats, "the recovered owner to process a command")
           # The caller's work past the deadline and its allowance is the
           # condition under test.
-          sleep(deadline.remaining + (AsyncHelpers::INTERNAL::CLEANUP_SECONDS * 1.2))
+          sleep(deadline.remaining + (allowance * 1.2))
           raise "after the deadline"
         end
       end
@@ -678,7 +684,7 @@ RSpec.describe "PerCallTransport connection close, close budget and outcome prec
           end
           # The caller's work past the deadline and its allowance is the
           # condition under test.
-          sleep(deadline.remaining + (AsyncHelpers::INTERNAL::CLEANUP_SECONDS * 1.2))
+          sleep(deadline.remaining + (allowance * 1.2))
           raise failure, "after the deadline"
         end
       end
