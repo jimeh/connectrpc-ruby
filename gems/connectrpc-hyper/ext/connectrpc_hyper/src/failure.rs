@@ -148,11 +148,11 @@ impl TlsFault {
     }
 
     /// A call's failure on this connection: a connection loss (closed, or a
-    /// protocol error without a reset code) becomes the recorded TLS failure.
-    /// Resets, GOAWAYs, limits and timeouts pass through.
+    /// protocol error, which is how h2 reports rustls's `InvalidData`) becomes
+    /// the recorded TLS failure. Resets, GOAWAYs, limits and timeouts pass
+    /// through.
     pub fn resolve(&self, failure: Failure) -> Failure {
-        let lost =
-            failure.kind == "closed" || (failure.kind == "protocol" && failure.reset.is_none());
+        let lost = matches!(failure.kind, "closed" | "protocol");
         match self.0.get() {
             Some(tls) if lost => tls.clone(),
             _ => failure,

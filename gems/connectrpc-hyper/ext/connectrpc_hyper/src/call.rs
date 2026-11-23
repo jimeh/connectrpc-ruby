@@ -431,7 +431,7 @@ async fn respond(
         let retry = async {
             let body = match error.take_message() {
                 // Handed back unsent: the peer never saw it. Spec hold point:
-                // armed with a zero bound, it counts these retries.
+                // it parks, or with a zero bound counts, these retries.
                 Some(request) => {
                     core.holds.reach("retry:unsent").await;
                     request.into_body()

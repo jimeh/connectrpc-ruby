@@ -56,8 +56,8 @@ pub async fn unary(
             Err(mut error) => {
                 let unsent = error.take_message().is_some();
                 if unsent {
-                    // Spec hold point: armed with a zero bound, it counts the
-                    // requests hyper handed back unsent.
+                    // Spec hold point: it parks, or with a zero bound counts,
+                    // the requests hyper handed back unsent.
                     core.holds.reach("retry:unsent").await;
                 }
                 // Its stream is above a GOAWAY's last stream id and either h2

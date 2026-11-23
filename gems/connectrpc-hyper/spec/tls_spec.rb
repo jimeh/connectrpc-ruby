@@ -77,9 +77,7 @@ RSpec.describe "TLS parity" do
   # handshake completes. Each attempt parks before handing hyper its request
   # until the server's alert has ended its connection (the socket dropped), so
   # the first send and the one retry both meet a closed connection; the call
-  # still reports the alert the connection read. HTTP/2 has no such example:
-  # h2 may write after the server's reset and end on that write error before
-  # it reads the alert, and the call then reports the write's lost connection.
+  # still reports the alert the connection read.
   it "reports a missing client identity as a TLS error when the alert closes an idle connection" do
     root = authority
     server = tls_server(*leaf(root), client_ca: authority("client CA").first)
@@ -101,6 +99,25 @@ RSpec.describe "TLS parity" do
     expect(call.value).to eq(["unavailable", "HTTP transport failed: TLS error"])
   ensure
     %w[request:send socket:drop retry:unsent].each { |point| native_driver&.release(point) }
+  end
+
+  # h2 keeps only an I/O error's kind and text, so the alert must not surface
+  # as a malformed response. No hold forces the order here: h2 may write after
+  # the server's reset and end on that write error before it reads the alert,
+  # and that call reports a lost connection, as grpc-go reports a write error.
+  # Ten calls make a run without one TLS error vanishingly unlikely.
+  { "connect_mtls" => :connect, "grpc_mtls" => :grpc }.each do |origin, protocol|
+    it "reports a missing client identity over HTTP/2 to #{origin} as a TLS error, never a malformed response" do
+      closed = ["unavailable", "HTTP transport failed: connection closed"]
+      rejected = ["unavailable", "HTTP transport failed: TLS error"]
+      outcomes = Array.new(10) do
+        transport = hyper(ca_file: File.join(peer.certs, "ca.pem"), connections: :per_call)
+        error_of { client(peer[origin], transport: transport, protocol: protocol).unary(MSG.new, timeout: 5) }
+          &.then { |error| [error.code, error.message] }
+      end
+      expect(outcomes - [closed]).to all(eq(rejected))
+      expect(outcomes).to include(rejected)
+    end
   end
 
   it "accepts a leaf-first chain with an intermediate" do
