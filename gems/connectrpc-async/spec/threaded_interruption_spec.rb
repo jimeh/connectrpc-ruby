@@ -28,7 +28,7 @@ RSpec.describe "ThreadedTransport deadlines, interruption and cancellation" do
     error = capture_error { typed.echo(AsyncHelpers::MESSAGE.new(name: "stalled"), timeout: 0.3) }
     duration = monotonic - started
     expect([error.class, error.code]).to eq([ConnectRPC::Error, "deadline_exceeded"])
-    expect(duration).to be_between(0.3, 0.3 + allowance + 0.5)
+    expect(duration).to be_between(0.3 + allowance, 0.3 + allowance + 0.5)
     expect(admitted(transport)).to eq(1)
     gate << true
     eventually("admission released after the reactor resumes") { admitted(transport).zero? }
@@ -56,7 +56,7 @@ RSpec.describe "ThreadedTransport deadlines, interruption and cancellation" do
     value_within(Thread.new { source.cancel }, "the cancelling thread")
     error = value_within(caller, "the cancelled caller")
     expect([error.class, error.code]).to eq([ConnectRPC::Error, "canceled"])
-    expect(monotonic - started).to be < allowance + 0.9
+    expect(monotonic - started).to be_between(allowance, allowance + 0.9)
     gate << true
     eventually("admission released") { admitted(transport).zero? }
   ensure

@@ -1206,16 +1206,18 @@ cleanup; it is not a hard deadline for that cleanup.
 The allowance covers HTTP/2 cleanup after a call ends, the refused-stream
 output retirement before a resend, HTTP/1 cleanup (also capped by the RPC
 deadline), the cleanup of a timed read, and the `ThreadedTransport` waits past
-a deadline, cancellation or close grace for a stalled owner thread. Server
+a deadline, cancellation or close grace for a stalled owner thread. Timed reads
+include a server handler's request-body reads, so a read the server cancels
+also has 1 second to unwind before its connection is aborted. Server
 connections keep their own 100 ms bound for a control frame's own write and the
 `too_many_pings` GOAWAY; see [Server keepalive](#server-keepalive).
 
-grpc-go 1.85.0 has no such client budget. A cancelled stream queues a cleanup
-item for the connection's single writer goroutine, which drops the stream's
-queued data, writes `RST_STREAM` and returns the stream's quota. The caller
-returns at once, and a stuck socket write holds that quota and the connection
-until keepalive (which also sets `TCP_USER_TIMEOUT`) or the operating system
-gives up. Go's `x/net/http2` client is similar: `RoundTrip` returns when its
+grpc-go 1.85.0 has no such client budget. A cancelled stream returns its
+stream quota at once and queues a cleanup item for the connection's single
+writer goroutine, which later drops the stream's queued data and writes
+`RST_STREAM`. The caller returns at once. A stuck socket write holds that
+writer, the stream's state and the connection until keepalive (which also sets
+`TCP_USER_TIMEOUT`) or the operating system gives up. Go's `x/net/http2` client is similar: `RoundTrip` returns when its
 context ends, and the reset waits for the connection's write lock, bounded only
 by `WriteByteTimeout`, which is off by default. This transport keeps a bound
 because an Async task cannot stop a frame write partway without corrupting the
@@ -1226,8 +1228,9 @@ for each CPU-bound Ruby thread before it runs at all (see [Latency under CPU
 load](#latency-under-cpu-load)), and a stall that lands inside cleanup, after
 its expiry was computed, used to replace a healthy connection and fail its
 siblings once it passed 100 ms (#187). The cost is that a call whose frame is
-really stuck returns its error up to 1 second after its deadline or
-cancellation, and only then fails the connection.
+really stuck waits up to 1 second after its deadline or cancellation before
+the transport forces raw-first retirement, and its error returns once that
+retirement is joined.
 
 ### Forced teardown and retirement
 

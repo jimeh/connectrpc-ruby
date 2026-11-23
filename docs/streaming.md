@@ -113,7 +113,7 @@ steal a live reader or resume normal reading after discarding data. Only a valid
 remote error with verified HTTP tail can replace the generic write failure.
 Remote success cannot erase an unhandled send failure; an application may handle
 a send failure and complete its normal response path. Recovery and the existing
-1-second destructive cleanup stage are separate, up to 1.1 seconds together. Native or
+1-second destructive cleanup allowance are separate allowances. Native or
 application code that blocks the reactor remains outside hard timing guarantees.
 
 ## Clients and declarations

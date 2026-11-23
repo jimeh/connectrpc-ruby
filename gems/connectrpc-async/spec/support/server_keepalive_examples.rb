@@ -382,7 +382,7 @@ RSpec.shared_examples "HTTP/2 server keepalive" do
       end
     end
 
-    it "aborts within the cleanup allowance when the too_many_pings GOAWAY is stuck behind a held frame" do
+    it "aborts within its 100 ms bound when the too_many_pings GOAWAY is stuck behind a held frame" do
       reactor do |task|
         with_keepalive_host(task, keepalive: server_keepalive(time: nil)) do |fixture|
           client = fixture.client

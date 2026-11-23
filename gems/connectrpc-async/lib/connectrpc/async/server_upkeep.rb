@@ -6,7 +6,8 @@ module ConnectRPC
       # Bounds a server control frame's own write, once it holds the frame
       # guard, and the too_many_pings GOAWAY. A small control frame write
       # finishes without yielding unless the send buffer is full, so a reactor
-      # stall alone cannot expire it, unlike the client CLEANUP_SECONDS.
+      # stall alone cannot expire the write watchdog, unlike the client
+      # CLEANUP_SECONDS. A too_many_pings connection ends either way.
       CONTROL_WRITE_SECONDS = 0.1
 
       # Writes one server connection's control frames (PING ACKs, GOAWAYs,
