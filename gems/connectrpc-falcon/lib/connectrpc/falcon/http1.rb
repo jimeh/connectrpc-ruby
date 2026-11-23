@@ -510,7 +510,9 @@ module ConnectRPC
                                                        request_body_timeout: @request_body_timeout)
       end
 
-      def abort
+      # An interruptible caller raises an interruption at once and leaves
+      # retirement to the cleanup task.
+      def abort(interruptible: false)
         return if @cleanup&.current?
 
         capture_retirement
@@ -523,7 +525,7 @@ module ConnectRPC
         if owned
           @cleanup.run if launch
         else
-          join(@cleanup, failure: true) { @cleanup.run if launch }
+          join(@cleanup, failure: true, interruptible: interruptible) { @cleanup.run if launch }
         end
         nil
       end
@@ -704,10 +706,10 @@ module ConnectRPC
       end
 
       # Local counterpart of the private Async helper; no shared public utility.
-      def join(task, failure: false)
+      def join(task, failure: false, interruptible: false)
         return unless task
 
-        CompletionJoin.call(task, failure: failure) { yield if block_given? }
+        CompletionJoin.call(task, failure: failure, interruptible: interruptible) { yield if block_given? }
       end
     end
     private_constant :HTTP1Resource

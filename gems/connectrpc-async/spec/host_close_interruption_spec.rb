@@ -58,7 +58,8 @@ RSpec.describe "Interrupted Host close" do
     reactor do |task|
       with_held_call(task) do |host, handler, call, release, transport|
         expect { task.with_timeout(0.05) { host.close(grace: 30) } }.to raise_error(Async::TimeoutError)
-        expect(drain_started?(host)).to be_truthy
+        expect_drain_pending(host, handler)
+        wait_until(task, "the connection drain to start") { drain_started?(host) }
         expect_drain_pending(host, handler)
         expect_graceful_finish(host, call, release, transport)
       end
@@ -78,9 +79,27 @@ RSpec.describe "Interrupted Host close" do
     end
   end
 
+  # With every close caller gone, the drain still ends at its own grace.
+  # Elapsed grace is the behavior here, so the example uses a short one.
+  it "forces the drain at its original grace after every close caller left" do
+    reactor do |task|
+      with_held_call(task) do |host, handler, call, _release, _transport|
+        expect { task.with_timeout(0.01) { host.close(grace: 0.2) } }.to raise_error(Async::TimeoutError)
+        expect_drain_pending(host, handler)
+        session = host_session(host)
+        AsyncHelpers::INTERNAL.join_complete(session.instance_variable_get(:@closer))
+        expect(session.instance_variable_get(:@state)).to eq(:closed)
+        expect(session.instance_variable_get(:@close_outcome)).to be(false)
+        expect(handler).to be_finished
+        expect(call.wait).to be_a(ConnectRPC::Error)
+      end
+    end
+  end
+
   # The closer is a child of the session owner, so cancelling the owner
   # cancels it too. Its ensure, like the owner's lifetime guard, then forces
-  # raw-first retirement and joins it, and the owner finishes only after that.
+  # raw-first retirement and joins it. The owner's task tree finishes only
+  # after that, though Task#wait on the cancelled owner returns earlier.
   it "forces the drain when the session owner is cancelled during a graceful close" do
     reactor do |task|
       ready = Async::Queue.new
@@ -112,6 +131,8 @@ RSpec.describe "Interrupted Host close" do
       resource = session.instance_variable_get(:@resources).first
       owner.cancel
       expect(owner).to be_cancelled
+      expect(owner).not_to be_finished
+      expect(resource.send(:retirement_completed?)).to be(false)
       AsyncHelpers::INTERNAL.join_complete(closer)
       expect(session.instance_variable_get(:@state)).to eq(:closed)
       expect(session.instance_variable_get(:@close_outcome)).to be(false)

@@ -326,6 +326,94 @@ RSpec.shared_examples "retirement close corrections" do |protocol|
     end
   end
 
+  # The first close can still be stopping listeners when its grace runs out,
+  # before any connection drain starts, so expiry alone cannot mean forcing.
+  it "forces #{protocol} connections with zero grace after the first close's grace ran out before its drain" do
+    reactor do |task|
+      with_retirement_connection(task, protocol: protocol) do |state|
+        session, resource = state.values_at(:session, :resource)
+        entered = Async::Queue.new
+        release = Async::Queue.new
+        calls = 0
+        allow(session).to receive(:stop_accepting).and_wrap_original do |stop|
+          calls += 1
+          if calls == 1
+            entered.enqueue(true)
+            release.dequeue
+          end
+          stop.call
+        end
+        started = AsyncHelpers::INTERNAL.now
+        joiner = task.async(finished: false) { session.close(grace: 0.01) }
+        entered.dequeue
+        joiner.cancel
+        wait_until(task, "the first close's grace to run out") { AsyncHelpers::INTERNAL.now >= started + 0.01 }
+        expect(resource.instance_variable_get(:@drain_task)).to be_nil
+        forcer = task.async(finished: false) { session.close(grace: 0) }
+        expect(resource.send(:raw_failed?)).to be(true), "zero grace must force before the stalled drain starts"
+        expect(state.fetch(:gate).entered.dequeue).to equal(state.fetch(:handler))
+        release.enqueue(true)
+        state.fetch(:gate).release
+        join_retirement_tasks(task, forcer, state.fetch(:handler))
+        expect(forcer.result).to be(false)
+        expect(retirement_complete?(resource)).to be(true)
+      ensure
+        release&.enqueue(true)
+        state.fetch(:gate).release
+        session&.abort
+      end
+    end
+  end
+
+  it "lets a #{protocol} handler force a pending drain with a zero-grace close" do
+    reactor do |task|
+      with_retirement_connection(task, protocol: protocol) do |state|
+        session, resource = state.values_at(:session, :resource)
+        closer = task.async(finished: false) { session.close(grace: 3600) }
+        wait_until(task, "real nonzero resource drain started") { resource.instance_variable_get(:@drain_task) }
+        returned = :pending
+        state.fetch(:commands).enqueue(->(_) { returned = session.close(grace: 0) })
+        expect(state.fetch(:gate).entered.dequeue).to equal(state.fetch(:handler))
+        expect(returned).to be_nil
+        expect(resource.send(:raw_failed?)).to be(true)
+        expect(closer).not_to be_finished
+        state.fetch(:gate).release
+        join_retirement_tasks(task, closer, state.fetch(:handler))
+        expect(closer.result).to be(false)
+        expect(retirement_complete?(resource)).to be(true)
+      ensure
+        state.fetch(:gate).release
+        session&.abort
+      end
+    end
+  end
+
+  it "lets an interrupted #{protocol} accepted-handle close leave while retirement finishes" do
+    reactor do |task|
+      with_retirement_connection(task, protocol: protocol) do |state|
+        accepted, resource = state.values_at(:accepted, :resource)
+        first = RuntimeError.new("accepted close interruption")
+        joiner = task.async(finished: false) do
+          accepted.close
+        rescue Exception => e # rubocop:disable Lint/RescueException -- exact caller exception identity
+          e
+        end
+        expect(state.fetch(:gate).entered.dequeue).to equal(state.fetch(:handler))
+        Fiber.scheduler.raise(joiner.fiber, first)
+        expect(joiner).to be_finished
+        expect(joiner.result).to equal(first)
+        expect(retirement_complete?(resource)).to be(false)
+        waiter = task.async(finished: false) { accepted.wait_closed }
+        expect(waiter).not_to be_finished
+        state.fetch(:gate).release
+        join_retirement_tasks(task, waiter, state.fetch(:handler))
+        expect(retirement_complete?(resource)).to be(true)
+      ensure
+        state.fetch(:gate).release
+      end
+    end
+  end
+
   it "blocks the #{protocol} completion join on actual cleanup descendants" do
     reactor do |task|
       with_retirement_connection(task, protocol: protocol) do |state|

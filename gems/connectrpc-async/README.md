@@ -1316,16 +1316,20 @@ end
 ```
 
 A later `close` with a positive grace joins the running drain and returns its
-result, keeping the first close's expiry. `close(grace: 0)` forces a drain
-whose grace has not run out and returns false once retirement finishes, as
-`abort` does. Before 0.3.0 a repeated `close(grace: 0)` joined the drain
-instead.
+result, keeping the first close's expiry. `close(grace: 0)` forces the drain,
+unless its outcome is already decided or every connection has retired, and
+returns false once retirement finishes, as `abort` does. A handler's own
+zero-grace close forces it too and returns nil. Before 0.3.0 a repeated
+`close(grace: 0)` joined the drain instead.
 
 Cancelling the session owner still forces teardown. Async cancels the drain's
 task with its owner; that task and the session's lifetime guard then force
-raw-first retirement and join it, so the owner task finishes only after
-retirement. A caller that is the owner and is only timed out, for example by
-`with_timeout`, does not cancel its children, so the drain continues.
+raw-first retirement and join it. The owner task stays unfinished, and keeps
+its reactor running, until retirement completes, but `Task#wait` on the
+cancelled owner returns as soon as the owner's own block has unwound, which
+can be before retirement. A caller that is the owner and is only timed out,
+for example by `with_timeout`, does not cancel its children, so the drain
+continues.
 
 Go's `net/http` separates the same two steps: `Server.Shutdown(ctx)` returns
 the context's error when the context ends while connections keep draining,
@@ -1344,7 +1348,8 @@ Server `Host#close` and `ServerSession#close` return `bool?`:
   decides the outcome nor publishes completion.
 - Repeated requests with a positive grace share the original closer and
   expiry, even with a different grace argument. Since 0.3.0 a repeated
-  zero-grace request forces the drain if its grace has not run out; see
+  zero-grace request forces the drain unless its outcome is decided or every
+  connection has retired; see
   [Interrupted server close](#interrupted-server-close).
 - External callers join actual cleanup and receive its final boolean, unless
   they are interrupted first. Once closed, every call returns that same
@@ -1496,7 +1501,9 @@ handle also supports `close`, `wait_closed`, `timeout=` and `remote_address`,
 and exposes no SSLContext.
 
 `wait_closed` waits for actual connection retirement, including owned task
-unwind and final disposal, rather than merely observing invalidation. Retiring
+unwind and final disposal, rather than merely observing invalidation. Since
+0.3.0 an interrupted handle `close` raises at once while retirement continues,
+as an interrupted session close does; `wait_closed` still observes its end. Retiring
 server connections retain their admission slot until this boundary. The H2
 client's private connection manager removes a retiring connection's slot and
 wakes waiting calls before joining its connection close.

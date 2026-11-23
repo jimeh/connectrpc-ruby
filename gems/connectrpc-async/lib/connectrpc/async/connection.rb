@@ -1374,7 +1374,9 @@ module ConnectRPC
           changed
         end
 
-        def abort(error = IOError.new("HTTP/2 connection closed"))
+        # An interruptible caller raises an interruption at once and leaves
+        # retirement to the cleanup task.
+        def abort(error = IOError.new("HTTP/2 connection closed"), interruptible: false)
           return if @cleanup&.current?
 
           record_close(default_close_reason)
@@ -1393,7 +1395,7 @@ module ConnectRPC
           if owned
             start_cleanup if launch
           else
-            Internal.join_complete(@cleanup, failure: true) { start_cleanup if launch }
+            Internal.join_complete(@cleanup, failure: true, interruptible: interruptible) { start_cleanup if launch }
           end
           nil
         end

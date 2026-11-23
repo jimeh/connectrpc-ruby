@@ -374,7 +374,8 @@ overrides.
   decides the outcome nor publishes completion.
 - Repeated requests with a positive grace retain the first closer and expiry
   even when passed a different grace. Since 0.3.0 a repeated zero-grace
-  request forces the drain if its grace has not run out.
+  request forces the drain unless its outcome is decided or every connection
+  has retired.
 - Once closed, all calls return that same boolean, including coordinator
   reentry.
 - Zero grace still forces teardown; explicit abort and already-decided outcomes

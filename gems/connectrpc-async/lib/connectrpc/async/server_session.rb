@@ -112,18 +112,18 @@ module ConnectRPC
 
         owned = resource_owned_task?
         launch = @state != :closing
-        # A zero-grace close forces a drain that an earlier close started and
-        # whose grace has not run out. Any other repeated close joins it.
-        force = !launch && grace.zero? && @close_expires && Internal.now < @close_expires
+        # A zero-grace close forces a drain that an earlier close started,
+        # unless its outcome is decided or no connection is left to force.
+        # Any other repeated close joins it.
+        force = !launch && grace.zero? && !@close_decided && retiring_resources?
         if launch
           @state = :closing
-          @close_expires = Internal.now + grace
           # The session owner, not the caller, owns the drain: it continues
           # under its own grace when an interrupted caller leaves, and owner
           # cancellation forces it.
           @closer = ::Async::Task.new(@owner, finished: false) do
             begin
-              close_owned(@close_expires)
+              close_owned(Internal.now + grace)
             ensure
               abort_owned
             end
@@ -207,8 +207,10 @@ module ConnectRPC
           @session.send(:serve, @resource) { |resource| @resource = resource }
         end
 
+        # An interrupted caller leaves at once; the connection's cleanup task
+        # finishes retirement, which wait_closed still observes.
         def close
-          @resource.abort unless @resource.finishing?
+          @resource.abort(interruptible: true) unless @resource.finishing?
         end
 
         def wait_closed
@@ -239,6 +241,10 @@ module ConnectRPC
       def capacity?
         @resources.reject! { |resource| resource.send(:retirement_completed?) }
         @resources.size < @max_connections
+      end
+
+      def retiring_resources?
+        @resources.any? { |resource| !resource.send(:retirement_completed?) }
       end
 
       # Resources signal the shared progress condition when they change and

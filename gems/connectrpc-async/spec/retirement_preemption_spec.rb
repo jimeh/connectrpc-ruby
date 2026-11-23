@@ -45,4 +45,42 @@ RSpec.describe "Internal interruptible completion join" do
       writer&.close
     end
   end
+
+  # The target's block has finished but its finalization is still pending, so
+  # the joiner waits on the completion latch rather than on a task.
+  it "raises a latch-wait interruption at once" do
+    reactor do |task|
+      reader, writer = Socket.pair(:UNIX, :STREAM, 0)
+      started = Async::Promise.new
+      root = task.async(finished: false) do |parent|
+        parent.async(finished: false) { reader.readpartial(1) }
+        started.resolve(true)
+        Async::Condition.new.wait
+      end
+      started.wait
+      first = RuntimeError.new("latch interruption")
+      joiner = Async::Task.new(task, finished: false) do
+        AsyncHelpers::INTERNAL.join_complete(root, interruptible: true) { root.cancel }
+      rescue StandardError => e
+        e
+      end
+      waiter = task.async(finished: false) do
+        root.wait
+        state = root.instance_variable_get(:@connectrpc_async_completion)
+        expect(state).not_to be_nil
+        expect(state).not_to be_terminal
+        Fiber.scheduler.raise(joiner.fiber, first)
+        expect(joiner).to be_finished
+        expect(state).not_to be_terminal
+      end
+      joiner.run
+      expect(joiner.wait).to equal(first)
+      waiter.wait
+      AsyncHelpers::INTERNAL.join_complete(root)
+      expect([root, joiner, waiter]).to all(be_finished)
+    ensure
+      reader&.close
+      writer&.close
+    end
+  end
 end
