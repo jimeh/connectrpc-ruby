@@ -36,12 +36,13 @@ module ConnectRPC
         super()
         @session = session
         @on_reject = on_reject
-        @listeners = {}
+        # Each accept task with the listening socket it accepts on.
+        @listeners = {}.compare_by_identity
         @backoff = ->(delay) { accept_backoff(delay) }
       end
 
       def socket_accept(server)
-        @listeners[::Async::Task.current] = true
+        @listeners[::Async::Task.current] = server
         loop do
           raw, address = @session.send(:accept_raw, server, @backoff)
           accepted = @session.accept(raw)
@@ -59,11 +60,11 @@ module ConnectRPC
         end
       end
 
-      # Stops every accept task whatever an earlier stop raised.
-      def stop
-        listeners = @listeners.keys
+      # Returns each accept task with its listening socket, and forgets them.
+      def take_listeners
+        listeners = @listeners.to_a
         @listeners.clear
-        Teardown.finish(listeners.map { |listener| Teardown.capture { listener.stop } })
+        listeners
       end
 
       private

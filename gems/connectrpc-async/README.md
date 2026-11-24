@@ -357,17 +357,21 @@ end.wait
 ```
 
 Before start it raises `LifecycleError`, unless the Host was already closed.
-Ordinary shutdown returns nil after all listener tasks stop; session retirement
-may still be running. External `close(grace:)` callers await the session's
-boolean drain outcome; resource-owned calls can return nil while shutdown is
-pending, as described in [Close results](#close-results). Terminal listener
+Ordinary shutdown returns nil after all listener tasks stop and their listening
+sockets close; session retirement may still be running. External
+`close(grace:)` callers await the session's boolean drain outcome;
+resource-owned calls can return nil while shutdown is pending, as described in
+[Close results](#close-results). Terminal listener
 failure instead makes `wait` raise the identical original exception after
 cooperative session abort, listener joins and actual finalization of its stored
 private exit task. A failure in that cleanup is written as a warning and never
 replaces the cause, as described in
 [Terminal failure and startup](#terminal-failure-and-startup).
 Repeated/concurrent waits share that outcome; cancelling a waiter does not
-close the Host. Like other lifecycle operations, `wait`
+close the Host. Since 0.3.0 a waiter that is cancelled, times out or is
+otherwise interrupted while it waits for that cleanup gets its exception at
+once, and the exit task finishes cleanup on its own; a later `wait` raises the
+cause once it has. Like other lifecycle operations, `wait`
 requires the owning reactor and thread.
 
 ### Accept errors
@@ -391,7 +395,7 @@ described below. No RPC is replayed and no retry policy knobs are exposed.
 
 ### Terminal failure and startup
 
-The first terminal listener cause closes every listener and forces raw-first
+The first terminal listener cause stops every listener and forces raw-first
 session abort with zero drain time, then cooperative cancellation and joins.
 Server abort has no cleanup deadline and cannot forcibly interrupt nonyielding
 or cancellation-resistant application code. The stored exit task runs outside
@@ -400,16 +404,27 @@ cancellation; `wait` joins its actual finalization before reporting the cause.
 Ordinary owner cancellation stops accepting and resolves ordinary waits after
 listener finalization, while session retirement may still be running. `close`
 retains its drain result and does not raise the stored listener cause.
-If the session abort or a listener close fails, the exit task still attempts
-every listener close once, cancels and joins every listener, and resolves
-completion. A listener whose close failed may stay open. Each failure is
+Since 0.3.0 listener shutdown cancels and joins every accept loop before it
+closes each listening socket once, so no accept loop is still waiting on a
+socket as it closes, and concurrent shutdown steps run one at a time. Before
+0.3.0 the Host closed the sockets first.
+
+If the session abort or a listener close fails, the exit task still cancels
+and joins every listener, attempts every listener close once, and resolves
+completion. A listener whose close failed may stay open, and a listener whose
+cancel failed is not joined and keeps its socket open. Each failure is
 written as a warning that names only its class, such as
 `ConnectRPC teardown error: Errno::EBADF`, and never replaces the outcome:
 `start` raises the startup error or listener cause, and after a terminal
 listener failure `wait` raises that cause; after a startup error with no
-listener cause, it returns nil. A caller interrupted during startup cleanup
-or `wait` is kept until the exit task finishes, and the cause still wins over
-the startup caller's interruption.
+listener cause, it returns nil.
+
+Since 0.3.0 a `start` or `wait` caller that is cancelled, times out or is
+otherwise interrupted during that cleanup gets its exception at once, and the
+exit task finishes cleanup on its own. A starter's own interruption wins over
+a recorded listener cause, which a later `wait` still raises once cleanup has
+finished. Before 0.3.0 such a caller was kept until the exit task finished, and
+`start` then raised the startup error or listener cause instead.
 
 A terminal cause already observed during startup is raised by `start` after
 cleanup; bind/initial setup errors remain synchronous and subsequent `wait`
@@ -422,9 +437,9 @@ returns nil. The Host cannot restart after close or failure.
 - An overlapping `start` from another task while startup is still in progress
   raises `LifecycleError` before binding, so it cannot leak a second listener
   set, reset startup state or abort the first start.
-- Startup failure uses that same exit task and preserves its first caller/setup
-  error, or an already recorded terminal cause, through repeated caller
-  interruption.
+- Startup failure uses that same exit task. An uninterrupted `start` raises
+  its first setup error, or an already recorded terminal cause, once that task
+  finishes.
 - When an independent ordinary close already owns shutdown, startup exit stops
   only listeners and late acquisitions. It preserves that close's admitted
   RPCs, original grace and outcome without awaiting its peer drain.
@@ -1275,7 +1290,10 @@ still served, then handlers and wire streams complete, a final GOAWAY follows,
 and the connection half-closes and awaits EOF. `Transport` stops admission,
 awaits calls and complete wire streams, sends GOAWAY when empty, then
 half-closes and awaits EOF. External callers receive true when drained, false
-after forced teardown. Grace is finite and nonnegative; zero aborts.
+after forced teardown. A connection has drained once its streams finished
+within the grace, whether or not the peer's EOF arrives in time, as described
+in [Close results](#close-results). Grace is finite and nonnegative; zero
+aborts.
 Repeated/concurrent calls share the first outcome.
 
 Since 0.3.0 a failed teardown step, such as a listener close, a connection's
@@ -1428,12 +1446,22 @@ Server `Host#close` and `ServerSession#close` return `bool?`:
 - A failed listener close, `stop_accepting:` callback or TLS shutdown skips
   neither the drain nor its result. A connection whose final retirement fails
   after it drained still counts as drained.
+- Since 0.3.0 a connection counts as drained once its streams finished within
+  the grace, however the peer leaves afterwards. Close still sends the final
+  GOAWAY, half-closes and waits for the peer's EOF until the grace ends, then
+  forces retirement, but a peer that never sends EOF, or a connection's own
+  abort during that wait, such as an upkeep bound, no longer makes the result
+  false. A forced close, `close(grace: 0)` or `abort`, still returns false. `drain_tls` reports its connections
+  the same way. Before 0.3.0 such a close returned false.
 
 The client `Transport` and `HTTP1Transport` close return types remain `bool`.
-A failure in close's own steps before or instead of the drain, such as the
-`Transport` connection manager's close, forces retirement, so close returns
-false. A connection whose teardown fails after it drained is reported, and the
-drained result stands: a `Transport` connection whose final retirement fails,
+Since 0.3.0 a `Transport` connection whose calls and streams finished within
+the grace counts as drained, as on the server, even when the server never
+sends EOF after the client's GOAWAY and half-close; before 0.3.0 that close
+returned false. A failure in close's own steps before or instead of the drain,
+such as the `Transport` connection manager's close, forces retirement, so close
+returns false. A connection whose teardown fails after it drained is reported,
+and the drained result stands: a `Transport` connection whose final retirement fails,
 or an idle `HTTP1Transport` connection whose close fails after every call has
 finished, leaves the result true.
 

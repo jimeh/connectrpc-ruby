@@ -133,17 +133,48 @@ module ConnectRPC
 
       private
 
-      # Stops this worker's accept tasks after session validation, then closes
-      # each owned listening socket. A failed step is reported and never skips
-      # a later one. Accepted peers have an independent lifetime; parent-bound
-      # listeners stay open.
+      # Cancels and joins this worker's accept tasks, then closes each owned
+      # listening socket once, so no accept task is still waiting on a socket
+      # as it closes. A failed step is reported and never skips a later one.
+      # An accept task whose cancel failed is not joined, and its socket stays
+      # open. Passes run one at a time, and each caller, a task the session
+      # owns, keeps waiting for a running pass through an interruption and
+      # raises only its first one at the end. Accepted peers have an
+      # independent lifetime; parent-bound listeners stay open.
       def stop_accepting
-        escapes = [Teardown.capture { @accept_wrapper&.stop }]
+        escapes = []
+        while (running = @listener_stop)
+          escapes << Teardown.capture { running.wait } until running.resolved?
+        end
+        pass = @listener_stop = ::Async::Promise.new
+        begin
+          escapes.concat(stop_listeners)
+        ensure
+          @listener_stop = nil
+          pass.resolve(nil)
+        end
+        Teardown.finish(escapes)
+      end
+
+      def stop_listeners
+        escapes = []
+        kept = []
+        joined = []
+        (@accept_wrapper ? @accept_wrapper.take_listeners : []).each do |listener, socket|
+          delivered, escape = Teardown.cancel { listener.stop unless listener.current? || listener.finished? }
+          escapes << escape
+          delivered ? joined << listener : kept << socket
+        end
+        joined.each do |listener|
+          escapes << Teardown.capture { CompletionJoin.call(listener) unless listener.current? }
+        end
         # As BoundEndpoint#close does, each socket close runs once.
         sockets = @owned_bound&.sockets&.dup || []
         @owned_bound&.sockets&.clear
-        escapes.concat(sockets.map { |socket| Teardown.capture { socket.close } })
-        Teardown.finish(escapes)
+        sockets.each do |socket|
+          escapes << Teardown.capture { socket.close } unless kept.any? { |open| open.equal?(socket) }
+        end
+        escapes
       end
     end
   end

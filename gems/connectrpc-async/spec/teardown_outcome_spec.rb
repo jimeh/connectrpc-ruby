@@ -1,5 +1,6 @@
 # frozen_string_literal: true
 
+require_relative "support/cleanup_interruption"
 require_relative "support/retirement_helpers"
 require_relative "support/http1_client_helpers"
 
@@ -8,6 +9,7 @@ require_relative "support/http1_client_helpers"
 # drained or forced result (docs/design.md, rule 4).
 RSpec.describe "Teardown failure outcomes" do
   include RetirementHelpers
+  include CleanupInterruption
   include HTTP1ClientHelpers
 
   def two_listeners(host)
@@ -38,7 +40,7 @@ RSpec.describe "Teardown failure outcomes" do
         close = sockets.first.method(:close)
         sockets.first.define_singleton_method(:close) { raise Errno::EBADF, "listener close failed" }
         host.start
-        listeners = host.instance_variable_get(:@listeners).dup
+        listeners = host.instance_variable_get(:@listeners).keys
         session = host_session(host)
         origin = "https://127.0.0.1:#{host.port}"
         transport = ConnectRPC::Async::Transport.new(origin: origin, **settings)
@@ -108,6 +110,14 @@ RSpec.describe "Teardown failure outcomes" do
         expect(session.instance_variable_get(:@state)).to eq(:closed)
         expect(session.close(grace: 0)).to be(false)
       end
+    end
+  end
+
+  # An interruption of a connection's cleanup task skips no later retirement
+  # step (docs/design.md, rules 1 and 3).
+  it "completes retirement after its cleanup task is cancelled while it joins a held handler" do
+    reactor do |task|
+      with_retirement_connection(task) { |state| expect_cancelled_cleanup_to_retire(task, state) }
     end
   end
 

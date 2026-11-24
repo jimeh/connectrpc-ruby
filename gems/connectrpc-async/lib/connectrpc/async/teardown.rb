@@ -31,6 +31,20 @@ module ConnectRPC
           e
         end
 
+        # Runs one cancel step. Returns whether the cancel reached its task
+        # and the step's interruption, or nil. Async delivers a cancel by
+        # transferring to the task, so an interruption of the runner
+        # surfaces only after delivery. A failed cancel may not have reached
+        # the task.
+        def self.cancel
+          yield
+          [true, nil]
+        rescue StandardError => e
+          [false, escape(e)]
+        rescue Exception => e # rubocop:disable Lint/RescueException -- the runner raises an interruption after its remaining steps
+          [true, e]
+        end
+
         # Raises the first interruption the steps returned.
         def self.finish(escapes)
           interruption = escapes.compact.first

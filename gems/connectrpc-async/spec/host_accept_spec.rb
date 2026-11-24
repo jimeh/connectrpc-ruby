@@ -1,5 +1,6 @@
 # frozen_string_literal: true
 
+require "English"
 require "spec_helper"
 require_relative "support/accept_faults"
 
@@ -449,6 +450,70 @@ RSpec.describe ConnectRPC::Async::Host do
         transport&.close(grace: 0)
         host.close(grace: 0)
       end
+    end
+  end
+
+  # A listening socket closes only after its accept loop has left it
+  # (docs/design.md, rule 3).
+  it "cancels and joins every accept loop before closing any listening socket" do
+    reactor do
+      host = described_class.new(server: server)
+      sockets = two_listeners(host)
+      ended = []
+      faults = AcceptFaults.new(after: -> { ended << $ERROR_INFO&.class }) { |_index, _attempt| nil }
+      at_close = []
+      faults.enable do
+        host.start
+        listeners = host.instance_variable_get(:@listeners).keys
+        expect(listeners.size).to eq(2)
+        sockets.each do |socket|
+          socket.define_singleton_method(:close) do
+            at_close << listeners.map(&:status)
+            super()
+          end
+        end
+        expect(host.close(grace: 0.5)).to be(true)
+        expect(sockets).to all(be_closed)
+        expect(at_close).to eq([%i[cancelled cancelled]] * 2)
+        expect(ended).to eq([Async::Cancel, Async::Cancel])
+        expect(host.wait).to be_nil
+      ensure
+        host.close(grace: 0)
+      end
+    end
+  end
+
+  # Listener stop passes run one at a time, so a later caller resolves
+  # completion only after the running pass has closed its sockets.
+  it "resolves ordinary completion only after a running listener stop has closed its sockets" do
+    reactor do |task|
+      host = described_class.new(server: server)
+      sockets = two_listeners(host)
+      closing = Async::Queue.new
+      release = Async::Queue.new
+      sockets.first.define_singleton_method(:close) do
+        closing.enqueue(true)
+        release.dequeue
+        super()
+      end
+      host.start
+      completion = host.instance_variable_get(:@completion)
+      closer = task.async(finished: false) { host.close(grace: 0.5) }
+      closing.dequeue
+      expect(host.instance_variable_get(:@listeners).keys).to all(be_cancelled)
+      second = task.async(finished: false) { host.send(:stop_accepting) }
+      waiter = task.async(finished: false) { host.wait }
+      expect(second).not_to be_finished
+      expect(completion).not_to be_resolved
+      expect(waiter).not_to be_finished
+      release.enqueue(true)
+      expect(closer.wait).to be(true)
+      second.wait
+      expect(waiter.wait).to be_nil
+      expect(sockets).to all(be_closed)
+    ensure
+      release&.enqueue(true)
+      host&.close(grace: 0)
     end
   end
 

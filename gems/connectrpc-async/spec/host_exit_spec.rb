@@ -126,6 +126,9 @@ RSpec.describe ConnectRPC::Async::Host, "exit ownership" do
     end
   end
 
+  # A starter cancelled during startup cleanup leaves at once. The exit task
+  # still finishes retirement, also when the held listener then fails
+  # (:third) or the construction owner is cancelled (:owner).
   %i[starter third owner].each do |mode|
     it "completes actual session retirement and ordinary wait after #{mode} interruption at listener join" do
       reactor do |task|
@@ -189,28 +192,23 @@ RSpec.describe ConnectRPC::Async::Host, "exit ownership" do
           AsyncHelpers::INTERNAL.cancel(starter)
           expect(unwinding.dequeue).to equal(listener)
           expect(joining.dequeue).not_to be_nil
-          expect(starter).not_to be_finished
-          expect(listener).not_to be_finished
+          # The cancelled starter has left while cleanup still joins the held
+          # listener.
+          expect(starter).to be_finished
+          expect(starter.result).to equal(first_errors.first)
           expect(first_errors.size).to eq(1)
-          second = RuntimeError.new("second starter cleanup interruption")
-          Fiber.scheduler.raise(starter.fiber, second)
-          expect(starter).not_to be_finished
           expect(listener).not_to be_finished
           exit_owner = host.instance_variable_get(:@exit_task)
           owner_fiber = exit_owner&.fiber
-          if mode != :starter
-            expect(exit_owner).not_to be_nil
-            expect(exit_owner.parent).to equal(mode == :owner ? owner : task)
-            expect(exit_owner).not_to be_finished
-            expect(exit_owner).to be_transient
-            Fiber.scheduler.raise(starter.fiber, RuntimeError.new("third starter interruption"))
-            AsyncHelpers::INTERNAL.cancel(owner) if mode == :owner
-            expect(starter).not_to be_finished
-            expect(exit_owner).not_to be_finished
-          end
+          expect(exit_owner).not_to be_nil
+          expect(exit_owner.parent).to equal(mode == :owner ? owner : task)
+          expect(exit_owner).not_to be_finished
+          expect(exit_owner).to be_transient
+          AsyncHelpers::INTERNAL.cancel(owner) if mode == :owner
+          expect(exit_owner).not_to be_finished
+          expect(listener).not_to be_finished
           release_unwind.enqueue(true)
-          expect(starter.wait).to equal(first_errors.first)
-          AsyncHelpers::INTERNAL.join_complete(starter)
+          AsyncHelpers::INTERNAL.join_complete(exit_owner)
           # Assert before fixture close or any peer join can supply cleanup credit.
           expect(session.instance_variable_get(:@state)).to eq(:closed)
           expect(retained).to all(be_finished)
@@ -303,6 +301,105 @@ RSpec.describe ConnectRPC::Async::Host, "exit ownership" do
       trigger&.enqueue(true)
       AsyncHelpers::INTERNAL.cancel(waiter)
       AsyncHelpers::INTERNAL.join_complete(waiter) if waiter
+      host&.close(grace: 0)
+    end
+  end
+
+  # Holds the exit task after it resolves completion with `cause`. Returns
+  # the queue that receives the held exit task and its release queue.
+  def hold_exit_after_resolve(host, cause)
+    resolved = Async::Queue.new
+    release = Async::Queue.new
+    promise = host.instance_variable_get(:@completion)
+    resolve = promise.method(:resolve)
+    promise.define_singleton_method(:resolve) do |value|
+      resolve.call(value)
+      next unless value.equal?(cause)
+
+      resolved.enqueue(Async::Task.current)
+      release.dequeue
+    end
+    [resolved, release]
+  end
+
+  # An interrupted caller leaves at once while the exit task finishes
+  # cleanup on its own (docs/design.md, rule 1).
+  %i[cancel timeout].each do |interruption|
+    it "raises a #{interruption} into a terminal wait at once while the exit task still runs" do
+      reactor do |task|
+        trigger = Async::Queue.new
+        original = IOError.new("terminal while waiting")
+        host = described_class.new(server: server)
+        resolved, release = hold_exit_after_resolve(host, original)
+        waiter = nil
+        faults = AcceptFaults.new do
+          trigger.dequeue
+          raise original
+        end
+        faults.enable do
+          host.start
+          trigger.enqueue(true)
+          exit_owner = resolved.dequeue
+          waiter = task.async(finished: false) do
+            interruption == :timeout ? Async::Task.current.with_timeout(0.05) { host.wait } : host.wait
+          rescue Async::TimeoutError => e
+            e
+          end
+          # The waiter is joining the held exit task.
+          expect(waiter).not_to be_finished
+          if interruption == :cancel
+            AsyncHelpers::INTERNAL.cancel(waiter)
+          else
+            begin
+              task.with_timeout(1) { waiter.wait }
+            rescue Async::TimeoutError
+              nil # The expectation below reports a waiter still held.
+            end
+          end
+          expect(waiter).to be_finished
+          expect(exit_owner).not_to be_finished
+          if interruption == :cancel
+            expect(waiter).to be_cancelled
+          else
+            expect(waiter.result).to be_a(Async::TimeoutError)
+          end
+          release.enqueue(true)
+          AsyncHelpers::INTERNAL.join_complete(exit_owner)
+          expect(faults.listeners).to all(be_closed)
+          expect { host.wait }.to(raise_error { |error| expect(error).to equal(original) })
+        end
+      ensure
+        release&.enqueue(true)
+        trigger&.enqueue(true)
+        AsyncHelpers::INTERNAL.cancel(waiter)
+        host&.close(grace: 0)
+      end
+    end
+  end
+
+  it "raises a starter's cancellation at once while it joins cleanup for a startup listener cause" do
+    reactor do |task|
+      original = IOError.new("terminal during startup")
+      host = described_class.new(server: server)
+      resolved, release = hold_exit_after_resolve(host, original)
+      starter = nil
+      faults = AcceptFaults.new { raise original }
+      faults.enable do
+        starter = task.async(finished: false) { host.start }
+        exit_owner = resolved.dequeue
+        expect(starter).not_to be_finished
+        AsyncHelpers::INTERNAL.cancel(starter)
+        expect(starter).to be_cancelled
+        expect(exit_owner).not_to be_finished
+        release.enqueue(true)
+        AsyncHelpers::INTERNAL.join_complete(exit_owner)
+        expect(faults.listeners).to all(be_closed)
+        expect(host_session(host).instance_variable_get(:@state)).to eq(:closed)
+        expect { host.wait }.to(raise_error { |error| expect(error).to equal(original) })
+      end
+    ensure
+      release&.enqueue(true)
+      AsyncHelpers::INTERNAL.cancel(starter)
       host&.close(grace: 0)
     end
   end

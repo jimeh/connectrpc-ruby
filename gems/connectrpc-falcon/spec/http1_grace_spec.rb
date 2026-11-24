@@ -105,6 +105,105 @@ RSpec.describe "Connect H1 cooperative final-close grace" do
     end
   end
 
+  # A delivered response counts as finished during its post-flush wait, so
+  # a grace that ends inside it still reports drained, while it still forces
+  # raw-first retirement.
+  [false, true].each do |secure|
+    it "reports a close that ends inside the post-response wait as drained, TLS=#{secure}" do
+      reactor do |task|
+        _, cs, = methods
+        owners = observe_owners
+        with_host(target({ cs.path => lambda { |*|
+          AsyncHelpers::MESSAGE.new(name: "lingering")
+        } }), secure, request_body_timeout: 0.05) do |host, peer, _|
+          peer.write(request_head(cs, :chunked))
+          owner = owners.dequeue
+          expect(peer.head.first).to eq(200)
+          expect(peer.body).to include("lingering")
+          resource = host.instance_variable_get(:@session).instance_variable_get(:@resources).first
+          wait_until(task, "the post-response wait") { owner.lingering? }
+          expect(resource).not_to be_empty
+          closing = task.async(finished: false) { host.close(grace: 0.1) }
+          expect(closing).not_to be_finished
+          expect(closing.wait).to be(true)
+          expect(AsyncHelpers::INTERNAL.now).to be < owner.instance_variable_get(:@close_expires)
+          wait_until(task, "forced retirement") { resource.send(:retirement_completed?) }
+          expect(resource.raw).to be_closed
+        end
+      end
+    end
+
+    # A drain already waiting when the response is delivered wakes as the
+    # post-flush wait begins, so its grace still ends inside that wait.
+    it "wakes a waiting drain as the post-response wait begins, TLS=#{secure}" do
+      reactor do |task|
+        _, cs, = methods
+        owners = observe_owners
+        entered = Async::Queue.new
+        gate = Async::Queue.new
+        with_host(target({ cs.path => lambda { |*|
+          entered.enqueue(true)
+          gate.dequeue
+          AsyncHelpers::MESSAGE.new(name: "lingering")
+        } }), secure, request_body_timeout: 0.05) do |host, peer, _|
+          peer.write(request_head(cs, :chunked))
+          owner = owners.dequeue
+          entered.dequeue
+          resource = host.instance_variable_get(:@session).instance_variable_get(:@resources).first
+          # The half-close that starts the wait yields, as a yielding
+          # lifecycle observer before it would, so the drain consumes the
+          # response's earlier wake-up before the wait begins.
+          allow(resource.raw).to receive(:shutdown).and_wrap_original do |shutdown, how|
+            Async::Task.current.yield if how == Socket::SHUT_WR
+            shutdown.call(how)
+          end
+          closing = task.async(finished: false) { host.close(grace: 0.2) }
+          wait_until(task, "the drain waits for the exchange") { resource.instance_variable_get(:@drain_task) }
+          gate.enqueue(true)
+          expect(peer.head.first).to eq(200)
+          expect(closing.wait).to be(true)
+          expect(owner).to be_lingering
+          expect(AsyncHelpers::INTERNAL.now).to be < owner.instance_variable_get(:@close_expires)
+        ensure
+          gate&.enqueue(true)
+        end
+      end
+    end
+
+    # Each caller of one drain is judged against its own deadline.
+    it "reports each joined H1 drain against its own deadline, TLS=#{secure}" do
+      reactor do |task|
+        _, cs, = methods
+        owners = observe_owners
+        entered = Async::Queue.new
+        gate = Async::Queue.new
+        with_host(target({ cs.path => lambda { |*|
+          entered.enqueue(true)
+          gate.dequeue
+          AsyncHelpers::MESSAGE.new(name: "joined")
+        } }), secure, request_body_timeout: 0.05) do |host, peer, _|
+          peer.write(request_head(cs, :chunked))
+          owner = owners.dequeue
+          entered.dequeue
+          session = host.instance_variable_get(:@session)
+          lifetime = session.instance_variable_get(:@lifetime)
+          resource = session.instance_variable_get(:@resources).first
+          closing = task.async(finished: false) { host.close(grace: 5) }
+          wait_until(task, "the drain waits for the exchange") { resource.instance_variable_get(:@drain_task) }
+          before_finish = AsyncHelpers::INTERNAL.now
+          gate.enqueue(true)
+          expect(peer.head.first).to eq(200)
+          wait_until(task, "the post-response wait") { owner.lingering? }
+          expect(resource.drain(lifetime, AsyncHelpers::INTERNAL.now + 0.05)).to be(true)
+          expect(resource.drain(lifetime, before_finish)).to be(false)
+          expect(closing.wait).to be(true)
+        ensure
+          gate&.enqueue(true)
+        end
+      end
+    end
+  end
+
   [false, true].product(%i[abort close drain_tls]).each do |secure, operation|
     next if operation == :drain_tls && !secure
 

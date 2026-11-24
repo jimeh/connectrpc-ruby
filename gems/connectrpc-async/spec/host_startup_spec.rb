@@ -101,7 +101,7 @@ RSpec.describe ConnectRPC::Async::Host, "startup ownership" do
       expect(sockets).to all(be_closed)
       expect(outcome).to be_a(AsyncHelpers::LIFECYCLE_ERROR)
       expect(host.wait).to be_nil
-      expect(host.instance_variable_get(:@listeners)).to all(be_finished)
+      expect(host.instance_variable_get(:@listeners).keys).to all(be_finished)
     ensure
       release&.enqueue(true)
       AsyncHelpers::INTERNAL.cancel(starter)
@@ -195,7 +195,9 @@ RSpec.describe ConnectRPC::Async::Host, "startup ownership" do
     end
   end
 
-  it "preserves the first terminal cause when startup collection is cancelled" do
+  # The cancelled starter leaves at once, and the recorded listener cause no
+  # longer wins over that cancellation. Wait still raises it after cleanup.
+  it "raises a starter's cancellation over a recorded listener cause and keeps that cause for wait" do
     reactor do |task|
       host = described_class.new(server: server)
       entered = Async::Queue.new
@@ -218,8 +220,10 @@ RSpec.describe ConnectRPC::Async::Host, "startup ownership" do
         listener = entered.dequeue
         AsyncHelpers::INTERNAL.cancel(starter)
         AsyncHelpers::INTERNAL.join_complete(starter)
-        expect(caught).to equal(original)
+        expect(starter).to be_cancelled
+        expect(caught).to be_nil
         expect { host.wait }.to(raise_error { |error| expect(error).to equal(original) })
+        expect(host.instance_variable_get(:@exit_task)).to be_finished
         expect(listener).to be_finished
         expect(faults.listeners).to all(be_closed)
         expect(host_session(host).instance_variable_get(:@state)).to eq(:closed)
@@ -260,6 +264,8 @@ RSpec.describe ConnectRPC::Async::Host, "startup ownership" do
       AsyncHelpers::INTERNAL.join_complete(starter)
       expect(observed.length).to eq(2)
       expect(observed.last).to equal(observed.first)
+      # The cancelled starter leaves before the exit task finishes cleanup.
+      AsyncHelpers::INTERNAL.join_complete(host.instance_variable_get(:@exit_task))
       expect(session.instance_variable_get(:@state)).to eq(:closed)
       expect(retained).to all(be_finished)
       expect(fibers).to all(satisfy { |fiber| !fiber.alive? })
@@ -402,7 +408,7 @@ RSpec.describe ConnectRPC::Async::Host, "startup ownership" do
           second: [second.class, second.respond_to?(:message) ? second.message : second], during: during,
           first: outcome.equal?(host) ? :host : [outcome.class, outcome.message], served: served,
           port: port.zero? ? :ephemeral : host.port == port,
-          listeners_finished: host.instance_variable_get(:@listeners).all?(&:finished?),
+          listeners_finished: host.instance_variable_get(:@listeners).keys.all?(&:finished?),
           sockets_closed: endpoints.flat_map(&:sockets).all?(&:closed?),
           closed: closed, session: host_session(host).instance_variable_get(:@state)
         }

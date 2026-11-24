@@ -591,8 +591,9 @@ RSpec.shared_examples "HTTP/2 server keepalive" do
     end
 
     # Retirement shuts raw TCP down before it closes it, so its own failure
-    # also ends the discard with EOF.
-    it "reports a drain joined in its final discard as not drained when its bound aborts it" do
+    # also ends the discard with EOF. The age drain's streams had finished,
+    # so the joined close still reports drained (docs/design.md, rule 5).
+    it "reports a drain joined in its final discard as drained when its bound aborts it" do
       reactor do |task|
         with_keepalive_host(task, keepalive: server_keepalive(time: nil, min_time: nil,
                                                               max_connection_age: 100)) do |fixture|
@@ -626,7 +627,7 @@ RSpec.shared_examples "HTTP/2 server keepalive" do
           closing = task.async { fixture.host.close(grace: 5) }
           await_due(task, fixture.clock, 101)
           fixture.clock.advance(1)
-          expect(closing.wait).to be(false)
+          expect(closing.wait).to be(true)
           expect(retired?(resource)).to be(true)
           expect(raw).to be_closed
           expect(gate).to eq(:joined)
@@ -638,7 +639,9 @@ RSpec.shared_examples "HTTP/2 server keepalive" do
       end
     end
 
-    it "reports a session drain in its final discard as not drained when the connection aborts" do
+    # The streams had finished before the abort, so the drain succeeded
+    # however the connection then ended (docs/design.md, rule 5).
+    it "reports a session drain in its final discard as drained when the connection aborts" do
       reactor do |task|
         with_keepalive_host(task, keepalive: server_keepalive(time: nil, min_time: nil)) do |fixture|
           # A second descriptor keeps the socket open after the client closes.
@@ -646,13 +649,111 @@ RSpec.shared_examples "HTTP/2 server keepalive" do
           resource = fixture.resource
           closing = task.async { fixture.host.close(grace: 5) }
           wait_until(task, "final discard") { resource.instance_variable_get(:@discarding) }
-          # The connection's own raw failure ends the discard with EOF; it is
-          # not the peer's close.
           resource.abort
-          expect(closing.wait).to be(false)
+          expect(closing.wait).to be(true)
           expect(retired?(resource)).to be(true)
           expect(resource.raw).to be_closed
         ensure
+          keeper&.close
+        end
+      end
+    end
+
+    # Whether a drain succeeded depends on its streams finishing in time, not
+    # on how the peer leaves afterwards (docs/design.md, rule 5).
+    it "reports a close whose streams finished as drained when the peer never sends EOF" do
+      reactor do |task|
+        with_keepalive_host(task, keepalive: server_keepalive(time: nil, min_time: nil)) do |fixture|
+          # A second descriptor keeps the socket open after the client closes.
+          keeper = fixture.client.raw.dup
+          resource = fixture.resource
+          expect(unary(fixture, "finished")).to eq([200, encoded("finished")])
+          closing = task.async { fixture.host.close(grace: 0.3) }
+          wait_until(task, "final discard") { resource.instance_variable_get(:@discarding) }
+          expect(fixture.client.wire.goaways.size).to eq(3)
+          expect(closing).not_to be_finished
+          expect(closing.wait).to be(true)
+          expect(retired?(resource)).to be(true)
+          expect(resource.raw).to be_closed
+        ensure
+          keeper&.close
+        end
+      end
+    end
+
+    # Each caller decides from its own deadline: one that passed before the
+    # streams finished is not drained, however the connection then ends.
+    it "reports each joined drain against its own deadline" do
+      reactor do |task|
+        with_keepalive_host(task, keepalive: server_keepalive(time: nil, min_time: nil)) do |fixture|
+          keeper = fixture.client.raw.dup
+          resource = fixture.resource
+          lifetime = keepalive_session(fixture.host).instance_variable_get(:@lifetime)
+          hold = fixture.log[:holds]["hold-deadlines"]
+          held = task.async { unary(fixture, "hold-deadlines") }
+          wait_until(task, "held handler") { fixture.log[:invoked] == ["hold-deadlines"] }
+          closing = task.async { fixture.host.close(grace: 5) }
+          wait_until(task, "drain waits for the held stream") { resource.instance_variable_get(:@drain_task) }
+          before_finish = AsyncHelpers::INTERNAL.now
+          hold.enqueue(true)
+          expect(held.wait).to eq([200, encoded("hold-deadlines")])
+          wait_until(task, "final discard") { resource.instance_variable_get(:@discarding) }
+          expect(resource.drain(lifetime, AsyncHelpers::INTERNAL.now + 0.05)).to be(true)
+          expect(resource.drain(lifetime, before_finish)).to be(false)
+          expect(closing.wait).to be(true)
+          expect(retired?(resource)).to be(true)
+        ensure
+          hold&.enqueue(true)
+          keeper&.close
+        end
+      end
+    end
+
+    # An interruption of the cleanup task while it waits for the discard read
+    # skips no step: raw stays open until the read has left it, and
+    # retirement still completes before the cleanup task ends cancelled.
+    it "keeps raw open through an interrupted discard wait and still completes retirement" do
+      reactor do |task|
+        with_keepalive_host(task, keepalive: server_keepalive(time: nil, min_time: nil)) do |fixture|
+          keeper = fixture.client.raw.dup
+          resource = fixture.resource
+          raw = resource.raw
+          left = Async::Promise.new
+          allow(raw).to receive(:readpartial).and_wrap_original do |read, *args|
+            read.call(*args)
+          rescue EOFError
+            left.wait
+            raise
+          end
+          discarding_at_close = []
+          allow(raw).to receive(:close).and_wrap_original do |close|
+            discarding_at_close << resource.instance_variable_get(:@discarding)
+            close.call
+          end
+          closing = task.async { fixture.host.close(grace: 5) }
+          wait_until(task, "final discard") { resource.instance_variable_get(:@discarding) }
+          forcing = task.async { fixture.host.close(grace: 0) }
+          cleanup = nil
+          members = resource.instance_variable_get(:@retirement_members)
+          wait_until(task, "retirement waiting for the discard read") do
+            cleanup = resource.instance_variable_get(:@cleanup)
+            cleanup && !members.empty? && members.keys.all?(&:finished?) && resource.progress.waiting?
+          end
+          AsyncHelpers::INTERNAL.cancel(cleanup)
+          wait_until(task, "retirement waiting again") { resource.progress.waiting? || cleanup.finished? }
+          expect(cleanup).not_to be_finished
+          expect(raw).not_to be_closed
+          expect(retired?(resource)).to be(false)
+          left.resolve(true)
+          wait_until(task, "cleanup to end") { cleanup.finished? }
+          expect(retired?(resource)).to be(true)
+          expect(raw).to be_closed
+          expect(discarding_at_close).to all(be(false))
+          expect(cleanup).to be_cancelled
+          expect(forcing.wait).to be(false)
+          expect(closing.wait).to be(false)
+        ensure
+          left&.resolve(true)
           keeper&.close
         end
       end
@@ -1226,7 +1327,8 @@ RSpec.shared_examples "HTTP/2 server keepalive" do
           expect(fixture.clock.sleepers.map(&:due)).to eq([eof])
           expect(resource).not_to be_finished
           fixture.clock.advance(eof - fixture.clock.now)
-          expect(closing.wait).to be(false)
+          # The streams finished before the violation, so the drain succeeded.
+          expect(closing.wait).to be(true)
           expect(resource).to be_finished
         ensure
           kept&.close
