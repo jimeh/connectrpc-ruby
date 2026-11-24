@@ -511,15 +511,18 @@ impl CallState {
     /// inside the write, so the write's deadline, cancellation, abort,
     /// shutdown and interrupt waits bound it. That wait is short: hyper's
     /// HTTP/2 pipe drops the body only once the stream closed, which also
-    /// resolves the response; a stranded request's failure is published
-    /// right after `stranded` fires; and while a retry runs the replacement
-    /// body holds the receiver, so the channel stays open. HTTP/1.1 does not
-    /// wait: hyper also drops a body its own framing ended (a declared
-    /// Content-Length reached, or an HTTP/1.0 connection) while the response
-    /// is pending, and waiting for that response could last indefinitely.
-    /// A failure the response side does not know yet, including an HTTP/1.1
-    /// connection failure the response task has not published, is the
-    /// generic `ended`, recomputed by the next write.
+    /// resolves the response (`Exchange#write` rejects a chunk h2 would
+    /// refuse as too large, which would drop the body alone); a stranded
+    /// request's failure is published right after `stranded` fires; and
+    /// while a retry runs the replacement body holds the receiver, so the
+    /// channel stays open. HTTP/1.1 does not wait: hyper also drops a body
+    /// its own framing ended (a declared Content-Length reached, or an
+    /// HTTP/1.0 connection) while the response is pending, and waiting for
+    /// that response could last indefinitely. A failure the response side
+    /// does not know yet is the generic `ended` on HTTP/2, and on HTTP/1.1
+    /// `closed`, since there its connection ending is what usually drops the
+    /// body; forced teardown's phrases stay its only ones. Either is
+    /// recomputed by the next write.
     async fn ended(self: &Arc<Self>, send: &mut SendHalf) -> Failure {
         if let Some(failure) = &send.ended {
             return failure.clone();
@@ -539,7 +542,8 @@ impl CallState {
                 send.ended = Some(failure.clone());
                 failure
             }
-            None => Failure::ended(),
+            None if self.is_h2() => Failure::ended(),
+            None => Failure::closed(),
         }
     }
 

@@ -18,6 +18,14 @@ The [changelog](../CHANGELOG.md) lists every change.
   deadline on `ThreadedTransport` and two on `PerCallTransport`, instead of
   two and three. See
   [streams from ordinary threads](../gems/connectrpc-async/README.md#streams-from-ordinary-threads).
+- A connectrpc-hyper streaming write that starts after the server reset the
+  stream, or ended its response and the stream, raises instead of returning
+  success and discarding the message. It raises the stream's own failure when
+  the response side already knows it, such as `canceled` for a gRPC
+  `RST_STREAM(CANCEL)`, and otherwise `unavailable`. Core's client streams
+  then stop writing and report the server's status, as connectrpc-async does.
+  A single write of 2 GiB or more raises `ArgumentError`. See
+  [writes after the stream ended](../gems/connectrpc-hyper/README.md#errors).
 
 These affect Falcon's native HTTP/1.1 Connect unary and gRPC-Web requests. See
 [HTTP/1.1 input retirement](../gems/connectrpc-falcon/README.md#http11-input-retirement)

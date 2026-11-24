@@ -155,8 +155,7 @@ RSpec.describe "Streaming writes after the stream ended", :interop do
   # A write that finds the body dropped waits for the response's outcome,
   # which `respond` publishes; the hold point parks that publication.
   describe "waiting for the response's outcome" do
-    def parked_writer(transport)
-      native_driver = driver(transport)
+    def parked_writer(transport, native_driver)
       native_driver.hold("respond:publish", 10)
       native_driver.hold("write:outcome", 0)
       writer = Thread.new do
@@ -166,21 +165,25 @@ RSpec.describe "Streaming writes after the stream ended", :interop do
       wait_until("the reset's outcome parked before publication") { native_driver.reached("respond:publish") == 1 }
       wait_until("the write waiting for the outcome") { native_driver.reached("write:outcome") == 1 }
       wait_parked(writer, "Exchange#write")
-      [native_driver, writer]
+      writer
     end
+
+    def release_points(native_driver) = %w[respond:publish write:outcome].each { native_driver&.release(it) }
 
     it "parks the write until the outcome is published, then raises it" do
       transport = hyper
-      native_driver, writer = parked_writer(transport)
+      native_driver = driver(transport)
+      writer = parked_writer(transport, native_driver)
       native_driver.release("respond:publish")
       expect(outcome(writer.value)).to eq(reset)
     ensure
-      native_driver&.release("respond:publish")
+      release_points(native_driver)
     end
 
     it "lands a Thread#raise on the parked write promptly" do
       transport = hyper
-      native_driver, writer = parked_writer(transport)
+      native_driver = driver(transport)
+      writer = parked_writer(transport, native_driver)
       sent = monotonic
       writer.raise(RuntimeError, "interrupted")
       error = begin
@@ -190,8 +193,20 @@ RSpec.describe "Streaming writes after the stream ended", :interop do
       end
       expect([error.class, error.message, monotonic - sent < 1]).to eq([RuntimeError, "interrupted", true])
     ensure
-      native_driver&.release("respond:publish")
+      release_points(native_driver)
     end
+  end
+
+  # h2 refuses a chunk this large outright, which would drop the request
+  # body while the response waits for it; the bytesize stands in for 2 GiB.
+  it "rejects a write of 2 GiB or more before queuing it" do
+    from = peer.mark
+    exchange("ok") do |call|
+      big = +"x"
+      big.define_singleton_method(:bytesize) { 1 << 31 }
+      expect { call.write(big) }.to raise_error(ArgumentError, "A streaming write must be smaller than 2 GiB")
+    end
+    expect(peer.since(from).grep(/\Araw request /)).to eq([])
   end
 
   # The reader holds the receive half, so the write cannot look at the body:
@@ -274,9 +289,7 @@ RSpec.describe "Streaming writes after the stream ended", :interop do
     it "keeps a body error a write consumed for the next read" do
       @server, @served = h1_server { |socket| truncated(socket) }
       h1_exchange(@server) do |call|
-        # The write raises the body error when its look at the response
-        # finds it, or the generic phrase before the response arrived.
-        expect(outcome(write_until_raised(call))).to eq(connection_closed).or eq(closed)
+        expect(outcome(write_until_raised(call))).to eq(connection_closed)
         expect(call.response_head(timeout: 5).status).to eq(200)
         expect(outcome(read_all(call).last)).to eq(connection_closed)
       end
@@ -293,14 +306,15 @@ RSpec.describe "Streaming writes after the stream ended", :interop do
     end
 
     # hyper drops a body that reached its declared Content-Length while the
-    # response is pending, so the write raises without waiting for it. A
-    # length of 0 is a body hyper never polls.
+    # response is pending, so the write raises without waiting for it, with
+    # the phrase HTTP/1.1 gives every body it dropped before the response
+    # reported a failure. A length of 0 is a body hyper never polls.
     it "raises a write past the declared Content-Length without waiting for the response" do
       answered = Queue.new
       @server, @served = h1_server { |_socket| answered.pop }
       h1_exchange(@server, headers: { "content-length" => ["5"] }) do |call|
         call.write(envelope)
-        expect(outcome(write_until_raised(call))).to eq(closed)
+        expect(outcome(write_until_raised(call))).to eq(connection_closed)
       end
     ensure
       answered << :done
@@ -310,7 +324,7 @@ RSpec.describe "Streaming writes after the stream ended", :interop do
       answered = Queue.new
       @server, @served = h1_server { |_socket| answered.pop }
       h1_exchange(@server, headers: { "content-length" => ["0"] }) do |call|
-        expect(outcome(write_until_raised(call))).to eq(closed)
+        expect(outcome(write_until_raised(call))).to eq(connection_closed)
       end
     ensure
       answered << :done
@@ -333,23 +347,22 @@ RSpec.describe "Streaming writes after the stream ended", :interop do
       expect(transport.call(unary).status).to eq(200)
       request = request("h1", grpc: false, origin: "http://127.0.0.1:#{@server.addr[1]}")
       transport.open_stream(request) do |call|
-        expect(outcome(write_until_raised(call))).to eq(closed)
+        expect(outcome(write_until_raised(call))).to eq(connection_closed)
       end
     ensure
       answered << :done
     end
 
-    # HTTP/1.1 never waits for the response's outcome, so the write raises
-    # the connection's failure once the response task published it, or the
-    # generic phrase before; the head reports the connection's failure.
-    it "raises promptly when the connection resets mid-upload" do
+    # HTTP/1.1 never waits for the response's outcome; the write raises the
+    # connection's failure whether or not the response task published it.
+    it "raises the connection's failure when the connection resets mid-upload" do
       @server, @served = h1_server do |socket|
         socket.readpartial(65_536)
         socket.setsockopt(Socket::SOL_SOCKET, Socket::SO_LINGER, [1, 0].pack("ii"))
         socket.close
       end
       h1_exchange(@server) do |call|
-        expect(outcome(write_until_raised(call))).to eq(connection_closed).or eq(closed)
+        expect(outcome(write_until_raised(call))).to eq(connection_closed)
         expect(outcome(error_of { call.response_head(timeout: 5) })).to eq(connection_closed)
       end
     end

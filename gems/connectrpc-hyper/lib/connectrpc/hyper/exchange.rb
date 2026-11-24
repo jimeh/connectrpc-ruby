@@ -34,7 +34,14 @@ module ConnectRPC
         bytes
       end
 
+      # h2 refuses a larger chunk outright, which would drop the request body
+      # while the response waits for it.
+      MAX_WRITE = 1 << 31
+      private_constant :MAX_WRITE
+
       def write(bytes)
+        raise ArgumentError, "A streaming write must be smaller than 2 GiB" if bytes.bytesize >= MAX_WRITE
+
         wait(nil) { |limit| @native.write(bytes, limit) }
         nil
       end
