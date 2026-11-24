@@ -90,6 +90,66 @@ RSpec.shared_examples "settled completion join" do
     preempt_join(interrupt: false)
   end
 
+  # Resuming the joiner directly wakes its promise wait without resolving the
+  # promise. Async's Promise#wait waits again; the join relies on that.
+  it "stays joined across a stray wake while the task it waits on is still pending" do
+    reactor do |task|
+      release = Async::Queue.new
+      target = task.async(finished: false) { release.dequeue }
+      joiner = nil
+      resumed = 0
+      # Counts switches into the joiner, so the example proves the stray
+      # resume reached it while it waited.
+      trace = TracePoint.new(:fiber_switch) { resumed += 1 if Fiber.current.equal?(joiner&.fiber) }
+      recording_waits do |waits|
+        joiner = task.async(finished: false) do
+          completion_join(target)
+          :joined
+        end
+        expect(waits_on?(waits, joiner.fiber, target)).to be(true)
+        trace.enable(target_thread: Thread.current)
+        Fiber.scheduler.resume(joiner.fiber)
+        trace.disable
+        expect(resumed).to eq(1)
+        expect(joiner).not_to be_finished
+        expect(target).to be_alive
+        release.enqueue(true)
+        expect(joiner.wait).to eq(:joined)
+      end
+    ensure
+      trace&.disable
+      release&.enqueue(true)
+    end
+  end
+
+  # Task#wait raises the task's own failure when it fails during the wait;
+  # that failure is the task's to report, not the joiner's.
+  it "does not raise a task's own failure that arrives while it waits" do
+    reactor do |task|
+      release = Async::Queue.new
+      failure = RuntimeError.new("failure during the join")
+      target = task.async(finished: false) do
+        release.dequeue
+        raise failure
+      end
+      recording_waits do |waits|
+        joiner = task.async(finished: false) do
+          completion_join(target)
+          :joined
+        rescue StandardError => e
+          e
+        end
+        expect(waits_on?(waits, joiner.fiber, target)).to be(true)
+        expect(target).to be_alive
+        release.enqueue(true)
+        expect(joiner.wait).to eq(:joined)
+        expect(target.result).to equal(failure)
+      end
+    ensure
+      release&.enqueue(true)
+    end
+  end
+
   # The target's own failure is its task's to report: no join raises it.
   it "keeps independent interruptions through actual child cleanup without raising the target's failure" do
     reactor do |task|
@@ -202,41 +262,44 @@ RSpec.shared_examples "settled completion join" do
     end
   end
 
-  it "keeps children seen while it waits joined after they are reparented away or flagged transient" do
-    reactor do |task|
-      releases = Array.new(3) { Async::Queue.new }
-      started = Async::Promise.new
-      root = task.async(finished: false) do |parent|
-        started.resolve(releases.first(2).map { |release| parent.async(finished: false) { release.dequeue } })
-        releases[2].dequeue
+  # One child per example, so a join that dropped either kind of identity
+  # would return before the child settles.
+  {
+    "reparented away" => ->(child, task) { child.parent = task },
+    "flagged transient" => ->(child, _task) { child.transient = true }
+  }.each do |change, apply|
+    it "keeps a child seen while it waits joined after it is #{change}" do
+      reactor do |task|
+        releases = Array.new(2) { Async::Queue.new }
+        started = Async::Promise.new
+        root = task.async(finished: false) do |parent|
+          started.resolve(parent.async(finished: false) { releases.first.dequeue })
+          releases.last.dequeue
+        end
+        child = started.wait
+        recording_waits do |waits|
+          settled_at_return = nil
+          joiner = task.async(finished: false) do
+            completion_join(root)
+            settled_at_return = settled?(child)
+          end
+          joiner_fiber = joiner.fiber
+          expect(waits_on?(waits, joiner_fiber, root)).to be(true)
+          apply.call(child, task)
+          releases.last.enqueue(true)
+          wait_until(task, "the joiner to wait on the #{change} child or return") do
+            waits_on?(waits, joiner_fiber, child) || joiner.finished?
+          end
+          expect(joiner).not_to be_finished
+          expect(settled?(root)).to be(true)
+          expect(child).to be_alive
+          releases.first.enqueue(true)
+          joiner.wait
+          expect(settled_at_return).to be(true)
+        end
+      ensure
+        releases&.each { |release| release.enqueue(true) }
       end
-      children = started.wait
-      recording_waits do |waits|
-        settled_at_return = nil
-        joiner = task.async(finished: false) do
-          completion_join(root)
-          settled_at_return = children.map { |child| settled?(child) }
-        end
-        joiner_fiber = joiner.fiber
-        expect(waits_on?(waits, joiner_fiber, root)).to be(true)
-        children.first.parent = task
-        children.last.transient = true
-        releases[2].enqueue(true)
-        wait_until(task, "the joiner to wait on a detached child or return") do
-          children.any? { |child| waits_on?(waits, joiner_fiber, child) } || joiner.finished?
-        end
-        expect(joiner).not_to be_finished
-        releases[0].enqueue(true)
-        wait_until(task, "the joiner to wait on the transient child or return") do
-          waits_on?(waits, joiner_fiber, children.last) || joiner.finished?
-        end
-        expect(joiner).not_to be_finished
-        releases[1].enqueue(true)
-        joiner.wait
-        expect(settled_at_return).to eq([true, true])
-      end
-    ensure
-      releases&.each { |release| release.enqueue(true) }
     end
   end
 
