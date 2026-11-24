@@ -26,11 +26,11 @@ and adoption gates.
 ## Installation
 
 ```ruby
-gem "connectrpc-yabeda", "~> 0.2.0"
+gem "connectrpc-yabeda", "~> 0.3.0"
 gem "yabeda-prometheus" # or another Yabeda adapter
 ```
 
-The only runtime dependencies are `connectrpc ~> 0.2.0` and
+The only runtime dependencies are `connectrpc ~> 0.3.0` and
 `yabeda >= 0.16, < 1`. This package does not depend on `prometheus-client` or
 any adapter; the application chooses and configures its adapters. Core and the
 HTTP/framework packages do not depend on Yabeda.

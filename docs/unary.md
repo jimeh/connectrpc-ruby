@@ -24,7 +24,7 @@ compatible core and Rack dependencies. Add it to your Gemfile and keep
 `require "connectrpc/rack"`:
 
 ```ruby
-gem "connectrpc-rack", "~> 0.2.0"
+gem "connectrpc-rack", "~> 0.3.0"
 ```
 
 Core installed alone has no middleware file, so requiring `connectrpc/rack`
