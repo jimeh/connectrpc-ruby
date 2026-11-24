@@ -479,8 +479,9 @@ net/http does. Successfully delivered retiring responses half-close raw TCP
 writes, then wait only the remaining total budget without further reads.
 Admission/socket ownership joins original processing and
 retirement; owner shutdown can shorten either phase. These cooperative timers
-can overshoot under scheduler delay and do not guarantee peer receipt. The
-independent Web rejected-input policy is unchanged. Only explicit Rack fallback
+can overshoot under scheduler delay and do not guarantee peer receipt. Rejected
+Web input and early unary responses use the same read, but keep a connection
+whose read reaches EOF, as `net/http` does. Only explicit Rack fallback
 receives Falcon's generic encoding/cache middleware. Native Connect streaming hosts
 select explicit core shape capabilities. See the package guide for source failure, expiry, worker
 stop and unsupported socket-ownership transfer policies.

@@ -172,17 +172,16 @@ discards the candidate terminal and aborts delivery. Admission includes original
 processing and wire/callback completion. H1 has explicit resources, not fake H2
 streams. Only an actual H2 CANCEL reset signals Context cancellation. H1 EOF,
 disconnect and host shutdown do not. There is no Connect one-second tail policy.
-Falcon native H1 now has a separate explicit rejected-input resource policy:
-one absolute 100 ms allowance to finish the original HTTP body framing, shortened
-by the original valid grpc-timeout and subject to earlier cancellation, drain
-and owner abort. Each discard read is at most 64 KiB; progress does not reset the
-budget and a following request is never consumed. Expiry or malformed framing
-retires that connection raw-first, preserving the original RPC outcome and
-independent aborted delivery. This best effort does not promise delivery for
-arbitrarily slow uploads or extend existing cleanup allowances. The 100 ms
-allowance is a provisional budget in the
-[support contract](support.md#falcon-connect-h1-retirement). See the
-[Falcon guide](../gems/connectrpc-falcon/README.md#grpc-web).
+Since 0.3.1, Falcon native H1 reads rejected input as it reads unread Connect
+H1 input: up to 256 KiB before the rejection head, with `request_body_timeout`
+bounding each read wait and the original valid grpc-timeout the whole read,
+subject to earlier cancellation, drain and owner abort. Each read is at most
+64 KiB and a following request is never consumed. A read that reaches EOF keeps
+the connection. A remainder above the limit, or a stalled, expired or malformed
+one, still receives the rejection with `Connection: close`, and the connection
+closes after the reply. The read limit and close delay are provisional budgets
+in the [support contract](support.md#falcon-connect-h1-retirement). See the
+[Falcon guide](../gems/connectrpc-falcon/README.md#rejected-http1-web-input).
 
 `Server#cors_response(path:, http_method:, headers:, response: nil)` is a pure
 typed host SPI for early decisions and idempotent decoration, including admission

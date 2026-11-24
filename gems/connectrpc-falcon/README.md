@@ -564,6 +564,17 @@ Following pipelined requests are never parsed or dispatched. Admission/socket
 ownership lasts until retirement and original processing join. Earlier owner
 shutdown can shorten either phase; failed delivery receives no success grace.
 
+Since 0.3.1, a Connect unary request whose response is ready before its body
+has been read gets the same read before the head, with the same limits and
+bounds, once processing finishes. As on `net/http`, the connection stays open
+for the next request when the read reaches EOF. Otherwise the response carries
+`Connection: close`, and the connection closes after the same 500 ms wait. An
+unanswered `Expect: 100-continue` request skips the read and closes. Admission
+ends with delivery; the socket is held through the wait. Before 0.3.1 async-http
+answered first and then read a unary remainder with no byte cap, bounded only
+by `idle_timeout`, or, after a partial chunked read, never read it, so the next
+request on that connection waited until `idle_timeout` closed it.
+
 Timers are cooperative and may overshoot under scheduler delay. Holding
 admission during the read and the remaining grace increases resource retention.
 This is best effort reset avoidance, with no arbitrary network-delivery
@@ -611,26 +622,35 @@ rules.
 
 ### Rejected HTTP/1 Web input
 
-Rejected native Web HTTP/1 input now has an explicit resource-policy allowance:
-one absolute monotonic 100 ms budget to finish the original fixed/chunked body
-framing. Progress never resets it. The valid grpc-timeout captured at original
-application entry can shorten this allowance; cancellation, host drain and
-owner abort retain control. Reads use protocol-http1's framed body, which
-returns at most 64 KiB per read, without aggregating the upload or consuming the
-next request. An existing input-adapter remainder can coexist with one discard
-read, each at most 64 KiB;
-this is not a total allocation or RSS bound. Successful calls already consume
-their input and do not enter this tail policy.
+Since 0.3.1, rejected native Web HTTP/1 input is read as
+[Connect input](#http11-input-retirement) is: before the response head, up to
+256 KiB, with `request_body_timeout` bounding each read wait and the valid
+grpc-timeout captured at original application entry bounding the whole read.
+Progress does not extend that deadline. The original processor reads, before it
+releases the staged terminal and rejection head, and its reads use
+protocol-http1's framed body, which returns at most 64 KiB per read, without
+aggregating the upload or consuming the next request. An existing input-adapter
+remainder can coexist with one read, each at most 64 KiB; this is not a total
+allocation or RSS bound. Successful calls already consume their input and do
+not enter this policy.
 
-On expiry or malformed framing, cleanup retires only the affected connection,
-closing raw TCP before body/TLS cleanup. The original RPC processing outcome
-remains separate from aborted delivery and cleanup failure. Terminal bytes stay
-staged until the original processor and application cleanup succeed. This is a
-best effort within bounded cleanup, not a delivery promise for arbitrarily slow
-uploads. The tail budget runs once and does not restart or stack; existing
-backend input-cancellation and teardown allowances remain separate. The support
-contract classifies the 100 ms allowance as a
-[provisional budget](../../docs/support.md#falcon-connect-h1-retirement).
+When the read reaches EOF, the connection stays open for the next request.
+When the remainder is above the limit, stalls, expires or is malformed, the
+rejection is still delivered with `Connection: close`, and the connection then
+closes after the 500 ms wait without reading. An unanswered
+`Expect: 100-continue` request skips the read. Admission ends with delivery.
+Cancellation, host drain and owner abort retain control: they retire only the
+affected connection, closing raw TCP before body/TLS cleanup, without delivering
+the response. The original RPC processing outcome remains separate from aborted
+delivery. Over TLS, a client that ends its TCP stream mid-upload without
+`close_notify` cannot receive the response: OpenSSL treats that EOF as fatal and
+the response write fails, where Go's `crypto/tls` would still write it.
+
+Before 0.3.1 the read had one absolute 100 ms allowance with no byte limit, and
+expiry or malformed framing reset the connection, so a client that paused its
+upload for longer saw a reset instead of the error. The support contract
+classifies this read as
+[provisional](../../docs/support.md#falcon-connect-h1-retirement).
 
 ## Explicit unary cancellation
 

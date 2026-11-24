@@ -84,12 +84,13 @@ CI requires the production official H1 profiles to pass all 174 identity and 160
 gzip cases on both pinned Rubies, including the original oversized CS cases over
 TCP/TLS.
 No official assertion or inventory changed. Unlike `net/http`, Falcon never
-reuses a connection after incomplete input, and it also reads when the client
-sent `Connection: close`. Native H1 Web retains its separate policy: original
-input cleanup gates the staged Web terminal, and an incomplete upload also gates
-a rejection head to avoid stopping the client's upload, with its own 100 ms
-allowance. The historical Web TCP/TLS failures, diagnosis and separate baseline
-repair are recorded in the [conformance
+reuses a connection after incomplete streaming input, and it also reads when
+the client sent `Connection: close`. In native H1 Web, original input cleanup
+gates the staged Web terminal, and an incomplete upload also gates a rejection
+head to avoid stopping the client's upload. Since 0.3.1 that cleanup, and an early
+Connect unary response, read the remainder with the same limits and bounds.
+The historical Web TCP/TLS failures, diagnosis and separate baseline repair are
+recorded in the [conformance
 status](../conformance/README.md#connect-http11-server-profiles).
 
 ## Completion policy
