@@ -1,6 +1,25 @@
 # frozen_string_literal: true
 
-RSpec.shared_examples "R3 original-source finalization orderings" do
+# Each including group defines completion_join(task, **, &) for its join.
+RSpec.shared_examples "settled completion join" do
+  # A settled task's block, ensure included, has returned.
+  def settled?(task) = task.completed? || task.failed? || task.cancelled?
+
+  # Records [fiber, task] for every Task#wait on this thread, so an example
+  # can synchronize on the task a joiner actually waits on.
+  def recording_waits
+    waits = []
+    trace = TracePoint.new(:call) do |event|
+      waits << [Fiber.current, event.self] if event.method_id == :wait && event.defined_class == Async::Task
+    end
+    trace.enable(target_thread: Thread.current)
+    yield waits
+  ensure
+    trace&.disable
+  end
+
+  def waits_on?(waits, fiber, target) = waits.any? { |waiter, task| waiter.equal?(fiber) && task.equal?(target) }
+
   def preemption_tasks(task)
     sockets = Array.new(5) { Socket.pair(:UNIX, :STREAM, 0) }
     started = Async::Queue.new
@@ -39,29 +58,24 @@ RSpec.shared_examples "R3 original-source finalization orderings" do
     sockets&.flatten&.each { |socket| socket.close unless socket.closed? }
   end
 
-  def preempt_finalization(interrupt:)
+  def preempt_join(interrupt:)
     reactor do |task|
       sockets, root, children, readers = preemption_tasks(task)
-      fibers = [root, *children, *readers].map(&:fiber)
+      tasks = [root, *children, *readers]
       first = Async::Cancel.new("first R3 interruption")
-      boundary = nil
+      settled_at_return = nil
       joiner = Async::Task.new(task, finished: false) do
         completion_join(root) { root.cancel }
       rescue Exception => e # rubocop:disable Lint/RescueException -- observe caller identity before fixture cleanup
         e
       ensure
-        boundary = { root_finished: root.finished?, fibers_alive: fibers.map(&:alive?),
-                     tasks: [root, *children, *readers].map { |entry| [entry.status, entry.finished?] } }
-        puts "R3 boundary #{interrupt ? 'interrupt' : 'stray'}: #{boundary.inspect}"
+        settled_at_return = tasks.map { |entry| settled?(entry) }
       end
       waiter = preemption_waiter(task, children.last, joiner, first, interrupt: interrupt)
       joiner.run
-      result = joiner.wait
-      puts "R3 result: #{result.class}: #{result} first_identity=#{result.equal?(first)}"
-      expect(result).to equal(interrupt ? first : nil)
-      expect(boundary.fetch(:root_finished)).to be(true)
-      expect(boundary.fetch(:fibers_alive)).to eq([false] * fibers.length)
-      expect([root, *children, *readers]).to all(be_finished)
+      expect(joiner.wait).to equal(interrupt ? first : nil)
+      expect(settled_at_return).to eq([true] * tasks.length)
+      wait_until(task, "every joined fiber to be reclaimed") { tasks.all?(&:finished?) }
       waiter.wait
     ensure
       close_preemption_sockets(sockets)
@@ -69,24 +83,71 @@ RSpec.shared_examples "R3 original-source finalization orderings" do
   end
 
   it "preserves the first interruption through promise-waiter preemption" do
-    preempt_finalization(interrupt: true)
+    preempt_join(interrupt: true)
   end
 
-  it "joins actual finalization across a queued stray wake" do
-    preempt_finalization(interrupt: false)
+  it "joins every settled task across a queued stray wake" do
+    preempt_join(interrupt: false)
   end
-end
 
-RSpec.shared_examples "completion progress observation" do
-  def residual_root(task, reader)
-    started = Async::Promise.new
-    root = task.async(finished: false) do |parent|
-      parent.async(finished: false) { reader.readpartial(1) }
-      started.resolve(true)
-      Async::Condition.new.wait
+  # Resuming the joiner directly wakes its promise wait without resolving the
+  # promise. Async's Promise#wait waits again; the join relies on that.
+  it "stays joined across a stray wake while the task it waits on is still pending" do
+    reactor do |task|
+      release = Async::Queue.new
+      target = task.async(finished: false) { release.dequeue }
+      joiner = nil
+      resumed = 0
+      # Counts switches into the joiner, so the example proves the stray
+      # resume reached it while it waited.
+      trace = TracePoint.new(:fiber_switch) { resumed += 1 if Fiber.current.equal?(joiner&.fiber) }
+      recording_waits do |waits|
+        joiner = task.async(finished: false) do
+          completion_join(target)
+          :joined
+        end
+        expect(waits_on?(waits, joiner.fiber, target)).to be(true)
+        trace.enable(target_thread: Thread.current)
+        Fiber.scheduler.resume(joiner.fiber)
+        trace.disable
+        expect(resumed).to eq(1)
+        expect(joiner).not_to be_finished
+        expect(target).to be_alive
+        release.enqueue(true)
+        expect(joiner.wait).to eq(:joined)
+      end
+    ensure
+      trace&.disable
+      release&.enqueue(true)
     end
-    started.wait
-    root
+  end
+
+  # Task#wait raises the task's own failure when it fails during the wait;
+  # that failure is the task's to report, not the joiner's.
+  it "does not raise a task's own failure that arrives while it waits" do
+    reactor do |task|
+      release = Async::Queue.new
+      failure = RuntimeError.new("failure during the join")
+      target = task.async(finished: false) do
+        release.dequeue
+        raise failure
+      end
+      recording_waits do |waits|
+        joiner = task.async(finished: false) do
+          completion_join(target)
+          :joined
+        rescue StandardError => e
+          e
+        end
+        expect(waits_on?(waits, joiner.fiber, target)).to be(true)
+        expect(target).to be_alive
+        release.enqueue(true)
+        expect(joiner.wait).to eq(:joined)
+        expect(target.result).to equal(failure)
+      end
+    ensure
+      release&.enqueue(true)
+    end
   end
 
   # The target's own failure is its task's to report: no join raises it.
@@ -129,160 +190,162 @@ RSpec.shared_examples "completion progress observation" do
       expect(competitor.wait).to eq(:joined)
       expect(root).to be_finished
       expect { completion_join(root) }.not_to raise_error
-      expect(completion_state(root)).to be_nil
     ensure
       releases&.each { |release| release.enqueue(true) }
     end
   end
 
-  it "retains consume-time child progress across removal reparenting and later transient flags" do
+  # Each raise lands while the joiner waits, so it has handled the raise by
+  # the time Fiber.scheduler.raise returns.
+  it "keeps a pre-join interruption over a later one raised while it waits" do
     reactor do |task|
-      reader, writer = Socket.pair(:UNIX, :STREAM, 0)
-      root = residual_root(task, reader)
-      original = root.fiber
-      releases = Array.new(2) { Async::Queue.new }
-      required = []
-      competitor = nil
-      captured = Async::Promise.new
-      # This controller is parked until the root enters its actual finish!.
-      # That non-yielding tail captures the new children before the controller.
-      controller = task.async(finished: false) do
-        Fiber.scheduler.transfer
-        state = completion_state(root)
-        expect(original).not_to be_alive
-        expect(state.required.keys).to include(*required)
-        expect(state).not_to be_terminal
-        required.first.parent = task
-        required.last.parent = nil
-        required.each { |child| child.transient = true }
-        competitor = task.async(finished: false) { completion_join(root) }
-        required.each(&:run)
-        captured.resolve(true)
-      end
-      trace = TracePoint.new(:call) do |event|
-        next unless event.self.equal?(root) && event.method_id == :finish! && completion_state(root)
-
-        trace.disable
-        required = releases.map do |release|
-          Async::Task.new(root, finished: false) { release.dequeue }
-        end
-        Fiber.scheduler.push(controller.fiber)
-      end
-      joiner = task.async(finished: false) do
-        trace.enable
-        completion_join(root) { root.cancel }
-      end
-      captured.wait
-      expect(root).to be_finished
-      expect([joiner, competitor]).to all(satisfy { |entry| !entry.finished? })
-      state = completion_state(root)
-      state.promise.wait until state.terminal?
-      expect(state.instance_variable_get(:@fiber)).to be_nil
-      expect(state.instance_variable_get(:@scheduler)).to be_nil
-      # Terminal observation cannot freeze membership while retained joins live.
-      late_release = Async::Queue.new
-      late = Async::Task.new(root, finished: false) { late_release.dequeue }
-      late.run
-      pulse = Async::Task.new(root, finished: false) { :consumed }
-      pulse.run
-      pulse.wait
-      expect(state.required.keys).to include(late)
-      late.parent = task
-      late.transient = true
-      releases.last.enqueue(true)
-      completion_join(required.last)
-      expect([joiner, competitor]).to all(satisfy { |entry| !entry.finished? })
-      releases.first.enqueue(true)
-      completion_join(required.first)
-      expect([joiner, competitor]).to all(satisfy { |entry| !entry.finished? })
-      late_release.enqueue(true)
-      expect(joiner.wait).to be_nil
-      expect(competitor.wait).to be_nil
-      expect([root, *required, late, pulse, controller]).to all(be_finished)
-      expect(original).not_to be_alive
-      state = completion_state(root)
-      expect(state).to be_terminal
-      expect(state.instance_variable_get(:@fiber)).to be_nil
-      expect(state.instance_variable_get(:@scheduler)).to be_nil
-      generation = state.generation
-      root.consume
-      expect(state.generation).to eq(generation), "released per-instance forwarding must be inert"
-    ensure
-      trace&.disable
-      releases&.each { |release| release.enqueue(true) }
-      late_release&.enqueue(true)
-      reader&.close
-      writer&.close
-    end
-  end
-
-  it "latches terminal notification before the first wait and rechecks a finished task's new work" do
-    reactor do |task|
-      reader, writer = Socket.pair(:UNIX, :STREAM, 0)
-      root = residual_root(task, reader)
-      original = root.fiber
-      joiner = nil
-      notified_before_wait = false
-      controller = task.async(finished: false) do
-        Fiber.scheduler.transfer
-        completion_state(root).promise.wait
-        notified_before_wait = completion_state(root).terminal? && !original.alive?
-        Fiber.scheduler.resume(joiner.fiber)
-      end
-      trace = TracePoint.new(:call) do |event|
-        state = completion_state(root)
-        next unless state && event.self.equal?(state.promise) && event.method_id == :wait
-
-        trace.disable
-        Fiber.scheduler.push(controller.fiber)
-        Fiber.scheduler.transfer
-      end
-      joiner = Async::Task.new(task, finished: false) do
-        trace.enable
-        completion_join(root) { root.cancel }
-      end
-      joiner.run
-      expect(joiner.wait).to be_nil
-      expect(notified_before_wait).to be(true)
-      expect([root, controller, joiner]).to all(be_finished)
       release = Async::Queue.new
-      child = Async::Task.new(root, finished: false) { release.dequeue }
-      child.run
-      expect(root).not_to be_finished
-      later = task.async(finished: false) { completion_join(root) }
-      expect(later).not_to be_finished
-      child.parent = task
-      child.transient = true
-      competitor = task.async(finished: false) { completion_join(root) }
-      expect([later, competitor]).to all(satisfy { |entry| !entry.finished? })
+      root = task.async(finished: false) { release.dequeue }
+      first = RuntimeError.new("pre-join interruption")
+      joiner = task.async(finished: false) do
+        completion_join(root) { raise first }
+      rescue StandardError => e
+        e
+      end
+      expect(joiner).not_to be_finished
+      Fiber.scheduler.raise(joiner.fiber, RuntimeError.new("later interruption"))
+      expect(joiner).not_to be_finished
       release.enqueue(true)
-      expect(later.wait).to be_nil
-      expect(competitor.wait).to be_nil
-      expect([root, child, later, competitor]).to all(be_finished)
+      expect(joiner.wait).to equal(first)
+      expect(root).to be_completed
     ensure
-      trace&.disable
       release&.enqueue(true)
-      reader&.close
-      writer&.close
     end
   end
 
-  it "reports a nil-fiber unfinished target with attached finished children explicitly" do
+  # A snapshot of the subtree, like Task#wait_all, misses this task (Async
+  # 2.46.0): it does not exist until the cancel cascade reaches the child.
+  it "joins a task created in a cancelled child's ensure whose own unwind suspends" do
     reactor do |task|
-      root = Async::Task.new(task, finished: false) { :never_run }
-      root.cancel
-      finished = task.async(finished: false) { :finished }
-      finished.wait
-      finished.parent = root
-      expect(root).not_to be_finished
-      expect(root.fiber).to be_nil
-      expect do
-        completion_join(root)
-      end.to raise_error(RuntimeError, /Completion observation violation:.*attached_children=.*finished: true/)
-      expect(completion_state(root)).to be_nil
+      entered = Async::Promise.new
+      release = Async::Queue.new
+      late = nil
+      root = task.async(finished: false) do |parent|
+        parent.async(finished: false) do |child|
+          entered.resolve(true)
+          Async::Condition.new.wait
+        ensure
+          late = child.async(finished: false) do
+            Async::Condition.new.wait
+          ensure
+            release.dequeue
+          end
+        end
+        Async::Condition.new.wait
+      end
+      entered.wait
+      recording_waits do |waits|
+        settled_at_return = nil
+        joiner = task.async(finished: false) do
+          completion_join(root)
+          settled_at_return = settled?(late)
+        end
+        joiner_fiber = joiner.fiber
+        root.cancel
+        wait_until(task, "the joiner to wait on the late task or return") do
+          (late && waits_on?(waits, joiner_fiber, late)) || joiner.finished?
+        end
+        expect(joiner).not_to be_finished
+        expect(settled?(root)).to be(true)
+        expect(late).to be_alive
+        release.enqueue(true)
+        joiner.wait
+        expect(settled_at_return).to be(true)
+      end
     ensure
-      finished.parent = nil if finished
-      root&.consume
+      release&.enqueue(true)
+    end
+  end
+
+  # One child per example, so a join that dropped either kind of identity
+  # would return before the child settles.
+  {
+    "reparented away" => ->(child, task) { child.parent = task },
+    "flagged transient" => ->(child, _task) { child.transient = true }
+  }.each do |change, apply|
+    it "keeps a child seen while it waits joined after it is #{change}" do
+      reactor do |task|
+        releases = Array.new(2) { Async::Queue.new }
+        started = Async::Promise.new
+        root = task.async(finished: false) do |parent|
+          started.resolve(parent.async(finished: false) { releases.first.dequeue })
+          releases.last.dequeue
+        end
+        child = started.wait
+        recording_waits do |waits|
+          settled_at_return = nil
+          joiner = task.async(finished: false) do
+            completion_join(root)
+            settled_at_return = settled?(child)
+          end
+          joiner_fiber = joiner.fiber
+          expect(waits_on?(waits, joiner_fiber, root)).to be(true)
+          apply.call(child, task)
+          releases.last.enqueue(true)
+          wait_until(task, "the joiner to wait on the #{change} child or return") do
+            waits_on?(waits, joiner_fiber, child) || joiner.finished?
+          end
+          expect(joiner).not_to be_finished
+          expect(settled?(root)).to be(true)
+          expect(child).to be_alive
+          releases.first.enqueue(true)
+          joiner.wait
+          expect(settled_at_return).to be(true)
+        end
+      ensure
+        releases&.each { |release| release.enqueue(true) }
+      end
+    end
+  end
+
+  it "raises ArgumentError for a self-join without blocking" do
+    reactor do |task|
+      expect { completion_join(task) }.to raise_error(ArgumentError, "Cannot join the current task")
+    end
+  end
+
+  # The parent waits on the child, so a join that waited on the parent would
+  # never return.
+  it "raises ArgumentError when a child joins a live ancestor that waits on it" do
+    reactor do |task|
+      release = Async::Queue.new
+      parent = task.async(finished: false) do |current|
+        child = current.async(finished: false) do
+          release.dequeue
+          completion_join(current)
+        rescue ArgumentError => e
+          e
+        end
+        child.wait
+      end
+      release.enqueue(true)
+      outcome = begin
+        task.with_timeout(2) { parent.wait }
+      rescue Async::TimeoutError
+        :blocked
+      end
+      expect(outcome).to be_a(ArgumentError)
+      expect(outcome.message).to eq("Cannot join the current task")
+    ensure
+      AsyncHelpers::INTERNAL.cancel(parent) if parent && !parent.finished?
+    end
+  end
+
+  it "waits on an initialized task until another fiber starts it" do
+    reactor do |task|
+      staged = Async::Task.new(task, finished: false) { :staged }
+      joiner = task.async(finished: false) { completion_join(staged) }
+      expect(joiner).not_to be_finished
+      expect(staged.status).to eq(:initialized)
+      staged.run
+      expect(joiner.wait).to eq(:staged)
+    ensure
+      staged.run if staged&.status == :initialized
     end
   end
 end

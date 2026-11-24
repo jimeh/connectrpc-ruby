@@ -8,12 +8,7 @@ RSpec.describe "Internal completion preemption" do
     AsyncHelpers::INTERNAL.join_complete(task, **, &)
   end
 
-  def completion_state(task)
-    task.instance_variable_get(:@connectrpc_async_completion)
-  end
-
-  it_behaves_like "R3 original-source finalization orderings"
-  it_behaves_like "completion progress observation"
+  it_behaves_like "settled completion join"
 end
 
 RSpec.describe "Internal interruptible completion join" do
@@ -46,41 +41,50 @@ RSpec.describe "Internal interruptible completion join" do
     end
   end
 
-  # The target's block has finished but its finalization is still pending, so
-  # the joiner waits on the completion latch rather than on a task.
-  it "raises a latch-wait interruption at once" do
+  # The target has settled, so the joiner waits on its child's unwind.
+  it "raises an interruption at once while it waits on a settled target's unwinding child" do
     reactor do |task|
-      reader, writer = Socket.pair(:UNIX, :STREAM, 0)
-      started = Async::Promise.new
+      entered = Async::Promise.new
+      release = Async::Queue.new
+      waits = []
+      trace = TracePoint.new(:call) do |event|
+        waits << [Fiber.current, event.self] if event.method_id == :wait && event.defined_class == Async::Task
+      end
       root = task.async(finished: false) do |parent|
-        parent.async(finished: false) { reader.readpartial(1) }
-        started.resolve(true)
+        parent.async(finished: false) do |current|
+          entered.resolve(current)
+          Async::Condition.new.wait
+        ensure
+          release.dequeue
+        end
         Async::Condition.new.wait
       end
-      started.wait
-      first = RuntimeError.new("latch interruption")
+      child = entered.wait
+      first = RuntimeError.new("unwinding child interruption")
       joiner = Async::Task.new(task, finished: false) do
         AsyncHelpers::INTERNAL.join_complete(root, interruptible: true) { root.cancel }
       rescue StandardError => e
         e
       end
-      waiter = task.async(finished: false) do
-        root.wait
-        state = root.instance_variable_get(:@connectrpc_async_completion)
-        expect(state).not_to be_nil
-        expect(state).not_to be_terminal
-        Fiber.scheduler.raise(joiner.fiber, first)
-        expect(joiner).to be_finished
-        expect(state).not_to be_terminal
-      end
+      trace.enable(target_thread: Thread.current)
       joiner.run
-      expect(joiner.wait).to equal(first)
-      waiter.wait
+      joiner_fiber = joiner.fiber
+      wait_until(task, "the joiner to wait on the unwinding child") do
+        waits.any? { |fiber, target| fiber.equal?(joiner_fiber) && target.equal?(child) } || joiner.finished?
+      end
+      trace.disable
+      expect(root).to be_cancelled
+      expect(joiner).not_to be_finished
+      Fiber.scheduler.raise(joiner_fiber, first)
+      expect(joiner).to be_finished
+      expect(joiner.result).to equal(first)
+      expect(child).to be_alive
+      release.enqueue(true)
       AsyncHelpers::INTERNAL.join_complete(root)
-      expect([root, joiner, waiter]).to all(be_finished)
+      expect(child).to be_cancelled
     ensure
-      reader&.close
-      writer&.close
+      trace&.disable
+      release&.enqueue(true)
     end
   end
 end

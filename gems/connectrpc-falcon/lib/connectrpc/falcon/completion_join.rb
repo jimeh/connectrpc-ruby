@@ -2,7 +2,7 @@
 
 module ConnectRPC
   module Falcon
-    # Falcon and connectrpc-async joins on one task share a single observation.
+    # Falcon joins tasks with connectrpc-async's settled-task join.
     CompletionJoin = ConnectRPC::Async.const_get(:Internal).const_get(:CompletionJoin)
     # Falcon teardown reports its failures as connectrpc-async's does.
     Teardown = ConnectRPC::Async.const_get(:Internal).const_get(:Teardown)

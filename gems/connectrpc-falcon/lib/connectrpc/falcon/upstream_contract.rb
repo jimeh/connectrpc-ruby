@@ -17,8 +17,7 @@ module ConnectRPC
 
       def self.verify!
         ConnectRPC::Async.const_get(:Internal).const_get(:UpstreamContract)
-                         .verify!(package: "connectrpc-falcon", version: VERSION, hooks: HOOKS, tested: TESTED,
-                                  finalization: false)
+                         .verify!(package: "connectrpc-falcon", version: VERSION, hooks: HOOKS, tested: TESTED)
       end
     end
     private_constant :UpstreamContract
