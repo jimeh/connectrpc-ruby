@@ -97,17 +97,16 @@ RSpec.describe "Retries" do
     # 1.12 reported its dispatcher gone); it is a connection failure, as h2
     # reports it for the held stream, not a stream reset. grpc-go reports a
     # connection error as unavailable on every stream. request:indexed fires
-    # in the dispatch poll that then calls h2's send_request and polls h2's
-    # readiness before parking the request; were the corrupt frame processed
-    # before that readiness poll checks for it, either call would fail with
-    # h2's GOAWAY error instead, which reads the same, so a pass there would
-    # not prove the slot path. The control-channel round trip makes that
-    # unlikely.
+    # in the dispatch poll that then calls h2's send_request and parks the
+    # request; the corrupt frame waits for dispatch:returned:2, a dispatch poll
+    # ending with both indexes taken, so it cannot reach h2 before the request
+    # parks (it would then fail through h2's GOAWAY error, which reads the
+    # same, and the pass would not prove the slot path).
     it "fails a call waiting for a stream slot as a closed connection when h2 fails the connection (#{protocol})" do
       from = peer.mark
       transport = hyper
       native_driver = driver(transport)
-      points = %w[request:indexed retry:unsent retry:unprocessed]
+      points = %w[request:indexed dispatch:returned:2 retry:unsent retry:unprocessed]
       points.each { |point| native_driver.hold(point, 0) }
       origin = peer["raw_mcs1"]
       tag = "slot-conn-error-#{protocol}"
@@ -130,7 +129,8 @@ RSpec.describe "Retries" do
       queued = Thread.new do
         error_of { raw_call(origin, "ok", transport: transport, protocol: protocol, timeout: 20) }
       end
-      wait_until("the queued call passed to h2") { native_driver.reached("request:indexed") == 2 }
+      wait_until("the queued call parked in h2") { native_driver.reached("dispatch:returned:2") >= 1 }
+      expect(native_driver.reached("request:indexed")).to eq(2)
       peer.command("raw-corrupt rawmcs1")
       errors = [queued.value, held.value].map { |error| error && [error.code, error.message] }
       expect(errors).to all(eq(["unavailable", "HTTP transport failed: connection closed"]))

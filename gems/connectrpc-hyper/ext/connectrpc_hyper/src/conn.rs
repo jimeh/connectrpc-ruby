@@ -300,6 +300,9 @@ struct Dispatcher {
     connection: Option<Pin<Box<dyn Future<Output = ()> + Send>>>,
     closed: Arc<Signal>,
     holds: Arc<Holds>,
+    /// An HTTP/2 connection's stream record, for the `dispatch:returned`
+    /// hold point.
+    wire: Option<Arc<Wire>>,
 }
 
 impl Future for Dispatcher {
@@ -307,7 +310,19 @@ impl Future for Dispatcher {
 
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<()> {
         if let Some(connection) = self.connection.as_mut() {
-            std::task::ready!(connection.as_mut().poll(cx));
+            let polled = connection.as_mut().poll(cx);
+            if polled.is_pending() && self.holds.armed() {
+                if let Some(wire) = &self.wire {
+                    // Spec hold point: armed with a zero bound, it counts the
+                    // dispatch polls that returned with N stream indexes
+                    // taken. hyper takes them in that poll, so the poll that
+                    // passed request N to h2 has ended, and a request waiting
+                    // for a stream slot is parked.
+                    self.holds
+                        .block(&format!("dispatch:returned:{}", wire.taken()));
+                }
+            }
+            std::task::ready!(polled);
         }
         self.connection = None;
         Poll::Ready(())
@@ -542,7 +557,7 @@ pub async fn connect(
             .map_err(|e| Failure::from_hyper(&e))?;
         registering(holds);
         let closed = Signal::new();
-        spawn_dispatcher(tracker, holds, connection, &closed);
+        spawn_dispatcher(tracker, holds, connection, &closed, Some(wire.clone()));
         Ok(Connected {
             handshake: Handshake::H2 {
                 sender,
@@ -563,7 +578,7 @@ pub async fn connect(
             .map_err(|e| Failure::from_hyper(&e))?;
         registering(holds);
         let closed = Signal::new();
-        let task = spawn_dispatcher(tracker, holds, connection, &closed);
+        let task = spawn_dispatcher(tracker, holds, connection, &closed, None);
         Ok(Connected {
             handshake: Handshake::H1 {
                 sender,
@@ -583,6 +598,7 @@ fn spawn_dispatcher<E>(
     holds: &Arc<Holds>,
     connection: impl Future<Output = Result<(), E>> + Send + 'static,
     closed: &Arc<Signal>,
+    wire: Option<Arc<Wire>>,
 ) -> Task {
     let dispatcher = Dispatcher {
         connection: Some(Box::pin(async move {
@@ -590,6 +606,7 @@ fn spawn_dispatcher<E>(
         })),
         closed: closed.clone(),
         holds: holds.clone(),
+        wire,
     };
     let holds = holds.clone();
     tracker.spawn(async move {

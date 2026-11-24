@@ -87,6 +87,11 @@ impl Wire {
         })
     }
 
+    /// The stream indexes hyper's dispatch has taken so far.
+    pub fn taken(&self) -> u64 {
+        self.next.load(Ordering::SeqCst)
+    }
+
     pub fn disable(&self) {
         self.disabled.store(true, Ordering::SeqCst);
     }
