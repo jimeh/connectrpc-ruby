@@ -11,40 +11,6 @@ RSpec.describe "connectrpc-async upstream contract" do
 
   def contract = AsyncHelpers::INTERNAL.const_get(:UpstreamContract)
 
-  def now = Process.clock_gettime(Process::CLOCK_MONOTONIC)
-
-  # A per-instance #consume observer, installed like CompletionJoin's.
-  def observe_consume(task, &observer)
-    seen = []
-    spy = Module.new do
-      define_method(:consume) do
-        result = super()
-        seen << [fiber.nil?, finished?]
-        observer&.call(self)
-        result
-      end
-    end
-    task.extend(spy)
-    seen
-  end
-
-  def end_task(task, exit)
-    if exit == :cancel
-      expect(task).to be_alive
-      task.cancel
-    end
-    task.wait
-  rescue ArgumentError
-    nil
-  end
-
-  def task_body(exit, gate)
-    case exit
-    when :raise then raise ArgumentError, "probe failure"
-    when :cancel then gate.wait
-    end
-  end
-
   # Our client and server connections over a socket pair, with no resource.
   def connection_pair(task)
     left, right = Socket.pair(:UNIX, :STREAM, 0)
@@ -71,14 +37,13 @@ RSpec.describe "connectrpc-async upstream contract" do
 
   def require_async(perturbation) = require_perturbed("connectrpc/async", perturbation)
 
-  def expect_async_error(output, *lines, **)
-    expect_contract_error(output, "connectrpc-async", ConnectRPC::Async::VERSION, *lines, **)
+  def expect_async_error(output, *lines)
+    expect_contract_error(output, "connectrpc-async", ConnectRPC::Async::VERSION, *lines)
   end
 
   describe "relied on" do
-    it "passes the boot-time hook and finalization checks on the installed stack" do
+    it "passes the boot-time hook checks on the installed stack" do
       expect(contract.hook_failures(contract::HOOKS)).to eq([])
-      expect(contract.finalization_failures).to eq([])
     end
 
     it "names only tested versions that the gemspec allows" do
@@ -109,105 +74,6 @@ RSpec.describe "connectrpc-async upstream contract" do
                                           "()", "Object"]])
       expect(failures).to eq(["unlisted-gem (unknown version): Async::HTTP::Protocol::HTTP2::Missing#start " \
                               "expected public start() from Object, found nothing"])
-    end
-
-    it "bounds a stuck finalization probe and names the step it was in" do
-      probe = contract.const_get(:FinalizationProbe)
-      allow_any_instance_of(probe).to receive(:call) { Thread::Queue.new.pop }
-      started = now
-      failures = contract.finalization_failures(0.2)
-      expect(now - started).to be < 0.45
-      expect(failures).to eq(["async #{Async::VERSION}: Task finalization probe did not finish within 0.2 s " \
-                              "while starting its reactor"])
-    end
-
-    # A kill grace added on top of the budget would take 0.7 s here.
-    it "keeps a probe thread that ignores kill within the budget and says it could not stop" do
-      probe = contract.const_get(:FinalizationProbe)
-      release = Thread::Queue.new
-      allow_any_instance_of(probe).to receive(:call) do
-        Thread::Queue.new.pop
-      ensure
-        release.pop
-      end
-      started = now
-      failures = contract.finalization_failures(0.2)
-      expect(now - started).to be < 0.45
-      expect(failures).to eq(["async #{Async::VERSION}: Task finalization probe did not finish within 0.2 s " \
-                              "while starting its reactor, and Async could not stop the probe thread"])
-    ensure
-      release&.push(nil)
-    end
-
-    it "reports a probe crash as a broken contract" do
-      probe = contract.const_get(:FinalizationProbe)
-      allow_any_instance_of(probe).to receive(:call).and_raise(NoMethodError, "undefined method 'consume'")
-      expect(contract.finalization_failures).to eq(["async #{Async::VERSION}: Task finalization probe raised " \
-                                                    "NoMethodError while starting its reactor: undefined method " \
-                                                    "'consume'"])
-    end
-
-    %i[return raise cancel].each do |exit|
-      it "calls a per-instance #consume with the fiber cleared when a task ends by #{exit}" do
-        reactor do |root|
-          gate = Async::Promise.new
-          task = Async::Task.new(root, finished: false) { task_body(exit, gate) }
-          seen = observe_consume(task)
-          task.run
-          end_task(task, exit)
-          expect(seen).to include([true, true])
-          expect(task).to be_finished
-        end
-      end
-
-      it "calls a parent's per-instance #consume when its last child finishes after the parent ends by #{exit}" do
-        reactor do |root|
-          child_gate = Async::Promise.new
-          parent_gate = Async::Promise.new
-          started = Async::Promise.new
-          child = nil
-          parent = Async::Task.new(root, finished: false) do |task|
-            child = task.async(finished: false) { |inner| inner.defer_cancel { child_gate.wait } }
-            started.resolve(true)
-            task_body(exit, parent_gate)
-          end
-          seen = observe_consume(parent)
-          parent.run
-          started.wait
-          end_task(parent, exit)
-          expect(parent.fiber).to be_nil
-          expect(parent).not_to be_finished
-          expect(seen.map(&:last)).not_to include(true)
-          child_gate.resolve(true)
-          child.wait
-          expect(seen).to include([true, true])
-          expect(parent).to be_finished
-        end
-      end
-    end
-
-    it "transfers an object pushed from #consume on a later iteration, after the task's fiber is dead" do
-      reactor do |root|
-        done = Async::Promise.new
-        events = []
-        fiber = nil
-        pushed = Object.new
-        pushed.define_singleton_method(:alive?) { !done.resolved? }
-        pushed.define_singleton_method(:transfer) do
-          events << [:transfer, fiber.alive?]
-          done.resolve(true)
-        end
-        task = Async::Task.new(root, finished: false) { fiber = Fiber.current }
-        observe_consume(task) do |target|
-          next unless target.fiber.nil? && events.empty?
-
-          Fiber.scheduler.push(pushed)
-          events << :pushed
-        end
-        task.run
-        done.wait
-        expect(events).to eq([:pushed, [:transfer, false]])
-      end
     end
 
     it "dispatches incoming streams through create_stream, so the server builds our RequestStream" do
@@ -449,84 +315,6 @@ RSpec.describe "connectrpc-async upstream contract" do
   end
 
   describe "perturbed at require" do
-    finish = <<~RUBY
-      Async::Task.prepend(Module.new do
-        private def finish!
-          return super unless bypass?
-
-          @fiber&.async_task = nil
-          @fiber = nil
-          @block = nil
-          Async::Node.instance_method(:consume).bind_call(self)
-        end
-      end)
-    RUBY
-
-    it "fails require by name when Task finalization bypasses a per-instance #consume (P9)" do
-      output = require_async("#{finish}\nAsync::Task.define_method(:bypass?) { true }")
-      expect_async_error(output, "async #{Async::VERSION}: Task finalization after normal return no longer " \
-                                 "calls a per-instance #consume once the task's fiber is cleared")
-    end
-
-    it "fails require by name when only cancellation bypasses a per-instance #consume" do
-      output = require_async("#{finish}\nAsync::Task.define_method(:bypass?) { cancelled? }")
-      expect_async_error(output, "async #{Async::VERSION}: Task finalization after cancellation no longer")
-      expect(output).not_to include("after normal return")
-    end
-
-    it "fails require by name when Node#consume stops calling an ancestor's #consume" do
-      output = require_async(<<~RUBY)
-        Async::Node.prepend(Module.new do
-          def consume
-            return unless (parent = @parent) && finished?
-
-            parent.__send__(:remove_child, self)
-            if @children
-              while (child = @children.shift)
-                child.finished? ? child.__send__(:set_parent, nil) : parent.__send__(:add_child, child)
-              end
-              @children = nil
-            end
-            Async::Node.instance_method(:consume).bind_call(parent)
-          end
-        end)
-      RUBY
-      expect_async_error(output, "async #{Async::VERSION}: Task finalization no longer calls a parent's " \
-                                 "per-instance #consume when its last child finishes")
-    end
-
-    it "fails require within its budget, keeping recorded failures, when broken consumption hangs teardown" do
-      output = require_async("Async::Node.prepend(Module.new { def consume = nil })")
-      seconds = contract::PROBE_SECONDS
-      expect_async_error(output, "async #{Async::VERSION}: Task finalization no longer calls a parent's " \
-                                 "per-instance #consume when its last child finishes after the parent ended by " \
-                                 "normal return",
-                         "async #{Async::VERSION}: Task finalization probe did not finish within #{seconds} s " \
-                         "while closing its reactor, and Async could not stop the probe thread",
-                         within: seconds + 0.5)
-    end
-
-    it "names the probe step that crashed, not the teardown after it" do
-      output = require_async(<<~RUBY)
-        Async::Task.prepend(Module.new { def cancel(...) = raise(NoMethodError, "undefined method 'cancel'") })
-      RUBY
-      expect_async_error(output, "async #{Async::VERSION}: Task finalization probe raised NoMethodError while " \
-                                 "finalizing a task after cancellation: undefined method 'cancel'")
-    end
-
-    it "fails require by name when Scheduler#push transfers a pushed object inline" do
-      output = require_async(<<~RUBY)
-        Async::Scheduler.prepend(Module.new do
-          def push(fiber)
-            return super if fiber.is_a?(Fiber)
-
-            fiber.transfer if fiber.alive?
-          end
-        end)
-      RUBY
-      expect_async_error(output, "async #{Async::VERSION}: Fiber.scheduler.push ran a pushed object inline")
-    end
-
     it "fails require by name when a hook changes visibility or signature" do
       output = require_async(<<~RUBY)
         Async::HTTP::Protocol::HTTP2::Output.send(:public, :stream)

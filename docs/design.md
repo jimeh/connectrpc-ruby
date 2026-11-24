@@ -604,8 +604,19 @@ ends and leaves the remaining connections to `Close`.
    retirement. Whether a drain succeeded should depend on whether its streams
    finished in time, not on how the peer left afterwards.
 
-Rule 3 may let most of the private completion join go.
-[#200](https://github.com/jimeh/connectrpc-ruby/issues/200) tracks this.
+Rule 3 sets the private completion join's boundary. Async resolves a
+cancelled task's promise, which wakes `Task#wait`, before it stops that task's
+children and clears its fiber, and `Task#finished?` then turns true with no
+signal to wait on. A wait on one subtree is not enough either: client frame
+writers and outputs run under caller tasks, the connection reader is transient,
+and `wait_all` takes a snapshot, so it misses a task created while the subtree
+unwinds. The join instead walks the task, its non-transient descendants and
+every task it has already seen until each has settled, meaning its block,
+`ensure` included, has returned. Only Async's own bookkeeping remains after
+that: `stop_children` raising into children the walk still joins, then
+`finish!`. That runs no application code and touches no descriptor, so the
+descriptor can close. Retirement loops test the same settled state, since a
+loop that waited for `finished?` could spin without yielding.
 
 ## RPC lifecycle observation
 

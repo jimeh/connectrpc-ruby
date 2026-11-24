@@ -9,7 +9,18 @@ RSpec.shared_examples "retirement close corrections" do |protocol|
   # joined, for H2 and HTTP/1 alike.
   def raw_retired?(resource) = resource.send(:raw_failed?)
 
-  it "joins immediate #{protocol} cancellation finalization after promise resolution" do
+  def protocol_join(protocol, state, task)
+    if protocol == :h1
+      state.fetch(:resource).send(:join, task)
+    else
+      AsyncHelpers::INTERNAL.join_complete(task)
+    end
+  end
+
+  # Async resolves a cancelled task's promise before it stops the task's
+  # children and clears its fiber. The join returns at that settled boundary
+  # without suspending; the fiber is reclaimed afterwards, with no signal.
+  it "joins an immediately cancelled #{protocol} task at its settled boundary without suspending" do
     reactor do |task|
       with_retirement_connection(task, protocol: protocol) do |state|
         reader, writer = Socket.pair(:UNIX, :STREAM, 0)
@@ -23,20 +34,14 @@ RSpec.shared_examples "retirement close corrections" do |protocol|
         expect(root.wait).to be_nil
         expect(root).to be_alive
         expect(root.children.to_a).to be_empty
-        puts "F1 #{protocol}: resolved=true alive=#{root.alive?} children=#{root.children&.size || 0}"
-        yields = 0
-        trace = TracePoint.new(:call) do |event|
-          yields += 1 if event.self.equal?(task) && event.method_id == :yield
-        end
-        trace.enable
-        if protocol == :h1
-          state.fetch(:resource).send(:join, root)
-        else
-          AsyncHelpers::INTERNAL.join_complete(root)
-        end
+        switches = 0
+        trace = TracePoint.new(:fiber_switch) { switches += 1 }
+        trace.enable(target_thread: Thread.current)
+        protocol_join(protocol, state, root)
         trace.disable
-        expect(yields).to eq(0)
-        expect(root).to be_finished
+        expect(switches).to eq(0)
+        expect(original_fibers.first).to be_alive
+        wait_until(task, "the cancelled task's fiber to be reclaimed") { root.finished? }
         expect(child).to be_finished
         expect(original_fibers).to all(satisfy { |fiber| !fiber.alive? })
         state.fetch(:gate).release
@@ -52,48 +57,94 @@ RSpec.shared_examples "retirement close corrections" do |protocol|
     end
   end
 
-  it "retains the first #{protocol} joiner interruption during finalization observation" do
+  # Retirement waits on the member, whose cancel then ends it with a child
+  # to stop. Async wakes that wait when the member settles, before it stops
+  # the child and clears its fiber, with no signal in between. A loop that
+  # waited for Task#finished? would spin without yielding, so the passes are
+  # bounded and the bound fails the example.
+  it "completes #{protocol} retirement while a settled member's fiber is still unwinding" do
     reactor do |task|
       with_retirement_connection(task, protocol: protocol) do |state|
-        reader, writer = Socket.pair(:UNIX, :STREAM, 0)
-        root = task.async(finished: false) do |parent|
-          parent.async(finished: false) { reader.readpartial(1) }
-          Async::Condition.new.wait
+        resource = state.fetch(:resource)
+        member_gate = RetirementHelpers::CleanupGate.new
+        root = Async::Task.new(state.fetch(:session).instance_variable_get(:@lifetime), finished: false) do |current|
+          member_gate.hold
+        rescue Async::Cancel
+          # A child whose own cancel ends at once, without suspending.
+          current.async(finished: false) { Async::Condition.new.wait }
+          raise
         end
-        child = root.children.to_a.fetch(0)
-        first = Async::Cancel.new("first finalization interruption")
-        joiner = Async::Task.new(task, finished: false) do
-          root.cancel
-          expect(root.wait).to be_nil
-          expect(root).to be_alive
-          expect(root.children.to_a).to be_empty
-          if protocol == :h1
-            state.fetch(:resource).send(:join, root)
-          else
-            AsyncHelpers::INTERNAL.join_complete(root)
+        resource.track(root)
+        root.run
+        member_gate.entered.dequeue
+        original = root.fiber
+        completion_join = AsyncHelpers::INTERNAL.const_get(:CompletionJoin)
+        limit = 1_000
+        passes = 0
+        waited = []
+        unwinding_at_join = []
+        trace = TracePoint.new(:call, :return) do |event|
+          if event.event == :call
+            if event.method_id == :wait && event.defined_class == Async::Task
+              waited << event.self
+            elsif event.self.equal?(resource) && event.method_id == :capture_retirement
+              passes += 1
+              raise "retirement made #{passes} passes without yielding" if passes > limit
+            end
+          elsif event.self.equal?(completion_join) && event.method_id == :call &&
+                event.binding.local_variable_get(:task).equal?(root)
+            unwinding_at_join << original.alive?
           end
-        rescue Exception => e # rubocop:disable Lint/RescueException -- exact caller interruption identity
-          e
         end
-        interrupter = task.async(finished: false) do
-          root.wait
-          Fiber.scheduler.raise(joiner.fiber, first)
-        end
-        yields = 0
-        trace = TracePoint.new(:call) do |event|
-          yields += 1 if event.self.equal?(joiner) && event.method_id == :yield
-        end
-        trace.enable
-        joiner.run
-        join_retirement_tasks(task, joiner, interrupter, root, child)
+        trace.enable(target_thread: Thread.current)
+        state.fetch(:gate).release
+        aborter = task.async(finished: false) { resource.abort }
+        wait_until(task, "retirement to wait on the member") { waited.any? { |entry| entry.equal?(root) } }
+        member_gate.release
+        task.with_timeout(2) { aborter.wait }
         trace.disable
-        expect(yields).to eq(0)
-        expect(joiner.result).to equal(first)
+        expect(passes).to be <= limit
+        expect(retirement_complete?(resource)).to be(true)
+        expect(unwinding_at_join).to include(true)
+        wait_until(task, "the member's fiber to be reclaimed") { root.finished? }
       ensure
         trace&.disable
-        reader&.close
-        writer&.close
-        AsyncHelpers::INTERNAL.cancel(interrupter) if interrupter && !interrupter.finished?
+        member_gate&.release
+      end
+    end
+  end
+
+  it "keeps #{protocol} raw open until a task created in a cancelled member's ensure leaves" do
+    reactor do |task|
+      with_retirement_connection(task, protocol: protocol) do |state|
+        resource = state.fetch(:resource)
+        late_gate = RetirementHelpers::CleanupGate.new
+        state[:on_cleanup] = -> { Async::Task.current.async(finished: false) { late_gate.hold } }
+        waited = []
+        trace = TracePoint.new(:call) do |event|
+          waited << event.self if event.method_id == :wait && event.defined_class == Async::Task
+        end
+        trace.enable(target_thread: Thread.current)
+        aborter = task.async(finished: false) { resource.abort }
+        late = late_gate.entered.dequeue
+        expect(state.fetch(:gate).entered.dequeue).to equal(state.fetch(:handler))
+        # The member's block ends; its cancel cascade reaches the late task,
+        # whose unwind holds.
+        state.fetch(:gate).release
+        wait_until(task, "retirement to wait on the late task or close raw") do
+          waited.any? { |entry| entry.equal?(late) } || resource.raw.closed?
+        end
+        expect(resource.raw).not_to be_closed
+        expect(retirement_complete?(resource)).to be(false)
+        expect(late).to be_alive
+        late_gate.release
+        join_retirement_tasks(task, aborter, state.fetch(:handler), late)
+        expect(resource.raw).to be_closed
+        expect(retirement_complete?(resource)).to be(true)
+      ensure
+        trace&.disable
+        late_gate&.release
+        state.fetch(:gate).release
       end
     end
   end

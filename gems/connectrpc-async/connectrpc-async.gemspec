@@ -28,10 +28,8 @@ Gem::Specification.new do |spec|
   #   check cannot prove.
   # - protocol-http2: receive-window enforcement and credit-before-WINDOW_UPDATE ordering replace
   #   its flow-control accounting.
-  # Guarded coupling: async's task finalization is probed at require by
-  # ConnectRPC::Async::Internal::UpstreamContract, so async takes the range below its next major.
   # The rest use only public APIs, so they follow the floor policy: the tested release as floor,
-  # capped below 1.
+  # capped below 1, or below the next major for async.
   {
     "connectrpc" => local_requirement, "async-http" => "~> 0.105.0", "async" => [">= 2.46.0", "< 3"],
     "protocol-http2" => "~> 0.29.2", "protocol-http1" => [">= 0.41.1", "< 1"],

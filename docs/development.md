@@ -295,8 +295,8 @@ into one of three tiers, and internal gems follow the train:
 
 1. **Floor and cap.** For dependencies whose public API is all we use, the
    floor is the release the project currently tests, for example
-   `rack >= 3.2.7` or `falcon >= 0.57.0`. Pre-1.0 dependencies are capped below
-   1, and 1.x+ gems below their next major.
+   `rack >= 3.2.7`, `falcon >= 0.57.0` or `async >= 2.46.0`. Pre-1.0
+   dependencies are capped below 1, and 1.x+ gems below their next major.
 2. **Guarded coupling.** A dependency whose internals we rely on may take a
    floor-and-cap range only when all of the following hold:
    - `require` detects the coupling at boot. A contract check runs before any
@@ -309,11 +309,8 @@ into one of three tiers, and internal gems follow the train:
    Coupling does not qualify when a boot check cannot observe it: ordering
    under concurrency, flow-control accounting or eager-start races. Neither do
    replaced methods whose failure mode is a hang or silent misbehavior under
-   load, nor anything checked only by its shape. The only member is `async`
-   in connectrpc-async (`>= 2.46.0, < 3`): the
-   `ConnectRPC::Async::Internal::UpstreamContract` finalization probe proves at
-   require that Async still calls the per-instance `#consume` the completion
-   joins depend on.
+   load, nor anything checked only by its shape. No dependency is in this tier
+   today; the criteria stand for future use.
 3. **Patch-pinned.** Everything else coupled to private internals keeps a
    patch-only `~> x.y.z` requirement, named with its reason in the gemspec
    comment:

@@ -1665,18 +1665,20 @@ module ConnectRPC
             # An ancestor's cascade can leave the registered frame writer with
             # only a deferred request. Logical coverage is not forced delivery.
             writers.each { |writer| escapes << Internal::Teardown.capture { force_deferred(writer) } }
-            # A join retains an interruption until its member has finished. A
-            # join's own failure, such as a completion violation, still
+            # A join retains an interruption until its member has settled. A
+            # join's own failure, such as joining the current task, still
             # escapes: retrying that member would never end.
             @retirement_members.keys.reverse_each do |task|
               Internal.join_complete(task)
             rescue StandardError
               raise
-            rescue Exception => e # rubocop:disable Lint/RescueException -- the member has finished; retirement continues
+            rescue Exception => e # rubocop:disable Lint/RescueException -- the member has settled; retirement continues
               escapes << e
             end
             capture_retirement
-            break if @retirement_members.keys.all?(&:finished?)
+            # A settled member can stay unfinished, with no signal, until
+            # Async clears its fiber; finished? here would spin without yielding.
+            break if @retirement_members.keys.all? { |task| CompletionJoin.settled?(task) }
           end
           # A drain's discard read is not a member, but the shutdown ends it
           # with EOF. The protocol stream and TLS socket below close raw too,

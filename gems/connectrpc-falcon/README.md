@@ -430,9 +430,12 @@ stop that is cancelled while it closes therefore forces the drain when the
 worker's task ends. See
 [Interrupted server close](../connectrpc-async/README.md#interrupted-server-close).
 
-Private task joins distinguish a resolved result from actual finalization. They
-block on required children and task-local progress/finalization notifications,
-retaining captured child identities through reparenting or transient changes.
+Private task joins wait until a task and its non-transient descendants have
+settled: each task's block, `ensure` included, has returned. A join keeps every
+child it has seen joined, through reparenting or a transient flag, and walks
+the tree again after each wake, so it also joins a task created while the tree
+unwinds. Async may still be stopping a settled task's children or clearing its
+fiber, which runs no application code.
 A scheduling opportunity after raw failure establishes no completion boundary;
 all retained task joins still precede disposal and retirement publication.
 

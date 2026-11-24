@@ -47,9 +47,11 @@ module PerturbedRequire
     reader&.close
   end
 
-  # within: bounds require; a probe that uses its whole budget needs a margin.
-  def expect_contract_error(output, package, version, *lines,
-                            within: AsyncHelpers::INTERNAL.const_get(:UpstreamContract)::PROBE_SECONDS)
+  # The contract check inspects method shapes only, so a failing require
+  # returns well inside this bound even on a loaded machine.
+  REQUIRE_SECONDS = 5
+
+  def expect_contract_error(output, package, version, *lines, within: REQUIRE_SECONDS)
     expect(output).to include("ConnectRPC::Async::UpstreamContractError")
     expect(output).to include("#{package} #{version} is incompatible with the installed socketry gems:")
     lines.each { |line| expect(output).to include(line) }

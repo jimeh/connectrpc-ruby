@@ -362,10 +362,10 @@ sockets close; session retirement may still be running. External
 `close(grace:)` callers await the session's boolean drain outcome;
 resource-owned calls can return nil while shutdown is pending, as described in
 [Close results](#close-results). Terminal listener
-failure instead makes `wait` raise the identical original exception after
-cooperative session abort, listener joins and actual finalization of its stored
-private exit task. A failure in that cleanup is written as a warning and never
-replaces the cause, as described in
+failure instead makes `wait` raise the identical original exception once
+cooperative session abort, listener joins and the rest of the cleanup in its
+stored private exit task have completed. A failure in that cleanup is written
+as a warning and never replaces the cause, as described in
 [Terminal failure and startup](#terminal-failure-and-startup).
 Repeated/concurrent waits share that outcome; cancelling a waiter does not
 close the Host. Since 0.3.0 a waiter that is cancelled, times out or is
@@ -400,10 +400,10 @@ session abort with zero drain time, then cooperative cancellation and joins.
 Server abort has no cleanup deadline and cannot forcibly interrupt nonyielding
 or cancellation-resistant application code. The stored exit task runs outside
 the session lifetime under the application owner and survives ordinary owner
-cancellation; `wait` joins its actual finalization before reporting the cause.
-Ordinary owner cancellation stops accepting and resolves ordinary waits after
-listener finalization, while session retirement may still be running. `close`
-retains its drain result and does not raise the stored listener cause.
+cancellation; `wait` reports the cause once that cleanup has completed.
+Ordinary owner cancellation stops accepting and resolves ordinary waits once
+every listener has stopped, while session retirement may still be running.
+`close` retains its drain result and does not raise the stored listener cause.
 Since 0.3.0 listener shutdown cancels and joins every accept loop before it
 closes each listening socket once, so no accept loop is still waiting on a
 socket as it closes, and concurrent shutdown steps run one at a time. Before
@@ -1467,9 +1467,12 @@ finished, leaves the result true.
 
 ### Task joins
 
-Private task joins distinguish a resolved result from actual finalization. They
-block on required children and task-local progress/finalization notifications,
-retaining captured child identities through reparenting or transient changes.
+Private task joins wait until a task and its non-transient descendants have
+settled: each task's block, `ensure` included, has returned. A join keeps every
+child it has seen joined, through reparenting or a transient flag, and walks
+the tree again after each wake, so it also joins a task created while the tree
+unwinds. Async may still be stopping a settled task's children or clearing its
+fiber, which runs no application code.
 A scheduling opportunity after raw failure establishes no completion boundary;
 all retained task joins still precede disposal and retirement publication.
 
@@ -1908,29 +1911,18 @@ RPC cancellation; credit accounting adds no lifecycle instrumentation.
 
 ### Upstream contract guard
 
-This package replaces or calls a few async-http and protocol-http2 hooks, and
-its retirement joins rely on how Async finalizes tasks. `require
-"connectrpc/async"` checks both once per process, in about a millisecond:
-
-- Each hook's owner, visibility and parameter shape.
-- In a separate thread with its own reactor: Async must call a per-instance
-  `#consume` after it clears a finished task's fiber (on normal return, failure
-  and cancellation). It must also call the parent's `#consume` when the last
-  child leaves, and `Fiber.scheduler.push` must run a pushed object on a later
-  iteration.
-
-If any check fails, require raises one error that names each broken contract,
-the installed gem version and the versions the package was verified with.
-That replaces a hang or misbehavior at runtime. There is no switch to skip the
-check. The finalization probe has a 5 s budget, including the time to stop it.
-If it runs out, the error lists the failures already found and the step that
-stalled. When the broken contract also stops Async from tearing down the
-probe's reactor, the probe thread stays asleep for the rest of the process.
+This package replaces or calls a few async-http and protocol-http2 hooks.
+`require "connectrpc/async"` checks each hook's owner, visibility and parameter
+shape once per process, in about a millisecond. If any check fails, require
+raises one error that names each broken contract, the installed gem version
+and the versions the package was verified with. That replaces a hang or
+misbehavior at runtime. There is no switch to skip the check.
 `connectrpc/falcon` checks its async-http `Endpoint` hooks the same way. The
-guards cover the patch-pinned async-http and protocol-http2 hooks and Async's
-finalization contract. Async itself is no longer patch-pinned: the finalization
-probe is what lets the gemspec allow `async >= 2.46.0, < 3` (the guarded-coupling
-tier in the [dependency policy](../../docs/development.md#gem-dependency-constraints)).
+guards cover the patch-pinned async-http and protocol-http2 hooks. Async itself
+is not patch-pinned: the retirement joins use only its public task API
+(`Task#wait`, the task state predicates, `children` and `transient?`), so the
+gemspec allows `async >= 2.46.0, < 3`, the floor-and-cap tier in the
+[dependency policy](../../docs/development.md#gem-dependency-constraints).
 async-http and protocol-http2 stay patch-pinned because the semantics their
 replaced hooks depend on cannot be proven at boot; the daily
 [pins-lifted canary](../../docs/development.md#pins-lifted-canary) runs these
