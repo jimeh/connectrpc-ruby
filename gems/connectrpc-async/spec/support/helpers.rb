@@ -1,7 +1,5 @@
 # frozen_string_literal: true
 
-require_relative "teardown_helpers"
-
 module AsyncHelpers
   INTERNAL = ConnectRPC::Async.const_get(:Internal)
   LIFECYCLE_ERROR = ConnectRPC::Async::LifecycleError

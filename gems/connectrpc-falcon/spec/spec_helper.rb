@@ -18,6 +18,7 @@ require "tmpdir"
 $LOAD_PATH.unshift(File.expand_path("../../../spec/fixtures/generation/echo", __dir__))
 require "echo_connect"
 require_relative "../../connectrpc-async/spec/support/helpers"
+require_relative "../../connectrpc-async/spec/support/teardown_helpers"
 require_relative "support/helpers"
 
 # Ruby warns once per process on first IO::Buffer use, which io-stream's
