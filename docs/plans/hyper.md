@@ -111,10 +111,11 @@ stage and reset its stream.
   resumes the same operation state and never repeats a side effect (a
   `write` enqueues its bytes once, then waits for hyper to pull them). A
   `write` that finds the request body dropped (the stream ended) or the
-  request stranded raises (#193): it waits, inside the same bounded wait, for
-  the response task to publish its outcome (an HTTP/1.1 request that declares
-  a Content-Length does not wait: hyper also drops a body that reached it
-  while the response is pending), then raises the head's failure,
+  request stranded raises (#193): on HTTP/2, or once stranded, it waits,
+  inside the same bounded wait, for the response task to publish its outcome
+  (HTTP/1.1 does not wait: hyper also drops a body its own framing ended, a
+  declared Content-Length or an HTTP/1.0 connection, while the response is
+  pending), then raises the head's failure,
   or a body failure it can read without waiting and without taking the
   receive half from a reader, and otherwise a generic `ended` failure (`stream
   closed`), which core treats as a send failure and recovers the server's

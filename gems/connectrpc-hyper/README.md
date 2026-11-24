@@ -463,6 +463,10 @@ hyper does not tell the request body why the stream ended, which limits this:
   thread reads the response after its head, makes the write raise
   `stream closed`. Core then reports `unavailable` where connectrpc-async
   reports the reset's mapped code. The reader still receives the reset.
+- Over HTTP/1.1 the write does not wait for the response, since hyper also
+  ends a body its own framing finished while the response is pending. A
+  connection failure the response side has not reported yet raises
+  `stream closed`; the head then reports the connection's failure.
 - A response head followed by `RST_STREAM(NO_ERROR)` without a valid status
   also raises `stream closed`, where connectrpc-async raises `internal`.
 - A server that ends its response without resetting the stream leaves the

@@ -158,11 +158,13 @@ RSpec.describe "Streaming writes after the stream ended", :interop do
     def parked_writer(transport)
       native_driver = driver(transport)
       native_driver.hold("respond:publish", 10)
+      native_driver.hold("write:outcome", 0)
       writer = Thread.new do
         Thread.current.report_on_exception = false
         exchange("end-on-data:reset:8", transport: transport) { |call| write_until_raised(call) }
       end
       wait_until("the reset's outcome parked before publication") { native_driver.reached("respond:publish") == 1 }
+      wait_until("the write waiting for the outcome") { native_driver.reached("write:outcome") == 1 }
       wait_parked(writer, "Exchange#write")
       [native_driver, writer]
     end
@@ -314,38 +316,42 @@ RSpec.describe "Streaming writes after the stream ended", :interop do
       answered << :done
     end
 
-    # Without a declared length the body ends only with its connection, so
-    # the write waits for the response's outcome and raises the connection's
-    # failure. The hold parks that outcome until the connection has ended,
-    # so a write that did not wait would raise the generic phrase first.
-    it "raises the connection's failure when the connection resets mid-upload" do
+    # After a keep-alive HTTP/1.0 response hyper sends the next request on
+    # that socket as HTTP/1.0 and drops an unsized upload body at once, while
+    # the response is pending: the write raises without waiting for it.
+    it "raises a write on a pooled HTTP/1.0 connection without waiting for the response" do
+      answered = Queue.new
+      @server, @served = h1_server do |socket|
+        socket.write("HTTP/1.0 200 OK\r\nContent-Length: 0\r\nConnection: keep-alive\r\n\r\n")
+        while (line = socket.gets("\r\n")) && line != "\r\n"; end
+        answered.pop
+      end
+      transport = hyper(http2: false)
+      url = URI("http://127.0.0.1:#{@server.addr[1]}/raw.v1.Raw/Upload")
+      unary = ConnectRPC::TransportRequest.new(url: url, http_method: "GET", headers: {}, response_limit: 1024,
+                                               deadline: ConnectRPC::Deadline.new(5))
+      expect(transport.call(unary).status).to eq(200)
+      request = request("h1", grpc: false, origin: "http://127.0.0.1:#{@server.addr[1]}")
+      transport.open_stream(request) do |call|
+        expect(outcome(write_until_raised(call))).to eq(closed)
+      end
+    ensure
+      answered << :done
+    end
+
+    # HTTP/1.1 never waits for the response's outcome, so the write raises
+    # the connection's failure once the response task published it, or the
+    # generic phrase before; the head reports the connection's failure.
+    it "raises promptly when the connection resets mid-upload" do
       @server, @served = h1_server do |socket|
         socket.readpartial(65_536)
         socket.setsockopt(Socket::SOL_SOCKET, Socket::SO_LINGER, [1, 0].pack("ii"))
         socket.close
       end
-      transport = hyper(http2: false)
-      native_driver = driver(transport)
-      native_driver.hold("respond:publish", 10)
-      native_driver.hold("dispatcher:closed", 0)
-      request = request("h1", grpc: false, origin: "http://127.0.0.1:#{@server.addr[1]}")
-      writer = Thread.new do
-        Thread.current.report_on_exception = false
-        transport.open_stream(request) { |call| write_until_raised(call) }
+      h1_exchange(@server) do |call|
+        expect(outcome(write_until_raised(call))).to eq(connection_closed).or eq(closed)
+        expect(outcome(error_of { call.response_head(timeout: 5) })).to eq(connection_closed)
       end
-      wait_until("the connection ended and its outcome parked") do
-        native_driver.reached("dispatcher:closed") == 1 && native_driver.reached("respond:publish") == 1
-      end
-      # The body is gone with the connection, so the writer either raised
-      # already or waits for the parked outcome.
-      wait_until("the writer raised or parked") do
-        trace = writer.backtrace || []
-        !writer.alive? || (writer.status == "sleep" && trace.first.to_s.include?("Native::"))
-      end
-      native_driver.release("respond:publish")
-      expect(outcome(writer.value)).to eq(connection_closed)
-    ensure
-      native_driver&.release("respond:publish")
     end
   end
 end

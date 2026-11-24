@@ -506,28 +506,28 @@ impl CallState {
         Ok(())
     }
 
-    /// Why a write found the stream ended. Waits for `respond` to publish the
-    /// response's outcome, inside the write, so the write's deadline,
-    /// cancellation, abort, shutdown and interrupt waits bound it. That wait
-    /// is short: hyper's HTTP/2 pipe drops the body only once the stream
-    /// closed, and its HTTP/1.1 dispatcher only once the connection ended,
-    /// which also resolves the response; a stranded request's failure is
-    /// published right after `stranded` fires; and while a retry runs the
-    /// replacement body holds the receiver, so the channel stays open. An
-    /// HTTP/1.1 request that declares a Content-Length does not wait: hyper
-    /// also drops a body that reached it while the response is still
-    /// pending. A failure the response side does not know yet is the generic
-    /// `ended`, recomputed by the next write.
+    /// Why a write found the stream ended. On HTTP/2, and for a stranded
+    /// request, waits for `respond` to publish the response's outcome,
+    /// inside the write, so the write's deadline, cancellation, abort,
+    /// shutdown and interrupt waits bound it. That wait is short: hyper's
+    /// HTTP/2 pipe drops the body only once the stream closed, which also
+    /// resolves the response; a stranded request's failure is published
+    /// right after `stranded` fires; and while a retry runs the replacement
+    /// body holds the receiver, so the channel stays open. HTTP/1.1 does not
+    /// wait: hyper also drops a body its own framing ended (a declared
+    /// Content-Length reached, or an HTTP/1.0 connection) while the response
+    /// is pending, and waiting for that response could last indefinitely.
+    /// A failure the response side does not know yet, including an HTTP/1.1
+    /// connection failure the response task has not published, is the
+    /// generic `ended`, recomputed by the next write.
     async fn ended(self: &Arc<Self>, send: &mut SendHalf) -> Failure {
         if let Some(failure) = &send.ended {
             return failure.clone();
         }
-        let sized = self
-            .spec
-            .headers
-            .iter()
-            .any(|(name, _)| name == http::header::CONTENT_LENGTH);
-        if self.is_h2() || self.stranded.fired() || !sized {
+        if self.is_h2() || self.stranded.fired() {
+            // Spec hold point: armed with a zero bound, it counts writes that
+            // wait for the response's outcome.
+            self.core.holds.block("write:outcome");
             self.responded.wait().await;
         }
         // A failed head is known even while a reader holds the receive half.
