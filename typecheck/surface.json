@@ -731,6 +731,7 @@
     "ConnectRPC::Async::ThreadedTransport#check_usable": {"kind":"method","visibility":"private","parameters":"stream, request","classification":"internal"},
     "ConnectRPC::Async::ThreadedTransport#exit_after_error": {"kind":"method","visibility":"private","parameters":"stream, request","classification":"internal"},
     "ConnectRPC::Async::ThreadedTransport#exit_stream": {"kind":"method","visibility":"private","parameters":"stream, request","classification":"internal"},
+    "ConnectRPC::Async::ThreadedTransport#expire_operation": {"kind":"method","visibility":"private","parameters":"stream, request, status, bound","classification":"internal"},
     "ConnectRPC::Async::ThreadedTransport#expired!": {"kind":"method","visibility":"private","parameters":"request, status","classification":"internal"},
     "ConnectRPC::Async::ThreadedTransport#leave_stream": {"kind":"method","visibility":"private","parameters":"stream","classification":"internal"},
     "ConnectRPC::Async::ThreadedTransport#owned?": {"kind":"method","visibility":"private","parameters":"stream","classification":"internal"},

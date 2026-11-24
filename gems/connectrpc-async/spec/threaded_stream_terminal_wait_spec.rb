@@ -176,6 +176,49 @@ RSpec.describe "ThreadedTransport and PerCallTransport stream terminal wait afte
       release << true
       transport&.close(grace: 0)
     end
+
+    # The deadline's clock runs at a twentieth of real speed, so the
+    # operation's timeout expires after the deadline as projected to
+    # monotonic time while core's deadline still has time left. Core reports
+    # unavailable, so the stream shares no deadline bound, and the exit still
+    # waits for an owner that recovers after that projected bound.
+    it "shares no deadline bound for an operation timeout that core reports as unavailable" do
+      stall = stall_response_head
+      wait_trace = record_waits
+      transport = threaded(origin: origin)
+      exiting = Thread::Queue.new
+      exit_trace = TracePoint.new(:call) { exiting << true }
+      exit_trace.enable(target: ConnectRPC::Async::ThreadedTransport.instance_method(:exit_stream))
+      releaser = Thread.new do
+        pop_within(exiting, "the block exit")
+        # Releasing the owner after the projected deadline bound, 0.3 s
+        # after the operation's expiry, has passed is the condition under test.
+        sleep(0.5)
+        release << true
+      end
+      clock_start = monotonic
+      deadline = ConnectRPC::Deadline.new(0.5, clock: -> { (monotonic - clock_start) / 20 })
+      operation_error = nil
+      error = capture_error_or_value do
+        transport.open_stream(stream_request(origin, "/stall", deadline: deadline)) do |exchange|
+          exchange.response_head(timeout: 0.2)
+        rescue ConnectRPC::Error => e
+          operation_error = e
+          :rescued
+        end
+      end
+      expect(operation_error&.code).to eq("unavailable")
+      expect(statuses).to eq(%i[reply timeout result])
+      expect([error.class, deadline.expired?]).to eq([ConnectRPC::Error, false])
+      expect(error.code).not_to eq("deadline_exceeded")
+      value_within(releaser, "the owner release")
+    ensure
+      stall&.disable
+      wait_trace&.disable
+      exit_trace&.disable
+      release << true
+      transport&.close(grace: 0)
+    end
   end
 
   describe "PerCallTransport" do
