@@ -450,8 +450,10 @@ server- and client-streaming input before it writes the response, as Go's
 
 Since 0.3.1, a Connect unary request and rejected native gRPC-Web input get the
 same read, with the same limits and bounds; the valid `grpc-timeout` bounds the
-whole Web read. An unanswered `Expect: 100-continue` request is answered without
-it. Unlike streaming input, and as on `net/http`, the connection stays open for
+whole Web read. Without a deadline, only each read wait and the 256 KiB limit
+bound the read, so drain grace and owner shutdown are the last bounds. An
+unanswered `Expect: 100-continue` request is answered without it. Unlike
+streaming input, and as on `net/http`, the connection stays open for
 the next request when the read reaches EOF. Otherwise the response carries
 `Connection: close`, still reaches the client after a stalled, expired or
 malformed remainder, and the connection closes after it as in step 3. Admission

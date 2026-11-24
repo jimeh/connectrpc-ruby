@@ -104,10 +104,16 @@ RSpec.describe "Connect H1 unary unread input" do
     it "writes the head without reading a declared remainder of 256 KiB and closes after the reply on #{label}" do
       reactor do |task|
         events, = observe_wire
-        with_host(unary_server, secure) do |_host, peer, _|
+        registry = Async::Utilization::Registry.new
+        with_host(unary_server, secure, utilization_registry: registry) do |_host, peer, _|
           peer.write(unary_head(:fixed, length: 262_144 + 1000))
           peer.write("x" * 1000)
           task.with_timeout(2) { expect_close_after_reply(peer) }
+          # The peer's EOF is the write half-close. The socket itself closes
+          # only after net/http's 500 ms rstAvoidanceDelay from the final flush.
+          replied = AsyncHelpers::INTERNAL.now
+          wait_until(task, "the socket closed") { registry.metric(:connections_active).value.zero? }
+          expect(AsyncHelpers::INTERNAL.now - replied).to be >= 0.3
           expect(read_bytes(events)).to eq(0)
         end
       end
@@ -156,6 +162,50 @@ RSpec.describe "Connect H1 unary unread input" do
           task.with_timeout(2) { expect_close_after_reply(peer) }
           expect(AsyncHelpers::INTERNAL.now - started).to be >= 0.25
         end
+      end
+    end
+  end
+
+  it "keeps the Connect deadline from the request's arrival, not from the end of processing" do
+    reactor do |task|
+      events, = observe_wire
+      target = unary_server
+      entered = Async::Queue.new
+      release = Async::Queue.new
+      target.define_singleton_method(:call) do |**options|
+        entered.enqueue(true)
+        release.dequeue
+        super(**options)
+      end
+      with_host(target, false) do |_, peer, _|
+        started = AsyncHelpers::INTERNAL.now
+        peer.write(unary_head(:fixed, extra: "Connect-Timeout-Ms: 200\r\n"))
+        peer.write("x" * 1000)
+        entered.dequeue
+        # The stimulus: processing outlasts the whole deadline.
+        task.sleep(0.25)
+        release.enqueue(true)
+        task.with_timeout(2) { expect_close_after_reply(peer) }
+        # An expired deadline skips the read, so the sent part stays unread.
+        expect(read_bytes(events)).to eq(0)
+        expect(AsyncHelpers::INTERNAL.now - started).to be < 1.5
+      end
+    end
+  end
+
+  it "reads a safe GET's unread body and keeps the connection" do
+    reactor do |task|
+      events, = observe_wire
+      with_host(server, false) do |_, peer, _|
+        # Core reads only enough of a GET body to reject it.
+        peer.write("GET #{AsyncHelpers::ECHO::ECHO.path} HTTP/1.1\r\nHost: localhost\r\n" \
+                   "Transfer-Encoding: chunked\r\n\r\n2\r\nab\r\n0\r\n\r\n")
+        status, headers, = task.with_timeout(2) { response(peer) }
+        expect(status).to be >= 400
+        expect(headers["connection"]).not_to include("close")
+        expect(events.map(&:first)).to include(:read)
+        peer.write("GET /next HTTP/1.1\r\nHost: localhost\r\n\r\n")
+        expect(task.with_timeout(2) { peer.head }.first).to eq(404)
       end
     end
   end

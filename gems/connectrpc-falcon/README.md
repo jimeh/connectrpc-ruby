@@ -469,7 +469,8 @@ Since 0.3.0, `max_concurrent_streams:` (default 100) and `request_body_timeout:`
 admission is refused with `REFUSED_STREAM` while its HEADERS are read, before
 any of its DATA, and a stalled request body other than a client or bidi stream
 is reset with `CANCEL`. On HTTP/1.1, `request_body_timeout` bounds only the
-[read of unread input](#http11-input-retirement) before a Connect response. A
+[read of unread input](#http11-input-retirement) before a Connect or rejected
+gRPC-Web response. A
 refusal for full admission counts once in `requests_total`. See [Stream
 admission](../connectrpc-async/README.md#stream-admission). HTTP/1 requests keep
 the bare 503 when admission is full.
@@ -570,7 +571,10 @@ bounds, once processing finishes. As on `net/http`, the connection stays open
 for the next request when the read reaches EOF. Otherwise the response carries
 `Connection: close`, and the connection closes after the same 500 ms wait. An
 unanswered `Expect: 100-continue` request skips the read and closes. Admission
-ends with delivery; the socket is held through the wait. Before 0.3.1 async-http
+ends with delivery; the socket is held through the wait. A close or `drain_tls`
+waits for a stalled unary read until its grace, as it does for streaming input.
+Native gRPC over HTTP/1, unhandled paths and Rack fallback keep async-http's
+handling of unread input. Before 0.3.1 async-http
 answered first and then read a unary remainder with no byte cap, bounded only
 by `idle_timeout`, or, after a partial chunked read, never read it, so the next
 request on that connection waited until `idle_timeout` closed it.
@@ -633,6 +637,16 @@ aggregating the upload or consuming the next request. An existing input-adapter
 remainder can coexist with one read, each at most 64 KiB; this is not a total
 allocation or RSS bound. Successful calls already consume their input and do
 not enter this policy.
+
+Without a valid grpc-timeout, only each read wait and the 256 KiB limit bound
+the read. A client that sends a byte within every `request_body_timeout` keeps
+the processor, its admission slot and the connection until the limit, or until
+drain grace or owner shutdown, as `net/http` without `ReadTimeout` does. With
+`request_body_timeout: nil` as well, a stalled client holds them until drain
+grace or owner shutdown, as for [Connect input](#http11-input-retirement).
+Core's own HTTP/1 read before the rejection has no timeout either. The read is
+part of original processing, so processing completion, lifecycle observation
+and processing-duration metrics for a rejected Web call include it.
 
 When the read reaches EOF, the connection stays open for the next request.
 When the remainder is above the limit, stalls, expires or is malformed, the

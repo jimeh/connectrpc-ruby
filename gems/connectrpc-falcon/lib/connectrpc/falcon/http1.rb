@@ -50,7 +50,7 @@ module ConnectRPC
 
     class HTTP1Connection < ::Async::HTTP::Protocol::HTTP1::Server
       attr_accessor :resource
-      attr_reader :request_fields
+      attr_reader :request_fields, :request_expires
 
       def close_read
         # Forced retirement has failed raw TCP and closes it, the TLS socket
@@ -66,6 +66,8 @@ module ConnectRPC
 
         request = super
         @request_fields = request&.headers&.header
+        # The Connect deadline for an unread remainder starts with the request.
+        @request_expires = HTTP1StreamInput.connect_expires(@request_fields)
         if request
           fields = request.headers.header
           if fields.any? do |key, value|
@@ -555,10 +557,10 @@ module ConnectRPC
       end
 
       def prepare_stream_input(body)
-        fields = @connection.request_fields
         @input_retirement = HTTP1StreamInput.new(body, raw: @raw, connection: @connection, resource: self,
-                                                       fields: fields, request_body_timeout: @request_body_timeout,
-                                                       expires: HTTP1StreamInput.connect_expires(fields))
+                                                       fields: @connection.request_fields,
+                                                       request_body_timeout: @request_body_timeout,
+                                                       expires: @connection.request_expires)
       end
 
       # A Connect unary response is whole once processing finishes. Its
@@ -568,10 +570,10 @@ module ConnectRPC
       def prepare_unary_input(request, status)
         return if HTTP1StreamInput.complete?(request.body.body) || !@unary_route&.call(request)
 
-        fields = @connection.request_fields
         input = HTTP1StreamInput.new(request.body, raw: @raw, connection: @connection, resource: self,
-                                                   fields: fields, request_body_timeout: @request_body_timeout,
-                                                   expires: HTTP1StreamInput.connect_expires(fields), reuse: true)
+                                                   fields: @connection.request_fields,
+                                                   request_body_timeout: @request_body_timeout,
+                                                   expires: @connection.request_expires, reuse: true)
         input.processor_finished
         input.head_resolved(status)
         @input_retirement = input

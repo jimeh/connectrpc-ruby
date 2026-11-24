@@ -66,10 +66,10 @@ module ConnectRPC
             !Streaming.codec(Protocol.single(headers, "content-type")).nil?)
       end
 
-      # Other native Connect POSTs, such as unary calls, whose whole response
-      # is ready once processing finishes.
+      # Other native Connect POSTs and GETs, such as unary calls, whose whole
+      # response is ready once processing finishes.
       def http1_unary_route?(request)
-        return false if request.respond_to?(:stream) || request.method != "POST"
+        return false if request.respond_to?(:stream) || !%w[GET POST].include?(request.method)
 
         path = request.path&.split("?", 2)&.first
         return false unless path && @server.handles?(path)
