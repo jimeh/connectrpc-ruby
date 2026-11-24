@@ -73,18 +73,89 @@ RSpec.describe "Teardown failure outcomes" do
     end
   end
 
-  it "returns the session from abort and closes it when a connection's retirement stage fails" do
+  # Records whether `task` had finished when `raw` first closed.
+  def observe_raw_close(raw, task)
+    observed = []
+    raw.define_singleton_method(:close) do
+      observed << task.finished? if observed.empty?
+      super()
+    end
+    observed
+  end
+
+  it "keeps the descriptor open for a held handler and completes retirement when the protocol close fails" do
     reactor do |task|
       with_retirement_connection(task) do |state|
-        session, resource = state.values_at(:session, :resource)
+        session, resource, gate, handler = state.values_at(:session, :resource, :gate, :handler)
+        raw = resource.raw
+        closed_after_handler = observe_raw_close(raw, handler)
         resource.connection.define_singleton_method(:close!) { raise IOError, "protocol close failed" }
         expect do
-          expect(task.async(finished: false) { session.abort }.wait).to equal(session)
+          aborter = task.async(finished: false) { session.abort }
+          waiter = task.async(finished: false) { state.fetch(:accepted).wait_closed }
+          # The failed close still cancels the handler, whose unwind holds.
+          wait_until(task, "the handler to hold its unwind or raw to close") { !gate.entered.empty? || raw.closed? }
+          expect(raw).not_to be_closed
+          expect(gate.entered.dequeue).to equal(handler)
+          expect(handler).to be_alive
+          expect(aborter).not_to be_finished
+          gate.release
+          join_retirement_tasks(task, aborter, waiter, handler)
+          expect(aborter.result).to equal(session)
         end.to output(teardown_warnings(IOError)).to_stderr
+        expect(closed_after_handler).to eq([true])
+        expect(retirement_complete?(resource)).to be(true)
         expect(session.instance_variable_get(:@state)).to eq(:closed)
-        expect(resource.raw).to be_closed
         expect(session.close(grace: 0)).to be(false)
       end
+    end
+  end
+
+  it "reports failed final disposal steps and still closes raw and completes retirement" do
+    reactor do |task|
+      with_retirement_connection(task, mode: :tls) do |state|
+        session, resource, gate, handler = state.values_at(:session, :resource, :gate, :handler)
+        raw = resource.raw
+        closed_after_handler = observe_raw_close(raw, handler)
+        resource.connection.define_singleton_method(:finish_close) { |*| raise IOError, "protocol finish failed" }
+        resource.socket.define_singleton_method(:close) { raise OpenSSL::SSL::SSLError, "TLS close failed" }
+        expect do
+          aborter = task.async(finished: false) { session.abort }
+          expect(gate.entered.dequeue).to equal(handler)
+          gate.release
+          join_retirement_tasks(task, aborter, handler)
+          expect(aborter.result).to equal(session)
+        end.to output(teardown_warnings(IOError, OpenSSL::SSL::SSLError)).to_stderr
+        expect(closed_after_handler).to eq([true])
+        expect(raw).to be_closed
+        expect(retirement_complete?(resource)).to be(true)
+        expect(session.instance_variable_get(:@state)).to eq(:closed)
+      end
+    end
+  end
+
+  it "keeps a unary H2 call's response when its cleanup and the connection's retirement both fail" do
+    reactor do
+      host, origin = retirement_host(server)
+      transport = ConnectRPC::Async::Transport.new(origin: origin)
+      rpc = client(transport, origin)
+      expect(rpc.echo(AsyncHelpers::MESSAGE.new(name: "warm")).message.name).to eq("warm")
+      resource = transport.instance_variable_get(:@resources).first
+      connection = resource.connection
+      # The call's cleanup fails closing its response, so the call aborts the
+      # connection, whose protocol close then fails too.
+      connection.define_singleton_method(:create_response) do
+        super().tap { |response| response.define_singleton_method(:close) { raise "response close failed" } }
+      end
+      connection.define_singleton_method(:close!) { raise IOError, "protocol close failed" }
+      expect do
+        expect(rpc.echo(AsyncHelpers::MESSAGE.new(name: "kept")).message.name).to eq("kept")
+      end.to output(teardown_warnings(IOError)).to_stderr
+      expect(retirement_complete?(resource)).to be(true)
+      expect(resource.raw).to be_closed
+    ensure
+      transport&.close(grace: 0)
+      host&.close(grace: 0)
     end
   end
 

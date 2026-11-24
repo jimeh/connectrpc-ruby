@@ -1279,11 +1279,13 @@ after forced teardown. Grace is finite and nonnegative; zero aborts.
 Repeated/concurrent calls share the first outcome.
 
 Since 0.3.0 a failed teardown step, such as a listener close, a connection's
-retirement or TLS provider shutdown, never skips a later step or replaces the
-result. It is written as a warning that names only its class, for example
-`ConnectRPC teardown error: Errno::EBADF`, never its message. Only an
-interruption of the task running teardown, such as its cancellation, is
-raised, once every step has run.
+retirement or TLS provider shutdown, never skips a later step and is never
+raised. It is written as a warning that names only its class, for example
+`ConnectRPC teardown error: Errno::EBADF`, never its message. Only an error
+that is not a `StandardError`, such as an interruption of the task running
+teardown, is raised, once every step has run. Whether a failure changes a
+close's result depends on the step, as described in
+[Close results](#close-results).
 
 Server connections also end on their own: graceful idle and age drains,
 unanswered server PINGs and `too_many_pings`, as described in
@@ -1423,14 +1425,17 @@ Server `Host#close` and `ServerSession#close` return `bool?`:
   boolean, including coordinator reentry.
 - Zero grace still forces teardown; explicit abort and already-decided outcomes
   are preserved.
-- A failed listener close or `stop_accepting:` callback skips neither TLS
-  shutdown nor the drain, so the result is still the drain's.
+- A failed listener close, `stop_accepting:` callback or TLS shutdown skips
+  neither the drain nor its result. A connection whose final retirement fails
+  after it drained still counts as drained.
 
 The client `Transport` and `HTTP1Transport` close return types remain `bool`.
-A graceful close step that fails, such as the connection manager's close,
-forces retirement, so close returns false. A failed retirement of an idle
-`HTTP1Transport` connection after every call has finished leaves the result
-true.
+A failure in close's own steps before or instead of the drain, such as the
+`Transport` connection manager's close, forces retirement, so close returns
+false. A connection whose teardown fails after it drained is reported, and the
+drained result stands: a `Transport` connection whose final retirement fails,
+or an idle `HTTP1Transport` connection whose close fails after every call has
+finished, leaves the result true.
 
 ### Task joins
 

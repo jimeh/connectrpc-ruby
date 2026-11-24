@@ -1617,7 +1617,10 @@ module ConnectRPC
           # Best-effort scheduling hint only. A return proves no unwind or
           # completion; the retained-task joins below establish retirement.
           ::Async::Task.current.yield
-          @connection&.close!
+          # A failed or interrupted step is reported or retained and never
+          # skips a later one: members still unwind before raw closes, and
+          # retirement still completes.
+          escapes = [Internal::Teardown.capture { @connection&.close! }]
           loop do
             capture_retirement
             writers = @connection&.writers&.keys || []
@@ -1642,20 +1645,12 @@ module ConnectRPC
           # with EOF. The protocol stream and TLS socket below close raw too,
           # so every close waits for that read to leave raw.
           @progress.wait while @discarding
-          begin
-            @connection&.finish_close(error)
-          rescue StandardError
-            nil
-          ensure
-            begin
-              @socket&.close
-            rescue StandardError
-              nil
-            end
-          end
+          escapes << Internal::Teardown.capture { @connection&.finish_close(error) }
+          escapes << Internal::Teardown.capture { @socket&.close }
           Internal.raw_close(@raw)
           @retirement_completed = true
           changed
+          Internal::Teardown.finish(escapes)
         ensure
           # An interrupted retirement still releases the descriptor, although
           # a fiber still blocked on raw may then get a late close interrupt.

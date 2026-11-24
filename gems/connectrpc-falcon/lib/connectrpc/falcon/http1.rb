@@ -680,20 +680,14 @@ module ConnectRPC
         # with EOF. The stream and TLS socket below close raw too, so every
         # close waits for that read to leave raw.
         @progress.wait while @discarding
-        begin
-          @connection.close
-        rescue StandardError
-          nil
-        ensure
-          begin
-            @socket&.close
-          rescue StandardError
-            nil
-          end
-        end
+        # A failed or interrupted close is reported or retained and never
+        # skips a later one or retirement's completion.
+        escapes = [Teardown.capture { @connection.close }]
+        escapes << Teardown.capture { @socket&.close }
         close_raw
         @retirement_completed = true
         changed
+        Teardown.finish(escapes)
       ensure
         # An interrupted retirement still releases the descriptor, although
         # a fiber still blocked on raw may then get a late close interrupt.

@@ -125,6 +125,7 @@ module ConnectRPC
 
         # Only the final owner calls this, after all accessing tasks have
         # joined, so no fiber is still blocked on the descriptor it closes.
+        # It raises the first escape and reports each later StandardError.
         def close
           interruption = nil
           [@connection, @socket, @raw].compact.uniq.each do |owned|
@@ -133,7 +134,11 @@ module ConnectRPC
             begin
               owned.close
             rescue Exception => e # rubocop:disable Lint/RescueException -- complete every close stage before propagating the first interruption
-              interruption ||= e
+              if interruption
+                Teardown.escape(e)
+              else
+                interruption = e
+              end
               # Native wrappers can be interrupted before completing their own
               # cleanup. Retry interruptions, but let ordinary wrapper failures
               # proceed to the remaining stages.

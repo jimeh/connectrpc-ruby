@@ -45,11 +45,21 @@ RSpec.describe ConnectRPC::Falcon::Server, "listener teardown failures" do
       host = ConnectRPC::Falcon::Service.allocate.run(nil, evaluator, Struct.new(:endpoint).new(bound))
       owner = owners.dequeue
       host.instance_variable_get(:@accept_wrapper).define_singleton_method(:stop) { raise "accept stop failed" }
+      fatal = RuntimeError.new("fatal worker failure")
+      # Async records no terminal cause on the task, so observe the cause
+      # its fiber ends with as it enters the cancelled state.
+      causes = []
+      ended = TracePoint.new(:call) do |event|
+        causes << event.binding.local_variable_get(:cause) if event.self.equal?(owner) && event.method_id == :cancelled!
+      end
       expect do
-        owner.cancel(cause: RuntimeError.new("fatal worker failure"))
-        task.with_timeout(1) { owner.wait }
+        ended.enable do
+          owner.cancel(cause: fatal)
+          task.with_timeout(1) { owner.wait }
+        end
       end.to output(teardown_warnings(RuntimeError)).to_stderr
       expect(owner).to be_cancelled
+      expect(causes.first).to equal(fatal)
       expect(host.instance_variable_get(:@session).instance_variable_get(:@state)).to eq(:closed)
     ensure
       owner&.cancel

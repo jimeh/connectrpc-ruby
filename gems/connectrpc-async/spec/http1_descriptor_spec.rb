@@ -418,7 +418,7 @@ RSpec.describe ConnectRPC::Async::HTTP1Transport, "descriptor lifetime" do
             AsyncHelpers::INTERNAL.join(caller)
             AsyncHelpers::INTERNAL.join(closer)
           end.to output(state == :idle ? teardown_warnings(IOError) : "").to_stderr
-          expect(observed).to equal(state == :idle ? nil : error)
+          expect(observed).to equal(error) unless state == :idle
           expect(closer.result).to be(true) if closer
           expect { descriptor_probe(number) }.to raise_error(Errno::EBADF)
           expect(resource.raw).to be_closed

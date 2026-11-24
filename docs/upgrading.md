@@ -341,21 +341,29 @@ These affect native HTTP/2 connections of the Async `Transport`,
   closes, as before.
 - A teardown step that fails during a close or abort no longer becomes the
   caller's outcome. This covers a listener close or `stop_accepting:`
-  callback, a connection's retirement, TLS provider shutdown and a client
-  transport's connection teardown. Every later step still runs, and the
-  failure is written as a warning that names only its class, such as
-  `ConnectRPC teardown error: Errno::EBADF`. `close` on `Host`,
+  callback, a connection's retirement and final disposal, TLS provider
+  shutdown and a client transport's connection teardown. Every later step
+  still runs, and the failure is written as a warning that names only its
+  class, such as `ConnectRPC teardown error: Errno::EBADF`. `close` on `Host`,
   `ServerSession`, `ConnectRPC::Falcon::Server`, `Transport` and
   `HTTP1Transport` returns its drained (`true`) or forced (`false`) result,
   `ServerSession#abort` and Falcon's `Server#abort` return as usual, and
-  `TLSConfiguration#close` returns the configuration. A failed listener close
-  no longer skips TLS shutdown or the drain, and a client transport whose
-  close step fails forces retirement and returns `false`. In 0.2.1 the first
-  failure stopped the remaining steps and was raised from `close` or `abort`:
-  a server session could stay closing with its TLS refresh timer running until
-  the owner task ended, and a client transport could leave connections open.
-  Watch for the warning instead of rescuing teardown errors. An interrupted
-  caller still gets its own exception. See
+  `TLSConfiguration#close` returns the configuration. A failed listener close,
+  `stop_accepting:` callback or TLS shutdown no longer skips the drain, so a
+  server close returns the drain's result. A failure in a client transport's
+  own close steps before or instead of the drain, such as the `Transport`
+  connection manager's close, forces retirement and close returns `false`. A
+  connection whose teardown fails after it drained is reported and the drained
+  result stands, so a `Transport` connection whose final retirement fails, or
+  an `HTTP1Transport` idle connection whose close fails after every call has
+  finished, leaves close returning `true`. A Connect unary `Transport` call
+  whose cleanup failed, and whose connection retirement then failed too, now
+  returns its response; in 0.2.1 it raised the retirement's error instead.
+  In 0.2.1 the first failure stopped the remaining steps and was raised from
+  `close` or `abort`: a server session could stay closing with its TLS refresh
+  timer running until the owner task ended, and a client transport could
+  leave connections open. Watch for the warning instead of rescuing teardown
+  errors. An interrupted caller still gets its own exception. See
   [Close results](../gems/connectrpc-async/README.md#close-results).
 
 These affect `connectrpc-otel` spans and trace propagation.

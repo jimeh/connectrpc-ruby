@@ -6,8 +6,9 @@ module ConnectRPC
       # Teardown runs every step whatever an earlier one raised. A step's
       # StandardError never becomes the caller's outcome: it is written as a
       # warning that names only its class, since a message can carry
-      # addresses or credentials. Only an interruption of the task running
-      # teardown, such as Async::Cancel, is raised, once every step has run.
+      # addresses or credentials. Only an error that is not a StandardError,
+      # such as an interruption of the task running teardown, is raised, once
+      # every step has run.
       module Teardown
         # Runs one step. Returns its interruption, or nil.
         def self.capture

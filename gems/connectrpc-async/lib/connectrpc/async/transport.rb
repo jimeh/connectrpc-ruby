@@ -586,9 +586,10 @@ module ConnectRPC
       end
 
       # An abort joins connection retirement in the caller's fiber, where the
-      # caller's own timeout is retained. Retirement reports its own failure,
-      # so a unary call fails with the cleanup error that led to the abort;
-      # any other abort failure, such as a join's, still fails a unary call.
+      # caller's own timeout is retained. Retirement reports its own failure
+      # and never raises it here, so a failed cleanup leaves a unary call's
+      # outcome, such as its received response, unchanged. Any other abort
+      # failure, such as a join's, still fails a unary call.
       def abort_failed(operation, error, interruptions)
         if Internal.foreign_timeout?(error)
           interruptions << error
