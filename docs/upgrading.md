@@ -5,6 +5,19 @@ every ConnectRPC gem to the same version, as the
 [support policy](support.md#match-the-connectrpc-package-versions) requires.
 The [changelog](../CHANGELOG.md) lists every change.
 
+## 0.3.1
+
+### Behavior changes
+
+- When a `ThreadedTransport` or `PerCallTransport` stream operation waits past
+  its deadline for a stalled owner thread and fails with `deadline_exceeded`,
+  the stream's exit wait now ends by the deadline plus the cleanup allowance
+  too. A stream block that rescues that error and returns no longer waits
+  another allowance: with a stalled owner the call returns one allowance past
+  the deadline on `ThreadedTransport` and two on `PerCallTransport`, instead of
+  two and three. See
+  [streams from ordinary threads](../gems/connectrpc-async/README.md#streams-from-ordinary-threads).
+
 ## 0.3.0
 
 ### Breaking change: Steepfiles name core explicitly
@@ -269,10 +282,6 @@ These affect the Async HTTP/2 and HTTP/1 client transports and the core
   control-frame writes and the `too_many_pings` GOAWAY keep their 100 ms
   bounds. See the
   [cleanup allowance](../gems/connectrpc-async/README.md#cleanup-allowance).
-- When a `ThreadedTransport` stream operation waits past its deadline for a
-  stalled owner thread, the stream's exit wait now ends by the deadline plus
-  the allowance too. A block that rescues that `deadline_exceeded` and
-  returns gets it raised from the call without waiting another allowance.
 
 These affect native HTTP/2 connections of the Async `Transport`,
 `ThreadedTransport`, `Host` and `ServerSession` and the Falcon server.

@@ -941,7 +941,7 @@ each `response_head`, `read`, `write`, `close_send`, `finish` and, for gRPC,
   fails with `deadline_exceeded`, or with `unavailable` for its own timeout, and
   the stream is reset when the owner resumes.
 - A normal block exit waits for the owner's actual outcome, bounded only by the
-  deadline as unary calls are. Since 0.3.0, once an operation's wait has
+  deadline as unary calls are. Since 0.3.1, once an operation's wait has
   ended past the deadline without the owner's answer, either at the deadline
   plus the allowance or at its own timeout plus the allowance when that fails
   it with `deadline_exceeded`, every other wait on the stream ends by the
