@@ -79,9 +79,10 @@ impl Failure {
     /// (`ClientTask::poll_dispatch`): an h2 error that is neither a stream
     /// reset nor a GOAWAY. That is a connection failure, as h2 reports it to
     /// the connection's other streams. Two other bare codes also count:
-    /// hyper's reset of an HTTP/2 CONNECT reply that carries a body, which
-    /// reads "connection closed" rather than "stream reset" although only
-    /// that stream ended (Connect and gRPC never send CONNECT), and the
+    /// hyper's reset of an HTTP/2 CONNECT reply with status 200 and a nonzero
+    /// Content-Length, which reads "connection closed" rather than "stream
+    /// reset" although only that stream ended (Connect and gRPC never send
+    /// CONNECT), and the
     /// CANCEL an aborted `CallBody` yields, which the call's abort outcome
     /// supersedes.
     pub fn from_hyper(error: &hyper::Error) -> Self {

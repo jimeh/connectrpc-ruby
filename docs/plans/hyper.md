@@ -275,29 +275,29 @@ stage and reset its stream.
   keep one). hyper 1.13.0 (hyperium/hyper#4222, #4242) closes the channel and
   drains it, waiting for a push under way, before the future of a dispatcher
   that shuts down completes, so such a dispatcher strands nothing (the
-  adopting pull request records a reproducer run). The guard below stays as
-  a safety net, since the receiver still drops as above for a future dropped
-  unfinished (an aborted task) and for an HTTP/1.1 upgrade (a 101 response),
-  which completes without that drain, and the tokio race stays open. Each
-  connection's
-  owner of hyper's connection future fires a signal only after dropping it,
-  which answers every request the dispatcher still held, and `send` races
-  hyper's promise with that signal. After it fires, one more poll, outside
-  tokio's cooperative budget (its oneshot checks the budget before its
-  state), lets a ready answer win; a request still pending then is stranded
-  on HTTP/1.1, and on HTTP/2 only when its mark has no index, since an
-  indexed request belongs to h2 and its response task, which may still
-  answer it during a graceful GOAWAY. A writer blocked on a stranded body
-  returns, and the head reports the failure.
+  adopting pull request records a reproducer run). The guard below stays as a
+  safety net, since the receiver still drops as above for a future dropped
+  unfinished (an aborted task) and for an HTTP/1.1 upgrade (a 101 response, or
+  a 2xx reply to CONNECT), which completes without that drain, and the tokio
+  race stays open. Each connection's owner of hyper's connection future fires
+  a signal only after dropping it, which answers every request the dispatcher
+  still held, and `send` races hyper's promise with that signal. After it
+  fires, one more poll, outside tokio's cooperative budget (its oneshot checks
+  the budget before its state), lets a ready answer win; a request still
+  pending then is stranded on HTTP/1.1, and on HTTP/2 only when its mark has
+  no index, since an indexed request belongs to h2 and its response task,
+  which may still answer it during a graceful GOAWAY. A writer blocked on a
+  stranded body returns, and the head reports the failure.
   hyper 1.13.0 (hyperium/hyper#4275) fails a request waiting in its HTTP/2
   dispatcher for a stream slot, when the connection fails with a code other
   than NO_ERROR, with only that code, where 1.12 reported its dispatcher gone
-  (a graceful close now reports a cancellation and a keepalive timeout still
-  dispatcher gone, both a closed connection). `Failure::from_hyper` counts such
-  a bare h2 code as a connection failure (`goaway`), as h2 reports the error
-  to the connection's other streams and grpc-go reports any connection error
-  (`unavailable`), not as a stream reset; the request still replays when the
-  wire record shows it unprocessed and unsent.
+  (a graceful close or an error without a code, such as an I/O error, now
+  reports a cancellation and a keepalive timeout still dispatcher gone, all a
+  closed connection). `Failure::from_hyper` counts such a bare h2 code as a
+  connection failure (`goaway`), as h2 reports the error to the connection's
+  other streams and grpc-go reports any connection error (`unavailable`), not
+  as a stream reset; the request still replays when the wire record shows it
+  unprocessed and unsent.
 - D13 `Transport#close(grace: 5) -> bool`, as the Async transports: stops
   admission (later calls fail `unavailable` with
   `HTTP transport admission is closed`), including callers waiting on a dial,
