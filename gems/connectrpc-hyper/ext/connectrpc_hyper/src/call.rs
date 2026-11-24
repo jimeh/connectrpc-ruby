@@ -322,7 +322,17 @@ impl CallState {
             .unwrap_or_else(|e| e.into_inner())
             .take()
             .expect("request body is dispatched once");
+        // Only an HTTP/2 request is replayed from a body hyper dropped unread
+        // (its mark can say it was never sent). On HTTP/1.1 the receiver must
+        // not outlive that body: a body hyper never polls (a declared
+        // Content-Length of 0) would otherwise keep the upload channel open
+        // under a blocked write.
         let (home, homed) = oneshot::channel();
+        let home = if lease.is_h2() {
+            home
+        } else {
+            oneshot::channel().0
+        };
         let body = CallBody::stream(rx, self.ended.clone(), self.abort.clone(), home);
         let request = match self.spec.build(body, self.deadline, lease.is_h2()) {
             Ok(request) => request,
@@ -496,23 +506,28 @@ impl CallState {
         Ok(())
     }
 
-    /// Why a write found the stream ended. On HTTP/2, and for a stranded
-    /// request, waits for `respond` to publish the response's outcome,
-    /// inside the write, so the write's deadline, cancellation, abort,
-    /// shutdown and interrupt waits bound it. That wait is short: hyper's
-    /// HTTP/2 pipe drops the body only once the stream closed, which also
-    /// resolves the response; a stranded request's failure is published
-    /// right after `stranded` fires; and while a retry runs the replacement
-    /// body holds the receiver, so the channel stays open. HTTP/1.1 does not
-    /// wait: hyper also drops a body that reached its declared
-    /// Content-Length while the response is still pending. A failure the
-    /// response side does not know yet is the generic `ended`, recomputed by
-    /// the next write.
+    /// Why a write found the stream ended. Waits for `respond` to publish the
+    /// response's outcome, inside the write, so the write's deadline,
+    /// cancellation, abort, shutdown and interrupt waits bound it. That wait
+    /// is short: hyper's HTTP/2 pipe drops the body only once the stream
+    /// closed, and its HTTP/1.1 dispatcher only once the connection ended,
+    /// which also resolves the response; a stranded request's failure is
+    /// published right after `stranded` fires; and while a retry runs the
+    /// replacement body holds the receiver, so the channel stays open. An
+    /// HTTP/1.1 request that declares a Content-Length does not wait: hyper
+    /// also drops a body that reached it while the response is still
+    /// pending. A failure the response side does not know yet is the generic
+    /// `ended`, recomputed by the next write.
     async fn ended(self: &Arc<Self>, send: &mut SendHalf) -> Failure {
         if let Some(failure) = &send.ended {
             return failure.clone();
         }
-        if self.is_h2() || self.stranded.fired() {
+        let sized = self
+            .spec
+            .headers
+            .iter()
+            .any(|(name, _)| name == http::header::CONTENT_LENGTH);
+        if self.is_h2() || self.stranded.fired() || !sized {
             self.responded.wait().await;
         }
         // A failed head is known even while a reader holds the receive half.

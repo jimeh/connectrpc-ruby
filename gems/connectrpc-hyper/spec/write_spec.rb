@@ -220,11 +220,12 @@ RSpec.describe "Streaming writes after the stream ended", :interop do
     exchange("end-on-data:status:5:open") do |call|
       call.write(envelope)
       peer.wait_event(/\Araw ended end-on-data:status:5:open /, from: from)
-      20.times { call.write(envelope) }
-      call.close_send
+      # Reading to EOF first: the client has then processed END_STREAM.
       expect(call.response_head(timeout: 5).status).to eq(200)
       expect(read_all(call)).to eq(["".b, nil])
       expect(call.response_trailers["grpc-status"]).to eq(["5"])
+      20.times { call.write(envelope) }
+      call.close_send
     end
   end
 
@@ -290,7 +291,8 @@ RSpec.describe "Streaming writes after the stream ended", :interop do
     end
 
     # hyper drops a body that reached its declared Content-Length while the
-    # response is pending, so the write raises without waiting for it.
+    # response is pending, so the write raises without waiting for it. A
+    # length of 0 is a body hyper never polls.
     it "raises a write past the declared Content-Length without waiting for the response" do
       answered = Queue.new
       @server, @served = h1_server { |_socket| answered.pop }
@@ -300,6 +302,50 @@ RSpec.describe "Streaming writes after the stream ended", :interop do
       end
     ensure
       answered << :done
+    end
+
+    it "raises a write to a declared Content-Length of 0 without waiting for the response" do
+      answered = Queue.new
+      @server, @served = h1_server { |_socket| answered.pop }
+      h1_exchange(@server, headers: { "content-length" => ["0"] }) do |call|
+        expect(outcome(write_until_raised(call))).to eq(closed)
+      end
+    ensure
+      answered << :done
+    end
+
+    # Without a declared length the body ends only with its connection, so
+    # the write waits for the response's outcome and raises the connection's
+    # failure. The hold parks that outcome until the connection has ended,
+    # so a write that did not wait would raise the generic phrase first.
+    it "raises the connection's failure when the connection resets mid-upload" do
+      @server, @served = h1_server do |socket|
+        socket.readpartial(65_536)
+        socket.setsockopt(Socket::SOL_SOCKET, Socket::SO_LINGER, [1, 0].pack("ii"))
+        socket.close
+      end
+      transport = hyper(http2: false)
+      native_driver = driver(transport)
+      native_driver.hold("respond:publish", 10)
+      native_driver.hold("dispatcher:closed", 0)
+      request = request("h1", grpc: false, origin: "http://127.0.0.1:#{@server.addr[1]}")
+      writer = Thread.new do
+        Thread.current.report_on_exception = false
+        transport.open_stream(request) { |call| write_until_raised(call) }
+      end
+      wait_until("the connection ended and its outcome parked") do
+        native_driver.reached("dispatcher:closed") == 1 && native_driver.reached("respond:publish") == 1
+      end
+      # The body is gone with the connection, so the writer either raised
+      # already or waits for the parked outcome.
+      wait_until("the writer raised or parked") do
+        trace = writer.backtrace || []
+        !writer.alive? || (writer.status == "sleep" && trace.first.to_s.include?("Native::"))
+      end
+      native_driver.release("respond:publish")
+      expect(outcome(writer.value)).to eq(connection_closed)
+    ensure
+      native_driver&.release("respond:publish")
     end
   end
 end
