@@ -8,7 +8,7 @@ use bytes::{Bytes, BytesMut};
 use http_body_util::BodyExt;
 
 use crate::body::CallBody;
-use crate::call::send;
+use crate::call::{Unanswered, send};
 use crate::failure::Failure;
 use crate::pool::{DriverCore, RequestSpec};
 
@@ -26,9 +26,10 @@ fn content_length(headers: &http::HeaderMap) -> Option<u64> {
 }
 
 /// Retries once, on a fresh connection and with a refreshed wire timeout: a
-/// request hyper hands back unsent, or, before response headers, a stream the
-/// server refused with REFUSED_STREAM or that its GOAWAY says it never
-/// processed (a stream id above the last stream id). Nothing else is replayed.
+/// request hyper hands back unsent or that its connection stranded (see
+/// `send`), or, before response headers, a stream the server refused with
+/// REFUSED_STREAM or that its GOAWAY says it never processed (a stream id
+/// above the last stream id). Nothing else is replayed.
 pub async fn unary(
     core: Arc<DriverCore>,
     spec: RequestSpec,
@@ -47,13 +48,22 @@ pub async fn unary(
         // Spec hold point: parks the call before it hands its request to
         // hyper, while the runtime keeps driving the connection.
         core.holds.reach("request:send").await;
-        let (sent, mark) = send(&mut lease, request);
+        let (sent, mark) = send(&mut lease, request, &core.holds);
         // Spec hold point: armed with a zero bound, it counts the requests
         // handed to hyper.
         core.holds.block("request:queued");
         let response = match sent.await {
             Ok(response) => response,
-            Err(mut error) => {
+            Err(Unanswered::Stranded) => {
+                // Never taken by hyper, so never sent: as unsent below.
+                core.holds.reach("retry:unsent").await;
+                if exclude.is_none() {
+                    exclude = Some(lease.id());
+                    continue;
+                }
+                return Err(lease.closed_failure());
+            }
+            Err(Unanswered::Failed(mut error)) => {
                 let unsent = error.take_message().is_some();
                 if unsent {
                     // Spec hold point: it parks, or with a zero bound counts,

@@ -712,7 +712,7 @@ tools.rust = "1.98.0"
 run = "ruby gems/connectrpc-hyper/scripts/run.rb test"
 
 [tasks."hyper:check"]
-description = "Parse and lint connectrpc-hyper Ruby, then cargo fmt, clippy -D warnings, cargo deny, cargo audit and notices"
+description = "Parse and lint connectrpc-hyper Ruby, then cargo fmt, clippy -D warnings, Rust unit tests, cargo deny, cargo audit and notices"
 depends = ["hyper:setup"]
 tools.rust = "1.98.0"
 tools."aqua:EmbarkStudios/cargo-deny" = "0.20.2"

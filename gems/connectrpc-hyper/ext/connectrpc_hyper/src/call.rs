@@ -5,9 +5,10 @@
 //! that every wait and the request body observe, so it wins over busy
 //! operations instead of waiting for them.
 use std::future::Future;
-use std::pin::Pin;
+use std::pin::{Pin, pin};
 use std::sync::atomic::{AtomicBool, AtomicU16, Ordering};
 use std::sync::{Arc, Mutex};
+use std::task::Poll;
 use std::time::Instant;
 
 use bytes::Bytes;
@@ -19,35 +20,108 @@ use tokio::sync::{mpsc, oneshot};
 use crate::body::CallBody;
 use crate::failure::{Failure, TlsFault};
 use crate::gvl::Signal;
+use crate::holds::Holds;
 use crate::pool::{DriverCore, Inflight, Lease, RequestSpec};
 use crate::wire::Mark;
 
-pub type Sent = Pin<
-    Box<
-        dyn Future<
-                Output = Result<hyper::Response<Incoming>, TrySendError<hyper::Request<CallBody>>>,
-            > + Send,
-    >,
->;
+/// Why a request got no response head.
+pub enum Unanswered<E> {
+    /// hyper's failure, which carries the request if hyper handed it back.
+    Failed(E),
+    /// The connection's dispatcher ended without ever taking the request.
+    Stranded,
+}
+
+type Response = hyper::Response<Incoming>;
+type HyperError = TrySendError<hyper::Request<CallBody>>;
+type Promise = Pin<Box<dyn Future<Output = Result<Response, HyperError>> + Send>>;
+pub type Sent = Pin<Box<dyn Future<Output = Result<Response, Unanswered<HyperError>>> + Send>>;
 
 /// Enqueues the request on the leased connection now; the returned future
-/// resolves with the response head or hands back an unsent request. On
-/// HTTP/2 the mark learns the request's stream id (see wire.rs).
-pub fn send(lease: &mut Lease, mut request: hyper::Request<CallBody>) -> (Sent, Option<Arc<Mark>>) {
+/// resolves with the response head, hands back an unsent request, or reports
+/// it stranded. On HTTP/2 the mark learns the request's stream id (see
+/// wire.rs).
+///
+/// Stranded: tokio's unbounded `send` checks that the channel is open, then
+/// pushes, while the receiver's drop closes the channel, then drains what it
+/// can read. A request pushed between the two is neither drained nor ever
+/// received, and its envelope, whose drop would answer the caller, lives
+/// until the connection's last sender drops: the lease, the pool and sibling
+/// leases hold those. So the answer races the connection's `closed` signal,
+/// which fires only after hyper's dispatcher was dropped and so answered
+/// every request it held (see `conn::Dispatcher`).
+pub fn send(
+    lease: &mut Lease,
+    request: hyper::Request<CallBody>,
+    holds: &Holds,
+) -> (Sent, Option<Arc<Mark>>) {
     if request.method() == http::Method::CONNECT {
         // hyper may drop a CONNECT request after taking its index.
         lease.disable_wire();
     }
     let mark = lease.mark();
-    request.body_mut().set_mark(mark.clone());
-    let sent: Sent = match lease {
-        Lease::H2 { sender, .. } => Box::pin(sender.try_send_request(request)),
-        Lease::H1 { conn, .. } => {
-            let conn = conn.as_mut().expect("HTTP/1.1 lease holds its connection");
-            Box::pin(conn.sender.try_send_request(request))
+    let closed = lease
+        .closed()
+        .expect("a lease holds its connection")
+        .clone();
+    let http1 = !lease.is_h2();
+    // Spec hold point: armed, it counts the request and keeps it, body
+    // included, until the point is released, never handing it to hyper, as a
+    // stranded envelope stays in the channel while a sender lives. The kept
+    // request carries no mark: nothing indexes it, and a mark would tie the
+    // driver's holds to themselves (mark, wire, holds) if the driver were
+    // dropped while the point is armed.
+    let promise: Promise = match holds.keep("request:strand", request) {
+        None => Box::pin(std::future::pending()),
+        Some(mut request) => {
+            request.body_mut().set_mark(mark.clone());
+            match lease {
+                Lease::H2 { sender, .. } => Box::pin(sender.try_send_request(request)),
+                Lease::H1 { conn, .. } => {
+                    let conn = conn.as_mut().expect("HTTP/1.1 lease holds its connection");
+                    Box::pin(conn.sender.try_send_request(request))
+                }
+            }
         }
     };
-    (sent, mark)
+    let taken = mark.clone();
+    // hyper's HTTP/1.1 dispatcher answers every request it took when it is
+    // dropped. hyper's HTTP/2 dispatcher indexes each request it takes before
+    // passing it to h2 (wire.rs), and an indexed request belongs to h2 and its
+    // response task, which may still answer it (a graceful GOAWAY drains).
+    let stranded = move || http1 || !taken.as_ref().is_some_and(|mark| mark.indexed());
+    (Box::pin(answered(promise, closed, stranded)), mark)
+}
+
+/// `promise`'s answer, or `Stranded` when `closed` has fired, `promise` is
+/// still pending and `stranded` says nobody else can answer it.
+async fn answered<T, E>(
+    promise: impl Future<Output = Result<T, E>>,
+    closed: Arc<Signal>,
+    stranded: impl FnOnce() -> bool,
+) -> Result<T, Unanswered<E>> {
+    let mut promise = pin!(promise);
+    tokio::select! {
+        biased;
+        answer = promise.as_mut() => return answer.map_err(Unanswered::Failed),
+        () = closed.wait() => {}
+    }
+    // The dispatcher answered every request it held before `closed` fired
+    // (SeqCst), so such an answer is ready now. Polled again because the first
+    // poll may have come before it, and unconstrained because tokio's oneshot
+    // checks the task's cooperative budget before its state: an exhausted
+    // budget must not read as pending.
+    let again = tokio::task::unconstrained(std::future::poll_fn(|cx| {
+        Poll::Ready(promise.as_mut().poll(cx))
+    }))
+    .await;
+    if let Poll::Ready(answer) = again {
+        return answer.map_err(Unanswered::Failed);
+    }
+    if stranded() {
+        return Err(Unanswered::Stranded);
+    }
+    promise.await.map_err(Unanswered::Failed)
 }
 
 type Delivered = Result<(hyper::Response<Incoming>, Lease), Failure>;
@@ -87,6 +161,9 @@ pub struct CallState {
     pub deadline: Option<Instant>,
     pub cancel: Arc<Signal>,
     pub abort: Arc<Signal>,
+    /// Fires when the request was stranded: its body, which owns the upload
+    /// channel's receiver, may stay alive, so a blocked `write` returns.
+    stranded: Arc<Signal>,
     aborted: AtomicBool,
     finished: AtomicBool,
     failed: AtomicBool,
@@ -118,6 +195,7 @@ impl CallState {
             deadline,
             cancel,
             abort: Signal::new(),
+            stranded: Signal::new(),
             aborted: AtomicBool::new(false),
             finished: AtomicBool::new(false),
             failed: AtomicBool::new(false),
@@ -202,7 +280,7 @@ impl CallState {
         };
         self.local_port.store(lease.local_port(), Ordering::SeqCst);
         self.h2.store(lease.is_h2(), Ordering::SeqCst);
-        let (sent, mark) = send(&mut lease, request);
+        let (sent, mark) = send(&mut lease, request, &self.core.holds);
         // Spec hold point: armed with a zero bound, it counts the requests
         // handed to hyper. `block` keeps this section free of awaits.
         self.core.holds.block("request:queued");
@@ -221,6 +299,7 @@ impl CallState {
             },
             self.abort.clone(),
             self.cancel.clone(),
+            self.stranded.clone(),
             deliver,
         ));
         *state = Dispatch::Dispatched(Some(delivered));
@@ -321,12 +400,20 @@ impl CallState {
             return Err(Failure::new("state", "request body already closed"));
         };
         // A closed channel means hyper dropped the request body: the stream
-        // ended or was reset, and the response side reports why.
-        match tx.reserve().await {
+        // ended or was reset, and the response side reports why. So does a
+        // stranded request, whose body may never be dropped or read.
+        let reserved = tokio::select! {
+            reserved = tx.reserve() => reserved,
+            () = self.stranded.wait() => return Ok(()),
+        };
+        match reserved {
             Ok(permit) => permit.send(bytes),
             Err(_) => return Ok(()),
         }
-        let _ = tx.reserve().await;
+        tokio::select! {
+            _ = tx.reserve() => {}
+            () = self.stranded.wait() => {}
+        }
         Ok(())
     }
 
@@ -404,13 +491,16 @@ struct Attempt {
 /// Owns the response future so an unsent request can be retried once on a
 /// fresh connection even while the caller is blocked in a write: one hyper
 /// handed back, or one the peer's GOAWAY says it never processed whose
-/// HEADERS never reached the socket and whose body yielded nothing.
+/// HEADERS never reached the socket and whose body yielded nothing. A
+/// stranded request (see `send`) fails with its connection's failure: its
+/// body cannot be recovered, and `stranded` releases a blocked writer.
 async fn respond(
     core: Arc<DriverCore>,
     spec: Arc<RequestSpec>,
     attempt: Attempt,
     abort: Arc<Signal>,
     cancel: Arc<Signal>,
+    stranded: Arc<Signal>,
     deliver: oneshot::Sender<Delivered>,
 ) {
     let Attempt {
@@ -422,10 +512,15 @@ async fn respond(
         mark,
         homed,
     } = attempt;
+    let strand = |lease: &Lease| {
+        stranded.fire();
+        lease.closed_failure()
+    };
     let work = async {
         let mut error = match sent.await {
             Ok(response) => return Ok((response, lease)),
-            Err(error) => error,
+            Err(Unanswered::Failed(error)) => error,
+            Err(Unanswered::Stranded) => return Err(strand(&lease)),
         };
         // A call canceled before its replacement is queued never sends it.
         let retry = async {
@@ -461,7 +556,7 @@ async fn respond(
                 .acquire(&spec.origin, require_h2, Some(exclude), deadline)
                 .await?;
             let request = spec.build(body, deadline, lease.is_h2())?;
-            let (sent, _) = send(&mut lease, request);
+            let (sent, _) = send(&mut lease, request, &core.holds);
             Ok((lease, sent))
         };
         let (lease, sent) = tokio::select! {
@@ -471,7 +566,8 @@ async fn respond(
         };
         match sent.await {
             Ok(response) => Ok((response, lease)),
-            Err(error) => Err(lease.failure(error.error())),
+            Err(Unanswered::Failed(error)) => Err(lease.failure(error.error())),
+            Err(Unanswered::Stranded) => Err(strand(&lease)),
         }
     };
     let delivered = tokio::select! {
@@ -487,5 +583,72 @@ async fn until<F: Future>(deadline: Option<Instant>, future: F) -> Option<F::Out
     match deadline {
         Some(deadline) => tokio::time::timeout_at(deadline.into(), future).await.ok(),
         None => Some(future.await),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Pending at its first poll, which spends the task's whole cooperative
+    /// budget; then a tokio oneshot that already holds its value, which
+    /// checks the budget before its state, as hyper's promise does.
+    struct Exhausting {
+        first: bool,
+        rx: oneshot::Receiver<u8>,
+    }
+
+    impl Future for Exhausting {
+        type Output = Result<u8, ()>;
+
+        fn poll(mut self: Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> Poll<Self::Output> {
+            if std::mem::take(&mut self.first) {
+                while pin!(tokio::task::consume_budget()).poll(cx).is_ready() {}
+                return Poll::Pending;
+            }
+            Pin::new(&mut self.rx)
+                .poll(cx)
+                .map(|answer| answer.map_err(|_| ()))
+        }
+    }
+
+    fn fired() -> Arc<Signal> {
+        let signal = Signal::new();
+        signal.fire();
+        signal
+    }
+
+    #[test]
+    fn an_answer_ready_when_closed_fires_wins_under_an_exhausted_budget() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .expect("runtime");
+        let (tx, rx) = oneshot::channel();
+        tx.send(7).expect("receiver open");
+        let promise = Exhausting { first: true, rx };
+        let answer = runtime.block_on(answered(promise, fired(), || true));
+        assert!(matches!(answer, Ok(7)));
+    }
+
+    #[test]
+    fn a_pending_answer_is_stranded_only_when_nobody_else_can_answer() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .expect("runtime");
+        let stranded = runtime.block_on(answered(
+            std::future::pending::<Result<u8, ()>>(),
+            fired(),
+            || true,
+        ));
+        assert!(matches!(stranded, Err(Unanswered::Stranded)));
+        let (tx, rx) = oneshot::channel();
+        let answer = answered(async { rx.await.map_err(|_| ()) }, fired(), || false);
+        let mut answer = pin!(answer);
+        let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
+        runtime.block_on(async {
+            assert!(answer.as_mut().poll(&mut cx).is_pending());
+            tx.send(9).expect("receiver open");
+            assert!(matches!(answer.as_mut().poll(&mut cx), Poll::Ready(Ok(9))));
+        });
     }
 }

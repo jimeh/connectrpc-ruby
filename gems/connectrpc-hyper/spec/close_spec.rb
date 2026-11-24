@@ -66,6 +66,23 @@ RSpec.describe "Transport#close" do
     end
   end
 
+  # request:strand keeps the request from hyper on a healthy connection, so
+  # the call waits until forced teardown aborts the connection's dispatcher,
+  # whose end then strands it. The stranded call must not dial a replacement.
+  it "fails a stranded call that forced teardown ends with a forced phrase and no replacement dial" do
+    transport = hyper
+    native_driver = driver(transport)
+    native_driver.hold("request:strand", 0)
+    peer_client = client(peer["connect_h2c"], transport: transport, protocol: :connect)
+    call = Thread.new { error_of { peer_client.unary(MSG.new, timeout: 10) } }
+    wait_until("the request stranded") { native_driver.reached("request:strand") == 1 }
+    expect(transport.close(grace: 0)).to be(false)
+    expect(call.value&.message).to forced_phrase
+    expect([stats(transport).first, native_driver.reached("request:strand")]).to eq([1, 1])
+  ensure
+    native_driver&.release("request:strand")
+  end
+
   # The dialing call parks its thread inside the poll that finished the
   # handshake, before the connection's dispatcher registers. A forced close
   # then returns; the released call must not start a task it no longer owns.
