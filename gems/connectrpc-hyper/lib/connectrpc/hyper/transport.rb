@@ -216,7 +216,10 @@ module ConnectRPC
       end
 
       # [outcome, nil] or [nil, the exception native close raised]. Native
-      # close raises only after teardown published its outcome.
+      # close raises only after teardown published its outcome, except the
+      # `fatal` of a runtime that could not start, before teardown started.
+      # That `fatal` passes this rescue (Ruby rescues a native `fatal` only
+      # after an ensure) and leaves through the ensure, recording nothing.
       def await_teardown(driver, grace)
         outcome = nil
         begin

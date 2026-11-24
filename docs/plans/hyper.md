@@ -522,8 +522,10 @@ cause, abort in a masked `ensure`. Rust owns connections, streams and waits.
   closer raises `fatal`. Close starts the runtime before it claims teardown,
   so that close claims and stops nothing, the transport stays closing, and a
   later close starts teardown. `Tracker::spawn` likewise starts the runtime
-  before it takes its lock. A call whose runtime start fails raises `fatal`
-  the same way and leaves nothing claimed.
+  before it takes its lock, and `Driver::open` before admission, because each
+  stream operation takes a stream half before it drives. A call or stream
+  whose runtime start fails raises `fatal` the same way and leaves nothing
+  claimed.
 - rustls strictness (CN-only, X.509 v1, single-label wildcard, CA as leaf,
   encrypted keys): `TLS verification failed` or `ArgumentError`; documented.
 - Server RST_STREAM codes map as the Async transport does (3 and 11
@@ -563,7 +565,7 @@ cause, abort in a masked `ensure`. Rust owns connections, streams and waits.
 | Errors | Fixed phrases for refused, DNS, TLS verify, closed, ALPN mismatch, deadline; server RST_STREAM with each mapped code |
 | Offload | Ruby 4.0 with async worker pool: sibling task progresses, stop/cancel/deadline/raise/kill land; simultaneous read and write on one bidi stream from two fibers on a two-worker pool, then abort or stop while both wait bodies run; a scheduler's `blocking_operation_wait` hook receives waits on 4.0 and never on 3.4; Ruby 3.4 and without the pool behave as a plain blocking call; on both Rubies, with and without the pool, a sibling fiber's in-flight call drains while another fiber waits in close |
 | Spurious wake | A wake without a pending interrupt during a blocked `write` does not duplicate the message on the wire |
-| Close | `close(grace:)` drains in-flight calls (true), forced (false), later calls fail with the closed phrase; `close(grace: 0)` racing setup, a retry or a streaming dispatch (write first and head first), with one of the two forced-teardown phrases and never a bare `HTTP transport failed`; a stranded Connect unary call that forced teardown ends gets a forced phrase and no replacement dial; repeated close shares the outcome, and a concurrent closer stopped by `Task#stop` while it waits raises only after it is published; a task aborted before its first poll is still counted until its socket closes; a `Task#stop` on the closer lets a sibling fiber's call drain before the stop is raised; a first close whose runtime start fails (injected in a fresh process) raises, and a later close starts teardown and returns true |
+| Close | `close(grace:)` drains in-flight calls (true), forced (false), later calls fail with the closed phrase; `close(grace: 0)` racing setup, a retry or a streaming dispatch (write first and head first), with one of the two forced-teardown phrases and never a bare `HTTP transport failed`; a stranded Connect unary call that forced teardown ends gets a forced phrase and no replacement dial; repeated close shares the outcome, and a concurrent closer stopped by `Task#stop` while it waits raises only after it is published; a task aborted before its first poll is still counted until its socket closes; a `Task#stop` on the closer lets a sibling fiber's call drain before the stop is raised; a first close whose runtime start fails (injected in a fresh process) raises, and a later close starts teardown and returns true; a stream whose runtime start fails raises before the exchange is handed out |
 | Keepalive move | Core `Keepalive` specs (validation, equality, freezing); `ConnectRPC::Async::Keepalive.equal?(ConnectRPC::Keepalive)` from installed packages in both require orders; existing Async keepalive specs pass |
 | Fast path | Connect unary passes all unary specs and does one native wait (spec on an internal counter or a GVL-contention probe) |
 | Package | Source gem builds and installs in a clean GEM_HOME and runs a smoke call; exact manifest, MIT plus third-party notice, push host, MFA |
