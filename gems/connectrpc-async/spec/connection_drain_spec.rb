@@ -325,4 +325,29 @@ RSpec.describe "HTTP/2 GOAWAY draining and replacement" do
       end
     end
   end
+
+  # A client close whose calls finished is drained, however the server
+  # leaves afterwards (docs/design.md, rule 5).
+  it "reports a close as drained when its calls finished and the server never sends EOF" do
+    reactor do |task|
+      bound = IO::Endpoint.tcp("127.0.0.1", 0).bound
+      peer = ConnectionPeer::RecordingServer.new(task, bound.sockets.first)
+      origin = "http://127.0.0.1:#{bound.sockets.first.local_address.ip_port}"
+      transport = ConnectRPC::Async::Transport.new(origin: origin)
+      expect(transport.call(request("#{origin}/finished")).body).to eq("ok")
+      resource = resources(transport).first
+      # A second descriptor keeps the server's socket open after it closes.
+      keeper = peer.raws.first.dup
+      closer = task.async { transport.close(grace: 0.3) }
+      wait_until(task, "final discard") { resource.instance_variable_get(:@discarding) }
+      expect(closer).not_to be_finished
+      expect(closer.wait).to be(true)
+      expect(resource.raw).to be_closed
+    ensure
+      keeper&.close
+      transport&.close(grace: 0)
+      peer&.stop
+      bound&.close
+    end
+  end
 end

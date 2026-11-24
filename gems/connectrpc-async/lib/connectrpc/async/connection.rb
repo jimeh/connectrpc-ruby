@@ -1409,7 +1409,9 @@ module ConnectRPC
         # for the accepted work, sends a final GOAWAY naming the cutoff,
         # half-closes and discards input until EOF, all within `expires`. A
         # peer that leaves once its streams closed ends the drain when the
-        # remaining work finishes, without the final GOAWAY.
+        # remaining work finishes, without the final GOAWAY. A caller gets
+        # true when the streams finished by its own `expires`, however the
+        # peer leaves afterwards or the connection then retires.
         def drain(parent, expires, reason: "graceful_stop")
           return Internal.wait(@drain_task, expires) if @drain_task
 
@@ -1431,11 +1433,14 @@ module ConnectRPC
             stop_maintenance unless @peer_departed
             @progress.wait until empty?
             next !@abort_during_drain if @aborted
+
+            streams_finished
             # The peer is gone, so nothing more is sent.
             next @drained = true if @peer_departed
 
             finish_drain { @connection.send_goaway }
           rescue EOFError, *PEER_LEFT
+            next true if @streams_finished_at
             # A local raw failure also surfaces as EOF or EPIPE.
             next false if @raw_failed
 
@@ -1444,15 +1449,18 @@ module ConnectRPC
             @drained = true
             true
           rescue StandardError
-            false
+            !@streams_finished_at.nil?
           ensure
             abort
           end
           @drain_task.run
           Internal.wait(@drain_task, expires)
         rescue ::Async::TimeoutError
+          # Decided before the abort, whose forced teardown empties the
+          # connection.
+          finished = streams_finished_by?(expires)
           abort
-          false
+          finished
         end
 
         # Finishes a connection whose final GOAWAY is already written: stops
@@ -1463,6 +1471,8 @@ module ConnectRPC
         def quiesce(parent, clock:, within:)
           return if @drain_task || @aborted
 
+          # A too_many_pings decision can quiesce while streams still run.
+          streams_finished if empty? && !@upkeep&.violated?
           @drain_task = ::Async::Task.new(parent, finished: false) do |task|
             timer = ::Async::Task.new(task, finished: false) do
               clock.sleep(within)
@@ -1472,12 +1482,13 @@ module ConnectRPC
             stop_maintenance
             finish_drain
           rescue EOFError, *PEER_LEFT
+            next true if @streams_finished_at
             next false if @raw_failed
 
             @drained = true
             true
           rescue StandardError
-            false
+            !@streams_finished_at.nil?
           ensure
             Internal.cancel(timer)
             abort
@@ -1487,6 +1498,14 @@ module ConnectRPC
         end
 
         private
+
+        # Records when a drain's streams finished, unless forced teardown
+        # emptied the connection.
+        def streams_finished
+          @streams_finished_at = Internal.now unless @aborted || raw_failed?
+        end
+
+        def streams_finished_by?(expires) = !!@streams_finished_at && @streams_finished_at <= expires
 
         def finish_drain
           @finishing = true
@@ -1614,12 +1633,15 @@ module ConnectRPC
           # Failing raw TCP precedes any protocol, buffered stream or TLS
           # disposal.
           fail_raw
+          # An interruption of this cleanup task is retained at every step
+          # below and skips no later one, so retirement still completes and
+          # publishes before it is raised.
           # Best-effort scheduling hint only. A return proves no unwind or
           # completion; the retained-task joins below establish retirement.
-          ::Async::Task.current.yield
+          escapes = [Internal::Teardown.capture { ::Async::Task.current.yield }]
           # A failed or interrupted protocol close is reported or retained and
           # skips neither the member joins nor the disposal steps below.
-          escapes = [Internal::Teardown.capture { @connection&.close! }]
+          escapes << Internal::Teardown.capture { @connection&.close! }
           loop do
             capture_retirement
             writers = @connection&.writers&.keys || []
@@ -1632,18 +1654,34 @@ module ConnectRPC
               end
               covered
             end
-            roots.each { |task| cancel_root(task) }
+            roots.each do |task|
+              next unless (interruption = Internal::Teardown.capture { cancel_root(task) })
+
+              # Async delivers a cancel by transferring to the task, so this
+              # interruption surfaced after delivery and needs no new cancel.
+              # It can still skip forcing a deferred request.
+              escapes.push(interruption, Internal::Teardown.capture { force_deferred(task) })
+            end
             # An ancestor's cascade can leave the registered frame writer with
             # only a deferred request. Logical coverage is not forced delivery.
-            writers.each { |writer| force_deferred(writer) }
-            @retirement_members.keys.reverse_each { |task| Internal.join_complete(task) }
+            writers.each { |writer| escapes << Internal::Teardown.capture { force_deferred(writer) } }
+            # A join retains an interruption until its member has finished. A
+            # join's own failure, such as a completion violation, still
+            # escapes: retrying that member would never end.
+            @retirement_members.keys.reverse_each do |task|
+              Internal.join_complete(task)
+            rescue StandardError
+              raise
+            rescue Exception => e # rubocop:disable Lint/RescueException -- the member has finished; retirement continues
+              escapes << e
+            end
             capture_retirement
             break if @retirement_members.keys.all?(&:finished?)
           end
           # A drain's discard read is not a member, but the shutdown ends it
           # with EOF. The protocol stream and TLS socket below close raw too,
           # so every close waits for that read to leave raw.
-          @progress.wait while @discarding
+          escapes << Internal::Teardown.capture { @progress.wait } while @discarding
           # A failed or interrupted disposal step, the final raw close
           # included, is reported or retained and skips neither a later one
           # nor retirement's completion.
@@ -1654,8 +1692,9 @@ module ConnectRPC
           changed
           Internal::Teardown.finish(escapes)
         ensure
-          # An interrupted retirement still releases the descriptor, although
-          # a fiber still blocked on raw may then get a late close interrupt.
+          # A retirement that ends early, such as on a failed join, still
+          # releases the descriptor, although a fiber still blocked on raw may
+          # then get a late close interrupt.
           Internal.raw_close(@raw)
         end
       end

@@ -105,6 +105,35 @@ RSpec.describe "Connect H1 cooperative final-close grace" do
     end
   end
 
+  # A delivered response counts as finished during its post-flush wait, so
+  # a grace that ends inside it still reports drained, while it still forces
+  # raw-first retirement.
+  [false, true].each do |secure|
+    it "reports a close that ends inside the post-response wait as drained, TLS=#{secure}" do
+      reactor do |task|
+        _, cs, = methods
+        owners = observe_owners
+        with_host(target({ cs.path => lambda { |*|
+          AsyncHelpers::MESSAGE.new(name: "lingering")
+        } }), secure, request_body_timeout: 0.05) do |host, peer, _|
+          peer.write(request_head(cs, :chunked))
+          owner = owners.dequeue
+          expect(peer.head.first).to eq(200)
+          expect(peer.body).to include("lingering")
+          resource = host.instance_variable_get(:@session).instance_variable_get(:@resources).first
+          wait_until(task, "the post-response wait") { owner.lingering? }
+          expect(resource).not_to be_empty
+          closing = task.async(finished: false) { host.close(grace: 0.1) }
+          expect(closing).not_to be_finished
+          expect(closing.wait).to be(true)
+          expect(AsyncHelpers::INTERNAL.now).to be < owner.instance_variable_get(:@close_expires)
+          wait_until(task, "forced retirement") { resource.send(:retirement_completed?) }
+          expect(resource.raw).to be_closed
+        end
+      end
+    end
+  end
+
   [false, true].product(%i[abort close drain_tls]).each do |secure, operation|
     next if operation == :drain_tls && !secure
 

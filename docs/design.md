@@ -594,9 +594,8 @@ ends and leaves the remaining connections to `Close`.
    reactor, such as a `ThreadedTransport` caller or `PerCallTransport` outside
    a reactor, can use them.
 3. Joins exist for descriptor safety: a connection's descriptor closes only
-   after every fiber that might touch it has left. Listener shutdown is an
-   existing exception: it closes listening sockets before it cancels and joins
-   their accept loops.
+   after every fiber that might touch it has left. Listener shutdown likewise
+   cancels and joins each accept loop before it closes the listening socket.
 4. Teardown failures don't become caller outcomes. A close reports whether it
    drained or forced. A failed step never skips a later one and is written as
    a warning that names only its class.
@@ -605,12 +604,8 @@ ends and leaves the remaining connections to `Close`.
    retirement. Whether a drain succeeded should depend on whether its streams
    finished in time, not on how the peer left afterwards.
 
-Some code predates rules 1 and 5: `Host#start`'s startup cleanup and
-`Host#wait` keep an interrupted caller until the exit task finishes, and a
-drain whose streams finished still reports false when the peer's EOF doesn't
-arrive within its grace. Rule 3 may let most of the private completion join
-go.
-[#200](https://github.com/jimeh/connectrpc-ruby/issues/200) tracks these.
+Rule 3 may let most of the private completion join go.
+[#200](https://github.com/jimeh/connectrpc-ruby/issues/200) tracks this.
 
 ## RPC lifecycle observation
 

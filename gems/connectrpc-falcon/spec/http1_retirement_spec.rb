@@ -102,7 +102,9 @@ RSpec.describe "Falcon HTTP/1 forced retirement" do
       end
     end
 
-    it "reports a #{label} drain interrupted in its discard read by session abort as not drained" do
+    # The exchange finished before the abort, so the drain succeeded however
+    # the connection then ended (docs/design.md, rule 5).
+    it "reports a #{label} drain interrupted in its discard read by session abort as drained" do
       reactor do |task|
         rack = ->(_env) { [200, { "content-type" => "text/plain" }, ["ok"]] }
         falcon(rack_app: rack, scheme: secure ? "https" : "http", tls: secure ? host_tls : nil) do |host, origin|
@@ -117,8 +119,29 @@ RSpec.describe "Falcon HTTP/1 forced retirement" do
           wait_until(task, "the drain discarding input") { resource.instance_variable_get(:@discarding) }
           aborter = task.async(finished: false) { session.abort }
           join_retirement_tasks(task, aborter, drainer)
-          # The end of stream after the local raw failure is not the peer's.
-          expect(drainer.result).to be(false)
+          expect(drainer.result).to be(true)
+          expect(retirement_complete?(resource)).to be(true)
+          expect(resource.raw).to be_closed
+        ensure
+          peer&.close
+        end
+      end
+    end
+
+    it "reports a #{label} close whose exchange finished as drained when the peer never sends EOF" do
+      reactor do |task|
+        rack = ->(_env) { [200, { "content-type" => "text/plain" }, ["ok"]] }
+        falcon(rack_app: rack, scheme: secure ? "https" : "http", tls: secure ? host_tls : nil) do |host, origin|
+          peer = ConnectH1Wire.new(origin, context: secure ? tls_context : nil)
+          peer.write("GET /kept HTTP/1.1\r\nHost: localhost\r\n\r\n")
+          expect(peer.head.first).to eq(200)
+          session = host.instance_variable_get(:@session)
+          resource = session.instance_variable_get(:@resources).first
+          wait_until(task, "the response completed") { resource.empty? }
+          closing = task.async(finished: false) { host.close(grace: 0.3) }
+          wait_until(task, "the drain discarding input") { resource.instance_variable_get(:@discarding) }
+          expect(closing).not_to be_finished
+          expect(closing.wait).to be(true)
           expect(retirement_complete?(resource)).to be(true)
           expect(resource.raw).to be_closed
         ensure

@@ -50,7 +50,8 @@ module ConnectRPC
         @requested_port = port
         @addresses = [].freeze
         @owner = ::Async::Task.current?
-        @listeners = []
+        # Each listener task with the socket it accepts on.
+        @listeners = {}.compare_by_identity
         @completion = ::Async::Promise.new
         # Application validates the server and a non-callable fallback.
         fallback = FallbackGuard.new(fallback) if fallback.respond_to?(:call)
@@ -96,7 +97,7 @@ module ConnectRPC
             break if @failure || @closing
 
             @session.schedule do |task|
-              @listeners << task
+              @listeners[task] = listener
               accept_loop(listener)
             end
           end
@@ -104,14 +105,17 @@ module ConnectRPC
           raise LifecycleError, "Host closed during startup" if @closing
 
           self
-        rescue Exception => e # rubocop:disable Lint/RescueException -- retain the first startup cause through obligatory cleanup
+        rescue Exception => e # rubocop:disable Lint/RescueException -- startup cleanup runs whatever ended startup
           cause = @failure || e
           cleanup = exit_task
-          begin
-            Internal.join_complete(cleanup) { cleanup.run if cleanup.status == :initialized }
-          rescue Exception # rubocop:disable Lint/RescueException -- joins retain later caller interruptions until actual finalization
-            nil # The startup cause wins over the caller's later interruption.
+          # The exit task finishes cleanup on its own. An interrupted caller
+          # leaves at once, whether startup ended with the caller's own
+          # interruption or the caller is interrupted while joining cleanup.
+          if !e.is_a?(StandardError) || Internal.foreign_timeout?(e)
+            cleanup.run if cleanup.status == :initialized
+            raise e
           end
+          Internal.join_complete(cleanup, interruptible: true) { cleanup.run if cleanup.status == :initialized }
           raise cause
         ensure
           @starting = false
@@ -120,14 +124,15 @@ module ConnectRPC
 
       # Ordinary shutdown waits only for listener stop, not session retirement.
       # Terminal failure waits for cooperative abort/join, then raises its cause,
-      # never a cleanup failure. Owner interruption is retained through cleanup.
+      # never a cleanup failure. An interrupted waiter leaves at once, and the
+      # exit task finishes cleanup on its own.
       def wait
         @session.send(:check_affinity!)
         raise LifecycleError, "Start or close the host before waiting" unless @bound || @closing
 
         error = @completion.wait
         if error
-          Internal.join_complete(@exit_task)
+          Internal.join_complete(@exit_task, interruptible: true)
           raise error
         end
 
@@ -220,19 +225,49 @@ module ConnectRPC
         end
       end
 
-      # Closes, cancels and joins every listener even when one step fails,
-      # reporting each failure, then raises only the first interruption. Each
-      # socket close runs once, so a failed close is reported once and the
-      # socket may stay open.
+      # Cancels and joins every listener, then closes each listening socket
+      # once, so no accept loop is still waiting on a socket as it closes. A
+      # failed step never skips a later one and is reported. A listener whose
+      # cancel failed is not joined, and its socket stays open. Passes run one
+      # at a time, so a concurrent caller resolves completion only after the
+      # running pass has closed its sockets. Each caller is a task the host
+      # or session owns, so it keeps waiting through an interruption and
+      # raises only its first one at the end.
       def stop_accepting
         @closing = true
-        sockets = @bound && !@unbound ? @bound.sockets : []
-        @unbound = true if @bound
-        escapes = sockets.map { |socket| Internal::Teardown.capture { socket.close } }
-        escapes.concat(@listeners.map { |listener| Internal::Teardown.capture { Internal.cancel(listener) } })
-        escapes.concat(@listeners.map { |listener| Internal::Teardown.capture { Internal.join_complete(listener) } })
+        escapes = []
+        while (running = @listener_stop)
+          escapes << Internal::Teardown.capture { running.wait } until running.resolved?
+        end
+        pass = @listener_stop = ::Async::Promise.new
+        begin
+          escapes.concat(stop_listeners)
+        ensure
+          @listener_stop = nil
+          pass.resolve(nil)
+        end
         @completion.resolve(nil) unless @failure || @starting
         Internal::Teardown.finish(escapes)
+      end
+
+      def stop_listeners
+        escapes = []
+        kept = []
+        joined = []
+        @listeners.to_a.each do |listener, socket|
+          delivered, escape = Internal::Teardown.cancel { Internal.cancel(listener) }
+          escapes << escape
+          delivered ? joined << listener : kept << socket
+        end
+        joined.each do |listener|
+          escapes << Internal::Teardown.capture { Internal.join_complete(listener) unless listener.current? }
+        end
+        sockets = @bound && !@unbound ? @bound.sockets : []
+        @unbound = true if @bound
+        sockets.each do |socket|
+          escapes << Internal::Teardown.capture { socket.close } unless kept.any? { |open| open.equal?(socket) }
+        end
+        escapes
       end
     end
   end

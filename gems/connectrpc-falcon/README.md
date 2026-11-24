@@ -354,10 +354,17 @@ boundary uses raw-first abort and offers no response-delivery guarantee.
 HTTP response completion is separate from TLS `close_notify`; orderly TLS
 shutdown is not promised.
 
+Since 0.3.0 the worker cancels and joins every accept task before it closes
+each owned listening socket once, so no accept task is still waiting on a
+socket as it closes, and concurrent shutdown steps run one at a time. Before
+0.3.0 it stopped the accept tasks and closed the sockets without waiting for
+the tasks to finish.
+
 Since 0.3.0 a failed teardown step never skips a later one and is never
 raised. The worker stops every accept task and closes every owned listening
-socket even when one of them fails, and a failed listener step skips neither
-TLS shutdown nor the drain, so close still returns the drain's result. Each failure is written as a warning that names
+socket even when one of them fails. An accept task whose cancel fails is not
+joined, and its socket stays open. A failed listener step skips neither TLS
+shutdown nor the drain, so close still returns the drain's result. Each failure is written as a warning that names
 only its class, such as `ConnectRPC teardown error: Errno::EBADF`. A managed
 worker that failed keeps its own failure when its `abort` or `close` then
 meets a teardown failure. See
@@ -391,6 +398,15 @@ overrides.
   are preserved.
 - Since 0.3.0 a failed listener step or connection retirement is written as a
   warning and leaves the drain's boolean, and `Server#abort` returns as usual.
+- Since 0.3.0 a connection counts as drained once its streams or HTTP/1
+  exchange finished within the grace, however the peer leaves afterwards. An
+  HTTP/1 response that has been delivered counts as finished during its
+  post-response wait, described in
+  [HTTP/1.1 input retirement](#http11-input-retirement). Close still waits for
+  the peer's EOF, or for that wait, until the grace ends and then forces
+  retirement, but neither a missing EOF nor that forced retirement makes the
+  result false. `drain_tls` reports its connections the same way. Before 0.3.0
+  such a close returned false.
 
 ### Connection retirement
 
@@ -539,6 +555,8 @@ One absolute final-close expiry is anchored at the actual final HTTP flush plus
 500 ms, before body callbacks or lifecycle observation. After those, Falcon
 half-closes raw TCP writes and waits without reading until that expiry, like
 `net/http`'s `rstAvoidanceDelay`.
+Since 0.3.0 a close or `drain_tls` whose grace ends during that wait still
+reports the connection drained, and forces raw-first retirement at once.
 Following pipelined requests are never parsed or dispatched. Admission/socket
 ownership lasts until retirement and original processing join. Earlier owner
 shutdown can shorten either phase; failed delivery receives no success grace.

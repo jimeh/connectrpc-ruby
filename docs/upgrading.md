@@ -365,6 +365,18 @@ These affect native HTTP/2 connections of the Async `Transport`,
   leave connections open. Watch for the warning instead of rescuing teardown
   errors. An interrupted caller still gets its own exception. See
   [Close results](../gems/connectrpc-async/README.md#close-results).
+- A connection drain whose streams finished within the grace reports drained
+  (`true`), however the peer leaves afterwards. This covers `close` on `Host`,
+  `ServerSession`, `ConnectRPC::Falcon::Server` and `Transport`, and
+  `drain_tls`. Close still sends the final GOAWAY, half-closes and waits for
+  the peer's EOF until the grace ends, but a peer that never sends EOF no
+  longer makes the result `false`. A Falcon HTTP/1 response that has been
+  delivered counts as finished during its 500 ms post-response wait, so a
+  grace that ends inside that wait also reports drained, and still forces
+  raw-first retirement at once. In 0.2.1 both cases returned `false`. A forced
+  close, `close(grace: 0)` or `abort`, still returns `false`, and so does a
+  drain whose streams were still running when its grace ended. See
+  [Close results](../gems/connectrpc-async/README.md#close-results).
 
 These affect `connectrpc-otel` spans and trace propagation.
 
@@ -460,6 +472,22 @@ and [Accept errors](../gems/connectrpc-async/README.md#accept-errors).
   task finishes only after retirement, but `Task#wait` on it can now return
   before retirement completes. See
   [Interrupted server close](../gems/connectrpc-async/README.md#interrupted-server-close).
+- A `Host#start` caller that is cancelled, times out or is otherwise
+  interrupted during startup cleanup, and a `Host#wait` caller interrupted
+  while it waits for terminal cleanup, get the exception at once. The host's
+  exit task finishes cleanup on its own, and a later `wait` raises the
+  listener cause once it has. In 0.2.1 both callers stayed until cleanup
+  finished: `wait` then raised the interruption, and `start` raised the
+  startup error or listener cause in its place. A starter's own interruption
+  now wins over a recorded listener cause. See
+  [Terminal failure and startup](../gems/connectrpc-async/README.md#terminal-failure-and-startup).
+- Listener shutdown on `Host` and Falcon's native listener cancels and joins
+  every accept loop before it closes each listening socket, so no accept loop
+  is still waiting on a socket as it closes, and concurrent shutdown steps run
+  one at a time. In 0.2.1 the `Host` closed its listening sockets before it
+  cancelled the accept loops, and Falcon closed them without waiting for its
+  accept tasks to finish. An accept loop whose cancel fails is not joined, and
+  its socket stays open.
 - A `TLSConfiguration#close` caller that is cancelled, times out or is
   otherwise interrupted gets its exception at once while provider shutdown
   continues in the configuration's own task, and a later `close` joins it and
