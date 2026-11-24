@@ -2,6 +2,6 @@
 
 module ConnectRPC
   module OnRails
-    VERSION = "0.2.1" # x-release-please-version
+    VERSION = "0.3.0" # x-release-please-version
   end
 end
