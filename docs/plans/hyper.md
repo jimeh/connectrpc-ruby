@@ -288,16 +288,18 @@ stage and reset its stream.
   its mark has no index, since an indexed request belongs to h2 and its
   response task, which may still answer it during a graceful GOAWAY. A writer
   blocked on a stranded body returns, and the head reports the failure.
-  hyper 1.13.0 (hyperium/hyper#4275) fails a request waiting in its HTTP/2
-  dispatcher for a stream slot, when the connection fails with a code other
-  than NO_ERROR, with only that code, where 1.12 reported its dispatcher gone
-  (a graceful close or an error without a code, such as an I/O error, now
-  reports a cancellation and a keepalive timeout still dispatcher gone, all a
-  closed connection). `Failure::from_hyper` counts such a bare h2 code as a
-  connection failure (`goaway`), as h2 reports the error to the connection's
-  other streams and grpc-go reports any connection error (`unavailable`), not
-  as a stream reset; the request still replays when the wire record shows it
-  unprocessed and unsent.
+  hyper 1.13.0 (hyperium/hyper#4275) changes how a request waiting in its
+  HTTP/2 dispatcher for a stream slot fails when its connection fails; 1.12
+  reported its dispatcher gone in every case. A connection error with a code
+  other than NO_ERROR now gives the request only that code. A graceful close
+  (NO_ERROR), or an error without a code such as an I/O error, gives a
+  cancellation. A keepalive timeout still gives dispatcher gone. A
+  cancellation and dispatcher gone both read as a closed connection, as
+  before. `Failure::from_hyper` counts the bare code as a connection failure
+  (`goaway`), as h2 reports the error to the connection's other streams and
+  grpc-go reports any connection error (`unavailable`), not as a stream reset;
+  the request still replays when the wire record shows it unprocessed and
+  unsent.
 - D13 `Transport#close(grace: 5) -> bool`, as the Async transports: stops
   admission (later calls fail `unavailable` with
   `HTTP transport admission is closed`), including callers waiting on a dial,

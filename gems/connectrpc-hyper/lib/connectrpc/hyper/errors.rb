@@ -4,8 +4,9 @@ module ConnectRPC
   module Hyper
     module Native
       # Raised by the extension. `kind` classifies the failure; `reset_code` is
-      # the HTTP/2 error code of a received RST_STREAM or GOAWAY; `errno` is the
-      # OS error, if any. Messages never carry paths or key material.
+      # the HTTP/2 error code of an RST_STREAM or GOAWAY, the peer's or h2's own;
+      # `errno` is the OS error, if any. Messages never carry paths or key
+      # material.
       class Failure < StandardError
         attr_reader :kind, :reset_code, :errno
 

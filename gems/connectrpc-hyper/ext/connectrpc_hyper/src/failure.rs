@@ -7,7 +7,8 @@ use std::sync::OnceLock;
 pub struct Failure {
     pub kind: &'static str,
     pub detail: String,
-    /// HTTP/2 error code of a received RST_STREAM or GOAWAY.
+    /// HTTP/2 error code of a stream reset or connection error: an RST_STREAM
+    /// or GOAWAY the peer sent or h2 sent itself.
     pub reset: Option<u32>,
     pub errno: Option<i32>,
 }
