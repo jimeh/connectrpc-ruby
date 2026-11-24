@@ -198,15 +198,51 @@ RSpec.describe "Streaming writes after the stream ended", :interop do
   end
 
   # h2 refuses a chunk this large outright, which would drop the request
-  # body while the response waits for it; the bytesize stands in for 2 GiB.
+  # body while the response waits for it. The check reads the string's own
+  # length, so a String subclass's bytesize cannot move it either way.
   it "rejects a write of 2 GiB or more before queuing it" do
     from = peer.mark
+    lying = Class.new(String) { def bytesize = 1 << 31 }
+    big = "\0".b * (1 << 31)
     exchange("ok") do |call|
-      big = +"x"
-      big.define_singleton_method(:bytesize) { 1 << 31 }
       expect { call.write(big) }.to raise_error(ArgumentError, "A streaming write must be smaller than 2 GiB")
+      expect(call.write(lying.new(envelope))).to be_nil
     end
-    expect(peer.since(from).grep(/\Araw request /)).to eq([])
+    expect(peer.since(from).grep(/\Araw request .* n=/).size).to eq(1)
+  ensure
+    big = nil
+  end
+
+  # Forced teardown fires `shutdown` before it aborts the connection that
+  # drops the upload, so a write in flight after the whole response arrived
+  # raises a forced phrase, never the generic one. The hold parks teardown
+  # between the two; the write must already have its forced phrase then.
+  it "raises a forced phrase from a write in flight when forced teardown ends the stream" do
+    transport = hyper
+    native_driver = driver(transport)
+    native_driver.hold("force:shutdown", 10)
+    from = peer.mark
+    writer = nil
+    closer = nil
+    exchange("end-on-data:status:0:open", transport: transport) do |call|
+      call.write(envelope)
+      peer.wait_event(/\Araw ended end-on-data:status:0:open /, from: from)
+      call.response_head(timeout: 5)
+      expect(read_all(call)).to eq(["".b, nil])
+      writer = Thread.new do
+        Thread.current.report_on_exception = false
+        write_until_raised(call)
+      end
+      wait_parked(writer, "Exchange#write")
+      closer = Thread.new { transport.close(grace: 0) }
+      wait_until("forced teardown parked after shutdown") { native_driver.reached("force:shutdown") == 1 }
+      expect(outcome(writer.value)).to eq(["unavailable", "HTTP transport failed: connection closed"])
+      native_driver.release("force:shutdown")
+      expect(closer.value).to be(false)
+    end
+  ensure
+    native_driver&.release("force:shutdown")
+    closer&.join(10)
   end
 
   # The reader holds the receive half, so the write cannot look at the body:
@@ -271,6 +307,15 @@ RSpec.describe "Streaming writes after the stream ended", :interop do
       socket.close_write
     end
 
+    # A chunked head, then a malformed chunk size: the client's body fails
+    # with a phrase no dropped upload gives.
+    def malformed(socket)
+      socket.write("HTTP/1.1 200 OK\r\ncontent-type: application/connect+proto\r\ntransfer-encoding: chunked\r\n\r\n" \
+                   "zz\r\n")
+    end
+
+    def malformed_response = ["unavailable", "HTTP transport failed: malformed response"]
+
     def h1_exchange(server, headers: {}, &)
       request = request("h1", grpc: false, origin: "http://127.0.0.1:#{server.addr[1]}")
       request.headers.merge!(headers)
@@ -286,22 +331,33 @@ RSpec.describe "Streaming writes after the stream ended", :interop do
 
     # hyper's HTTP/1.1 body channel hands its error out once, so whichever
     # operation consumes it keeps it for the next.
+    # The write raises the body error when its look at the response found
+    # it, or the HTTP/1.1 fallback when the response was not there yet.
     it "keeps a body error a write consumed for the next read" do
-      @server, @served = h1_server { |socket| truncated(socket) }
+      @server, @served = h1_server { |socket| malformed(socket) }
       h1_exchange(@server) do |call|
-        expect(outcome(write_until_raised(call))).to eq(connection_closed)
+        expect(outcome(write_until_raised(call))).to eq(malformed_response).or eq(connection_closed)
         expect(call.response_head(timeout: 5).status).to eq(200)
-        expect(outcome(read_all(call).last)).to eq(connection_closed)
+        expect(outcome(read_all(call).last)).to eq(malformed_response)
       end
     end
 
     it "keeps a body error a read consumed for the next write" do
-      @server, @served = h1_server { |socket| truncated(socket) }
+      @server, @served = h1_server { |socket| malformed(socket) }
       h1_exchange(@server) do |call|
         call.write(envelope)
         expect(call.response_head(timeout: 5).status).to eq(200)
-        expect(outcome(read_all(call).last)).to eq(connection_closed)
+        expect(outcome(read_all(call).last)).to eq(malformed_response)
+        expect(outcome(write_until_raised(call))).to eq(malformed_response)
+      end
+    end
+
+    it "raises the body error of a response that ended without a chunk" do
+      @server, @served = h1_server { |socket| truncated(socket) }
+      h1_exchange(@server) do |call|
         expect(outcome(write_until_raised(call))).to eq(connection_closed)
+        expect(call.response_head(timeout: 5).status).to eq(200)
+        expect(outcome(read_all(call).last)).to eq(connection_closed)
       end
     end
 

@@ -55,6 +55,9 @@ fn failure_error(ruby: &Ruby, failure: Failure) -> Error {
     }
 }
 
+/// One streaming write's limit (`Call::write`).
+const MAX_WRITE: usize = 1 << 31;
+
 fn arg_error(ruby: &Ruby, message: &'static str) -> Error {
     Error::new(ruby.exception_arg_error(), message)
 }
@@ -528,6 +531,15 @@ impl Call {
         data: RString,
         timeout: Option<f64>,
     ) -> Result<Value, Error> {
+        // h2 refuses a DATA chunk above its 2^31 - 1 byte window outright,
+        // which would drop the request body while the response still waits
+        // for it. Checked on the string's own length, before any copy.
+        if data.len() >= MAX_WRITE {
+            return Err(arg_error(
+                ruby,
+                "A streaming write must be smaller than 2 GiB",
+            ));
+        }
         let state = rb_self.state(ruby)?;
         let mut send = state
             .send
