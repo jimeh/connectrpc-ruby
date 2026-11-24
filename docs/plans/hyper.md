@@ -521,7 +521,9 @@ cause, abort in a masked `ensure`. Rust owns connections, streams and waits.
   the OS refuses a worker thread during a cold start, tokio panics and the
   closer raises `fatal`. Close starts the runtime before it claims teardown,
   so that close claims and stops nothing, the transport stays closing, and a
-  later close starts teardown. `Tracker::spawn` likewise starts the runtime
+  later close starts teardown. A closer whose helper thread could not start
+  retries once itself, and raises the `fatal` after the outcome if that retry
+  starts teardown. `Tracker::spawn` likewise starts the runtime
   before it takes its lock, and `Driver::open` before admission, because each
   stream operation takes a stream half before it drives. A call or stream
   whose runtime start fails raises `fatal` the same way and leaves nothing

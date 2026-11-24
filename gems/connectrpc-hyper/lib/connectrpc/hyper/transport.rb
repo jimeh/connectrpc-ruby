@@ -219,7 +219,8 @@ module ConnectRPC
       # close raises only after teardown published its outcome, except the
       # `fatal` of a runtime that could not start, before teardown started.
       # That `fatal` passes this rescue (Ruby rescues a native `fatal` only
-      # after an ensure) and leaves through the ensure, recording nothing.
+      # after an ensure) and leaves through the ensure, which records an
+      # outcome only if another closer's teardown already published one.
       def await_teardown(driver, grace)
         outcome = nil
         begin

@@ -340,6 +340,9 @@ impl Driver {
         let core = rb_self.owned(ruby)?.clone();
         let http2 = core.config.settings.http2;
         let spec = request_spec(ruby, "POST", &url, pairs, kind, grpc, proxy, http2)?;
+        // Before the runtime starts: Ruby measured `timeout` before this call,
+        // so a slow cold start must not extend the deadline sent to the peer.
+        let deadline = instant(timeout);
         // Each operation on the call takes a stream half before it drives. A
         // runtime start that panicked there would drop the half and leave the
         // exchange unusable, so the runtime starts here, before admission.
@@ -351,7 +354,7 @@ impl Driver {
             core,
             spec,
             require_h2,
-            instant(timeout),
+            deadline,
             cancel.signal.clone(),
             inflight,
         );
