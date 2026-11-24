@@ -89,7 +89,8 @@ RSpec.shared_examples "completion progress observation" do
     root
   end
 
-  it "keeps independent interruptions and stored failure through actual child cleanup" do
+  # The target's own failure is its task's to report: no join raises it.
+  it "keeps independent interruptions through actual child cleanup without raising the target's failure" do
     reactor do |task|
       entered = Async::Queue.new
       releases = Array.new(2) { Async::Queue.new }
@@ -107,12 +108,13 @@ RSpec.shared_examples "completion progress observation" do
       2.times { entered.dequeue }
       first = RuntimeError.new("first independent interruption")
       joiner = task.async(finished: false) do
-        completion_join(root, failure: true)
+        completion_join(root)
       rescue Exception => e # rubocop:disable Lint/RescueException -- preserve each caller's own outcome
         e
       end
       competitor = task.async(finished: false) do
-        completion_join(root, failure: true)
+        completion_join(root)
+        :joined
       rescue StandardError => e
         e
       end
@@ -124,10 +126,9 @@ RSpec.shared_examples "completion progress observation" do
       expect([joiner, competitor]).to all(satisfy { |entry| !entry.finished? })
       releases.first.enqueue(true)
       expect(joiner.wait).to equal(first)
-      expect(competitor.wait).to equal(failure)
+      expect(competitor.wait).to eq(:joined)
       expect(root).to be_finished
-      expect(completion_join(root)).to equal(failure)
-      expect { completion_join(root, failure: true) }.to(raise_error { |error| expect(error).to equal(failure) })
+      expect { completion_join(root) }.not_to raise_error
       expect(completion_state(root)).to be_nil
     ensure
       releases&.each { |release| release.enqueue(true) }

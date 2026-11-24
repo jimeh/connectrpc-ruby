@@ -36,6 +36,7 @@ PROXY_ENV = %w[HTTP_PROXY http_proxy HTTPS_PROXY https_proxy NO_PROXY no_proxy R
 
 RSpec.configure do |config|
   config.include AsyncHelpers
+  config.include TeardownHelpers
   config.include AsyncHostingHelpers
   config.include ConnectionPeer
   config.include ThreadedHelpers

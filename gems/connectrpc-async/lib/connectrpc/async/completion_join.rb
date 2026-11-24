@@ -170,9 +170,10 @@ module ConnectRPC
 
         # A join retains its caller's first interruption until the target has
         # actually finished, then raises it. An interruptible join raises it at
-        # once and leaves the target running on its own.
-        def self.call(task, failure: false, interruptible: false)
-          interruption = stored_failure = nil
+        # once and leaves the target running on its own. A target's or child's
+        # own failure is never raised: the task that failed reports it.
+        def self.call(task, interruptible: false)
+          interruption = nil
           pending = [[task, false, {}.compare_by_identity]]
           begin
             yield if block_given?
@@ -190,7 +191,6 @@ module ConnectRPC
               entry[1] = true
             rescue Exception => e # rubocop:disable Lint/RescueException -- repeated interruption cannot abandon retirement
               if target.failed? && target.result.equal?(e)
-                stored_failure ||= e if (failure && target.equal?(task)) || !e.is_a?(StandardError)
                 entry[1] = true
               else
                 raise if interruptible
@@ -243,7 +243,6 @@ module ConnectRPC
             end
           end
           raise interruption if interruption
-          raise stored_failure if stored_failure
 
           task.result
         end

@@ -598,16 +598,18 @@ ends and leaves the remaining connections to `Close`.
    existing exception: it closes listening sockets before it cancels and joins
    their accept loops.
 4. Teardown failures don't become caller outcomes. A close reports whether it
-   drained or forced.
+   drained or forced. A failed step never skips a later one and is written as
+   a warning that names only its class.
 5. Wire behavior keeps its precision: the two-phase GOAWAY,
    `RST_STREAM(CANCEL)`, the cleanup allowance, write watchdogs and raw-first
    retirement. Whether a drain succeeded should depend on whether its streams
    finished in time, not on how the peer left afterwards.
 
-Some code predates rules 1, 4 and 5: joins rank interruptions against stored
-failures, `Host` raises a failed teardown's error, and a drain whose streams
-finished still reports false when the peer's EOF doesn't arrive within its
-grace. Rule 3 may let most of the private completion join go.
+Some code predates rules 1 and 5: `Host#start`'s startup cleanup and
+`Host#wait` keep an interrupted caller until the exit task finishes, and a
+drain whose streams finished still reports false when the peer's EOF doesn't
+arrive within its grace. Rule 3 may let most of the private completion join
+go.
 [#200](https://github.com/jimeh/connectrpc-ruby/issues/200) tracks these.
 
 ## RPC lifecycle observation

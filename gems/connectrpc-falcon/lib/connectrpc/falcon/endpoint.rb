@@ -1,5 +1,7 @@
 # frozen_string_literal: true
 
+require_relative "completion_join"
+
 module ConnectRPC
   module Falcon
     # HTTPS describes the listener without compiling TLS in the parent process.
@@ -57,9 +59,11 @@ module ConnectRPC
         end
       end
 
+      # Stops every accept task whatever an earlier stop raised.
       def stop
-        @listeners.each_key(&:stop)
+        listeners = @listeners.keys
         @listeners.clear
+        Teardown.finish(listeners.map { |listener| Teardown.capture { listener.stop } })
       end
 
       private

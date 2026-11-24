@@ -520,12 +520,13 @@ module ConnectRPC
         launch = !@cleanup
         if launch
           @aborted = true
-          @cleanup = ::Async::Task.new(@lifetime, transient: true, finished: false) { retire }
+          # The cleanup task reports its own failure; no joiner raises it.
+          @cleanup = ::Async::Task.new(@lifetime, transient: true, finished: false) { Teardown.run { retire } }
         end
         if owned
           @cleanup.run if launch
         else
-          join(@cleanup, failure: true, interruptible: interruptible) { @cleanup.run if launch }
+          join(@cleanup, interruptible: interruptible) { @cleanup.run if launch }
         end
         nil
       end
@@ -706,10 +707,10 @@ module ConnectRPC
       end
 
       # Local counterpart of the private Async helper; no shared public utility.
-      def join(task, failure: false, interruptible: false)
+      def join(task, interruptible: false)
         return unless task
 
-        CompletionJoin.call(task, failure: failure, interruptible: interruptible) { yield if block_given? }
+        CompletionJoin.call(task, interruptible: interruptible) { yield if block_given? }
       end
     end
     private_constant :HTTP1Resource

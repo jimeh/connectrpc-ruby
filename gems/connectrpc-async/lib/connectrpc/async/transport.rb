@@ -586,7 +586,9 @@ module ConnectRPC
       end
 
       # An abort joins connection retirement in the caller's fiber, where the
-      # caller's own timeout is retained. Its other failures fail a unary call.
+      # caller's own timeout is retained. Retirement reports its own failure,
+      # so a unary call fails with the cleanup error that led to the abort;
+      # any other abort failure, such as a join's, still fails a unary call.
       def abort_failed(operation, error, interruptions)
         if Internal.foreign_timeout?(error)
           interruptions << error
@@ -602,7 +604,7 @@ module ConnectRPC
           Internal.wait(waiter, expires)
         rescue ::Async::TimeoutError
           # An expired grace forces the same teardown as an abort, which
-          # reports its own first failure; the closer's abort is then a no-op.
+          # reports its own failures; the closer's abort is then a no-op.
           return abort_owned
         ensure
           Internal.cancel(waiter)
@@ -613,10 +615,10 @@ module ConnectRPC
         finish_closed(graceful)
       end
 
-      # Every connection fails its raw socket before anything here can yield.
-      # Each later step runs whatever an earlier one raised, was interrupted
-      # by or changed, and the first interruption, otherwise the first
-      # failure, is raised once the transport has closed.
+      # Every connection fails its raw socket before anything here can yield,
+      # a failure's warning included. Each later step runs whatever an earlier
+      # one raised, was interrupted by or changed. Failures are reported, and
+      # only the first interruption is raised once the transport has closed.
       def abort_owned
         return if @aborting
 
@@ -624,17 +626,15 @@ module ConnectRPC
         @state = :closing unless @state == :closed
         resources = @resources.dup
         resources.each { |resource| resource.send(:fail_raw) }
-        failures = [Internal::Teardown.capture { @manager&.close }]
-        failures.concat((resources | @resources).map { |resource| Internal::Teardown.capture { resource.abort } })
+        escapes = [Internal::Teardown.capture { @manager&.close }]
+        escapes.concat((resources | @resources).map { |resource| Internal::Teardown.capture { resource.abort } })
         @calls.each_key.to_a.each do |operation|
-          failures << Internal::Teardown.capture { Internal.cancel(operation[:task]) }
+          escapes << Internal::Teardown.capture { Internal.cancel(operation[:task]) }
         end
-        failures << Internal::Teardown.capture { @manager&.finish }
+        escapes << Internal::Teardown.capture { @manager&.finish }
         finish_closed(false) unless @state == :closed
-        failure = Internal::Teardown.first(failures)
-        stopped = Internal::Teardown.capture { Internal.cancel(@lifetime) }
-        failure ||= stopped
-        raise failure if failure
+        escapes << Internal::Teardown.capture { Internal.cancel(@lifetime) }
+        Internal::Teardown.finish(escapes)
       end
     end
   end

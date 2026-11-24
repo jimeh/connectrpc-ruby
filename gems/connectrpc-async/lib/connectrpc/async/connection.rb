@@ -1390,12 +1390,15 @@ module ConnectRPC
             # EOF after our own raw failure is not the peer's.
             peer_left = !@raw_failed && @connection&.reader_task&.current? && empty?
             @abort_during_drain = true if @drain_task && !@drained && !peer_left
-            @cleanup = ::Async::Task.new(@lifetime, transient: true, finished: false) { retire(error) }
+            # The cleanup task reports its own failure; no joiner raises it.
+            @cleanup = ::Async::Task.new(@lifetime, transient: true, finished: false) do
+              Internal::Teardown.run { retire(error) }
+            end
           end
           if owned
             start_cleanup if launch
           else
-            Internal.join_complete(@cleanup, failure: true, interruptible: interruptible) { start_cleanup if launch }
+            Internal.join_complete(@cleanup, interruptible: interruptible) { start_cleanup if launch }
           end
           nil
         end

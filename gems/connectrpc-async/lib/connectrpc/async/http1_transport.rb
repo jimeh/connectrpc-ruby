@@ -655,17 +655,21 @@ module ConnectRPC
         interruption
       end
 
-      def retire_idle(resource)
-        interruption = abort_resource(resource)
+      # Acquisition retains the first escape. Close paths pass `teardown`:
+      # they report a failure and retain only an interruption.
+      def retire_idle(resource, teardown: false)
+        escapes = [abort_resource(resource)]
         begin
           resource.close
         rescue Exception => e # rubocop:disable Lint/RescueException -- finish idle accounting after raw disposal, retaining the first interruption
-          interruption ||= e
+          escapes << e
         end
         resource.finish!
         @idle.delete(resource)
         @leases.delete(resource)
         @progress.signal
+        escapes.map! { |error| Internal::Teardown.escape(error) } if teardown
+        interruption = escapes.compact.first
         raise interruption if interruption
       end
 
@@ -673,8 +677,9 @@ module ConnectRPC
         waiter = @lifetime.async(finished: false) { @progress.wait until @calls.empty? }
         begin
           Internal.wait(waiter, expires)
-          @idle.dup.each { |resource| retire_idle(resource) }
+          escapes = @idle.dup.map { |resource| Internal::Teardown.capture { retire_idle(resource, teardown: true) } }
           @idle.clear
+          Internal::Teardown.finish(escapes)
           finish_closed(true)
         rescue ::Async::TimeoutError
           force_operations
@@ -685,26 +690,21 @@ module ConnectRPC
         end
       end
 
+      # Forces every lease, admitted operation and idle connection whatever
+      # an earlier one raised. Failures are reported, and only the closer's
+      # first interruption is raised after all disposition.
       def force_operations
         @forced = true
-        interruption = nil
-        @leases.dup.each do |resource|
-          pending = abort_resource(resource)
-          interruption ||= pending
-        end
+        # Every lease fails its raw socket before a failure's warning can yield.
+        escapes = @leases.dup.map { |resource| abort_resource(resource) }
+        escapes.map! { |error| Internal::Teardown.escape(error) }
         operations = @calls.keys
-        operations.each do |operation|
-          cleanup(operation)
-        rescue Exception => e # rubocop:disable Lint/RescueException -- force every admitted operation before propagating the closer's interruption
-          interruption ||= e
-        end
+        operations.each { |operation| escapes << Internal::Teardown.capture { cleanup(operation) } }
         @idle.dup.each do |resource|
-          retire_idle(resource)
-        rescue Exception => e # rubocop:disable Lint/RescueException -- an interrupted idle close cannot bypass remaining resources
-          interruption ||= e
+          escapes << Internal::Teardown.capture { retire_idle(resource, teardown: true) }
         end
         @progress.signal
-        raise interruption if interruption
+        Internal::Teardown.finish(escapes)
       end
 
       def abort_owned
@@ -712,15 +712,13 @@ module ConnectRPC
 
         @aborting = true
         @state = :closing unless @state == :closed
-        begin
-          force_operations
-        ensure
-          # force_operations retains interruptions until all disposition ends.
-          if @state != :closed && @leases.empty? && @calls.keys.all? { |operation| operation[:cleanup_complete] }
-            finish_closed(false)
-          end
-          Internal.cancel(@lifetime) if @state == :closed
+        # force_operations retains interruptions until all disposition ends.
+        escapes = [Internal::Teardown.capture { force_operations }]
+        if @state != :closed && @leases.empty? && @calls.keys.all? { |operation| operation[:cleanup_complete] }
+          finish_closed(false)
         end
+        escapes << Internal::Teardown.capture { Internal.cancel(@lifetime) } if @state == :closed
+        Internal::Teardown.finish(escapes)
       end
 
       def check_request!(request)

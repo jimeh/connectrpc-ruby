@@ -27,6 +27,7 @@ IO::Buffer.new(1).free
 
 RSpec.configure do |config|
   config.include AsyncHelpers
+  config.include TeardownHelpers
   config.include FalconHelpers
   config.order = :random
   config.disable_monkey_patching!
