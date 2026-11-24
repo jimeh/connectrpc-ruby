@@ -269,6 +269,10 @@ These affect the Async HTTP/2 and HTTP/1 client transports and the core
   control-frame writes and the `too_many_pings` GOAWAY keep their 100 ms
   bounds. See the
   [cleanup allowance](../gems/connectrpc-async/README.md#cleanup-allowance).
+- A `ThreadedTransport` stream operation that waited out its deadline plus
+  the allowance for a stalled owner thread also ends the stream's exit wait.
+  A block that rescues that `deadline_exceeded` and returns now gets it raised
+  from the call at once, instead of after another allowance.
 
 These affect native HTTP/2 connections of the Async `Transport`,
 `ThreadedTransport`, `Host` and `ServerSession` and the Falcon server.

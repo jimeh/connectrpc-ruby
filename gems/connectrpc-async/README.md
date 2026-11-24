@@ -941,7 +941,12 @@ each `response_head`, `read`, `write`, `close_send`, `finish` and, for gRPC,
   fails with `deadline_exceeded`, or with `unavailable` for its own timeout, and
   the stream is reset when the owner resumes.
 - A normal block exit waits for the owner's actual outcome, bounded only by the
-  deadline as unary calls are. A gRPC cleanup failure after the block returns
+  deadline as unary calls are. Since 0.3.0, once an operation's wait has
+  expired at the deadline plus the allowance, the block exit's wait ends at
+  that same point rather than one allowance after it starts. A block that
+  rescues the operation's `deadline_exceeded` and returns therefore adds no
+  second allowance for a stalled owner, and still takes an outcome the owner
+  has already published. A gRPC cleanup failure after the block returns
   reaches the caller as `unavailable`; the caller never reports success
   without the owner's outcome.
 - An exception, `Timeout`, `Thread#raise`, `Thread#kill`, `break` or `throw`
@@ -1092,14 +1097,16 @@ and bidi streaming before any I/O.
   start, and the close always gives the owner at least one allowance from
   its start. An owner that responds is therefore joined even when the close
   starts long after the deadline, for example after a stream block that
-  kept working past it. A stalled owner, for example blocked in native code,
-  holds the call one allowance past the deadline for each such wait: two for
-  a unary call, or for a stream whose block ends when its deadline error
-  arrives. A stream block that rescues that error and returns at once adds
-  the stream's own terminal wait, up to a third. The owner exits once it
-  resumes. Beyond those bounds, an owner that has already published its
-  outcome and is exiting, for example while it waits for the GVL, is still
-  joined, which can take up to another allowance. With a custom `Deadline`
+  kept working past it. A stream's terminal wait ends sooner once one of its
+  operations has waited out the deadline plus the allowance: it ends with
+  that operation's wait. A stalled owner, for example blocked in
+  native code, holds the call one allowance past the deadline for each such
+  wait: two for a unary call, or for a stream whose block ends when its
+  deadline error arrives, whether the block lets that error propagate or
+  rescues it and returns at once. The owner exits once it resumes. Beyond
+  those bounds, an owner that has already published its outcome and is
+  exiting, for example while it waits for the GVL, is still joined, which
+  can take up to another allowance. With a custom `Deadline`
   clock, each wait converts the remaining time it reads when it starts to
   monotonic time, so the bounds hold against that reading rather than the
   custom clock.

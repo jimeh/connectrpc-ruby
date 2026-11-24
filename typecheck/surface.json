@@ -756,6 +756,8 @@
     "ConnectRPC::Async::ThreadedTransport::Stream#commands": {"kind":"attribute","visibility":"public","classification":"internal"},
     "ConnectRPC::Async::ThreadedTransport::Stream#exited": {"kind":"attribute","visibility":"public","classification":"internal"},
     "ConnectRPC::Async::ThreadedTransport::Stream#exited=": {"kind":"attribute","visibility":"public","classification":"internal"},
+    "ConnectRPC::Async::ThreadedTransport::Stream#expired_at": {"kind":"attribute","visibility":"public","classification":"internal"},
+    "ConnectRPC::Async::ThreadedTransport::Stream#expired_at=": {"kind":"attribute","visibility":"public","classification":"internal"},
     "ConnectRPC::Async::ThreadedTransport::Stream#finished": {"kind":"attribute","visibility":"public","classification":"internal"},
     "ConnectRPC::Async::ThreadedTransport::Stream#finished=": {"kind":"attribute","visibility":"public","classification":"internal"},
     "ConnectRPC::Async::ThreadedTransport::Stream#grpc": {"kind":"attribute","visibility":"public","classification":"internal"},

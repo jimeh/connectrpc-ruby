@@ -13,9 +13,10 @@ module ConnectRPC
 
       # One stream's mailbox. Admission, settle and release follow Call; the
       # command queue, reply slot and flags change only under the admission lock.
+      # +expired_at+ is the bound of the first wait that ended at the deadline.
       class Stream < Call
         attr_reader :grpc, :commands
-        attr_accessor :seq, :reply, :busy, :broken, :exited, :aborted, :finished
+        attr_accessor :seq, :reply, :busy, :broken, :exited, :aborted, :finished, :expired_at
 
         def initialize(request, source, proxy, grpc)
           super(request, 0, source, proxy)
@@ -25,6 +26,7 @@ module ConnectRPC
           @seq = 0
           @reply = nil
           @busy = @broken = @exited = @aborted = @finished = false
+          @expired_at = nil
         end
       end
       private_constant :Stream
@@ -416,12 +418,16 @@ module ConnectRPC
       # deadline or the operation timeout plus the cleanup allowance, or the
       # cancellation allowance; nil bounds wait until a signal or interrupt. An
       # operation also ends once the scope took or abandoned the stream.
+      # Once a wait expired at the deadline, later waits on the stream share
+      # its bound, so a stalled owner costs the stream one allowance past the
+      # deadline rather than one per wait.
       def await_stream(stream, request, seq: nil, timeout: nil)
         now = Internal.now
         deadline = now + request.deadline.remaining + Internal::CLEANUP_SECONDS if request.deadline
         expires = now + timeout + Internal::CLEANUP_SECONDS if timeout
         lock = stream.engine.admission.lock
         lock.synchronize do
+          deadline = stream.expired_at || deadline
           loop do
             if seq && stream.reply&.first == seq
               _, reply = stream.reply
@@ -433,7 +439,11 @@ module ConnectRPC
 
             now = Internal.now
             return [:canceled] if stream.cancel_expires && stream.cancel_expires <= now
-            return [:deadline] if deadline && deadline <= now
+
+            if deadline && deadline <= now
+              stream.expired_at ||= deadline
+              return [:deadline]
+            end
             return [:timeout] if expires && expires <= now
 
             limit = [deadline, expires, stream.cancel_expires].compact.min
