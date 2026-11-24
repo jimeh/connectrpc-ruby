@@ -468,6 +468,12 @@ completes, and later closers wait for and return the published outcome.
 Without a fiber scheduler, or on a blocking fiber, a closer defers
 `Thread#kill` until `close` returns.
 
+The first close in a process can be the first use of the native runtime. If
+the OS refuses the runtime's threads then, `close` raises Ruby's `fatal` before
+teardown starts, and the transport stays closing: later calls still fail with
+`HTTP transport admission is closed`, and a later `close` starts teardown and
+returns its outcome.
+
 ## License
 
 MIT. The extension links third-party Rust crates under their own licenses,

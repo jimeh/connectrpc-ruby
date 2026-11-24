@@ -608,6 +608,10 @@ fn wait_bodies() -> (usize, usize) {
     gvl::wait_bodies()
 }
 
+fn fail_runtime_starts(count: usize) {
+    runtime::fail_starts(count);
+}
+
 #[magnus::init]
 fn init(ruby: &Ruby) -> Result<(), Error> {
     let connectrpc = ruby.define_module("ConnectRPC")?;
@@ -619,6 +623,7 @@ fn init(ruby: &Ruby) -> Result<(), Error> {
     native.define_singleton_method("active_waits", function!(active_waits, 0))?;
     native.define_singleton_method("resumed_waits", function!(resumed_waits, 0))?;
     native.define_singleton_method("wait_bodies", function!(wait_bodies, 0))?;
+    native.define_singleton_method("fail_runtime_starts", function!(fail_runtime_starts, 1))?;
 
     let cancel: RClass = native.define_class("Cancel", ruby.class_object())?;
     cancel.define_singleton_method("new", function!(Cancel::new, 0))?;

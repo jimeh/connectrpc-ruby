@@ -11,7 +11,7 @@ use std::future::Future;
 use std::mem::ManuallyDrop;
 use std::pin::Pin;
 use std::ptr;
-use std::sync::atomic::{AtomicPtr, Ordering};
+use std::sync::atomic::{AtomicPtr, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll};
 
@@ -31,9 +31,23 @@ struct Slot {
 /// The current process's runtime, or a leaked parent's, or null.
 static RUNTIME: AtomicPtr<Slot> = AtomicPtr::new(ptr::null_mut());
 
+/// Cold starts a spec asked to fail (`fail_starts`).
+static FAIL_STARTS: AtomicUsize = AtomicUsize::new(0);
+
+/// For specs: the next `count` cold starts in this process panic as tokio
+/// does when the OS refuses a worker thread.
+pub fn fail_starts(count: usize) {
+    FAIL_STARTS.store(count, Ordering::SeqCst);
+}
+
 /// The process runtime, created on first use (never when a transport is
 /// built) and recreated in a forked child. Concurrent cold callers each build
 /// one; the compare-and-swap elects a winner and losers shut theirs down.
+///
+/// A cold start panics when the OS refuses a worker thread (tokio panics
+/// inside `build`), and the panic reaches Ruby as `fatal`. Call this before
+/// claiming anything a panic would leave claimed, such as a lock or a
+/// one-shot flag, so a later caller can retry the start.
 pub fn handle() -> Handle {
     let me = pid();
     let mut current = RUNTIME.load(Ordering::Acquire);
@@ -44,6 +58,12 @@ pub fn handle() -> Handle {
             if slot.pid == me {
                 return slot.runtime.handle().clone();
             }
+        }
+        if FAIL_STARTS
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1))
+            .is_ok()
+        {
+            panic!("OS can't spawn worker thread: failure injected by a spec");
         }
         let runtime = Builder::new_multi_thread()
             .worker_threads(2)
@@ -272,6 +292,9 @@ impl Tracker {
     where
         F: Future<Output = ()> + Send + 'static,
     {
+        // Before the lock: a failed runtime start panics, and unwinding with
+        // the lock held would deadlock in `Finished::drop`.
+        let runtime = handle();
         // The lock spans the spawn, so a task that ends at once removes an
         // entry that already exists, and `seal` waits for a registration in
         // progress, then aborts it.
@@ -289,7 +312,7 @@ impl Tracker {
             tracker: self.clone(),
             id,
         };
-        let join = handle().spawn(Tracked {
+        let join = runtime.spawn(Tracked {
             future: Box::pin(future),
             _finished: finished,
         });

@@ -357,4 +357,35 @@ RSpec.describe "Transport#close" do
   ensure
     cleanup&.call
   end
+
+  # A fresh process, so this close is the runtime's first use. The injected
+  # start failure panics as tokio does when the OS refuses a worker thread.
+  it "lets a later close start teardown after the first close failed to start the runtime" do
+    output, status = ruby_child(<<~RUBY, timeout: 30)
+      transport = ConnectRPC::Hyper::Transport.new
+      driver = transport.send(:driver)
+      ConnectRPC::Hyper.const_get(:Native).fail_runtime_starts(1)
+      first = begin
+        transport.close(grace: 1)
+      rescue Exception => e # rubocop:disable Lint/RescueException
+        [e.class.name, e.message]
+      end
+      admission = begin
+        transport.send(:driver)
+      rescue ConnectRPC::Error => e
+        e.message
+      end
+      closer = Thread.new { transport.close(grace: 1) }
+      second = closer.join(10) ? closer.value : :still_waiting
+      p [first, admission, driver.close_outcome, second]
+      # A stuck native close defers interrupts, so a normal exit would wait on it.
+      exit!(0)
+    RUBY
+    expect(status).to be_success
+    first, admission, outcome, second = eval(output.lines.last) # rubocop:disable Security/Eval
+    expect(first).to eq(["fatal", "OS can't spawn worker thread: failure injected by a spec"])
+    # The transport stays closing between the two closes.
+    expect(admission).to eq("HTTP transport admission is closed")
+    expect([outcome, second]).to eq([true, true])
+  end
 end
