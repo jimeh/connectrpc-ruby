@@ -36,11 +36,11 @@ Add `connectrpc-on-rails` and your chosen protobuf binding dependency to your
 application Gemfile:
 
 ```ruby
-gem "connectrpc-on-rails", "~> 0.2.0"
+gem "connectrpc-on-rails", "~> 0.3.0"
 gem "google-protobuf", ">= 4.36.2", "< 5"
 ```
 
-Runtime dependencies are `connectrpc ~> 0.2.0`, `connectrpc-rack ~> 0.2.0`, and
+Runtime dependencies are `connectrpc ~> 0.3.0`, `connectrpc-rack ~> 0.3.0`, and
 `actionpack >= 8.0.5.1, < 8.2`. The Rack package supplies the
 `rack >= 3.2.7, < 4` requirement. The application chooses its controller base,
 binding, authentication, and security policy.

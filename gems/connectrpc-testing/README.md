@@ -33,11 +33,11 @@ Add the gem to your development or test group:
 
 ```ruby
 group :development, :test do
-  gem "connectrpc-testing", "~> 0.2.0"
+  gem "connectrpc-testing", "~> 0.3.0"
 end
 ```
 
-The runtime dependency is only `connectrpc ~> 0.2.0`; Google protobuf and a
+The runtime dependency is only `connectrpc ~> 0.3.0`; Google protobuf and a
 test framework are application choices.
 
 ## Usage
