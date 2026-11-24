@@ -469,12 +469,14 @@ Without a fiber scheduler, or on a blocking fiber, a closer defers
 `Thread#kill` until `close` returns.
 
 The first close in a process can be the first use of the native runtime. If
-the OS refuses the runtime's threads then, `close` raises Ruby's `fatal`
+the OS refuses the runtime's first thread then, `close` raises Ruby's `fatal`
 without starting teardown, and the transport stays closing: later calls still
 fail with `HTTP transport admission is closed`, and a later `close` starts
 teardown and returns its outcome. A closer whose helper thread could not start
 either retries once, and if that starts teardown, it raises the `fatal` after
-the outcome is published, as it does with an interrupt.
+the outcome is published, as it does with an interrupt. If the OS refuses only
+the runtime's second worker thread, tokio does not recover, and that first
+close or call never returns.
 
 ## License
 
