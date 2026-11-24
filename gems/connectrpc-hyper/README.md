@@ -115,13 +115,15 @@ One HTTP/2 connection per origin and transport admits new calls. When there
 is none, the transport starts one dial for the origin, owned by the transport
 rather than by any call, and every caller that finds no connection waits for
 that dial. As in a grpc-go channel, its outcome is the same for every waiter:
-the new connection, or the failure. A pooled connection that closes before
-its waiters check it out fails them as the dial would have, with that
-connection's failure, instead of dialing again, as grpc-go fails a call whose
-connection failed while it waited. So a server that ends every connection
-right after its handshake, such as a TLS 1.3 server rejecting a missing
-client certificate, cannot keep a caller dialing until its deadline. A
-waiter's own deadline, cancellation or interrupt ends only its wait. A call
+the new connection, or the failure. A pooled connection that ends before the
+server's HTTP/2 preface (its SETTINGS frame) fails the dial's waiters with
+that connection's failure instead of dialing again, as grpc-go treats a
+transport that never received the server preface as a failed connection
+attempt. So a server that ends every connection right after its handshake,
+such as a TLS 1.3 server rejecting a missing client certificate, cannot keep
+a caller dialing until its deadline. A connection that closes or drains
+after the preface, such as one that received a graceful GOAWAY, was working:
+its waiters dial again, as grpc-go re-picks a transport. A waiter's own deadline, cancellation or interrupt ends only its wait. A call
 with a short deadline fails `deadline_exceeded` while the dial carries on and
 pools its connection for later calls. A second HTTP/2 connection never replaces a usable pooled one:
 it serves only the call that dialed it, then closes. hyper multiplexes calls

@@ -360,6 +360,39 @@ RSpec.describe "Connection pooling" do
     end
   end
 
+  # The pool dial's connection parks at dial:pooled until the server's
+  # graceful GOAWAY, sent after its SETTINGS, has ended it. That connection
+  # started HTTP/2, so its waiter dials again, as grpc-go re-picks after a
+  # ready transport drains, instead of failing as a connection that ended
+  # before the server's SETTINGS does (tls_spec.rb).
+  it "redials for a pool dial's waiter whose connection drained after the server's SETTINGS" do
+    from = peer.mark
+    transport = hyper
+    native_driver = driver(transport)
+    native_driver.hold("dial:pooled", 10)
+    %w[socket:drop dial:started wire:settings].each { |point| native_driver.hold(point, 0) }
+    origin = peer["raw_goaway"]
+    call = Thread.new do
+      raw_call(origin, "ok", transport: transport, protocol: :connect, timeout: 10).message
+    rescue ConnectRPC::Error => e
+      [e.code, e.message]
+    end
+    wait_until("the pooled connection read the server's SETTINGS") do
+      %w[dial:pooled wire:settings].all? { |point| native_driver.reached(point) == 1 }
+    end
+    wait_until("a GOAWAY was sent to the pooled connection") do
+      peer.command("raw-goaway rawgo")
+      peer.count(/\Arawgo goaway-sent /, from: from).positive?
+    end
+    wait_until("the pooled connection closed") { native_driver.reached("socket:drop") == 1 }
+    native_driver.release("dial:pooled")
+    expect(call.value).to eq(MSG.new)
+    expect(%w[dial:started wire:settings].map { |point| native_driver.reached(point) }).to eq([2, 2])
+    expect(accepts("rawgo", from)).to eq(2)
+  ensure
+    %w[dial:pooled socket:drop dial:started wire:settings].each { |point| native_driver&.release(point) }
+  end
+
   describe "HTTP/1.1" do
     it "keeps at most two clean idle connections per origin and reuses them" do
       arrived = Queue.new

@@ -52,7 +52,7 @@ pub type Sent = Pin<Box<dyn Future<Output = Result<Response, Unanswered<HyperErr
 /// every request it held (see `conn::Dispatcher`).
 pub fn send(
     lease: &mut Lease,
-    mut request: hyper::Request<CallBody>,
+    request: hyper::Request<CallBody>,
     holds: &Holds,
 ) -> (Sent, Option<Arc<Mark>>) {
     if request.method() == http::Method::CONNECT {
@@ -60,7 +60,6 @@ pub fn send(
         lease.disable_wire();
     }
     let mark = lease.mark();
-    request.body_mut().set_mark(mark.clone());
     let closed = lease
         .closed()
         .expect("a lease holds its connection")
@@ -68,16 +67,22 @@ pub fn send(
     let http1 = !lease.is_h2();
     // Spec hold point: armed, it counts the request and keeps it, body
     // included, until the point is released, never handing it to hyper, as a
-    // stranded envelope stays in the channel while a sender lives.
+    // stranded envelope stays in the channel while a sender lives. The kept
+    // request carries no mark: nothing indexes it, and a mark would tie the
+    // driver's holds to themselves (mark, wire, holds) if the driver were
+    // dropped while the point is armed.
     let promise: Promise = match holds.keep("request:strand", request) {
         None => Box::pin(std::future::pending()),
-        Some(request) => match lease {
-            Lease::H2 { sender, .. } => Box::pin(sender.try_send_request(request)),
-            Lease::H1 { conn, .. } => {
-                let conn = conn.as_mut().expect("HTTP/1.1 lease holds its connection");
-                Box::pin(conn.sender.try_send_request(request))
+        Some(mut request) => {
+            request.body_mut().set_mark(mark.clone());
+            match lease {
+                Lease::H2 { sender, .. } => Box::pin(sender.try_send_request(request)),
+                Lease::H1 { conn, .. } => {
+                    let conn = conn.as_mut().expect("HTTP/1.1 lease holds its connection");
+                    Box::pin(conn.sender.try_send_request(request))
+                }
             }
-        },
+        }
     };
     let taken = mark.clone();
     // hyper's HTTP/1.1 dispatcher answers every request it took when it is

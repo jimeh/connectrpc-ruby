@@ -31,6 +31,9 @@
 //! itself failed its stream for a GOAWAY; any other replay needs proof that
 //! the request's HEADERS never reached the socket. Anything the record cannot
 //! vouch for answers "no".
+//!
+//! The tap also records that the server started HTTP/2 (its first non-ACK
+//! SETTINGS frame, RFC 9113 3.4), for the pool dial's waiters (pool.rs).
 use std::io;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
@@ -46,6 +49,8 @@ const HEAD: usize = 9;
 const NONE: u32 = u32::MAX;
 
 const HEADERS: u8 = 0x1;
+const SETTINGS: u8 = 0x4;
+const ACK: u8 = 0x1;
 const GOAWAY: u8 = 0x7;
 const CONTINUATION: u8 = 0x9;
 
@@ -60,6 +65,12 @@ pub struct Wire {
     /// The highest client stream id whose HEADERS frame header h2 offered to
     /// the socket. It only grows, so one read answers "may it be sent".
     offered: AtomicU32,
+    /// The server started HTTP/2: the tap read a non-ACK SETTINGS frame from
+    /// it, its connection preface. Also set when the server-frame reader lost
+    /// its place first, so the record never claims a preface was missing
+    /// when it cannot tell. `disabled` does not touch it: CONNECT and the
+    /// client-frame reader leave server frames readable.
+    started: AtomicBool,
     holds: Arc<Holds>,
 }
 
@@ -70,6 +81,7 @@ impl Wire {
             disabled: AtomicBool::new(false),
             goaway: AtomicU32::new(NONE),
             offered: AtomicU32::new(0),
+            started: AtomicBool::new(false),
             holds,
         })
     }
@@ -81,6 +93,22 @@ impl Wire {
     /// A GOAWAY arrived: the connection admits nothing more.
     pub fn going_away(&self) -> bool {
         self.goaway.load(Ordering::SeqCst) != NONE
+    }
+
+    /// The server's preface arrived, or the reader can no longer tell (see
+    /// `started`). A connection that ends before it never was an HTTP/2
+    /// connection: a TLS 1.3 server rejecting the client's certificate sends
+    /// its alert where its SETTINGS would be.
+    pub fn server_started(&self) -> bool {
+        self.started.load(Ordering::SeqCst)
+    }
+
+    fn record_started(&self) {
+        if !self.started.swap(true, Ordering::SeqCst) {
+            // Spec hold point: armed with a zero bound, it counts the
+            // connections whose server preface the tap read.
+            self.holds.block("wire:settings");
+        }
     }
 
     fn record_goaway(&self, last: u32) -> bool {
@@ -224,18 +252,24 @@ impl Frames {
                 break;
             }
             self.have = 0;
-            self.server_header();
+            self.server_header(wire);
             if self.remaining == 0 {
                 self.end_goaway(wire);
             }
         }
         if self.broken {
             wire.disable();
+            // The reader stops here: it can no longer vouch that no SETTINGS
+            // follows.
+            wire.started.store(true, Ordering::SeqCst);
         }
     }
 
-    fn server_header(&mut self) {
-        let (length, kind, _, stream) = parse(&self.header);
+    fn server_header(&mut self, wire: &Wire) {
+        let (length, kind, flags, stream) = parse(&self.header);
+        if kind == SETTINGS && flags & ACK == 0 {
+            wire.record_started();
+        }
         if kind == GOAWAY && (stream != 0 || length < 8) {
             // Not a GOAWAY anyone can read a last stream id from.
             self.broken = true;
@@ -416,5 +450,45 @@ impl<T: AsyncWrite + Unpin> AsyncWrite for Tap<T> {
 
     fn poll_shutdown(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
         Pin::new(&mut self.get_mut().inner).poll_shutdown(cx)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn frame(kind: u8, flags: u8, stream: u32, payload: &[u8]) -> Vec<u8> {
+        let length = u32::try_from(payload.len())
+            .expect("small payload")
+            .to_be_bytes();
+        let mut bytes = vec![length[1], length[2], length[3], kind, flags];
+        bytes.extend_from_slice(&stream.to_be_bytes());
+        bytes.extend_from_slice(payload);
+        bytes
+    }
+
+    fn read(frames: &[Vec<u8>]) -> Arc<Wire> {
+        let wire = Wire::new(Arc::default());
+        let mut reader = Frames::new(0);
+        for bytes in frames {
+            // One byte at a time: headers split across reads still count.
+            for byte in bytes {
+                reader.read(&wire, std::slice::from_ref(byte));
+            }
+        }
+        wire
+    }
+
+    #[test]
+    fn a_server_settings_frame_starts_http2_and_its_ack_does_not() {
+        assert!(!read(&[frame(SETTINGS, ACK, 0, &[])]).server_started());
+        assert!(read(&[frame(SETTINGS, 0, 0, &[0, 3, 0, 0, 0, 100])]).server_started());
+    }
+
+    #[test]
+    fn a_reader_that_lost_its_place_cannot_vouch_for_a_missing_preface() {
+        let wire = read(&[frame(GOAWAY, 0, 1, &[0; 8])]);
+        assert!(wire.server_started());
+        assert!(wire.disabled.load(Ordering::SeqCst));
     }
 }

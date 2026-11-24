@@ -217,22 +217,25 @@ RSpec.describe "TLS parity" do
 
   # The pool dial's connection is pooled, then parks at dial:pooled until the
   # server's rejection has ended it (its socket dropped), before the waiter
-  # checks it out. The waiter fails as that connection did instead of dialing
-  # again: a server that ends every connection after its handshake would
-  # otherwise keep a pooled caller dialing until its deadline (#208).
+  # checks it out. The rejection came where the server's SETTINGS would have
+  # (wire:settings never counts one), so the waiter fails as that connection
+  # did instead of dialing again: a server that ends every connection after
+  # its handshake would otherwise keep a pooled caller dialing until its
+  # deadline (#208). pool_spec.rb covers a connection that closes after the
+  # server's SETTINGS, which redials.
   it "fails a pool dial's waiter with its connection's failure when that connection closed before checkout" do
     transport = hyper(ca_file: File.join(peer.certs, "ca.pem"))
     native_driver = driver(transport)
     native_driver.hold("dial:pooled", 10)
-    %w[socket:drop dial:started].each { |point| native_driver.hold(point, 0) }
+    %w[socket:drop dial:started wire:settings].each { |point| native_driver.hold(point, 0) }
     call = Thread.new { failure(peer["connect_mtls"], transport) }
     wait_until("the pooled connection closed") { native_driver.reached("socket:drop") == 1 }
     native_driver.release("dial:pooled")
     expect(call.value).to eq(["unavailable", "HTTP transport failed: connection closed"])
       .or eq(["unavailable", "HTTP transport failed: TLS error"])
-    expect(native_driver.reached("dial:started")).to eq(1)
+    expect(%w[dial:started wire:settings].map { |point| native_driver.reached(point) }).to eq([1, 0])
   ensure
-    %w[dial:pooled socket:drop dial:started].each { |point| native_driver&.release(point) }
+    %w[dial:pooled socket:drop dial:started wire:settings].each { |point| native_driver&.release(point) }
   end
 
   it "accepts a leaf-first chain with an intermediate" do

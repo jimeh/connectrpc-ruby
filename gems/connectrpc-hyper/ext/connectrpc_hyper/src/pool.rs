@@ -8,15 +8,15 @@
 //! HTTP/2 dial at a time, a task the driver owns. Its outcome is decided only
 //! by the dial and by `close`, never by a caller, and every caller that waited
 //! for it gets the same outcome: a pooled connection to check out (a waiter
-//! that finds it already closed, and nothing else usable, fails as that
-//! connection would have), HTTP/1.1 (the clean connection is parked idle;
-//! each waiter then uses a usable pooled or idle connection, else dials its
-//! own), or the failure. A caller decides to use a connection, or else to
-//! join or start the dial, under one lock. It waits under its own deadline,
-//! cancellation and interrupts, and leaving changes nothing about the dial,
-//! whose per-address budget splits `connect_timeout` alone. A dial still
-//! running when its transport is garbage collected ends within
-//! `connect_timeout`.
+//! that finds it ended before the server's HTTP/2 preface, and nothing else
+//! usable, fails as that connection would have), HTTP/1.1 (the clean
+//! connection is parked idle; each waiter then uses a usable pooled or idle
+//! connection, else dials its own), or the failure. A caller decides to use
+//! a connection, or else to join or start the dial, under one lock. It waits
+//! under its own deadline, cancellation and interrupts, and leaving changes
+//! nothing about the dial, whose per-address budget splits `connect_timeout`
+//! alone. A dial still running when its transport is garbage collected ends
+//! within `connect_timeout`.
 //!
 //! Unshared dials run inside one call, bounded by the earlier of
 //! `connect_timeout` and the call deadline: per-call mode, `http2: false`
@@ -115,7 +115,7 @@ struct Dial {
 enum Outcome {
     /// The pool has a usable HTTP/2 connection: check it out. It names the
     /// connection this dial pooled, if the pool kept it.
-    Pooled(Option<Arc<H2Conn>>),
+    Pooled(Option<Dialed>),
     /// TLS negotiated HTTP/1.1. The connection is parked idle, if it fits;
     /// waiters claim again without sharing a dial.
     Http1,
@@ -193,11 +193,6 @@ impl H2Conn {
     fn usable(&self) -> bool {
         !self.sender.is_closed() && !self.shared.closed.fired() && !self.wire.going_away()
     }
-
-    /// What a call that found this connection unusable reports.
-    fn failure(&self) -> Failure {
-        self.fault.resolve(Failure::closed())
-    }
 }
 
 struct ConnShared {
@@ -206,6 +201,33 @@ struct ConnShared {
     generation: AtomicU64,
     idle: Notify,
     closed: Arc<Signal>,
+    /// The pool evicted it as unusable. hyper may close its sender before
+    /// `closed` fires; this keeps that verdict for `Dialed`, which has none.
+    retired: AtomicBool,
+}
+
+/// A connection the pool kept, without its hyper sender: an outcome a slow
+/// waiter has yet to claim must not keep an evicted connection open (the
+/// idle reaper relies on the pool's sender being the last one).
+#[derive(Clone)]
+struct Dialed {
+    shared: Arc<ConnShared>,
+    wire: Arc<Wire>,
+    fault: Arc<TlsFault>,
+}
+
+impl Dialed {
+    /// The connection's failure when it closed or stopped admitting before
+    /// the server's HTTP/2 preface (its SETTINGS): a failed connection
+    /// attempt, as grpc-go treats a transport that never received the server
+    /// preface. None while it admits or once the server started HTTP/2.
+    fn failure(&self) -> Option<Failure> {
+        // Ended first: a preface read before the end is then always seen.
+        let ended = self.shared.retired.load(Ordering::SeqCst)
+            || self.shared.closed.fired()
+            || self.wire.going_away();
+        (ended && !self.wire.server_started()).then(|| self.fault.resolve(Failure::closed()))
+    }
 }
 
 struct IdleH1 {
@@ -636,8 +658,9 @@ impl DriverCore {
         // nor dials after a pool dial negotiated HTTP/1.1.
         let mut share = self.config.settings.http2;
         // The connection the pool dial this caller waited for pooled. One that
-        // closed before this caller checks it out fails the caller instead of
-        // starting another dial (see `claim`), so dials stay bounded.
+        // ended before the server's HTTP/2 preface fails the caller instead
+        // of starting another dial (see `claim`), so a server that rejects
+        // every connection cannot keep it dialing.
         let mut waited = None;
         loop {
             let dial = match self.claim(&entry, require_h2, exclude, share, waited.take())? {
@@ -775,20 +798,23 @@ impl DriverCore {
     /// lock.
     ///
     /// `waited` is the connection the pool dial this caller waited for
-    /// pooled. If it closed before this checkout and nothing else here is
-    /// usable, the caller fails as that connection would have failed its
-    /// call, as grpc-go fails a call whose connection failed while it waited,
-    /// instead of dialing again: a server that ends every connection right
-    /// after its handshake (a TLS 1.3 server rejecting a missing client
-    /// certificate) would otherwise keep a caller dialing until its deadline.
-    /// Callers that did not wait for that dial evict it and dial as usual.
+    /// pooled. If it ended before the server's HTTP/2 preface and nothing
+    /// else here is usable, the caller fails as that connection would have
+    /// failed its call, instead of dialing again: grpc-go treats a transport
+    /// that never received the server preface as a failed connection
+    /// attempt, and a server that ends every connection right after its
+    /// handshake (a TLS 1.3 server rejecting a missing client certificate)
+    /// would otherwise keep a caller dialing until its deadline. One that
+    /// drains or closes after the preface was a working connection: as
+    /// grpc-go re-picks, the caller joins or starts another dial, as do
+    /// callers that did not wait for that dial.
     fn claim(
         self: &Arc<Self>,
         entry: &Arc<OriginEntry>,
         require_h2: bool,
         exclude: Option<u64>,
         share: bool,
-        waited: Option<Arc<H2Conn>>,
+        waited: Option<Dialed>,
     ) -> Result<Claim, Failure> {
         let mut state = entry.state.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(conn) = state.h2.as_ref() {
@@ -816,6 +842,7 @@ impl DriverCore {
                 }));
             }
             // Stops admitting; its in-flight streams drain on their own.
+            conn.shared.retired.store(true, Ordering::SeqCst);
             state.h2 = None;
         }
         // Taking a connection out of the idle list drops its timer.
@@ -833,8 +860,8 @@ impl DriverCore {
                 entry: Some(entry.clone()),
             }));
         }
-        if let Some(waited) = waited.filter(|conn| !conn.usable()) {
-            return Err(waited.failure());
+        if let Some(failure) = waited.and_then(|conn| conn.failure()) {
+            return Err(failure);
         }
         if !share {
             return Ok(Claim::Dial);
@@ -873,7 +900,7 @@ impl DriverCore {
                         self.pool_h2(entry, sender, closed, wire, fault, local_port, id, 1)
                     })
                     .map(|conn| Active {
-                        shared: conn.shared.clone(),
+                        shared: conn.shared,
                     });
                 Ok(Lease::H2 {
                     sender,
@@ -915,7 +942,8 @@ impl DriverCore {
     }
 
     /// Pools an HTTP/2 connection already held by `active` calls and starts
-    /// its reaper; returns it, or None when it was not pooled.
+    /// its reaper; returns its sender-free record, or None when it was not
+    /// pooled.
     /// Checked under the lock begin_close clears the pool with: a connection
     /// dialed for a call admitted before close serves only that call, then
     /// closes with it. So does one dialed while a usable connection is pooled
@@ -933,28 +961,36 @@ impl DriverCore {
         local_port: u16,
         id: u64,
         active: usize,
-    ) -> Option<Arc<H2Conn>> {
+    ) -> Option<Dialed> {
         let shared = Arc::new(ConnShared {
             id,
             active: AtomicUsize::new(active),
             generation: AtomicU64::new(1),
             idle: Notify::new(),
             closed,
+            retired: AtomicBool::new(false),
         });
-        let conn = Arc::new(H2Conn {
-            sender,
+        let dialed = Dialed {
             shared: shared.clone(),
-            local_port,
-            wire,
-            fault,
-        });
+            wire: wire.clone(),
+            fault: fault.clone(),
+        };
         {
             let mut state = entry.state.lock().unwrap_or_else(|e| e.into_inner());
             let pooled = state.h2.as_ref().is_some_and(|current| current.usable());
             if self.is_closing() || pooled {
                 return None;
             }
-            state.h2 = Some(conn.clone());
+            let replaced = state.h2.replace(Arc::new(H2Conn {
+                sender,
+                shared: shared.clone(),
+                local_port,
+                wire,
+                fault,
+            }));
+            if let Some(replaced) = replaced {
+                replaced.shared.retired.store(true, Ordering::SeqCst);
+            }
         }
         if let Some(timeout) = self.config.idle_timeout {
             self.tracker.spawn(reap(
@@ -965,7 +1001,7 @@ impl DriverCore {
                 self.holds.clone(),
             ));
         }
-        Some(conn)
+        Some(dialed)
     }
 
     /// Returns an HTTP/1.1 connection once hyper reports it ready for the
