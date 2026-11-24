@@ -183,9 +183,9 @@ pub struct RecvHalf {
     buffer: Bytes,
     pub trailers: Option<http::HeaderMap>,
     done: bool,
-    /// The head's failure, or a body error a write consumed (`probe`): the
-    /// outcome stays here for the operations after it, since hyper hands
-    /// out a delivery, and an HTTP/1.1 body error, only once.
+    /// The head's failure, or a body error `read` or a write's `probe`
+    /// consumed: the outcome stays here for the operations after it, since
+    /// hyper hands out a delivery, and an HTTP/1.1 body error, only once.
     failed: Option<Failure>,
     /// The response's connection's TLS failure record, for body errors.
     fault: Arc<TlsFault>,
@@ -496,19 +496,25 @@ impl CallState {
         Ok(())
     }
 
-    /// Why a write found the stream ended. Waits for `respond` to publish the
-    /// response's outcome, inside the write, so the write's deadline,
-    /// cancellation, abort, shutdown and interrupt waits bound it. That wait
-    /// is short: hyper drops the body only once the stream closed (HTTP/2)
-    /// or the connection ended (HTTP/1.1), which also resolves the response,
-    /// and while a retry runs the replacement body holds the receiver, so
-    /// the channel stays open. A failure the response side does not know
-    /// yet is the generic `ended`, recomputed by the next write.
+    /// Why a write found the stream ended. On HTTP/2, and for a stranded
+    /// request, waits for `respond` to publish the response's outcome,
+    /// inside the write, so the write's deadline, cancellation, abort,
+    /// shutdown and interrupt waits bound it. That wait is short: hyper's
+    /// HTTP/2 pipe drops the body only once the stream closed, which also
+    /// resolves the response; a stranded request's failure is published
+    /// right after `stranded` fires; and while a retry runs the replacement
+    /// body holds the receiver, so the channel stays open. HTTP/1.1 does not
+    /// wait: hyper also drops a body that reached its declared
+    /// Content-Length while the response is still pending. A failure the
+    /// response side does not know yet is the generic `ended`, recomputed by
+    /// the next write.
     async fn ended(self: &Arc<Self>, send: &mut SendHalf) -> Failure {
         if let Some(failure) = &send.ended {
             return failure.clone();
         }
-        self.responded.wait().await;
+        if self.is_h2() || self.stranded.fired() {
+            self.responded.wait().await;
+        }
         // A failed head is known even while a reader holds the receive half.
         if let Some(failure) = self.head_failure.get() {
             return failure.clone();
@@ -567,7 +573,6 @@ impl CallState {
                 break;
             };
             if let Err(failure) = apply(recv, frame) {
-                recv.failed = Some(failure.clone());
                 return Some(failure);
             }
         }
@@ -637,7 +642,8 @@ impl CallState {
 const PROBE_POLLS: usize = 8;
 
 /// Applies one response body frame to `recv`, as `read` and `probe` both
-/// consume the body.
+/// consume the body. A body error stays on `recv` for the operations after
+/// it: hyper's HTTP/1.1 body hands it out once.
 fn apply(
     recv: &mut RecvHalf,
     frame: Option<Result<Frame<Bytes>, hyper::Error>>,
@@ -652,7 +658,11 @@ fn apply(
                 }
             }
         },
-        Some(Err(error)) => return Err(recv.fault.failure(&error)),
+        Some(Err(error)) => {
+            let failure = recv.fault.failure(&error);
+            recv.failed = Some(failure.clone());
+            return Err(failure);
+        }
     }
     Ok(())
 }

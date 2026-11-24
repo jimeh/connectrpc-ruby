@@ -449,7 +449,8 @@ connectrpc-async and grpc-go do. The write in flight when the stream ends may
 still return, since its bytes were already queued. The write raises the
 stream's own failure when the response side already knows it: a reset before
 the response head, or after the head with no unread response data, raises the
-reset as mapped above, and a failed HTTP/1.1 response raises its failure.
+reset as mapped above, and an HTTP/1.1 response failure the client already
+received raises that failure.
 Otherwise the write raises `unavailable` with
 `HTTP transport failed: stream closed`. Core then stops writing and reports the
 server's status from the response, or raises the write's failure when the

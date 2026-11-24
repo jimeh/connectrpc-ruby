@@ -212,33 +212,94 @@ RSpec.describe "Streaming writes after the stream ended", :interop do
     end
   end
 
-  # hyper's HTTP/1.1 body channel hands its error out once, so the write's
-  # look at the body keeps what it consumed for the next read.
-  it "keeps an HTTP/1.1 body error the write consumed for the next read" do
-    server = TCPServer.new("127.0.0.1", 0)
-    served = Thread.new do
-      socket = server.accept
-      while (line = socket.gets("\r\n")) && line != "\r\n"; end
-      # A chunked head, then end of response without a chunk: the client's
-      # body fails, while the server still reads the upload.
+  # A stream the server ends with END_STREAM and no reset stays half-open:
+  # hyper's pipe keeps sending, as connectrpc-async does (a documented
+  # limitation; grpc-go's client resets such a stream itself).
+  it "keeps accepting writes on a half-open stream, then reads the status" do
+    from = peer.mark
+    exchange("end-on-data:status:5:open") do |call|
+      call.write(envelope)
+      peer.wait_event(/\Araw ended end-on-data:status:5:open /, from: from)
+      20.times { call.write(envelope) }
+      call.close_send
+      expect(call.response_head(timeout: 5).status).to eq(200)
+      expect(read_all(call)).to eq(["".b, nil])
+      expect(call.response_trailers["grpc-status"]).to eq(["5"])
+    end
+  end
+
+  describe "over HTTP/1.1" do
+    # One connection: reads the request head, then runs the block with the
+    # socket, then reads the upload until the client goes.
+    def h1_server
+      server = TCPServer.new("127.0.0.1", 0)
+      served = Thread.new do
+        socket = server.accept
+        while (line = socket.gets("\r\n")) && line != "\r\n"; end
+        yield socket
+        loop { socket.readpartial(65_536) }
+      rescue IOError, SystemCallError
+        nil
+      ensure
+        socket&.close
+      end
+      [server, served]
+    end
+
+    # A chunked head, then end of response without a chunk: the client's
+    # body fails, while the server still reads the upload.
+    def truncated(socket)
       socket.write("HTTP/1.1 200 OK\r\ncontent-type: application/connect+proto\r\ntransfer-encoding: chunked\r\n\r\n")
       socket.close_write
-      loop { socket.readpartial(65_536) }
-    rescue IOError, SystemCallError
-      nil
+    end
+
+    def h1_exchange(server, headers: {}, &)
+      request = request("h1", grpc: false, origin: "http://127.0.0.1:#{server.addr[1]}")
+      request.headers.merge!(headers)
+      hyper(http2: false).open_stream(request, &)
+    end
+
+    after do
+      @server&.close
+      @served&.join(5)
+    end
+
+    def connection_closed = ["unavailable", "HTTP transport failed: connection closed"]
+
+    # hyper's HTTP/1.1 body channel hands its error out once, so whichever
+    # operation consumes it keeps it for the next.
+    it "keeps a body error a write consumed for the next read" do
+      @server, @served = h1_server { |socket| truncated(socket) }
+      h1_exchange(@server) do |call|
+        # The write raises the body error when its look at the response
+        # finds it, or the generic phrase before the response arrived.
+        expect(outcome(write_until_raised(call))).to eq(connection_closed).or eq(closed)
+        expect(call.response_head(timeout: 5).status).to eq(200)
+        expect(outcome(read_all(call).last)).to eq(connection_closed)
+      end
+    end
+
+    it "keeps a body error a read consumed for the next write" do
+      @server, @served = h1_server { |socket| truncated(socket) }
+      h1_exchange(@server) do |call|
+        call.write(envelope)
+        expect(call.response_head(timeout: 5).status).to eq(200)
+        expect(outcome(read_all(call).last)).to eq(connection_closed)
+        expect(outcome(write_until_raised(call))).to eq(connection_closed)
+      end
+    end
+
+    # hyper drops a body that reached its declared Content-Length while the
+    # response is pending, so the write raises without waiting for it.
+    it "raises a write past the declared Content-Length without waiting for the response" do
+      answered = Queue.new
+      @server, @served = h1_server { |_socket| answered.pop }
+      h1_exchange(@server, headers: { "content-length" => ["5"] }) do |call|
+        call.write(envelope)
+        expect(outcome(write_until_raised(call))).to eq(closed)
+      end
     ensure
-      socket&.close
+      answered << :done
     end
-    transport = hyper(http2: false)
-    request = request("h1", grpc: false, origin: "http://127.0.0.1:#{server.addr[1]}")
-    transport.open_stream(request) do |call|
-      error = write_until_raised(call)
-      expect(outcome(error)).to eq(["unavailable", "HTTP transport failed: connection closed"])
-      expect(call.response_head(timeout: 5).status).to eq(200)
-      expect(outcome(read_all(call).last)).to eq(outcome(error))
-    end
-  ensure
-    server&.close
-    served&.join(5)
   end
 end

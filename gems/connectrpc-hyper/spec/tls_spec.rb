@@ -189,7 +189,8 @@ RSpec.describe "TLS parity" do
     # The kept body owns the upload channel's receiver, as a stranded
     # envelope's body stays alive while any sender of its pooled connection
     # does, so nothing ever drains the write.
-    it "returns a writer blocked on a stranded stream and fails the stream at its head" do
+    # A later write fails with that failure (#193).
+    it "returns a writer blocked on a stranded stream, then fails a later write and the head" do
       transport = mtls_transport
       @native_driver.hold("request:strand", 0)
       @native_driver.hold("dispatcher", 10)
@@ -198,11 +199,13 @@ RSpec.describe "TLS parity" do
         headers: { "content-type" => ["application/grpc"], "te" => ["trailers"] }, deadline: ConnectRPC::Deadline.new(5)
       )
       wrote = Queue.new
+      later = Queue.new
       call = Thread.new do
         error_of do
           transport.open_grpc_stream(request) do |exchange|
             exchange.write([0, 0].pack("CN"))
             wrote << :returned
+            later << error_of { exchange.write([0, 0].pack("CN")) }
             exchange.response_head
           end
         end
@@ -211,6 +214,7 @@ RSpec.describe "TLS parity" do
       wait_parked(call, "Exchange#write")
       @native_driver.release("dispatcher")
       expect(wrote.pop(timeout: 10)).to eq(:returned)
+      expect(later.pop(timeout: 10)&.then { |error| [error.code, error.message] }).to eq(closed).or eq(rejected)
       expect(call.value&.then { |error| [error.code, error.message] }).to eq(closed).or eq(rejected)
     end
   end
