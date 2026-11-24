@@ -28,7 +28,7 @@ module ConnectRPC
         connect: "connection failed", connect_timeout: "timed out", timeout: "timed out",
         tls_verify: "TLS verification failed", tls: "TLS error", closed: "connection closed",
         goaway: "connection closed", shutdown: "connection closed", protocol: "malformed response",
-        alpn: "ALPN negotiation failed", reset: "stream reset",
+        alpn: "ALPN negotiation failed", reset: "stream reset", ended: "stream closed",
         # Core NetHTTP's proxy phrases. Proxy reply bytes never reach them.
         proxy_auth: "proxy authentication failed", proxy_refused: "proxy tunnel refused",
         proxy_failed: "proxy tunnel failed", proxy_timeout: "proxy tunnel timed out",

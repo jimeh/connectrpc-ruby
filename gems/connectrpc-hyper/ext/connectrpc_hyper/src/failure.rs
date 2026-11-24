@@ -76,6 +76,13 @@ impl Failure {
         Self::new("closed", "connection closed")
     }
 
+    /// A write after hyper dropped the request body, when the stream's own
+    /// failure is not known: the server ended or reset the stream, or its
+    /// connection ended.
+    pub fn ended() -> Self {
+        Self::new("ended", "request stream ended")
+    }
+
     /// Classifies by type, HTTP/2 code and errno, never by message text. hyper
     /// 1.13 fails a request waiting for a stream slot, when its connection
     /// fails with a code other than NO_ERROR, with only that code

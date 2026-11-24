@@ -109,7 +109,17 @@ stage and reset its stream.
   Rust never calls Ruby from a worker or inside the nogvl body; data crossing
   the offload boundary is `Send`. A wait woken without a pending interrupt
   resumes the same operation state and never repeats a side effect (a
-  `write` enqueues its bytes once, then waits for hyper to pull them). The
+  `write` enqueues its bytes once, then waits for hyper to pull them). A
+  `write` that finds the request body dropped (the stream ended) or the
+  request stranded raises (#193): it waits, inside the same bounded wait, for
+  the response task to publish its outcome, then raises the head's failure,
+  or a body failure it can read without waiting and without taking the
+  receive half from a reader, and otherwise a generic `ended` failure (`stream
+  closed`), which core treats as a send failure and recovers the server's
+  status from. The write in flight when the stream ends returns, as grpc-go's
+  `SendMsg` does once it queued a message. hyper never tells the request body
+  a reset's code, so a gRPC reset behind unread response DATA, or behind a
+  reader holding the receive half, gets the generic failure. The
   read and write directions of one stream progress independently (core allows
   one reader and one writer concurrently, which offload makes real when the
   pool has a worker for each: async builds io-event's pool with one worker by
@@ -287,7 +297,8 @@ stage and reset its stream.
   request still pending then is stranded on HTTP/1.1, and on HTTP/2 only when
   its mark has no index, since an indexed request belongs to h2 and its
   response task, which may still answer it during a graceful GOAWAY. A writer
-  blocked on a stranded body returns, and the head reports the failure.
+  blocked on a stranded body returns, a later write raises the failure, and
+  the head reports it.
   hyper 1.13.0 (hyperium/hyper#4275) changes how a request waiting in its
   HTTP/2 dispatcher for a stream slot fails when its connection fails; 1.12
   reported its dispatcher gone in every case. A connection error with a code
@@ -559,6 +570,7 @@ cause, abort in a masked `ensure`. Rust owns connections, streams and waits.
 | Interrupts | Matrix: DNS (LD_PRELOAD getaddrinfo shim), connect (full backlog), TLS (silent server), blocked write, blocked read; RuntimeError, an Exception subclass, `Thread#kill`; synchronised on parked-thread observation; follow-up call reuses the connection |
 | Teardown | GC and process exit with resolvers parked |
 | Streaming limits | Over-limit message fails `resource_exhausted`; flooding peer bounded by the window; peer that never reads blocks `write` until deadline |
+| Writes after the stream ended | Raw peer ends the stream at the request's first DATA: a gRPC reset before the head, or after it with no unread DATA, makes the next write raise the mapped reset, which the head or body then reports; a status (gRPC trailers or Connect end-stream) or a reply then `RST_STREAM(NO_ERROR)`, and a reset behind unread DATA, raise `stream closed` while the response still reads byte for byte; a Connect reset raises `stream reset`; core's client stream stops at the failing write and reports `not_found` (gRPC and Connect) or `canceled`; a write parks until the response task publishes its outcome (hold point `respond:publish`) and a `Thread#raise` lands there promptly; a reader parked on the same stream gets the reset, never an overlap error; an HTTP/1.1 body error the write consumed is still raised by the next read |
 | Cancellation | Sibling reset with and without DATA in flight on a shared connection; cross-thread `CancellationSource`; per-call deadline; token cancel during DNS/TCP/TLS and while waiting for the shared dial; silent h2 peer bounded by the deadline; the wire timeout after a delayed setup reflects the remaining deadline |
 | Resolver | Several parked lookups, then cancellation, then a lookup of another origin succeeds; GC and exit do not wait |
 | Liveness and restart | Idle pooled connection answers server PINGs; reconnect after idle GOAWAY; GOAWAY with an active stream: the sibling finishes on the draining connection while a new call uses a new one; hard kill and restart on the same port; keepalive: withheld ACK retires the connection and fails in-flight calls `unavailable`, `permit_without_calls` on and off, behaviour with buffered DATA and with BDP pings |

@@ -198,8 +198,8 @@ an HTTP/1.1 connection ends in an upgrade. The transport detects one once the
 dispatcher is gone, as Go's `net/http` watches a connection's close while it
 waits for a response. A Connect unary call treats it as handed back unsent,
 within the retry above. A streaming call, gRPC unary included, fails with its
-connection's failure, since its body cannot be recovered, and a `write`
-blocked on that body returns.
+connection's failure, since its body cannot be recovered. A `write` blocked
+on that body returns, and a later `write` raises that failure.
 
 Nothing else is replayed, so a handler that started never runs twice. After
 a GOAWAY, a stream at or below its last stream id is never replayed; a
@@ -435,12 +435,38 @@ failure as `cause`:
 | `HTTP transport failed: connection closed` | The connection closed, retired or received GOAWAY |
 | `HTTP transport failed: malformed response` | Protocol error |
 | `HTTP transport failed: stream reset` | A Connect stream reset by the server |
+| `HTTP transport failed: stream closed` | A streaming write after the stream ended, when the transport cannot tell why (below) |
 | `HTTP transport admission is closed` | A call after `close`, or one forced teardown ended after its own setup saw `close`, with no `cause` |
 
 A server `RST_STREAM` on a gRPC call maps as connectrpc-async does: codes 3
 and 11 to `resource_exhausted`, 7 to `unavailable`, 8 to `canceled`, 12 to
 `permission_denied` and anything else to `internal`. Deadlines and cancellation
 raise core's `deadline_exceeded` and `canceled` errors first.
+
+A streaming `write` that starts after the server reset the stream, or ended
+its response and the stream, raises instead of discarding the message, as
+connectrpc-async and grpc-go do. The write in flight when the stream ends may
+still return, since its bytes were already queued. The write raises the
+stream's own failure when the response side already knows it: a reset before
+the response head, or after the head with no unread response data, raises the
+reset as mapped above, and a failed HTTP/1.1 response raises its failure.
+Otherwise the write raises `unavailable` with
+`HTTP transport failed: stream closed`. Core then stops writing and reports the
+server's status from the response, or raises the write's failure when the
+response carries no error status. The response side still reads the head,
+every response byte, and the trailers or the reset.
+
+hyper does not tell the request body why the stream ended, which limits this:
+
+- A gRPC reset behind unread response data, or one that arrives while another
+  thread reads the response after its head, makes the write raise
+  `stream closed`. Core then reports `unavailable` where connectrpc-async
+  reports the reset's mapped code. The reader still receives the reset.
+- A response head followed by `RST_STREAM(NO_ERROR)` without a valid status
+  also raises `stream closed`, where connectrpc-async raises `internal`.
+- A server that ends its response without resetting the stream leaves the
+  stream half-open, and writes keep succeeding until the call ends, as they
+  do with connectrpc-async.
 
 `close(grace: 5)` stops admission, lets in-flight calls finish within `grace`,
 then aborts the rest and waits for every connection task. It returns true when
