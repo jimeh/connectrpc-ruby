@@ -283,13 +283,14 @@ pub enum Handshake {
 /// request the dispatcher held is answered. Since hyper 1.13.0 a dispatcher
 /// that shuts down closes its request channel and drains it, waiting for a
 /// send already under way, before its future completes; an HTTP/1.1 upgrade
-/// (a 101 response, or a 2xx reply to CONNECT) completes without that drain.
-/// Dropping the future drains what the channel's receiver can read, and an
-/// HTTP/1.1 in-flight callback or an HTTP/2 request still waiting for a
-/// stream slot answers "connection closed". Unless keepalive timed out, hyper
-/// 1.13 fails such a waiting request before that: with the connection's
-/// code, or a cancellation for NO_ERROR or an error without a code (see
-/// `Failure::from_hyper`).
+/// (a 101 response, or a 2xx reply to CONNECT other than 204) completes
+/// without that drain. Dropping the future drains what the channel's receiver
+/// can read, and an HTTP/1.1 in-flight callback or an HTTP/2 request still
+/// waiting for a stream slot answers "connection closed". When hyper 1.13's
+/// dispatch finds its connection failed while a request waits for a slot,
+/// and keepalive has not timed out, it fails that request first: with the
+/// connection's code, or a cancellation for NO_ERROR or an error without a
+/// code (see `Failure::from_hyper`).
 /// HTTP/2 requests already passed to h2 are answered by their own response
 /// tasks. So once `closed` fires, a pending request the dispatcher never took
 /// is stranded (see `call::send`). It exists before the task does: a sealed

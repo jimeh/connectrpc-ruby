@@ -278,16 +278,16 @@ stage and reset its stream.
   adopting pull request records a reproducer run). The guard below stays as a
   safety net, since the receiver still drops as above for a future dropped
   unfinished (an aborted task) and for an HTTP/1.1 upgrade (a 101 response, or
-  a 2xx reply to CONNECT), which completes without that drain, and the tokio
-  race stays open. Each connection's owner of hyper's connection future fires
-  a signal only after dropping it, which answers every request the dispatcher
-  still held, and `send` races hyper's promise with that signal. After it
-  fires, one more poll, outside tokio's cooperative budget (its oneshot checks
-  the budget before its state), lets a ready answer win; a request still
-  pending then is stranded on HTTP/1.1, and on HTTP/2 only when its mark has
-  no index, since an indexed request belongs to h2 and its response task,
-  which may still answer it during a graceful GOAWAY. A writer blocked on a
-  stranded body returns, and the head reports the failure.
+  a 2xx reply to CONNECT other than 204), which completes without that drain,
+  and the tokio race stays open. Each connection's owner of hyper's connection
+  future fires a signal only after dropping it, which answers every request
+  the dispatcher still held, and `send` races hyper's promise with that
+  signal. After it fires, one more poll, outside tokio's cooperative budget
+  (its oneshot checks the budget before its state), lets a ready answer win; a
+  request still pending then is stranded on HTTP/1.1, and on HTTP/2 only when
+  its mark has no index, since an indexed request belongs to h2 and its
+  response task, which may still answer it during a graceful GOAWAY. A writer
+  blocked on a stranded body returns, and the head reports the failure.
   hyper 1.13.0 (hyperium/hyper#4275) fails a request waiting in its HTTP/2
   dispatcher for a stream slot, when the connection fails with a code other
   than NO_ERROR, with only that code, where 1.12 reported its dispatcher gone
