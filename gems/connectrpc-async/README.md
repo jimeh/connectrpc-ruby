@@ -1101,8 +1101,9 @@ and bidi streaming before any I/O.
   its start. An owner that responds is therefore joined even when the close
   starts long after the deadline, for example after a stream block that
   kept working past it. A stream's terminal wait ends sooner once one of its
-  operations has waited past the deadline without the owner's answer: it
-  ends by the deadline plus the allowance. A stalled owner, for example blocked in
+  operations has waited past the deadline without the owner's answer, and
+  failed with `deadline_exceeded`: it ends by the deadline plus the
+  allowance. A stalled owner, for example blocked in
   native code, holds the call one allowance past the deadline for each such
   wait: two for a unary call, or for a stream whose block ends when its
   deadline error arrives, whether the block lets that error propagate or
