@@ -573,8 +573,8 @@ for the next request when the read reaches EOF. Otherwise the response carries
 unanswered `Expect: 100-continue` request skips the read and closes. Admission
 ends with delivery; the socket is held through the wait. A close or `drain_tls`
 waits for a stalled unary read until its grace, as it does for streaming input.
-Native gRPC over HTTP/1, unhandled paths and Rack fallback keep async-http's
-handling of unread input. Before 0.3.1 async-http
+Native gRPC unary over HTTP/1, unhandled paths and Rack fallback keep
+async-http's handling of unread input. Before 0.3.1 async-http
 answered first and then read a unary remainder with no byte cap, bounded only
 by `idle_timeout`, or, after a partial chunked read, never read it, so the next
 request on that connection waited until `idle_timeout` closed it.

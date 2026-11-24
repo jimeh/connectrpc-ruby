@@ -193,17 +193,19 @@ RSpec.describe "Connect H1 unary unread input" do
     end
   end
 
-  it "reads a safe GET's unread body and keeps the connection" do
+  it "reads the rest of a GET body that core rejected after a partial read, and keeps the connection" do
     reactor do |task|
       events, = observe_wire
       with_host(server, false) do |_, peer, _|
-        # Core reads only enough of a GET body to reject it.
-        peer.write("GET #{AsyncHelpers::ECHO::ECHO.path} HTTP/1.1\r\nHost: localhost\r\n" \
+        # With a valid encoding, core reads one chunk of the body to reject
+        # it, leaving the terminal chunk unread. async-http then waited for
+        # the body to close, and the next request on the connection hung.
+        peer.write("GET #{AsyncHelpers::ECHO::ECHO.path}?encoding=proto&message= HTTP/1.1\r\nHost: localhost\r\n" \
                    "Transfer-Encoding: chunked\r\n\r\n2\r\nab\r\n0\r\n\r\n")
         status, headers, = task.with_timeout(2) { response(peer) }
-        expect(status).to be >= 400
+        expect(status).to eq(415)
         expect(headers["connection"]).not_to include("close")
-        expect(events.map(&:first)).to include(:read)
+        expect(events).to include([:read, nil])
         peer.write("GET /next HTTP/1.1\r\nHost: localhost\r\n\r\n")
         expect(task.with_timeout(2) { peer.head }.first).to eq(404)
       end

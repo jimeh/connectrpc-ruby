@@ -30,8 +30,11 @@ and [rejected HTTP/1 Web input](../gems/connectrpc-falcon/README.md#rejected-htt
   the error instead of a reset. A remainder above the limit, or one that
   stalls, expires or is malformed, still receives the error with
   `Connection: close`, and the connection closes 500 ms after the reply. Before,
-  the connection was reset without a response.
-- When a Connect unary POST or safe GET response is ready before its request
+  the connection was reset without a response. Without a `grpc-timeout`, only
+  each read wait and the 256 KiB limit bound the read, so a client that trickles
+  its upload can hold the request until drain grace or owner shutdown; lower
+  `request_body_timeout` to shorten each wait.
+- When a Connect unary POST or GET response is ready before its request
   body has been read, Falcon now reads up to 256 KiB of the rest before the
   response head, with the same bounds, as Go's `net/http` server does. The
   connection stays open when that read reaches EOF, and otherwise closes after
