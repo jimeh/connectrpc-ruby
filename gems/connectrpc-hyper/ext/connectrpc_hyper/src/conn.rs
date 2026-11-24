@@ -279,10 +279,18 @@ pub enum Handshake {
 }
 
 /// Owns hyper's connection future (the HTTP/1.1 dispatcher, or HTTP/2's
-/// `ClientTask`) and fires `closed` only after dropping it. Dropping it
-/// answers every request the dispatcher still holds: its request channel's
-/// receiver drains what it can read, and an HTTP/1.1 in-flight callback or
-/// an HTTP/2 request waiting for a stream slot answers "connection closed".
+/// `ClientTask`) and fires `closed` only after dropping it. By then every
+/// request the dispatcher held is answered. Since hyper 1.13.0 a dispatcher
+/// that shuts down closes its request channel and drains it, waiting for a
+/// send already under way, before its future completes; an HTTP/1.1 upgrade
+/// (a 101 response, or a 2xx reply to CONNECT other than 204) completes
+/// without that drain. Dropping the future drains what the channel's receiver
+/// can read, and an HTTP/1.1 in-flight callback or an HTTP/2 request still
+/// waiting for a stream slot answers "connection closed". When hyper 1.13's
+/// dispatch finds its connection failed while a request waits for a slot,
+/// and keepalive has not timed out, it fails that request first: with the
+/// connection's code, or a cancellation for NO_ERROR or an error without a
+/// code (see `Failure::from_hyper`).
 /// HTTP/2 requests already passed to h2 are answered by their own response
 /// tasks. So once `closed` fires, a pending request the dispatcher never took
 /// is stranded (see `call::send`). It exists before the task does: a sealed
@@ -292,6 +300,9 @@ struct Dispatcher {
     connection: Option<Pin<Box<dyn Future<Output = ()> + Send>>>,
     closed: Arc<Signal>,
     holds: Arc<Holds>,
+    /// An HTTP/2 connection's stream record, for the `dispatch:returned`
+    /// hold point.
+    wire: Option<Arc<Wire>>,
 }
 
 impl Future for Dispatcher {
@@ -299,7 +310,22 @@ impl Future for Dispatcher {
 
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<()> {
         if let Some(connection) = self.connection.as_mut() {
-            std::task::ready!(connection.as_mut().poll(cx));
+            let polled = connection.as_mut().poll(cx);
+            if polled.is_pending() && self.holds.armed() {
+                if let Some(wire) = &self.wire {
+                    // Spec hold point: armed with a zero bound, it counts the
+                    // dispatch polls that returned with N stream indexes
+                    // taken. hyper takes them in that poll, so the first such
+                    // return means the poll that passed request N to h2 has
+                    // ended; while the connection is up, a request that found
+                    // no stream slot is then parked. Later returns at N say
+                    // nothing more (a closing dispatcher also returns pending
+                    // while it drains).
+                    self.holds
+                        .block(&format!("dispatch:returned:{}", wire.taken()));
+                }
+            }
+            std::task::ready!(polled);
         }
         self.connection = None;
         Poll::Ready(())
@@ -534,7 +560,7 @@ pub async fn connect(
             .map_err(|e| Failure::from_hyper(&e))?;
         registering(holds);
         let closed = Signal::new();
-        spawn_dispatcher(tracker, holds, connection, &closed);
+        spawn_dispatcher(tracker, holds, connection, &closed, Some(wire.clone()));
         Ok(Connected {
             handshake: Handshake::H2 {
                 sender,
@@ -555,7 +581,7 @@ pub async fn connect(
             .map_err(|e| Failure::from_hyper(&e))?;
         registering(holds);
         let closed = Signal::new();
-        let task = spawn_dispatcher(tracker, holds, connection, &closed);
+        let task = spawn_dispatcher(tracker, holds, connection, &closed, None);
         Ok(Connected {
             handshake: Handshake::H1 {
                 sender,
@@ -575,6 +601,7 @@ fn spawn_dispatcher<E>(
     holds: &Arc<Holds>,
     connection: impl Future<Output = Result<(), E>> + Send + 'static,
     closed: &Arc<Signal>,
+    wire: Option<Arc<Wire>>,
 ) -> Task {
     let dispatcher = Dispatcher {
         connection: Some(Box::pin(async move {
@@ -582,6 +609,7 @@ fn spawn_dispatcher<E>(
         })),
         closed: closed.clone(),
         holds: holds.clone(),
+        wire,
     };
     let holds = holds.clone();
     tracker.spawn(async move {

@@ -40,7 +40,7 @@ stage and reset its stream.
   cardinality.
 - hyper's default `max_header_list_size` is 16 KiB, below core's 64 KiB gRPC
   field limit (`GRPCProtocol::FIELD_LIMIT`).
-- hyper keepalive (`hyper-1.12.0/src/proto/h2/ping.rs`): the idle clock resets
+- hyper keepalive (`hyper-1.13.0/src/proto/h2/ping.rs`): the idle clock resets
   on response HEADERS, on DATA and trailers as the body is polled, and on PING
   ACKs. Server PINGs, SETTINGS, WINDOW_UPDATE and buffered but unpolled DATA do
   not reset it. Only the ACK proves liveness; `keep_alive_while_idle` gates
@@ -247,7 +247,7 @@ stage and reset its stream.
   (the lowest last stream id the peer's GOAWAYs name, and the highest client
   stream id whose HEADERS h2 offered to the socket, written or not, since h2's
   `FramedWrite` offers its whole encoded buffer each time) and a body's first
-  `size_hint`, which hyper 1.12's dispatch calls once right before h2 assigns
+  `size_hint`, which hyper 1.13's dispatch calls once right before h2 assigns
   the id, takes the connection's next stream index. The peer's GOAWAY is the
   authority on what it processed, as its REFUSED_STREAM is: the tap follows
   frame lengths as h2 does and does not repeat h2's frame validation, which
@@ -266,21 +266,40 @@ stage and reset its stream.
   A stranded request (#208) also counts as (a) for Connect unary and is
   terminal, with the connection's failure, for streaming. tokio 1.54's
   unbounded `send` checks the channel is open, then pushes; the receiver's
-  drop closes it, then drains what it can read. hyper 1.12 queues each
-  request and its reply callback in that channel, and the dispatcher (the
-  HTTP/1.1 `Dispatcher`, HTTP/2's `ClientTask`) owns the receiver, so a
-  request pushed between the dispatcher's close and drain is never received
-  and its envelope, whose drop would answer it, lives until the connection's
-  last sender drops (the pool and sibling leases keep one). Each connection's
-  owner of hyper's connection future fires a signal only after dropping it,
-  which answers every request the dispatcher still held, and `send` races
-  hyper's promise with that signal. After it fires, one more poll, outside
-  tokio's cooperative budget (its oneshot checks the budget before its
-  state), lets a ready answer win; a request still pending then is stranded
-  on HTTP/1.1, and on HTTP/2 only when its mark has no index, since an
-  indexed request belongs to h2 and its response task, which may still
-  answer it during a graceful GOAWAY. A writer blocked on a stranded body
-  returns, and the head reports the failure.
+  drop closes it, then drains what it can read (tokio-rs/tokio#7714). hyper
+  queues each request and its reply callback in that channel, and the
+  dispatcher (the HTTP/1.1 `Dispatcher`, HTTP/2's `ClientTask`) owns the
+  receiver, so in hyper 1.12 a request pushed between the dispatcher's close
+  and drain is never received and its envelope, whose drop would answer it,
+  lives until the connection's last sender drops (the pool and sibling leases
+  keep one). hyper 1.13.0 (hyperium/hyper#4222, #4242) closes the channel and
+  drains it, waiting for a push under way, before the future of a dispatcher
+  that shuts down completes, so such a dispatcher strands nothing (the
+  adopting pull request records a reproducer run). The guard below stays as a
+  safety net, since the receiver still drops as above for a future dropped
+  unfinished (an aborted task) and for an HTTP/1.1 upgrade (a 101 response, or
+  a 2xx reply to CONNECT other than 204), which completes without that drain,
+  and the tokio race stays open. Each connection's owner of hyper's connection
+  future fires a signal only after dropping it, which answers every request
+  the dispatcher still held, and `send` races hyper's promise with that
+  signal. After it fires, one more poll, outside tokio's cooperative budget
+  (its oneshot checks the budget before its state), lets a ready answer win; a
+  request still pending then is stranded on HTTP/1.1, and on HTTP/2 only when
+  its mark has no index, since an indexed request belongs to h2 and its
+  response task, which may still answer it during a graceful GOAWAY. A writer
+  blocked on a stranded body returns, and the head reports the failure.
+  hyper 1.13.0 (hyperium/hyper#4275) changes how a request waiting in its
+  HTTP/2 dispatcher for a stream slot fails when its connection fails; 1.12
+  reported its dispatcher gone in every case. A connection error with a code
+  other than NO_ERROR now gives the request only that code. A graceful close
+  (NO_ERROR), or an error without a code such as an I/O error, gives a
+  cancellation. A keepalive timeout still gives dispatcher gone. A
+  cancellation and dispatcher gone both read as a closed connection, as
+  before. `Failure::from_hyper` counts the bare code as a connection failure
+  (`goaway`), as h2 reports the error to the connection's other streams and
+  grpc-go reports any connection error (`unavailable`), not as a stream reset;
+  the request still replays when the wire record shows it unprocessed and
+  unsent.
 - D13 `Transport#close(grace: 5) -> bool`, as the Async transports: stops
   admission (later calls fail `unavailable` with
   `HTTP transport admission is closed`), including callers waiting on a dial,
@@ -347,6 +366,13 @@ stage and reset its stream.
   `rbs:package`) build offline from a pre-fetched locked crate cache
   (`cargo fetch --locked`, then `CARGO_NET_OFFLINE=true`). The canary updates
   the lock in a temporary copy, since workflows check the tree stays clean.
+  Exception: Jim approved hyper 1.13.0 (published 2026-11-23) on 2026-11-24, at
+  about one day old, because it fixes hyperium/hyper#4202, the race behind
+  #208, once the release checked out as expected. The adopting pull request's
+  description records that check: crates.io metadata and checksum, the
+  `.crate` against the `v1.13.0` tag's tree, a read of the 1.12.0..1.13.0
+  diff, the lock moving only hyper, and `cargo deny` and `cargo audit`. The
+  exception covers that version only; the next hyper release waits the 7 days.
 - D17 `Keepalive` moves to core as `ConnectRPC::Keepalive` (Since 0.3.0,
   loaded by `require "connectrpc"`), with the same constructor, validation,
   equality and freezing as today's `ConnectRPC::Async::Keepalive`.
@@ -525,7 +551,7 @@ cause, abort in a masked `ensure`. Rust owns connections, streams and waits.
 | Resolver | Several parked lookups, then cancellation, then a lookup of another origin succeeds; GC and exit do not wait |
 | Liveness and restart | Idle pooled connection answers server PINGs; reconnect after idle GOAWAY; GOAWAY with an active stream: the sibling finishes on the draining connection while a new call uses a new one; hard kill and restart on the same port; keepalive: withheld ACK retires the connection and fails in-flight calls `unavailable`, `permit_without_calls` on and off, behaviour with buffered DATA and with BDP pings |
 | Pool | A pool dial's waiter whose pooled connection closed before the server's SETTINGS (TLS 1.3 mTLS rejection) fails with that connection's failure after one dial, with no SETTINGS recorded (#208), while one whose connection drained after the server's SETTINGS (graceful GOAWAY) dials again and succeeds (two dials and accepts); concurrent first callers share one connection; callers before, during and after the pool dial pools its connection share one accept; a pool dial outlives the call that started it and splits `connect_timeout` alone; a failed dial fails every waiter alike and is not cached; an `http/1.1` outcome serves each waiter on a free pooled or idle connection, the dialed one included, or else its own dial, and fails a streaming waiter; close fails pool-dial waiters and ends the dial; `per_call` opens one each; idle timeout closes an idle connection and the next call reconnects; idle eviction racing a checkout never fails the call; HTTP/1.1: two-idle cap, reuse, and an interrupted upload or incomplete response never returns its socket |
-| Retry | With one stream slot held, a GOAWAY replays both the request waiting in h2's slot and the one hyper hands back, each once on a new connection (Connect and gRPC); a Connect unary stream above a GOAWAY's last stream id succeeds once on a new connection while one at or below it fails without a replay; a gRPC stream whose HEADERS were sent, or were offered but not written while the socket was held back, is not replayed; a stranded Connect unary request (held at `request:strand`) is retried once as unsent over HTTP/1.1 and HTTP/2, per-call and pooled, and fails with the connection's TLS or closed failure, while a stranded gRPC stream fails without a retry and releases a blocked `write`; an indexed HTTP/2 stream whose head is withheld still gets its response after the dispatcher ended; a ready answer wins under an exhausted cooperative budget (Rust unit test); derived stream ids match the wire when hyper skips a request canceled in its queue; refused Connect unary retried once; a refusal from a pooled connection that still admits retries on a connection of its own while siblings and later calls keep the pooled one; no second retry; an ambiguous disconnect after the handler started is not replayed (the handler runs once) |
+| Retry | With one stream slot held, a GOAWAY replays both the request waiting in h2's slot and the one hyper hands back, each once on a new connection (Connect and gRPC), while a connection h2 fails itself (DATA on stream 0) fails the request in the slot `unavailable` with the closed phrase and no replay, as the held stream (Connect and gRPC); a Connect unary stream above a GOAWAY's last stream id succeeds once on a new connection while one at or below it fails without a replay; a gRPC stream whose HEADERS were sent, or were offered but not written while the socket was held back, is not replayed; a stranded Connect unary request (held at `request:strand`) is retried once as unsent over HTTP/1.1 and HTTP/2, per-call and pooled, and fails with the connection's TLS or closed failure, while a stranded gRPC stream fails without a retry and releases a blocked `write`; an indexed HTTP/2 stream whose head is withheld still gets its response after the dispatcher ended; a ready answer wins under an exhausted cooperative budget (Rust unit test); derived stream ids match the wire when hyper skips a request canceled in its queue; refused Connect unary retried once; a refusal from a pooled connection that still admits retries on a connection of its own while siblings and later calls keep the pooled one; no second retry; an ambiguous disconnect after the handler started is not replayed (the handler runs once) |
 | Fork | Subprocess with an in-flight stream in another thread, h2c and TLS: child calls work, parent stream intact, parent reuses its connection; fork while the runtime or root cache initialises; parent closes while a long-lived child stays alive (the peer sees the close, or the documented limitation); a transport closed before fork stays closed in the child; a child that inherits a pending close, or never built its own driver, closes at once with `true` and then fails calls with the closed phrase |
 | TLS parity | ca_file appended to native roots; `SSL_CERT_FILE` override; chain/key validation errors name only the input, without a leaking cause; mTLS; name mismatch and IP SAN; provider-rejected identity (Ed448); TLS options on `http://` raise; rustls rejections pinned (CN-only, v1, single-label wildcard, CA as leaf, encrypted key) |
 | Errors | Fixed phrases for refused, DNS, TLS verify, closed, ALPN mismatch, deadline; server RST_STREAM with each mapped code |

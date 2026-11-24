@@ -88,6 +88,59 @@ RSpec.describe "Retries" do
     ensure
       points&.each { |point| native_driver&.release(point) }
     end
+
+    # As above, a queued call waits inside h2 for the one stream slot. The peer
+    # then sends DATA on stream 0, so h2 fails the connection itself with
+    # PROTOCOL_ERROR (its GOAWAY to the peer shows it): no peer GOAWAY disowns
+    # the queued call, so it is not replayed. hyper 1.13.0 fails such a waiting
+    # request with the connection's bare error code (hyperium/hyper#4275, where
+    # 1.12 reported its dispatcher gone); it is a connection failure, as h2
+    # reports it for the held stream, not a stream reset. grpc-go reports a
+    # connection error as unavailable on every stream. request:indexed fires
+    # in the dispatch poll that then calls h2's send_request and parks the
+    # request; the corrupt frame waits for dispatch:returned:2, a dispatch poll
+    # ending with both indexes taken, so it cannot reach h2 before the request
+    # parks (it would then fail through h2's GOAWAY error, which reads the
+    # same, and the pass would not prove the slot path).
+    it "fails a call waiting for a stream slot as a closed connection when h2 fails the connection (#{protocol})" do
+      from = peer.mark
+      transport = hyper
+      native_driver = driver(transport)
+      points = %w[request:indexed dispatch:returned:2 retry:unsent retry:unprocessed]
+      points.each { |point| native_driver.hold(point, 0) }
+      origin = peer["raw_mcs1"]
+      tag = "slot-conn-error-#{protocol}"
+      head = Queue.new
+      held = Thread.new do
+        request = ConnectRPC::StreamRequest.new(
+          url: URI("#{origin}/raw.v1.Raw/Call"), http_method: "POST",
+          headers: { "content-type" => ["application/grpc"], "te" => ["trailers"], "x-scenario" => ["hold:#{tag}"] }
+        )
+        error_of do
+          transport.open_grpc_stream(request) do |exchange|
+            exchange.write([0, 0].pack("CN"))
+            exchange.close_send
+            head << exchange.response_head(timeout: 20).status
+            nil while exchange.read(64, timeout: 20)
+          end
+        end
+      end
+      expect(head.pop(timeout: 10)).to eq(200)
+      queued = Thread.new do
+        error_of { raw_call(origin, "ok", transport: transport, protocol: protocol, timeout: 20) }
+      end
+      wait_until("the queued call parked in h2") { native_driver.reached("dispatch:returned:2") >= 1 }
+      expect(native_driver.reached("request:indexed")).to eq(2)
+      peer.command("raw-corrupt rawmcs1")
+      errors = [queued.value, held.value].map { |error| error && [error.code, error.message] }
+      expect(errors).to all(eq(["unavailable", "HTTP transport failed: connection closed"]))
+      peer.wait_event(/\Arawmcs1 client-goaway code=1\z/, from: from)
+      expect(%w[retry:unsent retry:unprocessed].map { |point| native_driver.reached(point) }).to eq([0, 0])
+      expect(accepts("rawmcs1", from)).to eq(1)
+    ensure
+      points&.each { |point| native_driver&.release(point) }
+      peer.command("release #{tag}") if tag
+    end
   end
 
   # hyper's HTTP/2 dispatcher ends on a GOAWAY once something wakes it: here

@@ -7,7 +7,10 @@ use std::sync::OnceLock;
 pub struct Failure {
     pub kind: &'static str,
     pub detail: String,
-    /// HTTP/2 error code of a received RST_STREAM or GOAWAY.
+    /// HTTP/2 error code of a stream reset or connection error, if any: from
+    /// an RST_STREAM or GOAWAY the peer sent, or the code h2 resets a stream
+    /// or fails the connection with, which can reach a call before h2 writes
+    /// its own frame.
     pub reset: Option<u32>,
     pub errno: Option<i32>,
 }
@@ -73,13 +76,24 @@ impl Failure {
         Self::new("closed", "connection closed")
     }
 
-    /// Classifies by type, HTTP/2 code and errno, never by message text.
+    /// Classifies by type, HTTP/2 code and errno, never by message text. hyper
+    /// 1.13 fails a request waiting for a stream slot, when its connection
+    /// fails with a code other than NO_ERROR, with only that code
+    /// (`ClientTask::poll_dispatch`): an h2 error that is neither a stream
+    /// reset nor a GOAWAY. That is a connection failure, as h2 reports it to
+    /// the connection's other streams. Two other bare codes also count:
+    /// hyper's reset of an HTTP/2 CONNECT reply with status 200 and a nonzero
+    /// Content-Length, which reads "connection closed" rather than "stream
+    /// reset" although only that stream ended (Connect and gRPC never send
+    /// CONNECT), and the
+    /// CANCEL an aborted `CallBody` yields, which the call's abort outcome
+    /// supersedes.
     pub fn from_hyper(error: &hyper::Error) -> Self {
         let mut source = error.source();
         while let Some(inner) = source {
             if let Some(h2e) = inner.downcast_ref::<h2::Error>() {
                 if let Some(reason) = h2e.reason() {
-                    let kind = if h2e.is_go_away() { "goaway" } else { "reset" };
+                    let kind = if h2e.is_reset() { "reset" } else { "goaway" };
                     return Self {
                         kind,
                         detail: format!("HTTP/2 {kind} {}", u32::from(reason)),

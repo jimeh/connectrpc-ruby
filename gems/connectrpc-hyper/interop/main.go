@@ -199,6 +199,9 @@ func control(restart *restartable) {
 				}
 			}
 			rawGoaway(fields[1], last, closeAfter)
+		case "raw-corrupt":
+			// raw-corrupt TAG
+			rawCorrupt(fields[1])
 		case "kill":
 			restart.kill()
 			restart.start()

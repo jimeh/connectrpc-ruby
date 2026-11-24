@@ -191,7 +191,10 @@ within the original deadline and with the wire timeout recomputed:
   `REFUSED_STREAM` or whose stream id is above a GOAWAY's last stream id.
 
 tokio's request channel can keep a request sent just as hyper's dispatcher
-ends: never received and never answered. The transport detects one once the
+ends: never received and never answered. Since hyper 1.13.0 a dispatcher that
+shuts down waits for such a request and hands it back. A request can still be
+stranded when a forced close stops the dispatcher before it finishes, or when
+an HTTP/1.1 connection ends in an upgrade. The transport detects one once the
 dispatcher is gone, as Go's `net/http` watches a connection's close while it
 waits for a response. A Connect unary call treats it as handed back unsent,
 within the retry above. A streaming call, gRPC unary included, fails with its
