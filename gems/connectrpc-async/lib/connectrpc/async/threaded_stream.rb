@@ -13,8 +13,9 @@ module ConnectRPC
 
       # One stream's mailbox. Admission, settle and release follow Call; the
       # command queue, reply slot and flags change only under the admission lock.
-      # +shared_deadline+ is the deadline bound every wait shares once one
-      # ended past the deadline without the owner's answer.
+      # +shared_deadline+ is the deadline bound every wait shares once an
+      # operation ended past the deadline without the owner's answer and
+      # failed with deadline_exceeded.
       class Stream < Call
         attr_reader :grpc, :commands
         attr_accessor :seq, :reply, :busy, :broken, :exited, :aborted, :finished, :shared_deadline

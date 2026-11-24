@@ -938,12 +938,13 @@ each `response_head`, `read`, `write`, `close_send`, `finish` and, for gRPC,
   and each chunk is a new string the caller owns.
 - An operation's wait is bounded by the deadline and by its own timeout, each
   plus the 1-second allowance. If the owner is stalled past that, the operation
-  fails with `deadline_exceeded`, or with `unavailable` for its own timeout, and
-  the stream is reset when the owner resumes.
+  fails with `deadline_exceeded`, or with `unavailable` for its own timeout
+  while the deadline is live, and the stream is reset when the owner resumes.
+  An accepted cancellation keeps its `canceled`.
 - A normal block exit waits for the owner's actual outcome, bounded only by the
   deadline as unary calls are. Since 0.3.1, once an operation's wait has
-  ended past the deadline without the owner's answer, at the deadline or at
-  its own timeout plus the allowance, and the operation failed with
+  ended past the deadline without the owner's answer, at the deadline or its
+  own timeout, each plus the allowance, and the operation failed with
   `deadline_exceeded`, every other wait on the stream ends by the deadline
   plus the allowance. That includes the block exit's wait, even one already
   in progress. An operation that fails with another error, such as an
