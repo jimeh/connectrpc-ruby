@@ -1449,8 +1449,9 @@ Server `Host#close` and `ServerSession#close` return `bool?`:
 - Since 0.3.0 a connection counts as drained once its streams finished within
   the grace, however the peer leaves afterwards. Close still sends the final
   GOAWAY, half-closes and waits for the peer's EOF until the grace ends, then
-  forces retirement, but a peer that never sends EOF, or an abort during that
-  wait, no longer makes the result false. `drain_tls` reports its connections
+  forces retirement, but a peer that never sends EOF, or a connection's own
+  abort during that wait, such as an upkeep bound, no longer makes the result
+  false. A forced close, `close(grace: 0)` or `abort`, still returns false. `drain_tls` reports its connections
   the same way. Before 0.3.0 such a close returned false.
 
 The client `Transport` and `HTTP1Transport` close return types remain `bool`.

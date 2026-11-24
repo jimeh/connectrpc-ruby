@@ -64,6 +64,52 @@ RSpec.describe ConnectRPC::Falcon::Server, "listener teardown failures" do
     end
   end
 
+  # An accept task that yields while it unwinds keeps its socket open until
+  # it has finished, which only the join establishes.
+  it "keeps a socket open until its accept task has finished unwinding" do
+    reactor do |task|
+      sockets = 2.times.flat_map { IO::Endpoint.tcp("127.0.0.1", 0).bound.sockets }
+      endpoint = ConnectRPC::Falcon::Endpoint.parse("http://127.0.0.1:0")
+      endpoint.define_singleton_method(:bound) { |**| IO::Endpoint::BoundEndpoint.new(self, sockets.dup) }
+      host = described_class.new(server: server, endpoint: endpoint)
+      unwinding = Async::Promise.new
+      release = Async::Promise.new
+      allow(host.instance_variable_get(:@session)).to receive(:accept_raw).and_wrap_original do |accept, socket, *rest|
+        accept.call(socket, *rest)
+      rescue Async::Cancel
+        if socket.equal?(sockets[0])
+          unwinding.resolve(true)
+          release.wait
+        end
+        raise
+      end
+      host.run
+      wrapper = host.instance_variable_get(:@accept_wrapper)
+      wait_until(task, "both accept tasks to start") { wrapper.instance_variable_get(:@listeners).size == 2 }
+      held, = wrapper.instance_variable_get(:@listeners).find { |_listener, socket| socket.equal?(sockets[0]) }
+      joined = Async::Promise.new
+      session = host.instance_variable_get(:@session)
+      # async-http's server task also waits on its accept tasks; only the
+      # session closer's wait is the shutdown join.
+      held.define_singleton_method(:wait) do |*args|
+        joined.resolve(true) if session.instance_variable_get(:@closer)&.current?
+        super(*args)
+      end
+      closing = task.async { host.close(grace: 5) }
+      unwinding.wait
+      # The closer either joins the unwinding task or closes its socket first.
+      wait_until(task, "the closer to join the task or close its socket") { joined.resolved? || sockets[0].closed? }
+      expect(sockets[0]).not_to be_closed
+      expect(closing).not_to be_finished
+      release.resolve(true)
+      expect(closing.wait).to be(true)
+      expect(sockets).to all(be_closed)
+    ensure
+      release&.resolve(true)
+      sockets&.each { |socket| AsyncHelpers::INTERNAL.raw_close(socket) }
+    end
+  end
+
   # A worker that ends outside the managed stop aborts in its ensure. A
   # teardown failure there is reported and never replaces how it ended.
   it "keeps a worker's own cancellation when its ensure abort meets a failing teardown step" do
