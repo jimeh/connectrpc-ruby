@@ -96,7 +96,11 @@ RSpec.describe "Retries" do
     # request with the connection's bare error code (hyperium/hyper#4275, where
     # 1.12 reported its dispatcher gone); it is a connection failure, as h2
     # reports it for the held stream, not a stream reset. grpc-go reports a
-    # connection error as unavailable on every stream.
+    # connection error as unavailable on every stream. request:indexed fires
+    # in the dispatch poll right before h2's send_request; were the corrupt
+    # frame processed in that gap, send_request would fail with h2's GOAWAY
+    # error instead, which reads the same, so a pass there would not prove
+    # the slot path. The control-channel round trip makes that unlikely.
     it "fails a call waiting for a stream slot as a closed connection when h2 fails the connection (#{protocol})" do
       from = peer.mark
       transport = hyper

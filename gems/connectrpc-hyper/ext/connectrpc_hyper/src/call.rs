@@ -48,9 +48,10 @@ pub type Sent = Pin<Box<dyn Future<Output = Result<Response, Unanswered<HyperErr
 /// neither drained nor ever received, and its envelope, whose drop would
 /// answer the caller, lives until the connection's last sender drops: the
 /// lease, the pool and sibling leases hold those. Since hyper 1.13.0
-/// (hyperium/hyper#4222, #4242) a connection future that completes has
-/// closed its channel and waited for such a push, so this guards the futures
-/// dropped unfinished (an aborted task) and any other path to that race. The
+/// (hyperium/hyper#4222, #4242) a dispatcher that shuts down closes its
+/// channel and waits for such a push before its future completes, so this
+/// guards a future dropped unfinished (an aborted task), an HTTP/1.1 upgrade,
+/// which completes without that drain, and any other path to that race. The
 /// answer races the connection's `closed` signal, which fires only after
 /// hyper's dispatcher was dropped and so answered every request it held (see
 /// `conn::Dispatcher`).

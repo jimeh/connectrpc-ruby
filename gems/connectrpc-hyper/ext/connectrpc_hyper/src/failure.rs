@@ -74,11 +74,16 @@ impl Failure {
     }
 
     /// Classifies by type, HTTP/2 code and errno, never by message text. hyper
-    /// 1.13 fails a request waiting for a stream slot with only the code of
-    /// its connection's error (`ClientTask::poll_dispatch`): an h2 error that
-    /// is neither a stream reset nor a GOAWAY. That is a connection failure,
-    /// as h2 reports it to the connection's other streams. hyper's only other
-    /// bare code on a client, for a CONNECT reply with a body, also counts.
+    /// 1.13 fails a request waiting for a stream slot, when its connection
+    /// fails with a code other than NO_ERROR, with only that code
+    /// (`ClientTask::poll_dispatch`): an h2 error that is neither a stream
+    /// reset nor a GOAWAY. That is a connection failure, as h2 reports it to
+    /// the connection's other streams. Two other bare codes also count:
+    /// hyper's reset of an HTTP/2 CONNECT reply that carries a body, which
+    /// reads "connection closed" rather than "stream reset" although only
+    /// that stream ended (Connect and gRPC never send CONNECT), and the
+    /// CANCEL an aborted `CallBody` yields, which the call's abort outcome
+    /// supersedes.
     pub fn from_hyper(error: &hyper::Error) -> Self {
         let mut source = error.source();
         while let Some(inner) = source {
