@@ -13,10 +13,11 @@ module ConnectRPC
 
       # One stream's mailbox. Admission, settle and release follow Call; the
       # command queue, reply slot and flags change only under the admission lock.
-      # +expired_at+ is the bound of the first wait that ended at the deadline.
+      # +shared_deadline+ is the deadline bound every wait shares once one
+      # ended past the deadline without the owner's answer.
       class Stream < Call
         attr_reader :grpc, :commands
-        attr_accessor :seq, :reply, :busy, :broken, :exited, :aborted, :finished, :expired_at
+        attr_accessor :seq, :reply, :busy, :broken, :exited, :aborted, :finished, :shared_deadline
 
         def initialize(request, source, proxy, grpc)
           super(request, 0, source, proxy)
@@ -26,7 +27,7 @@ module ConnectRPC
           @seq = 0
           @reply = nil
           @busy = @broken = @exited = @aborted = @finished = false
-          @expired_at = nil
+          @shared_deadline = nil
         end
       end
       private_constant :Stream
@@ -418,16 +419,12 @@ module ConnectRPC
       # deadline or the operation timeout plus the cleanup allowance, or the
       # cancellation allowance; nil bounds wait until a signal or interrupt. An
       # operation also ends once the scope took or abandoned the stream.
-      # Once a wait expired at the deadline, later waits on the stream share
-      # its bound, so a stalled owner costs the stream one allowance past the
-      # deadline rather than one per wait.
       def await_stream(stream, request, seq: nil, timeout: nil)
         now = Internal.now
-        deadline = now + request.deadline.remaining + Internal::CLEANUP_SECONDS if request.deadline
+        sampled = now + request.deadline.remaining + Internal::CLEANUP_SECONDS if request.deadline
         expires = now + timeout + Internal::CLEANUP_SECONDS if timeout
         lock = stream.engine.admission.lock
         lock.synchronize do
-          deadline = stream.expired_at || deadline
           loop do
             if seq && stream.reply&.first == seq
               _, reply = stream.reply
@@ -438,13 +435,18 @@ module ConnectRPC
             return [:retired] if seq && stream.caller_done
 
             now = Internal.now
+            deadline = [stream.shared_deadline, sampled].compact.min
             return [:canceled] if stream.cancel_expires && stream.cancel_expires <= now
 
             if deadline && deadline <= now
-              stream.expired_at ||= deadline
+              share_deadline(stream, deadline)
               return [:deadline]
             end
-            return [:timeout] if expires && expires <= now
+            if expires && expires <= now
+              # Past the deadline, core reports this expiry as deadline_exceeded.
+              share_deadline(stream, deadline) if deadline && deadline - Internal::CLEANUP_SECONDS <= now
+              return [:timeout]
+            end
 
             limit = [deadline, expires, stream.cancel_expires].compact.min
             caller_mask(:immediate) do
@@ -452,6 +454,17 @@ module ConnectRPC
             end
           end
         end
+      end
+
+      # Called under the admission lock when a wait ends past the deadline
+      # without the owner's answer. Every later or concurrent wait on the
+      # stream then ends by the same deadline bound, so a stalled owner costs
+      # the stream one allowance past the deadline rather than one per wait.
+      def share_deadline(stream, deadline)
+        return if stream.shared_deadline
+
+        stream.shared_deadline = deadline
+        stream.signal.broadcast
       end
 
       # An accepted cancellation or deadline keeps its own reason; otherwise

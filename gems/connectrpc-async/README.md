@@ -942,11 +942,13 @@ each `response_head`, `read`, `write`, `close_send`, `finish` and, for gRPC,
   the stream is reset when the owner resumes.
 - A normal block exit waits for the owner's actual outcome, bounded only by the
   deadline as unary calls are. Since 0.3.0, once an operation's wait has
-  expired at the deadline plus the allowance, the block exit's wait ends at
-  that same point rather than one allowance after it starts. A block that
-  rescues the operation's `deadline_exceeded` and returns therefore adds no
-  second allowance for a stalled owner, and still takes an outcome the owner
-  has already published. A gRPC cleanup failure after the block returns
+  ended past the deadline without the owner's answer, whether at the deadline
+  plus the allowance or at its own timeout plus the allowance, every other
+  wait on the stream ends by the deadline plus the allowance. That includes
+  the block exit's wait, even one already in progress. A block that rescues
+  the operation's `deadline_exceeded` and returns therefore adds no second
+  allowance for a stalled owner, and still takes an outcome the owner has
+  already published. A gRPC cleanup failure after the block returns
   reaches the caller as `unavailable`; the caller never reports success
   without the owner's outcome.
 - An exception, `Timeout`, `Thread#raise`, `Thread#kill`, `break` or `throw`
@@ -1098,8 +1100,8 @@ and bidi streaming before any I/O.
   its start. An owner that responds is therefore joined even when the close
   starts long after the deadline, for example after a stream block that
   kept working past it. A stream's terminal wait ends sooner once one of its
-  operations has waited out the deadline plus the allowance: it ends with
-  that operation's wait. A stalled owner, for example blocked in
+  operations has waited past the deadline without the owner's answer: it
+  ends by the deadline plus the allowance. A stalled owner, for example blocked in
   native code, holds the call one allowance past the deadline for each such
   wait: two for a unary call, or for a stream whose block ends when its
   deadline error arrives, whether the block lets that error propagate or

@@ -6,9 +6,9 @@ require_relative "support/threaded_stream_helpers"
 require_relative "support/per_call_helpers"
 
 # A stream block that rescues its deadline error and returns runs the stream's
-# terminal wait. When an operation's wait already expired at the deadline
-# plus the allowance, that terminal wait shares its bound instead of adding
-# another allowance for a stalled owner (#198).
+# terminal wait. Once an operation's wait ended past the deadline without the
+# owner's answer, the terminal wait shares that operation's deadline bound
+# instead of adding another allowance for a stalled owner (#198).
 RSpec.describe "ThreadedTransport and PerCallTransport stream terminal wait after a deadline" do
   include ThreadedStreamHelpers
   include PerCallHelpers
@@ -16,7 +16,7 @@ RSpec.describe "ThreadedTransport and PerCallTransport stream terminal wait afte
   # The client cleanup allowance, which stalled-owner bounds extend by.
   allowance = AsyncHelpers::INTERNAL::CLEANUP_SECONDS
   # The stream deadline, in seconds.
-  def seconds = 0.3
+  def seconds = 0.5
 
   let(:unanswered) { Thread::Queue.new }
   let(:peer) { threaded_recording_peer { |_incoming| unanswered.pop(timeout: 10) } }
@@ -50,15 +50,41 @@ RSpec.describe "ThreadedTransport and PerCallTransport stream terminal wait afte
 
   def statuses = Array.new(waits.size) { waits.pop }
 
-  # Opens a stream whose block rescues the deadline error of its first
-  # response_head, runs `after_rescue`, and returns at once. Returns the
-  # escaping error with the start, rescue and return times.
-  def rescuing_stream(transport, after_rescue: nil)
+  # Holds the owner thread as it returns from its run, after it published
+  # its outcome, until another thread joins it. Returns the held owners and
+  # a release for the example's ensure.
+  def hold_exiting_owners
+    lock = Mutex.new
+    gates = Hash.new { |hash, thread| hash[thread] = Thread::Queue.new }
+    gate = ->(thread) { lock.synchronize { gates[thread] } }
+    held = Thread::Queue.new
+    hold = TracePoint.new(:return) do
+      held << Thread.current
+      gate.call(Thread.current).pop
+    end
+    hold.enable(target: ConnectRPC::Async::ThreadedTransport.const_get(:Engine).instance_method(:own))
+    joins = TracePoint.new(:c_call) do |point|
+      gate.call(point.self) << true if point.method_id == :join && point.self.is_a?(Thread)
+    end
+    joins.enable
+    release = lambda do
+      [hold, joins].each(&:disable)
+      lock.synchronize { gates.each_value { |queue| queue << true } }
+    end
+    [held, release]
+  end
+
+  # Opens a stream whose block rescues the deadline error of its operation,
+  # by default a response_head, runs `after_rescue`, and returns at once.
+  # Returns the escaping error with the start, rescue and return times.
+  def rescuing_stream(transport, deadline: seconds, after_rescue: nil, &operation)
+    operation ||= lambda(&:response_head)
     rescued = nil
     started = monotonic
     error = capture_error_or_value do
-      transport.open_stream(stream_request(origin, "/stall", deadline: ConnectRPC::Deadline.new(seconds))) do |exchange|
-        exchange.response_head
+      transport.open_stream(stream_request(origin, "/stall",
+                                           deadline: ConnectRPC::Deadline.new(deadline))) do |exchange|
+        operation.call(exchange)
       rescue ConnectRPC::Error => e
         raise unless e.code == "deadline_exceeded"
 
@@ -67,6 +93,8 @@ RSpec.describe "ThreadedTransport and PerCallTransport stream terminal wait afte
         :rescued
       end
     end
+    raise "the block never rescued a deadline error: #{error.inspect}" unless rescued
+
     [error, started, rescued, monotonic]
   end
 
@@ -114,6 +142,40 @@ RSpec.describe "ThreadedTransport and PerCallTransport stream terminal wait afte
       wait_trace&.disable
       transport&.close(grace: 0)
     end
+
+    # The block returns past the deadline while a read on another thread
+    # still waits for the stalled owner. The terminal wait starts later than
+    # that read, and still ends when the read's wait expires.
+    it "ends a terminal wait already in progress when a concurrent operation's wait expires" do
+      stall = stall_response_head
+      transport = threaded(origin: origin)
+      reader = nil
+      deadline = nil
+      started = monotonic
+      error = capture_error_or_value do
+        deadline = ConnectRPC::Deadline.new(seconds)
+        transport.open_stream(stream_request(origin, "/stall", deadline: deadline)) do |exchange|
+          reader = Thread.new { capture_error { exchange.response_head } }
+          pop_within(entered, "the owner stalled in response_head")
+          eventually("the deadline to pass") { !deadline.remaining.positive? }
+          # Returning well inside the read's allowance, rather than at the
+          # deadline, is the condition under test.
+          sleep(allowance / 2)
+        end
+      end
+      returned = monotonic
+      read_error = value_within(reader, "the concurrent read")
+      expect([error.class, error.code, read_error.class, read_error.code])
+        .to eq([ConnectRPC::Error, "deadline_exceeded", ConnectRPC::Error, "deadline_exceeded"])
+      expect(returned - started).to be_between(seconds + allowance, seconds + allowance + 0.3)
+      expect(admitted(transport)).to eq(1)
+      release << true
+      eventually("admission released after the owner resumes") { admitted(transport).zero? }
+    ensure
+      stall&.disable
+      release << true
+      transport&.close(grace: 0)
+    end
   end
 
   describe "PerCallTransport" do
@@ -139,11 +201,37 @@ RSpec.describe "ThreadedTransport and PerCallTransport stream terminal wait afte
       wait_trace&.disable
     end
 
+    # The operation's own timeout plus the allowance expires after the
+    # deadline but before the deadline's own bound, so core reports
+    # deadline_exceeded. The terminal wait shares the deadline bound, and the
+    # close adds the second allowance.
+    it "returns within two allowances of the deadline when an operation timeout expires past it" do
+      stall = stall_response_head
+      wait_trace = record_waits
+      deadline = 0.8
+      error, started, _rescued, returned = on_path(:threaded) do
+        rescuing_stream(per_call, deadline: deadline) { |exchange| exchange.response_head(timeout: 0.5) }
+      end
+      expect([error.class, error.code]).to eq([ConnectRPC::Error, "deadline_exceeded"])
+      owner = pop_within(entered, "the owner stalled in response_head")
+      expect(statuses).to eq(%i[reply timeout deadline])
+      expect(returned - started).to be_between(deadline + (2 * allowance), deadline + (2 * allowance) + 0.4)
+      stall.disable
+      release << true
+      expect(owner.join(5)).to equal(owner)
+    ensure
+      stall&.disable
+      wait_trace&.disable
+    end
+
     # The owner recovers once the operation's wait expired, and the block
     # returns at once, so the terminal wait shares the expired bound. The
-    # close still gives the recovered owner its allowance and joins it.
+    # recovered owner is held after it publishes its outcome until a thread
+    # joins it, so the call's boundary finds it gone only if the close
+    # joined it.
     it "joins an owner that recovers after the expired wait" do
       stall = stall_response_head
+      held, release_owners = hold_exiting_owners
       with_boundaries do |boundaries|
         resume = lambda do
           pop_within(entered, "the owner stalled in response_head")
@@ -151,10 +239,12 @@ RSpec.describe "ThreadedTransport and PerCallTransport stream terminal wait afte
         end
         error, = on_path(:threaded) { rescuing_stream(per_call, after_rescue: resume) }
         expect([error.class, error.code]).to eq([ConnectRPC::Error, "deadline_exceeded"])
+        expect(pop_within(held, "the owner held as it exits")).to be_a(Thread)
         expect_released(boundaries.take.first)
       end
     ensure
       stall&.disable
+      release_owners&.call
     end
   end
 end
