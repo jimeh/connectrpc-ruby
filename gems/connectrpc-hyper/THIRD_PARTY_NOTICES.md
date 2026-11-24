@@ -22,7 +22,7 @@ The connectrpc-hyper native extension links the following Rust crates, resolved 
 - http-body 1.1.0 (MIT): [LICENSE](#text-57f841bc9767)
 - http-body-util 0.1.5 (MIT): [LICENSE](#text-57f841bc9767)
 - httparse 1.10.1 (MIT OR Apache-2.0): [LICENSE-APACHE](#text-954f335b8baf), [LICENSE-MIT](#text-8502803cebb3)
-- hyper 1.12.0 (MIT): [LICENSE](#text-05f344491a7d)
+- hyper 1.13.0 (MIT): [LICENSE](#text-05f344491a7d)
 - hyper-util 0.1.21 (MIT): [LICENSE](#text-e7d622e4783e)
 - indexmap 2.14.2 (Apache-2.0 OR MIT): [LICENSE-APACHE](#text-954f335b8baf), [LICENSE-MIT](#text-4f2ac128e429)
 - itoa 1.0.19 (MIT OR Apache-2.0): [LICENSE-APACHE](#text-85ad950cce87), [LICENSE-MIT](#text-30fefc3a7d6a)

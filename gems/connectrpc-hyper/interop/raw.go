@@ -103,6 +103,20 @@ func rawGoaway(tag string, last int64, closeAfter bool) {
 	}
 }
 
+// rawCorrupt sends a DATA frame on stream 0 on each connection the listener
+// has open. RFC 9113 6.1 makes that a connection error of type
+// PROTOCOL_ERROR, so the client fails the connection itself: no GOAWAY from
+// the peer says which streams it processed.
+func rawCorrupt(tag string) {
+	rawConns.Lock()
+	conns := append([]*rawConn(nil), rawConns.byTag[tag]...)
+	rawConns.Unlock()
+	for _, c := range conns {
+		c.locked(func() error { return c.framer.WriteRawFrame(http2.FrameData, 0, 0, nil) })
+		emit("%s corrupt-sent", c.tag)
+	}
+}
+
 func handleRaw(tag string, conn net.Conn, options rawOptions) {
 	defer conn.Close()
 	preface := make([]byte, len(http2.ClientPreface))

@@ -11,16 +11,17 @@
 //!   attempt, which follows every encode in the same poll, so a HEADERS frame
 //!   is offered before it can be written.
 //! - A request body's first `size_hint` call takes the connection's next
-//!   stream index. In hyper 1.12.0 (`proto/h2/client.rs`, `ClientTask::poll`)
-//!   the dispatch task pops requests in order, skips one whose caller has
-//!   gone, then calls `size_hint` exactly once and, in the same synchronous
-//!   poll, h2's `send_request`. That consumes the next client stream id
-//!   (1, 3, 5, ...) unless the connection already failed, and that failure is
-//!   permanent, so no later request gets an id either. Index n is therefore
-//!   stream 2n + 1. h2 can also skip an id while resetting a stream the peer
-//!   should not have opened; that only makes an index lower than its stream,
-//!   which never authorises a replay. A CONNECT request may be dropped after
-//!   `size_hint` without an id, so one disables the record for its connection.
+//!   stream index. In hyper 1.13.0 (`proto/h2/client.rs`,
+//!   `ClientTask::poll_dispatch`) the dispatch task pops requests in order,
+//!   skips one whose caller has gone, then calls `size_hint` exactly once
+//!   and, in the same synchronous poll, h2's `send_request`. That consumes
+//!   the next client stream id (1, 3, 5, ...) unless the connection already
+//!   failed, and that failure is permanent, so no later request gets an id
+//!   either. Index n is therefore stream 2n + 1. h2 can also skip an id
+//!   while resetting a stream the peer should not have opened; that only
+//!   makes an index lower than its stream, which never authorises a replay.
+//!   A CONNECT request may be dropped after `size_hint` without an id, so
+//!   one disables the record for its connection.
 //!
 //! A stream above a GOAWAY's last stream id was never processed (RFC 9113
 //! 6.8): the peer's GOAWAY is the authority on that, as its REFUSED_STREAM

@@ -73,13 +73,18 @@ impl Failure {
         Self::new("closed", "connection closed")
     }
 
-    /// Classifies by type, HTTP/2 code and errno, never by message text.
+    /// Classifies by type, HTTP/2 code and errno, never by message text. hyper
+    /// 1.13 fails a request waiting for a stream slot with only the code of
+    /// its connection's error (`ClientTask::poll_dispatch`): an h2 error that
+    /// is neither a stream reset nor a GOAWAY. That is a connection failure,
+    /// as h2 reports it to the connection's other streams. hyper's only other
+    /// bare code on a client, for a CONNECT reply with a body, also counts.
     pub fn from_hyper(error: &hyper::Error) -> Self {
         let mut source = error.source();
         while let Some(inner) = source {
             if let Some(h2e) = inner.downcast_ref::<h2::Error>() {
                 if let Some(reason) = h2e.reason() {
-                    let kind = if h2e.is_go_away() { "goaway" } else { "reset" };
+                    let kind = if h2e.is_reset() { "reset" } else { "goaway" };
                     return Self {
                         kind,
                         detail: format!("HTTP/2 {kind} {}", u32::from(reason)),

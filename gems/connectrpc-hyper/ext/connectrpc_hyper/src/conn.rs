@@ -279,10 +279,13 @@ pub enum Handshake {
 }
 
 /// Owns hyper's connection future (the HTTP/1.1 dispatcher, or HTTP/2's
-/// `ClientTask`) and fires `closed` only after dropping it. Dropping it
-/// answers every request the dispatcher still holds: its request channel's
-/// receiver drains what it can read, and an HTTP/1.1 in-flight callback or
-/// an HTTP/2 request waiting for a stream slot answers "connection closed".
+/// `ClientTask`) and fires `closed` only after dropping it. By then every
+/// request the dispatcher held is answered. Since hyper 1.13.0 a future that
+/// completes has closed its request channel and drained it, waiting for a
+/// send already under way, and failed an HTTP/2 request waiting for a stream
+/// slot with the connection's error. Dropping an unfinished one drains what
+/// the channel's receiver can read, and an HTTP/1.1 in-flight callback or an
+/// HTTP/2 request waiting for a stream slot answers "connection closed".
 /// HTTP/2 requests already passed to h2 are answered by their own response
 /// tasks. So once `closed` fires, a pending request the dispatcher never took
 /// is stranded (see `call::send`). It exists before the task does: a sealed
