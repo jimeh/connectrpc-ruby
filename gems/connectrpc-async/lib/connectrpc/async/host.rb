@@ -108,9 +108,9 @@ module ConnectRPC
           cause = @failure || e
           cleanup = exit_task
           begin
-            Internal.join_complete(cleanup, failure: true) { cleanup.run if cleanup.status == :initialized }
+            Internal.join_complete(cleanup) { cleanup.run if cleanup.status == :initialized }
           rescue Exception # rubocop:disable Lint/RescueException -- joins retain later caller interruptions until actual finalization
-            raise if cleanup.failed?
+            nil # The startup cause wins over the caller's later interruption.
           end
           raise cause
         ensure
@@ -119,15 +119,15 @@ module ConnectRPC
       end
 
       # Ordinary shutdown waits only for listener stop, not session retirement.
-      # Terminal failure waits for cooperative abort/join, then raises its cause.
-      # Owner interruption is retained through cleanup; the cause still survives.
+      # Terminal failure waits for cooperative abort/join, then raises its cause,
+      # never a cleanup failure. Owner interruption is retained through cleanup.
       def wait
         @session.send(:check_affinity!)
         raise LifecycleError, "Start or close the host before waiting" unless @bound || @closing
 
         error = @completion.wait
         if error
-          Internal.join_complete(@exit_task, failure: true)
+          Internal.join_complete(@exit_task)
           raise error
         end
 
@@ -210,27 +210,29 @@ module ConnectRPC
         # Store identity before eager execution; callers never own this sequence.
         @exit_task = ::Async::Task.new(@owner, transient: true, finished: false) do
           # A failed step never skips a later one or completion, so waiters
-          # never hang on it; joins of this task then raise the first failure.
+          # never hang on it, and its failure is reported rather than raised.
           # The exit task owns the abort, so it joins retirement through
           # interruption, unlike an external abort caller.
-          failures = [force ? Internal::Teardown.capture { @session.send(:abort_owned) } : nil]
-          failures << Internal::Teardown.capture { stop_accepting }
+          escapes = [force ? Internal::Teardown.capture { @session.send(:abort_owned) } : nil]
+          escapes << Internal::Teardown.capture { stop_accepting }
           @completion.resolve(@failure)
-          failure = Internal::Teardown.first(failures)
-          raise failure if failure
+          Internal::Teardown.finish(escapes)
         end
       end
 
-      # Closes, cancels and joins every listener even when one step fails, then
-      # raises the first failure.
+      # Closes, cancels and joins every listener even when one step fails,
+      # reporting each failure, then raises only the first interruption. Each
+      # socket close runs once, so a failed close is reported once and the
+      # socket may stay open.
       def stop_accepting
         @closing = true
-        failures = (@bound&.sockets || []).map { |socket| Internal::Teardown.capture { socket.close } }
-        failures.concat(@listeners.map { |listener| Internal::Teardown.capture { Internal.cancel(listener) } })
-        failures.concat(@listeners.map { |listener| Internal::Teardown.capture { Internal.join_complete(listener) } })
+        sockets = @bound && !@unbound ? @bound.sockets : []
+        @unbound = true if @bound
+        escapes = sockets.map { |socket| Internal::Teardown.capture { socket.close } }
+        escapes.concat(@listeners.map { |listener| Internal::Teardown.capture { Internal.cancel(listener) } })
+        escapes.concat(@listeners.map { |listener| Internal::Teardown.capture { Internal.join_complete(listener) } })
         @completion.resolve(nil) unless @failure || @starting
-        failure = Internal::Teardown.first(failures)
-        raise failure if failure
+        Internal::Teardown.finish(escapes)
       end
     end
   end

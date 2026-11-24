@@ -18,6 +18,7 @@ require "tmpdir"
 $LOAD_PATH.unshift(File.expand_path("../../../spec/fixtures/generation/echo", __dir__))
 require "echo_connect"
 require_relative "../../connectrpc-async/spec/support/helpers"
+require_relative "../../connectrpc-async/spec/support/teardown_helpers"
 require_relative "support/helpers"
 
 # Ruby warns once per process on first IO::Buffer use, which io-stream's
@@ -27,6 +28,7 @@ IO::Buffer.new(1).free
 
 RSpec.configure do |config|
   config.include AsyncHelpers
+  config.include TeardownHelpers
   config.include FalconHelpers
   config.order = :random
   config.disable_monkey_patching!

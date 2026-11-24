@@ -520,12 +520,13 @@ module ConnectRPC
         launch = !@cleanup
         if launch
           @aborted = true
-          @cleanup = ::Async::Task.new(@lifetime, transient: true, finished: false) { retire }
+          # The cleanup task reports its own failure; no joiner raises it.
+          @cleanup = ::Async::Task.new(@lifetime, transient: true, finished: false) { Teardown.run { retire } }
         end
         if owned
           @cleanup.run if launch
         else
-          join(@cleanup, failure: true, interruptible: interruptible) { @cleanup.run if launch }
+          join(@cleanup, interruptible: interruptible) { @cleanup.run if launch }
         end
         nil
       end
@@ -679,20 +680,15 @@ module ConnectRPC
         # with EOF. The stream and TLS socket below close raw too, so every
         # close waits for that read to leave raw.
         @progress.wait while @discarding
-        begin
-          @connection.close
-        rescue StandardError
-          nil
-        ensure
-          begin
-            @socket&.close
-          rescue StandardError
-            nil
-          end
-        end
-        close_raw
+        # A failed or interrupted disposal step, the final raw close included,
+        # is reported or retained and skips neither a later one nor
+        # retirement's completion.
+        escapes = [Teardown.capture { @connection.close }]
+        escapes << Teardown.capture { @socket&.close }
+        escapes << Teardown.capture { @raw.close if @raw && !@raw.closed? }
         @retirement_completed = true
         changed
+        Teardown.finish(escapes)
       ensure
         # An interrupted retirement still releases the descriptor, although
         # a fiber still blocked on raw may then get a late close interrupt.
@@ -706,10 +702,10 @@ module ConnectRPC
       end
 
       # Local counterpart of the private Async helper; no shared public utility.
-      def join(task, failure: false, interruptible: false)
+      def join(task, interruptible: false)
         return unless task
 
-        CompletionJoin.call(task, failure: failure, interruptible: interruptible) { yield if block_given? }
+        CompletionJoin.call(task, interruptible: interruptible) { yield if block_given? }
       end
     end
     private_constant :HTTP1Resource

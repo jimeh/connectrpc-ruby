@@ -339,13 +339,32 @@ These affect native HTTP/2 connections of the Async `Transport`,
   beside a replacement until the retiring connection's tasks finish.
   `HTTP1Transport` keeps a retiring connection's lease until its descriptor
   closes, as before.
-- A server session whose listener cleanup or connection teardown raises during
-  `close` or `abort` (Host, Falcon server or `ServerSession`) still ends
-  closed, with its TLS provider refresh stopped, and then raises the first
-  failure. Previously it stayed closing, and the refresh timer kept running
-  until the owner task ended. A client `Transport` whose close grace expires,
-  or whose owner ends, retires every connection even when one connection's
-  teardown raises, closes, and then raises that failure.
+- A teardown step that fails during a close or abort no longer becomes the
+  caller's outcome. This covers a listener close or `stop_accepting:`
+  callback, a connection's retirement and final disposal, TLS provider
+  shutdown and a client transport's connection teardown. Every later step
+  still runs, and the failure is written as a warning that names only its
+  class, such as `ConnectRPC teardown error: Errno::EBADF`. `close` on `Host`,
+  `ServerSession`, `ConnectRPC::Falcon::Server`, `Transport` and
+  `HTTP1Transport` returns its drained (`true`) or forced (`false`) result,
+  `ServerSession#abort` and Falcon's `Server#abort` return as usual, and
+  `TLSConfiguration#close` returns the configuration. A failed listener close,
+  `stop_accepting:` callback or TLS shutdown no longer skips the drain, so a
+  server close returns the drain's result. A failure in a client transport's
+  own close steps before or instead of the drain, such as the `Transport`
+  connection manager's close, forces retirement and close returns `false`. A
+  connection whose teardown fails after it drained is reported and the drained
+  result stands, so a `Transport` connection whose final retirement fails, or
+  an `HTTP1Transport` idle connection whose close fails after every call has
+  finished, leaves close returning `true`. A Connect unary `Transport` call
+  whose cleanup failed, and whose connection retirement then failed too, now
+  returns its response; in 0.2.1 it raised the retirement's error instead.
+  In 0.2.1 the first failure stopped the remaining steps and was raised from
+  `close` or `abort`: a server session could stay closing with its TLS refresh
+  timer running until the owner task ended, and a client transport could
+  leave connections open. Watch for the warning instead of rescuing teardown
+  errors. An interrupted caller still gets its own exception. See
+  [Close results](../gems/connectrpc-async/README.md#close-results).
 
 These affect `connectrpc-otel` spans and trace propagation.
 
@@ -419,10 +438,14 @@ and [Accept errors](../gems/connectrpc-async/README.md#accept-errors).
   `close_on_exec: false` to `Endpoint#bound` to keep the old behavior.
 - `Host.new(port: 0)` binds every resolved address on one port, so
   `host.port` is the port of every entry in `host.addresses`.
-- When a terminal listener failure's session abort or a listener close fails,
-  `Host#wait` raises that failure. It used to wait forever, because the
-  failure skipped resolving the host's completion, and a failed listener close
-  left the later listeners open.
+- `Host#start` raises the startup error or the listener's terminal cause, and
+  `Host#wait` raises that listener cause, even when the session abort or a
+  listener close fails during cleanup. That failure is written as a teardown
+  warning instead. In 0.2.1 `start` raised the cleanup failure in place of
+  its cause, and `wait` never returned, because the failure skipped resolving
+  the host's completion; a failed listener close also left the later
+  listeners open. Each listener close is now attempted once, and a listener
+  whose close failed may stay open.
 - A caller of `Host#close`, of `close` or `abort` on `ServerSession` or
   `ConnectRPC::Falcon::Server`, or of `close` on a `ServerSession#accept`
   handle that is cancelled, times out or is otherwise interrupted gets its
@@ -437,6 +460,14 @@ and [Accept errors](../gems/connectrpc-async/README.md#accept-errors).
   task finishes only after retirement, but `Task#wait` on it can now return
   before retirement completes. See
   [Interrupted server close](../gems/connectrpc-async/README.md#interrupted-server-close).
+- A `TLSConfiguration#close` caller that is cancelled, times out or is
+  otherwise interrupted gets its exception at once while provider shutdown
+  continues in the configuration's own task, and a later `close` joins it and
+  returns once the configuration is closed. In 0.2.1 a cancellation stopped
+  shutdown where it landed, so the provider's timer or callback could keep
+  running until a later `close`, and a caller's own timeout landing in
+  shutdown was dropped. Host and session TLS shutdown still finishes before
+  their cleanup ends.
 - A unary, client-streaming or fallback HTTP/2 response that waits 60 seconds
   for flow-control credit is reset with `RST_STREAM(CANCEL)` and its admission
   slot is released. Before 0.3.0 it waited until a deadline or `close`. Raise

@@ -125,7 +125,13 @@ module ConnectRPC
 
         # Only the final owner calls this, after all accessing tasks have
         # joined, so no fiber is still blocked on the descriptor it closes.
+        # Every stage runs. Afterwards it raises the first interruption (an
+        # error that is not a StandardError), reporting the first
+        # StandardError, or else raises that first StandardError. Each later
+        # StandardError is reported, and an interruption of that report is
+        # kept like any other.
         def close
+          failure = nil
           interruption = nil
           [@connection, @socket, @raw].compact.uniq.each do |owned|
             next if owned.equal?(@raw) && owned.closed?
@@ -133,14 +139,25 @@ module ConnectRPC
             begin
               owned.close
             rescue Exception => e # rubocop:disable Lint/RescueException -- complete every close stage before propagating the first interruption
-              interruption ||= e
+              if !e.is_a?(StandardError)
+                interruption ||= e
+              elsif failure
+                interruption ||= Teardown.escape(e)
+              else
+                failure = e
+              end
               # Native wrappers can be interrupted before completing their own
               # cleanup. Retry interruptions, but let ordinary wrapper failures
               # proceed to the remaining stages.
               retry if !e.is_a?(StandardError) && !(owned.equal?(@raw) && owned.closed?)
             end
           end
-          raise interruption if interruption
+          if interruption
+            # The interruption already held is the one raised.
+            Teardown.escape(failure) if failure
+            raise interruption
+          end
+          raise failure if failure
         end
       end
     end

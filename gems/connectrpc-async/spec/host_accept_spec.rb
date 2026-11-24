@@ -204,34 +204,37 @@ RSpec.describe ConnectRPC::Async::Host do
     end
   end
 
-  it "resolves completion when the session abort fails after a terminal cause in startup" do
+  # A teardown failure is reported once and never replaces the listener cause.
+  it "raises the startup listener cause when the session abort fails after it" do
     reactor do
       host = described_class.new(server: server)
       sockets = two_listeners(host)
-      failure = RuntimeError.new("session abort failed")
-      failing_abort(host, failure)
-      faults = AcceptFaults.new { |index, _attempt| raise IOError, "first accept" if index.zero? }
+      failing_abort(host, RuntimeError.new("session abort failed"))
+      original = IOError.new("first accept")
+      faults = AcceptFaults.new { |index, _attempt| raise original if index.zero? }
       faults.enable do
-        expect { host.start }.to(raise_error { |error| expect(error).to equal(failure) })
+        expect do
+          expect { host.start }.to(raise_error { |error| expect(error).to equal(original) })
+        end.to output(teardown_warnings(RuntimeError)).to_stderr
         expect(sockets).to all(be_closed)
         expect(faults.tasks).to all(be_finished)
         expect(host.instance_variable_get(:@completion)).to be_resolved
-        expect(wait_error(host)).to equal(failure)
+        expect(wait_error(host)).to equal(original)
       ensure
         host.close(grace: 0)
       end
     end
   end
 
-  # Fails listener zero after start while a waiter is already blocked, and
-  # returns that waiter once the exit task has finished.
-  def terminal_after_start(task, host)
+  # Fails listener zero with `cause` after start while a waiter is already
+  # blocked, and returns that waiter once the exit task has finished.
+  def terminal_after_start(task, host, cause)
     trigger = Async::Queue.new
     faults = AcceptFaults.new do |index, _attempt|
       next unless index.zero?
 
       trigger.dequeue
-      raise IOError, "terminal after start"
+      raise cause
     end
     faults.enable do
       host.start
@@ -242,36 +245,40 @@ RSpec.describe ConnectRPC::Async::Host do
     end
   end
 
-  it "wakes a blocked wait when the session abort fails after a terminal cause" do
+  it "wakes a blocked wait with the listener cause when the session abort fails after it" do
     reactor do |task|
       host = described_class.new(server: server)
       sockets = two_listeners(host)
-      failure = RuntimeError.new("session abort failed")
-      failing_abort(host, failure)
-      terminal_after_start(task, host) do |waiter, faults|
-        expect(host.instance_variable_get(:@completion)).to be_resolved
-        expect(sockets).to all(be_closed)
-        expect(faults.tasks).to all(be_finished)
-        expect(waiter.wait).to equal(failure)
-      end
+      failing_abort(host, RuntimeError.new("session abort failed"))
+      original = IOError.new("terminal after start")
+      expect do
+        terminal_after_start(task, host, original) do |waiter, faults|
+          expect(host.instance_variable_get(:@completion)).to be_resolved
+          expect(sockets).to all(be_closed)
+          expect(faults.tasks).to all(be_finished)
+          expect(waiter.wait).to equal(original)
+        end
+      end.to output(teardown_warnings(RuntimeError)).to_stderr
     ensure
       host&.close(grace: 0)
     end
   end
 
-  it "closes the other listeners and wakes a blocked wait when one listener fails to close" do
+  it "closes the other listeners and wakes a blocked wait with the listener cause when one fails to close" do
     reactor do |task|
       host = described_class.new(server: server)
       sockets = two_listeners(host)
-      failure = Errno::EBADF.new("listener close failed")
       close = sockets.first.method(:close)
-      sockets.first.define_singleton_method(:close) { raise failure }
-      terminal_after_start(task, host) do |waiter, faults|
-        expect(host.instance_variable_get(:@completion)).to be_resolved
-        expect(sockets.last).to be_closed
-        expect(faults.tasks).to all(be_finished)
-        expect(waiter.wait).to equal(failure)
-      end
+      sockets.first.define_singleton_method(:close) { raise Errno::EBADF, "listener close failed" }
+      original = IOError.new("terminal after start")
+      expect do
+        terminal_after_start(task, host, original) do |waiter, faults|
+          expect(host.instance_variable_get(:@completion)).to be_resolved
+          expect(sockets.last).to be_closed
+          expect(faults.tasks).to all(be_finished)
+          expect(waiter.wait).to equal(original)
+        end
+      end.to output(teardown_warnings(Errno::EBADF)).to_stderr
     ensure
       close&.call
       host&.close(grace: 0)

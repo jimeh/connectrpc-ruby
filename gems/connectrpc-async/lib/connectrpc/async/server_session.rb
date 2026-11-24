@@ -120,13 +120,13 @@ module ConnectRPC
           @state = :closing
           # The session owner, not the caller, owns the drain: it continues
           # under its own grace when an interrupted caller leaves, and owner
-          # cancellation forces it.
+          # cancellation forces it. A failed close step is reported, and the
+          # forced retirement that follows decides false unless the drain
+          # already decided.
           @closer = ::Async::Task.new(@owner, finished: false) do
-            begin
-              close_owned(Internal.now + grace)
-            ensure
-              abort_owned
-            end
+            escapes = [Internal::Teardown.capture { close_owned(Internal.now + grace) }]
+            escapes << Internal::Teardown.capture { abort_owned }
+            Internal::Teardown.finish(escapes)
             @close_outcome
           end
         end
@@ -138,7 +138,7 @@ module ConnectRPC
 
         abort_owned(interruptible: true) if force
         waiter = @closer || @cleanup
-        Internal.join_complete(waiter, failure: true, interruptible: true) { @closer.run if launch }
+        Internal.join_complete(waiter, interruptible: true) { @closer.run if launch }
         @close_outcome
       end
 
@@ -642,9 +642,11 @@ module ConnectRPC
         @stop_accepting&.call
       end
 
+      # A failed listener or TLS close never skips the drain. An interruption
+      # leaves the rest to the closer's forced retirement.
       def close_owned(expires)
-        stop_accepting
-        @tls.close
+        Internal::Teardown.run { stop_accepting }
+        Internal::Teardown.run { @tls.send(:close_joined) }
         @resources.each { |resource| resource.draining = true }
         drained = drain_resources(@resources, expires, reason: "graceful_stop")
         @admitted.clear
@@ -688,38 +690,36 @@ module ConnectRPC
         if owned
           @cleanup.run if launch
         else
-          Internal.join_complete(@cleanup, failure: true, interruptible: interruptible) { @cleanup.run if launch }
+          Internal.join_complete(@cleanup, interruptible: interruptible) { @cleanup.run if launch }
         end
       end
 
       def retire_session
         # Every accepted peer fails before this cleanup can yield. A raw
-        # shutdown never yields; listener cleanup and each resource's own
-        # retirement can. Only a resource's retirement closes its descriptor,
-        # once its tasks have left it, so a failure or interruption never skips
-        # a later step. Listeners prune @resources while a step yields, so each
-        # pass walks its own array.
+        # shutdown never yields; listener cleanup, each resource's own
+        # retirement and a failure's warning can. Only a resource's retirement
+        # closes its descriptor, once its tasks have left it, so a failure or
+        # interruption never skips a later step. Listeners prune @resources
+        # while a step yields, so each pass walks its own array.
         resources = @resources.dup
         resources.each { |resource| resource.send(:fail_raw) if resource.respond_to?(:fail_raw, true) }
-        failures = [Internal::Teardown.capture { stop_accepting }]
+        escapes = [Internal::Teardown.capture { stop_accepting }]
         # Setup maps no HTTP/1 replacement once this abort has started, so
         # these are every resource the session holds.
-        failures.concat((resources | @resources).map { |resource| Internal::Teardown.capture { resource.abort } })
+        escapes.concat((resources | @resources).map { |resource| Internal::Teardown.capture { resource.abort } })
         # Every resource has run its retirement, and a retirement that failed
-        # has still failed and closed its raw socket. Nothing can retry it, so
-        # the session closes whatever failed, and then reports the first
-        # interruption, otherwise the first failure, as in CompletionJoin.
+        # has reported it and closed its raw socket. Nothing can retry it, so
+        # the session closes whatever failed and raises only the first
+        # interruption.
         @admitted.clear
         @h1_wire.clear
-        failures << Internal::Teardown.capture { @tls.close }
+        escapes << Internal::Teardown.capture { @tls.send(:close_joined) }
         finish_closed(@close_outcome)
-        failure = Internal::Teardown.first(failures)
         # Cancelling the guard can stop this cleanup too, once its own
         # cancellation made it non-transient. That stop never replaces the
         # outcome above.
-        stopped = Internal::Teardown.capture { Internal.cancel(@lifetime) }
-        failure ||= stopped
-        raise failure if failure
+        escapes << Internal::Teardown.capture { Internal.cancel(@lifetime) }
+        Internal::Teardown.finish(escapes)
       end
     end
   end

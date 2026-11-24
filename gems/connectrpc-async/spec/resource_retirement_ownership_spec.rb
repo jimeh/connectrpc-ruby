@@ -444,8 +444,8 @@ RSpec.describe "Retirement lifecycle coordinators" do
 
   # Session retirement fails every peer, then retires every resource whatever
   # fails, is interrupted or prunes the resource list. It then closes the
-  # session and its TLS configuration, and raises the first interruption,
-  # otherwise the first failure.
+  # session and its TLS configuration, reports each failure and raises only
+  # the first interruption.
   {
     listener: "listener cleanup fails",
     resource_raises: "listener cleanup fails and the first resource abort raises",
@@ -496,13 +496,10 @@ RSpec.describe "Retirement lifecycle coordinators" do
           http1.define_singleton_method(:retirement_completed?) { true }
           session.instance_variable_get(:@resources).unshift(http1)
         end
-        if %i[resource_interrupted http1_interrupted].include?(mode)
-          # The interruption wins over the listener failure: session cleanup
-          # ends cancelled, so abort returns rather than raising it.
-          expect { session.abort }.not_to raise_error
-        else
-          expect { session.abort }.to raise_error(equal(failure))
-        end
+        # A failure never reaches the abort caller. An interruption ends the
+        # session cleanup cancelled, which abort does not raise either.
+        warnings = mode == :resource_raises ? [RuntimeError, RuntimeError] : [RuntimeError]
+        expect { expect(session.abort).to equal(session) }.to output(teardown_warnings(*warnings)).to_stderr
         expect(events).to eq(mode == :http1_interrupted ? %i[http1_failed listener] : [:listener])
         expect(resources).to all(satisfy { |resource| retirement_complete?(resource) })
         expect(resources.map(&:raw)).to all(be_closed)
@@ -520,15 +517,18 @@ RSpec.describe "Retirement lifecycle coordinators" do
     end
   end
 
-  it "closes the session when graceful close's listener cleanup fails" do
+  # The failed listener cleanup skips neither TLS close nor the drain, whose
+  # result, true with no connection to drain, is the close's. The close and
+  # the session cleanup each report their own call's failure.
+  it "closes the session and returns the drain result when graceful close's listener cleanup fails" do
     reactor do
-      failure = RuntimeError.new("listener cleanup failed")
       session = ConnectRPC::Async::ServerSession.new(application: ConnectRPC::Async::Application.new(server: server),
                                                      tls_provider: -> { host_tls.merge(version: "one") },
-                                                     stop_accepting: -> { raise failure }).start
-      expect { session.close(grace: 0) }.to raise_error(equal(failure))
+                                                     stop_accepting: -> { raise "listener cleanup failed" }).start
+      expect { expect(session.close(grace: 0)).to be(true) }
+        .to output(teardown_warnings(RuntimeError, RuntimeError)).to_stderr
       expect(finalization(session)).to eq([:closed, :closed, true, true])
-      expect(session.close(grace: 0)).to be(false)
+      expect(session.close(grace: 0)).to be(true)
     end
   end
 
@@ -618,8 +618,9 @@ RSpec.describe "Retirement lifecycle coordinators" do
   end
 
   # A client transport's forced teardown fails every connection first and
-  # retires each one whatever another's abort raises or is interrupted by,
-  # then reports that escape once, after closing.
+  # retires each one whatever another's abort raises or is interrupted by. It
+  # reports a failure and returns false, and raises an interruption once,
+  # after closing.
   %i[raises interrupted].each do |mode|
     it "retires every client connection when the first forced connection abort #{mode}" do
       reactor do |task|
@@ -653,7 +654,7 @@ RSpec.describe "Retirement lifecycle coordinators" do
           raise error if teardown
         end
         if mode == :raises
-          expect { transport.close(grace: 0) }.to raise_error(equal(error))
+          expect { expect(transport.close(grace: 0)).to be(false) }.to output(teardown_warnings(RuntimeError)).to_stderr
         else
           # The closer itself ends cancelled, so close returns no outcome.
           expect(transport.close(grace: 0)).to be_nil

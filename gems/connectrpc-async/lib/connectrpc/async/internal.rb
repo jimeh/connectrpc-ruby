@@ -252,12 +252,12 @@ module ConnectRPC
           end
 
           @state = :closing
+          # A failed close step is reported and the abort that follows forces
+          # the outcome to false. A cancelled closer returns no outcome.
           @closer = @owner.async(finished: false) do
-            begin
-              close_owned(Internal.now + grace)
-            ensure
-              abort_owned
-            end
+            escapes = [Internal::Teardown.capture { close_owned(Internal.now + grace) }]
+            escapes << Internal::Teardown.capture { abort_owned }
+            Internal::Teardown.finish(escapes)
             @close_outcome
           end
           @closer.wait

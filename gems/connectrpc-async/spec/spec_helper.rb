@@ -17,6 +17,7 @@ require "tmpdir"
 $LOAD_PATH.unshift(File.expand_path("../../../spec/fixtures/generation/echo", __dir__))
 require "echo_connect"
 require_relative "support/helpers"
+require_relative "support/teardown_helpers"
 require_relative "support/hosting_helpers"
 require_relative "support/tls_observed_host"
 require_relative "support/frame_gate"
@@ -36,6 +37,7 @@ PROXY_ENV = %w[HTTP_PROXY http_proxy HTTPS_PROXY https_proxy NO_PROXY no_proxy R
 
 RSpec.configure do |config|
   config.include AsyncHelpers
+  config.include TeardownHelpers
   config.include AsyncHostingHelpers
   config.include ConnectionPeer
   config.include ThreadedHelpers

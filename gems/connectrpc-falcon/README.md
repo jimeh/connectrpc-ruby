@@ -354,6 +354,15 @@ boundary uses raw-first abort and offers no response-delivery guarantee.
 HTTP response completion is separate from TLS `close_notify`; orderly TLS
 shutdown is not promised.
 
+Since 0.3.0 a failed teardown step never skips a later one and is never
+raised. The worker stops every accept task and closes every owned listening
+socket even when one of them fails, and a failed listener step skips neither
+TLS shutdown nor the drain, so close still returns the drain's result. Each failure is written as a warning that names
+only its class, such as `ConnectRPC teardown error: Errno::EBADF`. A managed
+worker that failed keeps its own failure when its `abort` or `close` then
+meets a teardown failure. See
+[Close and cleanup](../connectrpc-async/README.md#close-and-cleanup).
+
 Since 0.3.0, managed worker stop uses the service's `connectrpc_close_grace`
 (default 5 seconds). Keep it below the Falcon container's graceful stop
 timeout, after which the container kills workers. `falcon host` uses
@@ -380,6 +389,8 @@ overrides.
   reentry.
 - Zero grace still forces teardown; explicit abort and already-decided outcomes
   are preserved.
+- Since 0.3.0 a failed listener step or connection retirement is written as a
+  warning and leaves the drain's boolean, and `Server#abort` returns as usual.
 
 ### Connection retirement
 
@@ -390,7 +401,8 @@ waiting on cleanup that must join them. A session accepted handle's existing
 `wait_closed` operation uses this same boundary, so the active connection metric
 and server connection slot remain retained until cleanup completes. Each
 external private connection abort joiner retains its own first interruption
-through the join.
+through the join. A failed retirement step is reported by the connection's own
+cleanup task, never by its joiners.
 
 Since 0.3.0, a `Server#close` or `Server#abort` caller that is cancelled, times
 out or is otherwise interrupted gets its exception at once. The drain keeps its

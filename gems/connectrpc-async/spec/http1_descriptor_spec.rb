@@ -400,11 +400,9 @@ RSpec.describe ConnectRPC::Async::HTTP1Transport, "descriptor lifetime" do
           if state == :idle
             caller.wait
             expect(transport.instance_variable_get(:@idle)).to eq([resource])
-            closer = task.async(finished: false) do
-              transport.close
-            rescue IOError => e
-              observed = e
-            end
+            # Every call finished, so the failed idle close is reported and the
+            # close still drained.
+            closer = task.async(finished: false) { transport.close }
           end
           wait_until(task, "final close attempted or disposition returned") { closing.resolved? || exited.resolved? }
           expect(closing).to be_resolved
@@ -415,10 +413,13 @@ RSpec.describe ConnectRPC::Async::HTTP1Transport, "descriptor lifetime" do
           expect_retained_shutdown(number)
           expect(resource).not_to be_finished
           expect(transport.instance_variable_get(:@leases)).to eq([resource])
-          release.resolve(nil)
-          AsyncHelpers::INTERNAL.join(caller)
-          AsyncHelpers::INTERNAL.join(closer)
-          expect(observed).to equal(error)
+          expect do
+            release.resolve(nil)
+            AsyncHelpers::INTERNAL.join(caller)
+            AsyncHelpers::INTERNAL.join(closer)
+          end.to output(state == :idle ? teardown_warnings(IOError) : "").to_stderr
+          expect(observed).to equal(error) unless state == :idle
+          expect(closer.result).to be(true) if closer
           expect { descriptor_probe(number) }.to raise_error(Errno::EBADF)
           expect(resource.raw).to be_closed
           expect(releases).to eq(1) if boundary == :raw

@@ -1,5 +1,7 @@
 # frozen_string_literal: true
 
+require_relative "completion_join"
+
 module ConnectRPC
   module Falcon
     class Server < ::Falcon::Server
@@ -131,11 +133,17 @@ module ConnectRPC
 
       private
 
+      # Stops this worker's accept tasks after session validation, then closes
+      # each owned listening socket. A failed step is reported and never skips
+      # a later one. Accepted peers have an independent lifetime; parent-bound
+      # listeners stay open.
       def stop_accepting
-        # Stop this worker's accept tasks after session validation. Accepted
-        # peers have an independent lifetime; parent-bound listeners stay open.
-        @accept_wrapper&.stop
-        @owned_bound&.close
+        escapes = [Teardown.capture { @accept_wrapper&.stop }]
+        # As BoundEndpoint#close does, each socket close runs once.
+        sockets = @owned_bound&.sockets&.dup || []
+        @owned_bound&.sockets&.clear
+        escapes.concat(sockets.map { |socket| Teardown.capture { socket.close } })
+        Teardown.finish(escapes)
       end
     end
   end

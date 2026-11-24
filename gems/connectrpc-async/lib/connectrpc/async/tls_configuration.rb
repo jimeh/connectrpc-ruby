@@ -50,6 +50,9 @@ module ConnectRPC
         @state = :new
         @timer_progress = ::Async::Condition.new
         @expiry_progress = ::Async::Condition.new
+        # The guard owns shutdown: close and the owner's cancellation both
+        # cancel it, and its ensure runs the shutdown steps. Shutdown joins
+        # only the guard's own tasks, none of which joins the guard.
         @lifetime = @owner.async do
           ::Async::Condition.new.wait
         ensure
@@ -119,10 +122,13 @@ module ConnectRPC
         fail_safely(:invalid)
       end
 
+      # An interrupted caller leaves at once while shutdown continues; a later
+      # or concurrent close joins the same shutdown.
       def close
         check_affinity!
         check_recursion!
-        shutdown
+        begin_shutdown
+        Internal.join_complete(@lifetime, interruptible: true)
         self
       end
 
@@ -335,20 +341,34 @@ module ConnectRPC
         raise Error.new(category), cause: nil
       end
 
-      # An interruption of the closing task cannot abandon the shutdown: every
-      # task is still cancelled and joined, and the first interruption is
-      # raised once the configuration is closed.
-      def shutdown
-        return if @state == :closed
+      # Seals admission and hands shutdown to the guard. The cancellation
+      # runs the guard's shutdown at once, up to its first wait, so a shutdown
+      # with nothing to wait for finishes before this returns.
+      def begin_shutdown
+        return if %i[closing closed].include?(@state)
 
         @state = :closing
+        Internal.cancel(@lifetime)
+      end
+
+      # Sessions close their TLS from their own closer and cleanup tasks,
+      # which join actual shutdown through their own interruption and raise
+      # that interruption only once shutdown has finished.
+      def close_joined
+        begin_shutdown
+        Internal.join_complete(@lifetime)
+      end
+
+      # Runs in the guard. An interruption of the guard cannot abandon the
+      # shutdown: every task is still cancelled and joined, and the first
+      # interruption is raised once the configuration is closed.
+      def shutdown
+        @state = :closing
         tasks = [@timer, @expiry, @attempt, @callback]
-        failures = tasks.map { |task| Internal::Teardown.capture { Internal.cancel(task) } }
-        failures.concat(tasks.values_at(0, 1, 3, 2).map { |task| join_retaining(task) })
+        escapes = tasks.map { |task| Internal::Teardown.capture { Internal.cancel(task) } }
+        escapes.concat(tasks.values_at(0, 1, 3, 2).map { |task| Internal::Teardown.escape(join_retaining(task)) })
         @state = :closed
-        failures << Internal::Teardown.capture { Internal.cancel(@lifetime) }
-        interruption = Internal::Teardown.first(failures)
-        raise interruption if interruption
+        Internal::Teardown.finish(escapes)
       end
 
       # Waits until `task` finishes, retaining the first interruption of the

@@ -1390,12 +1390,15 @@ module ConnectRPC
             # EOF after our own raw failure is not the peer's.
             peer_left = !@raw_failed && @connection&.reader_task&.current? && empty?
             @abort_during_drain = true if @drain_task && !@drained && !peer_left
-            @cleanup = ::Async::Task.new(@lifetime, transient: true, finished: false) { retire(error) }
+            # The cleanup task reports its own failure; no joiner raises it.
+            @cleanup = ::Async::Task.new(@lifetime, transient: true, finished: false) do
+              Internal::Teardown.run { retire(error) }
+            end
           end
           if owned
             start_cleanup if launch
           else
-            Internal.join_complete(@cleanup, failure: true, interruptible: interruptible) { start_cleanup if launch }
+            Internal.join_complete(@cleanup, interruptible: interruptible) { start_cleanup if launch }
           end
           nil
         end
@@ -1614,7 +1617,9 @@ module ConnectRPC
           # Best-effort scheduling hint only. A return proves no unwind or
           # completion; the retained-task joins below establish retirement.
           ::Async::Task.current.yield
-          @connection&.close!
+          # A failed or interrupted protocol close is reported or retained and
+          # skips neither the member joins nor the disposal steps below.
+          escapes = [Internal::Teardown.capture { @connection&.close! }]
           loop do
             capture_retirement
             writers = @connection&.writers&.keys || []
@@ -1639,20 +1644,15 @@ module ConnectRPC
           # with EOF. The protocol stream and TLS socket below close raw too,
           # so every close waits for that read to leave raw.
           @progress.wait while @discarding
-          begin
-            @connection&.finish_close(error)
-          rescue StandardError
-            nil
-          ensure
-            begin
-              @socket&.close
-            rescue StandardError
-              nil
-            end
-          end
-          Internal.raw_close(@raw)
+          # A failed or interrupted disposal step, the final raw close
+          # included, is reported or retained and skips neither a later one
+          # nor retirement's completion.
+          escapes << Internal::Teardown.capture { @connection&.finish_close(error) }
+          escapes << Internal::Teardown.capture { @socket&.close }
+          escapes << Internal::Teardown.capture { @raw.close if @raw && !@raw.closed? }
           @retirement_completed = true
           changed
+          Internal::Teardown.finish(escapes)
         ensure
           # An interrupted retirement still releases the descriptor, although
           # a fiber still blocked on raw may then get a late close interrupt.
