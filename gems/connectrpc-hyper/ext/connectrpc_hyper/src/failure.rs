@@ -7,8 +7,10 @@ use std::sync::OnceLock;
 pub struct Failure {
     pub kind: &'static str,
     pub detail: String,
-    /// HTTP/2 error code of a stream reset or connection error: an RST_STREAM
-    /// or GOAWAY the peer sent or h2 sent itself.
+    /// HTTP/2 error code of a stream reset or connection error, if any: from
+    /// an RST_STREAM or GOAWAY the peer sent, or the code h2 resets a stream
+    /// or fails the connection with, which can reach a call before h2 writes
+    /// its own frame.
     pub reset: Option<u32>,
     pub errno: Option<i32>,
 }

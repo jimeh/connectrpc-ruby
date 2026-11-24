@@ -315,9 +315,12 @@ impl Future for Dispatcher {
                 if let Some(wire) = &self.wire {
                     // Spec hold point: armed with a zero bound, it counts the
                     // dispatch polls that returned with N stream indexes
-                    // taken. hyper takes them in that poll, so the poll that
-                    // passed request N to h2 has ended, and a request waiting
-                    // for a stream slot is parked.
+                    // taken. hyper takes them in that poll, so the first such
+                    // return means the poll that passed request N to h2 has
+                    // ended; while the connection is up, a request that found
+                    // no stream slot is then parked. Later returns at N say
+                    // nothing more (a closing dispatcher also returns pending
+                    // while it drains).
                     self.holds
                         .block(&format!("dispatch:returned:{}", wire.taken()));
                 }
