@@ -942,11 +942,12 @@ each `response_head`, `read`, `write`, `close_send`, `finish` and, for gRPC,
   the stream is reset when the owner resumes.
 - A normal block exit waits for the owner's actual outcome, bounded only by the
   deadline as unary calls are. Since 0.3.1, once an operation's wait has
-  ended past the deadline without the owner's answer, either at the deadline
-  plus the allowance or at its own timeout plus the allowance when that fails
-  it with `deadline_exceeded`, every other wait on the stream ends by the
-  deadline plus the allowance. That includes the block exit's wait, even one
-  already in progress. A block that rescues the operation's
+  ended past the deadline without the owner's answer, at the deadline or at
+  its own timeout plus the allowance, and the operation failed with
+  `deadline_exceeded`, every other wait on the stream ends by the deadline
+  plus the allowance. That includes the block exit's wait, even one already
+  in progress. An operation that fails with another error, such as an
+  accepted cancellation, shares nothing. A block that rescues the operation's
   `deadline_exceeded` and returns therefore adds no second allowance for a
   stalled owner, and still takes an outcome the owner has already published.
   A gRPC cleanup failure after the block returns reaches the caller as

@@ -98,6 +98,86 @@ RSpec.describe "ThreadedTransport and PerCallTransport stream terminal wait afte
     [error, started, rescued, monotonic]
   end
 
+  # Runs a stream whose deadline clock runs at a twentieth of real speed:
+  # core's deadline stays live while the transport's waits, which project it
+  # to monotonic time when they start, expire. The block rescues its
+  # operation's error and returns, and the owner, stalled in response_head,
+  # recovers `release_delay` after the block exits. `cancel_after` cancels
+  # the call's source that long after the owner stalled; `faults` arm the
+  # clock as slow_clock describes. Returns the operation's error, the call's
+  # error and the deadline.
+  def slow_clock_stream(transport, operation_timeout:, cancel_after: nil, release_delay: 0.5, **faults)
+    clock, traces = slow_clock(**faults)
+    exiting = Thread::Queue.new
+    exit_trace = TracePoint.new(:call) { exiting << true }
+    exit_trace.enable(target: ConnectRPC::Async::ThreadedTransport.instance_method(:exit_stream))
+    traces << exit_trace
+    deadline = ConnectRPC::Deadline.new(0.5, clock: clock)
+    source = ConnectRPC::CancellationSource.new if cancel_after
+    helpers = slow_clock_helpers(exiting, release_delay, source, cancel_after)
+    operation_error = nil
+    request = stream_request(origin, "/stall", deadline: deadline, cancellation: source&.token)
+    error = capture_error_or_value do
+      transport.open_stream(request) do |exchange|
+        exchange.response_head(timeout: operation_timeout)
+      rescue ConnectRPC::Error => e
+        operation_error = e
+        :rescued
+      end
+    end
+    helpers.each { |thread| value_within(thread, "a helper thread") }
+    [operation_error, error, deadline]
+  ensure
+    traces&.each(&:disable)
+  end
+
+  # A clock at a twentieth of real speed, with faults armed when an
+  # await_stream returns the given status. fail_on: the clock's next read
+  # raises its own deadline_exceeded Error. step_on: the clock jumps past the
+  # deadline once the arbiter's next reason read returns. Returns the clock
+  # and the traces to disable.
+  def slow_clock(fail_on: nil, step_on: nil)
+    armed = stepping = jumped = false
+    arm = TracePoint.new(:return) do |point|
+      status = point.return_value.first
+      armed = true if status == fail_on
+      stepping = true if status == step_on
+    end
+    arm.enable(target: ConnectRPC::Async::ThreadedTransport.instance_method(:await_stream))
+    step = TracePoint.new(:return) { jumped = true if stepping }
+    step.enable(target: ConnectRPC::CallCancellation.instance_method(:reason))
+    started = monotonic
+    clock = lambda do
+      if armed
+        armed = false
+        raise ConnectRPC::Error.new(:deadline_exceeded, "clock failure")
+      end
+      ((monotonic - started) / 20) + (jumped ? 1 : 0)
+    end
+    [clock, [arm, step]]
+  end
+
+  # The owner's release after the block exits and the optional cancellation.
+  def slow_clock_helpers(exiting, release_delay, source, cancel_after)
+    helpers = [Thread.new do
+      pop_within(exiting, "the block exit")
+      # Releasing the owner after a wrongly shared bound would have ended
+      # the exit wait is the condition under test.
+      sleep(release_delay)
+      release << true
+    end]
+    return helpers unless source
+
+    helpers << Thread.new do
+      pop_within(entered, "the owner stalled in response_head")
+      # Cancelling after the operation's deadline bound minus one
+      # allowance, so the cancellation outlasts that bound, is the
+      # condition under test.
+      sleep(cancel_after)
+      source.cancel
+    end
+  end
+
   after do
     release << true
     unanswered << true
@@ -149,6 +229,12 @@ RSpec.describe "ThreadedTransport and PerCallTransport stream terminal wait afte
     it "ends a terminal wait already in progress when a concurrent operation's wait expires" do
       stall = stall_response_head
       transport = threaded(origin: origin)
+      threaded_type = ConnectRPC::Async::ThreadedTransport
+      moments = Thread::Queue.new
+      exit_trace = TracePoint.new(:call) { moments << [:exit, monotonic] }
+      exit_trace.enable(target: threaded_type.instance_method(:exit_stream))
+      expiry_trace = TracePoint.new(:call) { moments << [:read_expired, monotonic] }
+      expiry_trace.enable(target: threaded_type.instance_method(:expire_operation))
       reader = nil
       deadline = nil
       started = monotonic
@@ -168,74 +254,54 @@ RSpec.describe "ThreadedTransport and PerCallTransport stream terminal wait afte
       expect([error.class, error.code, read_error.class, read_error.code])
         .to eq([ConnectRPC::Error, "deadline_exceeded", ConnectRPC::Error, "deadline_exceeded"])
       expect(returned - started).to be_between(seconds + allowance, seconds + allowance + 0.3)
+      # The exit wait was already in progress when the read's wait expired.
+      expect(Array.new(moments.size) { moments.pop }.sort_by(&:last).map(&:first)).to eq(%i[exit read_expired])
       expect(admitted(transport)).to eq(1)
       release << true
       eventually("admission released after the owner resumes") { admitted(transport).zero? }
     ensure
       stall&.disable
+      exit_trace&.disable
+      expiry_trace&.disable
       release << true
       transport&.close(grace: 0)
     end
 
-    # The deadline's clock runs at a twentieth of real speed, so the
-    # operation's timeout expires after the deadline as projected to
-    # monotonic time while core's deadline still has time left, and core's
-    # arbiter does not accept the deadline. Core reports unavailable, or the
-    # clock itself raises a deadline_exceeded Error at that arbitration.
-    # Either way the stream shares no deadline bound, and the exit still
-    # waits for an owner that recovers after that projected bound.
+    # Core's arbiter decides each unanswered operation's error once, and
+    # only a deadline_exceeded decision shares the deadline bound. Each case
+    # recovers the owner after the bound a wrong share would publish but
+    # before the exit wait's own bound, so the exit takes the owner's
+    # outcome only if nothing was shared.
     {
-      "core reports as unavailable" => [false, "unavailable"],
-      "the deadline's clock fails with its own deadline_exceeded" => [true, "deadline_exceeded"]
-    }.each do |label, (clock_fails, code)|
-      it "shares no deadline bound for an operation timeout that #{label}" do
+      "an operation timeout that core reports as unavailable" =>
+        [{ operation_timeout: 0.2 }, %w[unavailable timeout], [:live, nil]],
+      "an operation timeout whose arbitration the clock fails with its own deadline_exceeded" =>
+        [{ operation_timeout: 0.2, fail_on: :timeout }, %w[clock timeout], [:live, nil]],
+      "a deadline expiry whose arbitration the clock fails with its own deadline_exceeded" =>
+        [{ operation_timeout: nil, fail_on: :deadline }, %w[clock deadline], [:live, nil]],
+      "a deadline expiry after core accepted a cancellation" =>
+        [{ operation_timeout: nil, cancel_after: 1.0, release_delay: 0.2 }, %w[canceled deadline], [:live, "canceled"]],
+      "an operation timeout whose deadline core accepts only after its single arbitration" =>
+        [{ operation_timeout: 0.2, step_on: :timeout }, %w[unavailable timeout], [:expired, "deadline_exceeded"]]
+    }.each do |label, (options, (operation, expiry), (deadline_state, code))|
+      it "shares no deadline bound for #{label}" do
         stall = stall_response_head
         wait_trace = record_waits
         transport = threaded(origin: origin)
-        exiting = Thread::Queue.new
-        exit_trace = TracePoint.new(:call) { exiting << true }
-        exit_trace.enable(target: ConnectRPC::Async::ThreadedTransport.instance_method(:exit_stream))
-        # Arms the clock to fail once, at the arbitration after the
-        # operation's timeout expired.
-        armed = false
-        arm_trace = TracePoint.new(:return) { |point| armed = clock_fails if point.return_value.first == :timeout }
-        arm_trace.enable(target: ConnectRPC::Async::ThreadedTransport.instance_method(:await_stream))
-        releaser = Thread.new do
-          pop_within(exiting, "the block exit")
-          # Releasing the owner after the projected deadline bound, 0.3 s
-          # after the operation's expiry, has passed is the condition under
-          # test.
-          sleep(0.5)
-          release << true
+        operation_error, error, deadline = slow_clock_stream(transport, **options)
+        if operation == "clock"
+          expect([operation_error.class, operation_error.code, operation_error.message])
+            .to eq([ConnectRPC::Error, "deadline_exceeded", "clock failure"])
+        else
+          expect(operation_error&.code).to eq(operation)
         end
-        clock_start = monotonic
-        clock = lambda do
-          if armed
-            armed = false
-            raise ConnectRPC::Error.new(:deadline_exceeded, "clock failure")
-          end
-          (monotonic - clock_start) / 20
-        end
-        deadline = ConnectRPC::Deadline.new(0.5, clock: clock)
-        operation_error = nil
-        error = capture_error_or_value do
-          transport.open_stream(stream_request(origin, "/stall", deadline: deadline)) do |exchange|
-            exchange.response_head(timeout: 0.2)
-          rescue ConnectRPC::Error => e
-            operation_error = e
-            :rescued
-          end
-        end
-        expect(operation_error&.code).to eq(code)
-        expect(statuses).to eq(%i[reply timeout result])
-        expect([error.class, deadline.expired?]).to eq([ConnectRPC::Error, false])
-        expect(error.code).not_to eq("deadline_exceeded")
-        value_within(releaser, "the owner release")
+        expect(statuses).to eq([:reply, expiry.to_sym, :result])
+        expect(error).to be_a(ConnectRPC::Error)
+        expect(deadline.expired?).to be(deadline_state == :expired)
+        code ? expect(error.code).to(eq(code)) : expect(error.code).not_to(eq("deadline_exceeded"))
       ensure
         stall&.disable
         wait_trace&.disable
-        exit_trace&.disable
-        arm_trace&.disable
         release << true
         transport&.close(grace: 0)
       end
