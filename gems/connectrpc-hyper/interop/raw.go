@@ -15,7 +15,8 @@ import (
 
 // A programmable HTTP/2 server for frame-exact cases grpc-go and connect-go
 // never produce: header blocks of exact sizes, split trailers, server resets
-// with any code, refused streams, withheld PING ACKs and silent streams. The
+// with any code, refused streams, withheld PING ACKs, withheld response heads
+// and silent streams. The
 // "x-scenario" request header selects the response; every request, PING and
 // client RST_STREAM is reported as an event.
 
@@ -372,6 +373,15 @@ func (c *rawConn) request(frame *http2.MetaHeadersFrame) {
 			defer c.mu.Unlock()
 			_ = c.framer.WriteData(stream, false, emptyMessage)
 			c.headers(stream, [][2]string{{"grpc-status", "0"}}, true)
+		}()
+	case "withhold":
+		// Sends nothing, not even the response head, until "release
+		// <argument>" arrives, then answers.
+		go func() {
+			<-gate(argument)
+			c.mu.Lock()
+			defer c.mu.Unlock()
+			ok()
 		}()
 	case "silent-data":
 		c.headers(stream, head, false)

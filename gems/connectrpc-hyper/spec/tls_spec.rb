@@ -119,6 +119,122 @@ RSpec.describe "TLS parity" do
     end
   end
 
+  # request:strand keeps each request away from hyper, as tokio's channel can
+  # leave a request sent while the connection's dispatcher was being dropped
+  # (#208): never received, never answered. Each attempt's connection then
+  # ends with the server's rejection, and its dispatcher's end tells the call.
+  # A Connect unary call counts that as unsent and retries once.
+  describe "stranded requests" do
+    let(:closed) { ["unavailable", "HTTP transport failed: connection closed"] }
+    let(:rejected) { ["unavailable", "HTTP transport failed: TLS error"] }
+
+    after { %w[request:strand retry:unsent dispatcher].each { |point| @native_driver&.release(point) } }
+
+    def mtls_transport(**)
+      transport = hyper(ca_file: File.join(peer.certs, "ca.pem"), **)
+      @native_driver = driver(transport)
+      transport
+    end
+
+    def outcome(origin, transport, protocol)
+      error_of { client(peer[origin], transport: transport, protocol: protocol).unary(MSG.new, timeout: 5) }
+        &.then { |error| [error.code, error.message] }
+    end
+
+    def counts = %w[request:strand retry:unsent].map { |point| @native_driver.reached(point) }
+
+    it "fails a stranded Connect unary call over HTTP/1.1 with the server's alert after one retry" do
+      root = authority
+      server = tls_server(*leaf(root), client_ca: authority("client CA").first)
+      transport = hyper(ca_file: ca_file(root.first), http2: false)
+      @native_driver = driver(transport)
+      %w[request:strand retry:unsent].each { |point| @native_driver.hold(point, 0) }
+      expect(failure(server.origin, transport)).to eq(rejected)
+      expect(counts).to eq([2, 2])
+    end
+
+    it "fails a stranded Connect unary call over per-call HTTP/2 after one retry" do
+      transport = mtls_transport(connections: :per_call)
+      %w[request:strand retry:unsent].each { |point| @native_driver.hold(point, 0) }
+      expect(outcome("connect_mtls", transport, :connect)).to eq(closed).or eq(rejected)
+      expect(counts).to eq([2, 2])
+    end
+
+    # The dispatcher hold keeps each pooled connection admitting until its
+    # request is stranded; otherwise the rejection could end it first and the
+    # pool dial's waiter would fail before sending (below).
+    it "fails a stranded Connect unary call over pooled HTTP/2 after one retry" do
+      transport = mtls_transport
+      @native_driver.hold("request:strand", 0)
+      %w[dispatcher retry:unsent].each { |point| @native_driver.hold(point, 10) }
+      call = Thread.new { outcome("connect_mtls", transport, :connect) }
+      wait_until("the first request stranded") { @native_driver.reached("request:strand") == 1 }
+      @native_driver.release("dispatcher")
+      wait_until("the stranded request counted as unsent") { @native_driver.reached("retry:unsent") == 1 }
+      @native_driver.hold("dispatcher", 10)
+      @native_driver.release("retry:unsent")
+      wait_until("the retry stranded") { @native_driver.reached("request:strand") == 2 }
+      @native_driver.release("dispatcher")
+      expect(call.value).to eq(closed).or eq(rejected)
+      expect(@native_driver.reached("request:strand")).to eq(2)
+    end
+
+    it "fails a stranded gRPC call with its connection's failure, without a retry" do
+      transport = mtls_transport(connections: :per_call)
+      @native_driver.hold("request:strand", 0)
+      expect(outcome("grpc_mtls", transport, :grpc)).to eq(closed).or eq(rejected)
+      expect(@native_driver.reached("request:strand")).to eq(1)
+    end
+
+    # The kept body owns the upload channel's receiver, as a stranded
+    # envelope's body stays alive while any sender of its pooled connection
+    # does, so nothing ever drains the write.
+    it "returns a writer blocked on a stranded stream and fails the stream at its head" do
+      transport = mtls_transport
+      @native_driver.hold("request:strand", 0)
+      @native_driver.hold("dispatcher", 10)
+      request = ConnectRPC::StreamRequest.new(
+        url: URI("#{peer['grpc_mtls']}/raw.v1.Raw/Upload"), http_method: "POST",
+        headers: { "content-type" => ["application/grpc"], "te" => ["trailers"] }, deadline: ConnectRPC::Deadline.new(5)
+      )
+      wrote = Queue.new
+      call = Thread.new do
+        error_of do
+          transport.open_grpc_stream(request) do |exchange|
+            exchange.write([0, 0].pack("CN"))
+            wrote << :returned
+            exchange.response_head
+          end
+        end
+      end
+      wait_until("the request stranded") { @native_driver.reached("request:strand") == 1 }
+      wait_parked(call, "Exchange#write")
+      @native_driver.release("dispatcher")
+      expect(wrote.pop(timeout: 10)).to eq(:returned)
+      expect(call.value&.then { |error| [error.code, error.message] }).to eq(closed).or eq(rejected)
+    end
+  end
+
+  # The pool dial's connection is pooled, then parks at dial:pooled until the
+  # server's rejection has ended it (its socket dropped), before the waiter
+  # checks it out. The waiter fails as that connection did instead of dialing
+  # again: a server that ends every connection after its handshake would
+  # otherwise keep a pooled caller dialing until its deadline (#208).
+  it "fails a pool dial's waiter with its connection's failure when that connection closed before checkout" do
+    transport = hyper(ca_file: File.join(peer.certs, "ca.pem"))
+    native_driver = driver(transport)
+    native_driver.hold("dial:pooled", 10)
+    %w[socket:drop dial:started].each { |point| native_driver.hold(point, 0) }
+    call = Thread.new { failure(peer["connect_mtls"], transport) }
+    wait_until("the pooled connection closed") { native_driver.reached("socket:drop") == 1 }
+    native_driver.release("dial:pooled")
+    expect(call.value).to eq(["unavailable", "HTTP transport failed: connection closed"])
+      .or eq(["unavailable", "HTTP transport failed: TLS error"])
+    expect(native_driver.reached("dial:started")).to eq(1)
+  ensure
+    %w[dial:pooled socket:drop dial:started].each { |point| native_driver&.release(point) }
+  end
+
   it "accepts a leaf-first chain with an intermediate" do
     root = authority
     intermediate = credentials("intermediate CA", issuer: root, authority: true)

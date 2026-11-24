@@ -2,6 +2,7 @@
 //! with Go-style dual-stack fallback, an optional proxy CONNECT tunnel,
 //! rustls, then a hyper HTTP/2 or HTTP/1.1 handshake. Failures are classified
 //! by type and errno, never by text.
+use std::future::Future;
 use std::io;
 use std::net::{IpAddr, SocketAddr};
 use std::pin::Pin;
@@ -263,24 +264,57 @@ pub struct Settings {
 pub enum Handshake {
     H2 {
         sender: http2::SendRequest<CallBody>,
-        /// Fires when hyper's dispatcher ends: the connection admits no more
-        /// requests (GOAWAY, error or close).
+        /// Fires once hyper's dispatcher has ended and been dropped (see
+        /// `Dispatcher`): the connection admits no more requests (GOAWAY,
+        /// error or close).
         closed: Arc<Signal>,
         wire: Arc<Wire>,
     },
     H1 {
         sender: http1::SendRequest<CallBody>,
         task: Task,
+        /// As for HTTP/2.
+        closed: Arc<Signal>,
     },
 }
 
-/// Fires its signal when dropped: a dispatcher task that ends, is aborted or
-/// is refused by a sealed tracker reports its connection closed alike.
-struct FireOnDrop(Arc<Signal>);
+/// Owns hyper's connection future (the HTTP/1.1 dispatcher, or HTTP/2's
+/// `ClientTask`) and fires `closed` only after dropping it. Dropping it
+/// answers every request the dispatcher still holds: its request channel's
+/// receiver drains what it can read, and an HTTP/1.1 in-flight callback or
+/// an HTTP/2 request waiting for a stream slot answers "connection closed".
+/// HTTP/2 requests already passed to h2 are answered by their own response
+/// tasks. So once `closed` fires, a pending request the dispatcher never took
+/// is stranded (see `call::send`). It exists before the task does: a sealed
+/// tracker drops a refused task at once, and an aborted or finished task
+/// drops its future before it deregisters, so every exit fires.
+struct Dispatcher {
+    connection: Option<Pin<Box<dyn Future<Output = ()> + Send>>>,
+    closed: Arc<Signal>,
+    holds: Arc<Holds>,
+}
 
-impl Drop for FireOnDrop {
+impl Future for Dispatcher {
+    type Output = ();
+
+    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<()> {
+        if let Some(connection) = self.connection.as_mut() {
+            std::task::ready!(connection.as_mut().poll(cx));
+        }
+        self.connection = None;
+        Poll::Ready(())
+    }
+}
+
+impl Drop for Dispatcher {
     fn drop(&mut self) {
-        self.0.fire();
+        // Explicitly first: `closed` must not fire while hyper still holds
+        // requests it has yet to answer.
+        drop(self.connection.take());
+        self.closed.fire();
+        // Spec hold point: armed with a zero bound, it counts the fired
+        // signals.
+        self.holds.block("dispatcher:closed");
     }
 }
 
@@ -500,13 +534,7 @@ pub async fn connect(
             .map_err(|e| Failure::from_hyper(&e))?;
         registering(holds);
         let closed = Signal::new();
-        let dispatcher_closed = FireOnDrop(closed.clone());
-        let holds = holds.clone();
-        tracker.spawn(async move {
-            let _closed = dispatcher_closed;
-            holds.reach("dispatcher").await;
-            let _ = connection.await;
-        });
+        spawn_dispatcher(tracker, holds, connection, &closed);
         Ok(Connected {
             handshake: Handshake::H2 {
                 sender,
@@ -526,17 +554,40 @@ pub async fn connect(
             .await
             .map_err(|e| Failure::from_hyper(&e))?;
         registering(holds);
-        let holds = holds.clone();
-        let task = tracker.spawn(async move {
-            holds.reach("dispatcher").await;
-            let _ = connection.await;
-        });
+        let closed = Signal::new();
+        let task = spawn_dispatcher(tracker, holds, connection, &closed);
         Ok(Connected {
-            handshake: Handshake::H1 { sender, task },
+            handshake: Handshake::H1 {
+                sender,
+                task,
+                closed,
+            },
             local_port,
             fault,
         })
     }
+}
+
+/// Runs hyper's connection future as a tracked task that fires `closed` once
+/// the future is gone, however the task ends.
+fn spawn_dispatcher<E>(
+    tracker: &Arc<Tracker>,
+    holds: &Arc<Holds>,
+    connection: impl Future<Output = Result<(), E>> + Send + 'static,
+    closed: &Arc<Signal>,
+) -> Task {
+    let dispatcher = Dispatcher {
+        connection: Some(Box::pin(async move {
+            let _ = connection.await;
+        })),
+        closed: closed.clone(),
+        holds: holds.clone(),
+    };
+    let holds = holds.clone();
+    tracker.spawn(async move {
+        holds.reach("dispatcher").await;
+        dispatcher.await;
+    })
 }
 
 /// Spec hold point between the handshake and the dispatcher's registration,

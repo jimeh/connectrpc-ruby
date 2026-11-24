@@ -68,6 +68,11 @@ impl Failure {
         Self::new("shutdown", "transport closed")
     }
 
+    /// A connection that ended under a call.
+    pub fn closed() -> Self {
+        Self::new("closed", "connection closed")
+    }
+
     /// Classifies by type, HTTP/2 code and errno, never by message text.
     pub fn from_hyper(error: &hyper::Error) -> Self {
         let mut source = error.source();
@@ -94,7 +99,7 @@ impl Failure {
         if error.is_parse() || error.is_parse_status() {
             Self::new("protocol", "malformed response")
         } else {
-            Self::new("closed", "connection closed")
+            Self::closed()
         }
     }
 

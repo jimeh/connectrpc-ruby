@@ -9,7 +9,8 @@ system("rubocop", ".", "--config", File.join(root, ".rubocop.yml"), exception: t
 cargo = { "CARGO_TARGET_DIR" => File.join(root, "vendor/hyper/target/lint") }
 system(cargo, "cargo", "fmt", "--all", "--check", exception: true)
 system(cargo, "cargo", "clippy", "--locked", "--all-targets", "--", "-D", "warnings", exception: true)
+system(cargo, "cargo", "test", "--locked", "--lib", exception: true)
 system(cargo, "cargo", "deny", "--locked", "check", exception: true)
 system(cargo, "cargo", "audit", "--deny", "warnings", exception: true)
 system(RbConfig.ruby, "scripts/notices.rb", "--check", exception: true)
-puts "Ruby syntax and lint, cargo fmt, clippy -D warnings, cargo deny, cargo audit and notices passed"
+puts "Ruby syntax and lint, cargo fmt, clippy -D warnings, Rust unit tests, cargo deny, cargo audit and notices passed"

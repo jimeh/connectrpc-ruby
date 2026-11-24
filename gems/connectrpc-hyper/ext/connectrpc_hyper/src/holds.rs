@@ -8,6 +8,7 @@
 //! GVL: the whole VM would stall for the point's bound, and the spec waiting
 //! to observe the hold could not run. `drive` therefore skips its GVL-held
 //! first poll while any point is armed in the process (`any_armed`).
+use std::any::Any;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
@@ -38,6 +39,9 @@ struct Point {
     /// Polls stalled at the point (`poll_stall`), woken on release or when
     /// a re-arm retires the point.
     stalled: Mutex<Stalled>,
+    /// Values `keep` took, dropped with the point (release, re-arm or the
+    /// driver's end).
+    kept: Mutex<Vec<Box<dyn Any + Send>>>,
 }
 
 #[derive(Default)]
@@ -125,6 +129,21 @@ impl Holds {
             .wait_timeout_while(released, point.bound, |released| !*released);
     }
 
+    /// Takes `value` while `name` is armed, counting the arrival, and keeps
+    /// it until the point is released; hands it back when unarmed.
+    pub fn keep<T: Send + 'static>(&self, name: &str, value: T) -> Option<T> {
+        let Some(point) = self.point(name) else {
+            return Some(value);
+        };
+        point.reached.fetch_add(1, Ordering::SeqCst);
+        point
+            .kept
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push(Box::new(value));
+        None
+    }
+
     /// Whether any point is armed on this driver: callers that build a
     /// point's name check this first.
     pub fn armed(&self) -> bool {
@@ -169,6 +188,7 @@ impl Holds {
             changed: Condvar::new(),
             notify: Notify::new(),
             stalled: Mutex::new(Stalled::default()),
+            kept: Mutex::new(Vec::new()),
         });
         let mut points = self.points.lock().unwrap_or_else(|e| e.into_inner());
         match points.insert(name, point) {

@@ -90,6 +90,39 @@ RSpec.describe "Retries" do
     end
   end
 
+  # hyper's HTTP/2 dispatcher ends on a GOAWAY once something wakes it: here
+  # the queued call waiting in h2 for the one stream slot, which the GOAWAY
+  # disowns and which is replayed (above). The withheld call's stream is at
+  # the last stream id, so h2 and its response task still own it: it must not
+  # count as stranded when the dispatcher's end fires the connection's closed
+  # signal, and its response arrives on the draining connection.
+  it "delivers an indexed stream's response after its connection's dispatcher ended" do
+    from = peer.mark
+    transport = hyper
+    native_driver = driver(transport)
+    points = %w[request:indexed dispatcher:closed retry:unsent retry:unprocessed]
+    points.each { |point| native_driver.hold(point, 0) }
+    origin = peer["raw_mcs1"]
+    key = "withhold-#{rand(1 << 30)}"
+    call = ->(scenario) { raw_call(origin, scenario, transport: transport, protocol: :connect, timeout: 20).message }
+    # Its response shows the client applied the peer's one-stream SETTINGS.
+    expect(call.call("ok")).to eq(MSG.new)
+    withheld = Thread.new { call.call("withhold:#{key}") }
+    peer.wait_event(/\Arawmcs1 request withhold:#{key} /, from: from)
+    queued = Thread.new { call.call("await-ok:queued") }
+    wait_until("the queued call passed to h2") { native_driver.reached("request:indexed") == 3 }
+    peer.command("raw-goaway rawmcs1")
+    wait_until("the first connection's dispatcher ended") { native_driver.reached("dispatcher:closed") == 1 }
+    expect(queued.value).to eq(MSG.new)
+    peer.command("release #{key}")
+    expect(withheld.value).to eq(MSG.new)
+    expect(%w[retry:unsent retry:unprocessed].map { |point| native_driver.reached(point) }).to eq([0, 1])
+    expect(requests("rawmcs1", from).grep(/request withhold:#{key} /).size).to eq(1)
+    expect(accepts("rawmcs1", from)).to eq(2)
+  ensure
+    points&.each { |point| native_driver&.release(point) }
+  end
+
   # The GOAWAY retry derives each request's stream id from the order hyper's
   # dispatch passes requests to h2 (wire.rs): one index per request, taken in
   # the body's size_hint right before h2's send_request, and none for a request

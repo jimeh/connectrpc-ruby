@@ -740,7 +740,7 @@ compiler's include directory. Tasks:
 | `mise run hyper:setup` | Install the bundle under `vendor/hyper/bundle` and compile the extension into `lib/connectrpc/hyper/<minor>/` (ignored), one per Ruby minor. |
 | `mise run hyper:peer` | Build the disposable grpc-go/connect-go/raw HTTP/2 Go peer into `vendor/hyper/peer`. |
 | `mise run hyper:test -- spec/pool_spec.rb` | Run specs (paths relative to the gem); coverage goes to `coverage/hyper/<Ruby>/`. |
-| `mise run hyper:check` | Ruby syntax and RuboCop, `cargo fmt --check`, `cargo clippy -D warnings`, `cargo deny check`, `cargo audit` and the third-party notices check. |
+| `mise run hyper:check` | Ruby syntax and RuboCop, `cargo fmt --check`, `cargo clippy -D warnings`, `cargo test --lib`, `cargo deny check`, `cargo audit` and the third-party notices check. |
 | `mise run hyper:interop` | The grpc-go/connect-go interop matrix (`--tag interop`). |
 | `mise run hyper:package` | Build the source gem, fetch its locked crates into `vendor/hyper/cargo`, install it offline (`CARGO_NET_OFFLINE=true`) into a fresh GEM_HOME and run `scripts/smoke.rb`. |
 | `mise run hyper:verify` | All of the above. |

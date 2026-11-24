@@ -147,6 +147,13 @@ impl Mark {
         });
     }
 
+    /// hyper's dispatch task passed the request to h2 (`take_index`), so h2
+    /// and the stream's response task, not the dispatcher, answer it. Read
+    /// directly: a disabled record still says whether hyper took it.
+    pub fn indexed(&self) -> bool {
+        self.index.get().is_some()
+    }
+
     /// A GOAWAY names a last stream id below this request's stream.
     pub fn unprocessed(&self) -> bool {
         self.wire.unprocessed(self).is_some()
