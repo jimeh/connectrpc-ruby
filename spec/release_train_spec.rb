@@ -117,7 +117,7 @@ RSpec.describe ReleaseTrain do
     captured_train do |train|
       edit(train, "gems/connectrpc-hyper/connectrpc-hyper.gemspec") do |text|
         text.sub('spec.add_dependency "connectrpc", local_requirement',
-                 "spec.add_dependency \"connectrpc\", \"~> #{train.version}\"")
+                 "spec.add_dependency \"connectrpc\", \"~> #{next_version(train)}\"")
       end
       expect { train.check! }.to raise_error(/Local dependency policy changed: connectrpc-hyper/)
     end
