@@ -1087,11 +1087,16 @@ impl DriverCore {
     /// It is a runtime task outside the tracker, which `force` seals and waits
     /// for, so no closer's interruption ends it part way. Every call returns
     /// the signal that fires once the outcome is published.
+    ///
+    /// The runtime starts before teardown is claimed: a start that fails
+    /// panics with nothing claimed, so a later close starts teardown instead
+    /// of waiting for a signal that no task would fire.
     pub fn start_teardown(self: &Arc<Self>, grace: Duration) -> Arc<Signal> {
+        let runtime = runtime::handle();
         if !self.teardown.swap(true, Ordering::SeqCst) {
             self.begin_close();
             let core = self.clone();
-            runtime::handle().spawn(async move {
+            runtime.spawn(async move {
                 let expires = tokio::time::Instant::now() + grace;
                 let drained = tokio::time::timeout_at(expires, core.wait_drained())
                     .await

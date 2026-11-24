@@ -35,6 +35,34 @@ RSpec.describe ConnectRPC::Hyper::Transport do
     expect(output).not_to include(peer.certs)
   end
 
+  # A fresh process, so opening the stream is the runtime's first use. The
+  # injected start failure panics as tokio does when the OS refuses a worker
+  # thread. An exchange whose first operation panicked would have lost a
+  # stream half for good.
+  it "fails a stream whose runtime cannot start before it hands out the exchange" do
+    output, status = ruby_child(<<~RUBY, timeout: 30)
+      transport = ConnectRPC::Hyper::Transport.new
+      ConnectRPC::Hyper.const_get(:Native).fail_runtime_starts(1)
+      request = ConnectRPC::StreamRequest.new(url: URI(#{peer['grpc_h2c'].dump} + "/connectrpc.grpcinterop.v1.Peer/Bidi"),
+                                              http_method: "POST", headers: { "content-type" => ["application/grpc"] })
+      entered = false
+      failed = begin
+        transport.open_grpc_stream(request) do |exchange|
+          entered = true
+          exchange.write("\\x00\\x00\\x00\\x00\\x00".b)
+        end
+      rescue Exception => e # rubocop:disable Lint/RescueException
+        [e.class.name, e.message]
+      end
+      p [failed, entered, client(#{peer['grpc_h2c'].dump}, transport).unary(MSG.new(value: "after"), timeout: 5).message.value]
+      transport.close
+    RUBY
+    expect(status).to be_success
+    expect(eval(output.lines.last)).to eq( # rubocop:disable Security/Eval
+      [["fatal", "OS can't spawn worker thread: failure injected by a spec"], false, "after"]
+    )
+  end
+
   [
     [{ connections: :shared }, "connections must be :pooled or :per_call"],
     [{ idle_timeout: 0 }, "idle_timeout must be finite positive seconds or nil"],

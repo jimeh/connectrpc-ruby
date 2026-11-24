@@ -340,6 +340,13 @@ impl Driver {
         let core = rb_self.owned(ruby)?.clone();
         let http2 = core.config.settings.http2;
         let spec = request_spec(ruby, "POST", &url, pairs, kind, grpc, proxy, http2)?;
+        // Before the runtime starts: Ruby measured `timeout` before this call,
+        // so a slow cold start must not extend the deadline sent to the peer.
+        let deadline = instant(timeout);
+        // Each operation on the call takes a stream half before it drives. A
+        // runtime start that panicked there would drop the half and leave the
+        // exchange unusable, so the runtime starts here, before admission.
+        runtime::handle();
         let inflight = core
             .admit()
             .map_err(|failure| failure_error(ruby, failure))?;
@@ -347,7 +354,7 @@ impl Driver {
             core,
             spec,
             require_h2,
-            instant(timeout),
+            deadline,
             cancel.signal.clone(),
             inflight,
         );
@@ -608,6 +615,10 @@ fn wait_bodies() -> (usize, usize) {
     gvl::wait_bodies()
 }
 
+fn fail_runtime_starts(count: usize) {
+    runtime::fail_starts(count);
+}
+
 #[magnus::init]
 fn init(ruby: &Ruby) -> Result<(), Error> {
     let connectrpc = ruby.define_module("ConnectRPC")?;
@@ -619,6 +630,7 @@ fn init(ruby: &Ruby) -> Result<(), Error> {
     native.define_singleton_method("active_waits", function!(active_waits, 0))?;
     native.define_singleton_method("resumed_waits", function!(resumed_waits, 0))?;
     native.define_singleton_method("wait_bodies", function!(wait_bodies, 0))?;
+    native.define_singleton_method("fail_runtime_starts", function!(fail_runtime_starts, 1))?;
 
     let cancel: RClass = native.define_class("Cancel", ruby.class_object())?;
     cancel.define_singleton_method("new", function!(Cancel::new, 0))?;
