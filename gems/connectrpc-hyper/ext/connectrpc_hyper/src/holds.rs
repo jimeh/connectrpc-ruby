@@ -1,8 +1,9 @@
 //! Spec hold points. A spec arms a named point on one driver; whatever
 //! reaches an armed point parks there until the spec releases it or the
 //! point's bound passes, so a spec can hold one step of an interleaving that
-//! a race would otherwise decide. A driver with no armed point pays one
-//! atomic load per point.
+//! a race would otherwise decide. Two kinds of point ignore the bound and
+//! hold until release: a stalled poll (`poll_stall`) and a kept value
+//! (`keep`). A driver with no armed point pays one atomic load per point.
 //!
 //! A point that parks its thread must never park a Ruby thread holding the
 //! GVL: the whole VM would stall for the point's bound, and the spec waiting
@@ -130,7 +131,10 @@ impl Holds {
     }
 
     /// Takes `value` while `name` is armed, counting the arrival, and keeps
-    /// it until the point is released; hands it back when unarmed.
+    /// it until the point is released, re-armed or dropped with the driver;
+    /// hands it back when unarmed. The bound does not apply: a kept value
+    /// stands for one that never moves on (see `request:strand`), and specs
+    /// arm the point with a zero bound only to count.
     pub fn keep<T: Send + 'static>(&self, name: &str, value: T) -> Option<T> {
         let Some(point) = self.point(name) else {
             return Some(value);
@@ -179,7 +183,8 @@ impl Holds {
         }
     }
 
-    /// Arms `name`; each arrival parks for at most `bound`.
+    /// Arms `name`; each arrival parks for at most `bound`, except at
+    /// `poll_stall` and `keep`, which hold until release.
     pub fn arm(&self, name: String, bound: Duration) {
         let point = Arc::new(Point {
             bound,

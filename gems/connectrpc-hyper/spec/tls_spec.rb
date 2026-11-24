@@ -216,8 +216,9 @@ RSpec.describe "TLS parity" do
   end
 
   # The pool dial's connection is pooled, then parks at dial:pooled until the
-  # server's rejection has ended it (its socket dropped), before the waiter
-  # checks it out. The rejection came where the server's SETTINGS would have
+  # server's rejection has ended it (its dispatcher closed, so it no longer
+  # admits; its socket drops in h2's own task, which may come first), before
+  # the waiter checks it out. The rejection came where the server's SETTINGS would have
   # (wire:settings never counts one), so the waiter fails as that connection
   # did instead of dialing again: a server that ends every connection after
   # its handshake would otherwise keep a pooled caller dialing until its
@@ -227,15 +228,15 @@ RSpec.describe "TLS parity" do
     transport = hyper(ca_file: File.join(peer.certs, "ca.pem"))
     native_driver = driver(transport)
     native_driver.hold("dial:pooled", 10)
-    %w[socket:drop dial:started wire:settings].each { |point| native_driver.hold(point, 0) }
+    %w[dispatcher:closed dial:started wire:settings].each { |point| native_driver.hold(point, 0) }
     call = Thread.new { failure(peer["connect_mtls"], transport) }
-    wait_until("the pooled connection closed") { native_driver.reached("socket:drop") == 1 }
+    wait_until("the pooled connection closed") { native_driver.reached("dispatcher:closed") == 1 }
     native_driver.release("dial:pooled")
     expect(call.value).to eq(["unavailable", "HTTP transport failed: connection closed"])
       .or eq(["unavailable", "HTTP transport failed: TLS error"])
     expect(%w[dial:started wire:settings].map { |point| native_driver.reached(point) }).to eq([1, 0])
   ensure
-    %w[dial:pooled socket:drop dial:started wire:settings].each { |point| native_driver&.release(point) }
+    %w[dial:pooled dispatcher:closed dial:started wire:settings].each { |point| native_driver&.release(point) }
   end
 
   it "accepts a leaf-first chain with an intermediate" do
