@@ -1,5 +1,7 @@
 # frozen_string_literal: true
 
+require_relative "../../connectrpc-async/spec/support/retirement_helpers"
+
 # A failing listener step never skips a later one or replaces the close result
 # (docs/design.md, rule 4).
 RSpec.describe ConnectRPC::Falcon::Server, "listener teardown failures" do
@@ -64,6 +66,45 @@ RSpec.describe ConnectRPC::Falcon::Server, "listener teardown failures" do
     ensure
       owner&.cancel
       bound&.close
+    end
+  end
+end
+
+RSpec.describe "Falcon HTTP/1 retirement teardown failures" do
+  include RetirementHelpers
+
+  def retirement_host(core, tls: nil, **)
+    scheme = tls ? "https" : "http"
+    host = ConnectRPC::Falcon::Server.new(server: core, endpoint: ConnectRPC::Falcon::Endpoint.parse(
+      "#{scheme}://127.0.0.1:0"
+    ), tls: tls, **)
+    host.run
+    [host, "#{scheme}://127.0.0.1:#{host.instance_variable_get(:@owned_bound).sockets.first.local_address.ip_port}"]
+  end
+
+  # The stream and TLS closes fail without closing raw, so the final raw
+  # close meets the last fault.
+  it "reports failed disposal steps and a failed final raw close and still completes retirement" do
+    reactor do |task|
+      with_retirement_connection(task, mode: :tls, protocol: :h1) do |state|
+        session, resource, gate, handler = state.values_at(:session, :resource, :gate, :handler)
+        expect(resource).to be_a(ConnectRPC::Falcon.const_get(:HTTP1Resource))
+        raw = resource.raw
+        closed_after_handler = fail_first_raw_close(raw, handler)
+        resource.connection.define_singleton_method(:close) { |*| raise IOError, "HTTP/1 close failed" }
+        resource.socket.define_singleton_method(:close) { raise OpenSSL::SSL::SSLError, "TLS close failed" }
+        expect do
+          aborter = task.async(finished: false) { session.abort }
+          waiter = task.async(finished: false) { state.fetch(:accepted).wait_closed }
+          expect(gate.entered.dequeue).to equal(handler)
+          gate.release
+          join_retirement_tasks(task, aborter, waiter, handler)
+          expect(aborter.result).to equal(session)
+        end.to output(teardown_warnings(IOError, OpenSSL::SSL::SSLError, RuntimeError)).to_stderr
+        expect(closed_after_handler).to eq([true])
+        expect(retirement_complete?(resource)).to be(true)
+        expect(raw).to be_closed
+      end
     end
   end
 end

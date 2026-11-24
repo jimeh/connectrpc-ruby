@@ -134,6 +134,96 @@ RSpec.describe "Teardown failure outcomes" do
     end
   end
 
+  # The protocol and TLS closes fail without closing raw, so the final raw
+  # close is the step that meets the fault.
+  it "reports a failed final raw close and still completes retirement" do
+    reactor do |task|
+      with_retirement_connection(task, mode: :tls) do |state|
+        session, resource, gate, handler = state.values_at(:session, :resource, :gate, :handler)
+        raw = resource.raw
+        closed_after_handler = fail_first_raw_close(raw, handler)
+        resource.connection.define_singleton_method(:finish_close) { |*| raise IOError, "protocol finish failed" }
+        resource.socket.define_singleton_method(:close) { raise OpenSSL::SSL::SSLError, "TLS close failed" }
+        expect do
+          aborter = task.async(finished: false) { session.abort }
+          waiter = task.async(finished: false) { state.fetch(:accepted).wait_closed }
+          expect(gate.entered.dequeue).to equal(handler)
+          gate.release
+          join_retirement_tasks(task, aborter, waiter, handler)
+          expect(aborter.result).to equal(session)
+        end.to output(teardown_warnings(IOError, OpenSSL::SSL::SSLError, RuntimeError)).to_stderr
+        expect(closed_after_handler).to eq([true])
+        expect(retirement_complete?(resource)).to be(true)
+        expect(raw).to be_closed
+      end
+    end
+  end
+
+  describe "HTTP/1 client resource close" do
+    # A stage whose close runs `action` and records each call.
+    def stage(calls, name, &action)
+      owned = Object.new
+      owned.define_singleton_method(:close) do
+        calls << name
+        action&.call
+      end
+      owned
+    end
+
+    def resource_with(connection, socket)
+      raw, peer = Socket.pair(:UNIX, :STREAM)
+      resource = AsyncHelpers::INTERNAL.const_get(:HTTP1Resource).new
+      resource.connection = connection
+      resource.socket = socket
+      resource.raw = raw
+      [resource, peer]
+    end
+
+    it "raises the first failure, reports a later one and closes raw" do
+      calls = []
+      first = IOError.new("connection close failed")
+      resource, peer = resource_with(stage(calls, :connection) { raise first },
+                                     stage(calls, :socket) { raise OpenSSL::SSL::SSLError, "TLS close failed" })
+      expect do
+        expect { resource.close }.to(raise_error { |error| expect(error).to equal(first) })
+      end.to output(teardown_warnings(OpenSSL::SSL::SSLError)).to_stderr
+      expect(calls).to eq(%i[connection socket])
+      expect(resource.raw).to be_closed
+    ensure
+      peer&.close
+    end
+
+    it "raises an interruption delivered after a failure, reports the failure and closes raw" do
+      reactor do |task|
+        calls = []
+        entered = Async::Promise.new
+        held = Async::Promise.new
+        socket = stage(calls, :socket) do
+          # The interrupted close is retried and then completes.
+          next if entered.resolved?
+
+          entered.resolve(true)
+          held.wait
+        end
+        resource, peer = resource_with(stage(calls, :connection) { raise IOError, "connection close failed" }, socket)
+        expect do
+          closer = task.async(finished: false) do
+            resource.close
+          rescue Exception => e # rubocop:disable Lint/RescueException -- observe what close raises
+            e
+          end
+          entered.wait
+          closer.cancel
+          expect(closer.wait).to be_a(Async::Cancel)
+        end.to output(teardown_warnings(IOError)).to_stderr
+        expect(calls).to eq(%i[connection socket socket])
+        expect(resource.raw).to be_closed
+      ensure
+        peer&.close
+      end
+    end
+  end
+
   it "keeps a unary H2 call's response when its cleanup and the connection's retirement both fail" do
     reactor do
       host, origin = retirement_host(server)
