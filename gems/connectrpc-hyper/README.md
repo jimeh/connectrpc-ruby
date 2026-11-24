@@ -123,10 +123,12 @@ attempt. So a server that ends every connection right after its handshake,
 such as a TLS 1.3 server rejecting a missing client certificate, cannot keep
 a caller dialing until its deadline. A connection that closes or drains
 after the preface, such as one that received a graceful GOAWAY, was working:
-its waiters dial again, as grpc-go re-picks a transport. A waiter's own deadline, cancellation or interrupt ends only its wait. A call
-with a short deadline fails `deadline_exceeded` while the dial carries on and
-pools its connection for later calls. A second HTTP/2 connection never replaces a usable pooled one:
-it serves only the call that dialed it, then closes. hyper multiplexes calls
+its waiters dial again, as grpc-go re-picks a transport, and so do the
+waiters of a connection the idle timeout closed. A waiter's own deadline,
+cancellation or interrupt ends only its wait. A call with a short deadline
+fails `deadline_exceeded` while the dial carries on and pools its connection
+for later calls. A second HTTP/2 connection never replaces a usable pooled
+one: it serves only the call that dialed it, then closes. hyper multiplexes calls
 up to the peer's `SETTINGS_MAX_CONCURRENT_STREAMS`. Behaviour compared with a
 grpc-go channel:
 

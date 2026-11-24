@@ -144,9 +144,11 @@ stage and reset its stream.
   attempt (`newHTTP2Client` waits for it), while a ready transport that
   drains or closes makes waiting RPCs re-pick; so a connection that closes or
   drains after the preface (a graceful GOAWAY) keeps the redial: its waiters
-  join or start another dial, with no cap. The tap (D12) records the
-  preface; a server-frame reader that lost its place before one cannot vouch
-  that none arrived and keeps the redial. Callers that did not wait for that
+  join or start another dial, with no cap, as do the waiters of a connection
+  the idle timeout closed. The tap (D12) records the preface once the whole
+  SETTINGS frame has passed, as grpc-go reads the full frame; a server-frame
+  reader that lost its place before one cannot vouch that none arrived and
+  keeps the redial. Callers that did not wait for that
   dial evict it and dial as usual. The dial's outcome names its connection
   without a hyper sender, so a slow waiter never keeps an evicted connection
   open (D6).

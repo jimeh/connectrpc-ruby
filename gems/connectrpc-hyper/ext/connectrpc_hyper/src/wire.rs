@@ -212,6 +212,10 @@ struct Frames {
     remaining: usize,
     /// The current frame is a GOAWAY: its payload bytes seen so far.
     goaway: Option<([u8; 4], usize)>,
+    /// The current frame is a non-ACK SETTINGS (server side): it counts as
+    /// the server's preface only once its whole payload has passed, as
+    /// grpc-go reads the full frame before accepting the preface.
+    settings: bool,
     broken: bool,
 }
 
@@ -223,11 +227,13 @@ impl Frames {
             have: 0,
             remaining: 0,
             goaway: None,
+            settings: false,
             broken: false,
         }
     }
 
-    /// Server frames: records each GOAWAY once its payload passed.
+    /// Server frames: records each GOAWAY, and the first non-ACK SETTINGS,
+    /// once its payload passed.
     fn read(&mut self, wire: &Wire, mut bytes: &[u8]) {
         while !self.broken && !bytes.is_empty() {
             if self.remaining > 0 {
@@ -240,7 +246,7 @@ impl Frames {
                 self.remaining -= take;
                 bytes = &bytes[take..];
                 if self.remaining == 0 {
-                    self.end_goaway(wire);
+                    self.end_frame(wire);
                 }
                 continue;
             }
@@ -252,9 +258,9 @@ impl Frames {
                 break;
             }
             self.have = 0;
-            self.server_header(wire);
+            self.server_header();
             if self.remaining == 0 {
-                self.end_goaway(wire);
+                self.end_frame(wire);
             }
         }
         if self.broken {
@@ -265,11 +271,9 @@ impl Frames {
         }
     }
 
-    fn server_header(&mut self, wire: &Wire) {
+    fn server_header(&mut self) {
         let (length, kind, flags, stream) = parse(&self.header);
-        if kind == SETTINGS && flags & ACK == 0 {
-            wire.record_started();
-        }
+        self.settings = kind == SETTINGS && flags & ACK == 0;
         if kind == GOAWAY && (stream != 0 || length < 8) {
             // Not a GOAWAY anyone can read a last stream id from.
             self.broken = true;
@@ -279,7 +283,10 @@ impl Frames {
         self.remaining = length;
     }
 
-    fn end_goaway(&mut self, wire: &Wire) {
+    fn end_frame(&mut self, wire: &Wire) {
+        if std::mem::take(&mut self.settings) {
+            wire.record_started();
+        }
         if let Some((last, _)) = self.goaway.take() {
             let last = u32::from_be_bytes(last) & 0x7fff_ffff;
             if !wire.record_goaway(last) {
@@ -483,6 +490,12 @@ mod tests {
     fn a_server_settings_frame_starts_http2_and_its_ack_does_not() {
         assert!(!read(&[frame(SETTINGS, ACK, 0, &[])]).server_started());
         assert!(read(&[frame(SETTINGS, 0, 0, &[0, 3, 0, 0, 0, 100])]).server_started());
+    }
+
+    #[test]
+    fn a_settings_frame_cut_short_is_no_preface() {
+        let whole = frame(SETTINGS, 0, 0, &[0, 3, 0, 0, 0, 100]);
+        assert!(!read(&[whole[..whole.len() - 1].to_vec()]).server_started());
     }
 
     #[test]

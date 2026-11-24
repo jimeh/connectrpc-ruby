@@ -204,6 +204,9 @@ struct ConnShared {
     /// The pool evicted it as unusable. hyper may close its sender before
     /// `closed` fires; this keeps that verdict for `Dialed`, which has none.
     retired: AtomicBool,
+    /// The idle reaper evicted it: its end is the pool's doing, not a failed
+    /// connection attempt, even before the server's preface arrived.
+    reaped: AtomicBool,
 }
 
 /// A connection the pool kept, without its hyper sender: an outcome a slow
@@ -222,11 +225,14 @@ impl Dialed {
     /// attempt, as grpc-go treats a transport that never received the server
     /// preface. None while it admits or once the server started HTTP/2.
     fn failure(&self) -> Option<Failure> {
-        // Ended first: a preface read before the end is then always seen.
+        // Ended first: a preface read, or an idle eviction made, before the
+        // end is then always seen.
         let ended = self.shared.retired.load(Ordering::SeqCst)
             || self.shared.closed.fired()
             || self.wire.going_away();
-        (ended && !self.wire.server_started()).then(|| self.fault.resolve(Failure::closed()))
+        let failed =
+            ended && !self.shared.reaped.load(Ordering::SeqCst) && !self.wire.server_started();
+        failed.then(|| self.fault.resolve(Failure::closed()))
     }
 }
 
@@ -969,6 +975,7 @@ impl DriverCore {
             idle: Notify::new(),
             closed,
             retired: AtomicBool::new(false),
+            reaped: AtomicBool::new(false),
         });
         let dialed = Dialed {
             shared: shared.clone(),
@@ -1190,6 +1197,8 @@ async fn reap(
             && shared.generation.load(Ordering::Acquire) == generation
         {
             // Dropping the pool's sender lets hyper close the connection.
+            // Marked first, so a dial waiter yet to claim it redials.
+            shared.reaped.store(true, Ordering::SeqCst);
             state.h2 = None;
             return;
         }
