@@ -13,9 +13,12 @@ module ConnectRPC
 
       # One stream's mailbox. Admission, settle and release follow Call; the
       # command queue, reply slot and flags change only under the admission lock.
+      # +shared_deadline+ is the deadline bound every wait shares once an
+      # operation ended past the deadline without the owner's answer and
+      # failed with deadline_exceeded.
       class Stream < Call
         attr_reader :grpc, :commands
-        attr_accessor :seq, :reply, :busy, :broken, :exited, :aborted, :finished
+        attr_accessor :seq, :reply, :busy, :broken, :exited, :aborted, :finished, :shared_deadline
 
         def initialize(request, source, proxy, grpc)
           super(request, 0, source, proxy)
@@ -25,6 +28,7 @@ module ConnectRPC
           @seq = 0
           @reply = nil
           @busy = @broken = @exited = @aborted = @finished = false
+          @shared_deadline = nil
         end
       end
       private_constant :Stream
@@ -325,7 +329,7 @@ module ConnectRPC
           begin
             status, reply = await_stream(stream, request, seq: seq, timeout: command.last)
             answered = %i[reply result retired].include?(status)
-            expired!(request, status) unless answered
+            expire_operation(stream, request, status, reply) unless answered
             raise_outcome(settled(stream), request) if status == :result
             if status == :retired
               check_request!(request)
@@ -348,6 +352,19 @@ module ConnectRPC
             break_stream(stream) unless answered
           end
         end
+      end
+
+      # Raises an unanswered operation's expiry. One read of core's arbiter,
+      # on the deadline's own clock and outside the admission lock, picks the
+      # error; when that is deadline_exceeded the stream first shares the
+      # operation's deadline bound, +bound+. A clock failure while reading
+      # the arbiter propagates and shares nothing.
+      def expire_operation(stream, request, status, bound)
+        error = expiry_error(request, status)
+        if bound && error.code == "deadline_exceeded"
+          stream.engine.admission.lock.synchronize { share_deadline(stream, bound) }
+        end
+        raise error, cause: nil
       end
 
       # Settled outcomes are raised outside the lock: arbitration can run
@@ -411,14 +428,16 @@ module ConnectRPC
       end
 
       # Waits for the reply tagged +seq+ or the terminal outcome and returns
-      # [status, reply]. A reply is taken in the same critical section that
-      # selects it, so a concurrent break cannot withdraw it. Expiry is the
+      # [status, reply], or [:deadline or :timeout, deadline bound] on those
+      # expiries, the bound nil without a deadline. A reply is taken in the
+      # same critical section that selects it, so a concurrent break cannot
+      # withdraw it. Expiry is the
       # deadline or the operation timeout plus the cleanup allowance, or the
       # cancellation allowance; nil bounds wait until a signal or interrupt. An
       # operation also ends once the scope took or abandoned the stream.
       def await_stream(stream, request, seq: nil, timeout: nil)
         now = Internal.now
-        deadline = now + request.deadline.remaining + Internal::CLEANUP_SECONDS if request.deadline
+        sampled = now + request.deadline.remaining + Internal::CLEANUP_SECONDS if request.deadline
         expires = now + timeout + Internal::CLEANUP_SECONDS if timeout
         lock = stream.engine.admission.lock
         lock.synchronize do
@@ -432,9 +451,11 @@ module ConnectRPC
             return [:retired] if seq && stream.caller_done
 
             now = Internal.now
+            deadline = [stream.shared_deadline, sampled].compact.min
             return [:canceled] if stream.cancel_expires && stream.cancel_expires <= now
-            return [:deadline] if deadline && deadline <= now
-            return [:timeout] if expires && expires <= now
+
+            return [:deadline, deadline] if deadline && deadline <= now
+            return [:timeout, deadline] if expires && expires <= now
 
             limit = [deadline, expires, stream.cancel_expires].compact.min
             caller_mask(:immediate) do
@@ -444,14 +465,33 @@ module ConnectRPC
         end
       end
 
-      # An accepted cancellation or deadline keeps its own reason; otherwise
-      # the expired bound picks the code.
-      def expired!(request, status)
-        check_request!(request)
-        raise Error.new(:canceled, "Call canceled"), cause: nil if status == :canceled
-        raise Error.new(:deadline_exceeded, "Deadline exceeded"), cause: nil if status == :deadline
+      # Called under the admission lock when an unanswered operation's expiry
+      # is deadline_exceeded. Every later or concurrent wait on the stream
+      # then ends by the same deadline bound, so a stalled owner costs the
+      # stream one allowance past the deadline rather than one per wait.
+      def share_deadline(stream, deadline)
+        return if stream.shared_deadline
 
-        raise Error.new(:unavailable, FAILED), cause: nil
+        stream.shared_deadline = deadline
+        stream.signal.broadcast
+      end
+
+      def expired!(request, status)
+        raise expiry_error(request, status), cause: nil
+      end
+
+      # An accepted cancellation or deadline keeps its own reason; otherwise
+      # the expired bound picks the code. Reads core's arbiter once, as
+      # check_request! does.
+      def expiry_error(request, status)
+        cancellation = request.cancellation
+        reason = cancellation ? cancellation.reason : (:deadline_exceeded if request.deadline&.expired?)
+        reason ||= :canceled if status == :canceled
+        reason ||= :deadline_exceeded if status == :deadline
+        return Error.new(:canceled, "Call canceled") if reason == :canceled
+        return Error.new(:deadline_exceeded, "Deadline exceeded") if reason == :deadline_exceeded
+
+        Error.new(:unavailable, FAILED)
       end
 
       # A terminal outcome observed while opening or during an operation.
