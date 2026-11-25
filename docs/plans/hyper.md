@@ -90,8 +90,12 @@ stage and reset its stream.
   FIPS build.
 - D3 Runtime: one lazily created, PID-checked multi-thread tokio runtime per
   process (two workers, no public setting), stored in an `AtomicPtr` slot with
-  its owner PID, never a lock a fork can inherit; concurrent cold callers elect
-  one runtime (compare-and-swap, losers drop theirs). Every process-wide native
+  its owner PID, never a lock a fork can inherit. A cold caller builds the
+  runtime on a short-lived `hyper-runtime-start` thread and waits for it, GVL
+  held, for at most 5 s; concurrent starts elect one runtime (compare-and-swap,
+  losers shut theirs down). A start that fails or outlasts the bound raises
+  `fatal` and publishes nothing, so a later use starts a fresh attempt (see
+  Runtime start failure in the accepted behaviour). Every process-wide native
   state, including the native-root cache and any initialisation in progress, is
   PID-scoped the same way. A forked child leaks inherited runtime state through
   `ForkGuard`, never shuts down inherited sockets, and closes (not shuts down)
@@ -549,9 +553,19 @@ cause, abort in a masked `ensure`. Rust owns connections, streams and waits.
   runtime before it takes its lock, and `Driver::open` before admission,
   because each stream operation takes a stream half before it drives. A call
   or stream whose runtime start fails raises `fatal` the same way and leaves
-  nothing claimed. Not fixed: when the OS refuses the second worker after the
-  first started, tokio panics with that worker running and never returns, so
-  that first close or call hangs inside tokio.
+  nothing claimed. When the OS refuses the second worker after the first
+  started, tokio 1.54's `build` panics with that worker running and never
+  returns (cause tokio-rs/tokio#8408; tokio-rs/tokio#8752, merged upstream but
+  unreleased, makes `build` return an error instead). So the runtime starts
+  on a short-lived `hyper-runtime-start` thread, and the caller waits for it
+  for at most 5 s (#218): a start that fails, returns an error or outlasts the
+  bound raises `fatal` with nothing published, and a later use starts a fresh
+  attempt. A start stuck in tokio keeps its start thread, first worker and I/O
+  driver for the life of the process; if it finishes after all, its runtime
+  serves later uses. The bound applies per attempt, so a closer whose helper
+  thread could not start, and that retries once itself, can wait for it twice.
+  `Thread#raise`, `Thread#kill` and signals wait for the start, as the caller
+  holds the GVL.
 - rustls strictness (CN-only, X.509 v1, single-label wildcard, CA as leaf,
   encrypted keys): `TLS verification failed` or `ArgumentError`; documented.
 - Server RST_STREAM codes map as the Async transport does (3 and 11
@@ -592,7 +606,7 @@ cause, abort in a masked `ensure`. Rust owns connections, streams and waits.
 | Errors | Fixed phrases for refused, DNS, TLS verify, closed, ALPN mismatch, deadline; server RST_STREAM with each mapped code |
 | Offload | Ruby 4.0 with async worker pool: sibling task progresses, stop/cancel/deadline/raise/kill land; simultaneous read and write on one bidi stream from two fibers on a two-worker pool, then abort or stop while both wait bodies run; a scheduler's `blocking_operation_wait` hook receives waits on 4.0 and never on 3.4; Ruby 3.4 and without the pool behave as a plain blocking call; on both Rubies, with and without the pool, a sibling fiber's in-flight call drains while another fiber waits in close |
 | Spurious wake | A wake without a pending interrupt during a blocked `write` does not duplicate the message on the wire |
-| Close | `close(grace:)` drains in-flight calls (true), forced (false), later calls fail with the closed phrase; `close(grace: 0)` racing setup, a retry or a streaming dispatch (write first and head first), with one of the two forced-teardown phrases and never a bare `HTTP transport failed`; a stranded Connect unary call that forced teardown ends gets a forced phrase and no replacement dial; repeated close shares the outcome, and a concurrent closer stopped by `Task#stop` while it waits raises only after it is published; a task aborted before its first poll is still counted until its socket closes; a `Task#stop` on the closer lets a sibling fiber's call drain before the stop is raised; a first close whose runtime start fails (injected in a fresh process) raises, and a later close starts teardown and returns true; a stream whose runtime start fails raises before the exchange is handed out; a dial that finishes its handshake while forced teardown is parked after `shutdown` (hold point `force:shutdown`) registers no dispatcher and sends no request, per-call HTTP/2 and HTTP/1.1 |
+| Close | `close(grace:)` drains in-flight calls (true), forced (false), later calls fail with the closed phrase; `close(grace: 0)` racing setup, a retry or a streaming dispatch (write first and head first), with one of the two forced-teardown phrases and never a bare `HTTP transport failed`; a stranded Connect unary call that forced teardown ends gets a forced phrase and no replacement dial; repeated close shares the outcome, and a concurrent closer stopped by `Task#stop` while it waits raises only after it is published; a task aborted before its first poll is still counted until its socket closes; a `Task#stop` on the closer lets a sibling fiber's call drain before the stop is raised; a first close whose runtime start fails (injected in a fresh process) raises, and a later close starts teardown and returns true; a first close whose start thread, first worker or only second worker the OS refuses (`pthread_create` shim, `runtime_start_spec.rb`) raises `fatal` within the start bound, the transport stays closing, and a later close starts the runtime and returns true; a stream whose runtime start fails raises before the exchange is handed out; a dial that finishes its handshake while forced teardown is parked after `shutdown` (hold point `force:shutdown`) registers no dispatcher and sends no request, per-call HTTP/2 and HTTP/1.1 |
 | Keepalive move | Core `Keepalive` specs (validation, equality, freezing); `ConnectRPC::Async::Keepalive.equal?(ConnectRPC::Keepalive)` from installed packages in both require orders; existing Async keepalive specs pass |
 | Fast path | Connect unary passes all unary specs and does one native wait (spec on an internal counter or a GVL-contention probe) |
 | Package | Source gem builds and installs in a clean GEM_HOME and runs a smoke call; exact manifest, MIT plus third-party notice, push host, MFA |

@@ -797,7 +797,9 @@ same operation after a wake without a pending interrupt, so `Thread#raise`,
 repeating a side effect. Rust never calls Ruby from a worker thread. A
 process-wide tokio runtime with two workers is created lazily and checked
 against the owning PID, so a forked child builds its own runtime and
-connections and closes the inherited connection sockets it can identify.
+connections and closes the inherited connection sockets it can identify. The
+first use waits for the runtime's start, holding the GVL, for at most 5 s; a
+start that fails or takes longer raises, and a later use retries.
 
 One admitting HTTP/2 connection per origin is shared by every thread; GOAWAY
 retires it while a new connection admits, and reconnection is lazy, without
