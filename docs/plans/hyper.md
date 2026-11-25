@@ -400,6 +400,24 @@ stage and reset its stream.
   `.crate` against the `v1.13.0` tag's tree, a read of the 1.12.0..1.13.0
   diff, the lock moving only hyper, and `cargo deny` and `cargo audit`. The
   exception covers that version only; the next hyper release waits the 7 days.
+  A hyper or h2 update also rereads, in the new release's source, two
+  internals the transport relies on. The GOAWAY retry (D12) relies on the
+  dispatch order and frame writes `wire.rs` documents; `retry_spec.rb`'s
+  stream-id and waiting-HEADERS specs fail when an update breaks them. The
+  HTTP/2 write wait (#193) relies on hyper's request-body pipe
+  (`PipeToSendStream` in `proto/h2/mod.rs`, run by `PipeMap` in
+  `proto/h2/client.rs`) dropping the body only once its stream closed, which
+  also resolves the response: a reset, a stream h2 no longer streams, a body
+  error hyper resets the stream for, or the caller's cancel. h2's
+  `UserError::PayloadTooBig` from `send_data` (a chunk above the 2^31 - 1
+  byte window, `Prioritize::send_data`) is the one path that drops the body
+  with the stream open, and `write_chunk` in `lib.rs` rejects such a chunk
+  before it is queued. A write that finds the body dropped waits for the
+  response's outcome, so a new path of that kind makes a write without a
+  deadline wait until the call is canceled or aborted, and no spec fails
+  unless it exercises that path. Check the pipe's exits and `send_data`'s
+  errors; a new such path needs its own check before the write, as
+  `write_chunk` is for `PayloadTooBig`.
 - D17 `Keepalive` moves to core as `ConnectRPC::Keepalive` (Since 0.3.0,
   loaded by `require "connectrpc"`), with the same constructor, validation,
   equality and freezing as today's `ConnectRPC::Async::Keepalive`.

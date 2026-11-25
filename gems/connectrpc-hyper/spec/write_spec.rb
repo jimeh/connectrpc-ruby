@@ -197,24 +197,21 @@ RSpec.describe "Streaming writes after the stream ended", :interop do
     end
   end
 
-  # h2 refuses a chunk this large outright, which would drop the request
-  # body while the response waits for it. The check reads the string's own
-  # length, so a String subclass's bytesize cannot move it either way.
-  it "rejects a write of 2 GiB or more before queuing it" do
-    # A String's length is a C long, 32 bits on Windows, where no string
-    # reaches the limit.
-    skip "a String cannot reach 2 GiB where a long is 32 bits" if [0].pack("l!").bytesize < 8
+  # h2 refuses a chunk of 2 GiB or more outright, which would drop the
+  # request body while the response waits for it, so the extension rejects
+  # such a write before copying or queuing it. Rust unit tests on
+  # `write_chunk` (lib.rs) prove that boundary without a 2 GiB string; this
+  # example proves the check reads the string's own length, so a String
+  # subclass whose sizes claim the limit still sends its bytes.
+  it "judges a write by the string's own length, not its bytesize" do
     from = peer.mark
-    lying = Class.new(String) { def bytesize = 1 << 31 }
-    big = "\0".b * (1 << 31)
-    exchange("ok") do |call|
-      expect { call.write(big) }.to raise_error(ArgumentError, "A streaming write must be smaller than 2 GiB")
+    lying = Class.new(String) { %i[bytesize length size].each { |name| define_method(name) { 1 << 31 } } }
+    exchange("await-ok:own-length") do |call|
       expect(call.write(lying.new(envelope))).to be_nil
+      call.close_send
+      expect(call.response_head(timeout: 5).status).to eq(200)
     end
-    peer.wait_event(/\Araw request ok /, from: from)
-    expect(peer.since(from).grep(/\Araw request /).size).to eq(1)
-  ensure
-    big = nil
+    peer.wait_event(/\Araw handled await-ok:own-length stream=\d+ bytes=5\z/, from: from)
   end
 
   # Forced teardown fires `shutdown` before it aborts the connection that

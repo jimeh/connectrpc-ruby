@@ -55,8 +55,20 @@ fn failure_error(ruby: &Ruby, failure: Failure) -> Error {
     }
 }
 
-/// One streaming write's limit (`Call::write`).
+/// One streaming write's limit (`Call::write`). h2 refuses a DATA chunk
+/// above its 2^31 - 1 byte window outright, which would drop the request
+/// body while the response still waits for it.
 const MAX_WRITE: usize = 1 << 31;
+
+/// A streaming write's chunk: `copy` runs only once `len`, the string's own
+/// length, passed `MAX_WRITE`, so a write that fails copies and queues
+/// nothing.
+fn write_chunk<T>(len: usize, copy: impl FnOnce() -> T) -> Result<T, &'static str> {
+    if len >= MAX_WRITE {
+        return Err("A streaming write must be smaller than 2 GiB");
+    }
+    Ok(copy())
+}
 
 fn arg_error(ruby: &Ruby, message: &'static str) -> Error {
     Error::new(ruby.exception_arg_error(), message)
@@ -531,15 +543,10 @@ impl Call {
         data: RString,
         timeout: Option<f64>,
     ) -> Result<Value, Error> {
-        // h2 refuses a DATA chunk above its 2^31 - 1 byte window outright,
-        // which would drop the request body while the response still waits
-        // for it. Checked on the string's own length, before any copy.
-        if data.len() >= MAX_WRITE {
-            return Err(arg_error(
-                ruby,
-                "A streaming write must be smaller than 2 GiB",
-            ));
-        }
+        // The string's own length, so a `String#bytesize` override cannot
+        // move the check either way.
+        let chunk =
+            write_chunk(data.len(), || bytes(data)).map_err(|message| arg_error(ruby, message))?;
         let state = rb_self.state(ruby)?;
         let mut send = state
             .send
@@ -548,7 +555,7 @@ impl Call {
             .take()
             .ok_or_else(|| Self::overlap(ruby))?;
         let waits = Self::waits(state, instant(timeout));
-        let outcome = drive(ruby, &waits, state.write(&mut send, bytes(data)));
+        let outcome = drive(ruby, &waits, state.write(&mut send, chunk));
         state.restore(&state.send, send);
         settle(ruby, outcome).inspect_err(|_| state.mark_failed())?;
         Ok(ruby.qnil().as_value())
@@ -678,4 +685,31 @@ fn init(ruby: &Ruby) -> Result<(), Error> {
     call.define_method("h2?", method!(Call::is_h2, 0))?;
     call.define_method("finished?", method!(Call::is_finished, 0))?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::cell::Cell;
+
+    use super::*;
+
+    #[test]
+    fn a_write_below_the_limit_is_copied() {
+        let copies = Cell::new(0);
+        let chunk = write_chunk(MAX_WRITE - 1, || copies.set(copies.get() + 1));
+        assert_eq!((chunk, copies.get()), (Ok(()), 1));
+    }
+
+    #[test]
+    fn a_write_at_or_above_the_limit_fails_before_its_copy() {
+        for len in [MAX_WRITE, usize::MAX] {
+            let copies = Cell::new(0);
+            let chunk = write_chunk(len, || copies.set(copies.get() + 1));
+            assert_eq!(
+                (chunk, copies.get()),
+                (Err("A streaming write must be smaller than 2 GiB"), 0),
+                "a write of {len} bytes"
+            );
+        }
+    }
 }
