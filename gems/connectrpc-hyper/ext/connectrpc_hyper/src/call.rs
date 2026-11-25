@@ -790,6 +790,8 @@ async fn respond(
     // Spec hold point: it parks the outcome before it is published.
     core.holds.reach("respond:publish").await;
     responder.publish(delivered);
+    // Spec hold point: armed with a zero bound, it counts outcomes published.
+    core.holds.block("respond:published");
 }
 
 /// `future`'s output, or None once `deadline` passes.

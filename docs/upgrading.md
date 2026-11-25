@@ -23,7 +23,9 @@ The [changelog](../CHANGELOG.md) lists every change.
   success and discarding the message. It raises the stream's own failure when
   the response side already knows it, such as `canceled` for a gRPC
   `RST_STREAM(CANCEL)`, and otherwise `unavailable`. Core's client streams
-  then stop writing and report the server's status, as connectrpc-async does.
+  then stop writing and report the server's error status, as connectrpc-async
+  does, or keep the write's `unavailable` when the response carries no error
+  status, or when a gRPC reset sits behind unread response data.
   A single write of 2 GiB or more raises `ArgumentError`. See
   [writes after the stream ended](../gems/connectrpc-hyper/README.md#errors).
 

@@ -333,13 +333,13 @@ RSpec.describe "Streaming writes after the stream ended", :interop do
       transport.open_stream(request, &)
     end
 
-    # Writes once, waits until the response task holds the response head,
-    # which it publishes in the same poll, then writes until one raises: the
+    # Writes once, waits until the response task published the response
+    # head, then writes until one raises: the
     # write that finds the upload dropped then finds the head and the body
     # error behind it.
     def write_after_head(call, native_driver)
       call.write(envelope)
-      wait_until("the response head") { native_driver.reached("respond:publish") == 1 }
+      wait_until("the response head") { native_driver.reached("respond:published") == 1 }
       write_until_raised(call)
     end
 
@@ -356,14 +356,14 @@ RSpec.describe "Streaming writes after the stream ended", :interop do
       @server, @served = h1_server { |socket| answer_after_upload(socket) { malformed(socket) } }
       transport = hyper(http2: false)
       native_driver = driver(transport)
-      native_driver.hold("respond:publish", 0)
+      native_driver.hold("respond:published", 0)
       h1_exchange(@server, transport: transport) do |call|
         expect(outcome(write_after_head(call, native_driver))).to eq(malformed_response)
         expect(call.response_head(timeout: 5).status).to eq(200)
         expect(outcome(read_all(call).last)).to eq(malformed_response)
       end
     ensure
-      native_driver&.release("respond:publish")
+      native_driver&.release("respond:published")
     end
 
     it "keeps a body error a read consumed for the next write" do
@@ -380,14 +380,14 @@ RSpec.describe "Streaming writes after the stream ended", :interop do
       @server, @served = h1_server { |socket| answer_after_upload(socket) { truncated(socket) } }
       transport = hyper(http2: false)
       native_driver = driver(transport)
-      native_driver.hold("respond:publish", 0)
+      native_driver.hold("respond:published", 0)
       h1_exchange(@server, transport: transport) do |call|
         expect(outcome(write_after_head(call, native_driver))).to eq(connection_closed)
         expect(call.response_head(timeout: 5).status).to eq(200)
         expect(outcome(read_all(call).last)).to eq(connection_closed)
       end
     ensure
-      native_driver&.release("respond:publish")
+      native_driver&.release("respond:published")
     end
 
     # hyper drops a body that reached its declared Content-Length while the
