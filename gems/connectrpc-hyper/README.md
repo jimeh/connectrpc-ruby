@@ -266,7 +266,10 @@ connect, TLS, a blocked write and a blocked read. The stream is reset with
 keeps serving other calls. A token cancels name resolution, connect and TLS,
 including a wait for the shared dial (which carries on for other callers). The wire timeout headers
 (`grpc-timeout`, `connect-timeout-ms`) carry the deadline remaining at dispatch,
-after connection setup and on a retry.
+after connection setup and on a retry. The one wait that holds the GVL is a
+process's first use waiting for the native runtime to start: normally brief,
+and at most 5 seconds per start attempt when the start fails (see
+[errors](#errors)).
 
 ## Fiber schedulers
 
@@ -297,13 +300,16 @@ ends.
 ## Fork
 
 The tokio runtime has two `hyper-runtime` worker threads plus tokio's blocking
-pool, created lazily on the first call in each process. A forked child never
-touches its parent's runtime or connections: it builds its own on first use.
-The child closes, never shuts down, the inherited connection sockets it can
-identify, so the parent's connections keep working and a long-lived child does
-not hold them open. A socket still connecting at the moment of fork is not
-identified and stays open in the child until it exits. A transport closed
-before fork stays closed in the child.
+pool, created lazily on the first call in each process. A short-lived
+`hyper-rt-start` thread builds it and normally exits once that first use has
+its runtime (see [errors](#errors) for a start that never finishes). A forked
+child never touches its parent's runtime or
+connections: it builds its own on first use. The child closes, never shuts
+down, the inherited connection sockets it can identify, so the parent's
+connections keep working and a long-lived child does not hold them open. A
+socket still connecting at the moment of fork is not identified and stays open
+in the child until it exits. A transport closed before fork stays closed in the
+child.
 
 ## TLS
 
@@ -512,9 +518,19 @@ without starting teardown, and the transport stays closing: later calls still
 fail with `HTTP transport admission is closed`, and a later `close` starts
 teardown and returns its outcome. A closer whose helper thread could not start
 either retries once, and if that starts teardown, it raises the `fatal` after
-the outcome is published, as it does with an interrupt. If the OS refuses only
-the runtime's second worker thread, tokio does not recover, and that first
-close or call never returns.
+the outcome is published, as it does with an interrupt. The first use waits
+for the runtime's start for at most 5 seconds, holding the GVL; a start that
+fails or takes longer raises `fatal` the same way. A later use starts the
+runtime afresh, or uses the runtime of a start that finished after its caller
+gave up. A closer whose helper thread could not start, and that retries
+once itself, can wait for the start twice. If the OS refuses only the runtime's
+second worker thread, tokio 1.54 never finishes that start
+([tokio-rs/tokio#8408](https://github.com/tokio-rs/tokio/pull/8408); the
+unreleased
+[tokio-rs/tokio#8752](https://github.com/tokio-rs/tokio/pull/8752) makes it
+fail instead), so the first close or call raises after the 5 seconds, and
+each stuck start keeps its start thread, first worker thread and I/O driver
+for the life of the process.
 
 ## License
 

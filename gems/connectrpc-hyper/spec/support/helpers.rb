@@ -9,6 +9,8 @@ module HyperHelpers # rubocop:disable Metrics/ModuleLength
                                                          response_type: MSG)
   SHIM_SOURCE = File.expand_path("stall_dns.c", __dir__)
   SHIM = File.join(ROOT, "vendor/hyper/shim/stall_dns.so")
+  THREADS_SHIM_SOURCE = File.expand_path("fail_threads.c", __dir__)
+  THREADS_SHIM = File.join(ROOT, "vendor/hyper/shim/fail_threads.so")
 
   def self.included(base)
     base.after do
@@ -212,15 +214,37 @@ module HyperHelpers # rubocop:disable Metrics/ModuleLength
   # STALL_EVENTS FIFO, then block until a byte arrives on STALL_RELEASE.
   def stall_environment
     skip "The getaddrinfo shim needs Linux and glibc" unless RbConfig::CONFIG["host_os"].include?("linux")
-    unless File.exist?(SHIM) && File.mtime(SHIM) >= File.mtime(SHIM_SOURCE)
-      FileUtils.mkdir_p(File.dirname(SHIM))
-      system("cc", "-shared", "-fPIC", "-o", SHIM, SHIM_SOURCE, "-ldl", exception: true)
-    end
+    compile_shim(SHIM_SOURCE, SHIM)
     directory = Dir.mktmpdir("connectrpc-hyper-stall-")
     events = File.join(directory, "events")
     release = File.join(directory, "release")
     File.mkfifo(events)
     File.mkfifo(release)
     { "LD_PRELOAD" => SHIM, "STALL_EVENTS" => events, "STALL_RELEASE" => release }
+  end
+
+  # The pthread_create shim (fail_threads.c): refuses the extension threads
+  # FAIL_THREADS selects and logs each extension thread to the returned file.
+  # Returns [environment, log path].
+  def fail_threads_environment(allow, fail)
+    skip "The pthread_create shim needs Linux and glibc" unless glibc?
+    compile_shim(THREADS_SHIM_SOURCE, THREADS_SHIM)
+    log = File.join(Dir.mktmpdir("connectrpc-hyper-threads-"), "threads.log")
+    [{ "LD_PRELOAD" => THREADS_SHIM, "FAIL_THREADS" => "#{allow},#{fail}", "FAIL_THREADS_LOG" => log }, log]
+  end
+
+  def glibc?
+    return false unless RbConfig::CONFIG["host_os"].include?("linux")
+
+    IO.popen(%w[getconf GNU_LIBC_VERSION], err: File::NULL, &:read).start_with?("glibc")
+  rescue SystemCallError
+    false
+  end
+
+  def compile_shim(source, shim)
+    return if File.exist?(shim) && File.mtime(shim) >= File.mtime(source)
+
+    FileUtils.mkdir_p(File.dirname(shim))
+    system("cc", "-shared", "-fPIC", "-o", shim, source, "-ldl", exception: true)
   end
 end

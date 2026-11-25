@@ -6,14 +6,20 @@
 //! runtime is ever dropped or used in a child: `ForkGuard` leaks it, the Ruby
 //! transport builds a new driver, and the runtime slot is replaced. No state
 //! here is guarded by a lock a fork can inherit.
+use std::any::Any;
 use std::collections::HashMap;
 use std::future::Future;
+use std::io;
 use std::mem::ManuallyDrop;
+use std::panic::{AssertUnwindSafe, catch_unwind, resume_unwind};
 use std::pin::Pin;
 use std::ptr;
-use std::sync::atomic::{AtomicPtr, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicPtr, AtomicU64, AtomicUsize, Ordering};
+use std::sync::mpsc::{self, RecvTimeoutError};
 use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll};
+use std::thread;
+use std::time::Duration;
 
 use tokio::runtime::{Builder, Handle, Runtime};
 use tokio::sync::Notify;
@@ -34,24 +40,40 @@ static RUNTIME: AtomicPtr<Slot> = AtomicPtr::new(ptr::null_mut());
 /// Cold starts a spec asked to fail (`fail_starts`).
 static FAIL_STARTS: AtomicUsize = AtomicUsize::new(0);
 
+/// How long a cold caller waits for a start attempt, in nanoseconds.
+static START_BOUND: AtomicU64 = AtomicU64::new(5_000_000_000);
+
 /// For specs: the next `count` cold starts in this process panic as tokio
 /// does when the OS refuses a worker thread.
 pub fn fail_starts(count: usize) {
     FAIL_STARTS.store(count, Ordering::SeqCst);
 }
 
+/// For specs: how long later cold callers wait for a start attempt.
+pub fn start_bound(bound: Duration) {
+    let nanos = u64::try_from(bound.as_nanos()).unwrap_or(u64::MAX);
+    START_BOUND.store(nanos, Ordering::SeqCst);
+}
+
 /// The process runtime, created on first use (never when a transport is
-/// built) and recreated in a forked child. Concurrent cold callers each build
-/// one; the compare-and-swap elects a winner and losers shut theirs down.
+/// built) and recreated in a forked child.
 ///
-/// A cold start panics when the OS refuses a worker thread (tokio panics
-/// inside `build`), and the panic reaches Ruby as `fatal`. Call this before
-/// claiming anything a panic would leave claimed, such as a lock or a
-/// one-shot flag, so a later caller can retry the start.
+/// A cold caller builds the runtime on a short-lived `hyper-rt-start`
+/// thread and waits for it, holding the GVL, for at most the start bound
+/// (5 s). tokio 1.54's `build` never returns when the OS starts the first
+/// worker thread but refuses the second (tokio-rs/tokio#8408; the unwind
+/// joins the running first worker), so the bound is what returns control to
+/// Ruby. A failed or late start unwinds as a panic that reaches Ruby as
+/// `fatal`, with nothing published, so a later caller starts a fresh attempt.
+/// An attempt stuck in tokio keeps its start thread, its first worker and its
+/// I/O driver for the life of the process; if it finishes after all, its
+/// runtime serves later callers. Call this before claiming anything an unwind
+/// would leave claimed, such as a lock or a one-shot flag, so a later caller
+/// can retry the start.
 pub fn handle() -> Handle {
     let me = pid();
-    let mut current = RUNTIME.load(Ordering::Acquire);
     loop {
+        let current = RUNTIME.load(Ordering::Acquire);
         // SAFETY: a published slot is never freed: slots are leaked for the
         // life of the process, including inherited ones in a child.
         if let Some(slot) = unsafe { current.as_ref() } {
@@ -59,32 +81,106 @@ pub fn handle() -> Handle {
                 return slot.runtime.handle().clone();
             }
         }
-        if FAIL_STARTS
-            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1))
-            .is_ok()
-        {
-            panic!("OS can't spawn worker thread: failure injected by a spec");
+        let bound = Duration::from_nanos(START_BOUND.load(Ordering::SeqCst));
+        if let Err(message) = start(&RUNTIME, me, bound, build) {
+            // Not `panic!`: the panic hook writes to stderr synchronously,
+            // which can block (on a full pipe, say) while this caller holds
+            // the GVL. magnus raises a `String` payload as `fatal`.
+            resume_unwind(Box::new(message));
         }
-        let runtime = Builder::new_multi_thread()
-            .worker_threads(2)
-            .thread_name("hyper-runtime")
-            .enable_all()
-            .build()
-            .expect("tokio runtime");
-        let fresh = Box::into_raw(Box::new(Slot { pid: me, runtime }));
-        match RUNTIME.compare_exchange(current, fresh, Ordering::AcqRel, Ordering::Acquire) {
-            // An inherited slot, if any, is leaked: its threads do not exist here.
-            Ok(_) => {
-                // SAFETY: `fresh` was just published and is never freed.
-                return unsafe { &*fresh }.runtime.handle().clone();
-            }
-            Err(actual) => {
-                // SAFETY: `fresh` was never published, so this thread owns it.
-                let lost = unsafe { Box::from_raw(fresh) };
-                lost.runtime.shutdown_background();
-                current = actual;
-            }
+    }
+}
+
+fn build() -> io::Result<Runtime> {
+    if FAIL_STARTS
+        .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1))
+        .is_ok()
+    {
+        panic!("OS can't spawn worker thread: failure injected by a spec");
+    }
+    Builder::new_multi_thread()
+        .worker_threads(2)
+        .thread_name("hyper-runtime")
+        .enable_all()
+        .build()
+}
+
+/// One start attempt: `build` runs on a fresh start thread, which publishes
+/// the runtime to `slot` itself (`RUNTIME`, except in unit tests), and the
+/// caller waits for its report for at most `bound`. Each attempt has its own
+/// channel, so no shared state outlives it and a forked child inherits none
+/// mid-use. An abandoned attempt's report is dropped.
+fn start<F>(
+    slot: &'static AtomicPtr<Slot>,
+    me: u32,
+    bound: Duration,
+    build: F,
+) -> Result<(), String>
+where
+    F: FnOnce() -> io::Result<Runtime> + Send + 'static,
+{
+    let (report, outcome) = mpsc::sync_channel(1);
+    let attempt = thread::Builder::new()
+        .name("hyper-rt-start".into())
+        .spawn(move || {
+            let result = match catch_unwind(AssertUnwindSafe(build)) {
+                Ok(Ok(runtime)) => {
+                    publish(slot, me, runtime);
+                    Ok(())
+                }
+                Ok(Err(error)) => Err(format!("tokio runtime did not start: {error}")),
+                Err(payload) => Err(panic_message(payload.as_ref())),
+            };
+            let _ = report.send(result);
+        })
+        .map_err(|error| format!("OS can't spawn runtime start thread: {error}"))?;
+    match outcome.recv_timeout(bound) {
+        // The start thread sent its last message and is exiting: joining it
+        // is short and leaves no extra thread behind a returned start.
+        Ok(result) => {
+            let _ = attempt.join();
+            result
         }
+        // Abandoned, not joined: the start may be stuck in tokio for good.
+        Err(RecvTimeoutError::Timeout) => {
+            Err(format!("tokio runtime did not start within {bound:?}"))
+        }
+        Err(RecvTimeoutError::Disconnected) => {
+            let _ = attempt.join();
+            Err("tokio runtime start thread ended without a result".into())
+        }
+    }
+}
+
+/// Publishes a built runtime, unless another attempt already published one
+/// for this process: then this one is shut down. An inherited slot, if any,
+/// is leaked: its threads do not exist here.
+fn publish(slot: &AtomicPtr<Slot>, me: u32, runtime: Runtime) {
+    let fresh = Box::into_raw(Box::new(Slot { pid: me, runtime }));
+    let mut current = slot.load(Ordering::Acquire);
+    loop {
+        // SAFETY: a published slot is never freed (see `handle`).
+        let owned = unsafe { current.as_ref() }.is_some_and(|published| published.pid == me);
+        if owned {
+            // SAFETY: `fresh` was never published, so this thread owns it.
+            let lost = unsafe { Box::from_raw(fresh) };
+            lost.runtime.shutdown_background();
+            return;
+        }
+        match slot.compare_exchange(current, fresh, Ordering::AcqRel, Ordering::Acquire) {
+            Ok(_) => return,
+            Err(actual) => current = actual,
+        }
+    }
+}
+
+fn panic_message(payload: &(dyn Any + Send)) -> String {
+    if let Some(message) = payload.downcast_ref::<&'static str>() {
+        (*message).to_owned()
+    } else if let Some(message) = payload.downcast_ref::<String>() {
+        message.clone()
+    } else {
+        "tokio runtime start panicked".to_owned()
     }
 }
 
@@ -292,7 +388,7 @@ impl Tracker {
     where
         F: Future<Output = ()> + Send + 'static,
     {
-        // Before the lock: a failed runtime start panics, and unwinding with
+        // Before the lock: a failed runtime start unwinds, and unwinding with
         // the lock held would deadlock in `Finished::drop`.
         let runtime = handle();
         // The lock spans the spawn, so a task that ends at once removes an
@@ -377,5 +473,86 @@ where
 {
     fn execute(&self, future: F) {
         self.0.spawn(future);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Released tokio panics when it cannot spawn a worker; tokio-rs/tokio#8752
+    // (unreleased) makes `build` return the error instead.
+    #[test]
+    fn a_build_error_fails_the_attempt_and_publishes_nothing() {
+        let before = RUNTIME.load(Ordering::SeqCst);
+        let result = start(&RUNTIME, pid(), Duration::from_secs(60), || {
+            Err(io::Error::other("worker refused"))
+        });
+        assert_eq!(
+            result,
+            Err("tokio runtime did not start: worker refused".to_owned())
+        );
+        assert_eq!(RUNTIME.load(Ordering::SeqCst), before);
+    }
+
+    #[test]
+    fn a_start_still_running_at_the_bound_fails_the_attempt() {
+        let (release, released) = mpsc::channel::<()>();
+        let (ended, end) = mpsc::channel();
+        let result = start(&RUNTIME, pid(), Duration::from_millis(10), move || {
+            let _ = released.recv();
+            let _ = ended.send(());
+            Err(io::Error::other("released"))
+        });
+        assert_eq!(
+            result,
+            Err("tokio runtime did not start within 10ms".to_owned())
+        );
+        release.send(()).expect("the abandoned start is waiting");
+        end.recv().expect("the abandoned start ends");
+    }
+
+    // An abandoned start that succeeds later still publishes, and a start that
+    // succeeds after that loses the election: the first runtime stays.
+    #[test]
+    fn a_late_start_publishes_its_runtime_and_a_later_start_loses() {
+        static SLOT: AtomicPtr<Slot> = AtomicPtr::new(ptr::null_mut());
+        let runtime = || {
+            Builder::new_multi_thread()
+                .worker_threads(1)
+                .enable_all()
+                .build()
+        };
+        let (release, released) = mpsc::channel::<()>();
+        let late = start(&SLOT, pid(), Duration::from_millis(10), move || {
+            let _ = released.recv();
+            runtime()
+        });
+        assert_eq!(
+            late,
+            Err("tokio runtime did not start within 10ms".to_owned())
+        );
+        assert!(SLOT.load(Ordering::SeqCst).is_null());
+        release.send(()).expect("the abandoned start is waiting");
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        let winner = loop {
+            let published = SLOT.load(Ordering::SeqCst);
+            if !published.is_null() {
+                break published;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the late start never published"
+            );
+            thread::yield_now();
+        };
+        assert_eq!(
+            start(&SLOT, pid(), Duration::from_secs(60), runtime),
+            Ok(())
+        );
+        assert_eq!(SLOT.load(Ordering::SeqCst), winner);
+        // SAFETY: published slots are never freed.
+        let handle = unsafe { &*winner }.runtime.handle().clone();
+        assert_eq!(handle.block_on(handle.spawn(async { 7 })).unwrap(), 7);
     }
 }
