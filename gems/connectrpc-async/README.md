@@ -450,11 +450,9 @@ change a client's identity, replace its transport.
 `host.drain_tls(grace: 5)` records the current generation and retires (takes out
 of service) only connections accepted under older generations, including those
 still in their TLS handshake. Old connections get the two-phase GOAWAY drain
-with debug data `tls_rotation`. If an idle or age drain is already running on a
-connection, the TLS drain takes it over and keeps its debug data and cutoff. On
-a connection that an earlier `drain_tls` is already retiring, it waits for that
-retirement within its own grace. GOAWAY is the HTTP/2 frame that tells a client
-to stop opening streams on a connection. Each old connection sets its own stream
+with debug data `tls_rotation`. A drain already running on a connection keeps
+its debug data and cutoff. GOAWAY is the HTTP/2 frame that tells a client to
+stop opening streams on a connection. Each old connection sets its own stream
 cutoff during the drain, as [Server keepalive](#server-keepalive) describes.
 Streams opened before that cutoff are served, later ones are refused with
 `REFUSED_STREAM`, and admitted streams finish. Pending handshakes abort
