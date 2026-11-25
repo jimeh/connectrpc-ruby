@@ -267,8 +267,9 @@ keeps serving other calls. A token cancels name resolution, connect and TLS,
 including a wait for the shared dial (which carries on for other callers). The wire timeout headers
 (`grpc-timeout`, `connect-timeout-ms`) carry the deadline remaining at dispatch,
 after connection setup and on a retry. The one wait that holds the GVL is a
-process's first use waiting for the native runtime to start: normally under a
-millisecond, and at most 5 seconds when the start fails (see [errors](#errors)).
+process's first use waiting for the native runtime to start: normally brief,
+and at most 5 seconds per start attempt when the start fails (see
+[errors](#errors)).
 
 ## Fiber schedulers
 
@@ -519,8 +520,9 @@ teardown and returns its outcome. A closer whose helper thread could not start
 either retries once, and if that starts teardown, it raises the `fatal` after
 the outcome is published, as it does with an interrupt. The first use waits
 for the runtime's start for at most 5 seconds, holding the GVL; a start that
-fails or takes longer raises `fatal` the same way, and a later use starts the
-runtime afresh. A closer whose helper thread could not start, and that retries
+fails or takes longer raises `fatal` the same way. A later use starts the
+runtime afresh, or uses the runtime of a start that finished after its caller
+gave up. A closer whose helper thread could not start, and that retries
 once itself, can wait for the start twice. If the OS refuses only the runtime's
 second worker thread, tokio 1.54 never finishes that start
 ([tokio-rs/tokio#8408](https://github.com/tokio-rs/tokio/pull/8408); the

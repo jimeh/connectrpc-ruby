@@ -94,9 +94,10 @@ stage and reset its stream.
   runtime on a short-lived `hyper-rt-start` thread and waits for it, GVL
   held, for at most 5 s; concurrent starts elect one runtime (compare-and-swap,
   losers shut theirs down). A start that fails or outlasts the bound raises
-  `fatal` and publishes nothing, so a later use starts a fresh attempt (see
-  Runtime start failure in the accepted behaviour). Every process-wide native
-  state, including the native-root cache and any initialisation in progress, is
+  `fatal` in its caller, which publishes nothing; a later use starts a fresh
+  attempt, unless a start that finished late already published its runtime
+  (see "Runtime start failure (#181)" under Failure paths and risks). Every
+  process-wide native state, including the native-root cache and any initialisation in progress, is
   PID-scoped the same way. A forked child leaks inherited runtime state through
   `ForkGuard`, never shuts down inherited sockets, and closes (not shuts down)
   the inherited connection descriptors it can identify from a fork-safe
