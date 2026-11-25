@@ -201,6 +201,9 @@ RSpec.describe "Streaming writes after the stream ended", :interop do
   # body while the response waits for it. The check reads the string's own
   # length, so a String subclass's bytesize cannot move it either way.
   it "rejects a write of 2 GiB or more before queuing it" do
+    # A String's length is a C long, 32 bits on Windows, where no string
+    # reaches the limit.
+    skip "a String cannot reach 2 GiB where a long is 32 bits" if [0].pack("l!").bytesize < 8
     from = peer.mark
     lying = Class.new(String) { def bytesize = 1 << 31 }
     big = "\0".b * (1 << 31)
