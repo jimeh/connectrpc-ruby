@@ -2,8 +2,11 @@
 
 RSpec.describe "Falcon Rails fallback under fiber isolation" do
   before(:context) do
-    require_relative "support/rails_fiber_app"
+    # Booting the fixture's Rails application sets the level to :fiber, so the
+    # level to restore is read first.
+    require "active_support/isolated_execution_state"
     @isolation_level = ActiveSupport::IsolatedExecutionState.isolation_level
+    require_relative "support/rails_fiber_app"
     ActiveSupport::IsolatedExecutionState.isolation_level = :fiber
   end
 

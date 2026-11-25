@@ -44,9 +44,11 @@ The [changelog](../CHANGELOG.md) lists every change.
   writer or the HTTP/2 output task, so a Rails app with
   `config.active_support.isolation_level = :fiber` left each request's
   ActiveRecord connection checked out by a finished fiber and never reset that
-  fiber's `CurrentAttributes` or query cache. Request metrics, admission and
-  the next HTTP/1.1 keep-alive request still wait for completion. A client can
-  finish reading the response before completion ends, as with plain Falcon.
+  fiber's `CurrentAttributes` or query cache. Request metrics, HTTP/1.1
+  admission and the next HTTP/1.1 keep-alive request still wait for
+  completion. Over HTTP/2, a peer reset still releases the stream's admission
+  slot when the stream closes. A client can finish reading the response before
+  completion ends, as with plain Falcon.
   See
   [Rack fallback completion](../gems/connectrpc-falcon/README.md#rack-fallback-completion).
 

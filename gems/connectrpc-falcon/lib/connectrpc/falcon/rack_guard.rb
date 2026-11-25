@@ -45,9 +45,13 @@ module ConnectRPC
       # non-transient child of this handler, so cancellation, joins and
       # retirement capture reach it. This handler returns as soon as the
       # request task has an outcome, so the transport can write and close the
-      # body while the request task waits for that close.
+      # body while the request task waits for that close. Without an Async
+      # task, such as a direct Server#call from a plain fiber, the app runs
+      # here and its completion runs on whichever fiber closes the body.
       def call(env)
-        handler = ::Async::Task.current
+        handler = ::Async::Task.current?
+        return respond(env) unless handler
+
         outcome = ::Async::Promise.new
         identity = @identities&.capture
         raised, value = wait_outcome(outcome) do
@@ -65,15 +69,15 @@ module ConnectRPC
         value
       end
 
-      # Called by the server on the handler task once the fallback call has
-      # returned or failed. An exception that leaves the server after this
-      # guard produced a response, such as a failing response middleware,
-      # abandons the body before any transport owns it, so it is closed here
-      # with that error. A response lost later, inside the session's dispatch,
-      # stays parked until retirement cancels the request task, which then
-      # exits without completion, as before this request task existed.
+      # Called by the server, on the handler task when there is one, once the
+      # fallback call has returned or failed. An exception that leaves the
+      # server after this guard produced a response, such as a failing response
+      # middleware, abandons the body before any transport owns it, so it is
+      # closed here with that error. A response lost later, inside the session's
+      # dispatch, stays parked until retirement cancels the request task, which
+      # then exits without completion, as before this request task existed.
       def settle(error)
-        body = @produced.delete(::Async::Task.current)
+        body = @produced.delete(::Async::Task.current?)
         abandon(body, error) if body && error
       end
 
@@ -378,12 +382,15 @@ module ConnectRPC
       # here. One that reached this closer through its own pending deferred
       # cancellation was forced, so it is delivered even if the request task
       # defers it. Any other is delivered once, for the request task to defer
-      # or not. Returns the interruption when the request task deferred it
-      # unforced.
+      # or not. A request task that already had a cancellation pending takes
+      # the first cancel at once, as the forced delivery, so nothing follows
+      # it, even if the request task rescues it inside its deferral. Returns
+      # the interruption when the request task deferred it unforced.
       def relay(interruption)
         forced = ::Async::Task.current.cancel_deferred?
+        pending = @owner.cancel_deferred?
         @owner.cancel(cause: interruption)
-        return unless @owner.cancel_deferred?
+        return if pending || !@owner.cancel_deferred?
         return interruption unless forced
 
         @owner.cancel(cause: interruption)
@@ -462,9 +469,9 @@ module ConnectRPC
       def capture = @source.call&.to_der
 
       def scope(der)
-        return yield unless der
+        task = ::Async::Task.current? if der
+        return yield unless task
 
-        task = ::Async::Task.current
         @entries[task] = [der, Thread.current, Fiber.scheduler]
         yield
       ensure

@@ -589,6 +589,66 @@ RSpec.describe "Falcon Rack fallback completion" do
     end
   end
 
+  # The forced delivery can reach a request task that already holds a pending
+  # cancellation, relayed earlier or cascaded from the handler. A callback that
+  # rescues it inside its deferral keeps that cancellation pending and cleans
+  # up before the deferral exits. Nothing else interrupts that cleanup, and the
+  # host waits for it, as when the closer ran the callback.
+  [%w[HEAD handler], %w[GET transport]].product(%i[http1 h2], %i[close abort]).each do |(method, kind), protocol, stop|
+    it "waits for a deferring callback's cleanup after its forced cancellation on the #{kind} closer " \
+       "under #{stop} over #{protocol}" do
+      reactor do |task|
+        entered = Async::Queue.new
+        cleaning = Async::Queue.new
+        release = Async::Queue.new
+        events = []
+        registry = Async::Utilization::Registry.new
+        rack = lambda do |env|
+          env["rack.response_finished"] << lambda do |*|
+            Async::Task.current.defer_cancel do
+              entered.enqueue(true)
+              Async::Condition.new.wait
+            rescue Async::Cancel => e
+              events << [:rescued, e.class]
+              cleaning.enqueue(true)
+              release.dequeue
+              events << :cleaned_up
+            end
+          rescue Async::Cancel => e
+            events << [:cancelled, e.class]
+            raise
+          end
+          body = ["body"]
+          body.define_singleton_method(:close) { events << :closed }
+          [200, { "content-type" => "text/plain" }, body]
+        end
+        falcon(rack_app: rack, utilization_registry: registry) do |host, origin|
+          pending = task.async do
+            fallback(origin, protocol, method: method)
+          rescue StandardError => e
+            e
+          end
+          entered.dequeue
+          stopper = task.async do
+            stop == :abort ? host.abort : host.close(grace: 0.03)
+            events << :stopped
+          end
+          cleaning.dequeue
+          # The forced delivery has run; the cleanup still holds the request.
+          expect(events).to eq([[:rescued, Async::Cancel]])
+          expect(registry.metric(:requests_active).value).to eq(1)
+          release.enqueue(true)
+          task.with_timeout(2) { stopper.wait }
+          expect(events).to eq([[:rescued, Async::Cancel], :cleaned_up, [:cancelled, Async::Cancel], :closed, :stopped])
+          expect(registry.metric(:requests_active).value).to eq(0)
+        ensure
+          release&.enqueue(true)
+          pending&.stop
+        end
+      end
+    end
+  end
+
   # A peer reset cancels the stream's output task, the closer here, once.
   # Before the request task the callback ran on that task, so the reset met
   # the callback's own deferral there.
@@ -791,6 +851,37 @@ RSpec.describe "Falcon Rack fallback completion" do
         wait_observed(task, "the miss's original close", ->(seen) { seen >= 1 }) { closes }
         expect(calls).to eq(1)
         expect(closes).to eq(1)
+      end
+    end
+  end
+
+  # A direct call from a plain fiber on the host's reactor has no Async task to
+  # start a request task from, so the app runs on that fiber and its
+  # completion runs on whichever fiber closes the body.
+  it "serves a direct call from a fiber without an Async task" do
+    reactor do |task|
+      fibers = []
+      results = []
+      rack = lambda do |env|
+        fibers << Fiber.current
+        env["rack.response_finished"] << ->(*) { fibers << Fiber.current }
+        [200, { "content-type" => "text/plain" }, ["rack"]]
+      end
+      falcon(rack_app: rack) do |host, _origin|
+        caller = Fiber.new(blocking: false) do
+          results << Async::Task.current?
+          %w[GET CONNECT].each do |method|
+            request = Protocol::HTTP::Request[method, "/rack", {}, nil, scheme: "http", authority: "localhost"]
+            response = host.call(request)
+            results << [response.status, response.read]
+          rescue StandardError => e
+            results << e
+          end
+        end
+        caller.resume
+        wait_observed(task, "the direct calls", lambda(&:!)) { caller.alive? }
+        expect(results).to eq([nil, [200, "rack"], [501, nil]])
+        expect(fibers).to eq([caller, caller])
       end
     end
   end

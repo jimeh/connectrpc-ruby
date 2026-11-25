@@ -276,10 +276,12 @@ dead. Over HTTP/2 this is stricter than plain Falcon, which runs the callbacks
 on async-http's output task, because fiber isolation is a Ruby-specific hazard.
 
 The close that starts completion returns only after the callbacks and closes
-have finished, so request metrics and admission are released afterwards, and
-an HTTP/1.1 keep-alive connection reads its next request only then. A client
-can still finish reading the response before completion finishes, as with
-plain Falcon, which closes the body after the final flush.
+have finished, so request metrics and HTTP/1.1 admission are released
+afterwards, and an HTTP/1.1 keep-alive connection reads its next request only
+then. Over HTTP/2, a peer reset releases the stream's admission slot when the
+stream closes, which can be before the callbacks finish, as before the request
+task existed. A client can still finish reading the response before completion
+finishes, as with plain Falcon, which closes the body after the final flush.
 
 Before the request task existed, the closing fiber ran the callbacks itself, so
 a cancellation of that fiber and a callback's `Async::Task#defer_cancel` met on
@@ -287,24 +289,25 @@ one task. The closer keeps that behavior across the two tasks. It passes each
 interruption it receives on to the request task with the force it arrived with.
 One that was forced through the closer's own deferred cancellation, as
 retirement forces the HTTP/1.1 connection's writer, is delivered even if the
-callback defers it. Any other is delivered once, and the callback defers it or
-not. When the request task defers a cancellation the closer passed on, the
-closer defers one too, so a host that forces deferring tasks also forces the
-closer, which passes that force on. Forced retirement, `abort` and owner
-shutdown do this, so a callback that defers cancellation is still interrupted
-within `close(grace:)`. An HTTP/2 peer reset cancels the stream's output task
-only once, so a callback that defers it finishes its deferred section and is
-cancelled as it leaves it, as before. A callback that does not defer sees each
-passed-on cancellation once. When a transport task is the closer, retirement
-also cancels the session's handler task, which has already returned and so
-cancels the request task directly. A callback that rescues a cancellation and
-keeps waiting can then be cancelled again. The closer returns, or raises its
-first interruption, only once the request task has settled, so request metrics
-and admission stay held until completion finishes. An error that a body's
-`close` raises, an `Async::Stop` included, reaches the closer as before. A
-cancellation of the request task itself does not, unless it arrives while a
-body's `close` is blocked: that close raises it, and the closer receives it as
-the close's error.
+callback defers it, and only once: a callback that rescues it inside its
+deferral finishes its cleanup there before the deferral exits. Any other is
+delivered once, and the callback defers it or not. When the request task defers
+a cancellation the closer passed on, the closer defers one too, so a host that
+forces deferring tasks also forces the closer, which passes that force on.
+Forced retirement, `abort` and owner shutdown do this, so a callback that defers
+cancellation is still interrupted within `close(grace:)`. An HTTP/2 peer reset
+cancels the stream's output task only once, so a callback that defers it
+finishes its deferred section and is cancelled as it leaves it, as before. A
+callback that does not defer sees each passed-on cancellation once. When a
+transport task is the closer, retirement also cancels the session's handler
+task, which has already returned and so cancels the request task directly. A
+callback that rescues a cancellation and keeps waiting can then be cancelled
+again. The closer returns, or raises its first interruption, only once the
+request task has settled, so request metrics and HTTP/1.1 admission stay held
+until completion finishes. An error that a body's `close` raises, an
+`Async::Stop` included, reaches the closer as before. A cancellation of the
+request task itself does not, unless it arrives while a body's `close` is
+blocked: that close raises it, and the closer receives it as the close's error.
 
 If the request task is cancelled or fails while it waits, for example during
 forced retirement, `abort` or owner shutdown, it does not close the body or run
