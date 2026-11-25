@@ -39,7 +39,9 @@ end
 ```
 
 It uses the repository's [demo schema](../examples/proto/demo/v1/demo.proto),
-whose generated Ruby lives in `examples/gen`. Code generated for your own
+whose generated Ruby lives in `examples/gen`. From a repository checkout with
+`connectrpc-async` and `google-protobuf` installed, save it as `quickstart.rb`
+and run `ruby -I examples/gen quickstart.rb`. Code generated for your own
 service has the same shape; see
 [Generate services from protobuf](unary.md#generate-services-from-protobuf).
 Native streaming needs a native host and client, here the `Host` and
@@ -60,7 +62,9 @@ mise run example:client -- async-h2 countdown 3
 
 Each streaming kind has its own handler signature and generated client call.
 This object implements the demo schema's three streaming RPCs, and the client
-calls below use them:
+calls below use them. To run it, replace the quick start's `Countdown` class
+and `server` with the first part, and its `client.countdown` call inside the
+`Sync` block with the client calls:
 
 ```ruby
 class DemoStreams
@@ -112,10 +116,10 @@ Connect server streaming, client streaming and bidirectional (bidi) streaming
 all use the same core engine, which has no dependencies. Which stream kinds you
 can use depends on the host or client:
 
-- Over HTTP/2, the optional Async transport and the native HTTP/2 hosts of
-  Async and Falcon support all three kinds. They support protobuf and
-  ProtoJSON, identity and gzip encoding, h2c (HTTP/2 without TLS), verified
-  TLS and mTLS.
+- Over HTTP/2, the optional `ConnectRPC::Async::Transport` client and the
+  native HTTP/2 hosts of Async and Falcon support all three kinds. They
+  support protobuf and ProtoJSON, identity and gzip encoding, h2c (HTTP/2
+  without TLS), verified TLS and mTLS.
 - Over HTTP/1.1, Falcon also serves Connect server streaming and client
   streaming, with both codecs and identity or gzip encoding, over TCP, TLS and
   mTLS.
@@ -501,9 +505,11 @@ without close_notify remains a transport failure.
 This section describes how native hosts run streams. Most applications need
 none of it.
 
-### Native HTTP/2 hosts
+### Native hosts
 
-Each request has one original processor task. It runs the handlers, codecs
+This applies to the native HTTP/2 hosts and to Falcon's HTTP/1.1 server; the
+next section adds the HTTP/1.1 specifics. Each request has one original
+processor task. It runs the handlers, codecs
 and cleanup, and owns the authenticated peer identity, cancellation and
 instrumentation for that whole time. A separate publication promise hands the
 response headers to the host while processing continues. Separate body tasks
@@ -511,7 +517,7 @@ send the bytes that processing has already prepared.
 
 A successful response reaches HTTP EOF, the end of its HTTP stream, only after
 the original processor task has completed. If cleanup fails late, the host
-aborts the response and resets the stream instead. Admission is the slot the
+aborts the response instead, which resets the stream on HTTP/2. Admission is the slot the
 host reserves for each accepted request. A request holds its admission, and a
 graceful drain waits for it, through processing, the wire tail (sending the
 rest of the response on the wire) and cleanup.

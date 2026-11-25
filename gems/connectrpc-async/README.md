@@ -220,6 +220,28 @@ the receive windows size response downloads; see
 [Flow-control windows](#flow-control-windows), and connections go through an
 `http://` proxy chosen by `proxy:`; see [Proxies](#proxies).
 
+Without generated code, pass core objects to the client directly. The example
+assumes existing core `server`, `binding`, `method` and `message` objects, as
+shown in the repository unary examples.
+
+```ruby
+require "async"
+require "connectrpc/async"
+
+Async do
+  host = ConnectRPC::Async::Host.new(server: server).start
+  origin = "http://127.0.0.1:#{host.port}"
+  transport = ConnectRPC::Async::Transport.new(origin: origin)
+  client = ConnectRPC::Client.new(base_url: origin, binding: binding, transport: transport)
+  begin
+    client.call(method, message)
+  ensure
+    transport.close
+    host.close
+  end
+end.wait
+```
+
 - Origins contain only scheme/host/port; a bare trailing `/` is accepted.
   Request paths, including core's base prefix, remain intact.
 - One connection multiplexes requests. Admission fails with unavailable:
@@ -438,13 +460,14 @@ and session ID, with OP_NO_TICKET and SESSION_CACHE_OFF set. TLS session reuse
 is disabled; this does not claim that OpenSSL sends zero TLS 1.3 tickets. To
 change a client's identity, replace its transport.
 
-`host.drain_tls(grace: 5)` captures the current generation as a cutoff and
-retires (takes out of service) only connections accepted under older
-generations, including those still in their TLS handshake. Old connections get
-the two-phase GOAWAY drain with debug data `tls_rotation`. GOAWAY is the HTTP/2
-frame that tells a client to stop opening streams on a connection. Streams
-opened before the drain's cutoff are served, later ones are refused with
-`REFUSED_STREAM`, and admitted streams finish. Pending handshakes abort
+`host.drain_tls(grace: 5)` records the current generation and retires (takes
+out of service) only connections accepted under older generations, including
+those still in their TLS handshake. Old connections get the two-phase GOAWAY
+drain with debug data `tls_rotation`. GOAWAY is the HTTP/2 frame that tells a
+client to stop opening streams on a connection. Each old connection sets its
+own stream cutoff during that drain, as [Server keepalive](#server-keepalive)
+describes. Streams opened before that cutoff are served, later ones are
+refused with `REFUSED_STREAM`, and admitted streams finish. Pending handshakes abort
 immediately. A persistent retirement floor, the oldest generation still
 allowed to go live, prevents old pending sockets from becoming live. The
 listener and the current and newer generations survive reloads and drains that
@@ -465,9 +488,11 @@ Async Host and the original Async Transport remain HTTP/2 only. Use the
 separate [`HTTP1Transport`](#explicit-http11-client) client for Connect unary
 calls, server streaming and client streaming.
 
-The streaming guide describes how Falcon reads up to 256 KiB of unread
-HTTP/1.1 input before it writes its response, and its cooperative 500 ms
-budget for the final close. The client applies a provisional HTTP tail policy:
+The streaming guide's
+[Falcon HTTP/1.1 server](../../docs/streaming.md#falcon-http11-server) section
+describes how Falcon reads up to 256 KiB of unread HTTP/1.1 input before it
+writes its response, with the exceptions to that limit, and its cooperative
+500 ms budget for the final close. The client applies a provisional HTTP tail policy:
 after the terminal envelope that ends the stream, the response must reach HTTP
 EOF and the transport must complete within one absolute second. The policy
 applies even with a nil RPC deadline, and it can
@@ -1441,7 +1466,7 @@ is closing.
 The transport has no hidden thread, pipelining, replay or fallback, and it
 makes one kind of resend. A server may close an idle keep-alive connection
 while the next request is on its way. So a unary GET whose reused connection
-closed before any response head arrived is sent once more on another
+closed before the final response head arrived is sent once more on another
 connection, unless it was cancelled, its deadline expired or the transport
 started closing. Call observers see no failure from the attempt that was
 resent. POST and streams are never resent.

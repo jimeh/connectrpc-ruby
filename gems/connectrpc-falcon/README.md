@@ -250,6 +250,11 @@ and ActiveRecord, that skips the following:
   Even with the interceptor below, a change to their own class needs a worker
   restart; only code they look up per call, such as models, is reloaded.
 
+With the default `:thread` isolation, Rails keeps this state per worker thread,
+not per request. A handler that runs while an ordinary Rails request on the same
+thread is inside the executor therefore sees that request's executor state,
+including its query cache and `CurrentAttributes`.
+
 To run native RPCs the way Rails runs a request, do two things. First, use
 fiber isolation:
 
@@ -277,8 +282,9 @@ class RailsExecution
 
   private
 
-  # The executor reports every exception that escapes it to Rails.error. A
-  # ConnectRPC::Error is a deliberate response, so it leaves after the wrap.
+  # The executor reports every exception that escapes the wrapped block to
+  # Rails.error. A ConnectRPC::Error is a deliberate response, so it leaves
+  # after the wrap.
   def wrap
     error = nil
     result = Rails.application.reloader.wrap do
@@ -303,8 +309,8 @@ end
 ```
 
 The `ConnectRPC::Error` rescue keeps the executor from reporting deliberate RPC
-errors, such as `not_found`, to `Rails.error` as unhandled exceptions;
-unexpected exceptions are still reported, once. Like any core
+errors, such as `not_found`, to `Rails.error` as unhandled exceptions. An
+unexpected exception that a handler raises is still reported, once. Like any core
 [interceptor](../../docs/unary.md#interceptors) or
 [stream interceptor](../../docs/streaming.md#interceptors), it covers every RPC
 the host serves: unary and all stream kinds on Connect and native gRPC, plus
