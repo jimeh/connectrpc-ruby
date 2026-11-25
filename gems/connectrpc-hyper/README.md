@@ -471,7 +471,9 @@ stream with `RST_STREAM(NO_ERROR)` and drops request bytes it has not sent. A
 write that starts after that, or that still waits to queue its bytes, raises
 `stream closed`; a write that already queued its bytes returns. The head, the
 response bytes and the status stay readable, so core reports the server's
-status, and the connection stays in use for other calls. A writer that called
+error status, and the connection stays in use for other calls. Core keeps a
+failed write's `unavailable` over an OK status, so a call whose server answered
+OK before it read the whole request can fail. A writer that called
 `close_send` before the transport saw the end sends its queued bytes and
 END_STREAM instead, without a reset. This applies to every protocol; Go's
 net/http client, which connect-go uses, keeps sending a Connect stream's upload

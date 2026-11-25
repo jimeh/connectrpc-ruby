@@ -481,9 +481,11 @@ body is still open and does not reset the stream, the client resets it with
 `RST_STREAM(NO_ERROR)`, as grpc-go's client does. This applies to every HTTP/2
 client stream, Connect and gRPC alike, and to unary uploads. The upload stops at
 the next frame boundary, a later or blocked write raises `unavailable`, and the
-response's messages and status still reach the caller. A request that
-`close_send` ended first finishes with END_STREAM and no reset. HTTP/1.1 is
-unchanged.
+response's messages and status stay readable. Core then reports the server's
+error status, but keeps a failed write's `unavailable` over an OK status, so a
+call whose server answered OK before it read the whole request can fail. A
+request that `close_send` ended first finishes with END_STREAM and no reset.
+HTTP/1.1 is unchanged.
 
 The streaming guide's [Falcon HTTP/1.1
 server](../../docs/streaming.md#falcon-http11-server) section describes how
