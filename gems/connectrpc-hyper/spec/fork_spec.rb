@@ -6,6 +6,7 @@ RSpec.describe "Fork", :fork do
   %w[grpc_h2c grpc_tls].each do |name|
     it "keeps a parent's in-flight #{name} stream and connection while the child calls on its own" do
       from = peer.mark
+      key = peer.hold_key
       tls = name.end_with?("tls") ? tls_options : {}
       tag = name.split("_").first
       output, status = ruby_child(<<~RUBY)
@@ -15,7 +16,7 @@ RSpec.describe "Fork", :fork do
         call.call("parent")
         held = Queue.new
         holder = Thread.new do
-          peer_client.server_stream(MSG.new(value: "hold"), timeout: 30) do |reader|
+          peer_client.server_stream(MSG.new(value: "hold:#{key}"), timeout: 30) do |reader|
             held << reader.receive.value
             reader.each { nil }
           end
@@ -44,13 +45,13 @@ RSpec.describe "Fork", :fork do
       expect([child, child_success, parent]).to eq(["[true, true]", true, [true, true, true]])
       # The peer logs the held stream's end only once it sees the reset,
       # which can come after the child Ruby exited.
-      peer.wait_event(/#{tag} ss-hold-done/, from: from)
+      peer.wait_event(peer.hold_done(key, tag: tag), from: from)
       events = peer.since(from)
       # The parent dialed once and reused its connection after the fork; the
       # child dialed its own, which closed when the child exited.
       accepted = events.grep(/\A#{tag} accept/)
       expect(accepted.size).to eq(2)
-      held_done = events.index { |event| event.match?(/#{tag} ss-hold-done/) }
+      held_done = events.index { |event| event.match?(peer.hold_done(key, tag: tag)) }
       expect(held_done).not_to be_nil
       # The parent's held stream outlived the child: it ended only when the
       # parent killed its holder thread.
@@ -202,12 +203,13 @@ RSpec.describe "Fork", :fork do
   # not wait for either.
   it "closes at once in a child that inherits the parent's pending close" do
     from = peer.mark
+    key = peer.hold_key
     output, status = ruby_child(<<~RUBY)
       #{child_close}
       transport = ConnectRPC::Hyper::Transport.new
       held = Queue.new
       holder = Thread.new do
-        client(#{peer['grpc_h2c'].dump}, transport).server_stream(MSG.new(value: "hold"), timeout: 30) do |reader|
+        client(#{peer['grpc_h2c'].dump}, transport).server_stream(MSG.new(value: "hold:#{key}"), timeout: 30) do |reader|
           held << reader.receive.value
           reader.each { nil }
         end
@@ -229,8 +231,8 @@ RSpec.describe "Fork", :fork do
     expect(status).to be_success
     expect(eval(output.lines.last)).to eq([child_closed, true]) # rubocop:disable Security/Eval
     # Killing the holder resets the held stream; wait for the peer to log its
-    # end so its unkeyed ss-hold-done never lands in a later example.
-    peer.wait_event(/grpc ss-hold-done/, from: from)
+    # end so it lands in this example.
+    peer.wait_event(peer.hold_done(key), from: from)
   end
 
   # The child never built a driver of its own, so its close has nothing to

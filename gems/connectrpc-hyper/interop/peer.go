@@ -77,13 +77,20 @@ func serverStreamBehaviour(ctx context.Context, tag string, in *pb.Message, send
 			}
 		}
 		return nil
-	case in.Value == "hold":
+	case strings.HasPrefix(in.Value, "hold:"):
+		// hold:<key> sends m0 and waits for the stream to end. Its events
+		// carry the key: the end is logged only once the reset arrives, which
+		// can be after the client call returned, so a spec matches its own.
+		key := strings.TrimPrefix(in.Value, "hold:")
+		if key == "" {
+			return status.Error(codes.InvalidArgument, "hold needs a key")
+		}
 		if err := send(&pb.Message{Value: "m0"}); err != nil {
 			return err
 		}
-		emit("%s ss-hold-sent", tag)
+		emit("%s ss-hold-sent %s", tag, key)
 		<-ctx.Done()
-		emit("%s ss-hold-done %v", tag, ctx.Err())
+		emit("%s ss-hold-done %s %v", tag, key, ctx.Err())
 		return status.FromContextError(ctx.Err()).Err()
 	case strings.HasPrefix(in.Value, "gate:"):
 		// Sends m0, waits for "release <tag>", then sends m1 and ends cleanly.

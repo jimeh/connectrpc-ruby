@@ -91,12 +91,13 @@ RSpec.describe "Inside an Async reactor" do
   # raised only after the outcome is published.
   def concurrent_closers(pool:)
     from = peer.mark
+    key = peer.hold_key
     output, status = reactor_child(<<~RUBY, pool: pool)
       transport = ConnectRPC::Hyper::Transport.new
       driver = transport.instance_variable_get(:@driver)
       ready = Queue.new
       held = Thread.new do
-        client(#{peer['grpc_h2c'].dump}, transport).server_stream(MSG.new(value: "hold"), timeout: 30) do |reader|
+        client(#{peer['grpc_h2c'].dump}, transport).server_stream(MSG.new(value: "hold:#{key}"), timeout: 30) do |reader|
           reader.receive
           ready << true
           reader.receive
@@ -125,8 +126,8 @@ RSpec.describe "Inside an Async reactor" do
     RUBY
     expect(status).to be_success
     # The forced close ends the held stream; wait for the peer to log it so
-    # its unkeyed ss-hold-done never lands in a later example.
-    peer.wait_event(/grpc ss-hold-done/, from: from)
+    # it lands in this example.
+    peer.wait_event(peer.hold_done(key), from: from)
     eval(output.lines.last) # rubocop:disable Security/Eval
   end
 
@@ -627,11 +628,12 @@ RSpec.describe "Inside an Async reactor" do
 
   it "still forces teardown after the grace when Task#stop lands on a closing task" do
     from = peer.mark
+    key = peer.hold_key
     output, status = reactor_child(<<~RUBY, pool: true)
       transport = ConnectRPC::Hyper::Transport.new
       ready = Queue.new
       held = Thread.new do
-        client(#{peer['grpc_h2c'].dump}, transport).server_stream(MSG.new(value: "hold"), timeout: 30) do |reader|
+        client(#{peer['grpc_h2c'].dump}, transport).server_stream(MSG.new(value: "hold:#{key}"), timeout: 30) do |reader|
           reader.receive
           ready << true
           reader.receive
@@ -664,7 +666,7 @@ RSpec.describe "Inside an Async reactor" do
     expect(eval(output.lines.last)).to eq( # rubocop:disable Security/Eval
       [[:stopped, false], true, ["unavailable", "HTTP transport failed: connection closed"], false, [0, 0], true]
     )
-    peer.wait_event(/grpc ss-hold-done context canceled/, from: from)
+    peer.wait_event(peer.hold_done(key, reason: "context canceled"), from: from)
   end
 
   # The held call waits in Ruby, so the only native wait is the close on its
@@ -714,6 +716,7 @@ RSpec.describe "Inside an Async reactor" do
 
     it "lands Task#stop, cancellation, the deadline, Thread#raise and Thread#kill on a parked call" do
       from = peer.mark
+      keys = Array.new(4) { peer.hold_key }
       output, status = reactor_child(<<~RUBY, pool: true)
         peer_client = client(#{peer['grpc_h2c'].dump}, ConnectRPC::Hyper::Transport.new)
         # Warm, as peer_client is by the deadline case, so the expired
@@ -721,8 +724,9 @@ RSpec.describe "Inside an Async reactor" do
         raw = raw_client
         raw.call(RAW_UNARY, MSG.new, metadata: { "x-scenario" => "ok" }, timeout: 5)
         # Parks in a read of a held stream once its first message arrived.
+        keys = #{keys.inspect}
         hold = lambda do |ready, timeout: 20, **options|
-          peer_client.server_stream(MSG.new(value: "hold"), timeout: timeout, **options) do |reader|
+          peer_client.server_stream(MSG.new(value: "hold:\#{keys.shift}"), timeout: timeout, **options) do |reader|
             reader.receive
             ready << true
             reader.receive
@@ -793,7 +797,9 @@ RSpec.describe "Inside an Async reactor" do
         [:stopped, "canceled", ["deadline_exceeded", true], ["RuntimeError", :ensure], [:ensure], "after"]
       )
       # Every parked stream reached its peer as cancellation or its deadline.
-      peer.wait_count(/grpc ss-hold-done context (canceled|deadline exceeded)/, 4, from: from)
+      keys.each do |key|
+        peer.wait_event(peer.hold_done(key, reason: /context (canceled|deadline exceeded)/), from: from)
+      end
       expired = peer.wait_event(/\Araw request silent-data /, from: from)[/ stream=(\d+) /, 1]
       peer.wait_event(/\Araw rst stream=#{expired} code=8\z/, from: from)
       # The expired stream reused the warmed connection.
