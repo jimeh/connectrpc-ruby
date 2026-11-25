@@ -235,8 +235,8 @@ This adapter's controllers are ordinary Rails controllers. When Falcon serves
 the Rails application as the fallback of
 [connectrpc-falcon](../connectrpc-falcon/README.md), their RPCs reach Rails
 through the fallback like any other Rails request. connectrpc-falcon completes
-each fallback request on its own request fiber, so Rails' executor finishes
-there under `:fiber` isolation.
+fallback requests on their own request fiber, so Rails' executor finishes there
+under `:fiber` isolation.
 [Rack fallback completion](../connectrpc-falcon/README.md#rack-fallback-completion)
 describes how, and the cases where completion runs on another fiber.
 

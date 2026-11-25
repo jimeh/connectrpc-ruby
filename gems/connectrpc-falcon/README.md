@@ -322,7 +322,8 @@ controller serves. Those go through the Rails application's own middleware
 stack, like any other Rails request on this listener.
 [Rack fallback completion](#rack-fallback-completion) describes how the listener
 completes those requests on their own request fiber, which Rails' executor
-needs under `:fiber` isolation.
+needs under `:fiber` isolation, and the cases where completion runs on another
+fiber.
 
 ## Rack fallback caching
 
