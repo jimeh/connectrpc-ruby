@@ -197,9 +197,15 @@ RSpec.describe "Falcon Rack/Rails fallback boundary" do
       transferred = []
       closed = []
       completed = []
+      arguments = []
       rack = lambda do |env|
         route = env["PATH_INFO"]
-        env["rack.response_finished"] << ->(*) { completed << route }
+        called = Fiber.current
+        env["rack.response_finished"] << lambda do |callback_env, status, headers, error|
+          completed << route
+          arguments << [Fiber.current.equal?(called), callback_env.equal?(env), status, headers.class,
+                        headers["content-type"], error]
+        end
         case route
         when "/rescued"
           begin
@@ -231,6 +237,28 @@ RSpec.describe "Falcon Rack/Rails fallback boundary" do
         wait_observed(task, "every rejection completion", ->(seen) { seen.size >= 6 }) { completed.dup }
         expect(closed).to eq(%w[/rescued /partial /protocol /101])
         expect(completed).to eq(%w[/full /native-hijack /rescued /partial /protocol /101])
+        # As protocol-rack ran them, on the app's fiber with converted headers.
+        expect(arguments).to eq([[true, true, 501, Protocol::HTTP::Headers, "text/plain", nil]] * 6)
+      end
+    end
+  end
+
+  it "runs rejection callbacks once as app-error callbacks when the rejected original's close raises" do
+    reactor do
+      arguments = []
+      failure = RuntimeError.new("close failed")
+      rack = lambda do |env|
+        called = Fiber.current
+        env["rack.response_finished"] << lambda do |callback_env, status, headers, error|
+          arguments << [Fiber.current.equal?(called), callback_env.equal?(env), status, headers, error]
+        end
+        body = ["rejected"]
+        body.define_singleton_method(:close) { raise failure }
+        [101, { "upgrade" => "websocket" }, body]
+      end
+      falcon(rack_app: rack) do |_host, origin|
+        expect(http1(origin, "/101").first).to eq(500)
+        expect(arguments).to eq([[true, true, nil, nil, failure]])
       end
     end
   end

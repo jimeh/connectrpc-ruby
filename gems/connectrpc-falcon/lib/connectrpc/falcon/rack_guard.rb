@@ -57,7 +57,7 @@ module ConnectRPC
             serve(env, outcome)
           end
         end
-        raised, value = outcome.wait
+        raised, value = wait_outcome(outcome)
         raise value if raised
 
         @produced[handler] = value[2]
@@ -73,10 +73,31 @@ module ConnectRPC
       # exits without completion, as before this request task existed.
       def settle(error)
         body = @produced.delete(::Async::Task.current)
-        body&.close(error) if error
+        abandon(body, error) if body && error
       end
 
       private
+
+      # A handler interrupted after the request task produced a response owns
+      # that response's body, which no transport will close. It closes the
+      # body with the interruption, so completion still runs once on the
+      # request task, then raises the interruption.
+      def wait_outcome(outcome)
+        outcome.wait
+      rescue Exception => e # rubocop:disable Lint/RescueException -- re-raised once the produced body is closed
+        raised, value = outcome.value if outcome.resolved?
+        abandon(value[2], e) if outcome.resolved? && !raised
+        raise
+      end
+
+      # Closes an abandoned body with the error that abandoned it. That error,
+      # not the close's own escape, still leaves the handler, so the escape is
+      # logged as protocol-rack logs a failing callback.
+      def abandon(body, error)
+        body.close(error)
+      rescue Exception => e # rubocop:disable Lint/RescueException -- the abandoning error propagates instead
+        ::Console.error(self, "Error occurred while closing an abandoned Rack response:", e)
+      end
 
       # Runs on the request task and always resolves the outcome. Escapes are
       # handed to the handler as tagged outcomes, so Async never reports them
@@ -104,6 +125,14 @@ module ConnectRPC
       end
 
       def respond(env)
+        accepted(env) || rejected(env)
+      end
+
+      # Returns the guarded response, or nil for a rejected one once its
+      # original has closed. A rejected original whose close raises leaves the
+      # callbacks in env for the app-error path, where protocol-rack's error
+      # handler ran them.
+      def accepted(env)
         attempted = false
         reject = lambda do
           attempted = true
@@ -115,17 +144,14 @@ module ConnectRPC
         response = @app.call(env)
         status, headers, body = response
         original = guarded_body(body)
-        if attempted || status == 101 || headers.keys.any? do |key|
-             %w[rack.hijack rack.protocol upgrade].include?(key.downcase)
-           end
-          return rejected(env)
-        end
+        switching = headers.keys.any? { |key| %w[rack.hijack rack.protocol upgrade].include?(key.downcase) }
+        return if attempted || status == 101 || switching
 
         response = [status, headers, completing_body(env, status, headers, original)]
         handed_off = true
         response
       rescue Unsupported
-        rejected(env)
+        nil
       rescue Exception => e # rubocop:disable Lint/RescueException -- the original body learns every escape
         error = e
         raise
@@ -152,11 +178,11 @@ module ConnectRPC
         end
       end
 
-      def completing_body(env, status, headers, original, content = original)
+      def completing_body(env, status, headers, original, content = original, callback_headers: headers)
         # Original-body ownership is needed even without callbacks: upstream
         # array conversion retains only the array's contents.
         callbacks = env["rack.response_finished"] || []
-        callback = ::Protocol::Rack::Body.completion_callback(callbacks, env, status, headers)
+        callback = ::Protocol::Rack::Body.completion_callback(callbacks, env, status, callback_headers)
         env["rack.response_finished"] = []
         CompletionBody.new(Completion.new(callback, original)) do
           ::Protocol::Rack::Body.wrap(env, status, headers.dup, content, env["protocol.http.request"].body)
@@ -164,10 +190,12 @@ module ConnectRPC
       end
 
       # The rejected original closes first; callbacks run once this reply's
-      # body closes, through the same request-task completion.
+      # body closes, through the same request-task completion. They receive
+      # the headers as protocol-rack converted this reply's for them.
       def rejected(env)
         headers = { "content-type" => "text/plain" }
-        [501, headers, completing_body(env, 501, headers, nil, ["Socket ownership transfer is unsupported"])]
+        [501, headers, completing_body(env, 501, headers, nil, ["Socket ownership transfer is unsupported"],
+                                       callback_headers: ::Protocol::HTTP::Headers[headers])]
       end
     end
     private_constant :RackGuard
@@ -215,7 +243,7 @@ module ConnectRPC
     private_constant :CompletionBody
 
     # One response's completion, shared by its CompletionBody and any shallow
-    # copy, such as a cache hit's, so it runs exactly once.
+    # copy, such as a cache hit's, so it runs at most once.
     #
     # States: inline (not parked, a close completes on the closing fiber),
     # parked (the request task waits for a close), requested (a closer handed
@@ -227,7 +255,8 @@ module ConnectRPC
     # still be writing the body and closing it would truncate a response that
     # could then look complete. It marks itself gone and exits; the later
     # close, from whichever fiber closes the body, then completes inline with
-    # that close's error.
+    # that close's error. The callbacks then run on that fiber, where
+    # peer_certificate is nil.
     class Completion
       attr_writer :body
 
@@ -246,15 +275,19 @@ module ConnectRPC
       end
 
       # On the request task: waits for a close, then completes here. A closer
-      # waiting on this task is always woken, whatever ends it.
+      # waiting on this task is always woken, whatever ends it. The claimed
+      # run's escapes go to that closer, except this task's own cancellation:
+      # a cancellation reaches the closer only when a close raised it. Only a
+      # cancellation is re-raised here, which Async counts as this task's
+      # cancellation rather than a failure.
       def serve
         @wake.wait
         @state = :running
         run(@error)
-      rescue ::Async::Cancel
-        raise
       rescue Exception => e # rubocop:disable Lint/RescueException -- the waiting closer raises the cleanup escape
-        @escape = e if @state == :running
+        cancel = e.is_a?(::Async::Cancel)
+        @escape = e if @state == :running && (!cancel || e.equal?(@close_escape))
+        raise if cancel
       ensure
         settle
       end
@@ -268,50 +301,58 @@ module ConnectRPC
 
       private
 
-      # Waits for the request task to complete. An interrupted closer stops
-      # waiting and re-raises; a request task that has claimed the run
-      # finishes on its own under retirement capture. Before the request task
-      # claims, the run falls to whichever side remains.
+      # Waits until the request task has settled. Before the request task
+      # existed the closer ran the completion itself, so an interruption of
+      # the closer interrupted the running callback and its close returned
+      # only once the nested ensures had closed the bodies. To keep that, each
+      # interruption of this closer is forwarded to the request task, where a
+      # second one also reaches a cancellation the task deferred, and the
+      # first is raised once the task has settled. A request task that exits
+      # without claiming the run leaves it to this closer.
+      #
+      # Limitation: over HTTP/2 a peer reset during the response's HEADERS
+      # flush makes the stream close the body under its connection's frame
+      # guard. A completion callback that then writes a frame to that same
+      # connection waits for the guard this closer holds, until retirement's
+      # cancellation of the closer is forwarded here.
       def hand_off(error)
         @error = error
         @state = :requested
         @wake.resolve(true)
+        interruption = await_settled
         begin
-          @done.wait
-        rescue Exception => e # rubocop:disable Lint/RescueException -- the interruption is re-raised below
-          interruption = e
+          run_inline(error) if @state == :gone
+        ensure
+          raise interruption if interruption
         end
-        if interruption
+        raise @escape if @escape
+      end
+
+      # Returns the closer's first interruption once the request task has
+      # settled.
+      def await_settled
+        interruption = nil
+        forwards = 0
+        until @done.resolved?
           begin
-            if @state == :gone
-              run_inline(error)
-            elsif @state == :requested
-              @abandoned = true
+            if forwards.positive?
+              forwards -= 1
+              @owner.cancel
+            else
+              @done.wait
             end
-          ensure
-            raise interruption
+          rescue Exception => e # rubocop:disable Lint/RescueException -- forwarded, then raised once settled
+            interruption ||= e
+            forwards += 1
           end
         end
-        return run_inline(error) if @state == :gone
-
-        raise @escape if @escape
+        interruption
       end
 
       def settle
         case @state
         when :running then @state = :done
-        when :parked then @state = :gone
-        when :requested
-          if @abandoned
-            # The closer stopped waiting before this task claimed the run.
-            begin
-              run_inline(@error)
-            rescue Exception # rubocop:disable Lint/RescueException -- no closer remains to receive it
-              nil
-            end
-          else
-            @state = :gone
-          end
+        when :parked, :requested then @state = :gone
         end
       ensure
         @done&.resolve(nil)
@@ -329,10 +370,19 @@ module ConnectRPC
         @callback.call(error)
       ensure
         begin
-          @body&.close(error)
+          release(@body, error)
         ensure
-          @original&.close(error)
+          release(@original, error)
         end
+      end
+
+      # Remembers the escape a close raised itself, as distinct from one that
+      # only passed through the release.
+      def release(body, error)
+        body&.close(error)
+      rescue Exception => e # rubocop:disable Lint/RescueException -- recorded and re-raised unchanged
+        @close_escape = e
+        raise
       end
     end
     private_constant :Completion

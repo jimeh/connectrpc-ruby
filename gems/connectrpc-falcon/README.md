@@ -259,6 +259,11 @@ its callbacks and its body close therefore run on one fiber over HTTP/1.1 and
 HTTP/2. Body chunks are still read where plain Falcon reads them: by the
 connection's writer over HTTP/1.1 and by the stream's output task over HTTP/2.
 
+protocol-rack's body conversion closes two kinds of body before the callbacks,
+on the same fiber, as it does in plain Falcon: the body of a 204, 205 or 304
+response unless it is an array, and the body of a 200 response that responds
+to `to_path`, which is then served from that file.
+
 Rails needs this under `config.active_support.isolation_level = :fiber`.
 `ActionDispatch::Executor` completes the request from a `rack.response_finished`
 callback, and that completion returns the fiber's ActiveRecord connection,
@@ -274,14 +279,30 @@ an HTTP/1.1 keep-alive connection reads its next request only then. A client
 can still finish reading the response before completion finishes, as with
 plain Falcon, which closes the body after the final flush.
 
+Before the request task existed, the closing fiber ran the callbacks itself, so
+interrupting that fiber interrupted a running callback. The closer keeps that:
+it passes each interruption it receives, such as a cancellation, on to the
+request task, and it still returns, or raises its first interruption, only once
+completion has finished. A callback that defers cancellation is therefore still
+reached by forced retirement, whose second cancel of the connection reaches the
+callback too, and metrics and admission stay held until completion finishes.
+An error that a body's `close` raises, an `Async::Stop` included, reaches the
+closer as before. A cancellation of the request task itself does not.
+
 If the request task is cancelled or fails while it waits, for example during
 forced retirement, `abort` or owner shutdown, it does not close the body or run
 callbacks then, because the writer may still be writing the body and closing
 it would truncate a response that could look complete. The later close, on
-whichever fiber closes the body, then runs completion as before. A closer
-interrupted while the request task runs completion stops waiting, and the
-request task finishes on its own under retirement. Completion runs once in
-every case, including for a cached response's shared copies.
+whichever fiber closes the body, then runs completion as before. In that
+case completion runs on the closing fiber, so Rails' executor completes there,
+with the connection leak this section describes for that request, and
+`peer_certificate` returns nil in those callbacks.
+
+Completion runs at most once, including for a cached response's shared copies.
+It does not run for a response lost inside the session's dispatch after the
+Falcon server returned it: the request task waits until retirement cancels it
+and then exits without completion, as before the request task existed. It also
+does not run for an app-raised `Async::Stop`, described below.
 
 An app that raises a `StandardError` has its registered callbacks run on its
 own fiber with a nil status and headers and the error, as protocol-rack does,
@@ -289,10 +310,20 @@ and the client gets the usual failure response. An app-raised `Async::Stop`
 runs no callbacks. A rejected hijack, protocol switch or 101 response still
 gets 501, with the app's body closed first and its callbacks run when the 501
 body closes. A response that Falcon's response middleware fails on, such as
-content encoding, is closed with that error, so its callbacks run too.
+content encoding, is closed with that error, so its callbacks run too. So is a
+response the app returned just as the session's handler task was interrupted,
+with that interruption.
 
 `peer_certificate` also returns the client leaf in the request task, including
 inside its `rack.response_finished` callbacks.
+
+One limitation remains over HTTP/2. If the peer resets a stream while its
+response HEADERS are being written, the stream closes the body while it holds
+the connection's frame-writing guard. A completion callback that then writes a
+frame to that same connection waits for that guard, which stalls the
+connection's other streams until retirement cancels the closer and that
+cancellation reaches the request task, within `close(grace:)`. Ordinary Rack
+callbacks do not write frames to their own connection.
 
 ## TLS lifecycle
 
