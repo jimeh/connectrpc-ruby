@@ -254,11 +254,11 @@ func padded(fields [][2]string, size int, first bool) [][2]string {
 func (c *rawConn) data(frame *http2.DataFrame) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if bytes, ok := c.scripted[frame.StreamID]; ok {
-		bytes += len(frame.Data())
-		c.scripted[frame.StreamID] = bytes
+	if size, ok := c.scripted[frame.StreamID]; ok {
+		size += len(frame.Data())
+		c.scripted[frame.StreamID] = size
 		if frame.StreamEnded() {
-			emit("%s request-end stream=%d bytes=%d conn=%s", c.tag, frame.StreamID, bytes, c.conn.RemoteAddr())
+			emit("%s request-end stream=%d bytes=%d conn=%s", c.tag, frame.StreamID, size, c.conn.RemoteAddr())
 		}
 	}
 	if end, ok := c.onData[frame.StreamID]; ok {

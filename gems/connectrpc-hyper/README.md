@@ -502,9 +502,12 @@ trailers-only response) at once, but one in DATA or trailers only as the
 response is read, and offers no way to reset a stream while its upload waits
 for send window, which limits the reset:
 
-- An END_STREAM behind response data nobody has read is seen once that data is
-  read. Until then writes succeed while send window remains, and a write that
-  needs more window blocks. grpc-go resets at once.
+- A write sees an END_STREAM only when no unread response data is ahead of it,
+  so an end behind data nobody has read is seen once that data is read. Until
+  then writes keep returning, also after the peer's window is spent: hyper's
+  upload pipeline (h2's send buffer, the pipe's held chunk and a one-slot
+  channel) accepts them, and a write blocks only once that pipeline is full.
+  grpc-go resets at once.
 - While the upload waits for send window (a server that stopped reading it),
   hyper does not poll the request body, so the reset goes out only once the
   window opens or the connection ends, also after the call completed. Until
