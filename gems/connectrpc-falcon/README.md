@@ -181,7 +181,8 @@ opaque identity/gzip bytes, wire/inflated caps, deadlines, metadata and errors.
 
 Falcon's generic content encoding/cache middleware wraps only `rack_app`. RPC
 compression and byte limits stay outside it. Native handlers do not inherit
-Rails callbacks/authentication. Ordinary Rails fallback preserves its
+Rails callbacks/authentication. They also bypass the Rails executor and
+reloader; see [Rails on Falcon](#rails-on-falcon). Ordinary Rails fallback preserves its
 controller, CSRF and session policy.
 
 TLS negotiates `h2` or `http/1.1`; no ALPN selects HTTP/1.1. Plaintext supports
@@ -217,6 +218,102 @@ HTTP/1.1 early responses use the bounded
 [input retirement policy](#http11-input-retirement). See the
 [Async ingress bounds](../connectrpc-async/README.md#backend-boundaries-and-verification)
 for padding, cleanup, allocation layers and the limits of this guarantee.
+
+## Rails on Falcon
+
+With a Rails application as the fallback, through `rack_app` or a `config.ru`
+application with `Falcon::Environment::Rack`, the native application dispatches
+registered RPCs before the fallback: it checks whether the core Server handles
+the path and calls the fallback only when it does not. Native handlers
+therefore never pass through the Rails middleware stack, so
+`ActionDispatch::Executor` and, with reloading enabled,
+`ActionDispatch::Reloader` do not run around them. As observed with Rails 8.1
+and ActiveRecord, that skips the following:
+
+- ActiveRecord's query cache is off inside handlers.
+- A connection that a handler leases for the rest of the request, for example
+  with `ActiveRecord::Base.connection` or `lease_connection`, is not returned to
+  the pool when the RPC ends. With `config.active_support.isolation_level =
+  :fiber`, it stays leased to the finished request fiber until ActiveRecord
+  reclaims it. With the default `:thread` isolation, the worker thread keeps it
+  checked out between RPCs. Ordinary model queries, such as `Widget.count`,
+  check out a connection for each query and return it, with or without the
+  executor.
+- `ActiveSupport::CurrentAttributes` are not reset after an RPC. With the
+  default `:thread` isolation, a value that one handler sets is still visible to
+  later RPCs on the same worker thread. With `:fiber` isolation, each RPC runs
+  in its own fiber and starts with empty attributes.
+- In development, RPCs do not reload changed code. Code that a handler looks up
+  during the call picks up a change only after an ordinary Rails request has
+  run the reloader. Handler objects that `connectrpc_server` builds, including
+  the bound methods that `handlers_for` captures, are created once per worker.
+  Even with the interceptor below, a change to their own class needs a worker
+  restart; only code they look up per call, such as models, is reloaded.
+
+To run native RPCs the way Rails runs a request, do two things. First, use
+fiber isolation:
+
+```ruby
+# config/application.rb
+config.active_support.isolation_level = :fiber
+```
+
+With `:thread` isolation, concurrent RPCs on one worker thread share executor
+state and `CurrentAttributes`. When another RPC on the thread already holds the
+executor, Rails' wrap runs the block at once without its own executor run, so
+the interceptor below cannot isolate those RPCs from each other.
+
+Second, register a server interceptor that runs each RPC inside
+`Rails.application.reloader.wrap`. The wrap runs the executor and, when
+reloading is enabled, checks for changed code and reloads it as the
+application's reloading configuration says:
+
+```ruby
+# Runs each native RPC the way a Rails request runs: inside the Rails executor,
+# and, when reloading is enabled, after reloading changed code.
+class RailsExecution
+  def server_unary(_call, &) = wrap(&)
+  def server_stream(_call, &) = wrap(&)
+
+  private
+
+  # The executor reports every exception that escapes it to Rails.error. A
+  # ConnectRPC::Error is a deliberate response, so it leaves after the wrap.
+  def wrap
+    error = nil
+    result = Rails.application.reloader.wrap do
+      yield
+    rescue ConnectRPC::Error => e
+      error = e
+    end
+    raise error if error
+
+    result
+  end
+end
+```
+
+Pass it to the core Server that `connectrpc_server` builds:
+
+```ruby
+connectrpc_server do
+  ConnectRPC::Server.new(services: [MyService::SERVICE], handlers: MyService.handlers_for(MyHandlers.new),
+                         interceptors: [RailsExecution.new])
+end
+```
+
+The `ConnectRPC::Error` rescue keeps the executor from reporting deliberate RPC
+errors, such as `not_found`, to `Rails.error` as unhandled exceptions;
+unexpected exceptions are still reported, once. Like any core
+[interceptor](../../docs/unary.md#interceptors) or
+[stream interceptor](../../docs/streaming.md#interceptors), it covers every RPC
+the host serves: unary and all stream kinds on Connect and native gRPC, plus
+unary and server-stream gRPC-Web, which has no client or bidi streaming.
+
+It does not cover RPCs that a
+[connectrpc-on-rails](../connectrpc-on-rails/README.md#rails-on-falcon)
+controller serves. Those go through the Rails application's own middleware
+stack, like any other Rails request on this listener.
 
 ## Rack fallback caching
 
