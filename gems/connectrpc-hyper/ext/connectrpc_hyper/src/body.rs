@@ -1,11 +1,13 @@
 //! Request bodies: nothing, a fixed buffer, or an incrementally written
 //! stream. An aborted stream fails with CANCEL instead of ending, so an
 //! interrupted upload reaches the peer as RST_STREAM(CANCEL) (HTTP/2) or a
-//! broken connection (HTTP/1.1), never as a clean end of the request.
+//! broken connection (HTTP/1.1), never as a clean end of the request. An
+//! HTTP/2 stream whose response ended while the upload was open fails with
+//! NO_ERROR (`Upload`).
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::task::{Context, Poll};
 
 use bytes::Bytes;
@@ -16,6 +18,63 @@ use crate::gvl::Signal;
 use crate::wire::Mark;
 
 type AbortWait = Pin<Box<dyn Future<Output = ()> + Send + Sync>>;
+
+const OPEN: u8 = 0;
+const CLOSED: u8 = 1;
+const RESET: u8 = 2;
+
+/// How an HTTP/2 upload ends, shared by a streaming call and its request
+/// bodies. Whichever comes first decides: the writer closing its side
+/// (`close`) commits a clean END_STREAM after the queued bytes; the
+/// transport observing the response's end (`end_response`) while the upload
+/// is open resets the stream with NO_ERROR and drops the unsent bytes, as
+/// grpc-go's client resets a stream it still sends on once the server ended
+/// it. hyper's pipe resets the stream with the reason of the body's error.
+#[derive(Default)]
+pub struct Upload {
+    state: AtomicU8,
+    response_ended: Signal,
+}
+
+impl Upload {
+    pub fn new() -> Arc<Self> {
+        Arc::new(Self::default())
+    }
+
+    /// The writer closed its side.
+    pub fn close(&self) {
+        let _ = self
+            .state
+            .compare_exchange(OPEN, CLOSED, Ordering::SeqCst, Ordering::SeqCst);
+    }
+
+    /// The transport observed the response's end.
+    pub fn end_response(&self) {
+        let _ = self
+            .state
+            .compare_exchange(OPEN, RESET, Ordering::SeqCst, Ordering::SeqCst);
+        self.response_ended.fire();
+    }
+
+    pub fn response_ended(&self) -> bool {
+        self.response_ended.fired()
+    }
+
+    pub async fn wait(&self) {
+        self.response_ended.wait().await;
+    }
+
+    fn is_reset(&self) -> bool {
+        self.state.load(Ordering::SeqCst) == RESET
+    }
+}
+
+/// A body's hold on its call's `Upload`, with a wait that wakes hyper's pipe
+/// once the response ended.
+struct UploadEnd {
+    upload: Arc<Upload>,
+    wait: Option<AbortWait>,
+}
 
 pub struct CallBody {
     kind: Kind,
@@ -34,6 +93,8 @@ enum Kind {
         /// Takes the receiver back when hyper drops a body that never
         /// yielded a frame, so a replay can carry the writer's bytes.
         home: Option<oneshot::Sender<mpsc::Receiver<Bytes>>>,
+        /// HTTP/2 only.
+        upload: Option<UploadEnd>,
         yielded: bool,
     },
 }
@@ -52,12 +113,21 @@ impl CallBody {
         ended: Arc<AtomicBool>,
         abort: Arc<Signal>,
         home: oneshot::Sender<mpsc::Receiver<Bytes>>,
+        upload: Option<Arc<Upload>>,
     ) -> Self {
+        let upload = upload.map(|upload| UploadEnd {
+            wait: Some(Box::pin({
+                let upload = upload.clone();
+                async move { upload.wait().await }
+            })),
+            upload,
+        });
         Self::from(Kind::Stream {
             rx: Some(rx),
             ended,
             abort: Box::pin(async move { abort.wait().await }),
             home: Some(home),
+            upload,
             yielded: false,
         })
     }
@@ -100,6 +170,7 @@ impl Body for CallBody {
                 rx,
                 ended,
                 abort,
+                upload,
                 yielded,
                 ..
             } => {
@@ -107,6 +178,21 @@ impl Body for CallBody {
                 if abort.as_mut().poll(cx).is_ready() {
                     *yielded = true;
                     return Poll::Ready(Some(Err(h2::Error::from(h2::Reason::CANCEL))));
+                }
+                // A response that ended the open upload wins over its queued
+                // bytes; the reset is never a clean end (`ended`).
+                if let Some(end) = upload {
+                    if end
+                        .wait
+                        .as_mut()
+                        .is_some_and(|wait| wait.as_mut().poll(cx).is_ready())
+                    {
+                        end.wait = None;
+                    }
+                    if end.upload.is_reset() {
+                        *yielded = true;
+                        return Poll::Ready(Some(Err(h2::Error::from(h2::Reason::NO_ERROR))));
+                    }
                 }
                 let rx = rx.as_mut().expect("receiver until drop");
                 let polled = match rx.poll_recv(cx) {

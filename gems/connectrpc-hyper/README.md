@@ -441,7 +441,7 @@ failure as `cause`:
 | `HTTP transport failed: connection closed` | The connection closed, retired or received GOAWAY |
 | `HTTP transport failed: malformed response` | Protocol error |
 | `HTTP transport failed: stream reset` | A Connect stream reset by the server |
-| `HTTP transport failed: stream closed` | A streaming write after an HTTP/2 stream ended, when the transport cannot tell why (below) |
+| `HTTP transport failed: stream closed` | A streaming write after an HTTP/2 stream ended, when the transport cannot tell why, or after its response ended while the upload was open (below) |
 | `HTTP transport admission is closed` | A call after `close`, or one forced teardown ended after its own setup saw `close`, with no `cause` |
 
 A server `RST_STREAM` on a gRPC call maps as connectrpc-async does: codes 3
@@ -464,6 +464,20 @@ server's status from the response, or raises the write's failure when the
 response carries no error status. The response side still reads the head,
 every response byte, and the trailers or the reset.
 
+Over HTTP/2, a server that ends its response (END_STREAM) while the upload is
+still open, without resetting the stream, ends the upload too, as grpc-go's
+client does: once the transport sees the response's end, the client resets the
+stream with `RST_STREAM(NO_ERROR)` and drops request bytes it has not sent. A
+write that starts after that, or that still waits to queue its bytes, raises
+`stream closed`; a write that already queued its bytes returns. The head, the
+response bytes and the status stay readable, so core reports the server's
+status, and the connection stays in use for other calls. A writer that called
+`close_send` before the transport saw the end sends its queued bytes and
+END_STREAM instead, without a reset. This applies to every protocol; Go's
+net/http client, which connect-go uses, keeps sending a Connect stream's upload
+after a successful response until the caller closes the response. HTTP/1.1 is
+unchanged.
+
 A single streaming `write` of 2 GiB or more raises `ArgumentError` before
 anything is queued: h2 refuses a chunk that large, which would end the upload
 while the response waits for it. Core writes at most 16 KiB at a time.
@@ -482,9 +496,19 @@ hyper does not tell the request body why the stream ended, which limits this:
   Core never sends `Content-Length` on a stream.
 - A response head followed by `RST_STREAM(NO_ERROR)` without a valid status
   also raises `stream closed`, where connectrpc-async raises `internal`.
-- A server that ends its response without resetting the stream leaves the
-  stream half-open, and writes keep succeeding until the call ends, as they
-  do with connectrpc-async.
+
+hyper offers no way to see the response's end without reading the response,
+or to reset a stream while its upload waits for send window, which limits the
+reset:
+
+- An END_STREAM behind response data nobody has read is seen once that data is
+  read; until then writes succeed. grpc-go resets at once.
+- While the upload waits for send window (a server that stopped reading it),
+  hyper does not poll the request body, so the reset goes out only once the
+  window opens or the connection ends, also after the call completed. Until
+  then the stream keeps its place in the connection's concurrent-stream limit.
+  Writes still behave as above: the write that queued returns and the next one
+  raises.
 
 `close(grace: 5)` stops admission, lets in-flight calls finish within `grace`,
 then aborts the rest and waits for every connection task. It returns true when

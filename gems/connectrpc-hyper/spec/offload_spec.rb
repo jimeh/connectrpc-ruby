@@ -801,7 +801,7 @@ RSpec.describe "Inside an Async reactor" do
         peer.wait_event(peer.hold_done(key, reason: /context (canceled|deadline exceeded)/), from: from)
       end
       expired = peer.wait_event(/\Araw request silent-data /, from: from)[/ stream=(\d+) /, 1]
-      peer.wait_event(/\Araw rst stream=#{expired} code=8\z/, from: from)
+      peer.wait_event(/\Araw rst stream=#{expired} code=8 /, from: from)
       # The expired stream reused the warmed connection.
       expect(peer.count(/\Araw accept /, from: from)).to eq(1)
     end

@@ -91,7 +91,7 @@ RSpec.describe "Cancellation and deadlines" do
     expect([error.code, error.message, monotonic - started])
       .to match(["deadline_exceeded", "Deadline exceeded", be_between(0.29, 1.5)])
     stalled = peer.wait_event(/\Araw request stall /, from: from)[/ stream=(\d+) /, 1]
-    peer.wait_event(/\Araw rst stream=#{stalled} code=8\z/, from: from)
+    peer.wait_event(/\Araw rst stream=#{stalled} code=8 /, from: from)
     resume << true
     expect(sibling.value).to eq(MSG.new)
     # The peer answers once the sibling's request ends, counting both messages,

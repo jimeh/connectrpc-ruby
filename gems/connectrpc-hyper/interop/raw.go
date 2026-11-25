@@ -19,7 +19,9 @@ import (
 // with any code, refused streams, withheld PING ACKs, withheld response heads,
 // silent streams and streams that end while the client is still sending. The
 // "x-scenario" request header selects the response; every request, PING and
-// client RST_STREAM is reported as an event.
+// client RST_STREAM is reported as an event. Request and RST_STREAM events end
+// with the client's address (conn=), since stream ids repeat across
+// connections.
 
 type rawOptions struct {
 	ack        bool
@@ -41,6 +43,8 @@ type rawConn struct {
 	unread map[uint32]bool
 	// onData holds end-on-data streams' endings, run at their first DATA.
 	onData map[uint32]func()
+	// scripted holds script streams, whose request END_STREAM is reported.
+	scripted map[uint32]bool
 }
 
 type awaitedRequest struct {
@@ -128,7 +132,8 @@ func handleRaw(tag string, conn net.Conn, options rawOptions) {
 		return
 	}
 	c := &rawConn{tag: tag, conn: conn, framer: http2.NewFramer(conn, conn),
-		awaiting: map[uint32]*awaitedRequest{}, unread: map[uint32]bool{}, onData: map[uint32]func(){}}
+		awaiting: map[uint32]*awaitedRequest{}, unread: map[uint32]bool{}, onData: map[uint32]func(){},
+		scripted: map[uint32]bool{}}
 	c.encoder = hpack.NewEncoder(&c.block)
 	c.framer.ReadMetaHeaders = hpack.NewDecoder(4096, nil)
 	c.framer.MaxHeaderListSize = 1 << 24
@@ -186,7 +191,7 @@ func handleRaw(tag string, conn net.Conn, options rawOptions) {
 			}
 			c.data(frame)
 		case *http2.RSTStreamFrame:
-			emit("%s rst stream=%d code=%d", tag, frame.StreamID, uint32(frame.ErrCode))
+			emit("%s rst stream=%d code=%d conn=%s", tag, frame.StreamID, uint32(frame.ErrCode), conn.RemoteAddr())
 		case *http2.GoAwayFrame:
 			emit("%s client-goaway code=%d", tag, uint32(frame.ErrCode))
 		}
@@ -248,6 +253,9 @@ func padded(fields [][2]string, size int, first bool) [][2]string {
 func (c *rawConn) data(frame *http2.DataFrame) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if frame.StreamEnded() && c.scripted[frame.StreamID] {
+		emit("%s request-end stream=%d conn=%s", c.tag, frame.StreamID, c.conn.RemoteAddr())
+	}
 	if end, ok := c.onData[frame.StreamID]; ok {
 		delete(c.onData, frame.StreamID)
 		end()
@@ -317,6 +325,43 @@ func (c *rawConn) status(stream uint32, grpc bool, code int) {
 	_ = c.framer.WriteData(stream, true, envelope)
 }
 
+// trailersOnly ends a gRPC stream with one HEADERS frame carrying the head
+// and the status, with END_STREAM. Callers hold c.mu.
+func (c *rawConn) trailersOnly(stream uint32, code int) {
+	c.headers(stream, [][2]string{{":status", "200"}, {"content-type", "application/grpc"},
+		{"grpc-status", strconv.Itoa(code)}, {"grpc-message", "ended"}}, true)
+}
+
+// script runs a script stream's steps (see the "script" scenario) in order.
+func (c *rawConn) script(stream uint32, grpc bool, tag string, steps []string) {
+	gates := 0
+	for _, step := range steps {
+		name, value, _ := strings.Cut(step, "=")
+		code, _ := strconv.Atoi(value)
+		if name == "gate" {
+			gates++
+			<-gate(fmt.Sprintf("%s.%d", tag, gates))
+			continue
+		}
+		c.locked(func() error {
+			switch name {
+			case "head":
+				c.streamHead(stream, grpc)
+			case "reply":
+				return c.framer.WriteData(stream, false, replyMessage)
+			case "status":
+				c.status(stream, grpc, code)
+			case "trailers-only":
+				c.trailersOnly(stream, code)
+			case "window":
+				return c.framer.WriteWindowUpdate(stream, 1<<30)
+			}
+			return nil
+		})
+		emit("%s script %s %s", c.tag, tag, step)
+	}
+}
+
 func (c *rawConn) request(frame *http2.MetaHeadersFrame) {
 	values := map[string]string{}
 	for _, field := range frame.Fields {
@@ -329,8 +374,8 @@ func (c *rawConn) request(frame *http2.MetaHeadersFrame) {
 	c.last = stream
 	scenario := values["x-scenario"]
 	grpc := strings.HasPrefix(values["content-type"], "application/grpc")
-	emit("%s request %s stream=%d n=%d timeout=%s", c.tag, scenario, stream, c.streams,
-		values["grpc-timeout"]+values["connect-timeout-ms"])
+	emit("%s request %s stream=%d n=%d timeout=%s conn=%s", c.tag, scenario, stream, c.streams,
+		values["grpc-timeout"]+values["connect-timeout-ms"], c.conn.RemoteAddr())
 	head := [][2]string{{":status", "200"}, {"content-type", "application/grpc"}}
 	ok := func() {
 		emit("%s handled %s stream=%d", c.tag, scenario, stream)
@@ -406,7 +451,10 @@ func (c *rawConn) request(frame *http2.MetaHeadersFrame) {
 		//     RST_STREAM(NO_ERROR), as Go's HTTP/2 server ends a stream whose
 		//     request is still open; with :open the stream stays half-open
 		//     and keeps reading;
-		//   reply:<grpc code>  as status, with one message before the status.
+		//   reply:<grpc code>[:open]  as status, with one message before the
+		//     status;
+		//   trailers-only:<grpc code>[:open]  as status, with the head and the
+		//     status in one HEADERS frame (gRPC).
 		mode, rest, _ := strings.Cut(argument, ":")
 		code, flag, _ := strings.Cut(rest, ":")
 		status, _ := strconv.Atoi(code)
@@ -420,6 +468,11 @@ func (c *rawConn) request(frame *http2.MetaHeadersFrame) {
 					_ = c.framer.WriteData(stream, false, replyMessage)
 				}
 				_ = c.framer.WriteRSTStream(stream, http2.ErrCode(status))
+			case "trailers-only":
+				c.trailersOnly(stream, status)
+				if flag != "open" {
+					_ = c.framer.WriteRSTStream(stream, http2.ErrCodeNo)
+				}
 			default:
 				c.streamHead(stream, grpc)
 				if mode == "reply" {
@@ -432,6 +485,23 @@ func (c *rawConn) request(frame *http2.MetaHeadersFrame) {
 			}
 			emit("%s ended %s stream=%d", c.tag, scenario, stream)
 		}
+	case "script":
+		// script:<tag>:<step>,... writes the response step by step, never
+		// resetting the stream: a leading "noread" never reopens the stream's
+		// window; "gate" waits for "release <tag>.<n>", the stream's nth gate;
+		// "head", "reply" (one message), "status=<grpc code>" (as end-on-data's
+		// status, with END_STREAM), "trailers-only=<grpc code>" and "window"
+		// (reopens the stream's window by 1 GiB) write those frames. Each
+		// written step is reported as "script <tag> <step>", and the request's
+		// END_STREAM as "request-end".
+		tag, list, _ := strings.Cut(argument, ":")
+		steps := strings.Split(list, ",")
+		if steps[0] == "noread" {
+			c.unread[stream] = true
+			steps = steps[1:]
+		}
+		c.scripted[stream] = true
+		go c.script(stream, grpc, tag, steps)
 	case "noread":
 		// Never answers and never reopens the stream's flow-control window,
 		// so the client's writes block once it is spent; nor does it reset

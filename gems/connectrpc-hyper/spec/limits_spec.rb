@@ -123,7 +123,7 @@ RSpec.describe "Header, body and streaming limits" do
       # The stream window plus h2's bounded send buffer, then the writer blocks.
       expect(written).to be < 40
       unread = peer.wait_event(/\Araw request noread /, from: from)[/ stream=(\d+) /, 1]
-      peer.wait_event(/\Araw rst stream=#{unread} code=8\z/, from: from)
+      peer.wait_event(/\Araw rst stream=#{unread} code=8 /, from: from)
     end
   end
 end
