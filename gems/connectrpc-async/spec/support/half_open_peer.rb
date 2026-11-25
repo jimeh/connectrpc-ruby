@@ -51,9 +51,13 @@ module HalfOpenPeer
   def half_open_envelope(flags, bytes) = [flags, bytes.bytesize].pack("CN") + bytes.b
 
   # Writes the response's frames and ends the stream, then resets it only
-  # with `reset_after`. A :unary response's `message` is its whole body;
-  # `extra` fields follow the gRPC status fields.
-  def half_open_response(stream, protocol:, message: nil, code: 5, trailers_only: false, reset_after: nil, extra: [])
+  # with `reset_after`; `reset` instead resets the stream with no response.
+  # A :unary response's `message` is its whole body; `extra` fields follow
+  # the gRPC status fields.
+  def half_open_response(stream, protocol:, message: nil, code: 5, trailers_only: false, reset_after: nil, reset: nil,
+                         extra: [])
+    return stream.send_reset_stream(reset) if reset
+
     half_open_frames(stream, protocol, message, code, trailers_only, extra: extra)
     stream.send_reset_stream(reset_after) if reset_after && !stream.closed?
   end

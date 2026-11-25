@@ -285,6 +285,104 @@ RSpec.describe "HTTP/2 half-open client streams" do
     end
   end
 
+  # Cleanup decides its reset inside the frame guard, after a sibling's frame
+  # and the abandoned stream's own waiting DATA, so it sees what the peer
+  # did meanwhile.
+  {
+    "writes only the NO_ERROR reset when the response ends" => [{ protocol: :connect }, :response_ended?,
+                                                                [Protocol::HTTP2::Error::NO_ERROR]],
+    "writes no reset when the peer resets the stream" => [{ protocol: :connect, reset: Protocol::HTTP2::Error::CANCEL },
+                                                          :closed?, []]
+  }.each do |outcome, (response, settled, resets)|
+    it "#{outcome} while cleanup of an abandoned stream waits for the frame guard" do
+      releases = path_releases
+      with_half_open_peer(release: releases) do |task, transport, origin, peer, _release|
+        abandoned = abandon_behind_sibling([task, transport, origin, peer, releases], response, settled)
+        expect(abandoned.fetch(:call).wait).to eq(:abandoned)
+        expect(abandoned.fetch(:operation)[:cleanup_error]).to be_nil
+        abandoned.fetch(:proceed).enqueue(true)
+        releases["/half/sibling"].enqueue({ protocol: :connect, code: 0 })
+        abandoned.fetch(:sibling).wait
+        expect_reuse(transport, origin, peer)
+        main = abandoned.fetch(:main)
+        expect(peer.wire[:data][main.id]).to eq(half_open_envelope(0, "first").bytesize)
+        expect(client_resets(peer, main.id)).to eq(resets)
+      end
+    end
+  end
+
+  it "keeps a gRPC block's result when cleanup's NO_ERROR reset write fails after waiting for the frame guard" do
+    releases = path_releases
+    with_half_open_peer(release: releases) do |task, transport, origin, peer, _release|
+      abandoned = abandon_behind_sibling([task, transport, origin, peer, releases], { protocol: :grpc },
+                                         :response_ended?, protocol: :grpc, fail_resets: true)
+      resource = abandoned.fetch(:main).connection.resource
+      expect(abandoned.fetch(:call).wait).to eq(:abandoned)
+      expect(abandoned.fetch(:operation)[:cleanup_error]).to be_nil
+      expect(resource).to be_finished
+      abandoned.fetch(:proceed).enqueue(true)
+      expect { abandoned.fetch(:sibling).wait }.to expect_unavailable
+      expect(transport.call(request("#{origin}/after")).body).to eq("ok")
+      expect(peer.accepted).to eq(2)
+      expect(client_resets(peer, abandoned.fetch(:main).id)).to be_empty
+    end
+  end
+
+  # Opens /half/main, holds the guard with a gated sibling while the main
+  # stream's second DATA waits for it, and returns the main block, whose
+  # cleanup then also waits for the guard. The peer answers with `response`
+  # and the guard is released once the stream reports `settled`. `setup` is
+  # the task, transport, origin, peer and releases of #with_half_open_peer.
+  def abandon_behind_sibling(setup, response, settled, protocol: :connect, fail_resets: false)
+    task, transport, origin, peer, releases = setup
+    first = half_open_envelope(0, "first")
+    opened = Async::Queue.new
+    go = Async::Queue.new
+    abandon = Async::Queue.new
+    opener = protocol == :grpc ? :open_grpc_stream : :open_stream
+    call = task.async(finished: false) do
+      transport.public_send(opener, half_open_request(origin, protocol, path: "/half/main")) do |exchange|
+        exchange.write(first)
+        opened.enqueue([half_open_operation(transport), exchange.instance_variable_get(:@body)])
+        go.dequeue
+        exchange.write(half_open_envelope(0, "second"))
+        abandon.dequeue
+        :abandoned
+      end
+    end
+    operation, body = opened.dequeue
+    main = operation.fetch(:response).stream
+    wait_until(task, "first DATA read") { peer.wire[:data][main.id] == first.bytesize }
+    gate = gate_data(transport, fail_resets)
+    proceed = Async::Queue.new
+    sibling = gated_sibling(task, transport, origin, gate, proceed)
+    go.enqueue(true)
+    wait_until(task, "DATA waits for the guard") { body.queued_bytes.zero? && guard_waiters(main.connection) == 1 }
+    abandon.enqueue(true)
+    wait_until(task, "cleanup waits for the guard") { operation[:cleaned] && guard_waiters(main.connection) == 2 }
+    expect(main.state).to eq(:open)
+    releases["/half/main"].enqueue(response)
+    wait_until(task, "peer's frame read") { main.public_send(settled) }
+    gate.release.enqueue(true)
+    { call: call, operation: operation, main: main, sibling: sibling, proceed: proceed }
+  end
+
+  # An armed DATA gate on the client socket. With `fail_resets`, every
+  # RST_STREAM write fails before it reaches the gate, which splits the held
+  # write.
+  def gate_data(transport, fail_resets)
+    resource = transport.instance_variable_get(:@resources).first
+    gate = FrameGate.new(resource.socket, frame_type: Protocol::HTTP2::DataFrame::TYPE)
+    io = gate
+    if fail_resets
+      io = HalfOpenPeer::ResetFailure.new(gate)
+      io.armed = true
+    end
+    resource.connection.stream.instance_variable_set(:@io, io)
+    gate.armed = true
+    gate
+  end
+
   it "ends a request closed before the response ended with END_STREAM and no reset" do
     with_half_open_peer do |task, transport, origin, peer, release|
       stream = nil
