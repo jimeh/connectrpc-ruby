@@ -962,20 +962,23 @@ module ConnectRPC
         # the NO_ERROR reset, unless the output already wrote it; both recheck
         # inside the frame guard, so only one is written, and the close stops
         # an output still attached. Otherwise CANCEL, also decided inside the
-        # guard: while cleanup waits for it the response may end, which takes
-        # the NO_ERROR path from within the guard, or the stream may close, as
-        # by a peer reset.
+        # guard: while cleanup waits for it the stream may close, as by a peer
+        # reset, or the response may end. A response that ended takes the
+        # NO_ERROR path after the guard is released, so a failed reset retires
+        # the connection from outside the guard, as every other abort does.
         def reset_in_cleanup
           return reset_ended if @response_ended
           return close! if state == :idle
           return if closed?
 
-          connection.synchronize do
-            next if closed?
-            next reset_ended if @response_ended
+          ended = connection.synchronize do
+            next false if closed?
+            next true if @response_ended
 
             send_reset_stream(::Protocol::HTTP2::Error::CANCEL)
+            false
           end
+          reset_ended if ended
         end
 
         # async-http resets a stream whose HEADERS fail validation, and
