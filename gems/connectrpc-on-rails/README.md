@@ -229,6 +229,31 @@ they cannot interrupt arbitrary application code or blocked synchronous reads.
 Warden/Devise throws and failure-app responses remain host-owned non-Connect
 responses unless the application explicitly adapts them.
 
+## Rails on Falcon
+
+This adapter's controllers are ordinary Rails controllers. When Falcon serves
+the Rails application as the fallback of
+[connectrpc-falcon](../connectrpc-falcon/README.md), their RPCs reach Rails
+through the fallback like any other Rails request. connectrpc-falcon completes
+fallback requests on their own request fiber, so Rails' executor finishes there
+under `:fiber` isolation.
+[Rack fallback completion](../connectrpc-falcon/README.md#rack-fallback-completion)
+describes how, and the cases where completion runs on another fiber.
+
+Native handlers registered in connectrpc-falcon's `connectrpc_server` never
+reach the Rails application. Falcon claims their whole service path before the
+fallback sees the request, so a controller route at the same path never runs. A
+controller route under another prefix, such as the `/rpc` scope in [Route the
+service](#3-route-the-service), is a different path and still reaches Rails.
+Native handlers bypass the Rails executor and reloader, so they get no query
+cache of their own, no return of a leased connection, no `CurrentAttributes`
+reset and no development reloading. [Rails on
+Falcon](../connectrpc-falcon/README.md#rails-on-falcon) in the Falcon README
+explains the details. Its interceptor and `:fiber` isolation setting restore the
+query cache, the connection return and the `CurrentAttributes` reset, and reload
+code that handlers look up per call. A change to a handler's own class still
+needs a worker restart.
+
 ## Interceptors
 
 Override private `connect_interceptors` to run core
