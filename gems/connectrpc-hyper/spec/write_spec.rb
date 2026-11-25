@@ -556,7 +556,8 @@ RSpec.describe "Streaming writes after the stream ended", :interop do
 
     # The client's own end of the upload commits a clean END_STREAM: the
     # response ends after close_send, and once the window opens the queued
-    # bytes and END_STREAM go out, with no reset.
+    # bytes and END_STREAM go out, with no reset. The interrupted third write
+    # left its bytes queued, so all three writes arrive.
     it "ends the upload cleanly when the writer closed its side first" do
       transport = hyper
       from = peer.mark
@@ -573,8 +574,9 @@ RSpec.describe "Streaming writes after the stream ended", :interop do
         expect(call.response_head(timeout: 5).status).to eq(200)
         expect(read_all(call)).to eq(grpc_end)
         peer.command("release #{tag}.2")
-        request_end = /\Araw request-end stream=#{stream[0]} conn=#{Regexp.escape(stream[1])}\z/
-        peer.wait_event(request_end, from: from, timeout: 4)
+        request_end = /\Araw request-end stream=#{stream[0]} bytes=(\d+) conn=#{Regexp.escape(stream[1])}\z/
+        expect(peer.wait_event(request_end, from: from, timeout: 4)[request_end, 1].to_i)
+          .to eq(3 * beyond_window.bytesize)
         call.finish(timeout: 5)
       end
       expect_reused(transport, stream, from)

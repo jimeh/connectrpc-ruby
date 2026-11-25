@@ -43,8 +43,9 @@ type rawConn struct {
 	unread map[uint32]bool
 	// onData holds end-on-data streams' endings, run at their first DATA.
 	onData map[uint32]func()
-	// scripted holds script streams, whose request END_STREAM is reported.
-	scripted map[uint32]bool
+	// scripted holds script streams' request body sizes so far; their
+	// request END_STREAM is reported with the size.
+	scripted map[uint32]int
 }
 
 type awaitedRequest struct {
@@ -133,7 +134,7 @@ func handleRaw(tag string, conn net.Conn, options rawOptions) {
 	}
 	c := &rawConn{tag: tag, conn: conn, framer: http2.NewFramer(conn, conn),
 		awaiting: map[uint32]*awaitedRequest{}, unread: map[uint32]bool{}, onData: map[uint32]func(){},
-		scripted: map[uint32]bool{}}
+		scripted: map[uint32]int{}}
 	c.encoder = hpack.NewEncoder(&c.block)
 	c.framer.ReadMetaHeaders = hpack.NewDecoder(4096, nil)
 	c.framer.MaxHeaderListSize = 1 << 24
@@ -253,8 +254,12 @@ func padded(fields [][2]string, size int, first bool) [][2]string {
 func (c *rawConn) data(frame *http2.DataFrame) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if frame.StreamEnded() && c.scripted[frame.StreamID] {
-		emit("%s request-end stream=%d conn=%s", c.tag, frame.StreamID, c.conn.RemoteAddr())
+	if bytes, ok := c.scripted[frame.StreamID]; ok {
+		bytes += len(frame.Data())
+		c.scripted[frame.StreamID] = bytes
+		if frame.StreamEnded() {
+			emit("%s request-end stream=%d bytes=%d conn=%s", c.tag, frame.StreamID, bytes, c.conn.RemoteAddr())
+		}
 	}
 	if end, ok := c.onData[frame.StreamID]; ok {
 		delete(c.onData, frame.StreamID)
@@ -493,16 +498,16 @@ func (c *rawConn) request(frame *http2.MetaHeadersFrame) {
 		// status, with END_STREAM), "trailers-only=<grpc code>" and "window"
 		// (reopens the stream's window by 1 GiB) write those frames. Each
 		// written step is reported as "script <tag> <step>", and the request's
-		// END_STREAM as "request-end".
+		// END_STREAM as "request-end" with the request body's size.
 		tag, list, _ := strings.Cut(argument, ":")
 		steps := strings.Split(list, ",")
 		if steps[0] == "noread" {
 			c.unread[stream] = true
 			steps = steps[1:]
 		}
-		c.scripted[stream] = true
+		c.scripted[stream] = 0
 		if frame.StreamEnded() {
-			emit("%s request-end stream=%d conn=%s", c.tag, stream, c.conn.RemoteAddr())
+			emit("%s request-end stream=%d bytes=0 conn=%s", c.tag, stream, c.conn.RemoteAddr())
 		}
 		go c.script(stream, grpc, tag, steps)
 	case "noread":
