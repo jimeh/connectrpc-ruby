@@ -3,6 +3,111 @@
 The [supported 0.x contract](support.md) defines the target compatibility
 boundary and the remaining adoption gates.
 
+## Quick start
+
+This program serves the demo schema's server-streaming `Countdown` RPC on a
+local HTTP/2 port, calls it and prints each message:
+
+```ruby
+require "async"
+require "connectrpc/async"
+require "demo/v1/demo_connect" # Generated from examples/proto/demo/v1/demo.proto.
+
+class Countdown
+  # Server streaming: one request in, any number of messages out.
+  def countdown(request, writer, _context)
+    request.from.downto(1) { |number| writer.send_message(Demo::V1::CountdownResponse.new(number: number)) }
+  end
+end
+
+server = ConnectRPC::Server.new(services: [Demo::V1::DemoService::SERVICE],
+                                handlers: Demo::V1::DemoService.handlers_for(Countdown.new))
+
+Sync do
+  host = ConnectRPC::Async::Host.new(server: server).start # h2c on an ephemeral localhost port.
+  origin = "http://127.0.0.1:#{host.port}"
+  transport = ConnectRPC::Async::Transport.new(origin: origin)
+  client = Demo::V1::DemoService::Client.new(client: ConnectRPC::Client.new(base_url: origin, transport: transport))
+
+  client.countdown(Demo::V1::CountdownRequest.new(from: 3)) do |reader|
+    reader.each { |message| puts message.number } # Prints 3, 2, 1.
+  end
+ensure
+  transport&.close
+  host&.close
+end
+```
+
+It uses the repository's [demo schema](../examples/proto/demo/v1/demo.proto),
+whose generated Ruby lives in `examples/gen`. Code generated for your own
+service has the same shape; see
+[Generate services from protobuf](unary.md#generate-services-from-protobuf).
+Native streaming needs a native host and client, here the `Host` and
+`Transport` of [connectrpc-async](../gems/connectrpc-async/README.md).
+
+The [runnable examples](../examples/README.md) run a streaming server and
+client in two terminals. After `mise run async:setup`:
+
+```sh
+# Terminal 1
+mise run example:server -- async
+
+# Terminal 2
+mise run example:client -- async-h2 countdown 3
+```
+
+## Stream kinds
+
+Each streaming kind has its own handler signature and generated client call.
+This object implements the demo schema's three streaming RPCs, and the client
+calls below use them:
+
+```ruby
+class DemoStreams
+  # Server streaming: one request in, any number of messages out. The return value is ignored.
+  def countdown(request, writer, _context)
+    request.from.downto(1) { |number| writer.send_message(Demo::V1::CountdownResponse.new(number: number)) }
+  end
+
+  # Client streaming: read every message, then return exactly one response.
+  def collect(reader, _context)
+    names = []
+    reader.each { |message| names << message.name }
+    Demo::V1::CollectResponse.new(summary: "Collected #{names.join(', ')}")
+  end
+
+  # Bidirectional streaming: receive and send on one duplex. The return value is ignored.
+  def chat(duplex, _context)
+    duplex.each { |message| duplex.send_message(Demo::V1::ChatResponse.new(text: "Hello, #{message.text}!")) }
+  end
+end
+
+server = ConnectRPC::Server.new(services: [Demo::V1::DemoService::SERVICE],
+                                handlers: Demo::V1::DemoService.handlers_for(DemoStreams.new))
+
+# The generated client calls, with `client` built as in the quick start:
+client.countdown(Demo::V1::CountdownRequest.new(from: 2)) do |reader|
+  reader.each { |message| puts message.number } # Prints 2, 1.
+end
+
+response = client.collect do |writer|
+  %w[Ada Grace].each { |name| writer.send_message(Demo::V1::CollectRequest.new(name: name)) }
+end
+puts response.message.summary # Collected Ada, Grace
+
+client.chat do |duplex|
+  duplex.send_message(Demo::V1::ChatRequest.new(text: "Ada"))
+  puts duplex.receive.text # Hello, Ada!
+  duplex.close_send
+  duplex.each { |message| puts message.text } # Reads any remaining replies until the stream ends.
+end
+```
+
+[Clients and declarations](#clients-and-declarations) and
+[Handlers and publication](#handlers-and-publication) give the full rules.
+
+## Hosts and clients
+
 Connect server streaming, client streaming and bidirectional streaming use the
 same dependency-free core engine. The optional Async transport and Async/Falcon
 native HTTP/2 hosts support protobuf and ProtoJSON, identity/gzip, h2c, verified
@@ -18,104 +123,6 @@ Native gRPC reuses the declarations and session engine below, including unary
 calls through the exchange SPI. Its protobuf-only negotiation, final HTTP/2
 HEADERS, status codec and independent bounds are described in [gRPC](grpc.md).
 The Connect terminal envelope and one-second tail policy below apply to Connect.
-
-## Falcon HTTP/1.1 server
-
-Custom hosts opt in with `Server#call_stream(capabilities: [:server_stream,
-:client_stream], ...)`. The default `capabilities: nil` retains portable
-rejection; legacy `http2: true` grants all three shapes. Explicit capabilities
-must be a nonempty, unique Array of supported shape symbols and cannot be
-combined with `http2: true`. Omitted SS/CS returns bounded `unimplemented`;
-omitted known bidi returns host-neutral bare 505 before input or codecs.
-Falcon turns every native H1 bidi 505 into a nonpersistent response with exactly
-one `Connection: close`. Web negotiation and CORS retain precedence. Native
-gRPC remains H2-only, and HTTP/1.0 Connect streaming is rejected.
-
-The original processor retains handlers, codecs, authenticated peer identity,
-trace activation and application cleanup. Response consumers transmit prepared
-bytes. Headers can publish during input reads, but successful HTTP terminal
-chunk delivery waits for original application cleanup. Leading metadata and
-propagation exclude actual chunked trailers, including `connect-timeout-ms`.
-H1 peer EOF does not synthesize Context cancellation.
-
-When original framed input is incomplete at response-head resolution, Falcon
-disables reuse and, since 0.3.0, reads the unread body before it writes the
-response head, as Go's `net/http` server does (`maxPostHandlerReadBytes`). It
-reads at most 256 KiB, though the last chunked read can pass that by less than
-64 KiB, and leaves a declared remainder of 256 KiB or more unread.
-`request_body_timeout` bounds each read wait and the Connect deadline bounds the
-whole read; progress never extends the deadline, and `grpc-timeout` does not
-apply. A stalled, expired or malformed remainder still receives the response.
-Only the connection task reads, once the original processor has stopped reading
-input: it has finished, or it has produced response output, which core does
-only after a handler's last input read. During the read a separate task drains
-that output into memory, so processing never blocks on it; the drain never
-waits for processing completion or lifecycle observers. A head published before
-any output, such as headers sent during CS input reads, is written at once, and
-the remainder is read before the first output chunk. A bidi 505 and an
-unanswered `Expect: 100-continue` request skip the read.
-
-A successfully delivered response on a retiring connection uses one absolute
-final-close expiry at the actual final HTTP flush plus 500 ms. On a successful
-write, protocol-http1 closes the body only after its final flush (for HTTP/1.0
-close-delimited bodies, also after the write half-close). A private body wrapper
-therefore anchors the expiry when the writer closes the body without an error
-after EOF or a HEAD response, before the body's close callbacks or lifecycle
-observation. A response without a body anchors when the writer returns. Payload
-bytes cannot trigger it. Cancellation can also close the body without an error, but
-the response is then undelivered and ignores the expiry. Delayed callbacks
-consume the same total budget. After completed delivery, Falcon half-closes raw
-TCP writes and waits for the rest of that budget without reading, like
-`net/http`'s `rstAvoidanceDelay`. Earlier owner abort/shutdown can shorten
-either phase. Failed or incomplete delivery gets no success grace. Late
-hygiene/grace failures preserve completed processing and delivery facts.
-
-Admission and socket ownership remain held until retirement and original
-processing join. Retirement never parses or dispatches a pipelined request,
-even if the original request finishes. Fully consumed nonretiring input retains
-persistence. Raw socket abort precedes framed/Finishable close on forced teardown.
-Both timers are cooperative and can overshoot under scheduler delay. Remaining
-grace retains resources and is best effort reset avoidance, not a guarantee of
-response delivery under arbitrary network or peer failure. The
-[support contract](support.md#falcon-connect-h1-retirement) promises this
-behavior and treats its budgets as provisional tuning values.
-
-CI requires the production official H1 profiles to pass all 174 identity and 160
-gzip cases on both pinned Rubies, including the original oversized CS cases over
-TCP/TLS.
-No official assertion or inventory changed. Unlike `net/http`, Falcon never
-reuses a connection after incomplete streaming input, and it also reads when
-the client sent `Connection: close`. In native H1 Web, original input cleanup
-gates the staged Web terminal, and an incomplete upload also gates a rejection
-head to avoid stopping the client's upload. Since 0.3.1 that cleanup, and an early
-Connect unary response, read the remainder with the same limits and bounds.
-The historical Web TCP/TLS failures, diagnosis and separate baseline repair are
-recorded in the [conformance
-status](../conformance/README.md#connect-http11-server-profiles).
-
-## Completion policy
-
-After a terminal envelope, the client requires HTTP EOF and transport completion
-within one **absolute second**, with at most one extra byte read. Any extra byte
-is a protocol error. A stalled tail is `unavailable`, including with `timeout: nil`.
-A shorter real RPC deadline or explicit cancellation can win first. Otherwise
-valid responses with late EOF or slow intermediaries can be rejected. This is
-this library's interoperability policy, not a Connect requirement, RPC deadline,
-wire timeout header or general stream watchdog. The
-[support contract](support.md#native-client-completion) classifies it as
-provisional, and [#102](https://github.com/jimeh/connectrpc-ruby/issues/102)
-evaluates relaxing it.
-
-An incidental send I/O failure permits terminal-only recovery of at most 262,144
-additional wire body bytes in one absolute 100 ms, including response headers,
-buffered remainders, prefixes, skipped data, terminal tail and transport finish.
-Recovery skips data incrementally without decoding or inflating it. It cannot
-steal a live reader or resume normal reading after discarding data. Only a valid
-remote error with verified HTTP tail can replace the generic write failure.
-Remote success cannot erase an unhandled send failure; an application may handle
-a send failure and complete its normal response path. Recovery and the existing
-1-second destructive cleanup allowance are separate allowances. Native or
-application code that blocks the reactor remains outside hard timing guarantees.
 
 ## Clients and declarations
 
@@ -198,12 +205,7 @@ There is no synthetic nil message for publishing headers. Core invokes the host
 publisher at most once per call. If publication fails, the call raises and the
 host aborts the response; core never finishes a stream with a terminal but no head.
 
-The original processor task owns authenticated peer identity, cancellation and
-instrumentation through handlers, codecs and cleanup. A separate publication
-promise exposes response headers while processing continues. Body tasks consume
-prepared bytes. Successful HTTP EOF waits for original processor completion;
-late cleanup failure aborts/reset. Admission and graceful drain include processing,
-wire tail and cleanup. Only actual peer RST_STREAM(CANCEL) signals explicit server
+Only actual peer RST_STREAM(CANCEL) signals explicit server
 Context cancellation. EOF, half-close, other reset codes and host shutdown do not.
 A long-lived handler that blocks on application state can register
 `context.on_cancel { ... }` to wake itself on that signal; the
@@ -367,6 +369,30 @@ including a failure after dispatch started but before the stream opened.
   interceptor; one that blocks should observe cancellation itself, and its
   frame lasts as long as a long-lived stream such as a health Watch.
 
+## Completion policy
+
+After a terminal envelope, the client requires HTTP EOF and transport completion
+within one **absolute second**, with at most one extra byte read. Any extra byte
+is a protocol error. A stalled tail is `unavailable`, including with `timeout: nil`.
+A shorter real RPC deadline or explicit cancellation can win first. Otherwise
+valid responses with late EOF or slow intermediaries can be rejected. This is
+this library's interoperability policy, not a Connect requirement, RPC deadline,
+wire timeout header or general stream watchdog. The
+[support contract](support.md#native-client-completion) classifies it as
+provisional, and [#102](https://github.com/jimeh/connectrpc-ruby/issues/102)
+evaluates relaxing it.
+
+An incidental send I/O failure permits terminal-only recovery of at most 262,144
+additional wire body bytes in one absolute 100 ms, including response headers,
+buffered remainders, prefixes, skipped data, terminal tail and transport finish.
+Recovery skips data incrementally without decoding or inflating it. It cannot
+steal a live reader or resume normal reading after discarding data. Only a valid
+remote error with verified HTTP tail can replace the generic write failure.
+Remote success cannot erase an unhandled send failure; an application may handle
+a send failure and complete its normal response path. Recovery and the existing
+1-second destructive cleanup allowance are separate allowances. Native or
+application code that blocks the reactor remains outside hard timing guarantees.
+
 ## Bounds and protocol
 
 Each direction retains at most one queued 16,384-byte output fragment and one
@@ -458,3 +484,91 @@ hostname verification enabled. Unary close-delimited responses accept clean EOF;
 without Content-Length, EOF cannot detect a semantically truncated payload that
 is otherwise valid. Core still validates protobuf/JSON; unexpected TLS EOF
 without close_notify remains a transport failure.
+
+## Host behavior
+
+This section describes how native hosts run streams. Most applications need
+none of it.
+
+### Native HTTP/2 hosts
+
+The original processor task owns authenticated peer identity, cancellation and
+instrumentation through handlers, codecs and cleanup. A separate publication
+promise exposes response headers while processing continues. Body tasks consume
+prepared bytes. Successful HTTP EOF waits for original processor completion;
+late cleanup failure aborts/reset. Admission and graceful drain include processing,
+wire tail and cleanup.
+
+### Falcon HTTP/1.1 server
+
+Custom hosts opt in with `Server#call_stream(capabilities: [:server_stream,
+:client_stream], ...)`. The default `capabilities: nil` retains portable
+rejection; legacy `http2: true` grants all three shapes. Explicit capabilities
+must be a nonempty, unique Array of supported shape symbols and cannot be
+combined with `http2: true`. Omitted SS/CS returns bounded `unimplemented`;
+omitted known bidi returns host-neutral bare 505 before input or codecs.
+Falcon turns every native H1 bidi 505 into a nonpersistent response with exactly
+one `Connection: close`. Web negotiation and CORS retain precedence. Native
+gRPC remains H2-only, and HTTP/1.0 Connect streaming is rejected.
+
+The original processor retains handlers, codecs, authenticated peer identity,
+trace activation and application cleanup. Response consumers transmit prepared
+bytes. Headers can publish during input reads, but successful HTTP terminal
+chunk delivery waits for original application cleanup. Leading metadata and
+propagation exclude actual chunked trailers, including `connect-timeout-ms`.
+H1 peer EOF does not synthesize Context cancellation.
+
+When original framed input is incomplete at response-head resolution, Falcon
+disables reuse and, since 0.3.0, reads the unread body before it writes the
+response head, as Go's `net/http` server does (`maxPostHandlerReadBytes`). It
+reads at most 256 KiB, though the last chunked read can pass that by less than
+64 KiB, and leaves a declared remainder of 256 KiB or more unread.
+`request_body_timeout` bounds each read wait and the Connect deadline bounds the
+whole read; progress never extends the deadline, and `grpc-timeout` does not
+apply. A stalled, expired or malformed remainder still receives the response.
+Only the connection task reads, once the original processor has stopped reading
+input: it has finished, or it has produced response output, which core does
+only after a handler's last input read. During the read a separate task drains
+that output into memory, so processing never blocks on it; the drain never
+waits for processing completion or lifecycle observers. A head published before
+any output, such as headers sent during CS input reads, is written at once, and
+the remainder is read before the first output chunk. A bidi 505 and an
+unanswered `Expect: 100-continue` request skip the read.
+
+A successfully delivered response on a retiring connection uses one absolute
+final-close expiry at the actual final HTTP flush plus 500 ms. On a successful
+write, protocol-http1 closes the body only after its final flush (for HTTP/1.0
+close-delimited bodies, also after the write half-close). A private body wrapper
+therefore anchors the expiry when the writer closes the body without an error
+after EOF or a HEAD response, before the body's close callbacks or lifecycle
+observation. A response without a body anchors when the writer returns. Payload
+bytes cannot trigger it. Cancellation can also close the body without an error, but
+the response is then undelivered and ignores the expiry. Delayed callbacks
+consume the same total budget. After completed delivery, Falcon half-closes raw
+TCP writes and waits for the rest of that budget without reading, like
+`net/http`'s `rstAvoidanceDelay`. Earlier owner abort/shutdown can shorten
+either phase. Failed or incomplete delivery gets no success grace. Late
+hygiene/grace failures preserve completed processing and delivery facts.
+
+Admission and socket ownership remain held until retirement and original
+processing join. Retirement never parses or dispatches a pipelined request,
+even if the original request finishes. Fully consumed nonretiring input retains
+persistence. Raw socket abort precedes framed/Finishable close on forced teardown.
+Both timers are cooperative and can overshoot under scheduler delay. Remaining
+grace retains resources and is best effort reset avoidance, not a guarantee of
+response delivery under arbitrary network or peer failure. The
+[support contract](support.md#falcon-connect-h1-retirement) promises this
+behavior and treats its budgets as provisional tuning values.
+
+CI requires the production official H1 profiles to pass all 174 identity and 160
+gzip cases on both pinned Rubies, including the original oversized CS cases over
+TCP/TLS.
+No official assertion or inventory changed. Unlike `net/http`, Falcon never
+reuses a connection after incomplete streaming input, and it also reads when
+the client sent `Connection: close`. In native H1 Web, original input cleanup
+gates the staged Web terminal, and an incomplete upload also gates a rejection
+head to avoid stopping the client's upload. Since 0.3.1 that cleanup, and an early
+Connect unary response, read the remainder with the same limits and bounds.
+The historical Web TCP/TLS failures, diagnosis and separate baseline repair are
+recorded in the [conformance
+status](../conformance/README.md#connect-http11-server-profiles).
