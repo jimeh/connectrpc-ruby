@@ -21,23 +21,31 @@ RSpec.describe "Falcon rejected Web HTTP/1 input" do
     target = server(**options, protocol: :grpc_web, request_limit: 100, instrumentation: instrumentation, **)
     # Core has prepared the original error; the host still owns input cleanup.
     original = target.method(:call_grpc_web)
+    recorder = method(:record_reads)
     target.define_singleton_method(:call_grpc_web) do |**arguments|
       events[:processing]&.call
-      native_body = arguments[:input].instance_variable_get(:@body)
-      events[:body] = native_body
-      original_read = native_body.method(:read)
-      native_body.define_singleton_method(:read) do
-        events[:cleanup_started] = true if events[:rejected]
-        chunk = original_read.call
-        (events[:reads] ||= []) << [chunk&.bytesize, Async::Task.current, events[:rejected]]
-        chunk
-      end
+      recorder.call(events[:body] = arguments[:input].instance_variable_get(:@body), events)
       original.call(**arguments)
     ensure
       events[:rejected] = true
       events[:prepared].enqueue(Async::Task.current)
     end
     target
+  end
+
+  # Records each read of the original body, including one that raises, with
+  # its reader and whether core had already rejected the request.
+  def record_reads(native_body, events)
+    original_read = native_body.method(:read)
+    native_body.define_singleton_method(:read) do
+      events[:cleanup_started] = true if events[:rejected]
+      chunk = original_read.call
+      (events[:reads] ||= []) << [chunk&.bytesize, Async::Task.current, events[:rejected]]
+      chunk
+    rescue StandardError
+      (events[:reads] ||= []) << [:raised, Async::Task.current, events[:rejected]]
+      raise
+    end
   end
 
   # [closed, failed]: hygiene closes raw TCP itself; forced retirement shuts it
@@ -100,7 +108,19 @@ RSpec.describe "Falcon rejected Web HTTP/1 input" do
     elsif headers["content-length"]
       body << socket.read(headers["content-length"].to_i)
     end
-    [status, body]
+    [status, body, headers]
+  end
+
+  # Raw TCP half-close precedes TLS cleanup, so TLS EOF has no close_notify.
+  def read_to_eof(task, socket)
+    wire = +"".b
+    task.with_timeout(2) { loop { wire << socket.readpartial(16_384) } }
+  rescue EOFError
+    wire
+  rescue OpenSSL::SSL::SSLError => e
+    raise unless e.message.include?("unexpected eof")
+
+    wire
   end
 
   [false, true].product([false, true]).each do |tls, chunked|
@@ -220,6 +240,114 @@ RSpec.describe "Falcon rejected Web HTTP/1 input" do
         end
       end
     end
+
+    it "delivers the rejection after a paused #{chunked ? 'chunked' : 'fixed'} upload, TLS=#{tls}" do
+      reactor do |task|
+        events = { prepared: Async::Queue.new, outcomes: [], completions: [] }
+        scheme = tls ? "https" : "http"
+        falcon(server: rejected_server(events), scheme: scheme, tls: tls ? host_tls : nil) do |_, origin|
+          rejected_socket(origin, tls: tls) do |socket|
+            rejection_prefix(socket, chunked: chunked)
+            task.with_timeout(2) { events[:prepared].dequeue }
+            wait_until(task, "cleanup reading the remainder") { events[:cleanup_started] }
+            # The pause is the stimulus: #195's former 100 ms allowance
+            # aborted raw TCP before a paused client could finish.
+            task.sleep(0.3)
+            begin
+              socket.write("30d40\r\n") if chunked
+              socket.write("x" * 200_000)
+              socket.write("\r\n0\r\n\r\n") if chunked
+              socket.write("GET /healthy HTTP/1.1\r\nHost: localhost\r\n\r\n")
+            rescue IOError, SystemCallError, OpenSSL::SSL::SSLError => e
+              # Report a reset through the response assertion below.
+              late_write = e
+            end
+            status, body = begin
+              task.with_timeout(2) { read_http1(socket) }
+            rescue IOError, SystemCallError, OpenSSL::SSL::SSLError => e
+              [e, nil]
+            end
+            expect(status.to_s).to start_with("HTTP/1.1 200"), "no response (late write: #{late_write.inspect})"
+            expect(late_write).to be_nil
+            expect(body).to include("grpc-status: 8\r\n")
+            # A remainder within the read limit leaves the connection reusable.
+            expect(task.with_timeout(2) { read_http1(socket) }.first).to start_with("HTTP/1.1 404")
+            wait_until(task, "completed rejection") { !events[:completions].empty? }
+            expect(events[:completions].map(&:delivery)).to eq([:completed])
+          end
+        end
+      end
+    end
+  end
+
+  # A premature EOF makes the chunked body empty? although its framing never
+  # finished, so the rejection head must still wait for the processor's read.
+  it "defers the rejection head while cleanup handles a truncated upload" do
+    reactor do |task|
+      events = { prepared: Async::Queue.new, outcomes: [], completions: [] }
+      held = Async::Queue.new
+      release = Async::Queue.new
+      input_type = ConnectRPC::Falcon.const_get(:HTTP1StreamInput)
+      allow(input_type).to receive(:new).and_wrap_original do |constructor, *args, **options|
+        constructor.call(*args, **options).tap do |owner|
+          next unless options[:reuse]
+
+          # Hold the processor after its read, before it hands over retirement.
+          # The connection task's later read_first call is not held.
+          allow(owner).to receive(:read_first).and_wrap_original do |read, *values|
+            first = !owner.instance_variable_get(:@held)
+            owner.instance_variable_set(:@held, true)
+            read.call(*values).tap do
+              if first
+                held.enqueue(true)
+                release.dequeue
+              end
+            end
+          end
+        end
+      end
+      registry = Async::Utilization::Registry.new
+      falcon(server: rejected_server(events), utilization_registry: registry) do |host, origin|
+        boundary = Async::Queue.new
+        session = host.instance_variable_get(:@session)
+        trace = TracePoint.new(:call) do |event|
+          next unless %i[wait write_response].include?(event.method_id)
+
+          resource = session.instance_variable_get(:@resources).find do |owned|
+            owned.respond_to?(:active) && owned.active && owned.task.equal?(Async::Task.current)
+          end
+          next unless resource
+
+          if event.defined_class == AsyncHelpers::INTERNAL::Publication && event.method_id == :wait
+            boundary.enqueue(:dispatch_wait)
+          elsif event.self.equal?(resource.connection) && event.method_id == :write_response
+            boundary.enqueue(:response_head)
+          end
+        end
+        trace.enable
+        rejected_socket(origin) do |socket|
+          # The whole truncated upload is buffered before the server runs.
+          rejection_prefix(socket)
+          socket.write("100\r\npartial")
+          socket.shutdown(Socket::SHUT_WR)
+          task.with_timeout(2) { held.dequeue }
+          ordering = task.with_timeout(2) { boundary.dequeue }
+          release.enqueue(true)
+          trace.disable
+          expect(ordering).to eq(:dispatch_wait), "response head preceded the processor's read"
+          status, _, headers = task.with_timeout(2) { read_http1(socket) }
+          replied = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+          expect(status).to start_with("HTTP/1.1 200")
+          expect(headers["connection"]).to eq("close")
+          expect(read_to_eof(task, socket)).to be_empty
+          wait_until(task, "the socket closed") { registry.metric(:connections_active).value.zero? }
+          expect(Process.clock_gettime(Process::CLOCK_MONOTONIC) - replied).to be >= 0.3
+        ensure
+          release.enqueue(true)
+          trace&.disable
+        end
+      end
+    end
   end
 
   [false, true].each do |text|
@@ -241,8 +369,8 @@ RSpec.describe "Falcon rejected Web HTTP/1 input" do
             expect(status).to start_with("HTTP/1.1 200")
             expect(body).to include("grpc-status: 8\r\n")
             expect(read_http1(socket).first).to start_with("HTTP/1.1 404")
-            expect(events[:reads].filter_map(&:first).sum).to eq(bytes.bytesize)
-            expect(events[:reads].filter_map(&:first).max).to be <= 65_536
+            expect(events[:reads].filter_map(&:first).grep(Integer).sum).to eq(bytes.bytesize)
+            expect(events[:reads].filter_map(&:first).grep(Integer).max).to be <= 65_536
             tail_readers = events[:reads].filter_map { |_, reader, rejected| reader if rejected }.uniq
             expect(tail_readers).to all(eq(processor))
           end
@@ -251,8 +379,110 @@ RSpec.describe "Falcon rejected Web HTTP/1 input" do
     end
   end
 
-  failure_modes = %i[stalled malformed truncated progress deadline drain drain_malformed abort cancel]
-  [false, true].product(failure_modes).each do |tls, failure|
+  # A remainder that cannot finish still receives the response, as on
+  # net/http, and the connection closes after the reply.
+  delivered_failures = %i[stalled malformed truncated progress deadline oversized drain_malformed]
+  delivered_failures.product([false, true]).each do |failure, tls|
+    it "delivers the rejection and closes after the reply on #{failure}, TLS=#{tls}" do
+      reactor do |task|
+        events = { prepared: Async::Queue.new, outcomes: [], completions: [] }
+        registry = Async::Utilization::Registry.new
+        falcon(server: rejected_server(events), scheme: tls ? "https" : "http", tls: tls ? host_tls : nil,
+               # A long request_body_timeout isolates the grpc-timeout bound.
+               utilization_registry: registry, request_body_timeout: failure == :deadline ? 5 : 0.1) do |host, origin|
+          rejected_socket(origin, tls: tls) do |socket|
+            started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+            timeout = { deadline: "30m", progress: "300m" }[failure]
+            rejection_prefix(socket, timeout: timeout)
+            processor = events[:prepared].dequeue
+            case failure
+            when :malformed then socket.write("invalid-chunk\r\n")
+            when :truncated
+              socket.write("100\r\npartial")
+              # Deliberately truncate the HTTP entity at the real TCP boundary.
+              socket.is_a?(OpenSSL::SSL::SSLSocket) ? socket.to_io.shutdown(Socket::SHUT_WR) : socket.shutdown(Socket::SHUT_WR)
+            when :progress
+              # Each read makes progress within request_body_timeout, so only
+              # the deadline ends the read. Short pauses space the writes.
+              writer = task.async(finished: false) do
+                loop do
+                  socket.write("1\r\nx\r\n")
+                  task.sleep(0.015)
+                end
+              rescue IOError, SystemCallError, OpenSSL::SSL::SSLError
+                nil
+              end
+            when :oversized
+              writer = task.async(finished: false) do
+                # The server stops reading partway, then closes.
+                socket.write("80000\r\n#{'x' * 524_288}\r\n0\r\n\r\n")
+              rescue IOError, SystemCallError, OpenSSL::SSL::SSLError
+                nil
+              end
+            when :drain_malformed
+              closing = task.async(finished: false) { host.close(grace: 3) }
+              resources = host.instance_variable_get(:@session).instance_variable_get(:@resources)
+              wait_until(task, "draining before independent input failure") { resources.any?(&:draining) }
+              socket.write("invalid-chunk\r\n")
+            end
+            if failure == :truncated && tls
+              # OpenSSL treats a TCP EOF without close_notify as fatal, so the
+              # server cannot write the response, unlike Go's crypto/tls.
+              expect { task.with_timeout(2) { read_http1(socket) } }.to raise_error(OpenSSL::SSL::SSLError)
+              wait_until(task, "aborted rejection") { !events[:completions].empty? }
+              expect(events[:completions].map(&:delivery)).to eq([:aborted])
+              expect(events[:completions].first.error).to be_a(OpenSSL::SSL::SSLError)
+              next
+            end
+            status, body, headers = task.with_timeout(2) { read_http1(socket) }
+            replied = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+            elapsed = replied - started
+            expect(status).to start_with("HTTP/1.1 200")
+            expect(headers["connection"]).to eq("close")
+            expect(body).to include("grpc-status: 8\r\n")
+            AsyncHelpers::INTERNAL.cancel(writer) unless failure == :oversized
+            # The peer's EOF is the write half-close. The socket itself closes
+            # only after net/http's 500 ms rstAvoidanceDelay from the final flush.
+            expect(read_to_eof(task, socket)).to be_empty
+            wait_until(task, "the socket closed") { registry.metric(:connections_active).value.zero? }
+            expect(Process.clock_gettime(Process::CLOCK_MONOTONIC) - replied).to be >= 0.3
+            AsyncHelpers::INTERNAL.cancel(writer)
+            wait_until(task, "completed rejection") { !events[:completions].empty? }
+            expect(events[:outcomes].map(&:code)).to eq(["resource_exhausted"])
+            expect(events[:completions].map(&:delivery)).to eq([:completed])
+            tail_readers = events[:reads].filter_map { |_, reader, rejected| reader if rejected }.uniq
+            expect(tail_readers).not_to be_empty unless failure == :deadline
+            expect(tail_readers).to all(eq(processor))
+            case failure
+            when :stalled then expect(elapsed).to be >= 0.1
+            when :oversized
+              # Reads stop at 256 KiB; a chunked read can pass it by under 64 KiB.
+              read = events[:reads].sum { |size, _, rejected| rejected && size.is_a?(Integer) ? size : 0 }
+              expect(read).to be_between(262_144, 262_144 + 65_536)
+            when :progress
+              # The read outlasted request_body_timeout and stopped at the deadline.
+              expect(events[:reads].count { |size, _| size == 1 }).to be >= 3
+              expect(elapsed).to be >= 0.25
+            end
+            expect(elapsed).to be < 1.5
+            if failure == :drain_malformed
+              expect(task.with_timeout(2) { closing.wait }).to be(true)
+            else
+              expect(http1(origin, "/healthy", context: tls ? verified_h1_context : nil).first).to eq(404)
+            end
+            wait_until(task, "rejection and healthy peer metrics retired") do
+              registry.metric(:connections_active).value.zero? && registry.metric(:requests_active).value.zero? &&
+                host.instance_variable_get(:@session).instance_variable_get(:@admitted).empty?
+            end
+          ensure
+            AsyncHelpers::INTERNAL.cancel(writer)
+          end
+        end
+      end
+    end
+  end
+
+  [false, true].product(%i[drain abort cancel]).each do |tls, failure|
     it "retires only owned input raw-first on #{failure}, TLS=#{tls}" do
       reactor do |task|
         events = { prepared: Async::Queue.new, outcomes: [], completions: [] }
@@ -272,40 +502,20 @@ RSpec.describe "Falcon rejected Web HTTP/1 input" do
                 closed_states << [raw_state(resource), Async::Task.current]
               end
             end
-            # Cleanup can finish before this fiber resumes: an already expired
-            # 30 ms deadline retires the input without yielding (#132). So the
-            # processor itself captures its resource and starts observation.
+            # The processor itself captures its resource and starts
+            # observation, before cleanup can retire the input.
             events[:processing] = lambda do
               resource = host.instance_variable_get(:@session).instance_variable_get(:@resources).find(&:active)
               trace.enable if resource
             end
             # This peer establishes wire progress before we observe its cleanup.
             started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
-            rejection_prefix(socket, timeout: failure == :deadline ? "30m" : nil)
+            rejection_prefix(socket)
             processor = events[:prepared].dequeue
             expect(resource).not_to be_nil
+            wait_until(task, "cleanup reading the remainder") { events[:cleanup_started] }
             case failure
-            when :malformed then socket.write("invalid-chunk\r\n")
-            when :truncated
-              socket.write("100\r\npartial")
-              # Deliberately truncate the HTTP entity at the real TCP boundary.
-              socket.is_a?(OpenSSL::SSL::SSLSocket) ? socket.to_io.shutdown(Socket::SHUT_WR) : socket.shutdown(Socket::SHUT_WR)
-            when :progress
-              # Real paced network input tests elapsed-time policy itself. Each
-              # short pause spaces writes, rather than assuming a race began.
-              writer = task.async(finished: false) do
-                loop do
-                  socket.write("1\r\nx\r\n")
-                  task.sleep(0.015)
-                end
-              rescue IOError, SystemCallError, OpenSSL::SSL::SSLError
-                nil
-              end
             when :drain then closing = task.async(finished: false) { host.close(grace: 0.015) }
-            when :drain_malformed
-              closing = task.async(finished: false) { host.close(grace: 3) }
-              wait_until(task, "draining before independent input failure") { resource.draining }
-              socket.write("invalid-chunk\r\n")
             when :abort then host.abort
             when :cancel then processor.cancel
             end
@@ -315,21 +525,14 @@ RSpec.describe "Falcon rejected Web HTTP/1 input" do
             expect(events[:completions].map(&:delivery)).to eq([:aborted])
             expect(events[:completions].map(&:http_status)).to eq([200])
             expect(events[:outcomes].first.error.code).to eq("resource_exhausted")
-            if %i[stalled progress deadline malformed].include?(failure)
-              # The writer can observe raw retirement before publication reports
-              # the cleanup error. Preserve that actual delivery failure too.
-              expect(events[:completions].first.error).to be_a(StandardError)
-              expect(events[:completions].first.error).not_to be_a(ConnectRPC::Error)
-            end
             expect(closed_states).not_to be_empty
-            expect(backend_closes).not_to be_empty if failure == :truncated
             case failure
             when :abort
               # Forced retirement leaves raw open, already shut down, until its
               # tasks have joined, and ends framed input without closing it.
               expect(closed_states.map(&:first)).to all(eq([false, true]))
               expect(backend_closes).to be_empty
-            when :drain, :drain_malformed
+            when :drain
               # Input cleanup or the expired grace may retire raw first.
               expect(closed_states.map(&:first)).to all(satisfy { |closed, failed| closed || failed })
               expect(backend_closes).to all(satisfy { |closed, failed| closed || failed })
@@ -347,54 +550,37 @@ RSpec.describe "Falcon rejected Web HTTP/1 input" do
             expect(wire).not_to include("grpc-status: 8")
             tail_readers = events[:reads].filter_map { |_, reader, rejected| reader if rejected }.uniq
             expect(tail_readers).to all(eq(processor))
-            limit = %i[deadline drain abort cancel].include?(failure) ? 0.09 : 0.5
-            expect(elapsed).to be < limit
-            if failure == :progress
-              expect(events[:reads].count { |size, _| size == 1 }).to be >= 3
-              expect(elapsed).to be >= 0.08
-            end
-            unless %i[drain drain_malformed abort].include?(failure)
+            expect(elapsed).to be < 0.5
+            unless %i[drain abort].include?(failure)
               expect(http1(origin, "/healthy", context: tls ? verified_h1_context : nil).first).to eq(404)
               wait_until(task, "all rejection and healthy peer metrics retired") do
                 registry.metric(:connections_active).value.zero? && registry.metric(:requests_active).value.zero?
               end
             end
-            if failure == :drain_malformed
-              drained = begin
-                task.with_timeout(1) { closing.wait }
-              rescue Async::TimeoutError
-                :still_draining
-              end
-              expect(drained).to be(false), "failed cleanup did not finish drain before its grace deadline"
-              expect(resource.active).to be(false)
-              expect(resource).to be_finished
-            else
-              closing&.wait
-            end
+            closing&.wait
             wait_until(task, "failed cleanup retires admission and request metrics") do
               host.instance_variable_get(:@session).instance_variable_get(:@admitted).empty? &&
                 registry.metric(:requests_active).value.zero?
             end
           ensure
             trace&.disable
-            AsyncHelpers::INTERNAL.cancel(writer)
           end
         end
       end
     end
   end
 
-  it "preserves an already established other connection after rejected input expires" do
+  it "preserves an already established other connection after rejected input stalls" do
     reactor do |task|
       events = { prepared: Async::Queue.new, outcomes: [], completions: [] }
-      falcon(server: rejected_server(events)) do |_host, origin|
+      falcon(server: rejected_server(events), request_body_timeout: 0.1) do |_host, origin|
         rejected_socket(origin) do |healthy|
           healthy.write("GET /before HTTP/1.1\r\nHost: localhost\r\n\r\n")
           expect(read_http1(healthy).first).to start_with("HTTP/1.1 404")
           rejected_socket(origin) do |socket|
             rejection_prefix(socket)
             events[:prepared].dequeue
-            wait_until(task, "stalled connection retired") { !events[:completions].empty? }
+            wait_until(task, "stalled connection answered") { !events[:completions].empty? }
             healthy.write("GET /after HTTP/1.1\r\nHost: localhost\r\n\r\n")
             expect(read_http1(healthy).first).to start_with("HTTP/1.1 404")
           end
@@ -425,13 +611,19 @@ RSpec.describe "Falcon rejected Web HTTP/1 input" do
         target = server(protocol: :grpc_web, cors: cors,
                         instrumentation: ConnectRPC::Instrumentation.new(subscribers: [subscriber]))
         registry = Async::Utilization::Registry.new
-        falcon(server: target, utilization_registry: registry) do |_host, origin|
+        falcon(server: target, utilization_registry: registry, request_body_timeout: 0.1) do |_host, origin|
           rejected_socket(origin) do |socket|
             socket.write("POST #{AsyncHelpers::ECHO::ECHO.path} HTTP/1.1\r\nHost: localhost\r\n" \
                          "Content-Type: application/grpc-web+proto\r\nOrigin: https://denied.example\r\n" \
                          "Transfer-Encoding: chunked\r\n\r\n5\r\nhello\r\n")
             if stalled
-              wait_until(task, "CORS native cleanup started") { registry.metric(:requests_active).value == 1 }
+              status, _, headers = task.with_timeout(2) { read_http1(socket) }
+              replied = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+              expect(status).to start_with("HTTP/1.1 403")
+              expect(headers["connection"]).to eq("close")
+              expect(read_to_eof(task, socket)).to be_empty
+              wait_until(task, "the socket closed") { registry.metric(:connections_active).value.zero? }
+              expect(Process.clock_gettime(Process::CLOCK_MONOTONIC) - replied).to be >= 0.3
               wait_until(task, "CORS unfinished input retired") { registry.metric(:connections_active).value.zero? }
               expect(registry.metric(:requests_active).value).to eq(0)
               expect(http1(origin, "/healthy").first).to eq(404)

@@ -371,7 +371,7 @@ The [#27](https://github.com/jimeh/connectrpc-ruby/issues/27) policy review on
 | --- | --- | --- |
 | [Native Connect client completion](#native-client-completion) | Provisional | [#102](https://github.com/jimeh/connectrpc-ruby/issues/102) |
 | [Native gRPC rich status](#native-grpc-rich-status) | Provisional | None |
-| [Falcon Connect H1 retirement](#falcon-connect-h1-retirement) | Behavior promised; budgets provisional | None |
+| [Falcon Connect H1 retirement](#falcon-connect-h1-retirement) | Streaming behavior promised; unary and Web read, budgets provisional | None |
 | [Server cancellation signal](#delivery-cancellation-and-metadata) | Provisional | [#103](https://github.com/jimeh/connectrpc-ruby/issues/103) |
 
 The other entries in this section describe scope and accepted limitations, and
@@ -448,23 +448,39 @@ server- and client-streaming input before it writes the response, as Go's
    Admission and socket ownership last through retirement and original
    processing join, and a pipelined request is never parsed or dispatched.
 
-Cooperative timers can overshoot and cannot preempt arbitrary native or
-application work. [Falcon Web cleanup](grpc-web.md#bounds-and-host-spi) is
-separate: original input cleanup gates its staged terminal and incomplete-upload
-rejection head with its own 100 ms allowance.
+Since 0.3.1, a Connect unary request and rejected native gRPC-Web input get the
+same read, with the same limits and bounds; the valid `grpc-timeout` bounds the
+whole Web read. Without a deadline, only each read wait and the 256 KiB limit
+bound the read, so drain grace and owner shutdown are the last bounds. An
+unanswered `Expect: 100-continue` request is answered without it. Unlike
+streaming input, and as on `net/http`, the connection stays open for
+the next request when the read reaches EOF. Otherwise the response carries
+`Connection: close`, still reaches the client after a stalled, expired or
+malformed remainder, and the connection closes after it as in step 3. Admission
+ends with delivery, as before; the socket is held through the close delay. The
+connection task reads a unary remainder once processing finishes. The original
+Web processor reads its own, before it releases the staged terminal and
+rejection head. Before 0.3.1, async-http read a unary remainder after the reply
+with no byte cap, bounded only by the connection's idle timeout. It never read
+a partly read chunked remainder, so the next request on that connection waited
+until the idle timeout closed it. Web cleanup had one 100 ms allowance and reset
+the connection when it expired.
 
-The behavior is **promised**: reading the remainder before the response head (or
-before the first output chunk after an early head), no reuse after incomplete
-input, no pipelined dispatch on a retiring connection, and admission and socket
-ownership through retirement. The budgets are **provisional** tuning values: the
-256 KiB read limit, the 500 ms close delay, and Falcon Web's 100 ms
-rejected-input cleanup allowance. The Connect values follow Go's `net/http`
-server. Besides the chunked overshoot above, two differences remain: Falcon
-never reuses a connection after incomplete input, even when the read reaches
-EOF, and it also reads when the client sent `Connection: close`, which
-`net/http` skips. Before 0.3.0 Falcon wrote the response first and discarded
-input for at most 100 ms afterwards, so a client that paused its upload past the
-500 ms close could fail its late write and lose the response.
+Cooperative timers can overshoot and cannot preempt arbitrary native or
+application work.
+
+The streaming behavior is **promised**: reading the remainder before the
+response head (or before the first output chunk after an early head), no reuse
+after incomplete input, no pipelined dispatch on a retiring connection, and
+admission and socket ownership through retirement. The unary and Web read added
+in 0.3.1 is **provisional**, as are the budgets: the 256 KiB read limit and the
+500 ms close delay. These follow Go's `net/http` server. Besides the chunked
+overshoot above, two differences remain. Falcon never reuses a connection after
+incomplete streaming input, even when the read reaches EOF, and it reads when
+the client sent `Connection: close`, which `net/http` skips. Before 0.3.0 Falcon
+wrote the streaming response first and discarded input for at most 100 ms
+afterwards, so a client that paused its upload past the 500 ms close could fail
+its late write and lose the response.
 
 ### HTTP/2 keepalive and connection age
 

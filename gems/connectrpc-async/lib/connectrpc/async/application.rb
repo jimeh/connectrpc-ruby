@@ -66,6 +66,18 @@ module ConnectRPC
             !Streaming.codec(Protocol.single(headers, "content-type")).nil?)
       end
 
+      # Other native Connect POSTs and GETs, such as unary calls, whose whole
+      # response is ready once processing finishes.
+      def http1_unary_route?(request)
+        return false if request.respond_to?(:stream) || !%w[GET POST].include?(request.method)
+
+        path = request.path&.split("?", 2)&.first
+        return false unless path && @server.handles?(path)
+
+        @server.send(:request_protocol, Internal.headers(request), request.method) == :connect &&
+          !http1_streaming_route?(request)
+      end
+
       # Client-streaming and bidi routes, whose request bodies may idle.
       def input_stream_route?(request)
         path = request.path&.split("?", 2)&.first
@@ -84,7 +96,8 @@ module ConnectRPC
         declaration.is_a?(ServerStreamMethod) || declaration.is_a?(BidiStreamMethod)
       end
 
-      private :call_headers, :publication?, :http1_streaming_route?, :input_stream_route?, :output_stream_route?
+      private :call_headers, :publication?, :http1_streaming_route?, :http1_unary_route?, :input_stream_route?,
+              :output_stream_route?
 
       def admission_response(request)
         path = request.path&.split("?", 2)&.first

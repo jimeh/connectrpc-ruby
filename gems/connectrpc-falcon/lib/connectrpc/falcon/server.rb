@@ -48,7 +48,8 @@ module ConnectRPC
           refresh_timeout: refresh_timeout, on_tls_error: on_tls_error,
           alpn_protocols: %w[h2 http/1.1],
           http1: lambda { |stream, **options|
-            HTTP1Resource.new(stream, request_body_timeout: request_body_timeout, **options)
+            HTTP1Resource.new(stream, request_body_timeout: request_body_timeout,
+                                      unary_route: method(:http1_unary_route?), **options)
           },
           stop_accepting: method(:stop_accepting), on_request_rejected: -> { @request_total.increment },
           keepalive: keepalive, max_concurrent_streams: max_concurrent_streams,
@@ -89,9 +90,10 @@ module ConnectRPC
 
       def publication?(request) = @listener_application.send(:publication?, request)
       def http1_streaming_route?(request) = @listener_application.send(:http1_streaming_route?, request)
+      def http1_unary_route?(request) = @native_application.send(:http1_unary_route?, request)
       def input_stream_route?(request) = @native_application.send(:input_stream_route?, request)
       def output_stream_route?(request) = @native_application.send(:output_stream_route?, request)
-      private :publication?, :http1_streaming_route?, :input_stream_route?, :output_stream_route?
+      private :publication?, :http1_streaming_route?, :http1_unary_route?, :input_stream_route?, :output_stream_route?
       def admission_response(request) = @listener_application.admission_response(request)
 
       def call_with_publication(request, publication:, lifecycle: nil, resource: nil)

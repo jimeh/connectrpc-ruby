@@ -508,7 +508,7 @@ module ConnectRPC
             # consumed unary input still permits incremental server streams.
             # Connect retirement owns input hygiene after response delivery.
             if publication && !retirement && GRPCWeb.intent?(Internal.headers(request)) &&
-               request.body && !request.body.empty?
+               !Internal.http1_input_complete?(request)
               begin
                 publication.wait
               rescue Exception => e # rubocop:disable Lint/RescueException -- cancellation must close deferred ownership too

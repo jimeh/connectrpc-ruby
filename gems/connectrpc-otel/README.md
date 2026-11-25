@@ -248,9 +248,9 @@ Transport remain H2-only. The explicit `ConnectRPC::Async::HTTP1Transport`
 supports Connect unary, safe GET, server streaming and client streaming in an
 application-owned reactor.
 
-The streaming guide defines Falcon's cooperative 500 ms total final-close budget
-and unchanged 100 ms / 256 KiB discard limits. Native Connect streaming clients
-have a separate, provisional one-second absolute HTTP tail policy. It applies even with a nil
+The streaming guide defines how Falcon reads up to 256 KiB of unread HTTP/1.1
+input before its response and its cooperative 500 ms final-close budget.
+Native Connect streaming clients have a separate, provisional one-second absolute HTTP tail policy. It applies even with a nil
 RPC deadline and can reject otherwise valid late EOF or slow intermediaries.
 
 ## Native gRPC

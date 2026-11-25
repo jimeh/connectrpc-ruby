@@ -5,7 +5,9 @@ RSpec.describe "Connect H1 framed input retirement bounds" do
 
   # The pinned Fixed and Chunked parsers are real; its connection boundary controls read sizes
   # and time without relying on TCP packetization or wall-clock scheduling.
-  def fixture(framing, length: 1_000_000, fields: nil)
+  def persistence(owner) = owner.instance_variable_get(:@connection).persistence
+
+  def fixture(framing, length: 1_000_000, fields: nil, **)
     events = []
     connection = Object.new
     connection.define_singleton_method(:readpartial) do |size|
@@ -28,9 +30,10 @@ RSpec.describe "Connect H1 framed input retirement bounds" do
     raw.define_singleton_method(:closed?) { false }
     raw.define_singleton_method(:close) { events << :raw_close }
     raw.define_singleton_method(:shutdown) { |_| nil }
-    connection.define_singleton_method(:persistent=) { |_| nil }
+    connection.define_singleton_method(:persistent=) { |value| (@persistence ||= []) << value }
+    connection.define_singleton_method(:persistence) { @persistence || [] }
     connection.define_singleton_method(:close) { events << :connection_close }
-    owner = owner_type.new(body, raw: raw, connection: connection, fields: fields)
+    owner = owner_type.new(body, raw: raw, connection: connection, fields: fields, **)
     [owner, body, events]
   end
 
@@ -96,22 +99,67 @@ RSpec.describe "Connect H1 framed input retirement bounds" do
 
   it "bounds the whole read by the Connect deadline despite repeated progress" do
     reactor do
-      # Construction, the eligibility check, then one reading per read wait.
-      allow_any_instance_of(owner_type).to receive(:now).and_return(10.0, 10.0, 10.01, 10.06, 10.101)
-      owner, _body, events = fixture(:chunked, fields: [%w[connect-timeout-ms 100]])
+      # The eligibility check, then one reading per read wait.
+      allow_any_instance_of(owner_type).to receive(:now).and_return(10.0, 10.01, 10.06, 10.101)
+      owner, _body, events = fixture(:chunked, expires: 10.1)
       owner.head_resolved(200)
       owner.processor_finished
       owner.read_first
-      expect(events).to eq([65_536] * 2)
+      expect(events.grep(Integer)).to eq([65_536] * 2)
       owner.close(false)
+    end
+  end
+
+  it "takes the read deadline from one valid connect-timeout-ms" do
+    allow(Process).to receive(:clock_gettime).with(Process::CLOCK_MONOTONIC).and_return(10.0)
+    expect(owner_type.connect_expires([%w[connect-timeout-ms 100]])).to eq(10.1)
+    [nil, [%w[connect-timeout-ms 0]], [%w[connect-timeout-ms 1x]],
+     [%w[connect-timeout-ms 1], %w[connect-timeout-ms 2]]].each do |fields|
+      expect(owner_type.connect_expires(fields)).to be_nil
+    end
+  end
+
+  # net/http keeps a connection whose unread body ends within the limit.
+  it "keeps a reusable connection when the read reaches EOF within the limit" do
+    reactor do
+      owner, _body, events = fixture(:fixed, length: 200_000, reuse: true)
+      owner.head_resolved(200)
+      owner.processor_finished
+      owner.read_first
+      expect(events.grep(Integer).sum).to eq(200_000)
+      expect(owner).not_to be_retiring
+      owner.final_flushed
+      owner.close(true)
+      expect(persistence(owner)).to be_empty
+      expect(events).not_to include(:raw_close, :connection_close)
+    end
+  end
+
+  it "closes a reusable connection after the reply when more remains" do
+    reactor do
+      [[:chunked, {}], [:fixed, { length: 262_144 }]].each do |framing, options|
+        owner, _body, events = fixture(framing, reuse: true, **options)
+        owner.head_resolved(200)
+        owner.processor_finished
+        # The connection header is decided after the read, before the head.
+        expect(persistence(owner)).to be_empty
+        owner.read_first
+        expect(events.grep(Integer).sum).to eq(framing == :fixed ? 0 : 262_144)
+        expect(persistence(owner)).to eq([false])
+        expect(owner).to be_retiring
+        owner.close(true)
+        expect(events).to include(:raw_close, :connection_close)
+      end
     end
   end
 
   it "skips the read for a 505 and an unanswered Expect: 100-continue" do
     reactor do
-      [[505, nil], [200, [%w[Expect 100-continue]]]].each do |status, fields|
-        owner, _body, events = fixture(:chunked, fields: fields)
+      [[505, nil, false], [200, [%w[Expect 100-continue]], false],
+       [200, [%w[Expect 100-continue]], true]].each do |status, fields, reuse|
+        owner, _body, events = fixture(:chunked, fields: fields, reuse: reuse)
         owner.head_resolved(status)
+        expect(persistence(owner)).to eq([false])
         owner.processor_finished
         owner.read_first
         expect(events).to be_empty

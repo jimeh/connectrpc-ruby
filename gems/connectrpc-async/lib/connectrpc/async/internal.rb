@@ -5,7 +5,7 @@ require_relative "teardown"
 
 module ConnectRPC
   module Async
-    module Internal
+    module Internal # rubocop:disable Metrics/ModuleLength
       CLEANUP_SECONDS = 1.0 # Spans several 100 ms GVL time slices; see the README (#187).
       MAX_WAIT = 86_400
 
@@ -410,11 +410,17 @@ module ConnectRPC
       def self.close_consumed_http1(request)
         return if request.respond_to?(:stream) || !request.body.respond_to?(:body)
 
+        request.body.close if http1_input_complete?(request)
+      end
+
+      # Framing completion never relies on empty?, which also becomes true
+      # when an upload ends early.
+      def self.http1_input_complete?(request)
+        return !request.body || request.body.empty? unless request.body.respond_to?(:body)
+
         framed = request.body.body
-        complete = framed.nil? ||
-                   (framed.is_a?(::Protocol::HTTP1::Body::Fixed) && framed.remaining.zero?) ||
-                   (framed.is_a?(::Protocol::HTTP1::Body::Chunked) && !framed.length.nil?)
-        request.body&.close if complete
+        framed.nil? || (framed.is_a?(::Protocol::HTTP1::Body::Fixed) && framed.remaining.zero?) ||
+          (framed.is_a?(::Protocol::HTTP1::Body::Chunked) && !framed.length.nil?)
       end
     end
     private_constant :Internal

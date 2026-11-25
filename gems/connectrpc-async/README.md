@@ -1989,8 +1989,9 @@ Connect server and client streaming over HTTP/1.1, with protobuf/ProtoJSON and
 identity/gzip over TCP/TLS/mTLS. The standalone Async Host and original Async
 Transport remain H2-only. Use the independent
 [`HTTP1Transport`](#explicit-http11-client) for Connect unary, server streaming
-and client streaming. See the streaming guide for Falcon's cooperative 500 ms
-total final-close budget and unchanged 100 ms / 256 KiB discard limits. The
+and client streaming. See the streaming guide for how Falcon reads up to 256 KiB
+of unread HTTP/1.1 input before its response and its cooperative 500 ms
+final-close budget. The
 client's provisional one-second absolute HTTP tail policy applies even with a
 nil RPC deadline and can reject otherwise valid late EOF or slow intermediaries.
 See the [support contract](../../docs/support.md#native-client-completion).

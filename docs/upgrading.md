@@ -19,6 +19,32 @@ The [changelog](../CHANGELOG.md) lists every change.
   two and three. See
   [streams from ordinary threads](../gems/connectrpc-async/README.md#streams-from-ordinary-threads).
 
+These affect Falcon's native HTTP/1.1 Connect unary and gRPC-Web requests. See
+[HTTP/1.1 input retirement](../gems/connectrpc-falcon/README.md#http11-input-retirement)
+and [rejected HTTP/1 Web input](../gems/connectrpc-falcon/README.md#rejected-http1-web-input).
+
+- When a gRPC-Web request is rejected before its body has been read, Falcon now
+  reads up to 256 KiB of the rest before the rejection, bounded per read by
+  `request_body_timeout` and in total by the request's `grpc-timeout`, instead
+  of within one 100 ms allowance. A client that pauses its upload now receives
+  the error instead of a reset. A remainder above the limit, or one that
+  stalls, expires or is malformed, still receives the error with
+  `Connection: close`, and the connection closes 500 ms after the reply. Before,
+  the connection was reset without a response. Without a `grpc-timeout`, only
+  each read wait and the 256 KiB limit bound the read, so a client that trickles
+  its upload can hold the request until drain grace or owner shutdown; lower
+  `request_body_timeout` to shorten each wait.
+- When a Connect unary POST or GET response is ready before its request
+  body has been read, Falcon now reads up to 256 KiB of the rest before the
+  response head, with the same bounds, as Go's `net/http` server does. The
+  connection stays open when that read reaches EOF, and otherwise closes after
+  the reply. Before, the response went first, async-http then read the whole
+  remainder with no byte cap, and after a partly read chunked body the next
+  request on the connection waited until `idle_timeout` closed it. Early unary
+  errors with a stalled upload now wait for `request_body_timeout` (default 60
+  seconds) or the Connect deadline; lower `request_body_timeout` to answer them
+  sooner.
+
 ## 0.3.0
 
 ### Breaking change: Steepfiles name core explicitly
