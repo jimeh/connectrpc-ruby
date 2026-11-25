@@ -37,10 +37,11 @@ The [changelog](../CHANGELOG.md) lists every change.
   still reach the caller, so core's client streams stop writing and report the
   server's error status. connectrpc-hyper sees an end that sits behind response
   data nobody has read only once that data is read. A call whose
-  server answers with OK status before it read the request message now fails
-  with `unavailable`, as it already did when such a server reset the stream
-  after its status. A request whose `close_send` came first
-  still ends with END_STREAM and no reset, and HTTP/1.1 is unchanged. See
+  server answers with OK status before it read the whole request can now fail
+  with `unavailable`, when the transport sees the response's end before the
+  request is written, as it already could when such a server reset the stream
+  after its status. A request whose `close_send` came first still ends with
+  END_STREAM and no reset, and HTTP/1.1 is unchanged. See
   connectrpc-hyper's [errors](../gems/connectrpc-hyper/README.md#errors),
   including the cases where hyper sees the end or sends the reset late, and
   connectrpc-async's

@@ -503,7 +503,8 @@ response is read, and offers no way to reset a stream while its upload waits
 for send window, which limits the reset:
 
 - An END_STREAM behind response data nobody has read is seen once that data is
-  read; until then writes succeed. grpc-go resets at once.
+  read. Until then writes succeed while send window remains, and a write that
+  needs more window blocks. grpc-go resets at once.
 - While the upload waits for send window (a server that stopped reading it),
   hyper does not poll the request body, so the reset goes out only once the
   window opens or the connection ends, also after the call completed. Until
