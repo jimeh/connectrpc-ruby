@@ -58,7 +58,7 @@ pub fn start_bound(bound: Duration) {
 /// The process runtime, created on first use (never when a transport is
 /// built) and recreated in a forked child.
 ///
-/// A cold caller builds the runtime on a short-lived `hyper-runtime-start`
+/// A cold caller builds the runtime on a short-lived `hyper-rt-start`
 /// thread and waits for it, holding the GVL, for at most the start bound
 /// (5 s). tokio 1.54's `build` never returns when the OS starts the first
 /// worker thread but refuses the second (tokio-rs/tokio#8408; the unwind
@@ -107,8 +107,8 @@ fn build() -> io::Result<Runtime> {
 
 /// One start attempt: `build` runs on a fresh start thread, which publishes
 /// the runtime itself, and the caller waits for its report for at most
-/// `bound`. Each attempt has its own channel, so no state outlives it and a
-/// forked child inherits none mid-use. An abandoned attempt's report is
+/// `bound`. Each attempt has its own channel, so no shared state outlives it
+/// and a forked child inherits none mid-use. An abandoned attempt's report is
 /// dropped.
 fn start<F>(me: u32, bound: Duration, build: F) -> Result<(), String>
 where
@@ -116,7 +116,7 @@ where
 {
     let (report, outcome) = mpsc::sync_channel(1);
     let attempt = thread::Builder::new()
-        .name("hyper-runtime-start".into())
+        .name("hyper-rt-start".into())
         .spawn(move || {
             let result = match catch_unwind(AssertUnwindSafe(build)) {
                 Ok(Ok(runtime)) => {

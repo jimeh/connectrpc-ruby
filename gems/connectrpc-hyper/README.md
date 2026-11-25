@@ -300,8 +300,9 @@ ends.
 
 The tokio runtime has two `hyper-runtime` worker threads plus tokio's blocking
 pool, created lazily on the first call in each process. A short-lived
-`hyper-runtime-start` thread builds it, and exists only while that first use
-waits for the start. A forked child never touches its parent's runtime or
+`hyper-rt-start` thread builds it and normally exits once that first use has
+its runtime (see [errors](#errors) for a start that never finishes). A forked
+child never touches its parent's runtime or
 connections: it builds its own on first use. The child closes, never shuts
 down, the inherited connection sockets it can identify, so the parent's
 connections keep working and a long-lived child does not hold them open. A
@@ -525,9 +526,9 @@ second worker thread, tokio 1.54 never finishes that start
 ([tokio-rs/tokio#8408](https://github.com/tokio-rs/tokio/pull/8408); the
 unreleased
 [tokio-rs/tokio#8752](https://github.com/tokio-rs/tokio/pull/8752) makes it
-fail instead), so the first close or call raises after the 5 seconds, and the
-stuck start keeps its start thread and first worker thread for the life of the
-process.
+fail instead), so the first close or call raises after the 5 seconds, and
+each stuck start keeps its start thread, first worker thread and I/O driver
+for the life of the process.
 
 ## License
 

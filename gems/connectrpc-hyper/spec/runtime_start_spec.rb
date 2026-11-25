@@ -4,14 +4,16 @@
 # use. The pthread_create shim refuses chosen extension threads, which start
 # in this order: the runtime start thread, then the two workers.
 RSpec.describe "connectrpc-hyper runtime start" do
-  # The first close (bound 1 s) fails; a call is refused while the transport
-  # stays closing; a second close, no longer refused, starts the runtime.
+  # The first close (bound 2 s) fails; a call is refused while the transport
+  # stays closing; a second close, no longer refused and with the default
+  # bound again, starts the runtime.
   def close_twice(allow, fail)
     env, log = fail_threads_environment(allow, fail)
     output, status = ruby_child(<<~RUBY, env: env, timeout: 30)
       transport = ConnectRPC::Hyper::Transport.new
       driver = transport.send(:driver)
-      ConnectRPC::Hyper.const_get(:Native).runtime_start_bound(1)
+      native = ConnectRPC::Hyper.const_get(:Native)
+      native.runtime_start_bound(2)
       started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
       first = begin
         transport.close(grace: 1)
@@ -26,6 +28,7 @@ RSpec.describe "connectrpc-hyper runtime start" do
       rescue ConnectRPC::Error => e
         e.message
       end
+      native.runtime_start_bound(5)
       closer = Thread.new { transport.close(grace: 1) }
       second = closer.join(10) ? closer.value : :still_waiting
       p [first, elapsed, threads, outcome, admission, second, driver.close_outcome]
@@ -56,7 +59,7 @@ RSpec.describe "connectrpc-hyper runtime start" do
   it "raises within the bound when the OS refuses only the second worker, and a later close starts the runtime" do
     first, elapsed, threads = close_twice(2, 1)
     expect(threads).to eq(%w[start start refuse])
-    expect(first).to eq(["fatal", "tokio runtime did not start within 1s"])
+    expect(first).to eq(["fatal", "tokio runtime did not start within 2s"])
     expect(elapsed).to be < 5
   end
 end

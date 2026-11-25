@@ -29,10 +29,14 @@ The [changelog](../CHANGELOG.md) lists every change.
   A single write of 2 GiB or more raises `ArgumentError`. See
   [writes after the stream ended](../gems/connectrpc-hyper/README.md#errors).
 - A first connectrpc-hyper use (call, stream open or close) whose tokio runtime
-  cannot fully start now raises `fatal` within 5 seconds instead of hanging
-  with the GVL held, and a later use starts the runtime again. This happens
-  when the OS refuses the runtime's second worker thread after the first
-  started. See [errors](../gems/connectrpc-hyper/README.md#errors).
+  cannot fully start now raises `fatal` within 5 seconds per start attempt
+  instead of hanging with the GVL held, and a later use starts the runtime
+  again. This happens when the OS refuses the runtime's second worker thread
+  after the first started. A start that takes longer than 5 seconds for any
+  other reason also raises; if it finishes later, the next use gets its
+  runtime. A `close` whose helper thread cannot start retries once on its own
+  thread, so it can wait for two attempts. See
+  [errors](../gems/connectrpc-hyper/README.md#errors).
 
 These affect Falcon's native HTTP/1.1 Connect unary and gRPC-Web requests. See
 [HTTP/1.1 input retirement](../gems/connectrpc-falcon/README.md#http11-input-retirement)

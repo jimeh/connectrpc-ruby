@@ -91,7 +91,7 @@ stage and reset its stream.
 - D3 Runtime: one lazily created, PID-checked multi-thread tokio runtime per
   process (two workers, no public setting), stored in an `AtomicPtr` slot with
   its owner PID, never a lock a fork can inherit. A cold caller builds the
-  runtime on a short-lived `hyper-runtime-start` thread and waits for it, GVL
+  runtime on a short-lived `hyper-rt-start` thread and waits for it, GVL
   held, for at most 5 s; concurrent starts elect one runtime (compare-and-swap,
   losers shut theirs down). A start that fails or outlasts the bound raises
   `fatal` and publishes nothing, so a later use starts a fresh attempt (see
@@ -557,7 +557,7 @@ cause, abort in a masked `ensure`. Rust owns connections, streams and waits.
   started, tokio 1.54's `build` panics with that worker running and never
   returns (cause tokio-rs/tokio#8408; tokio-rs/tokio#8752, merged upstream but
   unreleased, makes `build` return an error instead). So the runtime starts
-  on a short-lived `hyper-runtime-start` thread, and the caller waits for it
+  on a short-lived `hyper-rt-start` thread, and the caller waits for it
   for at most 5 s (#218): a start that fails, returns an error or outlasts the
   bound raises `fatal` with nothing published, and a later use starts a fresh
   attempt. A start stuck in tokio keeps its start thread, first worker and I/O
