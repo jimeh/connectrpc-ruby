@@ -357,12 +357,15 @@ end.wait
 
 `HTTP1Transport.new(origin:, ca_file: nil, certificate_chain: nil, private_key:
 nil, connection_limit: 4, max_requests: 128, connect_timeout: 10, proxy:
-:environment)` is an explicit Connect H1 client. Since 0.3.0 it reaches its
-origin through an `http://` proxy chosen by `proxy:`; see [Proxies](#proxies). Pass it through the existing core/generated client's
-`transport:` option inside an application-owned Async reactor. It supports safe
-unary GET, both codecs and identity/gzip through core, and SS/CS through the
-existing streaming SPI. It has no gRPC or bidi capability. Standalone Async Host
-remains H2-only; Falcon owns Ruby H1 hosting. For ordinary threads, see
+:environment)` is a Connect client over HTTP/1.1 that you select explicitly.
+Since 0.3.0 it reaches its origin through an `http://` proxy chosen by
+`proxy:`; see [Proxies](#proxies). Pass it as the `transport:` option of an
+existing core or generated client, inside an Async reactor that your
+application owns. Through core, it supports safe unary GET, both codecs
+(protobuf and ProtoJSON) and identity or gzip encoding. Through the existing
+streaming SPI, it supports server streaming and client streaming. It has no
+gRPC or bidi capability. The standalone Async Host remains HTTP/2 only, and
+Falcon owns Ruby HTTP/1.1 hosting. For ordinary threads, see
 [`ThreadedTransport`](#ordinary-threads).
 
 [HTTP1Transport behavior](#http1transport-behavior) describes its leases,
@@ -386,18 +389,24 @@ polls for renewed certificates; see
 
 ### Certificates and verification
 
-Each certificate element contains exactly one PEM certificate, leaf first.
-Keys are unencrypted PEM private keys. Inputs are copied and parsed without
-password prompts; key possession, leaf validity and adjacent chain signatures
-are checked. Snapshots retain private parsed objects, redact inspection/errors,
-and compile fresh contexts before publication. Explicit intermediates, including
-an empty array, prevent auto-chaining through the client-auth trust store.
+Each certificate element contains exactly one PEM certificate, and the chain
+lists the leaf first. Keys are unencrypted PEM private keys. The library copies
+and parses the inputs without password prompts. It checks key possession (the
+key matches the leaf), leaf validity, and the signature between each pair of
+adjacent certificates in the chain. A snapshot is the validated TLS state that
+new connections use. Snapshots keep their parsed objects private, redact
+them from `inspect` output and errors, and compile fresh TLS contexts before
+they are published. Explicit intermediates, including an empty array, stop
+OpenSSL from building the chain on its own (auto-chaining) through the
+client-auth trust store.
 
-Both roles require TLS >=1.2 and post-check ALPN `h2`. Clients always verify
-peer/hostname, including localhost, using system roots plus optional `ca_file`.
-Client chain/key must appear together; TLS options are invalid for h2c. IP
-literal origins send no server name (RFC 6066 section 3), and the certificate
-must still match the address.
+Both the server and the client require TLS 1.2 or later, and check after the
+handshake that ALPN selected `h2`. Clients always verify the peer certificate
+and hostname, including for localhost, using the system roots plus the optional
+`ca_file`. A client certificate chain and private key must be given together.
+TLS options are invalid for h2c (HTTP/2 without TLS). An origin whose host is an
+IP literal sends no server name (RFC 6066 section 3), and the certificate must
+still match the address.
 
 Client TLS inputs differ in kind: `ca_file` is a filesystem path to a PEM CA
 bundle, `certificate_chain` is an array of PEM certificate strings, leaf first,
@@ -420,43 +429,55 @@ core Context. Applications own authorization based on that identity.
 ### Reload and drain
 
 `host.reload_tls(certificate_chain:, private_key:, client_ca:)` replaces the
-complete snapshot for newly accepted sockets on the same listener. Generation
-starts at 1 and increments only after successful validation; invalid candidates
-leave the last good snapshot intact. Existing connections retain their prior
-identity and authentication. Every generation has a fresh context/session ID,
-OP_NO_TICKET and SESSION_CACHE_OFF. Reuse is disabled; this does not claim that
-OpenSSL emits zero TLS 1.3 tickets. Replace a transport to change client identity.
+complete TLS snapshot that the same listener uses for newly accepted sockets.
+Each snapshot has a generation number. The generation starts at 1 and
+increments only after a candidate passes validation; an invalid candidate
+leaves the last good snapshot in place. Existing connections keep their
+earlier identity and authentication. Every generation has a fresh TLS context
+and session ID, with OP_NO_TICKET and SESSION_CACHE_OFF set. TLS session reuse
+is disabled; this does not claim that OpenSSL sends zero TLS 1.3 tickets. To
+change a client's identity, replace its transport.
 
-`host.drain_tls(grace: 5)` captures the current generation cutoff and retires
-only older accepted connections, including pending handshakes. Old connections
-get the two-phase GOAWAY drain with debug data `tls_rotation`: streams opened
-before its cutoff are served, later ones are refused with `REFUSED_STREAM`, and
-admitted streams finish. Pending handshakes abort immediately.
-A persistent retirement floor prevents old pending sockets from becoming live.
-The listener and current/newer generations survive concurrent reloads/drains.
-Close supersedes drains. Renewal alone does not instantly revoke existing peers.
-There are no file watchers, ACME, secret services or authentication policy DSLs.
+`host.drain_tls(grace: 5)` captures the current generation as a cutoff and
+retires (takes out of service) only connections accepted under older
+generations, including those still in their TLS handshake. Old connections get
+the two-phase GOAWAY drain with debug data `tls_rotation`. GOAWAY is the HTTP/2
+frame that tells a client to stop opening streams on a connection. Streams
+opened before the drain's cutoff are served, later ones are refused with
+`REFUSED_STREAM`, and admitted streams finish. Pending handshakes abort
+immediately. A persistent retirement floor, the oldest generation still
+allowed to go live, prevents old pending sockets from becoming live. The
+listener and the current and newer generations survive reloads and drains that
+run concurrently. A close supersedes any drain. Renewing a certificate alone
+does not instantly revoke existing peers. There are no file watchers, ACME,
+secret services or authentication policy DSLs.
 
 ## Native streaming
 
-The core [streaming guide](../../docs/streaming.md) documents all three scoped
-Connect streaming shapes, typed generated clients/handlers, early headers,
-per-message limits and bounded ownership. Native Async/Falcon HTTP/2 supports
-both codecs and identity/gzip over h2c/TLS/mTLS. Falcon additionally serves
-Connect server and client streaming over HTTP/1.1, with protobuf/ProtoJSON and
-identity/gzip over TCP/TLS/mTLS. The standalone Async Host and original Async
-Transport remain H2-only. Use the independent
-[`HTTP1Transport`](#explicit-http11-client) for Connect unary, server streaming
-and client streaming. See the streaming guide for how Falcon reads up to 256 KiB
-of unread HTTP/1.1 input before its response and its cooperative 500 ms
-final-close budget. The
-client's provisional one-second absolute HTTP tail policy applies even with a
-nil RPC deadline and can reject otherwise valid late EOF or slow intermediaries.
-See the [support contract](../../docs/support.md#native-client-completion).
+The core [streaming guide](../../docs/streaming.md) documents all three Connect
+stream kinds in scope (server, client and bidirectional streaming), typed
+generated clients and handlers, early headers, per-message limits and bounded
+ownership. Native HTTP/2 on Async and Falcon supports both codecs and identity
+or gzip encoding, over h2c (HTTP/2 without TLS), TLS and mTLS. Over HTTP/1.1,
+Falcon also serves Connect server and client streaming, with protobuf or
+ProtoJSON and identity or gzip encoding, over TCP, TLS and mTLS. The standalone
+Async Host and the original Async Transport remain HTTP/2 only. Use the
+separate [`HTTP1Transport`](#explicit-http11-client) client for Connect unary
+calls, server streaming and client streaming.
 
-Use `async:conformance` and `async:interop:streaming` for the exact official
-native client/server inventories and independent pinned Go streaming matrix.
-Both belong to `async:verify`; original unary interoperability remains separate.
+The streaming guide describes how Falcon reads up to 256 KiB of unread
+HTTP/1.1 input before it writes its response, and its cooperative 500 ms
+budget for the final close. The client applies a provisional HTTP tail policy:
+after the terminal envelope that ends the stream, the response must reach HTTP
+EOF and the transport must complete within one absolute second. The policy
+applies even with a nil RPC deadline, and it can
+reject an otherwise valid EOF that arrives late or a slow intermediary. See
+the [support contract](../../docs/support.md#native-client-completion).
+
+Use `async:conformance` for the exact official native client and server
+inventories, and `async:interop:streaming` for the independent pinned Go
+streaming matrix. Both belong to `async:verify`. The original unary
+interoperability checks remain separate.
 
 ## Native gRPC
 
@@ -490,22 +511,26 @@ rules.
 ## Explicit unary cancellation
 
 Pass `cancellation: source.token` to core or generated client calls, where
-`source = ConnectRPC::CancellationSource.new`. The source is permanent and
-shareable; only `source.cancel` initiates cancellation. `timeout: nil` without
-`deadline:` keeps no RPC deadline or wire timeout. Context offers cooperative `cancelled?`,
+`source = ConnectRPC::CancellationSource.new`. A source cannot be reset and can
+be shared between calls. Only `source.cancel` starts cancellation.
+`timeout: nil` without `deadline:` sets no RPC deadline and sends no wire
+timeout. Context offers cooperative checks: `cancelled?`,
 `cancellation_reason` and `check!`. See the
 [unary guide](../../docs/unary.md#cancellation) for listener, arbitration and
 registration lifetime rules.
 
-The Async transport accepts foreign-thread cancellation through a Promise;
-only the owner reactor stops private SDK tasks and performs stream cleanup.
-Cancellation, an expired deadline or a stopped caller task resets the call's
-stream with `RST_STREAM(CANCEL)`, including while its upload waits for
-flow-control credit. Healthy multiplexed siblings survive. A stuck frame retains the one
-[cleanup allowance](#cleanup-allowance) and raw-first whole-connection fallback. Native HTTP/2 Context observes
-only an actual peer RST_STREAM(CANCEL), before input teardown. Other resets,
-normal half-close, connection loss and host shutdown do not fabricate explicit
-cancellation. Processing completion detaches the source independently of delivery.
+The Async transport accepts cancellation from another thread through a
+Promise. Only the reactor that owns the transport stops the private SDK tasks
+and cleans up the stream. Cancellation, an expired deadline or a stopped
+caller task resets the call's stream with `RST_STREAM(CANCEL)`, including
+while its upload waits for flow-control credit. Healthy calls multiplexed on
+the same connection keep running. A stuck frame still gets the one
+[cleanup allowance](#cleanup-allowance), and the fallback that fails the whole
+connection, raw socket first. On a native HTTP/2 host, Context observes only
+an actual RST_STREAM(CANCEL) from the peer, and observes it before input
+teardown. Other resets, a normal half-close, connection loss and host shutdown
+do not create an explicit cancellation. When processing completes, the source
+is detached, whether or not the response has been delivered.
 
 ## Interceptors
 
@@ -1396,32 +1421,43 @@ example does not need it.
 
 ### Leases and capacity
 
-Each connection has one exclusive lease through setup, upload, full HTTP EOF
-and cleanup. Pending dials and retiring connections count toward the hard cap;
-lease waits count toward admission. Four long streams can occupy every default
-slot. Configure capacity or give waiters cancellation/deadlines; fairness is not
-promised. `close(grace: 5)` stops admission and drains admitted operations,
-including waiters, returning false on forced teardown. Owner exit aborts owned
-resources. Forced teardown shuts a connection's raw TCP down at once and keeps
-its lease and descriptor until its tasks have joined. Admission fails with
-`HTTP/1 transport admission is full` at `max_requests` and
-`HTTP/1 transport admission is closed` once closing. There
-is no hidden thread, pipelining, replay or fallback, and one resend: a server
-may close an idle keep-alive connection while the next request crosses it, so
-a unary GET whose reused connection closed before any response head is sent
-once more on another connection, unless it was cancelled, its deadline expired
-or the transport started closing. Call observers see no failure from the
-attempt that was resent. POST and streams are never resent.
+A lease is one operation's exclusive use of a connection. Each connection has
+one lease at a time, held through setup, the upload, the full HTTP EOF and
+cleanup. Pending dials and retiring connections count toward the hard cap
+(`connection_limit`). Operations waiting for a lease count toward admission
+(`max_requests`). With the defaults, four long streams can occupy every slot.
+Configure the capacity, or give waiting operations cancellation or deadlines;
+the transport does not promise fairness.
+
+`close(grace: 5)` stops admitting new operations and drains the admitted ones,
+including those still waiting for a lease. It returns false if it had to force
+teardown. When the owner exits, the transport aborts the resources it owns.
+Forced teardown shuts down a connection's raw TCP socket at once, and keeps
+its lease and file descriptor until its tasks have joined. Admission fails with
+`HTTP/1 transport admission is full` once `max_requests` operations are
+admitted, and with `HTTP/1 transport admission is closed` once the transport
+is closing.
+
+The transport has no hidden thread, pipelining, replay or fallback, and it
+makes one kind of resend. A server may close an idle keep-alive connection
+while the next request is on its way. So a unary GET whose reused connection
+closed before any response head arrived is sent once more on another
+connection, unless it was cancelled, its deadline expired or the transport
+started closing. Call observers see no failure from the attempt that was
+resent. POST and streams are never resent.
 
 ### Deadlines and reuse
 
-Finite RPC deadlines cover every wait including cleanup. Nil RPC deadlines add
-no watchdog; setup still has its own combined connect timeout. Foreign-thread
-cancellation only signals the reactor. Full native EOF, a successful joined
-writer and successful cleanup permit reuse. Any abandoned/failed exchange
-retires its connection. Clean close-delimited unary EOF is supported, but
-cannot detect an otherwise valid semantic truncation without Content-Length.
-TLS unexpected EOF without close_notify remains a transport error.
+A finite RPC deadline covers every wait, including cleanup. A nil RPC deadline
+adds no watchdog, but setup still has its own combined connect timeout
+(`connect_timeout`). Cancellation from another thread only signals the
+reactor. A connection can be reused after a full native EOF, a successful
+joined writer and successful cleanup. Any abandoned or failed exchange retires
+its connection, so the transport does not reuse it. A unary response that the
+server ends cleanly by closing the connection (close-delimited) is supported.
+Without Content-Length, though, the client cannot detect a truncation that
+still leaves an otherwise valid response. On TLS, an unexpected EOF without
+close_notify remains a transport error.
 
 ### TLS
 
@@ -1626,16 +1662,19 @@ retirement is joined.
 
 ### Forced teardown and retirement
 
-Forced teardown invalidates the connection immediately. External callers of
-private connection abort and server session abort/close then wait for owned
-tasks, their cleanup descendants and final buffered/TLS disposal. An owned task
-initiating or reentering abort requests retirement without waiting on cleanup
-that must join that same task. Each external private connection abort joiner
-retains its own first interruption until cleanup completes. Server session
-callers that are interrupted leave at once, as described next. A retirement
-step that fails is reported by the task that ran it, as described in
-[Close and cleanup](#close-and-cleanup), and every other connection is still
-retired.
+Forced teardown invalidates the connection immediately. Retirement is the
+cleanup that then disposes of the connection. An external caller, one that is
+not a task the connection or session owns, can call the private connection
+abort or the server session's `abort` or `close`. It then waits for the owned
+tasks, the cleanup tasks they start, and the final disposal of buffered data
+and TLS state. An owned task that starts an abort, or calls it again during
+one, only requests retirement. It does not wait, because that cleanup must
+join the same task. Each external caller joining a private connection abort
+keeps its own first interruption, such as a cancellation, until cleanup
+completes. Server session callers that are interrupted leave at once, as
+described next. A retirement step that fails is reported by the task that ran
+it, as described in [Close and cleanup](#close-and-cleanup), and every other
+connection is still retired.
 
 ### Interrupted server close
 
@@ -1723,19 +1762,22 @@ finished, leaves the result true.
 
 ### Task joins
 
-Private task joins wait until a task and its non-transient descendants have
-settled: each task's block, `ensure` included, has returned. A join keeps every
-child it has seen joined, through reparenting or a transient flag, and walks
-the tree again after each wake, so it also joins a task created while the tree
-unwinds. Async may still be stopping a settled task's children or clearing its
-fiber, which runs no application code.
-A scheduling opportunity after raw failure establishes no completion boundary;
-all retained task joins still precede disposal and retirement publication.
+The library's private task joins wait until a task and its non-transient
+descendants have settled. A task has settled when its block,
+`ensure` included, has returned. Once a join has seen a child, it keeps
+joining it, even if the child moves to another parent or gains a transient
+flag. The join walks the task tree again after each wake-up, so it also joins
+a task created while the tree unwinds. Async may still be stopping a settled
+task's children or clearing its fiber, but that work runs no application code.
+A chance for other tasks to run after a raw socket failure does not mark
+completion. Disposal and the publication of retirement still wait for every
+retained task join.
 
-These joins require cooperative tasks and a live application reactor. A
-non-yielding handler or native operation can delay them indefinitely. Cleanup
-survives ordinary owner cancellation while an external waiter or lifetime guard
-keeps the task tree alive; reactor termination cannot guarantee completion.
+These joins require cooperative tasks, which yield to the scheduler, and a live
+application reactor. A handler or native operation that never yields can delay
+them indefinitely. Cleanup survives ordinary cancellation of the owner while an
+external waiter or a lifetime guard keeps the task tree alive. If the reactor
+terminates, completion cannot be guaranteed.
 
 ## Native application and managed TLS
 

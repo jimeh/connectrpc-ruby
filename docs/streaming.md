@@ -108,16 +108,27 @@ end
 
 ## Hosts and clients
 
-Connect server streaming, client streaming and bidirectional streaming use the
-same dependency-free core engine. The optional Async transport and Async/Falcon
-native HTTP/2 hosts support protobuf and ProtoJSON, identity/gzip, h2c, verified
-TLS and mTLS. Falcon also serves Connect server and client streaming over
-HTTP/1.1 with both codecs and identity/gzip over TCP/TLS/mTLS. The explicit
-`ConnectRPC::Async::HTTP1Transport` provides unary, SS and CS on the owning
-reactor. The standalone Async Host and original Async Transport remain H2-only. NetHTTP, Rack, Rails and Testing remain unary.
-Unsupported clients reject a streaming operation before encoding or I/O. Native
-listeners explicitly select their actual protocol capabilities. Portable adapters reject streaming
-media before reading input or invoking handlers, including Rails callbacks.
+Connect server streaming, client streaming and bidirectional (bidi) streaming
+all use the same core engine, which has no dependencies. Which stream kinds you
+can use depends on the host or client:
+
+- Over HTTP/2, the optional Async transport and the native HTTP/2 hosts of
+  Async and Falcon support all three kinds. They support protobuf and
+  ProtoJSON, identity and gzip encoding, h2c (HTTP/2 without TLS), verified
+  TLS and mTLS.
+- Over HTTP/1.1, Falcon also serves Connect server streaming and client
+  streaming, with both codecs and identity or gzip encoding, over TCP, TLS and
+  mTLS.
+- The explicit `ConnectRPC::Async::HTTP1Transport` client provides unary
+  calls, server streaming and client streaming on the reactor that owns it.
+- The standalone Async Host and the original Async Transport remain HTTP/2
+  only.
+- NetHTTP, Rack, Rails and Testing remain unary only.
+
+A client that does not support a streaming operation rejects it before any
+encoding or I/O. Native listeners explicitly select the protocol capabilities
+they actually support. Portable adapters reject requests with a streaming media
+type before they read input or invoke handlers, including Rails callbacks.
 
 Native gRPC reuses the declarations and session engine below, including unary
 calls through the exchange SPI. Its protobuf-only negotiation, final HTTP/2
@@ -492,31 +503,47 @@ none of it.
 
 ### Native HTTP/2 hosts
 
-The original processor task owns authenticated peer identity, cancellation and
-instrumentation through handlers, codecs and cleanup. A separate publication
-promise exposes response headers while processing continues. Body tasks consume
-prepared bytes. Successful HTTP EOF waits for original processor completion;
-late cleanup failure aborts/reset. Admission and graceful drain include processing,
-wire tail and cleanup.
+Each request has one original processor task. It runs the handlers, codecs
+and cleanup, and owns the authenticated peer identity, cancellation and
+instrumentation for that whole time. A separate publication promise hands the
+response headers to the host while processing continues. Separate body tasks
+send the bytes that processing has already prepared.
+
+A successful response reaches HTTP EOF, the end of its HTTP stream, only after
+the original processor task has completed. If cleanup fails late, the host
+aborts the response and resets the stream instead. Admission is the slot the
+host reserves for each accepted request. A request holds its admission, and a
+graceful drain waits for it, through processing, the wire tail (sending the
+rest of the response on the wire) and cleanup.
 
 ### Falcon HTTP/1.1 server
 
-Custom hosts opt in with `Server#call_stream(capabilities: [:server_stream,
-:client_stream], ...)`. The default `capabilities: nil` retains portable
-rejection; legacy `http2: true` grants all three shapes. Explicit capabilities
-must be a nonempty, unique Array of supported shape symbols and cannot be
-combined with `http2: true`. Omitted SS/CS returns bounded `unimplemented`;
-omitted known bidi returns host-neutral bare 505 before input or codecs.
-Falcon turns every native H1 bidi 505 into a nonpersistent response with exactly
-one `Connection: close`. Web negotiation and CORS retain precedence. Native
-gRPC remains H2-only, and HTTP/1.0 Connect streaming is rejected.
+A custom host opts in by calling `Server#call_stream(capabilities:
+[:server_stream, :client_stream], ...)`, which lists the stream kinds (shapes)
+it supports. With the default `capabilities: nil`, the server keeps the
+portable behavior and rejects streaming requests. The legacy `http2: true`
+option grants all three shapes. An explicit `capabilities:` value must be a
+nonempty Array of supported shape symbols with no duplicates, and it cannot be
+combined with `http2: true`.
 
-The original processor retains handlers, codecs, authenticated peer identity,
-trace activation and application cleanup. Response consumers transmit prepared
-bytes. Headers can publish during input reads, but successful HTTP terminal
-chunk delivery waits for original application cleanup. Leading metadata and
-propagation exclude actual chunked trailers, including `connect-timeout-ms`.
-H1 peer EOF does not synthesize Context cancellation.
+If the list omits server or client streaming, a call of that kind returns a
+bounded `unimplemented` error. If it omits bidi, a call to a known bidi method
+returns a bare 505 response from the host-neutral core, before the server
+reads input or selects a codec. Falcon turns every native HTTP/1.1 bidi 505
+into a nonpersistent response, one that closes the connection, with exactly
+one `Connection: close` header. gRPC-Web negotiation and CORS still take
+precedence. Native gRPC remains HTTP/2 only, and Connect streaming over
+HTTP/1.0 is rejected.
+
+The original processor task keeps the handlers, codecs, authenticated peer
+identity, trace activation and application cleanup. Separate response
+consumers send the prepared bytes. The response headers can be published while
+the handler is still reading input. A successful response's final HTTP chunk
+(the terminal chunk), however, is delivered only after the original
+application cleanup has finished. Leading metadata and propagation exclude
+fields sent as actual chunked trailers, including `connect-timeout-ms`. When an
+HTTP/1.1 peer closes its side of the connection (peer EOF), the server does not
+turn that into Context cancellation.
 
 When original framed input is incomplete at response-head resolution, Falcon
 disables reuse and, since 0.3.0, reads the unread body before it writes the
@@ -550,13 +577,19 @@ TCP writes and waits for the rest of that budget without reading, like
 either phase. Failed or incomplete delivery gets no success grace. Late
 hygiene/grace failures preserve completed processing and delivery facts.
 
-Admission and socket ownership remain held until retirement and original
-processing join. Retirement never parses or dispatches a pipelined request,
-even if the original request finishes. Fully consumed nonretiring input retains
-persistence. Raw socket abort precedes framed/Finishable close on forced teardown.
-Both timers are cooperative and can overshoot under scheduler delay. Remaining
-grace retains resources and is best effort reset avoidance, not a guarantee of
-response delivery under arbitrary network or peer failure. The
+A retiring connection is one that Falcon will not reuse and closes after the
+response. The request keeps its admission slot, and Falcon keeps ownership of
+the socket, until retirement finishes and the original processing task has
+been joined. A retiring connection never parses or dispatches a pipelined
+request (a further request sent on the same connection), even if the original
+request finishes. A connection that is not retiring and whose input was fully
+consumed stays persistent, so it can serve another request. On forced
+teardown, Falcon aborts the raw socket before it closes the framed request
+input and its `Finishable` wrapper. Both timers are cooperative, so they can run past their
+limit when the scheduler is delayed. The remaining grace period keeps the
+connection's resources held. It is a best-effort way to avoid a connection
+reset, not a guarantee of response delivery under arbitrary network or peer
+failure. The
 [support contract](support.md#falcon-connect-h1-retirement) promises this
 behavior and treats its budgets as provisional tuning values.
 
