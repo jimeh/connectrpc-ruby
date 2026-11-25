@@ -1,5 +1,7 @@
 # frozen_string_literal: true
 
+require_relative "ingress_wire"
+
 module ConnectionPeer
   # Records every manager sleep and holds it until the example releases it.
   # `fire` releases the oldest pending sleep, or the next one if none waits,
@@ -104,8 +106,11 @@ module ConnectionPeer
   # every frame, PING payloads with their connection index and ACK flag, and
   # GOAWAY cutoff, code and debug data. Clearing `ack_pings` black-holes every
   # connection's PINGs; `black_holes` lists connection indexes to black-hole.
+  # `wire(index)` holds IngressWire observations of what each connection
+  # read, and `sent_resets` the [index, stream id, code] of every RST_STREAM
+  # the peer wrote.
   class RecordingServer
-    attr_reader :accepted, :frames, :requests, :connections, :raws, :pings, :goaways, :black_holes
+    attr_reader :accepted, :frames, :requests, :connections, :raws, :pings, :goaways, :black_holes, :sent_resets
     attr_accessor :ack_pings
 
     def initialize(task, listener, settings: {}, refuse: [], tls: nil, gate: nil, &handler)
@@ -124,6 +129,8 @@ module ConnectionPeer
       @goaways = []
       @ack_pings = true
       @black_holes = []
+      @wires = {}
+      @sent_resets = []
       @task = task.async { accept_loop(task) }
     end
 
@@ -140,7 +147,10 @@ module ConnectionPeer
 
     def acks?(index) = @ack_pings && !@black_holes.include?(index)
 
+    def wire(index = 0) = @wires[index] ||= IngressWire.observations
+
     def record(index, frame)
+      IngressWire.record(wire(index), frame)
       case frame
       when Protocol::HTTP2::PingFrame then @pings << [index, frame.acknowledgement?, frame.unpack]
       when Protocol::HTTP2::GoawayFrame then @goaways << [index, *frame.unpack]
@@ -164,6 +174,10 @@ module ConnectionPeer
       end
       server.define_singleton_method(:receive_ping) do |frame|
         super(frame) if frame.acknowledgement? || peer.acks?(index)
+      end
+      server.define_singleton_method(:write_frame) do |frame|
+        peer.sent_resets << [index, frame.stream_id, frame.unpack] if frame.is_a?(Protocol::HTTP2::ResetStreamFrame)
+        super(frame)
       end
       server
     end

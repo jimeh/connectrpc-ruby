@@ -9,11 +9,10 @@ module IngressPeer
   include IngressClient
 
   # `pings` holds ACK payloads, `probes` the peer's own PING payloads and
-  # `settings` its SETTINGS values. `control` orders the peer's stream-0
+  # `settings` its SETTINGS values; see IngressWire for resets and ends. `control` orders the peer's stream-0
   # WINDOW_UPDATEs, SETTINGS and PINGs; `data` sums DATA lengths per stream.
   def observe_ingress_wire(connection)
-    observations = { credit: Hash.new(0), resets: {}, pings: [], goaway: nil, probes: [], settings: [],
-                     control: [], data: Hash.new(0) }
+    observations = IngressWire.observations
     connection.define_singleton_method(:read_frame) do
       super() { |frame| IngressWire.record(observations, frame) }
     end

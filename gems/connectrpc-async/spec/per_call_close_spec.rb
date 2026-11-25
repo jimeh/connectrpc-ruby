@@ -31,8 +31,11 @@ RSpec.describe "PerCallTransport connection close, close budget and outcome prec
 
   # A recording raw peer that answers a Connect server stream with one
   # message, "s".
+  # Reads the request first: a response that ends before the client wrote
+  # its request resets the stream and fails that write.
   def one_message_peer
     threaded_recording_peer do |incoming|
+      incoming.body&.read
       body = Protocol::HTTP::Body::Writable.new
       incoming.send_response(Protocol::HTTP::Response[200, { "content-type" => "application/connect+proto" }, body])
       body.write(envelope(item("s")))

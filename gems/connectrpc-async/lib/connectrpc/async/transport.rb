@@ -536,10 +536,17 @@ module ConnectRPC
           response = operation[:response]
           if response
             stream = response.stream
-            case stream.state
-            when :idle then stream.close!
-            when :closed then nil
-            else stream.send_reset_stream(::Protocol::HTTP2::Error::CANCEL)
+            if stream.response_ended?
+              # The NO_ERROR reset, unless the output already wrote it. Both
+              # recheck inside the frame guard, so only one is written, and
+              # the close stops an output still attached.
+              stream.reset_ended
+            else
+              case stream.state
+              when :idle then stream.close!
+              when :closed then nil
+              else stream.send_reset_stream(::Protocol::HTTP2::Error::CANCEL)
+              end
             end
             response.close
           end
