@@ -176,8 +176,9 @@ module ConnectionPeer
         super(frame) if frame.acknowledgement? || peer.acks?(index)
       end
       server.define_singleton_method(:write_frame) do |frame|
+        written = super(frame)
         peer.sent_resets << [index, frame.stream_id, frame.unpack] if frame.is_a?(Protocol::HTTP2::ResetStreamFrame)
-        super(frame)
+        written
       end
       server
     end

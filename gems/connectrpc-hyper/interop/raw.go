@@ -501,6 +501,9 @@ func (c *rawConn) request(frame *http2.MetaHeadersFrame) {
 			steps = steps[1:]
 		}
 		c.scripted[stream] = true
+		if frame.StreamEnded() {
+			emit("%s request-end stream=%d conn=%s", c.tag, stream, c.conn.RemoteAddr())
+		}
 		go c.script(stream, grpc, tag, steps)
 	case "noread":
 		// Never answers and never reopens the stream's flow-control window,
