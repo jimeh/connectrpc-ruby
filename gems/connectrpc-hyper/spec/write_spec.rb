@@ -316,10 +316,20 @@ RSpec.describe "Streaming writes after the stream ended", :interop do
 
     def malformed_response = ["unavailable", "HTTP transport failed: malformed response"]
 
-    def h1_exchange(server, headers: {}, &)
+    def h1_exchange(server, headers: {}, transport: hyper(http2: false), &)
       request = request("h1", grpc: false, origin: "http://127.0.0.1:#{server.addr[1]}")
       request.headers.merge!(headers)
-      hyper(http2: false).open_stream(request, &)
+      transport.open_stream(request, &)
+    end
+
+    # Writes once, waits until the response task holds the response head,
+    # which it publishes in the same poll, then writes until one raises: the
+    # write that finds the upload dropped then finds the head and the body
+    # error behind it.
+    def write_after_head(call, native_driver)
+      call.write(envelope)
+      wait_until("the response head") { native_driver.reached("respond:publish") == 1 }
+      write_until_raised(call)
     end
 
     after do
@@ -331,15 +341,18 @@ RSpec.describe "Streaming writes after the stream ended", :interop do
 
     # hyper's HTTP/1.1 body channel hands its error out once, so whichever
     # operation consumes it keeps it for the next.
-    # The write raises the body error when its look at the response found
-    # it, or the HTTP/1.1 fallback when the response was not there yet.
     it "keeps a body error a write consumed for the next read" do
       @server, @served = h1_server { |socket| malformed(socket) }
-      h1_exchange(@server) do |call|
-        expect(outcome(write_until_raised(call))).to eq(malformed_response).or eq(connection_closed)
+      transport = hyper(http2: false)
+      native_driver = driver(transport)
+      native_driver.hold("respond:publish", 0)
+      h1_exchange(@server, transport: transport) do |call|
+        expect(outcome(write_after_head(call, native_driver))).to eq(malformed_response)
         expect(call.response_head(timeout: 5).status).to eq(200)
         expect(outcome(read_all(call).last)).to eq(malformed_response)
       end
+    ensure
+      native_driver&.release("respond:publish")
     end
 
     it "keeps a body error a read consumed for the next write" do
@@ -354,11 +367,16 @@ RSpec.describe "Streaming writes after the stream ended", :interop do
 
     it "raises the body error of a response that ended without a chunk" do
       @server, @served = h1_server { |socket| truncated(socket) }
-      h1_exchange(@server) do |call|
-        expect(outcome(write_until_raised(call))).to eq(connection_closed)
+      transport = hyper(http2: false)
+      native_driver = driver(transport)
+      native_driver.hold("respond:publish", 0)
+      h1_exchange(@server, transport: transport) do |call|
+        expect(outcome(write_after_head(call, native_driver))).to eq(connection_closed)
         expect(call.response_head(timeout: 5).status).to eq(200)
         expect(outcome(read_all(call).last)).to eq(connection_closed)
       end
+    ensure
+      native_driver&.release("respond:publish")
     end
 
     # hyper drops a body that reached its declared Content-Length while the
@@ -414,7 +432,7 @@ RSpec.describe "Streaming writes after the stream ended", :interop do
     it "raises the connection's failure when the connection resets mid-upload" do
       @server, @served = h1_server do |socket|
         socket.readpartial(65_536)
-        socket.setsockopt(Socket::SOL_SOCKET, Socket::SO_LINGER, [1, 0].pack("ii"))
+        socket.setsockopt(Socket::Option.linger(true, 0))
         socket.close
       end
       h1_exchange(@server) do |call|

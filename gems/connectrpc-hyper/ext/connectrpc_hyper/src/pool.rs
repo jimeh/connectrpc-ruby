@@ -1124,13 +1124,14 @@ impl DriverCore {
     }
 
     /// Ends every call's waits and every owned task, then waits for the
-    /// tasks. Sealing first means a call mid-poll registers no task later.
-    /// `shutdown` fires before the seal aborts any task, so a site that
-    /// observes an abort's effect, such as a write that finds its request
-    /// body dropped with its connection, also sees `shutdown` and maps it to
-    /// a forced phrase. A task registered between the two is aborted by the
-    /// seal like any other.
+    /// tasks. Spawns are refused first, so a call mid-poll registers no task
+    /// (such as a dial's dispatcher, which would send its request) once
+    /// teardown started. `shutdown` fires before the seal aborts any task,
+    /// so a site that observes an abort's effect, such as a write that finds
+    /// its request body dropped with its connection, also sees `shutdown`
+    /// and maps it to a forced phrase.
     pub async fn force(&self) {
+        self.tracker.refuse();
         self.shutdown.fire();
         // Spec hold point: it parks forced teardown after `shutdown` fired and
         // before any task is aborted.

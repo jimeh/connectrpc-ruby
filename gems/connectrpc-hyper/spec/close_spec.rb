@@ -115,6 +115,42 @@ RSpec.describe "Transport#close" do
       end
     end
 
+  # Forced teardown refuses spawns before it fires `shutdown` (#193), so a
+  # dial that finishes its handshake while teardown is parked between the two
+  # registers no dispatcher, and the server never receives the request.
+  { "HTTP/2" => [{ connections: :per_call }, :grpc],
+    "HTTP/1.1" => [{ http2: false }, :connect] }
+    .each do |name, (options, protocol)|
+      it "starts no #{name} dispatcher, nor sends its request, once forced teardown fired shutdown" do
+        tiny = TinyHTTP.new if protocol == :connect
+        origin = tiny ? tiny.origin : peer["raw"]
+        from = peer.mark
+        transport = hyper(**options)
+        native_driver = driver(transport)
+        native_driver.hold("connect:handshaken", 10)
+        native_driver.hold("force:shutdown", 10)
+        native_driver.hold("dispatcher", 0)
+        dialing = Thread.new do
+          error_of { raw_call(origin, "ok", transport: transport, protocol: protocol, timeout: 20) }
+        end
+        wait_until("the handshake") { native_driver.reached("connect:handshaken") == 1 }
+        closer = Thread.new { transport.close(grace: 0) }
+        wait_until("forced teardown parked after shutdown") { native_driver.reached("force:shutdown") == 1 }
+        native_driver.release("connect:handshaken")
+        error = dialing.value
+        expect([error.code, error.message]).to match(["unavailable", forced_phrase])
+        expect(native_driver.reached("dispatcher")).to eq(0)
+        requests = tiny ? tiny.count(:request) : peer.since(from).grep(/\Araw request /).size
+        expect(requests).to eq(0)
+        native_driver.release("force:shutdown")
+        expect(closer.value).to be(false)
+      ensure
+        %w[connect:handshaken force:shutdown dispatcher].each { |point| native_driver&.release(point) }
+        closer&.join(10)
+        tiny&.close
+      end
+    end
+
   # Head first: the released call dispatches its request to the task that
   # awaits the response, which the sealed tracker refuses. The response head
   # then finds that task gone without a delivery: forced teardown, not an

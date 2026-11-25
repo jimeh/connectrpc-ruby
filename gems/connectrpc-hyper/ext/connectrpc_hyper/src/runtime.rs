@@ -321,6 +321,12 @@ impl Tracker {
         Task(Some(abort))
     }
 
+    /// Refuses every later spawn, aborting nothing yet: forced teardown
+    /// refuses spawns before it fires `shutdown`, and aborts after (`seal`).
+    pub fn refuse(&self) {
+        self.tasks.lock().unwrap_or_else(|e| e.into_inner()).sealed = true;
+    }
+
     /// Refuses every later spawn and aborts every registered task.
     pub fn seal(&self) {
         let mut state = self.tasks.lock().unwrap_or_else(|e| e.into_inner());
