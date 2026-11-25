@@ -188,6 +188,7 @@
     "ConnectRPC::Async::Internal::ResponseStream#receive_headers": {"kind":"method","visibility":"public","parameters":"frame","classification":"internal"},
     "ConnectRPC::Async::Internal::ResponseStream#receive_initial_headers": {"kind":"method","visibility":"public","parameters":"headers, end_stream","classification":"internal"},
     "ConnectRPC::Async::Internal::ResponseStream#reset_ended": {"kind":"method","visibility":"public","parameters":"","classification":"internal"},
+    "ConnectRPC::Async::Internal::ResponseStream#reset_in_cleanup": {"kind":"method","visibility":"public","parameters":"","classification":"internal"},
     "ConnectRPC::Async::Internal::ResponseStream#response_ended": {"kind":"method","visibility":"private","parameters":"","classification":"internal"},
     "ConnectRPC::Async::Internal::ResponseStream#response_ended?": {"kind":"method","visibility":"public","parameters":"","classification":"internal"},
     "ConnectRPC::Async::Internal::ResponseStream#response_headers?": {"kind":"method","visibility":"public","parameters":"","classification":"internal"},

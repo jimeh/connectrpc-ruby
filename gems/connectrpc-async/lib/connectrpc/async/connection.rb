@@ -962,6 +962,24 @@ module ConnectRPC
         # protocol-http2 then records the frame's END_STREAM on the closed
         # stream anyway. Restoring the closed state keeps the end unlatched
         # and stops cleanup from resetting the stream a second time.
+        # Ends an abandoned call's stream. After the response ended this is
+        # the NO_ERROR reset, unless the output already wrote it; both recheck
+        # inside the frame guard, so only one is written, and the close stops
+        # an output still attached. Otherwise CANCEL, also decided inside the
+        # guard: while cleanup waits for it the response may end, latching
+        # NO_ERROR, or the stream may close, as by a peer reset.
+        def reset_in_cleanup
+          return reset_ended if @response_ended
+          return close! if state == :idle
+          return if closed?
+
+          connection.synchronize do
+            next if closed?
+
+            send_reset_stream(@response_ended ? ::Protocol::HTTP2::Error::NO_ERROR : ::Protocol::HTTP2::Error::CANCEL)
+          end
+        end
+
         def receive_headers(frame)
           request_open = state == :open
           super
