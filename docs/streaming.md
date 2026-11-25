@@ -517,10 +517,10 @@ send the bytes that processing has already prepared.
 
 A successful response reaches HTTP EOF, the end of its HTTP stream, only after
 the original processor task has completed. If cleanup fails late, the host
-aborts the response instead, which resets the stream on HTTP/2. Admission is the slot the
-host reserves for each accepted request. A request holds its admission, and a
-graceful drain waits for it, through processing, the wire tail (sending the
-rest of the response on the wire) and cleanup.
+aborts the response instead, which resets the stream on HTTP/2. Admission is the
+slot the host reserves for each accepted request. A request holds its admission,
+and a graceful drain waits for it, through processing, the wire tail (sending
+the rest of the response on the wire) and cleanup.
 
 ### Falcon HTTP/1.1 server
 
@@ -585,19 +585,18 @@ hygiene/grace failures preserve completed processing and delivery facts.
 
 A retiring connection is one that Falcon will not reuse and closes after the
 response. The request keeps its admission slot, and Falcon keeps ownership of
-the socket, until retirement finishes and the original processing task has
-been joined. A retiring connection never parses or dispatches a pipelined
-request (a further request sent on the same connection), even if the original
-request finishes. A connection that is not retiring and whose input was fully
-consumed stays persistent, so it can serve another request. On forced
-teardown, Falcon aborts the raw socket before it closes the framed request
-input and its `Finishable` wrapper. Both timers are cooperative, so they can run past their
+the socket, until retirement finishes and the original processing task has been
+joined. A retiring connection never parses or dispatches a pipelined request (a
+further request sent on the same connection), even if the original request
+finishes. A connection that is not retiring and whose input was fully consumed
+stays persistent, so it can serve another request. On forced teardown, Falcon
+aborts the raw socket before it closes the framed request input and its
+`Finishable` wrapper. Both timers are cooperative, so they can run past their
 limit when the scheduler is delayed. The remaining grace period keeps the
 connection's resources held. It is a best-effort way to avoid a connection
 reset, not a guarantee of response delivery under arbitrary network or peer
-failure. The
-[support contract](support.md#falcon-connect-h1-retirement) promises this
-behavior and treats its budgets as provisional tuning values.
+failure. The [support contract](support.md#falcon-connect-h1-retirement)
+promises this behavior and treats its budgets as provisional tuning values.
 
 CI requires the production official H1 profiles to pass all 174 identity and 160
 gzip cases on both pinned Rubies, including the original oversized CS cases over

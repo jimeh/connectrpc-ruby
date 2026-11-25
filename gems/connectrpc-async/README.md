@@ -190,23 +190,10 @@ Async do
 end.wait
 ```
 
-Before start it raises `LifecycleError`, unless the Host was already closed.
-Ordinary shutdown returns nil after all listener tasks stop and their listening
-sockets close; session retirement may still be running. External
-`close(grace:)` callers await the session's boolean drain outcome;
-resource-owned calls can return nil while shutdown is pending, as described in
-[Close results](#close-results). Terminal listener
-failure instead makes `wait` raise the identical original exception once
-cooperative session abort, listener joins and the rest of the cleanup in its
-stored private exit task have completed. A failure in that cleanup is written
-as a warning and never replaces the cause, as described in
-[Terminal failure and startup](#terminal-failure-and-startup).
-Repeated/concurrent waits share that outcome; cancelling a waiter does not
-close the Host. Since 0.3.0 a waiter that is cancelled, times out or is
-otherwise interrupted while it waits for that cleanup gets its exception at
-once, and the exit task finishes cleanup on its own; a later `wait` raises the
-cause once it has. Like other lifecycle operations, `wait`
-requires the owning reactor and thread.
+`wait` returns nil once the listeners stop normally, and raises the original
+exception after a terminal listener failure. Like other lifecycle operations,
+it requires the owning reactor and thread.
+[Waiting for the Host](#waiting-for-the-host) describes its full results.
 
 ## Transport
 
@@ -460,20 +447,21 @@ and session ID, with OP_NO_TICKET and SESSION_CACHE_OFF set. TLS session reuse
 is disabled; this does not claim that OpenSSL sends zero TLS 1.3 tickets. To
 change a client's identity, replace its transport.
 
-`host.drain_tls(grace: 5)` records the current generation and retires (takes
-out of service) only connections accepted under older generations, including
-those still in their TLS handshake. Old connections get the two-phase GOAWAY
-drain with debug data `tls_rotation`. GOAWAY is the HTTP/2 frame that tells a
-client to stop opening streams on a connection. Each old connection sets its
-own stream cutoff during that drain, as [Server keepalive](#server-keepalive)
-describes. Streams opened before that cutoff are served, later ones are
-refused with `REFUSED_STREAM`, and admitted streams finish. Pending handshakes abort
-immediately. A persistent retirement floor, the oldest generation still
-allowed to go live, prevents old pending sockets from becoming live. The
-listener and the current and newer generations survive reloads and drains that
-run concurrently. A close supersedes any drain. Renewing a certificate alone
-does not instantly revoke existing peers. There are no file watchers, ACME,
-secret services or authentication policy DSLs.
+`host.drain_tls(grace: 5)` records the current generation and retires (takes out
+of service) only connections accepted under older generations, including those
+still in their TLS handshake. Old connections get the two-phase GOAWAY drain
+with debug data `tls_rotation`. On a connection that is already draining, the
+TLS drain takes over that drain and keeps its debug data and cutoff. GOAWAY is
+the HTTP/2 frame that tells a client to stop opening streams on a connection.
+Each old connection sets its own stream cutoff during the drain, as [Server
+keepalive](#server-keepalive) describes. Streams opened before that cutoff are
+served, later ones are refused with `REFUSED_STREAM`, and admitted streams
+finish. Pending handshakes abort immediately. A persistent retirement floor, the
+oldest generation still allowed to go live, prevents old pending sockets from
+becoming live. The listener and the current and newer generations survive
+reloads and drains that run concurrently. A close supersedes any drain. Renewing
+a certificate alone does not instantly revoke existing peers. There are no file
+watchers, ACME, secret services or authentication policy DSLs.
 
 ## Native streaming
 
@@ -488,16 +476,17 @@ Async Host and the original Async Transport remain HTTP/2 only. Use the
 separate [`HTTP1Transport`](#explicit-http11-client) client for Connect unary
 calls, server streaming and client streaming.
 
-The streaming guide's
-[Falcon HTTP/1.1 server](../../docs/streaming.md#falcon-http11-server) section
-describes how Falcon reads up to 256 KiB of unread HTTP/1.1 input before it
-writes its response, with the exceptions to that limit, and its cooperative
-500 ms budget for the final close. The client applies a provisional HTTP tail policy:
-after the terminal envelope that ends the stream, the response must reach HTTP
-EOF and the transport must complete within one absolute second. The policy
-applies even with a nil RPC deadline, and it can
-reject an otherwise valid EOF that arrives late or a slow intermediary. See
-the [support contract](../../docs/support.md#native-client-completion).
+The streaming guide's [Falcon HTTP/1.1
+server](../../docs/streaming.md#falcon-http11-server) section describes how
+Falcon reads up to 256 KiB of unread HTTP/1.1 input before it writes its
+response, or before the first output chunk when the headers were published
+early, with the exceptions to that limit. It also describes the cooperative 500
+ms budget for the final close. The client applies a provisional HTTP tail
+policy: after the terminal envelope that ends the stream, the response must
+reach HTTP EOF and the transport must complete within one absolute second. The
+policy applies even with a nil RPC deadline, and it can reject an otherwise
+valid EOF that arrives late or a slow intermediary. See the [support
+contract](../../docs/support.md#native-client-completion).
 
 Use `async:conformance` for the exact official native client and server
 inventories, and `async:interop:streaming` for the independent pinned Go
@@ -818,6 +807,26 @@ listener on their own, as in Go's `net/http` `Server.Serve` and grpc-go:
 Admitted RPCs and other listeners keep running during a delay, and `close`
 ends it. Other accept errors and unexpected listener errors are terminal, as
 described below. No RPC is replayed and no retry policy knobs are exposed.
+
+### Waiting for the Host
+
+Before start it raises `LifecycleError`, unless the Host was already closed.
+Ordinary shutdown returns nil after all listener tasks stop and their listening
+sockets close; session retirement may still be running. External
+`close(grace:)` callers await the session's boolean drain outcome;
+resource-owned calls can return nil while shutdown is pending, as described in
+[Close results](#close-results). Terminal listener
+failure instead makes `wait` raise the identical original exception once
+cooperative session abort, listener joins and the rest of the cleanup in its
+stored private exit task have completed. A failure in that cleanup is written
+as a warning and never replaces the cause, as described in
+[Terminal failure and startup](#terminal-failure-and-startup).
+Repeated/concurrent waits share that outcome; cancelling a waiter does not
+close the Host. Since 0.3.0 a waiter that is cancelled, times out or is
+otherwise interrupted while it waits for that cleanup gets its exception at
+once, and the exit task finishes cleanup on its own; a later `wait` raises the
+cause once it has. Like other lifecycle operations, `wait`
+requires the owning reactor and thread.
 
 ### Terminal failure and startup
 

@@ -182,8 +182,8 @@ opaque identity/gzip bytes, wire/inflated caps, deadlines, metadata and errors.
 Falcon's generic content encoding/cache middleware wraps only `rack_app`. RPC
 compression and byte limits stay outside it. Native handlers do not inherit
 Rails callbacks/authentication. They also bypass the Rails executor and
-reloader; see [Rails on Falcon](#rails-on-falcon). Ordinary Rails fallback preserves its
-controller, CSRF and session policy.
+reloader; see [Rails on Falcon](#rails-on-falcon). Ordinary Rails fallback
+preserves its controller, CSRF and session policy.
 
 TLS negotiates `h2` or `http/1.1`; no ALPN selects HTTP/1.1. Plaintext supports
 HTTP/2 prior knowledge and HTTP/1. The standalone Async Host remains strict h2.
@@ -230,7 +230,7 @@ therefore never pass through the Rails middleware stack, so
 `ActionDispatch::Reloader` do not run around them. As observed with Rails 8.1
 and ActiveRecord, that skips the following:
 
-- ActiveRecord's query cache is off inside handlers.
+- Rails does not turn on ActiveRecord's query cache for the RPC.
 - A connection that a handler leases for the rest of the request, for example
   with `ActiveRecord::Base.connection` or `lease_connection`, is not returned to
   the pool when the RPC ends. With `config.active_support.isolation_level =

@@ -237,18 +237,18 @@ the Rails application as the fallback of
 through the fallback like any other Rails request.
 
 Native handlers registered in connectrpc-falcon's `connectrpc_server` never
-reach Rails. Falcon claims their whole service path before the fallback sees
-the request, so a controller route at the same path never runs. A controller
-route under another prefix, such as the `/rpc` scope in
-[Route the service](#3-route-the-service), is a different path and still
-reaches Rails. Native handlers bypass the Rails executor and reloader, so they
-get no query cache, no return of a leased connection, no `CurrentAttributes`
-reset and no development reloading.
-[Rails on Falcon](../connectrpc-falcon/README.md#rails-on-falcon) in the Falcon
-README explains the details. Its interceptor and `:fiber` isolation setting
-restore the query cache, the connection return and the `CurrentAttributes`
-reset, and reload code that handlers look up per call. A change to a handler's
-own class still needs a worker restart.
+reach the Rails application. Falcon claims their whole service path before the
+fallback sees the request, so a controller route at the same path never runs. A
+controller route under another prefix, such as the `/rpc` scope in [Route the
+service](#3-route-the-service), is a different path and still reaches Rails.
+Native handlers bypass the Rails executor and reloader, so they get no query
+cache of their own, no return of a leased connection, no `CurrentAttributes`
+reset and no development reloading. [Rails on
+Falcon](../connectrpc-falcon/README.md#rails-on-falcon) in the Falcon README
+explains the details. Its interceptor and `:fiber` isolation setting restore the
+query cache, the connection return and the `CurrentAttributes` reset, and reload
+code that handlers look up per call. A change to a handler's own class still
+needs a worker restart.
 
 ## Interceptors
 
