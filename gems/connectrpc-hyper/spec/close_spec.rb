@@ -261,39 +261,40 @@ RSpec.describe "Transport#close" do
 
   it "aborts calls still running after grace, waits for its tasks and returns false" do
     from = peer.mark
+    key = peer.hold_key
     transport = hyper
     held = Thread.new do
       client(peer["grpc_h2c"], transport: transport)
-        .server_stream(MSG.new(value: "hold"), timeout: 30) { |reader| values(reader) }
+        .server_stream(MSG.new(value: "hold:#{key}"), timeout: 30) { |reader| values(reader) }
     rescue ConnectRPC::Error => e
       [e.code, e.message]
     end
-    peer.wait_event(/grpc ss-hold-sent/, from: from)
+    peer.wait_event(peer.hold_sent(key), from: from)
     expect(transport.close(grace: 0.2)).to be(false)
     expect(held.value).to eq(["unavailable", "HTTP transport failed: connection closed"])
     expect(stats(transport)[1..2]).to eq([0, 0])
-    peer.wait_event(/grpc ss-hold-done/, from: from)
+    peer.wait_event(peer.hold_done(key), from: from)
     expect(closed_error(transport).message).to eq("HTTP transport admission is closed")
   end
 
   it "shares the first outcome among repeated and concurrent closers" do
     from = peer.mark
+    key = peer.hold_key
     transport = hyper
     held = Thread.new do
       client(peer["grpc_h2c"], transport: transport)
-        .server_stream(MSG.new(value: "hold"), timeout: 30) { |reader| values(reader) }
+        .server_stream(MSG.new(value: "hold:#{key}"), timeout: 30) { |reader| values(reader) }
     rescue ConnectRPC::Error
       nil
     end
-    peer.wait_event(/grpc ss-hold-sent/, from: from)
+    peer.wait_event(peer.hold_sent(key), from: from)
     closers = Array.new(3) { Thread.new { transport.close(grace: 0.3) } }
     expect(closers.map(&:value)).to eq([false, false, false])
     expect(transport.close(grace: 5)).to be(false)
     held.join
     # The peer logs the held stream's end only once it sees the reset, which
-    # can come after the call returned. Its unkeyed ss-hold-done must not
-    # land in a later example that waits for its own.
-    peer.wait_event(/grpc ss-hold-done/, from: from)
+    # can come after the call returned; wait so it lands in this example.
+    peer.wait_event(peer.hold_done(key), from: from)
     expect(hyper.close).to be(true)
   end
 

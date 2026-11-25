@@ -110,6 +110,20 @@ class Peer
 
   def count(pattern, from: 0) = since(from).grep(pattern).size
 
+  # A key for a held server stream (request value `hold:<key>`), unique in
+  # this peer's log. The peer logs a hold's end only once it sees the reset,
+  # which can come after its example ended or failed, so each example waits
+  # for its own key's events and never takes an earlier example's.
+  def hold_key = "h#{@hold_keys = (@hold_keys || 0) + 1}"
+
+  def hold_sent(key, tag: "grpc") = /\A#{tag} ss-hold-sent #{Regexp.escape(key)}\z/
+
+  # `reason` is a literal String or a Regexp.
+  def hold_done(key, tag: "grpc", reason: /.+/)
+    reason = Regexp.escape(reason) if reason.is_a?(String)
+    /\A#{tag} ss-hold-done #{Regexp.escape(key)} #{reason}\z/
+  end
+
   # Runs a control command and waits for the peer to confirm it ran.
   def command(line)
     from = size

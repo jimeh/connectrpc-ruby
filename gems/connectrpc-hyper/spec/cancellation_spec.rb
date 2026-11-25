@@ -14,6 +14,7 @@ RSpec.describe "Cancellation and deadlines" do
   [false, true].each do |data_in_flight|
     it "resets one stream #{data_in_flight ? 'while the peer is sending DATA' : 'quietly'} beside a live sibling" do
       from = peer.mark
+      key = peer.hold_key unless data_in_flight
       transport = hyper
       peer_client = client(peer["grpc_h2c"], transport: transport)
       peer_client.bidi(timeout: 20) do |sibling|
@@ -22,7 +23,7 @@ RSpec.describe "Cancellation and deadlines" do
         source = ConnectRPC::CancellationSource.new
         started = Queue.new
         thread, cancel = canceled_call(source) do |token|
-          value = data_in_flight ? "flood" : "hold"
+          value = data_in_flight ? "flood" : "hold:#{key}"
           peer_client.server_stream(MSG.new(value: value), timeout: 20, cancellation: token) do |reader|
             reader.each { started << true if started.empty? }
           end
@@ -33,7 +34,8 @@ RSpec.describe "Cancellation and deadlines" do
         wait_parked(thread, "Native::") unless data_in_flight
         cancel.call
         expect(thread.value).to eq(["canceled", "Call canceled"])
-        peer.wait_event(data_in_flight ? /grpc ss-flood-done/ : /grpc ss-hold-done context canceled/, from: from)
+        ended = data_in_flight ? /grpc ss-flood-done/ : peer.hold_done(key, reason: "context canceled")
+        peer.wait_event(ended, from: from)
         sibling.send_message(MSG.new(value: "after"))
         expect(sibling.receive.value).to eq("after")
         sibling.close_send
@@ -46,18 +48,19 @@ RSpec.describe "Cancellation and deadlines" do
 
   it "cancels from another thread through a CancellationSource" do
     from = peer.mark
+    key = peer.hold_key
     source = ConnectRPC::CancellationSource.new
     thread, cancel = canceled_call(source) do |token|
       client(peer["connect_h2c"], transport: hyper, protocol: :connect)
-        .server_stream(MSG.new(value: "hold"), timeout: 20, cancellation: token) { |reader| values(reader) }
+        .server_stream(MSG.new(value: "hold:#{key}"), timeout: 20, cancellation: token) { |reader| values(reader) }
     end
-    peer.wait_event(/connect ss-hold-sent/, from: from)
+    peer.wait_event(peer.hold_sent(key, tag: "connect"), from: from)
     wait_parked(thread, "Exchange#read")
     started = monotonic
     cancel.call
     expect(thread.value).to eq(["canceled", "Call canceled"])
     expect(monotonic - started).to be < 0.5
-    peer.wait_event(/connect ss-hold-done context canceled/, from: from)
+    peer.wait_event(peer.hold_done(key, tag: "connect", reason: "context canceled"), from: from)
   end
 
   # grpc-go's server resets a call with RST_STREAM(CANCEL) when the deadline

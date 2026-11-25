@@ -111,14 +111,15 @@ RSpec.describe "Interrupts" do
 
         it "lands in a blocked read, resets the stream and keeps the connection" do
           from = peer.mark
+          key = peer.hold_key
           transport = hyper(connections: mode)
           peer_client = client(peer["grpc_h2c"], transport: transport)
-          outcome = interrupt(how, ready: -> { peer.wait_event(/grpc ss-hold-sent/, from: from) },
+          outcome = interrupt(how, ready: -> { peer.wait_event(peer.hold_sent(key), from: from) },
                                    frame: "Exchange#read") do
-            peer_client.server_stream(MSG.new(value: "hold"), timeout: 30) { |reader| values(reader) }
+            peer_client.server_stream(MSG.new(value: "hold:#{key}"), timeout: 30) { |reader| values(reader) }
           end
           expect_landed(how, outcome)
-          peer.wait_event(/grpc ss-hold-done context canceled/, from: from)
+          peer.wait_event(peer.hold_done(key, reason: "context canceled"), from: from)
           expect(peer_client.unary(MSG.new(value: "after"), timeout: 5).message.value).to eq("after")
           expect(peer.count(/\Agrpc accept/, from: from)).to eq(mode == :pooled ? 1 : 2)
         end
