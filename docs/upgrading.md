@@ -37,6 +37,20 @@ The [changelog](../CHANGELOG.md) lists every change.
   runtime. A `close` whose helper thread cannot start retries once on its own
   thread, so it can wait for two attempts. See
   [errors](../gems/connectrpc-hyper/README.md#errors).
+- connectrpc-falcon's Rack fallback now runs the app's `call`, its
+  `rack.response_finished` callbacks and its Rack body `close` on one request
+  fiber, over HTTP/1.1 and HTTP/2, so Rails' executor completes each request on
+  the fiber that ran it. Before, the callbacks and close ran on the connection
+  writer or the HTTP/2 output task, so a Rails app with
+  `config.active_support.isolation_level = :fiber` left each request's
+  ActiveRecord connection checked out by a finished fiber and never reset that
+  fiber's `CurrentAttributes` or query cache. Request metrics, HTTP/1.1
+  admission and the next HTTP/1.1 keep-alive request still wait for
+  completion. Over HTTP/2, a peer reset still releases the stream's admission
+  slot when the stream closes. A client can finish reading the response before
+  completion ends, as with plain Falcon.
+  See
+  [Rack fallback completion](../gems/connectrpc-falcon/README.md#rack-fallback-completion).
 
 These affect Falcon's native HTTP/1.1 Connect unary and gRPC-Web requests. See
 [HTTP/1.1 input retirement](../gems/connectrpc-falcon/README.md#http11-input-retirement)

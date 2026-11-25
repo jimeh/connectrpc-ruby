@@ -148,7 +148,7 @@ RSpec.describe "Falcon Rack/Rails fallback boundary" do
   end
 
   it "supports ordinary streamed and callable Rack bodies with completion callbacks" do
-    reactor do
+    reactor do |task|
       completed = []
       closed = []
       rack = lambda do |env|
@@ -181,6 +181,11 @@ RSpec.describe "Falcon Rack/Rails fallback boundary" do
         expect(http1(origin, "/streamed").values_at(0, 2)).to eq([200, "streamed-body"])
         expect(http1(origin, "/array").values_at(0, 2)).to eq([200, "array-body"])
         expect(http1(origin, "/readable").values_at(0, 2)).to eq([200, "readable-body"])
+        # Completion follows the final flush on the request task, a scheduler
+        # turn after the writer's close, so the last request's may still run.
+        wait_observed(task, "every completion and close", ->(seen) { seen.all? { |list| list.size >= 4 } }) do
+          [completed.dup, closed.dup]
+        end
         expect(completed).to eq(%w[/callable /streamed /array /readable])
         expect(closed).to eq(completed)
       end
@@ -188,13 +193,19 @@ RSpec.describe "Falcon Rack/Rails fallback boundary" do
   end
 
   it "rejects full hijack before execution and partial hijack/protocol/101 responses while closing rejected bodies" do
-    reactor do
+    reactor do |task|
       transferred = []
       closed = []
       completed = []
+      arguments = []
       rack = lambda do |env|
         route = env["PATH_INFO"]
-        env["rack.response_finished"] << ->(*) { completed << route }
+        called = Fiber.current
+        env["rack.response_finished"] << lambda do |callback_env, status, headers, error|
+          completed << route
+          arguments << [Fiber.current.equal?(called), callback_env.equal?(env), status, headers.class,
+                        headers["content-type"], error]
+        end
         case route
         when "/rescued"
           begin
@@ -221,8 +232,33 @@ RSpec.describe "Falcon Rack/Rails fallback boundary" do
           expect(http1(origin, route).first).to eq(501)
         end
         expect(transferred).to be_empty
+        # Rejection callbacks run on the request task when the 501 body
+        # closes, a scheduler turn after the writer's close.
+        wait_observed(task, "every rejection completion", ->(seen) { seen.size >= 6 }) { completed.dup }
         expect(closed).to eq(%w[/rescued /partial /protocol /101])
         expect(completed).to eq(%w[/full /native-hijack /rescued /partial /protocol /101])
+        # As protocol-rack ran them, on the app's fiber with converted headers.
+        expect(arguments).to eq([[true, true, 501, Protocol::HTTP::Headers, "text/plain", nil]] * 6)
+      end
+    end
+  end
+
+  it "runs rejection callbacks once as app-error callbacks when the rejected original's close raises" do
+    reactor do
+      arguments = []
+      failure = RuntimeError.new("close failed")
+      rack = lambda do |env|
+        called = Fiber.current
+        env["rack.response_finished"] << lambda do |callback_env, status, headers, error|
+          arguments << [Fiber.current.equal?(called), callback_env.equal?(env), status, headers, error]
+        end
+        body = ["rejected"]
+        body.define_singleton_method(:close) { raise failure }
+        [101, { "upgrade" => "websocket" }, body]
+      end
+      falcon(rack_app: rack) do |_host, origin|
+        expect(http1(origin, "/101").first).to eq(500)
+        expect(arguments).to eq([[true, true, nil, nil, failure]])
       end
     end
   end

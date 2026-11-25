@@ -114,6 +114,45 @@ RSpec.describe "Falcon TLS raw-accept generation" do
     end
   end
 
+  it "scopes the authenticated leaf to the Rack fallback's request task through its completion callback" do
+    reactor do
+      seen = []
+      completed = Async::Queue.new
+      host = nil
+      rack = lambda do |env|
+        leaf = host.peer_certificate
+        seen << [:call, leaf.serial.to_i, Async::Task.current.async { host.peer_certificate }.wait]
+        leaf.serial = 999
+        seen << [:reread, host.peer_certificate.serial.to_i]
+        env["rack.response_finished"] << lambda { |*|
+          seen << [:callback, host.peer_certificate&.serial&.to_i]
+          completed.enqueue(true)
+        }
+        [200, { "content-type" => "text/plain" }, ["identified"]]
+      end
+      falcon(scheme: "https", rack_app: rack, tls: host_tls(anchors: [tls_material[:client_ca]])) do |running, origin|
+        host = running
+        expected = [[:call, 201, nil], [:reread, 201], [:callback, 201]]
+        http1_context = context(identity: tls_material[:identity], offers: ["http/1.1"])
+        expect(http1(origin, "/identified", body: nil, context: http1_context).values_at(0, 2))
+          .to eq([200, "identified"])
+        completed.dequeue
+        expect(seen.shift(3)).to eq(expected)
+        peer(origin, context(identity: tls_material[:identity], offers: ["h2"])) do |ssl|
+          connection = Async::HTTP::Protocol::HTTP2.client(ssl)
+          response = connection.call(Protocol::HTTP::Request["GET", "/identified", {}, nil,
+                                                             scheme: "https", authority: URI(origin).authority])
+          expect([response.status, response.read]).to eq([200, "identified"])
+        ensure
+          connection&.close
+        end
+        completed.dequeue
+        expect(seen).to eq(expected)
+        expect(host.peer_certificate).to be_nil
+      end
+    end
+  end
+
   it "preserves explicit wire chains and rotates overlapping/scoped client trust without recapturing old peers" do
     reactor do
       root = tls_material[:root]

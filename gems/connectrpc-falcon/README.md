@@ -249,6 +249,109 @@ insufficient. Use appropriate `Vary` headers for deliberately shared content
 that depends on request headers. These are upstream cache semantics, not a
 promise of full RFC cache policy support.
 
+## Rack fallback completion
+
+Each Rack fallback request runs in its own request task, a child of the
+session's handler task. That task calls `rack_app`, then waits until the
+transport closes the response body, and runs the `rack.response_finished`
+callbacks and the Rack body's `close` itself, in that order. The app's `call`,
+its callbacks and its body close therefore run on one fiber over HTTP/1.1 and
+HTTP/2. Body chunks are still read where plain Falcon reads them: by the
+connection's writer over HTTP/1.1 and by the stream's output task over HTTP/2.
+
+protocol-rack's body conversion closes some bodies before the callbacks, on the
+same fiber, as it does in plain Falcon. It calls `to_ary` on a body that
+responds to it, and Rack 3 requires a body that also responds to `close` to
+close itself there, as `Rack::BodyProxy` does. It closes the body of a 204, 205
+or 304 response that does not respond to `to_ary`. It also closes the body of a
+200 response that responds to `to_path`, which is then served from that file.
+
+Rails needs this under `config.active_support.isolation_level = :fiber`.
+`ActionDispatch::Executor` completes the request from a `rack.response_finished`
+callback, and that completion returns the fiber's ActiveRecord connection,
+clears `CurrentAttributes`, pops the execution context and tears down the query
+cache for the fiber it runs on. Run elsewhere, it leaves the request fiber's
+connection checked out after the fiber ends, which the pool then counts as
+dead. Over HTTP/2 this is stricter than plain Falcon, which runs the callbacks
+on async-http's output task, because fiber isolation is a Ruby-specific hazard.
+
+The close that starts completion returns only after the callbacks and closes
+have finished, so request metrics and HTTP/1.1 admission are released
+afterwards, and an HTTP/1.1 keep-alive connection reads its next request only
+then. Over HTTP/2, a peer reset releases the stream's admission slot when the
+stream closes, which can be before the callbacks finish, as before the request
+task existed. A client can still finish reading the response before completion
+finishes, as with plain Falcon, which closes the body after the final flush.
+
+Before the request task existed, the closing fiber ran the callbacks itself, so
+a cancellation of that fiber and a callback's `Async::Task#defer_cancel` met on
+one task. The closer keeps that behavior across the two tasks. It passes each
+interruption it receives on to the request task with the force it arrived with.
+One that was forced through the closer's own deferred cancellation, as
+retirement forces the HTTP/1.1 connection's writer, is delivered even if the
+callback defers it, and only once: a callback that rescues it inside its
+deferral finishes its cleanup there before the deferral exits. Any other is
+delivered once, and the callback defers it or not. When the request task defers
+a cancellation the closer passed on, the closer defers one too, so a host that
+forces deferring tasks also forces the closer, which passes that force on.
+Forced retirement, `abort` and owner shutdown do this, so a callback that defers
+cancellation is still interrupted within `close(grace:)`. An HTTP/2 peer reset
+cancels the stream's output task only once, so a callback that defers it
+finishes its deferred section and is cancelled as it leaves it, as before. A
+callback that does not defer sees each passed-on cancellation once. When a
+transport task is the closer, retirement also cancels the session's handler
+task, which has already returned and so cancels the request task directly. A
+callback that rescues a cancellation and keeps waiting can then be cancelled
+again. The closer returns, or raises its first interruption, only once the
+request task has settled, so request metrics and HTTP/1.1 admission stay held
+until completion finishes. An error that a body's `close` raises, an
+`Async::Stop` included, reaches the closer as before. A cancellation of the
+request task itself does not, unless it arrives while a body's `close` is
+blocked: that close raises it, and the closer receives it as the close's error.
+
+If the request task is cancelled or fails while it waits, for example during
+forced retirement, `abort` or owner shutdown, it does not close the body or run
+callbacks then, because the writer may still be writing the body and closing
+it would truncate a response that could look complete. The later close, on
+whichever fiber closes the body, then runs completion as before. In that
+case completion runs on the closing fiber, so Rails' executor completes there,
+with the connection leak this section describes for that request.
+`peer_certificate` returns nil in those callbacks when a transport closer, the
+HTTP/1.1 connection's writer or the HTTP/2 stream's output task, runs them.
+When the session's handler task is the closer, for a HEAD or no-content
+response or an abandoned body, the callbacks run on that handler, which keeps
+its own client identity.
+
+Completion runs at most once, including for a cached response's shared copies.
+It does not run for a response lost inside the session's dispatch after the
+Falcon server returned it: the request task waits until retirement cancels it
+and then exits without completion, as before the request task existed. It also
+does not run for an app-raised `Async::Stop`, described below.
+
+An app that raises a `StandardError` has its registered callbacks run on its
+own fiber with a nil status and headers and the error, as protocol-rack does,
+and the client gets the usual failure response. An app-raised `Async::Stop`
+runs no callbacks. A rejected hijack, protocol switch or 101 response still
+gets 501, with the app's body closed first and its callbacks run when the 501
+body closes. A response that Falcon's response middleware fails on, such as
+content encoding, is closed with that error, so its callbacks run too. A
+response the app returns just as or after the session's handler task was
+interrupted is completed on the request task with that interruption, for
+example an error page that an app renders after rescuing the cancellation, as
+Rails' `ActionDispatch::ShowExceptions` does. The client does not receive that
+response.
+
+`peer_certificate` also returns the client leaf in the request task, including
+inside its `rack.response_finished` callbacks.
+
+One limitation remains over HTTP/2. If the peer resets a stream while its
+response HEADERS are being written, the stream closes the body while it holds
+the connection's frame-writing guard. A completion callback that then writes a
+frame to that same connection waits for that guard, which stalls the
+connection's other streams until retirement forces the closer and that force
+reaches the request task, within `close(grace:)`. Ordinary Rack
+callbacks do not write frames to their own connection.
+
 ## TLS lifecycle
 
 ### Provide TLS material
@@ -335,7 +438,9 @@ finish. Older HTTP/2 connections get the two-phase GOAWAY drain with debug data
 ones are refused with `REFUSED_STREAM`. Later HTTP/1 requests get a bare 503.
 
 `peer_certificate` returns a detached authenticated client leaf only in the
-exact session handler task. Child tasks, other servers, plaintext and
+exact session handler task and in the exact
+[Rack fallback request task](#rack-fallback-completion). Child tasks, other
+servers, plaintext and
 server-only TLS have no client identity. It does not claim that a
 peer-presented chain is a verified chain.
 
