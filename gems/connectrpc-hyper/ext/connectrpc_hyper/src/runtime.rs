@@ -107,9 +107,9 @@ fn build() -> io::Result<Runtime> {
 
 /// One start attempt: `build` runs on a fresh start thread, which publishes
 /// the runtime to `slot` itself (`RUNTIME`, except in unit tests), and the
-/// caller waits for its report for at most `bound`. Each attempt has its own channel, so no shared state outlives it
-/// and a forked child inherits none mid-use. An abandoned attempt's report is
-/// dropped.
+/// caller waits for its report for at most `bound`. Each attempt has its own
+/// channel, so no shared state outlives it and a forked child inherits none
+/// mid-use. An abandoned attempt's report is dropped.
 fn start<F>(
     slot: &'static AtomicPtr<Slot>,
     me: u32,
