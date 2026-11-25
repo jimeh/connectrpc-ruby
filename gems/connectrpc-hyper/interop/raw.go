@@ -306,7 +306,11 @@ func (c *rawConn) status(stream uint32, grpc bool, code int) {
 	}
 	end := []byte("{}")
 	if code != 0 {
-		end = []byte(fmt.Sprintf(`{"error":{"code":%q,"message":"ended"}}`, connectCodes[code]))
+		name := "unknown"
+		if code > 0 && code < len(connectCodes) {
+			name = connectCodes[code]
+		}
+		end = []byte(fmt.Sprintf(`{"error":{"code":%q,"message":"ended"}}`, name))
 	}
 	envelope := append([]byte{2, 0, 0, 0, 0}, end...)
 	binary.BigEndian.PutUint32(envelope[1:5], uint32(len(end)))
