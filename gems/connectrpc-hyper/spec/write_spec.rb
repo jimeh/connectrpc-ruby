@@ -149,11 +149,11 @@ RSpec.describe "Streaming writes after the stream ended", :interop do
   end
 
   describe "core's client stream" do
-    def upload(scenario, protocol:)
+    def upload(scenario, protocol:, transport: hyper)
       writes = 0
       metadata = { "x-scenario" => scenario }
       error = error_of do
-        core(peer["raw"], transport: hyper, protocol: protocol)
+        core(peer["raw"], transport: transport, protocol: protocol)
           .client_stream(HyperHelpers::RAW_CLIENT_STREAM, metadata: metadata, timeout: 5) do |writer|
           writes_cap.times do
             writer.send_message(MSG.new)
@@ -175,11 +175,13 @@ RSpec.describe "Streaming writes after the stream ended", :interop do
       # write count and the client's reset prove the stream ended.
       it "stops writing on a half-open stream, resets it and reports the server's status (#{protocol})" do
         from = peer.mark
-        result, writes = upload("end-on-data:status:5:open", protocol: protocol)
+        transport = hyper
+        result, writes = upload("end-on-data:status:5:open", protocol: protocol, transport: transport)
         expect(result).to eq(%w[not_found ended])
         expect(writes).to be < writes_cap / 10
         stream = request_of("end-on-data:status:5:open", from)
         wait_reset(stream, from)
+        expect_reused(transport, stream, from)
         expect(reset_codes(stream, from)).to eq(["0"])
       end
     end
@@ -345,8 +347,8 @@ RSpec.describe "Streaming writes after the stream ended", :interop do
   # without resetting the stream (#228). Once the transport observes the end,
   # the client resets the stream with RST_STREAM(NO_ERROR), as grpc-go's
   # client does, and later writes raise; the response stays readable.
-  # Examples that count resets finish their call, so no cleanup CANCEL
-  # follows the reset.
+  # Examples count resets after a later call on the same connection, which
+  # the peer reads after any reset the stream's cleanup wrote.
   describe "a response that ends while the upload is open" do
     # Larger than the stream's whole 64 KiB window: hyper hands h2 the first
     # write's bytes at once and holds the second's waiting for window, so
@@ -403,8 +405,8 @@ RSpec.describe "Streaming writes after the stream ended", :interop do
           expect(call.response_trailers["grpc-status"]).to eq(["5"]) if grpc
           call.finish(timeout: 5)
         end
-        expect(reset_codes(stream, from)).to eq(["0"])
         expect_reused(transport, stream, from)
+        expect(reset_codes(stream, from)).to eq(["0"])
       end
 
       # The status waits behind the message until it is read.
@@ -425,16 +427,17 @@ RSpec.describe "Streaming writes after the stream ended", :interop do
           expect(call.response_trailers["grpc-status"]).to eq(["5"]) if grpc
           call.finish(timeout: 5)
         end
-        expect(reset_codes(stream, from)).to eq(["0"])
         expect_reused(transport, stream, from)
+        expect(reset_codes(stream, from)).to eq(["0"])
       end
     end
 
     it "resets the stream of a trailers-only response, then reads its head" do
+      transport = hyper
       from = peer.mark
       scenario = "end-on-data:trailers-only:5:open"
       stream = nil
-      exchange(scenario) do |call|
+      exchange(scenario, transport: transport) do |call|
         call.write(envelope)
         stream = request_of(scenario, from)
         peer.wait_event(/\Araw ended #{scenario} /, from: from)
@@ -445,14 +448,16 @@ RSpec.describe "Streaming writes after the stream ended", :interop do
         expect(read_all(call)).to eq(grpc_end)
         call.finish(timeout: 5)
       end
+      expect_reused(transport, stream, from)
       expect(reset_codes(stream, from)).to eq(["0"])
     end
 
     it "resets the stream when a reader reaches the end, with no write in flight" do
+      transport = hyper
       from = peer.mark
       scenario = script(tag, "head,gate,status=5")
       stream = nil
-      exchange(scenario) do |call|
+      exchange(scenario, transport: transport) do |call|
         call.write(envelope)
         stream = request_of(scenario, from)
         peer.command("release #{tag}.1")
@@ -461,6 +466,7 @@ RSpec.describe "Streaming writes after the stream ended", :interop do
         wait_reset(stream, from)
         call.finish(timeout: 5)
       end
+      expect_reused(transport, stream, from)
       expect(reset_codes(stream, from)).to eq(["0"])
     end
 
@@ -488,16 +494,18 @@ RSpec.describe "Streaming writes after the stream ended", :interop do
       expect(reset_codes(stream, from)).to eq([])
       peer.command("release #{tag}.2")
       wait_reset(stream, from)
+      expect_reused(transport, stream, from)
       expect(reset_codes(stream, from)).to eq(["0"])
     end
 
     # An interrupted write leaves its bytes queued, so the next write waits
     # to queue its own.
     it "raises a write waiting to queue when the response ends" do
+      transport = hyper
       from = peer.mark
       scenario = script(tag, "noread,head,gate,status=5,gate,window")
       stream = nil
-      exchange(scenario) do |call|
+      exchange(scenario, transport: transport) do |call|
         thread, written = writer(call, beyond_window)
         wait_window_spent(thread, written)
         thread.raise(RuntimeError, "interrupted")
@@ -518,6 +526,7 @@ RSpec.describe "Streaming writes after the stream ended", :interop do
         expect(read_all(call)).to eq(grpc_end)
         call.finish(timeout: 5)
       end
+      expect_reused(transport, stream, from)
       expect(reset_codes(stream, from)).to eq(["0"])
     end
 
