@@ -118,7 +118,11 @@ class Peer
 
   def hold_sent(key, tag: "grpc") = /\A#{tag} ss-hold-sent #{Regexp.escape(key)}\z/
 
-  def hold_done(key, tag: "grpc", reason: /.+/) = /\A#{tag} ss-hold-done #{Regexp.escape(key)} #{reason}\z/
+  # `reason` is a literal String or a Regexp.
+  def hold_done(key, tag: "grpc", reason: /.+/)
+    reason = Regexp.escape(reason) if reason.is_a?(String)
+    /\A#{tag} ss-hold-done #{Regexp.escape(key)} #{reason}\z/
+  end
 
   # Runs a control command and waits for the peer to confirm it ran.
   def command(line)

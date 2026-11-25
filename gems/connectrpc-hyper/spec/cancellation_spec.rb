@@ -14,7 +14,7 @@ RSpec.describe "Cancellation and deadlines" do
   [false, true].each do |data_in_flight|
     it "resets one stream #{data_in_flight ? 'while the peer is sending DATA' : 'quietly'} beside a live sibling" do
       from = peer.mark
-      key = peer.hold_key
+      key = peer.hold_key unless data_in_flight
       transport = hyper
       peer_client = client(peer["grpc_h2c"], transport: transport)
       peer_client.bidi(timeout: 20) do |sibling|
