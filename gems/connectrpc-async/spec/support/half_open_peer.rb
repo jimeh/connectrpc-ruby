@@ -51,15 +51,16 @@ module HalfOpenPeer
   def half_open_envelope(flags, bytes) = [flags, bytes.bytesize].pack("CN") + bytes.b
 
   # Writes the response's frames and ends the stream, then resets it only
-  # with `reset_after`. A :unary response's `message` is its whole body.
-  def half_open_response(stream, protocol:, message: nil, code: 5, trailers_only: false, reset_after: nil)
-    half_open_frames(stream, protocol, message, code, trailers_only)
+  # with `reset_after`. A :unary response's `message` is its whole body;
+  # `extra` fields follow the gRPC status fields.
+  def half_open_response(stream, protocol:, message: nil, code: 5, trailers_only: false, reset_after: nil, extra: [])
+    half_open_frames(stream, protocol, message, code, trailers_only, extra: extra)
     stream.send_reset_stream(reset_after) if reset_after && !stream.closed?
   end
 
-  def half_open_frames(stream, protocol, message, code, trailers_only)
+  def half_open_frames(stream, protocol, message, code, trailers_only, extra: [])
     head = [[":status", "200"], ["content-type", CONTENT_TYPES.fetch(protocol)]]
-    status = [["grpc-status", code.to_s], %w[grpc-message missing]]
+    status = [["grpc-status", code.to_s], %w[grpc-message missing], *extra]
     return stream.send_headers(head + status, Protocol::HTTP2::END_STREAM) if trailers_only
     return half_open_unary(stream, head, message) if protocol == :unary
 

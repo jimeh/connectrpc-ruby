@@ -172,6 +172,26 @@ RSpec.describe "HTTP/2 half-open client streams" do
     end
   end
 
+  # async-http resets a stream whose HEADERS fail validation, and
+  # protocol-http2 then still records the frame's END_STREAM.
+  it "sends only its own reset when gRPC trailers ending a half-open stream fail validation" do
+    with_half_open_peer do |task, transport, origin, peer, release|
+      stream = nil
+      expect do
+        core_client(transport, origin, :grpc).client_stream(half_open_method, timeout: nil) do |writer|
+          writer.send_message(message("first"))
+          stream = half_open_operation(transport).fetch(:response).stream
+          release.enqueue({ protocol: :grpc, extra: [["x-large", "x" * 65_536]] })
+          wait_until(task, "trailers read") { stream.state != :open }
+        end
+      end.to expect_code("resource_exhausted")
+      expect(stream).not_to be_response_ended
+      expect_reuse(transport, origin, peer)
+      expect(client_resets(peer, stream.id)).to eq([Protocol::HTTP2::Error::ENHANCE_YOUR_CALM])
+      expect(peer.sent_resets).to be_empty
+    end
+  end
+
   it "wakes an upload parked on flow control at the response's end and fails the write waiting to queue" do
     with_half_open_peer(settings: one_frame_window, wait_data: false) do |task, transport, origin, peer, release|
       stream = nil

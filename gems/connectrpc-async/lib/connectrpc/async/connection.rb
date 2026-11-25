@@ -958,9 +958,15 @@ module ConnectRPC
           resource&.abort(e) unless resource&.peer_departed? || resource&.outlives_peer?(e)
         end
 
+        # async-http resets a stream whose HEADERS fail validation, and
+        # protocol-http2 then records the frame's END_STREAM on the closed
+        # stream anyway. Restoring the closed state keeps the end unlatched
+        # and stops cleanup from resetting the stream a second time.
         def receive_headers(frame)
           request_open = state == :open
           super
+          return @state = :closed unless connection.streams[id].equal?(self)
+
           response_ended if request_open && state == :half_closed_remote
         end
 
