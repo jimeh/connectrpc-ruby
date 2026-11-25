@@ -45,7 +45,7 @@ RSpec.describe "Falcon Rack body cleanup" do
     end
 
     it "closes array and array-like bodies without completion callbacks over #{protocol}" do
-      reactor do
+      reactor do |task|
         closed = []
         requests = 0
         rack = lambda do |_env|
@@ -61,6 +61,10 @@ RSpec.describe "Falcon Rack body cleanup" do
         end
         falcon(rack_app: rack) do |_host, origin|
           2.times { expect(fallback_response(origin, protocol)).to eq([200, "fallback-body"]) }
+          # The writer closes after the final flush and hands the close to the
+          # request task, which runs on a later scheduler turn than the
+          # client's last read.
+          wait_observed(task, "both original closes", ->(seen) { seen.size >= 2 }) { closed.dup }
           expect(closed).to eq([1, 2])
         end
       end

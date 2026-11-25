@@ -165,7 +165,7 @@ RSpec.describe "Falcon HTTP wire lifecycle" do
     end
   end
   it "retains global request admission through HTTP/1 body wire completion" do
-    reactor do
+    reactor do |task|
       entered = Async::Queue.new
       release = Async::Queue.new
       registry = Async::Utilization::Registry.new
@@ -189,6 +189,11 @@ RSpec.describe "Falcon HTTP wire lifecycle" do
         expect(response.read).to eq("x" * 200_000)
         expect(http1(origin, "/after-completion").values_at(0, 2)).to eq([200, "other"])
         expect(registry.metric(:requests_total).value).to eq(3)
+        # The last response's metric releases once its close, handed to the
+        # request task after the final flush, finishes on a later turn.
+        wait_observed(task, "the last request's release", lambda(&:zero?)) do
+          registry.metric(:requests_active).value
+        end
         expect(registry.metric(:requests_active).value).to eq(0)
       ensure
         release.enqueue(true)

@@ -9,12 +9,16 @@ gem "connectrpc-async", path: "../connectrpc-async"
 # Runtime dependencies float within gemspec constraints; only tools stay exact.
 group :development, :test do
   gem "actionpack", require: false
+  # With railties and sqlite3: fallback specs boot Rails with ActiveRecord under fiber isolation.
+  gem "activerecord", require: false
   # Specs drive real worker containers; Falcon itself owns the runtime requirement.
   gem "async-container", require: false
   gem "google-protobuf", "4.36.2", require: false
+  gem "railties", require: false
   gem "rake", "13.4.2"
   gem "rspec", "3.13.2"
   gem "rubocop", "1.92.1", require: false
   gem "simplecov", "1.3.2", require: false
+  gem "sqlite3", require: false
   gem "webrick", "1.9.2", require: false
 end

@@ -249,6 +249,51 @@ insufficient. Use appropriate `Vary` headers for deliberately shared content
 that depends on request headers. These are upstream cache semantics, not a
 promise of full RFC cache policy support.
 
+## Rack fallback completion
+
+Each Rack fallback request runs in its own request task, a child of the
+session's handler task. That task calls `rack_app`, then waits until the
+transport closes the response body, and runs the `rack.response_finished`
+callbacks and the Rack body's `close` itself, in that order. The app's `call`,
+its callbacks and its body close therefore run on one fiber over HTTP/1.1 and
+HTTP/2. Body chunks are still read where plain Falcon reads them: by the
+connection's writer over HTTP/1.1 and by the stream's output task over HTTP/2.
+
+Rails needs this under `config.active_support.isolation_level = :fiber`.
+`ActionDispatch::Executor` completes the request from a `rack.response_finished`
+callback, and that completion returns the fiber's ActiveRecord connection,
+clears `CurrentAttributes`, pops the execution context and tears down the query
+cache for the fiber it runs on. Run elsewhere, it leaves the request fiber's
+connection checked out after the fiber ends, which the pool then counts as
+dead. Over HTTP/2 this is stricter than plain Falcon, which runs the callbacks
+on async-http's output task, because fiber isolation is a Ruby-specific hazard.
+
+The close that starts completion returns only after the callbacks and closes
+have finished, so request metrics and admission are released afterwards, and
+an HTTP/1.1 keep-alive connection reads its next request only then. A client
+can still finish reading the response before completion finishes, as with
+plain Falcon, which closes the body after the final flush.
+
+If the request task is cancelled or fails while it waits, for example during
+forced retirement, `abort` or owner shutdown, it does not close the body or run
+callbacks then, because the writer may still be writing the body and closing
+it would truncate a response that could look complete. The later close, on
+whichever fiber closes the body, then runs completion as before. A closer
+interrupted while the request task runs completion stops waiting, and the
+request task finishes on its own under retirement. Completion runs once in
+every case, including for a cached response's shared copies.
+
+An app that raises a `StandardError` has its registered callbacks run on its
+own fiber with a nil status and headers and the error, as protocol-rack does,
+and the client gets the usual failure response. An app-raised `Async::Stop`
+runs no callbacks. A rejected hijack, protocol switch or 101 response still
+gets 501, with the app's body closed first and its callbacks run when the 501
+body closes. A response that Falcon's response middleware fails on, such as
+content encoding, is closed with that error, so its callbacks run too.
+
+`peer_certificate` also returns the client leaf in the request task, including
+inside its `rack.response_finished` callbacks.
+
 ## TLS lifecycle
 
 ### Provide TLS material
@@ -335,7 +380,9 @@ finish. Older HTTP/2 connections get the two-phase GOAWAY drain with debug data
 ones are refused with `REFUSED_STREAM`. Later HTTP/1 requests get a bare 503.
 
 `peer_certificate` returns a detached authenticated client leaf only in the
-exact session handler task. Child tasks, other servers, plaintext and
+exact session handler task and in the exact
+[Rack fallback request task](#rack-fallback-completion). Child tasks, other
+servers, plaintext and
 server-only TLS have no client identity. It does not claim that a
 peer-presented chain is a verified chain.
 

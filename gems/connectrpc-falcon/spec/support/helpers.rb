@@ -1,6 +1,15 @@
 # frozen_string_literal: true
 
 module FalconHelpers
+  # Polls an observed value under a bounded deadline until it satisfies the
+  # predicate, and reports the last observed value on timeout.
+  def wait_observed(task, message, satisfied, within: 2)
+    observed = nil
+    task.with_timeout(within) { task.yield until satisfied.call(observed = yield) }
+  rescue Async::TimeoutError
+    raise "Timed out waiting for #{message}; last observed: #{observed.inspect}"
+  end
+
   def falcon(server: self.server, scheme: "http", **)
     bound = ConnectRPC::Falcon::Endpoint.parse("#{scheme}://127.0.0.1:0").bound
     host = ConnectRPC::Falcon::Server.new(server: server, endpoint: bound, **)

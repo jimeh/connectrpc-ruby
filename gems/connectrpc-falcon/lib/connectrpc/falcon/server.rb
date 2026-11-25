@@ -30,7 +30,11 @@ module ConnectRPC
           raise ArgumentError, "Listener scheme and TLS configuration must agree"
         end
 
-        fallback = ::Falcon::Server.rack_middleware(RackGuard.new(rack_app), cache: cache) unless rack_app.nil?
+        @request_identities = RequestIdentities.new { @session.peer_certificate }
+        unless rack_app.nil?
+          @rack_guard = RackGuard.new(rack_app, identities: @request_identities)
+          fallback = ::Falcon::Server.rack_middleware(@rack_guard, cache: cache)
+        end
         application = @native_application = ::ConnectRPC::Async::Application.new(server: server, fallback: fallback)
         listener_application = ListenerApplication.new(application, configured.scheme)
         @listener_application = listener_application
@@ -119,9 +123,16 @@ module ConnectRPC
           wrapped = true
         end
         response
+      rescue Exception => e # rubocop:disable Lint/RescueException -- an escape abandons a produced fallback body
+        error = e
+        raise
       ensure
-        retained = publication && (publication.published? || response&.body)
-        @request_active.decrement unless wrapped || retained
+        begin
+          @rack_guard&.settle(error)
+        ensure
+          retained = publication && (publication.published? || response&.body)
+          @request_active.decrement unless wrapped || retained
+        end
       end
 
       private :call_native
@@ -131,7 +142,7 @@ module ConnectRPC
       def drain_tls(**) = @session.drain_tls(**)
       def tls_generation = @session.tls_generation
       def tls_status = @session.tls_status
-      def peer_certificate = @session.peer_certificate
+      def peer_certificate = @request_identities.peer_certificate || @session.peer_certificate
 
       private
 
