@@ -78,36 +78,51 @@ module ConnectRPC
 
       private
 
-      # A handler interrupted after the request task produced a response owns
+      # The outcome is resolved once, by whichever side reaches it first. A
+      # handler interrupted after the request task produced a response owns
       # that response's body, which no transport will close. It closes the
       # body with the interruption, so completion still runs once on the
-      # request task, then raises the interruption.
+      # request task, then raises the interruption. A handler interrupted
+      # earlier resolves the outcome as abandoned with its interruption, and
+      # the request task completes any response it produces afterwards.
       def wait_outcome(outcome)
         outcome.wait
-      rescue Exception => e # rubocop:disable Lint/RescueException -- re-raised once the produced body is closed
-        raised, value = outcome.value if outcome.resolved?
-        abandon(value[2], e) if outcome.resolved? && !raised
+      rescue Exception => e # rubocop:disable Lint/RescueException -- re-raised once the response is accounted for
+        if outcome.resolved?
+          raised, value = outcome.value
+          abandon(value[2], e) unless raised
+        else
+          outcome.resolve([:abandoned, e])
+        end
         raise
       end
 
-      # Closes an abandoned body with the error that abandoned it. That error,
-      # not the close's own escape, still leaves the handler, so the escape is
-      # logged as protocol-rack logs a failing callback.
+      # Closes an abandoned body with the error that abandoned it, on the
+      # handler or, for a response produced after the handler left, on the
+      # request task. That error, not the close's own escape, is what leaves
+      # the handler, so the escape is logged as protocol-rack logs a failing
+      # callback.
       def abandon(body, error)
         body.close(error)
       rescue Exception => e # rubocop:disable Lint/RescueException -- the abandoning error propagates instead
         ::Console.error(self, "Error occurred while closing an abandoned Rack response:", e)
       end
 
-      # Runs on the request task and always resolves the outcome. Escapes are
-      # handed to the handler as tagged outcomes, so Async never reports them
-      # as task failures here.
+      # Runs on the request task and always resolves the outcome, unless the
+      # handler abandoned it first. Escapes are handed to the handler as
+      # tagged outcomes, so Async never reports them as task failures here.
       def serve(env, outcome)
         begin
           response = respond(env)
-          completion = response[2].completion
-          # Park before the handler can see the body, so every close finds it.
-          completion.park
+          # Nothing yields between this check and the park and resolve below,
+          # so either the handler takes the response or this task completes
+          # it, here and with the handler's interruption.
+          abandoned = outcome.value[1] if outcome.resolved?
+          unless abandoned
+            completion = response[2].completion
+            # Park before the handler can see the body, so every close finds it.
+            completion.park
+          end
           result = [false, response]
         rescue Exception => e # rubocop:disable Lint/RescueException -- the handler re-raises every escape
           result = [true, e]
@@ -121,7 +136,7 @@ module ConnectRPC
         ensure
           outcome.resolve(result || [true, $ERROR_INFO])
         end
-        completion&.serve
+        abandoned ? abandon(response[2], abandoned) : completion&.serve
       end
 
       def respond(env)
@@ -256,7 +271,7 @@ module ConnectRPC
     # could then look complete. It marks itself gone and exits; the later
     # close, from whichever fiber closes the body, then completes inline with
     # that close's error. The callbacks then run on that fiber, where
-    # peer_certificate is nil.
+    # peer_certificate is nil unless it is the session's handler task.
     class Completion
       attr_writer :body
 
@@ -305,8 +320,8 @@ module ConnectRPC
       # existed the closer ran the completion itself, so an interruption of
       # the closer interrupted the running callback and its close returned
       # only once the nested ensures had closed the bodies. To keep that, each
-      # interruption of this closer is forwarded to the request task, where a
-      # second one also reaches a cancellation the task deferred, and the
+      # interruption of this closer is forwarded to the request task, which
+      # cannot defer a forwarded cancellation past that forward, and the
       # first is raised once the task has settled. A request task that exits
       # without claiming the run leaves it to this closer.
       #
@@ -337,7 +352,7 @@ module ConnectRPC
           begin
             if forwards.positive?
               forwards -= 1
-              @owner.cancel
+              forward
             else
               @done.wait
             end
@@ -347,6 +362,17 @@ module ConnectRPC
           end
         end
         interruption
+      end
+
+      # Every retirement path that cancels a closer also forces, in the same
+      # pass, a cancellation that closer deferred, which reached a callback
+      # when the closer ran it. A closer that is not itself deferring, such
+      # as a handler closing a HEAD response, is never forced, so a forwarded
+      # cancellation the request task defers is delivered here at once. A
+      # callback that does not defer sees one cancellation.
+      def forward
+        @owner.cancel
+        @owner.cancel if @owner.cancel_deferred?
       end
 
       def settle

@@ -259,10 +259,12 @@ its callbacks and its body close therefore run on one fiber over HTTP/1.1 and
 HTTP/2. Body chunks are still read where plain Falcon reads them: by the
 connection's writer over HTTP/1.1 and by the stream's output task over HTTP/2.
 
-protocol-rack's body conversion closes two kinds of body before the callbacks,
-on the same fiber, as it does in plain Falcon: the body of a 204, 205 or 304
-response unless it is an array, and the body of a 200 response that responds
-to `to_path`, which is then served from that file.
+protocol-rack's body conversion closes some bodies before the callbacks, on the
+same fiber, as it does in plain Falcon. It calls `to_ary` on a body that
+responds to it, and Rack 3 requires a body that also responds to `close` to
+close itself there, as `Rack::BodyProxy` does. It closes the body of a 204, 205
+or 304 response that does not respond to `to_ary`. It also closes the body of a
+200 response that responds to `to_path`, which is then served from that file.
 
 Rails needs this under `config.active_support.isolation_level = :fiber`.
 `ActionDispatch::Executor` completes the request from a `rack.response_finished`
@@ -283,11 +285,18 @@ Before the request task existed, the closing fiber ran the callbacks itself, so
 interrupting that fiber interrupted a running callback. The closer keeps that:
 it passes each interruption it receives, such as a cancellation, on to the
 request task, and it still returns, or raises its first interruption, only once
-completion has finished. A callback that defers cancellation is therefore still
-reached by forced retirement, whose second cancel of the connection reaches the
-callback too, and metrics and admission stay held until completion finishes.
-An error that a body's `close` raises, an `Async::Stop` included, reaches the
-closer as before. A cancellation of the request task itself does not.
+completion has finished. Forced retirement and `abort` cancel a closer and, in
+the same pass, force a cancellation that the closer deferred, which reached a
+callback that ran on it. A closer is often not deferring, for example the
+handler task closing a HEAD or 204 response, so retirement never forces it.
+Instead, when the request task defers a cancellation the closer passed on, the
+closer passes it on again at once. A callback that defers cancellation is
+therefore still interrupted within `close(grace:)`, a callback that does not
+defer sees each passed-on cancellation once, and metrics and admission stay
+held until completion finishes. An error that a body's `close` raises, an
+`Async::Stop` included, reaches the closer as before. A cancellation of the
+request task itself does not, unless it arrives while a body's `close` is
+blocked: that close raises it, and the closer receives it as the close's error.
 
 If the request task is cancelled or fails while it waits, for example during
 forced retirement, `abort` or owner shutdown, it does not close the body or run
@@ -295,8 +304,12 @@ callbacks then, because the writer may still be writing the body and closing
 it would truncate a response that could look complete. The later close, on
 whichever fiber closes the body, then runs completion as before. In that
 case completion runs on the closing fiber, so Rails' executor completes there,
-with the connection leak this section describes for that request, and
-`peer_certificate` returns nil in those callbacks.
+with the connection leak this section describes for that request.
+`peer_certificate` returns nil in those callbacks when a transport closer, the
+HTTP/1.1 connection's writer or the HTTP/2 stream's output task, runs them.
+When the session's handler task is the closer, for a HEAD or no-content
+response or an abandoned body, the callbacks run on that handler, which keeps
+its own client identity.
 
 Completion runs at most once, including for a cached response's shared copies.
 It does not run for a response lost inside the session's dispatch after the
@@ -310,9 +323,12 @@ and the client gets the usual failure response. An app-raised `Async::Stop`
 runs no callbacks. A rejected hijack, protocol switch or 101 response still
 gets 501, with the app's body closed first and its callbacks run when the 501
 body closes. A response that Falcon's response middleware fails on, such as
-content encoding, is closed with that error, so its callbacks run too. So is a
-response the app returned just as the session's handler task was interrupted,
-with that interruption.
+content encoding, is closed with that error, so its callbacks run too. A
+response the app returns just as or after the session's handler task was
+interrupted is completed on the request task with that interruption, for
+example an error page that an app renders after rescuing the cancellation, as
+Rails' `ActionDispatch::ShowExceptions` does. The client does not receive that
+response.
 
 `peer_certificate` also returns the client leaf in the request task, including
 inside its `rack.response_finished` callbacks.

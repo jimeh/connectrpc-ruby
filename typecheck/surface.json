@@ -1098,6 +1098,7 @@
     "ConnectRPC::Falcon::Completion#await_settled": {"kind":"method","visibility":"private","parameters":"","classification":"internal"},
     "ConnectRPC::Falcon::Completion#body=": {"kind":"attribute","visibility":"public","classification":"internal"},
     "ConnectRPC::Falcon::Completion#close": {"kind":"method","visibility":"public","parameters":"error","classification":"internal"},
+    "ConnectRPC::Falcon::Completion#forward": {"kind":"method","visibility":"private","parameters":"","classification":"internal"},
     "ConnectRPC::Falcon::Completion#hand_off": {"kind":"method","visibility":"private","parameters":"error","classification":"internal"},
     "ConnectRPC::Falcon::Completion#initialize": {"kind":"method","visibility":"public","parameters":"callback, original","classification":"internal"},
     "ConnectRPC::Falcon::Completion#park": {"kind":"method","visibility":"public","parameters":"","classification":"internal"},
