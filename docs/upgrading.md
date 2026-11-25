@@ -31,16 +31,19 @@ The [changelog](../CHANGELOG.md) lists every change.
 - Over HTTP/2, when a server ends its response with END_STREAM while the
   request body is still open and does not reset the stream, connectrpc-hyper
   and connectrpc-async now reset the stream with `RST_STREAM(NO_ERROR)`, as
-  grpc-go's client does, instead of leaving it half-open. Later writes raise
-  `unavailable` instead of succeeding and discarding the message, and the
-  response's messages and status still reach the caller, so core's client
-  streams stop writing and report the server's error status. A call whose
+  grpc-go's client does, instead of leaving it half-open. Once the transport
+  sees the response's end, later writes raise `unavailable` instead of
+  succeeding and discarding the message, and the response's messages and status
+  still reach the caller, so core's client streams stop writing and report the
+  server's error status. connectrpc-hyper sees an end that sits behind response
+  data nobody has read only once that data is read. A call whose
   server answers with OK status before it read the request message now fails
   with `unavailable`, as it already did when such a server reset the stream
   after its status. A request whose `close_send` came first
   still ends with END_STREAM and no reset, and HTTP/1.1 is unchanged. See
   connectrpc-hyper's [errors](../gems/connectrpc-hyper/README.md#errors),
-  including the cases where hyper sends the reset late, and connectrpc-async's
+  including the cases where hyper sees the end or sends the reset late, and
+  connectrpc-async's
   [native streaming](../gems/connectrpc-async/README.md#native-streaming).
 - A first connectrpc-hyper use (call, stream open or close) whose tokio runtime
   cannot fully start now raises `fatal` within 5 seconds per start attempt

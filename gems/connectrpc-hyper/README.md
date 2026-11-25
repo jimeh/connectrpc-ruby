@@ -497,9 +497,10 @@ hyper does not tell the request body why the stream ended, which limits this:
 - A response head followed by `RST_STREAM(NO_ERROR)` without a valid status
   also raises `stream closed`, where connectrpc-async raises `internal`.
 
-hyper offers no way to see the response's end without reading the response,
-or to reset a stream while its upload waits for send window, which limits the
-reset:
+hyper reports an END_STREAM that arrives in the response HEADERS (a gRPC
+trailers-only response) at once, but one in DATA or trailers only as the
+response is read, and offers no way to reset a stream while its upload waits
+for send window, which limits the reset:
 
 - An END_STREAM behind response data nobody has read is seen once that data is
   read; until then writes succeed. grpc-go resets at once.

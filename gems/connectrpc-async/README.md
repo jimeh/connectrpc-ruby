@@ -478,11 +478,12 @@ calls, server streaming and client streaming.
 
 Over HTTP/2, when a server ends its response with END_STREAM while the request
 body is still open and does not reset the stream, the client resets it with
-`RST_STREAM(NO_ERROR)`, as grpc-go's client does. This applies to Connect, gRPC
-and gRPC-Web streams and to unary uploads. The upload stops at the next frame
-boundary, a later or blocked write raises `unavailable`, and the response's
-messages and status still reach the caller. A request that `close_send` ended
-first finishes with END_STREAM and no reset. HTTP/1.1 is unchanged.
+`RST_STREAM(NO_ERROR)`, as grpc-go's client does. This applies to every HTTP/2
+client stream, Connect and gRPC alike, and to unary uploads. The upload stops at
+the next frame boundary, a later or blocked write raises `unavailable`, and the
+response's messages and status still reach the caller. A request that
+`close_send` ended first finishes with END_STREAM and no reset. HTTP/1.1 is
+unchanged.
 
 The streaming guide's [Falcon HTTP/1.1
 server](../../docs/streaming.md#falcon-http11-server) section describes how
