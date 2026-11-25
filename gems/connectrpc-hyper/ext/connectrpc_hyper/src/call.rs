@@ -7,14 +7,15 @@
 use std::future::Future;
 use std::pin::{Pin, pin};
 use std::sync::atomic::{AtomicBool, AtomicU16, Ordering};
-use std::sync::{Arc, Mutex};
-use std::task::Poll;
+use std::sync::{Arc, Mutex, OnceLock};
+use std::task::{Context, Poll, Waker};
 use std::time::Instant;
 
 use bytes::Bytes;
 use http_body_util::BodyExt;
-use hyper::body::Incoming;
+use hyper::body::{Frame, Incoming};
 use hyper::client::conn::TrySendError;
+use tokio::sync::oneshot::error::TryRecvError;
 use tokio::sync::{mpsc, oneshot};
 
 use crate::body::CallBody;
@@ -131,6 +132,37 @@ async fn answered<T, E>(
 
 type Delivered = Result<(hyper::Response<Incoming>, Lease), Failure>;
 
+/// Publishes a dispatch's response outcome. `respond` owns it, so a task that
+/// is never polled, refused by a sealed tracker or aborted drops it too.
+/// Publication order: a failure goes into `head_failure` before it is sent,
+/// and `responded` fires only after the outcome was sent or the sender
+/// dropped (`Drop`). So once `responded` fired, the outcome is in
+/// `head_failure` (a failure), in the receiver (a response), or the closed
+/// channel says none will come.
+struct Responder {
+    deliver: Option<oneshot::Sender<Delivered>>,
+    head_failure: Arc<OnceLock<Failure>>,
+    responded: Arc<Signal>,
+}
+
+impl Responder {
+    fn publish(mut self, delivered: Delivered) {
+        if let Err(failure) = &delivered {
+            let _ = self.head_failure.set(failure.clone());
+        }
+        if let Some(deliver) = self.deliver.take() {
+            let _ = deliver.send(delivered);
+        }
+    }
+}
+
+impl Drop for Responder {
+    fn drop(&mut self) {
+        drop(self.deliver.take());
+        self.responded.fire();
+    }
+}
+
 enum Dispatch {
     Pending,
     Dispatched(Option<oneshot::Receiver<Delivered>>),
@@ -151,12 +183,19 @@ pub struct RecvHalf {
     buffer: Bytes,
     pub trailers: Option<http::HeaderMap>,
     done: bool,
+    /// The head's failure, or a body error `read` or a write's `probe`
+    /// consumed: the outcome stays here for the operations after it, since
+    /// hyper hands out a delivery, and an HTTP/1.1 body error, only once.
+    failed: Option<Failure>,
     /// The response's connection's TLS failure record, for body errors.
     fault: Arc<TlsFault>,
 }
 
 pub struct SendHalf {
     tx: Option<mpsc::Sender<Bytes>>,
+    /// The stream's own failure, once a write that found the stream ended
+    /// learned it.
+    ended: Option<Failure>,
 }
 
 pub struct CallState {
@@ -169,6 +208,10 @@ pub struct CallState {
     /// Fires when the request was stranded: its body, which owns the upload
     /// channel's receiver, may stay alive, so a blocked `write` returns.
     stranded: Arc<Signal>,
+    /// The response's failure, and the signal that its outcome was
+    /// published, as `Responder` orders them.
+    head_failure: Arc<OnceLock<Failure>>,
+    responded: Arc<Signal>,
     aborted: AtomicBool,
     finished: AtomicBool,
     failed: AtomicBool,
@@ -201,13 +244,18 @@ impl CallState {
             cancel,
             abort: Signal::new(),
             stranded: Signal::new(),
+            head_failure: Arc::new(OnceLock::new()),
+            responded: Signal::new(),
             aborted: AtomicBool::new(false),
             finished: AtomicBool::new(false),
             failed: AtomicBool::new(false),
             ended: Arc::new(AtomicBool::new(false)),
             body: Mutex::new(Some(rx)),
             dispatch: tokio::sync::Mutex::new(Dispatch::Pending),
-            send: Mutex::new(Some(SendHalf { tx: Some(tx) })),
+            send: Mutex::new(Some(SendHalf {
+                tx: Some(tx),
+                ended: None,
+            })),
             recv: Mutex::new(Some(RecvHalf::default())),
             lease: Mutex::new(None),
             inflight: Mutex::new(Some(inflight)),
@@ -274,7 +322,17 @@ impl CallState {
             .unwrap_or_else(|e| e.into_inner())
             .take()
             .expect("request body is dispatched once");
+        // Only an HTTP/2 request is replayed from a body hyper dropped unread
+        // (its mark can say it was never sent). On HTTP/1.1 the receiver must
+        // not outlive that body: a body hyper never polls (a declared
+        // Content-Length of 0) would otherwise keep the upload channel open
+        // under a blocked write.
         let (home, homed) = oneshot::channel();
+        let home = if lease.is_h2() {
+            home
+        } else {
+            oneshot::channel().0
+        };
         let body = CallBody::stream(rx, self.ended.clone(), self.abort.clone(), home);
         let request = match self.spec.build(body, self.deadline, lease.is_h2()) {
             Ok(request) => request,
@@ -305,7 +363,11 @@ impl CallState {
             self.abort.clone(),
             self.cancel.clone(),
             self.stranded.clone(),
-            deliver,
+            Responder {
+                deliver: Some(deliver),
+                head_failure: self.head_failure.clone(),
+                responded: self.responded.clone(),
+            },
         ));
         *state = Dispatch::Dispatched(Some(delivered));
         Ok(())
@@ -314,6 +376,9 @@ impl CallState {
     pub async fn head(self: &Arc<Self>, recv: &mut RecvHalf) -> Result<(), Failure> {
         if recv.head.is_some() {
             return Ok(());
+        }
+        if let Some(failure) = &recv.failed {
+            return Err(failure.clone());
         }
         if recv.pending.is_none() {
             self.dispatch().await?;
@@ -326,11 +391,30 @@ impl CallState {
             .pending
             .as_mut()
             .ok_or_else(|| Failure::new("state", "response head already taken"))?;
-        let delivered = pending.await;
+        let delivered = pending.await.ok();
         recv.pending = None;
-        // `respond` ends without delivering only on this call's abort, or
-        // when forced teardown aborted it or a sealed tracker refused it.
-        let (response, lease) = delivered.map_err(|_| {
+        self.install(recv, delivered)
+    }
+
+    /// Installs the delivered response on `recv`, or keeps its failure there.
+    /// `None`: `respond` ended without delivering, which happens only on this
+    /// call's abort, or when forced teardown aborted it or a sealed tracker
+    /// refused it. Never awaits, so a write can install a head the response
+    /// task already delivered (`probe`).
+    fn install(&self, recv: &mut RecvHalf, delivered: Option<Delivered>) -> Result<(), Failure> {
+        let installed = self.take_response(recv, delivered);
+        if let Err(failure) = &installed {
+            recv.failed = Some(failure.clone());
+        }
+        installed
+    }
+
+    fn take_response(
+        &self,
+        recv: &mut RecvHalf,
+        delivered: Option<Delivered>,
+    ) -> Result<(), Failure> {
+        let (response, lease) = delivered.ok_or_else(|| {
             if self.abort.fired() {
                 Failure::new("aborted", "exchange aborted")
             } else {
@@ -377,49 +461,143 @@ impl CallState {
                 let take = max.max(1).min(recv.buffer.len());
                 return Ok(Some(recv.buffer.split_to(take)));
             }
+            if let Some(failure) = &recv.failed {
+                return Err(failure.clone());
+            }
             if recv.done {
                 return Ok(None);
             }
             let body = recv.body.as_mut().expect("body after head");
-            match body.frame().await {
-                None => recv.done = true,
-                Some(Ok(frame)) => match frame.into_data() {
-                    Ok(data) => recv.buffer = data,
-                    Err(frame) => {
-                        if let Ok(trailers) = frame.into_trailers() {
-                            recv.trailers = Some(trailers);
-                        }
-                    }
-                },
-                Some(Err(error)) => return Err(recv.fault.failure(&error)),
-            }
+            let frame = body.frame().await;
+            apply(recv, frame)?;
         }
     }
 
     /// Queues `bytes` once, then returns when hyper has pulled them, which it
     /// does only while the stream has send window: a peer that does not read
     /// blocks the writer.
+    ///
+    /// A write that starts after the stream ended fails with the stream's
+    /// own failure when the response side knows it (`ended`). The write in
+    /// flight when it ends returns: its bytes were queued, as grpc-go's
+    /// `SendMsg` returns once it queued a message and fails the next call.
     pub async fn write(self: &Arc<Self>, send: &mut SendHalf, bytes: Bytes) -> Result<(), Failure> {
         self.dispatch().await?;
         let Some(tx) = send.tx.as_ref() else {
             return Err(Failure::new("state", "request body already closed"));
         };
         // A closed channel means hyper dropped the request body: the stream
-        // ended or was reset, and the response side reports why. So does a
-        // stranded request, whose body may never be dropped or read.
-        let reserved = tokio::select! {
-            reserved = tx.reserve() => reserved,
-            () = self.stranded.wait() => return Ok(()),
+        // ended or was reset, or its connection ended. A stranded request's
+        // body may never be dropped or read, so `stranded` ends the wait too,
+        // checked first so a write that starts after it fails.
+        let queued = tokio::select! {
+            biased;
+            () = self.stranded.wait() => false,
+            reserved = tx.reserve() => reserved.map(|permit| permit.send(bytes)).is_ok(),
         };
-        match reserved {
-            Ok(permit) => permit.send(bytes),
-            Err(_) => return Ok(()),
+        if !queued {
+            return Err(self.ended(send).await);
         }
+        let tx = send.tx.as_ref().expect("a write holds its sender");
         tokio::select! {
             _ = tx.reserve() => {}
             () = self.stranded.wait() => {}
         }
         Ok(())
+    }
+
+    /// Why a write found the stream ended. On HTTP/2, and for a stranded
+    /// request, waits for `respond` to publish the response's outcome,
+    /// inside the write, so the write's deadline, cancellation, abort,
+    /// shutdown and interrupt waits bound it. That wait is short: hyper's
+    /// HTTP/2 pipe drops the body only once the stream closed, which also
+    /// resolves the response (`Call::write` rejects a chunk h2 would refuse
+    /// as too large, which would drop the body alone); a stranded
+    /// request's failure is published right after `stranded` fires; and
+    /// while a retry runs the replacement body holds the receiver, so the
+    /// channel stays open. HTTP/1.1 does not wait: hyper also drops a body
+    /// its own framing ended (a declared Content-Length reached, or an
+    /// HTTP/1.0 connection) while the response is pending, and waiting for
+    /// that response could last indefinitely. A failure the response side
+    /// does not know yet is forced teardown's once `shutdown` fired (it
+    /// fires before teardown drops any body), otherwise the generic `ended`
+    /// on HTTP/2, and on HTTP/1.1 `closed`, since there its connection
+    /// ending is what usually drops the body. Each is recomputed by the
+    /// next write.
+    async fn ended(self: &Arc<Self>, send: &mut SendHalf) -> Failure {
+        if let Some(failure) = &send.ended {
+            return failure.clone();
+        }
+        if self.is_h2() || self.stranded.fired() {
+            // Spec hold point: armed with a zero bound, it counts writes that
+            // wait for the response's outcome.
+            self.core.holds.block("write:outcome");
+            self.responded.wait().await;
+        }
+        // A failed head is known even while a reader holds the receive half.
+        if let Some(failure) = self.head_failure.get() {
+            return failure.clone();
+        }
+        match self.probe() {
+            Some(failure) => {
+                send.ended = Some(failure.clone());
+                failure
+            }
+            None if self.core.shutdown.fired() => Failure::shutdown(),
+            None if self.is_h2() => Failure::ended(),
+            None => Failure::closed(),
+        }
+    }
+
+    /// The stream's failure as the receive half shows it now, if it does:
+    /// installs a delivered head, then reads frames that are already there
+    /// until the buffer holds data or the body ended. Never awaits, and
+    /// never takes the half out of its slot, so a concurrent `read` never
+    /// sees an overlap; a reader that holds the half reports the failure
+    /// itself. Lock order: `recv`, then `lease` (`install`); `dispatch` is
+    /// only tried. Nothing takes `recv` while it holds either.
+    fn probe(&self) -> Option<Failure> {
+        let mut slot = self.recv.lock().unwrap_or_else(|e| e.into_inner());
+        let recv = slot.as_mut()?;
+        if let Some(failure) = &recv.failed {
+            return Some(failure.clone());
+        }
+        if recv.head.is_none() {
+            if recv.pending.is_none() {
+                let Ok(mut state) = self.dispatch.try_lock() else {
+                    return None;
+                };
+                if let Dispatch::Dispatched(delivered) = &mut *state {
+                    recv.pending = delivered.take();
+                }
+            }
+            let delivered = match recv.pending.as_mut()?.try_recv() {
+                Ok(delivered) => Some(delivered),
+                Err(TryRecvError::Empty) => return None,
+                Err(TryRecvError::Closed) => None,
+            };
+            recv.pending = None;
+            if let Err(failure) = self.install(recv, delivered) {
+                return Some(failure);
+            }
+        }
+        let mut cx = Context::from_waker(Waker::noop());
+        // Data, trailers and the end, with room for empty DATA frames.
+        for _ in 0..PROBE_POLLS {
+            if !recv.buffer.is_empty() || recv.done {
+                break;
+            }
+            let Some(body) = recv.body.as_mut() else {
+                break;
+            };
+            let Poll::Ready(frame) = http_body::Body::poll_frame(Pin::new(body), &mut cx) else {
+                break;
+            };
+            if let Err(failure) = apply(recv, frame) {
+                return Some(failure);
+            }
+        }
+        None
     }
 
     pub fn close_send(&self) {
@@ -481,6 +659,35 @@ impl CallState {
     }
 }
 
+/// Frames `probe` reads at most without waiting.
+const PROBE_POLLS: usize = 8;
+
+/// Applies one response body frame to `recv`, as `read` and `probe` both
+/// consume the body. A body error stays on `recv` for the operations after
+/// it: hyper's HTTP/1.1 body hands it out once.
+fn apply(
+    recv: &mut RecvHalf,
+    frame: Option<Result<Frame<Bytes>, hyper::Error>>,
+) -> Result<(), Failure> {
+    match frame {
+        None => recv.done = true,
+        Some(Ok(frame)) => match frame.into_data() {
+            Ok(data) => recv.buffer = data,
+            Err(frame) => {
+                if let Ok(trailers) = frame.into_trailers() {
+                    recv.trailers = Some(trailers);
+                }
+            }
+        },
+        Some(Err(error)) => {
+            let failure = recv.fault.failure(&error);
+            recv.failed = Some(failure.clone());
+            return Err(failure);
+        }
+    }
+    Ok(())
+}
+
 /// The first dispatch of a streaming call, as `respond` retries it.
 struct Attempt {
     require_h2: bool,
@@ -506,7 +713,7 @@ async fn respond(
     abort: Arc<Signal>,
     cancel: Arc<Signal>,
     stranded: Arc<Signal>,
-    deliver: oneshot::Sender<Delivered>,
+    responder: Responder,
 ) {
     let Attempt {
         require_h2,
@@ -580,7 +787,11 @@ async fn respond(
         _ = abort.wait() => return,
         _ = core.shutdown.wait() => Err(Failure::shutdown()),
     };
-    let _ = deliver.send(delivered);
+    // Spec hold point: it parks the outcome before it is published.
+    core.holds.reach("respond:publish").await;
+    responder.publish(delivered);
+    // Spec hold point: armed with a zero bound, it counts outcomes published.
+    core.holds.block("respond:published");
 }
 
 /// `future`'s output, or None once `deadline` passes.

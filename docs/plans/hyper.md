@@ -109,7 +109,23 @@ stage and reset its stream.
   Rust never calls Ruby from a worker or inside the nogvl body; data crossing
   the offload boundary is `Send`. A wait woken without a pending interrupt
   resumes the same operation state and never repeats a side effect (a
-  `write` enqueues its bytes once, then waits for hyper to pull them). The
+  `write` enqueues its bytes once, then waits for hyper to pull them). A
+  `write` that finds the request body dropped (the stream ended) or the
+  request stranded raises (#193): on HTTP/2, or once stranded, it waits,
+  inside the same bounded wait, for the response task to publish its outcome
+  (HTTP/1.1 does not wait: hyper also drops a body its own framing ended, a
+  declared Content-Length or an HTTP/1.0 connection, while the response is
+  pending), then raises the head's failure, or a body failure it can read
+  without waiting and without taking the receive half from a reader, and
+  otherwise forced teardown's phrase once `shutdown` fired, or a generic
+  failure (`stream closed` on HTTP/2, `connection closed` on HTTP/1.1), which
+  core treats as a send failure and recovers the server's status from. A
+  write rejects a single chunk of 2 GiB or more, which h2 refuses outright,
+  dropping the body while the response waits. The write in flight when the
+  stream ends returns, as grpc-go's `SendMsg` does once it queued a message.
+  hyper never tells the request body a reset's code, so a gRPC reset behind
+  unread response DATA, or behind a reader holding the receive half, gets the
+  generic failure. The
   read and write directions of one stream progress independently (core allows
   one reader and one writer concurrently, which offload makes real when the
   pool has a worker for each: async builds io-event's pool with one worker by
@@ -287,7 +303,8 @@ stage and reset its stream.
   request still pending then is stranded on HTTP/1.1, and on HTTP/2 only when
   its mark has no index, since an indexed request belongs to h2 and its
   response task, which may still answer it during a graceful GOAWAY. A writer
-  blocked on a stranded body returns, and the head reports the failure.
+  blocked on a stranded body returns, a later write raises the failure, and
+  the head reports it.
   hyper 1.13.0 (hyperium/hyper#4275) changes how a request waiting in its
   HTTP/2 dispatcher for a stream slot fails when its connection fails; 1.12
   reported its dispatcher gone in every case. A connection error with a code
@@ -308,7 +325,12 @@ stage and reset its stream.
   detached tasks); true when drained, false after forced teardown. Repeated and
   concurrent calls share the first call's grace (reserved when it starts
   closing, so a later closer that reaches native close first still uses it)
-  and outcome. A transport closed before fork stays closed. Teardown is a
+  and outcome. Forced teardown refuses new tasks, then fires `shutdown`,
+  then aborts the tasks: a call mid-poll registers no task (a dial's
+  dispatcher would send its request), and a call that observes an abort's
+  effect, such as a write finding its upload dropped, maps it to a forced
+  phrase. A transport closed before fork
+  stays closed. Teardown is a
   runtime task started by the first close, so it completes however closers
   are interrupted; every closer, concurrent ones included, waits in native
   close for the published outcome and raises a held exception afterwards.
@@ -559,6 +581,7 @@ cause, abort in a masked `ensure`. Rust owns connections, streams and waits.
 | Interrupts | Matrix: DNS (LD_PRELOAD getaddrinfo shim), connect (full backlog), TLS (silent server), blocked write, blocked read; RuntimeError, an Exception subclass, `Thread#kill`; synchronised on parked-thread observation; follow-up call reuses the connection |
 | Teardown | GC and process exit with resolvers parked |
 | Streaming limits | Over-limit message fails `resource_exhausted`; flooding peer bounded by the window; peer that never reads blocks `write` until deadline |
+| Writes after the stream ended | Raw peer ends the stream at the request's first DATA: a gRPC reset before the head, or after it with no unread DATA, makes the next write raise the mapped reset, which the head or body then reports; a status (gRPC trailers or Connect end-stream) or a reply then `RST_STREAM(NO_ERROR)`, and a reset behind unread DATA, raise `stream closed` while the response still reads byte for byte; a Connect reset raises `stream reset`; core's client stream stops at the failing write and reports `not_found` (gRPC and Connect) or `canceled`; a write parks until the response task publishes its outcome (hold point `respond:publish`) and a `Thread#raise` lands there promptly; a reader parked on the same stream gets the reset, never an overlap error; an HTTP/1.1 body error the write or a read consumed is still raised by the operation after it; over HTTP/1.1 a write never waits for the response (hold point `write:outcome` counts the HTTP/2 waits the publication specs synchronise on) and raises `connection closed` past a declared Content-Length (5 and 0), on a pooled HTTP/1.0 connection, and when the connection resets mid-upload; a write of 2 GiB or more raises `ArgumentError` before anything is sent, judged by the string's own length; a write in flight on a stream whose whole response arrived gets `connection closed` when forced teardown, parked between `shutdown` and the task aborts (hold point `force:shutdown`), ends it |
 | Cancellation | Sibling reset with and without DATA in flight on a shared connection; cross-thread `CancellationSource`; per-call deadline; token cancel during DNS/TCP/TLS and while waiting for the shared dial; silent h2 peer bounded by the deadline; the wire timeout after a delayed setup reflects the remaining deadline |
 | Resolver | Several parked lookups, then cancellation, then a lookup of another origin succeeds; GC and exit do not wait |
 | Liveness and restart | Idle pooled connection answers server PINGs; reconnect after idle GOAWAY; GOAWAY with an active stream: the sibling finishes on the draining connection while a new call uses a new one; hard kill and restart on the same port; keepalive: withheld ACK retires the connection and fails in-flight calls `unavailable`, `permit_without_calls` on and off, behaviour with buffered DATA and with BDP pings |
@@ -569,7 +592,7 @@ cause, abort in a masked `ensure`. Rust owns connections, streams and waits.
 | Errors | Fixed phrases for refused, DNS, TLS verify, closed, ALPN mismatch, deadline; server RST_STREAM with each mapped code |
 | Offload | Ruby 4.0 with async worker pool: sibling task progresses, stop/cancel/deadline/raise/kill land; simultaneous read and write on one bidi stream from two fibers on a two-worker pool, then abort or stop while both wait bodies run; a scheduler's `blocking_operation_wait` hook receives waits on 4.0 and never on 3.4; Ruby 3.4 and without the pool behave as a plain blocking call; on both Rubies, with and without the pool, a sibling fiber's in-flight call drains while another fiber waits in close |
 | Spurious wake | A wake without a pending interrupt during a blocked `write` does not duplicate the message on the wire |
-| Close | `close(grace:)` drains in-flight calls (true), forced (false), later calls fail with the closed phrase; `close(grace: 0)` racing setup, a retry or a streaming dispatch (write first and head first), with one of the two forced-teardown phrases and never a bare `HTTP transport failed`; a stranded Connect unary call that forced teardown ends gets a forced phrase and no replacement dial; repeated close shares the outcome, and a concurrent closer stopped by `Task#stop` while it waits raises only after it is published; a task aborted before its first poll is still counted until its socket closes; a `Task#stop` on the closer lets a sibling fiber's call drain before the stop is raised; a first close whose runtime start fails (injected in a fresh process) raises, and a later close starts teardown and returns true; a stream whose runtime start fails raises before the exchange is handed out |
+| Close | `close(grace:)` drains in-flight calls (true), forced (false), later calls fail with the closed phrase; `close(grace: 0)` racing setup, a retry or a streaming dispatch (write first and head first), with one of the two forced-teardown phrases and never a bare `HTTP transport failed`; a stranded Connect unary call that forced teardown ends gets a forced phrase and no replacement dial; repeated close shares the outcome, and a concurrent closer stopped by `Task#stop` while it waits raises only after it is published; a task aborted before its first poll is still counted until its socket closes; a `Task#stop` on the closer lets a sibling fiber's call drain before the stop is raised; a first close whose runtime start fails (injected in a fresh process) raises, and a later close starts teardown and returns true; a stream whose runtime start fails raises before the exchange is handed out; a dial that finishes its handshake while forced teardown is parked after `shutdown` (hold point `force:shutdown`) registers no dispatcher and sends no request, per-call HTTP/2 and HTTP/1.1 |
 | Keepalive move | Core `Keepalive` specs (validation, equality, freezing); `ConnectRPC::Async::Keepalive.equal?(ConnectRPC::Keepalive)` from installed packages in both require orders; existing Async keepalive specs pass |
 | Fast path | Connect unary passes all unary specs and does one native wait (spec on an internal counter or a GVL-contention probe) |
 | Package | Source gem builds and installs in a clean GEM_HOME and runs a smoke call; exact manifest, MIT plus third-party notice, push host, MFA |

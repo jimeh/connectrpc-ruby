@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"encoding/binary"
 	"fmt"
 	"io"
 	"net"
@@ -15,8 +16,8 @@ import (
 
 // A programmable HTTP/2 server for frame-exact cases grpc-go and connect-go
 // never produce: header blocks of exact sizes, split trailers, server resets
-// with any code, refused streams, withheld PING ACKs, withheld response heads
-// and silent streams. The
+// with any code, refused streams, withheld PING ACKs, withheld response heads,
+// silent streams and streams that end while the client is still sending. The
 // "x-scenario" request header selects the response; every request, PING and
 // client RST_STREAM is reported as an event.
 
@@ -38,6 +39,8 @@ type rawConn struct {
 	awaiting map[uint32]*awaitedRequest
 	// unread holds noread streams, whose DATA never reopens their window.
 	unread map[uint32]bool
+	// onData holds end-on-data streams' endings, run at their first DATA.
+	onData map[uint32]func()
 }
 
 type awaitedRequest struct {
@@ -125,7 +128,7 @@ func handleRaw(tag string, conn net.Conn, options rawOptions) {
 		return
 	}
 	c := &rawConn{tag: tag, conn: conn, framer: http2.NewFramer(conn, conn),
-		awaiting: map[uint32]*awaitedRequest{}, unread: map[uint32]bool{}}
+		awaiting: map[uint32]*awaitedRequest{}, unread: map[uint32]bool{}, onData: map[uint32]func(){}}
 	c.encoder = hpack.NewEncoder(&c.block)
 	c.framer.ReadMetaHeaders = hpack.NewDecoder(4096, nil)
 	c.framer.MaxHeaderListSize = 1 << 24
@@ -240,10 +243,16 @@ func padded(fields [][2]string, size int, first bool) [][2]string {
 	return append(fields, pad)
 }
 
-// data counts an await-ok request's body and answers once it ends.
+// data runs an end-on-data stream's ending at its first DATA frame, and
+// counts an await-ok request's body and answers once it ends.
 func (c *rawConn) data(frame *http2.DataFrame) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if end, ok := c.onData[frame.StreamID]; ok {
+		delete(c.onData, frame.StreamID)
+		end()
+		return
+	}
 	awaited, ok := c.awaiting[frame.StreamID]
 	if !ok {
 		return
@@ -266,6 +275,46 @@ func (c *rawConn) answer(stream uint32, awaited *awaitedRequest) {
 	c.headers(stream, [][2]string{{":status", "200"}, {"content-type", "application/grpc"}}, false)
 	_ = c.framer.WriteData(stream, false, emptyMessage)
 	c.headers(stream, [][2]string{{"grpc-status", "0"}}, true)
+}
+
+// connectCodes names gRPC status codes as the Connect protocol spells them.
+var connectCodes = []string{"ok", "canceled", "unknown", "invalid_argument", "deadline_exceeded", "not_found",
+	"already_exists", "permission_denied", "resource_exhausted", "failed_precondition", "aborted",
+	"out_of_range", "unimplemented", "internal", "unavailable", "data_loss", "unauthenticated"}
+
+// replyMessage is one Message{value: "reply"} in the 5-byte envelope gRPC
+// and Connect streaming share.
+var replyMessage = []byte{0, 0, 0, 0, 7, 0x0a, 5, 'r', 'e', 'p', 'l', 'y'}
+
+// streamHead writes a streaming response head, gRPC or Connect, leaving the
+// stream open. Callers hold c.mu.
+func (c *rawConn) streamHead(stream uint32, grpc bool) {
+	contentType := "application/connect+proto"
+	if grpc {
+		contentType = "application/grpc"
+	}
+	c.headers(stream, [][2]string{{":status", "200"}, {"content-type", contentType}}, false)
+}
+
+// status ends a stream whose head was written with the given status: gRPC
+// trailers or a Connect end-stream message, with END_STREAM. Callers hold
+// c.mu.
+func (c *rawConn) status(stream uint32, grpc bool, code int) {
+	if grpc {
+		c.headers(stream, [][2]string{{"grpc-status", strconv.Itoa(code)}, {"grpc-message", "ended"}}, true)
+		return
+	}
+	end := []byte("{}")
+	if code != 0 {
+		name := "unknown"
+		if code > 0 && code < len(connectCodes) {
+			name = connectCodes[code]
+		}
+		end = []byte(fmt.Sprintf(`{"error":{"code":%q,"message":"ended"}}`, name))
+	}
+	envelope := append([]byte{2, 0, 0, 0, 0}, end...)
+	binary.BigEndian.PutUint32(envelope[1:5], uint32(len(end)))
+	_ = c.framer.WriteData(stream, true, envelope)
 }
 
 func (c *rawConn) request(frame *http2.MetaHeadersFrame) {
@@ -334,6 +383,55 @@ func (c *rawConn) request(frame *http2.MetaHeadersFrame) {
 			<-gate(gateName)
 			c.locked(func() error { return c.framer.WriteRSTStream(stream, http2.ErrCode(reset)) })
 		}()
+	case "reset-after-on":
+		// reset-after-on:<gate>:<code> writes the head at once, then resets
+		// the stream once "release <gate>" arrives, reading the request
+		// meanwhile.
+		gateName, code, _ := strings.Cut(argument, ":")
+		reset, _ := strconv.Atoi(code)
+		c.streamHead(stream, grpc)
+		go func() {
+			<-gate(gateName)
+			c.locked(func() error { return c.framer.WriteRSTStream(stream, http2.ErrCode(reset)) })
+			emit("%s ended %s stream=%d", c.tag, scenario, stream)
+		}()
+	case "end-on-data":
+		// end-on-data:<mode>:<code> ends the stream at the request's first
+		// DATA frame, while the client is still sending:
+		//   reset:<code>       RST_STREAM(<code>) without a response;
+		//   head-reset:<code>  the head, then RST_STREAM(<code>);
+		//   data-reset:<code>  the head and one message, then RST_STREAM(<code>);
+		//   status:<grpc code>[:open]  the head, then the status (gRPC
+		//     trailers or a Connect end-stream message) with END_STREAM, then
+		//     RST_STREAM(NO_ERROR), as Go's HTTP/2 server ends a stream whose
+		//     request is still open; with :open the stream stays half-open
+		//     and keeps reading;
+		//   reply:<grpc code>  as status, with one message before the status.
+		mode, rest, _ := strings.Cut(argument, ":")
+		code, flag, _ := strings.Cut(rest, ":")
+		status, _ := strconv.Atoi(code)
+		c.onData[stream] = func() {
+			switch mode {
+			case "reset":
+				_ = c.framer.WriteRSTStream(stream, http2.ErrCode(status))
+			case "head-reset", "data-reset":
+				c.streamHead(stream, grpc)
+				if mode == "data-reset" {
+					_ = c.framer.WriteData(stream, false, replyMessage)
+				}
+				_ = c.framer.WriteRSTStream(stream, http2.ErrCode(status))
+			default:
+				c.streamHead(stream, grpc)
+				if mode == "reply" {
+					_ = c.framer.WriteData(stream, false, replyMessage)
+				}
+				c.status(stream, grpc, status)
+				if flag != "open" {
+					_ = c.framer.WriteRSTStream(stream, http2.ErrCodeNo)
+				}
+			}
+			emit("%s ended %s stream=%d", c.tag, scenario, stream)
+		}
 	case "noread":
 		// Never answers and never reopens the stream's flow-control window,
 		// so the client's writes block once it is spent; nor does it reset
