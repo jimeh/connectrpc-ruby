@@ -320,6 +320,9 @@ It does not cover RPCs that a
 [connectrpc-on-rails](../connectrpc-on-rails/README.md#rails-on-falcon)
 controller serves. Those go through the Rails application's own middleware
 stack, like any other Rails request on this listener.
+[Rack fallback completion](#rack-fallback-completion) describes how the listener
+completes those requests on their own request fiber, which Rails' executor
+needs under `:fiber` isolation.
 
 ## Rack fallback caching
 

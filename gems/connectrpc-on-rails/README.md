@@ -234,7 +234,11 @@ responses unless the application explicitly adapts them.
 This adapter's controllers are ordinary Rails controllers. When Falcon serves
 the Rails application as the fallback of
 [connectrpc-falcon](../connectrpc-falcon/README.md), their RPCs reach Rails
-through the fallback like any other Rails request.
+through the fallback like any other Rails request. connectrpc-falcon completes
+each fallback request on its own request fiber, so Rails' executor finishes
+there under `:fiber` isolation.
+[Rack fallback completion](../connectrpc-falcon/README.md#rack-fallback-completion)
+describes how, and the cases where completion runs on another fiber.
 
 Native handlers registered in connectrpc-falcon's `connectrpc_server` never
 reach the Rails application. Falcon claims their whole service path before the
