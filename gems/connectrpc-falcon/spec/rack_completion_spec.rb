@@ -298,62 +298,71 @@ RSpec.describe "Falcon Rack fallback completion" do
       end
     end
 
-    it "completes on the app's fiber a response returned after the handler abandoned it over #{protocol}" do
-      reactor do |task|
-        requests = Async::Queue.new
-        completed = Async::Queue.new
-        closes = []
-        rescued = []
-        cause = RuntimeError.new("handler cancelled")
-        rack = lambda do |env|
-          called = Fiber.current
-          env["rack.response_finished"] << lambda do |_env, status, _headers, error|
-            completed.enqueue([Fiber.current.equal?(called), status, error.class, error&.cause])
+    # The handler abandons the response while it waits for the outcome, or
+    # while it is still queued behind the request task it has just started.
+    { waiting: "", starting: " as it starts the request task" }.each do |window, phrase|
+      it "completes on the app's fiber a response returned after the handler abandoned it#{phrase} over #{protocol}" do
+        reactor do |task|
+          requests = Async::Queue.new
+          completed = Async::Queue.new
+          closes = []
+          rescued = []
+          cause = RuntimeError.new("handler cancelled")
+          rack = lambda do |env|
+            called = Fiber.current
+            env["rack.response_finished"] << lambda do |_env, status, _headers, error|
+              completed.enqueue([Fiber.current.equal?(called), status, error.class, error&.cause])
+            end
+            begin
+              requests.enqueue(Async::Task.current)
+              Async::Condition.new.wait
+            rescue Async::Cancel => e
+              # As Rails' ShowExceptions does, the app renders the interruption.
+              rescued << e.cause
+            end
+            body = ["failed"]
+            body.define_singleton_method(:close) { closes << Fiber.current.equal?(called) }
+            [500, { "content-type" => "text/plain" }, body]
           end
-          begin
-            requests.enqueue(Async::Task.current)
-            Async::Condition.new.wait
-          rescue Async::Cancel => e
-            # As Rails' ShowExceptions does, the app renders the interruption.
-            rescued << e.cause
+          falcon(rack_app: rack) do |host, origin|
+            pending = task.async do
+              fallback(origin, protocol)
+            rescue StandardError => e
+              e
+            end
+            # This fiber yields ahead of the handler, which the request task's
+            # start queued behind it, as any canceller already ready in that
+            # reactor turn would be.
+            task.yield while window == :starting && requests.empty?
+            # The handler leaves before the app returns; its cancellation reaches
+            # the app through the request task.
+            requests.dequeue.parent.cancel(cause: cause)
+            expect(task.with_timeout(2) { completed.dequeue }).to eq([true, 500, Async::Cancel, cause])
+            expect(rescued).to eq([cause])
+            expect(closes).to eq([true])
+            expect(completed).to be_empty
+            if protocol == :h2
+              # The abandoned stream stays unanswered until retirement, as for a
+              # handler cancelled as the response arrives.
+              expect(task.with_timeout(2) { host.close(grace: 0.03) }).to be(false)
+              expect(task.with_timeout(2) { pending.wait }).to be_a(EOFError)
+            else
+              # The client gets the adapter's failure response, not the
+              # abandoned one.
+              expect(task.with_timeout(2) { pending.wait }.values_at(0, 2)).to eq([500, nil])
+              expect(task.with_timeout(2) { host.close(grace: 1) }).to be(true)
+            end
+          ensure
+            pending&.stop
           end
-          body = ["failed"]
-          body.define_singleton_method(:close) { closes << Fiber.current.equal?(called) }
-          [500, { "content-type" => "text/plain" }, body]
-        end
-        falcon(rack_app: rack) do |host, origin|
-          pending = task.async do
-            fallback(origin, protocol)
-          rescue StandardError => e
-            e
-          end
-          # The handler leaves before the app returns; its cancellation reaches
-          # the app through the request task.
-          requests.dequeue.parent.cancel(cause: cause)
-          expect(task.with_timeout(2) { completed.dequeue }).to eq([true, 500, Async::Cancel, cause])
-          expect(rescued).to eq([cause])
-          expect(closes).to eq([true])
-          expect(completed).to be_empty
-          if protocol == :h2
-            # The abandoned stream stays unanswered until retirement, as for a
-            # handler cancelled as the response arrives.
-            expect(task.with_timeout(2) { host.close(grace: 0.03) }).to be(false)
-            expect(task.with_timeout(2) { pending.wait }).to be_a(EOFError)
-          else
-            # The client gets the adapter's failure response, not the
-            # abandoned one.
-            expect(task.with_timeout(2) { pending.wait }.values_at(0, 2)).to eq([500, nil])
-            expect(task.with_timeout(2) { host.close(grace: 1) }).to be(true)
-          end
-        ensure
-          pending&.stop
         end
       end
     end
 
-    # The handler closes these responses itself and is not deferring, so
-    # retirement never forces it; only its forwarded cancellation, delivered
-    # again at once, reaches a callback that defers it.
+    # The handler closes these responses itself and is not deferring when
+    # retirement cancels it. It relays that cancellation, which the request
+    # task defers, and takes on the deferral itself, so retirement's forced
+    # delivery reaches the handler and, through it, the callback.
     [["HEAD", :close], ["HEAD", :abort], ["204", :close]].each do |kind, stop|
       it "bounds #{stop} while a #{kind} response's completion callback defers cancellation over #{protocol}" do
         reactor do |task|
@@ -436,10 +445,10 @@ RSpec.describe "Falcon Rack fallback completion" do
         entered.dequeue
         closer = body.readers.last.async_task
         # The connection defers its first cancel until the response is done;
-        # the second interrupts its wait. The closer forwards it to the request
-        # task, which defers it inside the callback, so the closer delivers it
-        # again at once, as that second cancel reached a callback that ran on
-        # the connection before the request task existed.
+        # the second is forced through that deferral and interrupts its wait.
+        # The closer relays it with that force, so the request task gets it
+        # even inside the callback's deferral, as that second cancel reached a
+        # callback that ran on the connection before the request task existed.
         closer.cancel
         closer.cancel
         expect(task.with_timeout(2) { interrupted.dequeue }).to eq(Async::Cancel)
@@ -467,44 +476,238 @@ RSpec.describe "Falcon Rack fallback completion" do
     end
   end
 
-  # Before the request task the callback ran on the connection, whose deferred
-  # cancel retirement forces with a second cancel. Now the connection is the
-  # closer: it forwards its cancellation to the request task, which defers it
-  # inside the callback, and delivers it again at once.
-  it "bounds forced retirement while a completion callback defers cancellation over http1" do
-    reactor do |task|
-      entered = Async::Queue.new
-      release = Async::Queue.new
-      requests = Async::Queue.new
-      body = nil
-      called = nil
-      rack = lambda do |env|
-        requests.enqueue(Async::Task.current)
-        called = Fiber.current
-        env["rack.response_finished"] << lambda { |*|
-          Async::Task.current.defer_cancel do
-            entered.enqueue(true)
-            release.dequeue
+  # Before the request task the callback ran on the HTTP/1.1 connection writer
+  # or the HTTP/2 stream's output task, which retirement cancels and then
+  # forces if it deferred. Now that task is the closer and relays both with
+  # the force they had. Retirement also cancels the session's handler task,
+  # whose cancellation cascades to the request task directly.
+  [%i[http1 close], %i[http1 abort], %i[h2 close], %i[h2 abort]].each do |protocol, stop|
+    it "bounds #{stop == :close ? 'forced retirement' : 'abort'} while a completion callback defers " \
+       "cancellation over #{protocol}" do
+      reactor do |task|
+        entered = Async::Queue.new
+        release = Async::Queue.new
+        requests = Async::Queue.new
+        body = nil
+        called = nil
+        rack = lambda do |env|
+          requests.enqueue(Async::Task.current)
+          called = Fiber.current
+          env["rack.response_finished"] << lambda { |*|
+            Async::Task.current.defer_cancel do
+              entered.enqueue(true)
+              release.dequeue
+            end
+          }
+          body = FalconGatedBody.new
+          [200, { "content-type" => "text/plain" }, body]
+        end
+        falcon(rack_app: rack) do |host, origin|
+          raw = IO::Endpoint.tcp("127.0.0.1", URI(origin).port).connect
+          client = protocol == :h2 ? Async::HTTP::Protocol::HTTP2 : Async::HTTP::Protocol::HTTP1
+          connection = client.client(raw)
+          request = Protocol::HTTP::Request["GET", "/held", {}, nil, scheme: "http", authority: "localhost"]
+          response = connection.call(request)
+          if protocol == :h2
+            # The stream ends only after completion, so read up to it.
+            expect(response.body.read).to eq("first")
+          else
+            expect(response.read).to eq("firstsecond")
           end
-        }
-        body = FalconGatedBody.new
-        [200, { "content-type" => "text/plain" }, body]
+          request_task = requests.dequeue
+          entered.dequeue
+          # The callback holds completion; the original closes after it.
+          expect(body.closes).to be_empty
+          stopped = task.with_timeout(2) { stop == :abort ? host.abort : host.close(grace: 0.03) }
+          expect(stopped).to be(false) if stop == :close
+          expect(task.with_timeout(2) { request_task.wait }).to be_nil
+          expect(request_task).to be_cancelled
+          expect(body.closes.map(&:first)).to eq([called])
+        ensure
+          release&.enqueue(true)
+          AsyncHelpers::INTERNAL.raw_close(raw)
+          connection&.close
+        end
       end
+    end
+  end
+
+  # The host sees the completion's deferral on the closer, as it did when the
+  # closer ran the callback, and a second cancel forces both. Retirement does
+  # this through force_deferred; here the spec plays the host.
+  [[:h2, "GET", "output task"], [:http1, "HEAD", "handler"], [:h2, "HEAD", "handler"]].each do |protocol, method, kind|
+    it "takes on a deferral of the #{kind} closer's cancellation until forced over #{protocol}" do
+      reactor do |task|
+        entered = Async::Queue.new
+        release = Async::Queue.new
+        requests = Async::Queue.new
+        events = []
+        body = nil
+        called = nil
+        rack = lambda do |env|
+          requests.enqueue(Async::Task.current)
+          called = Fiber.current
+          env["rack.response_finished"] << lambda do |*|
+            Async::Task.current.defer_cancel do
+              entered.enqueue(true)
+              release.dequeue
+              events << :deferred_section
+            end
+          rescue Async::Cancel
+            events << :cancelled
+            raise
+          end
+          body = FalconGatedBody.new
+          [200, { "content-type" => "text/plain" }, body]
+        end
+        falcon(rack_app: rack) do |_host, origin|
+          pending = task.async do
+            fallback(origin, protocol, method: method)
+          rescue StandardError => e
+            e
+          end
+          request_task = requests.dequeue
+          entered.dequeue
+          closer = method == "HEAD" ? request_task.parent : body.readers.last.async_task
+          closer.cancel
+          wait_observed(task, "the relayed cancellation", ->(seen) { seen != [false, []] }) do
+            [request_task.cancel_deferred?, events.dup]
+          end
+          expect(events).to be_empty
+          expect(closer.cancel_deferred?).to be(true)
+          closer.cancel
+          expect(task.with_timeout(2) { request_task.wait }).to be_nil
+          expect(events).to eq([:cancelled])
+          expect(task.with_timeout(2) { closer.wait }).to be_nil
+          expect(closer).to be_cancelled
+          expect(body.closes.map(&:first)).to eq([called])
+        ensure
+          release&.enqueue(true)
+          pending&.stop
+        end
+      end
+    end
+  end
+
+  # A peer reset cancels the stream's output task, the closer here, once.
+  # Before the request task the callback ran on that task, so the reset met
+  # the callback's own deferral there.
+  describe "when the peer resets an HTTP/2 stream during completion" do
+    def held(called, closes)
+      called << Fiber.current
+      body = ["held"]
+      body.define_singleton_method(:close) { closes << Fiber.current }
+      [200, { "content-type" => "text/plain" }, body]
+    end
+
+    def reset_during_completion(rack)
       falcon(rack_app: rack) do |host, origin|
         raw = IO::Endpoint.tcp("127.0.0.1", URI(origin).port).connect
-        connection = Async::HTTP::Protocol::HTTP1.client(raw)
-        response = connection.call(Protocol::HTTP::Request["GET", "/held", {}, nil, authority: "localhost"])
-        expect(response.read).to eq("firstsecond")
-        request_task = requests.dequeue
-        entered.dequeue
-        expect(task.with_timeout(2) { host.close(grace: 0.03) }).to be(false)
-        expect(task.with_timeout(2) { request_task.wait }).to be_nil
-        expect(request_task).to be_cancelled
-        expect(body.closes.map(&:first)).to eq([called])
+        connection = Async::HTTP::Protocol::HTTP2.client(raw)
+        request = ->(path) { Protocol::HTTP::Request["GET", path, {}, nil, scheme: "http", authority: "localhost"] }
+        response = connection.call(request.call("/held"))
+        expect(response.body.read).to eq("held")
+        yield host, -> { response.stream.send_reset_stream(Protocol::HTTP2::Error::CANCEL) }, lambda {
+          other = connection.call(request.call("/other"))
+          [other.status, other.read]
+        }
       ensure
-        release&.enqueue(true)
-        AsyncHelpers::INTERNAL.raw_close(raw)
+        AsyncHelpers::INTERNAL.raw_close(raw) if raw
         connection&.close
+      end
+    end
+
+    it "lets a deferring callback finish its deferred section, then cancels it" do
+      reactor do |task|
+        entered = Async::Queue.new
+        release = Async::Queue.new
+        requests = Async::Queue.new
+        events = []
+        called = []
+        closes = []
+        rack = lambda do |env|
+          next [200, { "content-type" => "text/plain" }, ["other"]] unless env["PATH_INFO"] == "/held"
+
+          requests.enqueue(Async::Task.current)
+          env["rack.response_finished"] << lambda do |*|
+            Async::Task.current.defer_cancel do
+              entered.enqueue(true)
+              release.dequeue
+              events << :deferred_section
+            end
+            events << :after_deferral
+          rescue Async::Cancel
+            events << :cancelled
+            raise
+          end
+          held(called, closes)
+        end
+        reset_during_completion(rack) do |host, reset, other|
+          request_task = requests.dequeue
+          entered.dequeue
+          reset.call
+          wait_observed(task, "the reset to reach the request task", ->(seen) { seen != [false, []] }) do
+            [request_task.cancel_deferred?, events.dup]
+          end
+          expect(events).to be_empty
+          # Sibling streams still progress while the callback holds completion.
+          expect(other.call).to eq([200, "other"])
+          release.enqueue(true)
+          task.with_timeout(2) { request_task.wait }
+          expect(events).to eq(%i[deferred_section cancelled])
+          expect(request_task).to be_cancelled
+          expect(closes).to eq(called)
+          expect(host.close(grace: 1)).to be(true)
+        ensure
+          release&.enqueue(true)
+        end
+      end
+    end
+
+    it "cancels a callback that does not defer once" do
+      reactor do |task|
+        entered = Async::Queue.new
+        release = Async::Queue.new
+        requests = Async::Queue.new
+        events = []
+        called = []
+        closes = []
+        rack = lambda do |env|
+          next [200, { "content-type" => "text/plain" }, ["other"]] unless env["PATH_INFO"] == "/held"
+
+          requests.enqueue(Async::Task.current)
+          env["rack.response_finished"] << lambda do |*|
+            begin
+              entered.enqueue(true)
+              Async::Condition.new.wait
+            rescue Async::Cancel
+              events << :cancelled
+            end
+            release.dequeue
+            events << :released
+          rescue Async::Cancel
+            events << :cancelled_again
+            raise
+          end
+          held(called, closes)
+        end
+        reset_during_completion(rack) do |host, reset, other|
+          request_task = requests.dequeue
+          entered.dequeue
+          reset.call
+          wait_observed(task, "the reset to reach the callback", ->(seen) { !seen.empty? }) { events.dup }
+          # The closer relayed the reset before this connection could serve
+          # another stream, so a second cancellation would have arrived by now.
+          expect(other.call).to eq([200, "other"])
+          expect(events).to eq([:cancelled])
+          release.enqueue(true)
+          task.with_timeout(2) { request_task.wait }
+          expect(events).to eq(%i[cancelled released])
+          expect(closes).to eq(called)
+          expect(host.close(grace: 1)).to be(true)
+        ensure
+          release&.enqueue(true)
+        end
       end
     end
   end

@@ -50,14 +50,15 @@ module ConnectRPC
         handler = ::Async::Task.current
         outcome = ::Async::Promise.new
         identity = @identities&.capture
-        handler.async(finished: false) do
-          if @identities
-            @identities.scope(identity) { serve(env, outcome) }
-          else
-            serve(env, outcome)
+        raised, value = wait_outcome(outcome) do
+          handler.async(finished: false) do
+            if @identities
+              @identities.scope(identity) { serve(env, outcome) }
+            else
+              serve(env, outcome)
+            end
           end
         end
-        raised, value = wait_outcome(outcome)
         raise value if raised
 
         @produced[handler] = value[2]
@@ -78,14 +79,19 @@ module ConnectRPC
 
       private
 
-      # The outcome is resolved once, by whichever side reaches it first. A
-      # handler interrupted after the request task produced a response owns
-      # that response's body, which no transport will close. It closes the
-      # body with the interruption, so completion still runs once on the
-      # request task, then raises the interruption. A handler interrupted
-      # earlier resolves the outcome as abandoned with its interruption, and
-      # the request task completes any response it produces afterwards.
+      # Starts the request task, then waits for its outcome. The outcome is
+      # resolved once, by whichever side reaches it first. Starting the task
+      # runs it at once and queues this handler, so an interruption can reach
+      # the handler before it waits; the start is therefore inside the same
+      # rescue. A handler interrupted after the request task produced a
+      # response owns that response's body, which no transport will close. It
+      # closes the body with the interruption, so completion still runs once
+      # on the request task, then raises the interruption. A handler
+      # interrupted earlier resolves the outcome as abandoned with its
+      # interruption, and the request task completes any response it produces
+      # afterwards.
       def wait_outcome(outcome)
+        yield
         outcome.wait
       rescue Exception => e # rubocop:disable Lint/RescueException -- re-raised once the response is accounted for
         if outcome.resolved?
@@ -265,6 +271,13 @@ module ConnectRPC
     # the request task its error), running (claimed), done, and gone (the
     # request task exited without claiming).
     #
+    # Closer interruptions: before the request task existed, a closer ran the
+    # completion itself, so the closer's cancellation and a callback's
+    # deferral met on one task. A closer waiting on the request task keeps
+    # that across the two: it relays each interruption with the force it had,
+    # takes on any deferral the request task makes of an unforced one, and
+    # returns or raises only once the request task has settled.
+    #
     # Cancellation fallback: a request task cancelled or failed while parked
     # never closes the body or runs callbacks itself, because a writer may
     # still be writing the body and closing it would truncate a response that
@@ -316,20 +329,15 @@ module ConnectRPC
 
       private
 
-      # Waits until the request task has settled. Before the request task
-      # existed the closer ran the completion itself, so an interruption of
-      # the closer interrupted the running callback and its close returned
-      # only once the nested ensures had closed the bodies. To keep that, each
-      # interruption of this closer is forwarded to the request task, which
-      # cannot defer a forwarded cancellation past that forward, and the
-      # first is raised once the task has settled. A request task that exits
-      # without claiming the run leaves it to this closer.
+      # Waits until the request task has settled. It then runs the completion
+      # here if the request task exited without claiming it, and raises the
+      # closer's first interruption, or else the claimed run's escape.
       #
       # Limitation: over HTTP/2 a peer reset during the response's HEADERS
       # flush makes the stream close the body under its connection's frame
       # guard. A completion callback that then writes a frame to that same
-      # connection waits for the guard this closer holds, until retirement's
-      # cancellation of the closer is forwarded here.
+      # connection waits for the guard this closer holds, until retirement
+      # forces the closer and that force reaches the request task.
       def hand_off(error)
         @error = error
         @state = :requested
@@ -344,35 +352,62 @@ module ConnectRPC
       end
 
       # Returns the closer's first interruption once the request task has
-      # settled.
-      def await_settled
-        interruption = nil
-        forwards = 0
+      # settled. Each interruption is relayed inside the rescued region, so
+      # one that arrives while a relay runs the request task is relayed too.
+      def await_settled(interruption = nil)
+        unrelayed = nil
         until @done.resolved?
           begin
-            if forwards.positive?
-              forwards -= 1
-              forward
+            if unrelayed
+              cause = unrelayed
+              unrelayed = nil
+              deferred = relay(cause)
+              return mirror(deferred, interruption) if deferred
             else
               @done.wait
             end
-          rescue Exception => e # rubocop:disable Lint/RescueException -- forwarded, then raised once settled
+          rescue Exception => e # rubocop:disable Lint/RescueException -- relayed, then raised once settled
             interruption ||= e
-            forwards += 1
+            unrelayed = e
           end
         end
         interruption
       end
 
-      # Every retirement path that cancels a closer also forces, in the same
-      # pass, a cancellation that closer deferred, which reached a callback
-      # when the closer ran it. A closer that is not itself deferring, such
-      # as a handler closing a HEAD response, is never forced, so a forwarded
-      # cancellation the request task defers is delivered here at once. A
-      # callback that does not defer sees one cancellation.
-      def forward
-        @owner.cancel
-        @owner.cancel if @owner.cancel_deferred?
+      # Delivers an interruption to the request task with the force it had
+      # here. One that reached this closer through its own pending deferred
+      # cancellation was forced, so it is delivered even if the request task
+      # defers it. Any other is delivered once, for the request task to defer
+      # or not. Returns the interruption when the request task deferred it
+      # unforced.
+      def relay(interruption)
+        forced = ::Async::Task.current.cancel_deferred?
+        @owner.cancel(cause: interruption)
+        return unless @owner.cancel_deferred?
+        return interruption unless forced
+
+        @owner.cancel(cause: interruption)
+        nil
+      end
+
+      # Mirrors the request task's deferral here, with the relayed cancellation
+      # pending, until the request task settles. A host that forces deferring
+      # tasks, such as retirement, therefore forces this closer, and relay
+      # passes that force on. A host that cancels only once, such as an HTTP/2
+      # peer reset, lets the callback finish its deferred section; each task's
+      # cancellation then fires as it leaves its deferral. This closer's own
+      # fires here and gives way to its first interruption.
+      def mirror(cause, interruption)
+        closer = ::Async::Task.current
+        closer.defer_cancel do
+          closer.cancel(cause: cause)
+          interruption = await_settled(interruption)
+        end
+        interruption
+      rescue ::Async::Cancel => e
+        raise unless e.cause.equal?(cause)
+
+        interruption
       end
 
       def settle
