@@ -121,9 +121,11 @@ peer (`hyper:peer`, Go 1.27.3). Commit `Cargo.lock` and build `--locked`; crate
 updates use `hyper:cargo:update` and the 7-day age rule, and regenerate
 `THIRD_PARTY_NOTICES.md` with `scripts/notices.rb`. GOAWAY retries depend on
 hyper and h2 internals `wire.rs` documents; `retry_spec.rb`'s stream-id and
-waiting-HEADERS specs fail when an update breaks them. `hyper:cross` builds one
-platform gem with rb-sys-dock in a disposable copy (digest-pinned images,
-`HYPER_CROSS_TWICE=1` for the reproducibility check).
+waiting-HEADERS specs fail when an update breaks them. The HTTP/2 write wait
+relies on when hyper's request-body pipe drops the body, which specs cannot
+fully cover; D16 in the plan lists what a hyper or h2 update rereads.
+`hyper:cross` builds one platform gem with rb-sys-dock in a disposable copy
+(digest-pinned images, `HYPER_CROSS_TWICE=1` for the reproducibility check).
 `.github/workflows/hyper-gems.yml` builds and smokes all nine archives for CI
 and the release; `ReleaseTrain::PLATFORMS` makes the candidate check them.
 

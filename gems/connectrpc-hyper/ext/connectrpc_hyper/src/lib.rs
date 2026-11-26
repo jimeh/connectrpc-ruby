@@ -60,14 +60,13 @@ fn failure_error(ruby: &Ruby, failure: Failure) -> Error {
 /// body while the response still waits for it.
 const MAX_WRITE: usize = 1 << 31;
 
-/// A streaming write's chunk: `copy` runs only once `len`, the string's own
-/// length, passed `MAX_WRITE`, so a write that fails copies and queues
-/// nothing.
-fn write_chunk<T>(len: usize, copy: impl FnOnce() -> T) -> Result<T, &'static str> {
+/// Rejects a streaming write of `len` bytes, the string's own length, at or
+/// above `MAX_WRITE`.
+fn check_write_len(len: usize) -> Result<(), &'static str> {
     if len >= MAX_WRITE {
         return Err("A streaming write must be smaller than 2 GiB");
     }
-    Ok(copy())
+    Ok(())
 }
 
 fn arg_error(ruby: &Ruby, message: &'static str) -> Error {
@@ -543,10 +542,9 @@ impl Call {
         data: RString,
         timeout: Option<f64>,
     ) -> Result<Value, Error> {
-        // The string's own length, so a `String#bytesize` override cannot
-        // move the check either way.
-        let chunk =
-            write_chunk(data.len(), || bytes(data)).map_err(|message| arg_error(ruby, message))?;
+        // Checked first, before any copy, on the string's own length, so a
+        // `String#bytesize` override cannot move the check either way.
+        check_write_len(data.len()).map_err(|message| arg_error(ruby, message))?;
         let state = rb_self.state(ruby)?;
         let mut send = state
             .send
@@ -555,7 +553,7 @@ impl Call {
             .take()
             .ok_or_else(|| Self::overlap(ruby))?;
         let waits = Self::waits(state, instant(timeout));
-        let outcome = drive(ruby, &waits, state.write(&mut send, chunk));
+        let outcome = drive(ruby, &waits, state.write(&mut send, bytes(data)));
         state.restore(&state.send, send);
         settle(ruby, outcome).inspect_err(|_| state.mark_failed())?;
         Ok(ruby.qnil().as_value())
@@ -689,25 +687,20 @@ fn init(ruby: &Ruby) -> Result<(), Error> {
 
 #[cfg(test)]
 mod tests {
-    use std::cell::Cell;
-
     use super::*;
 
+    // h2's largest DATA chunk, its 2^31 - 1 byte window, and one byte more.
     #[test]
-    fn a_write_below_the_limit_is_copied() {
-        let copies = Cell::new(0);
-        let chunk = write_chunk(MAX_WRITE - 1, || copies.set(copies.get() + 1));
-        assert_eq!((chunk, copies.get()), (Ok(()), 1));
+    fn a_write_of_h2s_largest_chunk_passes() {
+        assert_eq!(check_write_len(2_147_483_647), Ok(()));
     }
 
     #[test]
-    fn a_write_at_or_above_the_limit_fails_before_its_copy() {
-        for len in [MAX_WRITE, usize::MAX] {
-            let copies = Cell::new(0);
-            let chunk = write_chunk(len, || copies.set(copies.get() + 1));
+    fn a_write_of_2_gib_or_more_fails() {
+        for len in [2_147_483_648, usize::MAX] {
             assert_eq!(
-                (chunk, copies.get()),
-                (Err("A streaming write must be smaller than 2 GiB"), 0),
+                check_write_len(len),
+                Err("A streaming write must be smaller than 2 GiB"),
                 "a write of {len} bytes"
             );
         }
