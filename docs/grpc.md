@@ -163,8 +163,13 @@ nil waits retain their existing behavior. There is no one-second gRPC tail timer
 Send-I/O terminal recovery has one absolute 100ms budget and allows at most
 262,144 additional body bytes, with separate finite header limits. It skips
 messages without decoding or inflating them and cannot take over an active
-reader. Only a validated remote error can replace an unhandled send failure;
-remote success cannot. The existing destructive cleanup has a separate 1-second
+reader. Only a validated remote error can replace an unhandled send failure of
+a client-streaming or bidi call; remote success cannot. A unary or
+server-streaming call, whose one request core sends itself, instead reads the
+response after a send failure and reports its outcome, OK included, as grpc-go's
+`clientStreamWrapper.SendMsg` and connect-go's `callUnary` do (see the
+[completion policy](streaming.md#completion-policy)). The existing destructive
+cleanup has a separate 1-second
 [allowance](../gems/connectrpc-async/README.md#cleanup-allowance). A stuck frame
 can fail its connection and siblings during that cleanup.
 

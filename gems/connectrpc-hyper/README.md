@@ -459,9 +459,11 @@ reset as mapped above, and an HTTP/1.1 response failure the client already
 received raises that failure. Otherwise the write raises `unavailable` with
 `HTTP transport failed: stream closed` on HTTP/2, and with
 `HTTP transport failed: connection closed` on HTTP/1.1, where the connection
-ending is what usually ends the upload. Core then stops writing and reports the
-server's status from the response, or raises the write's failure when the
-response carries no error status. The response side still reads the head,
+ending is what usually ends the upload. A core client or bidi stream then stops
+writing and reports the server's status from the response, or raises the
+write's failure when the response carries no error status; a gRPC unary or
+server-streaming call, whose request core writes itself, reports the response's
+outcome, OK included. The response side still reads the head,
 every response byte, and the trailers or the reset.
 
 Over HTTP/2, a server that ends its response (END_STREAM) while the upload is
@@ -471,9 +473,11 @@ stream with `RST_STREAM(NO_ERROR)` and drops request bytes it has not sent. A
 write that starts after that, or that still waits to queue its bytes, raises
 `stream closed`; a write that already queued its bytes returns. The head, the
 response bytes and the status stay readable, so core reports the server's
-error status, and the connection stays in use for other calls. Core keeps a
-failed write's `unavailable` over an OK status, so a call whose server answered
-OK before it read the whole request can fail. A writer that called
+error status, and the connection stays in use for other calls. A client or bidi
+stream keeps a failed write's `unavailable` over an OK status; a gRPC unary or
+server-streaming call reports the response's outcome, so a server that answered
+OK before it read the whole request still returns its reply, as with grpc-go and
+connect-go. A writer that called
 `close_send` before the transport saw the end sends its queued bytes and
 END_STREAM instead, without a reset. This applies to every protocol; Go's
 net/http client, which connect-go uses, keeps sending a Connect stream's upload

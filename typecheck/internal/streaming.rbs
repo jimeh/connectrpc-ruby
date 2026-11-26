@@ -250,6 +250,7 @@ module ConnectRPC
       def request_complete?: () -> bool
       def send_message: (untyped) -> nil
       def close_send: () -> nil
+      def send_request: (untyped) -> nil
       def abandon: () -> nil
       def remote_completed?: (Exception) -> bool
       def abandoned?: () -> bool
@@ -269,6 +270,7 @@ module ConnectRPC
       def initialize_framing: (Integer, Integer, encoding, encoding, terminal_wire_limit: Integer, terminal_limit: Integer) -> void
       def initialize_reader: (Integer, Integer, encoding, encoding, terminal_wire_limit: Integer, terminal_limit: Integer) -> void
       def initialize_writer: (Integer, Integer, encoding, encoding, terminal_wire_limit: Integer, terminal_limit: Integer) -> void
+      def forgivable_send: (untyped) -> bool
       def receive_message: (bool) -> untyped
       def completed_receive: () -> nil
       def receive_eof: () -> nil

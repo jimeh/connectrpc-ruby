@@ -186,6 +186,41 @@ RSpec.describe "gRPC local transport error conventions" do
   ensure
     provider.shutdown
   end
+
+  # Core forgives a unary request's send failure and lets the OK response
+  # decide; the raw write failure the transport recorded (as connectrpc-async
+  # and connectrpc-hyper do) does not fail the span.
+  it "keeps a forgiven unary request write failure out of an OK span" do
+    provider, exporter, bus = tracing
+    reply = AsyncHelpers::MESSAGE.encode(AsyncHelpers::MESSAGE.new(name: "reply"))
+    source = StringIO.new([0, reply.bytesize].pack("CN") + reply)
+    exchange = Object.new
+    exchange.define_singleton_method(:response_head) do |**|
+      ConnectRPC::GRPCHead.new(status: 200, end_stream: false, headers: { "content-type" => ["application/grpc"] })
+    end
+    exchange.define_singleton_method(:read) { |length, **| source.read(length) }
+    exchange.define_singleton_method(:response_trailers) { { "grpc-status" => ["0"] } }
+    %i[close_send abort].each { |name| exchange.define_singleton_method(name) { nil } }
+    exchange.define_singleton_method(:finish) { |**| nil }
+    transport = Object.new
+    transport.define_singleton_method(:grpc_capabilities) { [:unary] }
+    transport.define_singleton_method(:open_grpc_stream) do |request, &work|
+      exchange.define_singleton_method(:write) do |_|
+        request.lifecycle.record_failure(IOError.new("HTTP/2 response ended before the request"))
+        raise ConnectRPC::Error.new(:unavailable, "HTTP/2 transport failed")
+      end
+      work.call(exchange)
+    end
+    core = ConnectRPC::Client.new(base_url: "https://example.invalid", transport: transport, protocol: :grpc,
+                                  binding: ConnectRPC::Bindings::GoogleProtobuf.new, instrumentation: bus)
+    expect(core.call(AsyncHelpers::ECHO::ECHO, AsyncHelpers::MESSAGE.new).message.name).to eq("reply")
+    span = rpc_spans(exporter).fetch(0)
+    expect(span.attributes).to include("rpc.status_code" => "OK", "connectrpc.delivery" => "completed")
+    expect(span.attributes).not_to have_key("error.type")
+    expect(span.status.code).to eq(OpenTelemetry::Trace::Status::UNSET)
+  ensure
+    provider.shutdown
+  end
 end
 
 RSpec.describe "gRPC SDK owned cleanup observation" do

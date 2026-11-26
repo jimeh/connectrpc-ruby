@@ -2,7 +2,7 @@
 
 module ConnectRPC
   module Streaming
-    class Session
+    class Session # rubocop:disable Metrics/ClassLength
       def remote_completed?(error)
         @strategy.grpc? && @eof && error.equal?(@remote_error)
       end
@@ -48,6 +48,15 @@ module ConnectRPC
         end
       end
 
+      # Sends the one request of a unary or server-streaming call, which core
+      # writes itself. As in grpc-go and connect-go, a send failure leaves the
+      # outcome to the response; other failures still end the call.
+      def send_request(message)
+        lifecycle = @lifecycle
+        lifecycle ? lifecycle.forgiving { forgivable_send(message) } : forgivable_send(message)
+        close_send
+      end
+
       def abandon
         check_open!
         @abandoned = true
@@ -59,6 +68,17 @@ module ConnectRPC
       end
 
       private
+
+      # True when the send failed and the failure is forgiven.
+      def forgivable_send(message)
+        send_message(message)
+        false
+      rescue Error => e
+        raise unless send_failure?(e)
+
+        @send_failure = @writing_error = nil
+        true
+      end
 
       def receive_message(skip_data)
         raise StreamStateError, "Normal response consumption was relinquished" if @recovering

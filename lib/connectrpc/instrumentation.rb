@@ -179,6 +179,16 @@ module ConnectRPC
         nil
       end
 
+      # Internal. When the block returns true, the failures recorded while it
+      # ran, by core or a transport, are dropped: the call forgave them and its
+      # own outcome decides the error.
+      def forgiving
+        error = @error
+        forgiven = yield
+        @error = error if forgiven
+        forgiven
+      end
+
       # Internal, bound single-use processing entry. Hosts only activate and finish.
       def begin_processing(owner, path = nil)
         unless @owner.equal?(owner) && @path == path && @processing_state == :not_started && !@pending && !@terminal

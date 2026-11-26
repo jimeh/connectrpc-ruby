@@ -36,16 +36,24 @@ The [changelog](../CHANGELOG.md) lists every change.
   succeeding and discarding the message, and the response's messages and status
   still reach the caller, so core's client streams stop writing and report the
   server's error status. connectrpc-hyper sees an end that sits behind response
-  data nobody has read only once that data is read. A call whose
-  server answers with OK status before it read the whole request can now fail
-  with `unavailable`, when the transport sees the response's end before the
-  request is written, as it already could when such a server reset the stream
-  after its status. A request whose `close_send` came first still ends with
-  END_STREAM and no reset, and HTTP/1.1 is unchanged. See
+  data nobody has read only once that data is read. A request whose
+  `close_send` came first still ends with END_STREAM and no reset, and HTTP/1.1
+  is unchanged. See
   connectrpc-hyper's [errors](../gems/connectrpc-hyper/README.md#errors),
   including the cases where hyper sees the end or sends the reset late, and
   connectrpc-async's
   [native streaming](../gems/connectrpc-async/README.md#native-streaming).
+- A server-streaming call, Connect or gRPC, or a gRPC unary call whose request
+  write fails now reports the response's outcome instead of `unavailable`, as
+  grpc-go's and connect-go's clients do: an OK response returns its messages, a
+  remote error raises, and a response that never completes raises the read's own
+  failure. So a server that answers OK before it read the whole request, which
+  the HTTP/2 transports above now reset, still returns its reply. Other request
+  failures, such as encoding, message-size limits, cancellation and the
+  deadline, still end the call, and client-streaming and bidi calls keep a
+  failed write's `unavailable` over an OK status. Instrumentation outcomes no
+  longer carry the forgiven write's failure. See the streaming guide's
+  [completion policy](streaming.md#completion-policy).
 - A first connectrpc-hyper use (call, stream open or close) whose tokio runtime
   cannot fully start now raises `fatal` within 5 seconds per start attempt
   instead of hanging with the GVL held, and a later use starts the runtime

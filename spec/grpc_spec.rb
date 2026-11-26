@@ -260,6 +260,47 @@ RSpec.describe "gRPC public callers and status codec" do
     end.to raise_error(ConnectRPC::Error) { |error| expect(error.code).to eq("unavailable") }
   end
 
+  # Core sends a unary or server-streaming request itself; as in grpc-go and
+  # connect-go, the response then decides the outcome of a send failure.
+  describe "a send failure while core sends the request" do
+    def failing_client(**)
+      core, method, exchange, = client(**)
+      exchange.define_singleton_method(:write) { |_| raise IOError, "incidental send I/O" }
+      [core, method, exchange]
+    end
+
+    def run(core, method)
+      return core.call(method, "q").message if method.is_a?(ConnectRPC::Method)
+
+      received = []
+      core.server_stream(method, "q") { |reader| reader.each { |message| received << message } }
+      received
+    end
+
+    { ConnectRPC::Method => "reply", ConnectRPC::ServerStreamMethod => %w[one two] }.each do |kind, expected|
+      label = kind.name.split("::").last
+
+      it "returns an OK #{label} response" do
+        body = Array(expected).map { |message| envelope(message) }.join
+        core, method, = failing_client(body: body, kind: kind)
+        expect(run(core, method)).to eq(expected)
+      end
+
+      it "raises the remote error of a #{label} response" do
+        core, method, = failing_client(body: envelope("reply"), status: "5", kind: kind)
+        expect { run(core, method) }.to raise_error(ConnectRPC::Error) { |error| expect(error.code).to eq("not_found") }
+      end
+
+      it "raises the read's own failure when a #{label} response never completes" do
+        core, method, exchange = failing_client(kind: kind)
+        exchange.define_singleton_method(:read) { |_, **| raise ConnectRPC::Error.new(:unavailable, "read lost") }
+        expect { run(core, method) }.to raise_error(ConnectRPC::Error) { |error|
+          expect([error.code, error.message]).to eq(["unavailable", "read lost"])
+        }
+      end
+    end
+  end
+
   it "accepts a complete long leading-zero status block and authoritative OK on non-200 HTTP" do
     core, method, = client(body: envelope("reply"), status: "0" * 60_000, http_status: 503)
     expect(core.call(method, "q").message).to eq("reply")

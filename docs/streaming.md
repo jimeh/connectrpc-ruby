@@ -408,6 +408,21 @@ a send failure and complete its normal response path. Recovery and the existing
 1-second destructive cleanup allowance are separate allowances. Native or
 application code that blocks the reactor remains outside hard timing guarantees.
 
+That recovery applies to client-streaming and bidi calls, whose application
+sends the requests. Core itself sends the one request of a server-streaming call
+and of a gRPC unary call. Since 0.3.1 a send failure there does not end the
+call: core closes its side and reads the response normally, under the same
+limits, terminal and tail checks and budgets, so the response decides. An OK
+response returns its messages, a remote error raises, and a response that never
+completes raises the read's own failure. grpc-go 1.85.0
+(`clientStreamWrapper.SendMsg` in `stream.go`) and connect-go 1.21.1
+(`callUnary` and `CallServerStream` in `client.go`) also let the response
+decide for these calls. Only a send failure is forgiven: an encoding or
+message-size failure, a nil request, cancellation and the deadline still end
+the call. Instrumentation outcomes leave out the failures recorded during a
+forgiven send, the transport's included, so observers classify the call by its
+response.
+
 ## Bounds and protocol
 
 Each direction retains at most one queued 16,384-byte output fragment and one
@@ -488,7 +503,9 @@ error recovery, but always retires the connection. If failure first appears
 after the last accepted write, `finish` returns unavailable even when the
 terminal contains a remote error. This existing-SPI limit can mask that remote
 error; the transport does not decode terminals or invent early success.
-Unhandled send failures still win over remote success under core's policy.
+An unhandled send failure of a client stream still wins over remote success
+under core's policy; a server-streaming call reads the response's outcome
+instead.
 
 The supplied completion timeout and original RPC deadline also cover cleanup;
 cleanup has at most its existing 1-second allowance. Destructive retirement closes

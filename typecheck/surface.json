@@ -1866,6 +1866,7 @@
     "ConnectRPC::Instrumentation::Handle#complete_processing": {"kind":"method","visibility":"private","parameters":"","classification":"internal"},
     "ConnectRPC::Instrumentation::Handle#detach_tokens": {"kind":"method","visibility":"private","parameters":"tokens","classification":"internal"},
     "ConnectRPC::Instrumentation::Handle#finish": {"kind":"method","visibility":"public","parameters":"delivery:, error: nil, decision: :processed, http_status: nil","classification":"spi"},
+    "ConnectRPC::Instrumentation::Handle#forgiving": {"kind":"method","visibility":"public","parameters":"","classification":"internal"},
     "ConnectRPC::Instrumentation::Handle#host_rejected!": {"kind":"method","visibility":"public","parameters":"","classification":"spi"},
     "ConnectRPC::Instrumentation::Handle#host_rejected?": {"kind":"method","visibility":"public","parameters":"","classification":"spi"},
     "ConnectRPC::Instrumentation::Handle#initialize": {"kind":"method","visibility":"public","parameters":"bus, owner, path, observers","classification":"internal"},
@@ -2356,6 +2357,7 @@
     "ConnectRPC::Streaming::Session#completed_receive": {"kind":"method","visibility":"private","parameters":"","classification":"internal"},
     "ConnectRPC::Streaming::Session#decode_message": {"kind":"method","visibility":"private","parameters":"bytes, length","classification":"internal"},
     "ConnectRPC::Streaming::Session#encode_message": {"kind":"method","visibility":"private","parameters":"message","classification":"internal"},
+    "ConnectRPC::Streaming::Session#forgivable_send": {"kind":"method","visibility":"private","parameters":"message","classification":"internal"},
     "ConnectRPC::Streaming::Session#headers": {"kind":"method","visibility":"public","parameters":"","classification":"internal"},
     "ConnectRPC::Streaming::Session#receive": {"kind":"method","visibility":"public","parameters":"skip_data: false","classification":"internal"},
     "ConnectRPC::Streaming::Session#receive_eof": {"kind":"method","visibility":"private","parameters":"","classification":"internal"},
@@ -2363,6 +2365,7 @@
     "ConnectRPC::Streaming::Session#remote_completed?": {"kind":"method","visibility":"public","parameters":"error","classification":"internal"},
     "ConnectRPC::Streaming::Session#request_complete?": {"kind":"method","visibility":"public","parameters":"","classification":"internal"},
     "ConnectRPC::Streaming::Session#send_message": {"kind":"method","visibility":"public","parameters":"message","classification":"internal"},
+    "ConnectRPC::Streaming::Session#send_request": {"kind":"method","visibility":"public","parameters":"message","classification":"internal"},
     "ConnectRPC::Streaming::Session#validate_response_count": {"kind":"method","visibility":"private","parameters":"","classification":"internal"},
     "ConnectRPC::Streaming::Session#validate_send": {"kind":"method","visibility":"private","parameters":"message","classification":"internal"}
   },

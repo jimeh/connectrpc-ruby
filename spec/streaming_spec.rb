@@ -465,7 +465,7 @@ RSpec.describe "Streaming send-failure arbitration" do
     [flag, payload.bytesize].pack("CN") + payload
   end
 
-  def stream_client(body)
+  def stream_client(body, kind: ConnectRPC::BidiStreamMethod, **)
     reader = StringIO.new(body)
     exchange = Object.new
     exchange.define_singleton_method(:response_head) do |**|
@@ -477,15 +477,99 @@ RSpec.describe "Streaming send-failure arbitration" do
     exchange.define_singleton_method(:finish) { |**| nil }
     exchange.define_singleton_method(:abort) { nil }
     transport = Object.new
-    transport.define_singleton_method(:streaming_capabilities) { [:bidi_stream] }
+    transport.define_singleton_method(:streaming_capabilities) { %i[server_stream bidi_stream] }
     transport.define_singleton_method(:open_stream) { |_, &work| work.call(exchange) }
     binding = Object.new
     binding.define_singleton_method(:encode) { |message, **| message }
     binding.define_singleton_method(:decode) { |message, **| message }
-    rpc = ConnectRPC::BidiStreamMethod.new(service: "recovery.Test", name: "Bidi",
-                                           request_type: String, response_type: String)
-    [ConnectRPC::Client.new(base_url: "https://example.invalid", binding: binding, transport: transport), rpc, binding,
-     exchange]
+    rpc = kind.new(service: "recovery.Test", name: "Bidi", request_type: String, response_type: String)
+    [ConnectRPC::Client.new(base_url: "https://example.invalid", binding: binding, transport: transport, **),
+     rpc, binding, exchange, transport]
+  end
+
+  # Core sends a server stream's one request itself; grpc-go and connect-go
+  # then let the response decide the call's outcome.
+  describe "while core sends a server stream's request" do
+    let(:outcomes) { [] }
+    let(:bus) do
+      outcomes = self.outcomes
+      subscriber = Object.new
+      subscriber.define_singleton_method(:start) do |_call|
+        Object.new.tap do |observer|
+          observer.define_singleton_method(:processing_finished) { |outcome| outcomes << outcome }
+        end
+      end
+      ConnectRPC::Instrumentation.new(subscribers: [subscriber])
+    end
+
+    def server_stream_client(body, write: ->(_) { raise IOError, "incidental send I/O" }, **)
+      core, rpc, binding, exchange, transport = stream_client(body, kind: ConnectRPC::ServerStreamMethod, **)
+      exchange.define_singleton_method(:write, &write)
+      [core, rpc, binding, exchange, transport]
+    end
+
+    [IOError.new("incidental send I/O"), ConnectRPC::Error.new(:unavailable, "incidental")].each do |failure|
+      it "returns an OK response's messages after a #{failure.class} send failure" do
+        core, rpc, = server_stream_client(bytes("one") + bytes("two") + bytes("{}", 2),
+                                          write: ->(_) { raise failure }, instrumentation: bus)
+        received = []
+        expect(core.server_stream(rpc, "q") { |reader| reader.each { |message| received << message } }).to be_nil
+        expect(received).to eq(%w[one two])
+        expect(outcomes.map { |outcome| [outcome.code, outcome.error, outcome.normalized_error] })
+          .to eq([["OK", nil, nil]])
+      end
+    end
+
+    # connectrpc-hyper and connectrpc-async record their raw write failure
+    # before raising unavailable.
+    it "keeps a transport's recorded write failure out of an OK outcome" do
+      core, rpc, _, exchange, transport = server_stream_client(bytes("one") + bytes("{}", 2), instrumentation: bus)
+      transport.define_singleton_method(:open_stream) do |request, &work|
+        exchange.define_singleton_method(:write) do |_|
+          request.lifecycle.record_failure(RuntimeError.new("native write failure"))
+          raise ConnectRPC::Error.new(:unavailable, "HTTP transport failed: stream closed")
+        end
+        work.call(exchange)
+      end
+      expect(core.server_stream(rpc, "q") { |reader| reader.each { nil } }).to be_nil
+      expect(outcomes.map { |outcome| [outcome.code, outcome.error] }).to eq([["OK", nil]])
+    end
+
+    it "raises the response's remote error" do
+      core, rpc, = server_stream_client(bytes("one") + bytes('{"error":{"code":"not_found"}}', 2))
+      received = []
+      expect { core.server_stream(rpc, "q") { |reader| reader.each { |message| received << message } } }
+        .to raise_error(ConnectRPC::Error) { |error| expect(error.code).to eq("not_found") }
+      expect(received).to eq(["one"])
+    end
+
+    it "raises the read's own failure when the response never completes" do
+      core, rpc, _, exchange = server_stream_client(bytes("one"))
+      exchange.define_singleton_method(:read) { |_, **| raise ConnectRPC::Error.new(:unavailable, "read lost") }
+      expect { core.server_stream(rpc, "q") { |reader| reader.each { nil } } }
+        .to raise_error(ConnectRPC::Error) { |error|
+              expect([error.code, error.message]).to eq(["unavailable", "read lost"])
+            }
+    end
+
+    it "still fails the call on a request error that is not a send failure" do
+      core, rpc, = server_stream_client(bytes("{}", 2), write: ->(_) {}, request_limit: 3)
+      expect { core.server_stream(rpc, "long") { |reader| reader.each { nil } } }
+        .to raise_error(ConnectRPC::Error) { |error| expect(error.code).to eq("resource_exhausted") }
+      core, rpc, = server_stream_client(bytes("{}", 2))
+      expect { core.server_stream(rpc, nil) { |reader| reader.each { nil } } }
+        .to raise_error(ConnectRPC::Error) { |error| expect(error.code).to eq("invalid_argument") }
+    end
+
+    it "lets cancellation during the send win" do
+      source = ConnectRPC::CancellationSource.new
+      core, rpc, = server_stream_client(bytes("one") + bytes("{}", 2), write: lambda { |_|
+        source.cancel
+        raise IOError, "incidental send I/O"
+      })
+      expect { core.server_stream(rpc, "q", cancellation: source.token) { |reader| reader.each { nil } } }
+        .to raise_error(ConnectRPC::Error) { |error| expect(error.code).to eq("canceled") }
+    end
   end
 
   it "recovers a remote error only after skipping data without binding decode and verifying the tail" do

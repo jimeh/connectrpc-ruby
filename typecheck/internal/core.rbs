@@ -287,6 +287,7 @@ module ConnectRPC
       def processing_finished: (code: String?, ?http_status: Integer?, ?normalized_error: Exception?, ?error: Exception?, ?response_bytes: Integer?, ?response_metadata: headers | Metadata, ?response_trailers: headers | Metadata) -> nil
       def message_received: (Integer) -> nil
       def message_sent: (Integer) -> nil
+      def forgiving: () { () -> bool } -> bool
       private
       def notify_message: (:message_received | :message_sent, Integer) -> nil
       def detach_tokens: (Array[[(^(Object?) -> void)?, Object?]]) -> nil

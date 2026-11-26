@@ -172,6 +172,47 @@ RSpec.describe "HTTP/2 half-open client streams" do
     end
   end
 
+  # Core writes a unary or server-streaming request itself. The peer answers
+  # OK at the request's first DATA and never reopens the window, so the
+  # request, larger than the window, cannot finish first: the client resets
+  # the stream, the request's next write raises, and, as in grpc-go and
+  # connect-go, the response decides the call. The transport records the
+  # write's failure; the outcome stays OK.
+  { "gRPC unary" => [:grpc, ConnectRPC::Method], "gRPC server stream" => [:grpc, ConnectRPC::ServerStreamMethod],
+    "Connect server stream" => [:connect, ConnectRPC::ServerStreamMethod] }.each do |label, (protocol, kind)|
+    it "returns a #{label}'s OK reply after the response's end stopped its request" do
+      reply = AsyncHelpers::MESSAGE.encode(message("reply"))
+      release = HalfOpenPeer::Static.new({ protocol: protocol, message: reply, code: 0 })
+      with_half_open_peer(release: release) do |_task, transport, origin, peer|
+        outcomes = []
+        subscriber = Object.new
+        subscriber.define_singleton_method(:start) do |_call|
+          Object.new.tap { |observer| observer.define_singleton_method(:processing_finished) { outcomes << it } }
+        end
+        options = { binding: ConnectRPC::Bindings::GoogleProtobuf.new, transport: transport,
+                    instrumentation: ConnectRPC::Instrumentation.new(subscribers: [subscriber]) }
+        options[:protocol] = :grpc if protocol == :grpc
+        client = ConnectRPC::Client.new(base_url: origin, **options)
+        method = half_open_method(kind)
+        request = message("x" * 100_000)
+        received = []
+        if kind == ConnectRPC::Method
+          received << client.call(method, request, timeout: nil).message.name
+        else
+          client.server_stream(method, request, timeout: nil) { |reader| reader.each { received << it.name } }
+        end
+        expect(received).to eq(["reply"])
+        expect(outcomes.map { [it.code, it.error] }).to eq([["OK", nil]])
+        # The connection's first client stream.
+        stream_id = 1
+        expect_reuse(transport, origin, peer)
+        expect(client_resets(peer, stream_id)).to eq([Protocol::HTTP2::Error::NO_ERROR])
+        expect(peer.wire[:data][stream_id]).to be < request.to_proto.bytesize
+        expect(peer.sent_resets).to be_empty
+      end
+    end
+  end
+
   # async-http resets a stream whose HEADERS fail validation, and
   # protocol-http2 then still records the frame's END_STREAM.
   it "sends only its own reset when gRPC trailers ending a half-open stream fail validation" do

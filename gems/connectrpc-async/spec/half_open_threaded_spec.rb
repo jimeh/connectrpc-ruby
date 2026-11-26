@@ -45,6 +45,24 @@ RSpec.describe "Half-open HTTP/2 streams through owner-thread transports" do
     raise_error(ConnectRPC::Error) { |error| expect(error.code).to eq("not_found") }
   end
 
+  def ok_reply
+    { protocol: :grpc, message: AsyncHelpers::MESSAGE.encode(AsyncHelpers::MESSAGE.new(name: "reply")), code: 0 }
+  end
+
+  # A native gRPC unary call whose OK response ended while its request
+  # waited for credit: the response decides, as in grpc-go, and the write
+  # failure the transport recorded stays out of the outcome.
+  def ok_unary(transport, origin)
+    outcomes = []
+    subscriber = Object.new
+    subscriber.define_singleton_method(:start) do |_call|
+      Object.new.tap { |observer| observer.define_singleton_method(:processing_finished) { outcomes << it } }
+    end
+    bus = ConnectRPC::Instrumentation.new(subscribers: [subscriber])
+    reply = core(transport, origin, protocol: :grpc, instrumentation: bus).call(grpc_unary, big_message)
+    [reply.message.name, outcomes.map { [it.code, it.error] }]
+  end
+
   describe "ThreadedTransport" do
     it "returns a unary call's response and reuses the connection" do
       with_peer({ protocol: :unary, message: "done" }) do |peer, origin|
@@ -63,6 +81,16 @@ RSpec.describe "Half-open HTTP/2 streams through owner-thread transports" do
       with_peer({ protocol: :grpc, trailers_only: true }) do |peer, origin|
         transport = threaded(origin: origin)
         expect { core(transport, origin, protocol: :grpc).call(grpc_unary, big_message) }.to expect_not_found
+        expect_one_reset(peer)
+      ensure
+        transport&.close
+      end
+    end
+
+    it "returns a native gRPC unary call's OK reply" do
+      with_peer(ok_reply) do |peer, origin|
+        transport = threaded(origin: origin)
+        expect(ok_unary(transport, origin)).to eq(["reply", [["OK", nil]]])
         expect_one_reset(peer)
       ensure
         transport&.close
@@ -102,6 +130,14 @@ RSpec.describe "Half-open HTTP/2 streams through owner-thread transports" do
           result = on_path(path) { core(transport, origin, protocol: :grpc).call(grpc_unary, big_message) }
           expect(result).to be_a(ConnectRPC::Error)
           expect(result.code).to eq("not_found")
+          expect_one_reset(peer)
+        end
+      end
+
+      it "returns a native gRPC unary call's OK reply on the #{path} path" do
+        with_peer(ok_reply) do |peer, origin|
+          transport = per_call
+          expect(on_path(path) { ok_unary(transport, origin) }).to eq(["reply", [["OK", nil]]])
           expect_one_reset(peer)
         end
       end

@@ -195,6 +195,60 @@ RSpec.describe "Streaming writes after the stream ended", :interop do
     end
   end
 
+  # Core writes a unary or server-streaming request itself. A server that
+  # answers OK while the request is still open leaves the stream half-open;
+  # once the transport sees the end, the client resets the stream and the
+  # rest of the request's writes raise. As in grpc-go and connect-go, the
+  # response then decides the call.
+  describe "core's unary and server-streaming calls" do
+    # Several 16 KiB writes.
+    def large = MSG.new(value: "x" * 100_000)
+
+    def answered(kind, transport, scenario)
+      metadata = { "x-scenario" => scenario }
+      client = core(peer["raw"], transport: transport)
+      if kind == :unary
+        return [client.call(HyperHelpers::RAW_UNARY, large, metadata: metadata, timeout: 5).message.value]
+      end
+
+      received = []
+      client.server_stream(HyperHelpers::RAW_SERVER_STREAM, large, metadata: metadata, timeout: 5) do |reader|
+        received.concat(values(reader))
+      end
+      received
+    end
+
+    # The status ends the stream with no response DATA ahead of it, so the
+    # transport sees the end while core still writes the request.
+    %w[status:0:open trailers-only:0:open].each do |ending|
+      it "returns an OK server stream whose end stopped the request, and resets the stream (#{ending})" do
+        transport = hyper
+        from = peer.mark
+        scenario = "end-on-data:#{ending}"
+        expect(answered(:server_stream, transport, scenario)).to eq([])
+        stream = request_of(scenario, from)
+        wait_reset(stream, from)
+        expect_reused(transport, stream, from)
+        expect(reset_codes(stream, from)).to eq(["0"])
+      end
+    end
+
+    # hyper sees an end behind unread response DATA only once that data is
+    # read, after core wrote the whole request and closed its side, so the
+    # upload ends with END_STREAM and no reset (a documented limitation).
+    %i[unary server_stream].each do |kind|
+      it "returns an OK #{kind} reply that sits ahead of the end" do
+        transport = hyper
+        from = peer.mark
+        scenario = "end-on-data:reply:0:open"
+        expect(answered(kind, transport, scenario)).to eq(["reply"])
+        stream = request_of(scenario, from)
+        expect_reused(transport, stream, from)
+        expect(reset_codes(stream, from)).to eq([])
+      end
+    end
+  end
+
   # A write that finds the body dropped waits for the response's outcome,
   # which `respond` publishes; the hold point parks that publication.
   describe "waiting for the response's outcome" do

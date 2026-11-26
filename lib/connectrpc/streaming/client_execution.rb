@@ -77,8 +77,7 @@ module ConnectRPC
     def prepare_server_stream(method, request, session)
       return unless method.is_a?(ServerStreamMethod) || method.is_a?(Method)
 
-      session.send_message(request)
-      session.close_send
+      session.send_request(request)
     end
 
     def yield_stream_endpoint(session, scope)
