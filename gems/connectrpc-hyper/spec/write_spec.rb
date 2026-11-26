@@ -218,15 +218,30 @@ RSpec.describe "Streaming writes after the stream ended", :interop do
       received
     end
 
-    # The status ends the stream with no response DATA ahead of it, so the
-    # transport sees the end while core still writes the request.
-    %w[status:0:open trailers-only:0:open].each do |ending|
-      it "returns an OK server stream whose end stopped the request, and resets the stream (#{ending})" do
+    def script(tag, steps) = "script:#{tag}:#{steps}"
+    def tag = @tag ||= "early-ok-#{rand(1 << 30)}"
+
+    # The peer never reads, so a request larger than hyper's upload pipeline
+    # holds without window (the stream window, one held chunk and one queued
+    # write) must wait for window, while the status, with no response DATA
+    # ahead of it, ends the stream: the transport sees the end, and a write
+    # raises. The window opens only after the call returned, so hyper's pipe
+    # can send the reset even if it was waiting for window (a documented
+    # limitation).
+    { "status" => "head,status=0", "trailers-only" => "trailers-only=0" }.each do |name, ending|
+      it "returns an OK server stream whose end stopped the request, and resets the stream (#{name})" do
         transport = hyper
         from = peer.mark
-        scenario = "end-on-data:#{ending}"
-        expect(answered(:server_stream, transport, scenario)).to eq([])
+        scenario = script(tag, "noread,#{ending},gate,window")
+        received = []
+        core(peer["raw"], transport: transport)
+          .server_stream(HyperHelpers::RAW_SERVER_STREAM, MSG.new(value: "x" * 1_048_576),
+                         metadata: { "x-scenario" => scenario }, timeout: 5) do |reader|
+          received.concat(values(reader))
+        end
+        expect(received).to eq([])
         stream = request_of(scenario, from)
+        peer.command("release #{tag}.1")
         wait_reset(stream, from)
         expect_reused(transport, stream, from)
         expect(reset_codes(stream, from)).to eq(["0"])
