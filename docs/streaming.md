@@ -426,7 +426,8 @@ the call. If closing the send side then raises the write's failure again, or
 an I/O error or `unavailable` caused by it, core forgives that too; any other
 close failure ends the call, since the half-close may not have reached the
 server. Instrumentation outcomes leave out the forgiven failures and their
-causes, so observers classify the call by its response. That includes the raw
+causes, so when the response decides, observers classify the call by it; a
+close failure that ends the call is reported as such. That includes the raw
 transport failure behind a write error when the transport makes it the error's
 cause, as connectrpc-hyper and connectrpc-async do, even if the transport
 recorded it before core's write. A failure recorded independently, such as one
