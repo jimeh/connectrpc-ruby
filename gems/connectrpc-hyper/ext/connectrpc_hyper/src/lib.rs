@@ -55,8 +55,19 @@ fn failure_error(ruby: &Ruby, failure: Failure) -> Error {
     }
 }
 
-/// One streaming write's limit (`Call::write`).
+/// One streaming write's limit (`Call::write`). h2 refuses a DATA chunk
+/// above its 2^31 - 1 byte window outright, which would drop the request
+/// body while the response still waits for it.
 const MAX_WRITE: usize = 1 << 31;
+
+/// Rejects a streaming write of `len` bytes, the string's own length, at or
+/// above `MAX_WRITE`.
+fn check_write_len(len: usize) -> Result<(), &'static str> {
+    if len >= MAX_WRITE {
+        return Err("A streaming write must be smaller than 2 GiB");
+    }
+    Ok(())
+}
 
 fn arg_error(ruby: &Ruby, message: &'static str) -> Error {
     Error::new(ruby.exception_arg_error(), message)
@@ -531,15 +542,9 @@ impl Call {
         data: RString,
         timeout: Option<f64>,
     ) -> Result<Value, Error> {
-        // h2 refuses a DATA chunk above its 2^31 - 1 byte window outright,
-        // which would drop the request body while the response still waits
-        // for it. Checked on the string's own length, before any copy.
-        if data.len() >= MAX_WRITE {
-            return Err(arg_error(
-                ruby,
-                "A streaming write must be smaller than 2 GiB",
-            ));
-        }
+        // Checked first, before any copy, on the string's own length, so a
+        // `String#bytesize` override cannot move the check either way.
+        check_write_len(data.len()).map_err(|message| arg_error(ruby, message))?;
         let state = rb_self.state(ruby)?;
         let mut send = state
             .send
@@ -678,4 +683,26 @@ fn init(ruby: &Ruby) -> Result<(), Error> {
     call.define_method("h2?", method!(Call::is_h2, 0))?;
     call.define_method("finished?", method!(Call::is_finished, 0))?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // h2's largest DATA chunk, its 2^31 - 1 byte window, and one byte more.
+    #[test]
+    fn a_write_of_h2s_largest_chunk_passes() {
+        assert_eq!(check_write_len(2_147_483_647), Ok(()));
+    }
+
+    #[test]
+    fn a_write_of_2_gib_or_more_fails() {
+        for len in [2_147_483_648, usize::MAX] {
+            assert_eq!(
+                check_write_len(len),
+                Err("A streaming write must be smaller than 2 GiB"),
+                "a write of {len} bytes"
+            );
+        }
+    }
 }

@@ -757,6 +757,8 @@ including `extconf.rb`, cross builds and the source gem's install. Update it
 only with `hyper:cargo:update`, and check that each new crate release is at
 least seven days old, as for tools; the daily
 [canary](ci.md#pins-lifted-canary) shows whether the newest crates still pass.
+A hyper or h2 update also rereads the internals that D16 in the
+[hyper plan](plans/hyper.md) lists, as no spec guards all of them.
 `deny.toml` limits licenses and sources. `THIRD_PARTY_NOTICES.md` lists every
 crate linked on any target with its license texts and ships in the gem; a
 stale file fails `hyper:check` and `hyper:package`.

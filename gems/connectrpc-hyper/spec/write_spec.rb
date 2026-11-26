@@ -197,24 +197,54 @@ RSpec.describe "Streaming writes after the stream ended", :interop do
     end
   end
 
-  # h2 refuses a chunk this large outright, which would drop the request
-  # body while the response waits for it. The check reads the string's own
-  # length, so a String subclass's bytesize cannot move it either way.
+  # h2 refuses a chunk of 2 GiB or more outright, which would drop the
+  # request body while the response waits for it, so the extension rejects
+  # such a write before copying or queuing it, and the stream goes on.
+  # `check_write_len`'s Rust unit tests (lib.rs) pin both sides of the limit.
   it "rejects a write of 2 GiB or more before queuing it" do
     # A String's length is a C long, 32 bits on Windows, where no string
     # reaches the limit.
     skip "a String cannot reach 2 GiB where a long is 32 bits" if [0].pack("l!").bytesize < 8
-    from = peer.mark
-    lying = Class.new(String) { def bytesize = 1 << 31 }
-    big = "\0".b * (1 << 31)
-    exchange("ok") do |call|
-      expect { call.write(big) }.to raise_error(ArgumentError, "A streaming write must be smaller than 2 GiB")
-      expect(call.write(lying.new(envelope))).to be_nil
+    # On Linux the zero-filled string took about 1 ms and no resident memory,
+    # as its pages stay untouched. A host that cannot reserve the address
+    # space skips.
+    big = begin
+      "\0".b * (1 << 31)
+    rescue NoMemoryError
+      skip "this host cannot reserve a 2 GiB string"
     end
-    peer.wait_event(/\Araw request ok /, from: from)
-    expect(peer.since(from).grep(/\Araw request /).size).to eq(1)
+    from = peer.mark
+    transport = hyper
+    native_driver = driver(transport)
+    # Armed with a zero bound, the point counts the requests handed to hyper:
+    # the rejected write must not even send the request head.
+    native_driver.hold("request:queued", 0)
+    exchange("await-ok:big", transport: transport) do |call|
+      expect { call.write(big) }.to raise_error(ArgumentError, "A streaming write must be smaller than 2 GiB")
+      expect(native_driver.reached("request:queued")).to eq(0)
+      expect(call.write(envelope)).to be_nil
+      expect(native_driver.reached("request:queued")).to eq(1)
+      call.close_send
+      expect(call.response_head(timeout: 5).status).to eq(200)
+    end
+    peer.wait_event(/\Araw handled await-ok:big stream=\d+ bytes=5\z/, from: from)
   ensure
+    native_driver&.release("request:queued")
     big = nil
+  end
+
+  # The check reads the string's own length, so a String subclass whose
+  # sizes claim the limit still sends its bytes. Unlike the example above,
+  # this one runs where a long is 32 bits too.
+  it "judges a write by the string's own length, not its bytesize" do
+    from = peer.mark
+    lying = Class.new(String) { %i[bytesize length size].each { |name| define_method(name) { 1 << 31 } } }
+    exchange("await-ok:own-length") do |call|
+      expect(call.write(lying.new(envelope))).to be_nil
+      call.close_send
+      expect(call.response_head(timeout: 5).status).to eq(200)
+    end
+    peer.wait_event(/\Araw handled await-ok:own-length stream=\d+ bytes=5\z/, from: from)
   end
 
   # Forced teardown fires `shutdown` before it aborts the connection that

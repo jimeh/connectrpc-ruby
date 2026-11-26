@@ -400,6 +400,39 @@ stage and reset its stream.
   `.crate` against the `v1.13.0` tag's tree, a read of the 1.12.0..1.13.0
   diff, the lock moving only hyper, and `cargo deny` and `cargo audit`. The
   exception covers that version only; the next hyper release waits the 7 days.
+  - On a hyper or h2 update, reread in the new release's source the
+    dispatch order and frame writes `wire.rs` documents, which the GOAWAY
+    retry (D12) relies on. `retry_spec.rb`'s stream-id and waiting-HEADERS
+    specs fail when an update breaks them.
+  - On a hyper or h2 update, also reread the request-body pipe that the
+    HTTP/2 write wait (#193) relies on: `PipeToSendStream` in
+    `proto/h2/mod.rs`, polled once by `ClientTask::poll_pipe` and then by
+    `PipeMap` in `proto/h2/client.rs`. While a writer still holds the
+    body's sender, the pipe must drop the body only on an exit that also
+    ends the response attempt: the head has already arrived, the response
+    future resolves, or the caller dropped it, even if the response task
+    publishes that outcome later. A write that finds the body dropped waits
+    for that publication, and only the write's deadline, cancellation,
+    abort, forced teardown's `shutdown` or an interrupt otherwise ends the
+    wait. Today the pipe drops the body on a reset, a stream h2 no longer
+    streams, a body error hyper resets the stream for, the caller's cancel
+    (after it dropped the response future), a GOAWAY whose last stream id
+    is below the stream's, or a connection error h2 reports to every
+    stream; each closes the stream, which resolves any response still
+    pending. Its normal end after `close_send` leaves no writer behind. h2's
+    `UserError::PayloadTooBig` from `send_data` (a chunk above the 2^31 - 1
+    byte window, `Prioritize::send_data`) is the one exit that leaves the
+    stream open, and `check_write_len` in `lib.rs` rejects such a chunk
+    before it is queued. `send_data`'s other open-stream error,
+    `UnexpectedFrameType`, needs the send side already ended, which a live
+    sender rules out. The pipe's trailers branch returns `send_trailers`'s
+    errors without a reset too, but `CallBody` yields only DATA frames.
+    Check whether any of the pipe's exits, `send_data`'s errors or a body
+    that yields trailers can now drop the body under a live sender without
+    ending the response attempt: no spec fails unless it takes that exit,
+    and a write without a deadline would wait until one of those bounds
+    ends it. A new exit that depends on the input needs its own check
+    before the write, as `check_write_len` is for `PayloadTooBig`.
 - D17 `Keepalive` moves to core as `ConnectRPC::Keepalive` (Since 0.3.0,
   loaded by `require "connectrpc"`), with the same constructor, validation,
   equality and freezing as today's `ConnectRPC::Async::Keepalive`.
