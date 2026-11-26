@@ -114,12 +114,13 @@ RSpec.describe "HTTP/2 half-open client streams" do
           release.enqueue({ protocol: protocol, message: message })
           expect(exchange.response_head.status).to eq(200)
           bytes = read_all(exchange)
-          expect(bytes).to start_with(half_open_envelope(0, message))
-          case protocol
-          when :grpc then expect(exchange.response_trailers["grpc-status"]).to eq(["5"])
-          when :connect then expect(bytes).to end_with(half_open_envelope(2, HalfOpenPeer::NOT_FOUND))
-          else expect(bytes).to end_with(half_open_envelope(0x80, "grpc-status: 5\r\ngrpc-message: missing\r\n"))
-          end
+          terminal = case protocol
+                     when :grpc then ""
+                     when :connect then half_open_envelope(2, HalfOpenPeer::NOT_FOUND)
+                     else half_open_envelope(0x80, "grpc-status: 5\r\ngrpc-message: missing\r\n")
+                     end
+          expect(bytes).to eq(half_open_envelope(0, message) + terminal)
+          expect(exchange.response_trailers["grpc-status"]).to eq(["5"]) if protocol == :grpc
           expect { exchange.write(half_open_envelope(0, "late")) }.to expect_unavailable
         end
         expect_reuse(transport, origin, peer)

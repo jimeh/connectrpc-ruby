@@ -43,8 +43,8 @@ type rawConn struct {
 	unread map[uint32]bool
 	// onData holds end-on-data streams' endings, run at their first DATA.
 	onData map[uint32]func()
-	// scripted holds script streams' request body sizes so far; their
-	// request END_STREAM is reported with the size.
+	// scripted holds script and end-on-data streams' request body sizes so
+	// far; their request END_STREAM is reported with the size.
 	scripted map[uint32]int
 }
 
@@ -447,7 +447,8 @@ func (c *rawConn) request(frame *http2.MetaHeadersFrame) {
 		}()
 	case "end-on-data":
 		// end-on-data:<mode>:<code> ends the stream at the request's first
-		// DATA frame, while the client is still sending:
+		// DATA frame, while the client is still sending, and reports the
+		// request's END_STREAM as "request-end" with the body's size:
 		//   reset:<code>       RST_STREAM(<code>) without a response;
 		//   head-reset:<code>  the head, then RST_STREAM(<code>);
 		//   data-reset:<code>  the head and one message, then RST_STREAM(<code>);
@@ -463,6 +464,7 @@ func (c *rawConn) request(frame *http2.MetaHeadersFrame) {
 		mode, rest, _ := strings.Cut(argument, ":")
 		code, flag, _ := strings.Cut(rest, ":")
 		status, _ := strconv.Atoi(code)
+		c.scripted[stream] = 0
 		c.onData[stream] = func() {
 			switch mode {
 			case "reset":

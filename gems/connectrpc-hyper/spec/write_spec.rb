@@ -250,7 +250,8 @@ RSpec.describe "Streaming writes after the stream ended", :interop do
 
     # hyper sees an end behind unread response DATA only once that data is
     # read, after core wrote the whole request and closed its side, so the
-    # upload ends with END_STREAM and no reset (a documented limitation).
+    # whole request and its END_STREAM go out with no reset (a documented
+    # limitation).
     %i[unary server_stream].each do |kind|
       it "returns an OK #{kind} reply that sits ahead of the end" do
         transport = hyper
@@ -258,6 +259,9 @@ RSpec.describe "Streaming writes after the stream ended", :interop do
         scenario = "end-on-data:reply:0:open"
         expect(answered(kind, transport, scenario)).to eq(["reply"])
         stream = request_of(scenario, from)
+        request_end = /\Araw request-end stream=#{stream[0]} bytes=(\d+) conn=#{Regexp.escape(stream[1])}\z/
+        expect(peer.wait_event(request_end, from: from, timeout: 4)[request_end, 1].to_i)
+          .to eq(5 + MSG.encode(large).bytesize)
         expect_reused(transport, stream, from)
         expect(reset_codes(stream, from)).to eq([])
       end
