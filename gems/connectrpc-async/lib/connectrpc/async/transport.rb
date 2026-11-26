@@ -535,12 +535,7 @@ module ConnectRPC
           end
           response = operation[:response]
           if response
-            stream = response.stream
-            case stream.state
-            when :idle then stream.close!
-            when :closed then nil
-            else stream.send_reset_stream(::Protocol::HTTP2::Error::CANCEL)
-            end
+            response.stream.reset_in_cleanup
             response.close
           end
         end

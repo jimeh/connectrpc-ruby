@@ -1,15 +1,15 @@
 # frozen_string_literal: true
 
 RSpec.describe "Header, body and streaming limits" do
-  def envelope(message) = [0, message.bytesize].pack("CN") + message
-
   def raw_exchange(transport, scenario)
     request = ConnectRPC::StreamRequest.new(
       url: URI("#{peer['raw']}/raw.v1.Raw/Call"), http_method: "POST",
       headers: { "content-type" => ["application/grpc"], "te" => ["trailers"], "x-scenario" => [scenario] }
     )
+    # The peer answers at the request HEADERS, so the request carries no
+    # message: a write could race the response's end, which resets the
+    # half-open stream and fails the write.
     transport.open_grpc_stream(request) do |exchange|
-      exchange.write(envelope(""))
       exchange.close_send
       exchange.response_head(timeout: 5)
       nil while exchange.read(64, timeout: 5)
@@ -123,7 +123,7 @@ RSpec.describe "Header, body and streaming limits" do
       # The stream window plus h2's bounded send buffer, then the writer blocks.
       expect(written).to be < 40
       unread = peer.wait_event(/\Araw request noread /, from: from)[/ stream=(\d+) /, 1]
-      peer.wait_event(/\Araw rst stream=#{unread} code=8\z/, from: from)
+      peer.wait_event(/\Araw rst stream=#{unread} code=8 /, from: from)
     end
   end
 end

@@ -709,6 +709,35 @@ RSpec.describe "Stream interceptors" do
       expect(results.first).to eq(results.last)
     end
 
+    %i[connect grpc].each do |protocol|
+      it "reports a forgiven request send failure as OK, as without interceptors, over #{protocol}" do
+        passing = [layer(:client_stream) { |_call, &continuation| continuation.call },
+                   layer(:client_unary) { |_call, &continuation| continuation.call }]
+        passing.last.define_singleton_method(:client_stream) { |_call, &continuation| continuation.call }
+        results = [passing, []].map do |interceptors|
+          outcomes.clear
+          completions.clear
+          exchange = peer(protocol, %w[one two], on_write: ->(_) { raise IOError, "incidental send I/O" })
+          client = stream_client(interceptors, protocol: protocol, exchange: exchange)
+          received = []
+          invoke(client, :server_stream) { |reader| reader.each { |message| received << message } }
+          if protocol == :grpc
+            exchange = peer(protocol, ["reply"], on_write: ->(_) { raise IOError, "incidental send I/O" })
+            client = stream_client(interceptors, protocol: protocol, exchange: exchange)
+            unary = ConnectRPC::Method.new(service: "intercept.Streams", name: "Run", request_type: String,
+                                           response_type: String)
+            received << client.call(unary, "q").message
+          end
+          [received, outcomes.map { |outcome| [outcome.code, outcome.error, outcome.normalized_error] },
+           completions.map(&:delivery)]
+        end
+        calls = protocol == :grpc ? 2 : 1
+        expect(results.first).to eq([protocol == :grpc ? %w[one two reply] : %w[one two],
+                                     [["OK", nil, nil]] * calls, [:completed] * calls])
+        expect(results.first).to eq(results.last)
+      end
+    end
+
     it "classifies a raising wrap_stream factory as an independent interceptor exception" do
       count_closes
       failure = ConnectRPC::Error.new(:permission_denied, "Factory")

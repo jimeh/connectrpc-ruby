@@ -103,6 +103,27 @@ RSpec.describe "Transport failures" do
       .to eq([["ConnectRPC::Hyper::Native::Failure", :timeout]])
   end
 
+  # The deadline's clock never advances, so the blocked write's native wait
+  # times out while the deadline stays live. Core forgives a unary or
+  # server-streaming request's failed write with the failures in its cause
+  # chain, so the recorded native failure must be the write error's cause.
+  it "keeps a streaming write's per-wait timeout as its error's cause" do
+    recorded = []
+    lifecycle = Object.new
+    lifecycle.define_singleton_method(:record_failure) { |error| recorded << error }
+    headers = { "content-type" => ["application/grpc"], "te" => ["trailers"], "x-scenario" => ["noread"] }
+    request = ConnectRPC::StreamRequest.new(url: URI("#{peer['raw']}/raw.v1.Raw/Upload"), http_method: "POST",
+                                            headers: headers, deadline: ConnectRPC::Deadline.new(0.3, clock: -> { 0 }),
+                                            lifecycle: lifecycle)
+    chunk = "x".b * 65_536
+    # The stream window and h2's send buffer take fewer than 40 such writes.
+    error = error_of { hyper.open_grpc_stream(request) { |exchange| 100.times { exchange.write(chunk) } } }
+    expect([error.code, error.message]).to eq(["unavailable", "HTTP transport failed: timed out"])
+    expect(recorded.map { |failure| [failure.class.name, failure.kind] })
+      .to eq([["ConnectRPC::Hyper::Native::Failure", :timeout]])
+    expect(error.cause).to be(recorded.first)
+  end
+
   it "accepts an HTTP/1.1 response head larger than hyper's defaults, up to Go's 10 MiB bound" do
     big = Array.new(300) { |index| ["x-big-#{index}", "v" * 4096] }.to_h
     server = TinyHTTP.new { |_request, socket| TinyHTTP.ok(socket, headers: big) }

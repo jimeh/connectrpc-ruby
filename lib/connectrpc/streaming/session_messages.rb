@@ -2,7 +2,7 @@
 
 module ConnectRPC
   module Streaming
-    class Session
+    class Session # rubocop:disable Metrics/ClassLength
       def remote_completed?(error)
         @strategy.grpc? && @eof && error.equal?(@remote_error)
       end
@@ -48,6 +48,23 @@ module ConnectRPC
         end
       end
 
+      # Sends the one request of a unary or server-streaming call, which core
+      # writes itself. As in grpc-go and connect-go, a send failure leaves the
+      # outcome to the response; other failures still end the call.
+      def send_request(message)
+        forgiven = begin
+          send_message(message)
+          nil
+        rescue Error => e
+          raise unless send_failure?(e)
+
+          [e, @raw_send_failure].compact
+        end
+        # Closing outside the rescue keeps the forgiven failure from becoming
+        # the implicit cause of anything close_send raises.
+        forgiven ? close_forgiven_send(forgiven) : close_send
+      end
+
       def abandon
         check_open!
         @abandoned = true
@@ -59,6 +76,40 @@ module ConnectRPC
       end
 
       private
+
+      # The lifecycle drops only the failures this send produced, so failures
+      # recorded independently, before or during it, still count.
+      def forgive_send(*errors)
+        @send_failure = @raw_send_failure = @writing_error = nil
+        @lifecycle&.forgive(*errors)
+        nil
+      end
+
+      # After a forgiven send, closing may fail again with the write's failure,
+      # or with a send failure caused by it, which is forgiven too. Any other
+      # failure ends the call: the half-close may not have reached the peer.
+      def close_forgiven_send(forgiven)
+        forgive_send(*forgiven)
+        close_send
+      rescue IOError, SystemCallError, Error => e
+        raise if e.is_a?(Error) && e.code != "unavailable"
+        raise unless caused_by?(e, forgiven)
+
+        forgive_send(e)
+      end
+
+      def caused_by?(error, causes)
+        seen = [] #: Array[Exception]
+        # @type var current: Exception?
+        current = error
+        while current && seen.none? { |failure| failure.equal?(current) }
+          return true if causes.any? { |cause| cause.equal?(current) }
+
+          seen << current
+          current = current.cause
+        end
+        false
+      end
 
       def receive_message(skip_data)
         raise StreamStateError, "Normal response consumption was relinquished" if @recovering

@@ -3,7 +3,8 @@
 //! independent (core allows one reader and one writer at once), each taken
 //! out of its lock for the duration of an operation. `abort` fires a signal
 //! that every wait and the request body observe, so it wins over busy
-//! operations instead of waiting for them.
+//! operations instead of waiting for them. On HTTP/2 a response that ends
+//! while the upload is open ends the upload too (`Upload`).
 use std::future::Future;
 use std::pin::{Pin, pin};
 use std::sync::atomic::{AtomicBool, AtomicU16, Ordering};
@@ -16,9 +17,9 @@ use http_body_util::BodyExt;
 use hyper::body::{Frame, Incoming};
 use hyper::client::conn::TrySendError;
 use tokio::sync::oneshot::error::TryRecvError;
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{Notify, mpsc, oneshot};
 
-use crate::body::CallBody;
+use crate::body::{CallBody, Upload};
 use crate::failure::{Failure, TlsFault};
 use crate::gvl::Signal;
 use crate::holds::Holds;
@@ -130,7 +131,21 @@ async fn answered<T, E>(
     promise.await.map_err(Unanswered::Failed)
 }
 
-type Delivered = Result<(hyper::Response<Incoming>, Lease), Failure>;
+type Outcome = Result<(hyper::Response<Incoming>, Lease), Failure>;
+
+/// A response head and its lease.
+struct Answer {
+    response: hyper::Response<Incoming>,
+    lease: Lease,
+    /// HEADERS carried END_STREAM: a gRPC trailers-only response. h2 keeps
+    /// trailers that arrived right behind the head in its queue, so this is
+    /// false when the status came in a separate trailing HEADERS frame. Read
+    /// when the head is published: h2 stops reporting the end once the
+    /// stream was reset, as the upload's end may reset it (`Upload`).
+    end_stream: bool,
+}
+
+type Delivered = Result<Answer, Failure>;
 
 /// Publishes a dispatch's response outcome. `respond` owns it, so a task that
 /// is never polled, refused by a sealed tracker or aborted drops it too.
@@ -138,20 +153,32 @@ type Delivered = Result<(hyper::Response<Incoming>, Lease), Failure>;
 /// and `responded` fires only after the outcome was sent or the sender
 /// dropped (`Drop`). So once `responded` fired, the outcome is in
 /// `head_failure` (a failure), in the receiver (a response), or the closed
-/// channel says none will come.
+/// channel says none will come. An HTTP/2 head that carried END_STREAM ends
+/// the response once it was sent, so the upload ends even if nobody reads;
+/// it is the first point that observes the response's end.
 struct Responder {
     deliver: Option<oneshot::Sender<Delivered>>,
     head_failure: Arc<OnceLock<Failure>>,
     responded: Arc<Signal>,
+    upload: Arc<Upload>,
 }
 
 impl Responder {
-    fn publish(mut self, delivered: Delivered) {
+    fn publish(mut self, outcome: Outcome) {
+        let delivered = outcome.map(|(response, lease)| Answer {
+            end_stream: http_body::Body::is_end_stream(response.body()),
+            response,
+            lease,
+        });
+        let ended = matches!(&delivered, Ok(answer) if answer.end_stream && answer.lease.is_h2());
         if let Err(failure) = &delivered {
             let _ = self.head_failure.set(failure.clone());
         }
         if let Some(deliver) = self.deliver.take() {
             let _ = deliver.send(delivered);
+        }
+        if ended {
+            self.upload.end_response();
         }
     }
 }
@@ -189,6 +216,17 @@ pub struct RecvHalf {
     failed: Option<Failure>,
     /// The response's connection's TLS failure record, for body errors.
     fault: Arc<TlsFault>,
+    /// The call's upload, once an HTTP/2 response was installed.
+    upload: Option<Arc<Upload>>,
+}
+
+impl RecvHalf {
+    /// The response ended (END_STREAM), as this half consumed it.
+    fn end_response(&self) {
+        if let Some(upload) = &self.upload {
+            upload.end_response();
+        }
+    }
 }
 
 pub struct SendHalf {
@@ -212,6 +250,10 @@ pub struct CallState {
     /// published, as `Responder` orders them.
     head_failure: Arc<OnceLock<Failure>>,
     responded: Arc<Signal>,
+    /// How the upload ends on HTTP/2 (`Upload`).
+    upload: Arc<Upload>,
+    /// Notified whenever an operation returns its half (`restore`).
+    restored: Notify,
     aborted: AtomicBool,
     finished: AtomicBool,
     failed: AtomicBool,
@@ -246,6 +288,8 @@ impl CallState {
             stranded: Signal::new(),
             head_failure: Arc::new(OnceLock::new()),
             responded: Signal::new(),
+            upload: Upload::new(),
+            restored: Notify::new(),
             aborted: AtomicBool::new(false),
             finished: AtomicBool::new(false),
             failed: AtomicBool::new(false),
@@ -281,12 +325,17 @@ impl CallState {
     }
 
     /// Returns a half after an operation, unless the call was aborted
-    /// meanwhile; then the half is dropped here instead.
+    /// meanwhile; then the half is dropped here instead. Wakes a write that
+    /// waits for the response's end (`response_end`): the operation may have
+    /// taken the write's wake with the receive half.
     pub fn restore<T>(&self, slot: &Mutex<Option<T>>, half: T) {
-        let mut guard = slot.lock().unwrap_or_else(|e| e.into_inner());
-        if !self.aborted.load(Ordering::SeqCst) {
-            *guard = Some(half);
+        {
+            let mut guard = slot.lock().unwrap_or_else(|e| e.into_inner());
+            if !self.aborted.load(Ordering::SeqCst) {
+                *guard = Some(half);
+            }
         }
+        self.restored.notify_waiters();
     }
 
     pub fn mark_failed(&self) {
@@ -333,7 +382,14 @@ impl CallState {
         } else {
             oneshot::channel().0
         };
-        let body = CallBody::stream(rx, self.ended.clone(), self.abort.clone(), home);
+        let upload = lease.is_h2().then(|| self.upload.clone());
+        let body = CallBody::stream(
+            rx,
+            self.ended.clone(),
+            self.abort.clone(),
+            home,
+            upload.clone(),
+        );
         let request = match self.spec.build(body, self.deadline, lease.is_h2()) {
             Ok(request) => request,
             Err(failure) => {
@@ -355,6 +411,7 @@ impl CallState {
                 require_h2: self.require_h2,
                 deadline: self.deadline,
                 ended: self.ended.clone(),
+                upload,
                 lease,
                 sent,
                 mark,
@@ -367,6 +424,7 @@ impl CallState {
                 deliver: Some(deliver),
                 head_failure: self.head_failure.clone(),
                 responded: self.responded.clone(),
+                upload: self.upload.clone(),
             },
         ));
         *state = Dispatch::Dispatched(Some(delivered));
@@ -414,7 +472,11 @@ impl CallState {
         recv: &mut RecvHalf,
         delivered: Option<Delivered>,
     ) -> Result<(), Failure> {
-        let (response, lease) = delivered.ok_or_else(|| {
+        let Answer {
+            response,
+            lease,
+            end_stream,
+        } = delivered.ok_or_else(|| {
             if self.abort.fired() {
                 Failure::new("aborted", "exchange aborted")
             } else {
@@ -433,13 +495,12 @@ impl CallState {
             if let Some(fault) = lease.fault() {
                 recv.fault = fault.clone();
             }
+            if lease.is_h2() {
+                recv.upload = Some(self.upload.clone());
+            }
             *slot = Some(lease);
         }
         let (parts, body) = response.into_parts();
-        // HEADERS carried END_STREAM: a gRPC trailers-only response. h2 keeps
-        // trailers that arrived right behind the head in its queue, so this is
-        // false when the status came in a separate trailing HEADERS frame.
-        let end_stream = http_body::Body::is_end_stream(&body);
         recv.done = end_stream;
         recv.head = Some(Head {
             status: parts.status.as_u16(),
@@ -481,11 +542,24 @@ impl CallState {
     /// own failure when the response side knows it (`ended`). The write in
     /// flight when it ends returns: its bytes were queued, as grpc-go's
     /// `SendMsg` returns once it queued a message and fails the next call.
+    ///
+    /// On HTTP/2 the response's end ends the upload (`Upload`), so a write
+    /// that starts after the transport observed it, or that still waits to
+    /// queue its bytes then, fails the same way and queues nothing; one that
+    /// waits after queueing returns.
     pub async fn write(self: &Arc<Self>, send: &mut SendHalf, bytes: Bytes) -> Result<(), Failure> {
         self.dispatch().await?;
-        let Some(tx) = send.tx.as_ref() else {
+        if send.tx.is_none() {
             return Err(Failure::new("state", "request body already closed"));
-        };
+        }
+        if self.is_h2() {
+            // An end that already arrived, if nobody read it.
+            self.probe(&mut Context::from_waker(Waker::noop()));
+            if self.upload.response_ended() {
+                return Err(self.ended(send).await);
+            }
+        }
+        let tx = send.tx.as_ref().expect("checked above");
         // A closed channel means hyper dropped the request body: the stream
         // ended or was reset, or its connection ended. A stranded request's
         // body may never be dropped or read, so `stranded` ends the wait too,
@@ -493,6 +567,7 @@ impl CallState {
         let queued = tokio::select! {
             biased;
             () = self.stranded.wait() => false,
+            () = self.response_end() => false,
             reserved = tx.reserve() => reserved.map(|permit| permit.send(bytes)).is_ok(),
         };
         if !queued {
@@ -502,8 +577,38 @@ impl CallState {
         tokio::select! {
             _ = tx.reserve() => {}
             () = self.stranded.wait() => {}
+            () = self.response_end() => {}
         }
         Ok(())
+    }
+
+    /// Resolves once the transport observed the response's end on HTTP/2;
+    /// never on HTTP/1.1. While it waits it polls the receive half with this
+    /// task's waker whenever the half is in its slot (`probe`), so an end
+    /// that arrives while nobody reads is observed too. An operation that
+    /// takes the half may replace that waker, so returning the half
+    /// (`restore`) wakes this wait to poll again; the notification is
+    /// registered before the slot is checked.
+    async fn response_end(&self) {
+        if !self.is_h2() {
+            return std::future::pending().await;
+        }
+        let mut ended = pin!(self.upload.wait());
+        let mut restored = pin!(self.restored.notified());
+        std::future::poll_fn(|cx| {
+            if ended.as_mut().poll(cx).is_ready() {
+                return Poll::Ready(());
+            }
+            while restored.as_mut().poll(cx).is_ready() {
+                restored.set(self.restored.notified());
+            }
+            self.probe(cx);
+            match self.upload.response_ended() {
+                true => Poll::Ready(()),
+                false => Poll::Pending,
+            }
+        })
+        .await;
     }
 
     /// Why a write found the stream ended. On HTTP/2, and for a stranded
@@ -513,7 +618,8 @@ impl CallState {
     /// HTTP/2 pipe drops the body only once the stream closed, which also
     /// resolves the response (`Call::write` rejects a chunk h2 would refuse
     /// as too large, which would drop the body alone); a stranded
-    /// request's failure is published right after `stranded` fires; and
+    /// request's failure is published right after `stranded` fires; a
+    /// response that ended the upload (`Upload`) was already published; and
     /// while a retry runs the replacement body holds the receiver, so the
     /// channel stays open. HTTP/1.1 does not wait: hyper also drops a body
     /// its own framing ended (a declared Content-Length reached, or an
@@ -538,7 +644,7 @@ impl CallState {
         if let Some(failure) = self.head_failure.get() {
             return failure.clone();
         }
-        match self.probe() {
+        match self.probe(&mut Context::from_waker(Waker::noop())) {
             Some(failure) => {
                 send.ended = Some(failure.clone());
                 failure
@@ -551,12 +657,13 @@ impl CallState {
 
     /// The stream's failure as the receive half shows it now, if it does:
     /// installs a delivered head, then reads frames that are already there
-    /// until the buffer holds data or the body ended. Never awaits, and
-    /// never takes the half out of its slot, so a concurrent `read` never
-    /// sees an overlap; a reader that holds the half reports the failure
-    /// itself. Lock order: `recv`, then `lease` (`install`); `dispatch` is
-    /// only tried. Nothing takes `recv` while it holds either.
-    fn probe(&self) -> Option<Failure> {
+    /// until the buffer holds data or the body ended, which ends the
+    /// response (`apply`). Never awaits, and never takes the half out of its
+    /// slot, so a concurrent `read` never sees an overlap; a reader that
+    /// holds the half reports the failure itself. A pending head or frame
+    /// registers `cx`. Lock order: `recv`, then `lease` (`install`);
+    /// `dispatch` is only tried. Nothing takes `recv` while it holds either.
+    fn probe(&self, cx: &mut Context<'_>) -> Option<Failure> {
         let mut slot = self.recv.lock().unwrap_or_else(|e| e.into_inner());
         let recv = slot.as_mut()?;
         if let Some(failure) = &recv.failed {
@@ -571,9 +678,13 @@ impl CallState {
                     recv.pending = delivered.take();
                 }
             }
-            let delivered = match recv.pending.as_mut()?.try_recv() {
+            let pending = recv.pending.as_mut()?;
+            let delivered = match pending.try_recv() {
                 Ok(delivered) => Some(delivered),
-                Err(TryRecvError::Empty) => return None,
+                Err(TryRecvError::Empty) => match Pin::new(pending).poll(cx) {
+                    Poll::Ready(delivered) => delivered.ok(),
+                    Poll::Pending => return None,
+                },
                 Err(TryRecvError::Closed) => None,
             };
             recv.pending = None;
@@ -581,27 +692,27 @@ impl CallState {
                 return Some(failure);
             }
         }
-        let mut cx = Context::from_waker(Waker::noop());
         // Data, trailers and the end, with room for empty DATA frames.
         for _ in 0..PROBE_POLLS {
             if !recv.buffer.is_empty() || recv.done {
-                break;
+                return None;
             }
-            let Some(body) = recv.body.as_mut() else {
-                break;
-            };
-            let Poll::Ready(frame) = http_body::Body::poll_frame(Pin::new(body), &mut cx) else {
-                break;
+            let body = recv.body.as_mut()?;
+            let Poll::Ready(frame) = http_body::Body::poll_frame(Pin::new(body), cx) else {
+                return None;
             };
             if let Err(failure) = apply(recv, frame) {
                 return Some(failure);
             }
         }
+        // More frames may be there: a waiting write polls again.
+        cx.waker().wake_by_ref();
         None
     }
 
     pub fn close_send(&self) {
         if let Some(half) = self.send.lock().unwrap_or_else(|e| e.into_inner()).as_mut() {
+            self.upload.close();
             half.tx = None;
         }
     }
@@ -623,7 +734,13 @@ impl CallState {
                 self.core.release_h1(&mut lease);
             }
         }
-        drop(self.send.lock().unwrap_or_else(|e| e.into_inner()).take());
+        // The writer's side closes with the call; on HTTP/2 the drain already
+        // ended the response, which decided the upload's end.
+        let send = self.send.lock().unwrap_or_else(|e| e.into_inner()).take();
+        if send.is_some() {
+            self.upload.close();
+        }
+        drop(send);
         // The head and trailers stay readable; the h2 stream handle goes, so
         // nothing holds the connection open after the call.
         if let Some(recv) = self.recv.lock().unwrap_or_else(|e| e.into_inner()).as_mut() {
@@ -664,18 +781,34 @@ const PROBE_POLLS: usize = 8;
 
 /// Applies one response body frame to `recv`, as `read` and `probe` both
 /// consume the body. A body error stays on `recv` for the operations after
-/// it: hyper's HTTP/1.1 body hands it out once.
+/// it: hyper's HTTP/1.1 body hands it out once. The end, trailers and a DATA
+/// frame that carried END_STREAM (its bytes stay buffered) end the
+/// response. hyper reads a peer's RST_STREAM(NO_ERROR) as the end too, after
+/// which its pipe already dropped the upload.
 fn apply(
     recv: &mut RecvHalf,
     frame: Option<Result<Frame<Bytes>, hyper::Error>>,
 ) -> Result<(), Failure> {
     match frame {
-        None => recv.done = true,
+        None => {
+            recv.done = true;
+            recv.end_response();
+        }
         Some(Ok(frame)) => match frame.into_data() {
-            Ok(data) => recv.buffer = data,
+            Ok(data) => {
+                recv.buffer = data;
+                if recv
+                    .body
+                    .as_ref()
+                    .is_some_and(http_body::Body::is_end_stream)
+                {
+                    recv.end_response();
+                }
+            }
             Err(frame) => {
                 if let Ok(trailers) = frame.into_trailers() {
                     recv.trailers = Some(trailers);
+                    recv.end_response();
                 }
             }
         },
@@ -693,6 +826,8 @@ struct Attempt {
     require_h2: bool,
     deadline: Option<Instant>,
     ended: Arc<AtomicBool>,
+    /// The upload's end, when the first dispatch went out on HTTP/2.
+    upload: Option<Arc<Upload>>,
     lease: Lease,
     sent: Sent,
     mark: Option<Arc<Mark>>,
@@ -719,6 +854,7 @@ async fn respond(
         require_h2,
         deadline,
         ended,
+        upload,
         lease,
         sent,
         mark,
@@ -759,7 +895,7 @@ async fn respond(
                     // these retries.
                     core.holds.reach("retry:unprocessed").await;
                     // Retried at most once: this body has no receiver to return.
-                    CallBody::stream(rx, ended, abort.clone(), oneshot::channel().0)
+                    CallBody::stream(rx, ended, abort.clone(), oneshot::channel().0, upload)
                 }
             };
             let exclude = lease.id();
@@ -782,14 +918,14 @@ async fn respond(
             Err(Unanswered::Stranded) => Err(strand(&lease)),
         }
     };
-    let delivered = tokio::select! {
+    let outcome = tokio::select! {
         result = work => result,
         _ = abort.wait() => return,
         _ = core.shutdown.wait() => Err(Failure::shutdown()),
     };
     // Spec hold point: it parks the outcome before it is published.
     core.holds.reach("respond:publish").await;
-    responder.publish(delivered);
+    responder.publish(outcome);
     // Spec hold point: armed with a zero bound, it counts outcomes published.
     core.holds.block("respond:published");
 }

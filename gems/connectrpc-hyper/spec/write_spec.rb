@@ -53,6 +53,35 @@ RSpec.describe "Streaming writes after the stream ended", :interop do
     [bytes, e]
   end
 
+  # The scenario's request stream id and client address, from its peer event.
+  def request_of(scenario, from)
+    event = peer.wait_event(/\Araw request #{Regexp.escape(scenario)} /, from: from)
+    [event[/ stream=(\d+) /, 1], event[/ conn=(\S+)\z/, 1]]
+  end
+
+  def reset_pattern(stream, code: /\d+/)
+    /\Araw rst stream=#{stream[0]} code=(#{code}) conn=#{Regexp.escape(stream[1])}\z/
+  end
+
+  # Waits for the client's RST_STREAM(NO_ERROR) on the request's stream,
+  # within the call's 5 s deadline when the call is still open.
+  def wait_reset(stream, from) = peer.wait_event(reset_pattern(stream, code: 0), from: from, timeout: 4)
+
+  # The codes of every client RST_STREAM on the request's stream, in order.
+  def reset_codes(stream, from) = peer.since(from).filter_map { it[reset_pattern(stream), 1] }
+
+  # Runs an ok call on `transport` and expects it on the request's
+  # connection: the peer accepted no other since `from`.
+  def expect_reused(transport, stream, from)
+    mark = peer.mark
+    exchange("ok", transport: transport) do |call|
+      call.close_send
+      read_all(call)
+      call.finish(timeout: 5)
+    end
+    expect([request_of("ok", mark)[1], peer.count(/\Araw accept /, from: from)]).to eq([stream[1], 1])
+  end
+
   describe "an exchange (gRPC)" do
     it "raises a reset before the head as the reset, which the head then reports" do
       exchange("end-on-data:reset:8") do |call|
@@ -120,11 +149,11 @@ RSpec.describe "Streaming writes after the stream ended", :interop do
   end
 
   describe "core's client stream" do
-    def upload(scenario, protocol:)
+    def upload(scenario, protocol:, transport: hyper)
       writes = 0
       metadata = { "x-scenario" => scenario }
       error = error_of do
-        core(peer["raw"], transport: hyper, protocol: protocol)
+        core(peer["raw"], transport: transport, protocol: protocol)
           .client_stream(HyperHelpers::RAW_CLIENT_STREAM, metadata: metadata, timeout: 5) do |writer|
           writes_cap.times do
             writer.send_message(MSG.new)
@@ -141,6 +170,20 @@ RSpec.describe "Streaming writes after the stream ended", :interop do
         expect(result).to eq(%w[not_found ended])
         expect(writes).to be < writes_cap / 10
       end
+
+      # The baseline reports the status too, after every write: the bounded
+      # write count and the client's reset prove the stream ended.
+      it "stops writing on a half-open stream, resets it and reports the server's status (#{protocol})" do
+        from = peer.mark
+        transport = hyper
+        result, writes = upload("end-on-data:status:5:open", protocol: protocol, transport: transport)
+        expect(result).to eq(%w[not_found ended])
+        expect(writes).to be < writes_cap / 10
+        stream = request_of("end-on-data:status:5:open", from)
+        wait_reset(stream, from)
+        expect_reused(transport, stream, from)
+        expect(reset_codes(stream, from)).to eq(["0"])
+      end
     end
 
     %w[reset head-reset].each do |mode|
@@ -148,6 +191,79 @@ RSpec.describe "Streaming writes after the stream ended", :interop do
         result, writes = upload("end-on-data:#{mode}:8", protocol: :grpc)
         expect(result).to eq(reset)
         expect(writes).to be < writes_cap / 10
+      end
+    end
+  end
+
+  # Core writes a unary or server-streaming request itself. A server that
+  # answers OK while the request is still open leaves the stream half-open;
+  # once the transport sees the end, the client resets the stream and the
+  # rest of the request's writes raise. As in grpc-go and connect-go, the
+  # response then decides the call.
+  describe "core's unary and server-streaming calls" do
+    # Several 16 KiB writes.
+    def large = MSG.new(value: "x" * 100_000)
+
+    def answered(kind, transport, scenario)
+      metadata = { "x-scenario" => scenario }
+      client = core(peer["raw"], transport: transport)
+      if kind == :unary
+        return [client.call(HyperHelpers::RAW_UNARY, large, metadata: metadata, timeout: 5).message.value]
+      end
+
+      received = []
+      client.server_stream(HyperHelpers::RAW_SERVER_STREAM, large, metadata: metadata, timeout: 5) do |reader|
+        received.concat(values(reader))
+      end
+      received
+    end
+
+    def script(tag, steps) = "script:#{tag}:#{steps}"
+    def tag = @tag ||= "early-ok-#{rand(1 << 30)}"
+
+    # The peer never reads, so a request larger than hyper's upload pipeline
+    # holds without window (the stream window, one held chunk and one queued
+    # write) must wait for window, while the status, with no response DATA
+    # ahead of it, ends the stream: the transport sees the end, and a write
+    # raises. The window opens only after the call returned, so hyper's pipe
+    # can send the reset even if it was waiting for window (a documented
+    # limitation).
+    { "status" => "head,status=0", "trailers-only" => "trailers-only=0" }.each do |name, ending|
+      it "returns an OK server stream whose end stopped the request, and resets the stream (#{name})" do
+        transport = hyper
+        from = peer.mark
+        scenario = script(tag, "noread,#{ending},gate,window")
+        received = []
+        core(peer["raw"], transport: transport)
+          .server_stream(HyperHelpers::RAW_SERVER_STREAM, MSG.new(value: "x" * 1_048_576),
+                         metadata: { "x-scenario" => scenario }, timeout: 5) do |reader|
+          received.concat(values(reader))
+        end
+        expect(received).to eq([])
+        stream = request_of(scenario, from)
+        peer.command("release #{tag}.1")
+        wait_reset(stream, from)
+        expect_reused(transport, stream, from)
+        expect(reset_codes(stream, from)).to eq(["0"])
+      end
+    end
+
+    # hyper sees an end behind unread response DATA only once that data is
+    # read, after core wrote the whole request and closed its side, so the
+    # whole request and its END_STREAM go out with no reset (a documented
+    # limitation).
+    %i[unary server_stream].each do |kind|
+      it "returns an OK #{kind} reply that sits ahead of the end" do
+        transport = hyper
+        from = peer.mark
+        scenario = "end-on-data:reply:0:open"
+        expect(answered(kind, transport, scenario)).to eq(["reply"])
+        stream = request_of(scenario, from)
+        request_end = /\Araw request-end stream=#{stream[0]} bytes=(\d+) conn=#{Regexp.escape(stream[1])}\z/
+        expect(peer.wait_event(request_end, from: from, timeout: 4)[request_end, 1].to_i)
+          .to eq(5 + MSG.encode(large).bytesize)
+        expect_reused(transport, stream, from)
+        expect(reset_codes(stream, from)).to eq([])
       end
     end
   end
@@ -249,8 +365,10 @@ RSpec.describe "Streaming writes after the stream ended", :interop do
 
   # Forced teardown fires `shutdown` before it aborts the connection that
   # drops the upload, so a write in flight after the whole response arrived
-  # raises a forced phrase, never the generic one. The hold parks teardown
-  # between the two; the write must already have its forced phrase then.
+  # raises a forced phrase, never the generic one. The status waits behind
+  # the unread message, so the client has not seen the end and the writes
+  # go on. The hold parks teardown between the two; the write must already
+  # have its forced phrase then.
   it "raises a forced phrase from a write in flight when forced teardown ends the stream" do
     transport = hyper
     native_driver = driver(transport)
@@ -258,11 +376,10 @@ RSpec.describe "Streaming writes after the stream ended", :interop do
     from = peer.mark
     writer = nil
     closer = nil
-    exchange("end-on-data:status:0:open", transport: transport) do |call|
+    exchange("end-on-data:reply:0:open", transport: transport) do |call|
       call.write(envelope)
-      peer.wait_event(/\Araw ended end-on-data:status:0:open /, from: from)
+      peer.wait_event(/\Araw ended end-on-data:reply:0:open /, from: from)
       call.response_head(timeout: 5)
-      expect(read_all(call)).to eq(["".b, nil])
       writer = Thread.new do
         Thread.current.report_on_exception = false
         write_until_raised(call)
@@ -299,20 +416,244 @@ RSpec.describe "Streaming writes after the stream ended", :interop do
     end
   end
 
-  # A stream the server ends with END_STREAM and no reset stays half-open:
-  # hyper's pipe keeps sending, as connectrpc-async does (a documented
-  # limitation; grpc-go's client resets such a stream itself).
-  it "keeps accepting writes on a half-open stream, then reads the status" do
-    from = peer.mark
-    exchange("end-on-data:status:5:open") do |call|
-      call.write(envelope)
-      peer.wait_event(/\Araw ended end-on-data:status:5:open /, from: from)
-      # Reading to EOF first: the client has then processed END_STREAM.
-      expect(call.response_head(timeout: 5).status).to eq(200)
-      expect(read_all(call)).to eq(["".b, nil])
-      expect(call.response_trailers["grpc-status"]).to eq(["5"])
-      20.times { call.write(envelope) }
-      call.close_send
+  # A server that ends its response (END_STREAM) while the upload is open,
+  # without resetting the stream (#228). Once the transport observes the end,
+  # the client resets the stream with RST_STREAM(NO_ERROR), as grpc-go's
+  # client does, and later writes raise; the response stays readable.
+  # Examples count resets after a later call on the same connection, which
+  # the peer reads after any reset the stream's cleanup wrote.
+  describe "a response that ends while the upload is open" do
+    # Larger than the stream's whole 64 KiB window: hyper hands h2 the first
+    # write's bytes at once and holds the second's waiting for window, so
+    # against a peer that never reopens the window exactly two writes
+    # return, and the third waits after queueing until something ends it.
+    def beyond_window = "\0".b * 131_072
+
+    def grpc_end = ["".b, nil]
+
+    def connect_end
+      end_stream = '{"error":{"code":"not_found","message":"ended"}}'
+      [[2, end_stream.bytesize].pack("CN") + end_stream, nil]
+    end
+
+    # A thread writing `chunk` until a write raises, and the count of writes
+    # that returned.
+    def writer(call, chunk)
+      written = [0]
+      thread = Thread.new do
+        Thread.current.report_on_exception = false
+        loop do
+          call.write(chunk)
+          written[0] += 1
+        end
+      rescue ConnectRPC::Error, RuntimeError => e
+        e
+      end
+      [thread, written]
+    end
+
+    # Waits until the third write queued and waits for window.
+    def wait_window_spent(thread, written)
+      wait_until("two writes returned, the third parked") { written[0] == 2 }
+      wait_parked(thread, "Exchange#write")
+    end
+
+    def script(tag, steps) = "script:#{tag}:#{steps}"
+    def tag = @tag ||= "half-open-#{rand(1 << 30)}"
+
+    { grpc: true, connect: false }.each do |protocol, grpc|
+      it "resets the stream once a status ended it, then reads the status (#{protocol})" do
+        transport = hyper
+        from = peer.mark
+        scenario = "end-on-data:status:5:open"
+        stream = nil
+        exchange(scenario, grpc: grpc, transport: transport) do |call|
+          call.write(envelope)
+          stream = request_of(scenario, from)
+          peer.wait_event(/\Araw ended #{scenario} /, from: from)
+          expect(outcome(write_until_raised(call))).to eq(closed)
+          wait_reset(stream, from)
+          expect(call.response_head(timeout: 5).status).to eq(200)
+          expect(read_all(call)).to eq(grpc ? grpc_end : connect_end)
+          expect(call.response_trailers["grpc-status"]).to eq(["5"]) if grpc
+          call.finish(timeout: 5)
+        end
+        expect_reused(transport, stream, from)
+        expect(reset_codes(stream, from)).to eq(["0"])
+      end
+
+      # The status waits behind the message until it is read.
+      it "resets the stream once the message ahead of the status was read (#{protocol})" do
+        transport = hyper
+        from = peer.mark
+        scenario = "end-on-data:reply:5:open"
+        stream = nil
+        exchange(scenario, grpc: grpc, transport: transport) do |call|
+          call.write(envelope)
+          stream = request_of(scenario, from)
+          peer.wait_event(/\Araw ended #{scenario} /, from: from)
+          call.response_head(timeout: 5)
+          expect(call.read(64, timeout: 5)).to eq(reply)
+          expect(outcome(write_until_raised(call))).to eq(closed)
+          wait_reset(stream, from)
+          expect(read_all(call)).to eq(grpc ? grpc_end : connect_end)
+          expect(call.response_trailers["grpc-status"]).to eq(["5"]) if grpc
+          call.finish(timeout: 5)
+        end
+        expect_reused(transport, stream, from)
+        expect(reset_codes(stream, from)).to eq(["0"])
+      end
+    end
+
+    it "resets the stream of a trailers-only response, then reads its head" do
+      transport = hyper
+      from = peer.mark
+      scenario = "end-on-data:trailers-only:5:open"
+      stream = nil
+      exchange(scenario, transport: transport) do |call|
+        call.write(envelope)
+        stream = request_of(scenario, from)
+        peer.wait_event(/\Araw ended #{scenario} /, from: from)
+        expect(outcome(write_until_raised(call))).to eq(closed)
+        wait_reset(stream, from)
+        head = call.response_head(timeout: 5)
+        expect([head.status, head.end_stream, head.headers["grpc-status"]]).to eq([200, true, ["5"]])
+        expect(read_all(call)).to eq(grpc_end)
+        call.finish(timeout: 5)
+      end
+      expect_reused(transport, stream, from)
+      expect(reset_codes(stream, from)).to eq(["0"])
+    end
+
+    it "resets the stream when a reader reaches the end, with no write in flight" do
+      transport = hyper
+      from = peer.mark
+      scenario = script(tag, "head,gate,status=5")
+      stream = nil
+      exchange(scenario, transport: transport) do |call|
+        call.write(envelope)
+        stream = request_of(scenario, from)
+        peer.command("release #{tag}.1")
+        expect(call.response_head(timeout: 5).status).to eq(200)
+        expect(read_all(call)).to eq(grpc_end)
+        wait_reset(stream, from)
+        call.finish(timeout: 5)
+      end
+      expect_reused(transport, stream, from)
+      expect(reset_codes(stream, from)).to eq(["0"])
+    end
+
+    # Nobody reads: the waiting write observes the end itself. hyper does
+    # not poll the request body while it waits for window, so the reset goes
+    # out only once the window opens (a documented limitation).
+    it "returns a write queued when the response ends, then raises the next" do
+      transport = hyper
+      from = peer.mark
+      scenario = script(tag, "noread,head,gate,status=5,gate,window")
+      stream = nil
+      exchange(scenario, transport: transport) do |call|
+        thread, written = writer(call, beyond_window)
+        wait_window_spent(thread, written)
+        stream = request_of(scenario, from)
+        peer.command("release #{tag}.1")
+        expect([outcome(thread.value), written[0]]).to eq([closed, 3])
+        expect(call.response_head(timeout: 5).status).to eq(200)
+        expect(read_all(call)).to eq(grpc_end)
+        call.finish(timeout: 5)
+      end
+      # After the call completed, the reset waits for the window too; a
+      # later call on the connection is the ordering boundary.
+      expect_reused(transport, stream, from)
+      expect(reset_codes(stream, from)).to eq([])
+      peer.command("release #{tag}.2")
+      wait_reset(stream, from)
+      expect_reused(transport, stream, from)
+      expect(reset_codes(stream, from)).to eq(["0"])
+    end
+
+    # An interrupted write leaves its bytes queued, so the next write waits
+    # to queue its own.
+    it "raises a write waiting to queue when the response ends" do
+      transport = hyper
+      from = peer.mark
+      scenario = script(tag, "noread,head,gate,status=5,gate,window")
+      stream = nil
+      exchange(scenario, transport: transport) do |call|
+        thread, written = writer(call, beyond_window)
+        wait_window_spent(thread, written)
+        thread.raise(RuntimeError, "interrupted")
+        expect(thread.value.message).to eq("interrupted")
+        waiting = Thread.new do
+          Thread.current.report_on_exception = false
+          call.write(envelope)
+        rescue ConnectRPC::Error => e
+          e
+        end
+        wait_parked(waiting, "Exchange#write")
+        stream = request_of(scenario, from)
+        peer.command("release #{tag}.1")
+        expect(outcome(waiting.value)).to eq(closed)
+        peer.command("release #{tag}.2")
+        wait_reset(stream, from)
+        expect(call.response_head(timeout: 5).status).to eq(200)
+        expect(read_all(call)).to eq(grpc_end)
+        call.finish(timeout: 5)
+      end
+      expect_reused(transport, stream, from)
+      expect(reset_codes(stream, from)).to eq(["0"])
+    end
+
+    # A reader that took the receive half may take the waiting write's wake
+    # with it; returning the half must wake the write to look again.
+    {
+      "the head" => ["noread,gate,head,gate,status=5", "Exchange#response_head"],
+      "a message" => ["noread,head,gate,reply,gate,status=5", "Exchange#read"]
+    }.each do |what, (steps, frame)|
+      it "notices the end that arrives after a reader returned with #{what}" do
+        from = peer.mark
+        scenario = script(tag, steps)
+        message = frame == "Exchange#read"
+        exchange(scenario) do |call|
+          thread, written = writer(call, beyond_window)
+          wait_window_spent(thread, written)
+          reader = Thread.new { message ? call.read(64, timeout: 5) : call.response_head(timeout: 5).status }
+          wait_parked(reader, frame)
+          peer.command("release #{tag}.1")
+          expect(reader.value).to eq(message ? reply : 200)
+          peer.command("release #{tag}.2")
+          peer.wait_event(/\Araw script #{tag} status=5\z/, from: from)
+          expect([outcome(thread.value), written[0]]).to eq([closed, 3])
+        end
+      end
+    end
+
+    # The client's own end of the upload commits a clean END_STREAM: the
+    # response ends after close_send, and once the window opens the queued
+    # bytes and END_STREAM go out, with no reset. The interrupted third write
+    # left its bytes queued, so all three writes arrive.
+    it "ends the upload cleanly when the writer closed its side first" do
+      transport = hyper
+      from = peer.mark
+      scenario = script(tag, "noread,head,gate,status=5,gate,window")
+      stream = nil
+      exchange(scenario, transport: transport) do |call|
+        thread, written = writer(call, beyond_window)
+        wait_window_spent(thread, written)
+        thread.raise(RuntimeError, "interrupted")
+        expect(thread.value.message).to eq("interrupted")
+        call.close_send
+        stream = request_of(scenario, from)
+        peer.command("release #{tag}.1")
+        expect(call.response_head(timeout: 5).status).to eq(200)
+        expect(read_all(call)).to eq(grpc_end)
+        peer.command("release #{tag}.2")
+        request_end = /\Araw request-end stream=#{stream[0]} bytes=(\d+) conn=#{Regexp.escape(stream[1])}\z/
+        expect(peer.wait_event(request_end, from: from, timeout: 4)[request_end, 1].to_i)
+          .to eq(3 * beyond_window.bytesize)
+        call.finish(timeout: 5)
+      end
+      expect_reused(transport, stream, from)
+      expect(reset_codes(stream, from)).to eq([])
     end
   end
 

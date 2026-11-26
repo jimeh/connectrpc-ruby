@@ -276,7 +276,8 @@ module ConnectRPC
       @notifying_processing: bool?
       @processing_held: bool?
       @host_rejected: bool?
-      @error: Exception?
+      @failures: Array[Exception]?
+      FAILURE_LIMIT: Integer
       def initialize: (Instrumentation, Object, String?, Array[Object]) -> void
       attr_reader outcome: Outcome?
       attr_accessor request_bytes: Integer?
@@ -287,12 +288,14 @@ module ConnectRPC
       def processing_finished: (code: String?, ?http_status: Integer?, ?normalized_error: Exception?, ?error: Exception?, ?response_bytes: Integer?, ?response_metadata: headers | Metadata, ?response_trailers: headers | Metadata) -> nil
       def message_received: (Integer) -> nil
       def message_sent: (Integer) -> nil
+      def forgive: (*Exception?) -> nil
       private
       def notify_message: (:message_received | :message_sent, Integer) -> nil
       def detach_tokens: (Array[[(^(Object?) -> void)?, Object?]]) -> nil
       def with_processing_completion: [T] () { () -> T } -> T
       def complete_processing: () -> nil
       def now: () -> Float
+      def cause_chain: (Exception?) -> Array[Exception]
       def notify_processing: (Outcome) -> Array[Callbacks]
       def notify_finished: (Completion) -> Array[Callbacks]
       def complete: () -> Array[Callbacks]

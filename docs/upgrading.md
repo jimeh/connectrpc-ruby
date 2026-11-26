@@ -28,6 +28,36 @@ The [changelog](../CHANGELOG.md) lists every change.
   status, or when a gRPC reset sits behind unread response data.
   A single write of 2 GiB or more raises `ArgumentError`. See
   [writes after the stream ended](../gems/connectrpc-hyper/README.md#errors).
+- Over HTTP/2, when a server ends its response with END_STREAM while the
+  request body is still open and does not reset the stream, connectrpc-hyper
+  and connectrpc-async now reset the stream with `RST_STREAM(NO_ERROR)`, as
+  grpc-go's client does, instead of leaving it half-open. Once the transport
+  sees the response's end, later writes raise `unavailable` instead of
+  succeeding and discarding the message, and the response's messages and status
+  still reach the caller, so core's client streams stop writing and report the
+  server's error status. connectrpc-hyper sees an end that sits behind response
+  data nobody has read only once that data is read. A request whose
+  `close_send` came first still ends with END_STREAM and no reset, and HTTP/1.1
+  is unchanged. See
+  connectrpc-hyper's [errors](../gems/connectrpc-hyper/README.md#errors),
+  including the cases where hyper sees the end or sends the reset late, and
+  connectrpc-async's
+  [native streaming](../gems/connectrpc-async/README.md#native-streaming).
+- A server-streaming call, Connect or gRPC, or a gRPC unary call whose request
+  write fails now reports the response's outcome instead of `unavailable`, as
+  grpc-go's and connect-go's clients do: an OK response returns its messages, a
+  remote error raises, and a response that never completes raises the read's own
+  failure. So a server that answers OK before it read the whole request, which
+  the HTTP/2 transports above now reset, still returns its reply. Because core
+  then waits for the response within the call deadline, a server that never
+  answers fails the call with `deadline_exceeded` when the deadline expires
+  instead of with `unavailable` within 100 ms. Other request failures, such as
+  encoding, message-size limits, cancellation and the deadline, still end the
+  call, and client-streaming and bidi calls keep a failed write's `unavailable`
+  over an OK status. Instrumentation outcomes no longer carry the forgiven
+  write's failure, nor the transport failure behind it when the transport makes
+  it the write error's cause, as connectrpc-hyper and connectrpc-async do. See
+  the streaming guide's [completion policy](streaming.md#completion-policy).
 - A first connectrpc-hyper use (call, stream open or close) whose tokio runtime
   cannot fully start now raises `fatal` within 5 seconds per start attempt
   instead of hanging with the GVL held, and a later use starts the runtime

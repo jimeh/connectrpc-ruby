@@ -476,6 +476,19 @@ Async Host and the original Async Transport remain HTTP/2 only. Use the
 separate [`HTTP1Transport`](#explicit-http11-client) client for Connect unary
 calls, server streaming and client streaming.
 
+Over HTTP/2, when a server ends its response with END_STREAM while the request
+body is still open and does not reset the stream, the client resets it with
+`RST_STREAM(NO_ERROR)`, as grpc-go's client does. This applies to every HTTP/2
+client stream, Connect and gRPC alike, and to unary uploads. The upload stops at
+the next frame boundary, a later or blocked write raises `unavailable`, and the
+response's messages and status stay readable. Core then reports the server's
+error status. A client or bidi stream keeps a failed write's `unavailable` over
+an OK status; a gRPC unary or server-streaming call, whose request core writes
+itself, reports the response's outcome, so a server that answered OK before it
+read the whole request still returns its reply, as with grpc-go and connect-go.
+A request that `close_send` ended first finishes with END_STREAM and no reset.
+HTTP/1.1 is unchanged.
+
 The streaming guide's [Falcon HTTP/1.1
 server](../../docs/streaming.md#falcon-http11-server) section describes how
 Falcon reads up to 256 KiB of unread HTTP/1.1 input before it writes its

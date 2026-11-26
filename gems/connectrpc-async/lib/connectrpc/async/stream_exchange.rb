@@ -13,14 +13,17 @@ module ConnectRPC
           @changed = ::Async::Condition.new
           @fragment = nil
           @queued_bytes = @maximum_queued_bytes = 0
-          @ended = @closed = false
+          @ended = @closed = @retired = false
         end
+
+        # Whether the producer closed its side, committing END_STREAM.
+        def write_closed? = @ended
 
         def write(bytes, timeout: nil)
           raise ArgumentError, "Output fragments must fit one frame" if bytes.bytesize > 16_384
 
           expires = Internal.now + timeout if timeout
-          while @fragment && !@closed
+          while @fragment && !@closed && !@retired
             if expires
               waiter = ::Async::Task.current.async(finished: false) { @changed.wait }
               begin
@@ -34,6 +37,7 @@ module ConnectRPC
             end
           end
           raise(@error || IOError.new("Output is closed")) if @closed || @ended
+          raise IOError, "HTTP/2 response ended before the request" if @retired
 
           @fragment = bytes.dup.freeze
           @queued_bytes = bytes.bytesize
@@ -43,7 +47,7 @@ module ConnectRPC
         end
 
         def read
-          @changed.wait until @fragment || @ended || @closed
+          @changed.wait until @fragment || @ended || @closed || @retired
           raise @error if @error
 
           fragment = @fragment
@@ -55,6 +59,17 @@ module ConnectRPC
 
         def close_write
           @ended = true
+          @changed.signal
+          nil
+        end
+
+        # The response ended while the producer's side was open. The queued
+        # fragment is dropped, the output reads the end, and later writes
+        # raise. Never yields: the stream's reader calls it.
+        def retire
+          @retired = true
+          @fragment = nil
+          @queued_bytes = 0
           @changed.signal
           nil
         end
@@ -264,8 +279,12 @@ module ConnectRPC
           nil
         end
 
+        # A response that ended while the request was open does not wait for
+        # the output's reset, which completes or fails within cleanup's
+        # allowance.
         def finish(timeout: nil)
-          perform(timeout: timeout) { @response.stream.output_task&.wait }
+          stream = @response.stream
+          perform(timeout: timeout) { stream.output_task&.wait unless stream.response_ended? }
           nil
         end
 

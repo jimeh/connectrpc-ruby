@@ -546,6 +546,60 @@ module ConnectRPC
         end
       end
 
+      # A client request body. A response that ends while the body is open
+      # stops it at the next frame boundary: DATA admission holds the frame
+      # guard while it rechecks the response's end, the stream and its credit,
+      # then debits and writes the frame, so no DATA follows the end and an
+      # abandoned frame debits no credit. Credit waits happen outside the guard
+      # and end with the response too. The output then reads the producer's end
+      # and its stream resets the stream (ResponseStream#finish_output).
+      class ClientOutput < Output
+        def write(chunk)
+          until chunk.empty?
+            stream = @stream or raise IOError, "HTTP/2 stream is closed!"
+            return if stream.response_ended?
+            next await_credit(stream) unless stream.available_frame_size.positive?
+
+            chunk = admit(stream, chunk) or break
+          end
+        end
+
+        # Whether the producer closed its side before the response ended.
+        def committed? = !@body || (@body.respond_to?(:write_closed?) && @body.write_closed?)
+
+        # Called by the stream's reader once the response ended, without
+        # yielding: retires the producer and wakes a credit wait.
+        def response_ended
+          @body.retire if @body.respond_to?(:retire)
+          @guard.synchronize { @window_updated.broadcast }
+        end
+
+        private
+
+        # Returns the unsent remainder, or nil once the chunk was sent or the
+        # response ended.
+        def admit(stream, chunk)
+          stream.connection.synchronize do
+            next if stream.response_ended?
+            raise IOError, "HTTP/2 stream is closed!" if stream.closed?
+
+            size = stream.available_frame_size
+            next chunk unless size.positive?
+
+            send_data(stream, chunk, size)
+          end
+        end
+
+        def await_credit(stream)
+          @guard.synchronize do
+            until stream.available_frame_size.positive? || stream.response_ended?
+              @window_updated.wait(@guard)
+              stream = @stream or raise IOError, "HTTP/2 stream is closed!"
+            end
+          end
+        end
+      end
+
       module Stream # rubocop:disable Metrics/ModuleLength
         attr_reader :grpc_initial_headers, :grpc_initial_end_stream, :grpc_trailers, :grpc_error, :grpc_reset,
                     :declared_length
@@ -733,7 +787,7 @@ module ConnectRPC
           # Upstream otherwise starts an output task on the closed stream.
           return body.close if closed?
 
-          @output = Output.new(self, body, trailer)
+          @output = output_class.new(self, body, trailer)
           @output.bound_progress(*@output_bound) if @output_bound
           @output.start do |task|
             connection.output_started(task)
@@ -742,6 +796,8 @@ module ConnectRPC
         end
 
         private
+
+        def output_class = Output
 
         # Stream credit returns once the application has consumed or
         # discarded a quarter of the window, as grpc-go does (`inFlow.onRead`),
@@ -836,18 +892,32 @@ module ConnectRPC
         end
       end
 
+      # A response that ends with END_STREAM while the request body is open
+      # ends the request too, as in grpc-go's client: the reader latches the
+      # end, retires the producer and wakes the output, which stops at a frame
+      # boundary and writes RST_STREAM(NO_ERROR). A producer that closed its
+      # side first commits a clean END_STREAM instead.
       class ResponseStream < ::Async::HTTP::Protocol::HTTP2::Response::Stream
         include Stream
 
         attr_reader :output_task
 
+        def response_ended? = !!@response_ended
+
         # Output unwinding on a retiring connection must not attempt another
         # write or reset on its closed socket. A cancelled upload means the
         # call no longer needs the stream, which RFC 9113 section 8.7 signals
         # with CANCEL; upstream resets every output error with INTERNAL_ERROR.
+        # Once the response ended, the reset is NO_ERROR however the output
+        # ended, cancellation by cleanup included.
         def finish_output(error = nil)
           return if connection.retiring?
 
+          if @response_ended
+            @output = nil
+            reset_ended
+            return
+          end
           if error.is_a?(::Async::Cancel) && !closed?
             @output = nil
             send_reset_stream(::Protocol::HTTP2::Error::CANCEL)
@@ -856,8 +926,97 @@ module ConnectRPC
           super
         end
 
-        def send_body(...)
+        # A body attached after the response ended starts retired, so its
+        # output ends at once with the reset.
+        def send_body(body, trailer = nil, &)
+          body.retire if @response_ended && body.respond_to?(:retire)
           super { |task| @output_task = task }
+        end
+
+        # The one RST_STREAM(NO_ERROR) after the response ended, written by
+        # the output or by cleanup, whichever holds the frame guard first. It
+        # is skipped once the stream closed, as by a peer reset. Cancellation
+        # is deferred across the frame, its flush and the close. A failed
+        # write closes the stream locally, keeping the received response, and
+        # fails the connection.
+        def reset_ended
+          connection.synchronize do
+            ::Async::Task.current.defer_cancel do
+              next if closed? || connection.retiring?
+
+              frame = ::Protocol::HTTP2::ResetStreamFrame.new(id)
+              frame.pack(::Protocol::HTTP2::Error::NO_ERROR)
+              write_frame(frame)
+              close! unless closed?
+            end
+          end
+        rescue UnusableConnection
+          nil
+        rescue StandardError => e
+          close! unless closed?
+          resource = connection.resource
+          resource&.abort(e) unless resource&.peer_departed? || resource&.outlives_peer?(e)
+        end
+
+        # Ends an abandoned call's stream. After the response ended this is
+        # the NO_ERROR reset, unless the output already wrote it; both recheck
+        # inside the frame guard, so only one is written, and the close stops
+        # an output still attached. Otherwise CANCEL, also decided inside the
+        # guard: while cleanup waits for it the stream may close, as by a peer
+        # reset, or the response may end. A response that ended takes the
+        # NO_ERROR path after the guard is released, so a failed reset retires
+        # the connection from outside the guard, as every other abort does.
+        def reset_in_cleanup
+          return reset_ended if @response_ended
+          return close! if state == :idle
+          return if closed?
+
+          ended = connection.synchronize do
+            next false if closed?
+            next true if @response_ended
+
+            send_reset_stream(::Protocol::HTTP2::Error::CANCEL)
+            false
+          end
+          reset_ended if ended
+        end
+
+        # async-http resets a stream whose HEADERS fail validation, and
+        # protocol-http2 then records the frame's END_STREAM on the closed
+        # stream anyway. Restoring the closed state keeps the end unlatched
+        # and stops cleanup from resetting the stream a second time.
+        def receive_headers(frame)
+          request_open = state == :open
+          super
+          return @state = :closed unless connection.streams[id].equal?(self)
+
+          response_ended if request_open && state == :half_closed_remote
+        end
+
+        def receive_data(frame)
+          request_open = state == :open
+          super
+          response_ended if request_open && state == :half_closed_remote
+        end
+
+        # protocol-http2 opens a stream once its request HEADERS are flushed.
+        # A response that ended during that flush already moved the stream to
+        # half_closed_remote, and the body attached next starts retired.
+        def open!
+          return super unless state == :half_closed_remote
+
+          @response_ended = true
+          self
+        end
+
+        # A response that ended was fully received, so a close with an error,
+        # as by connection retirement, keeps its unread bytes for the caller.
+        def closed(error)
+          if @response_ended && (input = @input)
+            @input = nil
+            input.retire
+          end
+          super
         end
 
         # Any response HEADERS, including 1xx, show the server saw the request,
@@ -868,6 +1027,19 @@ module ConnectRPC
         end
 
         def response_headers? = !!@response_headers
+
+        private
+
+        def output_class = ClientOutput
+
+        # Runs in the reader without yielding.
+        def response_ended
+          output = @output
+          return if !output || output.committed?
+
+          @response_ended = true
+          output.response_ended
+        end
       end
 
       class ClientConnection < ::Async::HTTP::Protocol::HTTP2::Client
