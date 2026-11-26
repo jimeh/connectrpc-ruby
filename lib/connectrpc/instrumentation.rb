@@ -182,13 +182,9 @@ module ConnectRPC
         failures = @failures ||= [] #: Array[Exception]
         return if failures.any? { |failure| failure.equal?(error) }
 
-        # Keep the first failures and the latest one, so a call that records
-        # failures repeatedly holds a bounded list.
-        if failures.size < FAILURE_LIMIT
-          failures << error
-        else
-          failures[-1] = error
-        end
+        # Keep only the first failures, so a call that records failures
+        # repeatedly holds a bounded list and later ones displace none.
+        failures << error if failures.size < FAILURE_LIMIT
         nil
       end
 

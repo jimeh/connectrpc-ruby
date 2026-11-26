@@ -566,6 +566,29 @@ RSpec.describe "Streaming send-failure arbitration" do
       expect(outcomes.map { |outcome| [outcome.code, outcome.error] }).to eq([["OK", independent]])
     end
 
+    # The call holds its first eight failures; later ones cannot displace an
+    # earlier independent failure that forgiveness must keep.
+    it "keeps an independent failure recorded before the forgiven send's ninth failure" do
+      independent = IOError.new("sibling read failed")
+      core, rpc, _, exchange, transport = server_stream_client(bytes("one") + bytes("{}", 2), instrumentation: bus)
+      transport.define_singleton_method(:open_stream) do |request, &work|
+        exchange.define_singleton_method(:write) do |_|
+          causes = []
+          7.times do |index|
+            raise IOError, "write cause #{index}", cause: causes.last
+          rescue IOError => e
+            request.lifecycle.record_failure(e)
+            causes << e
+          end
+          request.lifecycle.record_failure(independent)
+          raise ConnectRPC::Error.new(:unavailable, "HTTP transport failed: stream closed"), cause: causes.last
+        end
+        work.call(exchange)
+      end
+      expect(core.server_stream(rpc, "q") { |reader| reader.each { nil } }).to be_nil
+      expect(outcomes.map { |outcome| [outcome.code, outcome.error] }).to eq([["OK", independent]])
+    end
+
     it "closes the send side after a forgiven send before reading the response" do
       core, rpc, _, exchange = server_stream_client(bytes("one") + bytes("{}", 2))
       closed = false
@@ -582,15 +605,17 @@ RSpec.describe "Streaming send-failure arbitration" do
     end
 
     {
-      "the write's failure" => ->(failure) { failure },
-      "another IOError" => ->(_) { IOError.new("close failed") },
-      "an unavailable error" => ->(_) { ConnectRPC::Error.new(:unavailable, "close failed") }
+      "the write's failure" => ->(failure) { raise failure },
+      "an IOError caused by the write's failure" => ->(failure) { raise IOError, "close failed", cause: failure },
+      "an unavailable error caused by the write's failure" => lambda { |failure|
+        raise ConnectRPC::Error.new(:unavailable, "close failed"), cause: failure
+      }
     }.each do |label, close_failure|
       it "forgives a close_send that raises #{label} after a forgiven send" do
         failure = IOError.new("incidental send I/O")
         core, rpc, _, exchange = server_stream_client(bytes("one") + bytes("{}", 2),
                                                       write: ->(_) { raise failure }, instrumentation: bus)
-        exchange.define_singleton_method(:close_send) { raise close_failure.call(failure) }
+        exchange.define_singleton_method(:close_send) { close_failure.call(failure) }
         received = []
         expect(core.server_stream(rpc, "q") { |reader| reader.each { |message| received << message } }).to be_nil
         expect(received).to eq(["one"])
@@ -602,7 +627,18 @@ RSpec.describe "Streaming send-failure arbitration" do
       core, rpc, _, exchange = server_stream_client(bytes("one") + bytes("{}", 2))
       exchange.define_singleton_method(:close_send) { raise ConnectRPC::Error.new(:deadline_exceeded, "closing") }
       expect { core.server_stream(rpc, "q") { |reader| reader.each { nil } } }
-        .to raise_error(ConnectRPC::Error) { |error| expect(error.code).to eq("deadline_exceeded") }
+        .to raise_error(ConnectRPC::Error) { |error| expect([error.code, error.cause]).to eq(["deadline_exceeded", nil]) }
+    end
+
+    # Closing may have failed before it committed the half-close, so a fresh
+    # failure there ends the call instead of leaving the read to the deadline.
+    it "ends the call when close_send raises an unavailable error unrelated to the forgiven send" do
+      closing = ConnectRPC::Error.new(:unavailable, "close failed")
+      core, rpc, _, exchange = server_stream_client(bytes("one") + bytes("{}", 2), instrumentation: bus)
+      exchange.define_singleton_method(:close_send) { raise closing }
+      expect { core.server_stream(rpc, "q") { |reader| reader.each { nil } } }
+        .to raise_error(ConnectRPC::Error) { |error| expect(error).to be(closing) }
+      expect(outcomes.map { |outcome| [outcome.code, outcome.error] }).to eq([["unavailable", closing]])
     end
 
     it "raises the response's remote error" do

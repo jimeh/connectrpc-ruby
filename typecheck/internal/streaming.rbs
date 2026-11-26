@@ -272,7 +272,8 @@ module ConnectRPC
       def initialize_reader: (Integer, Integer, encoding, encoding, terminal_wire_limit: Integer, terminal_limit: Integer) -> void
       def initialize_writer: (Integer, Integer, encoding, encoding, terminal_wire_limit: Integer, terminal_limit: Integer) -> void
       def forgive_send: (*Exception?) -> nil
-      def close_forgiven_send: () -> nil
+      def close_forgiven_send: (Array[StandardError]) -> nil
+      def caused_by?: (Exception, Array[StandardError]) -> bool
       def receive_message: (bool) -> untyped
       def completed_receive: () -> nil
       def receive_eof: () -> nil

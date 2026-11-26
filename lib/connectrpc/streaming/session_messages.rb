@@ -52,14 +52,17 @@ module ConnectRPC
       # writes itself. As in grpc-go and connect-go, a send failure leaves the
       # outcome to the response; other failures still end the call.
       def send_request(message)
-        send_message(message)
-      rescue Error => e
-        raise unless send_failure?(e)
+        forgiven = begin
+          send_message(message)
+          nil
+        rescue Error => e
+          raise unless send_failure?(e)
 
-        forgive_send(e, @raw_send_failure)
-        close_forgiven_send
-      else
-        close_send
+          [e, @raw_send_failure].compact
+        end
+        # Closing outside the rescue keeps the forgiven failure from becoming
+        # the implicit cause of anything close_send raises.
+        forgiven ? close_forgiven_send(forgiven) : close_send
       end
 
       def abandon
@@ -82,14 +85,30 @@ module ConnectRPC
         nil
       end
 
-      # After a forgiven send, closing may fail for the same reason the write
-      # did. Other failures, such as cancellation or a closed scope, end the call.
-      def close_forgiven_send
+      # After a forgiven send, closing may fail again with the write's failure,
+      # or with a send failure caused by it, which is forgiven too. Any other
+      # failure ends the call: the half-close may not have reached the peer.
+      def close_forgiven_send(forgiven)
+        forgive_send(*forgiven)
         close_send
       rescue IOError, SystemCallError, Error => e
         raise if e.is_a?(Error) && e.code != "unavailable"
+        raise unless caused_by?(e, forgiven)
 
         forgive_send(e)
+      end
+
+      def caused_by?(error, causes)
+        seen = [] #: Array[Exception]
+        # @type var current: Exception?
+        current = error
+        while current && seen.none? { |failure| failure.equal?(current) }
+          return true if causes.any? { |cause| cause.equal?(current) }
+
+          seen << current
+          current = current.cause
+        end
+        false
       end
 
       def receive_message(skip_data)

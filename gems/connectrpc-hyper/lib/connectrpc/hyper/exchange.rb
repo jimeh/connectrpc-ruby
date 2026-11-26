@@ -35,7 +35,7 @@ module ConnectRPC
       end
 
       def write(bytes)
-        wait(nil) { |limit| @native.write(bytes, limit) }
+        wait(nil, write: true) { |limit| @native.write(bytes, limit) }
         nil
       end
 
@@ -77,8 +77,8 @@ module ConnectRPC
         @read_eof = true
       end
 
-      def wait(timeout)
-        Errors.native(@request, grpc: @grpc) do
+      def wait(timeout, write: false)
+        Errors.native(@request, grpc: @grpc, write: write) do
           @request.cancellation ? @request.cancellation.check! : @request.deadline&.check!
           remaining = @request.deadline&.remaining
           yield [timeout, remaining].compact.min

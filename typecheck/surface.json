@@ -1237,7 +1237,7 @@
 
   },
   "gems/connectrpc-hyper/lib/connectrpc/hyper/errors.rb": {
-    "ConnectRPC::Hyper::Errors.native": {"kind":"method","visibility":"public","parameters":"request, grpc:","classification":"internal"},
+    "ConnectRPC::Hyper::Errors.native": {"kind":"method","visibility":"public","parameters":"request, grpc:, write: false","classification":"internal"},
     "ConnectRPC::Hyper::Errors.proxy": {"kind":"method","visibility":"public","parameters":"kind","classification":"internal"},
     "ConnectRPC::Hyper::Errors.translate": {"kind":"method","visibility":"public","parameters":"failure, grpc:","classification":"internal"},
     "ConnectRPC::Hyper::Errors.transport": {"kind":"method","visibility":"public","parameters":"kind","classification":"internal"},
@@ -1255,7 +1255,7 @@
     "ConnectRPC::Hyper::Exchange#receive_trailers": {"kind":"method","visibility":"private","parameters":"","classification":"internal"},
     "ConnectRPC::Hyper::Exchange#response_head": {"kind":"method","visibility":"public","parameters":"timeout: nil","classification":"internal"},
     "ConnectRPC::Hyper::Exchange#response_trailers": {"kind":"method","visibility":"public","parameters":"","classification":"internal"},
-    "ConnectRPC::Hyper::Exchange#wait": {"kind":"method","visibility":"private","parameters":"timeout","classification":"internal"},
+    "ConnectRPC::Hyper::Exchange#wait": {"kind":"method","visibility":"private","parameters":"timeout, write: false","classification":"internal"},
     "ConnectRPC::Hyper::Exchange#write": {"kind":"method","visibility":"public","parameters":"bytes","classification":"internal"}
   },
   "gems/connectrpc-hyper/lib/connectrpc/hyper/tls.rb": {
@@ -2354,7 +2354,8 @@
   "lib/connectrpc/streaming/session_messages.rb": {
     "ConnectRPC::Streaming::Session#abandon": {"kind":"method","visibility":"public","parameters":"","classification":"internal"},
     "ConnectRPC::Streaming::Session#cached_headers": {"kind":"method","visibility":"public","parameters":"","classification":"internal"},
-    "ConnectRPC::Streaming::Session#close_forgiven_send": {"kind":"method","visibility":"private","parameters":"","classification":"internal"},
+    "ConnectRPC::Streaming::Session#caused_by?": {"kind":"method","visibility":"private","parameters":"error, causes","classification":"internal"},
+    "ConnectRPC::Streaming::Session#close_forgiven_send": {"kind":"method","visibility":"private","parameters":"forgiven","classification":"internal"},
     "ConnectRPC::Streaming::Session#close_send": {"kind":"method","visibility":"public","parameters":"","classification":"internal"},
     "ConnectRPC::Streaming::Session#completed_receive": {"kind":"method","visibility":"private","parameters":"","classification":"internal"},
     "ConnectRPC::Streaming::Session#decode_message": {"kind":"method","visibility":"private","parameters":"bytes, length","classification":"internal"},

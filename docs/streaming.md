@@ -422,13 +422,16 @@ grpc-go 1.85.0 (`clientStreamWrapper.SendMsg` in `stream.go`) and connect-go
 1.21.1 (`callUnary` and `CallServerStream` in `client.go`) also let the
 response decide for these calls. Only a send failure is forgiven: an encoding
 or message-size failure, a nil request, cancellation and the deadline still end
-the call. If closing the send side then fails with an I/O error or
-`unavailable`, as it may for the same reason the write did, core forgives that
-too; other close failures still end the call. Instrumentation outcomes leave out
-the forgiven failures, the raw transport failure behind them and their causes,
-even when a transport recorded them before core's write, so observers classify
-the call by its response. A failure recorded independently, such as one from
-another fiber during the send, still counts.
+the call. If closing the send side then raises the write's failure again, or
+an I/O error or `unavailable` caused by it, core forgives that too; any other
+close failure ends the call, since the half-close may not have reached the
+server. Instrumentation outcomes leave out the forgiven failures and their
+causes, so observers classify the call by its response. That includes the raw
+transport failure behind a write error when the transport makes it the error's
+cause, as connectrpc-hyper and connectrpc-async do, even if the transport
+recorded it before core's write. A failure recorded independently, such as one
+from another fiber during the send, still counts, unless the transport raised
+the write error while handling it, which makes it the error's implicit cause.
 
 ## Bounds and protocol
 

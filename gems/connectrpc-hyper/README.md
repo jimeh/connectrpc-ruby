@@ -435,7 +435,7 @@ failure as `cause`:
 | `HTTP transport failed: name resolution failed` | DNS |
 | `HTTP transport failed: connection refused` | TCP refused |
 | `HTTP transport failed: host unreachable` / `connection failed` | Other connect errors |
-| `HTTP transport failed: timed out` | `connect_timeout` |
+| `HTTP transport failed: timed out` | `connect_timeout`, or a streaming write's wait timing out before the call's deadline. A response wait's own `timeout` raises it with no `cause` |
 | `HTTP transport failed: TLS verification failed` / `TLS error` | Certificate or handshake failure, or a TLS rejection the server sends after the handshake (such as for a missing client certificate) when the connection that fails the call has read it. A connection whose write fails first reports `connection closed`, as grpc-go reports a write error. A call retried after its first connection read the rejection reports its retry connection's failure |
 | `HTTP transport failed: ALPN negotiation failed` | Streaming call on an HTTP/1.1 TLS connection |
 | `HTTP transport failed: connection closed` | The connection closed, retired or received GOAWAY |

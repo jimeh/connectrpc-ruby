@@ -55,8 +55,9 @@ The [changelog](../CHANGELOG.md) lists every change.
   encoding, message-size limits, cancellation and the deadline, still end the
   call, and client-streaming and bidi calls keep a failed write's `unavailable`
   over an OK status. Instrumentation outcomes no longer carry the forgiven
-  write's failure or the transport failure behind it. See the streaming guide's
-  [completion policy](streaming.md#completion-policy).
+  write's failure, nor the transport failure behind it when the transport makes
+  it the write error's cause, as connectrpc-hyper and connectrpc-async do. See
+  the streaming guide's [completion policy](streaming.md#completion-policy).
 - A first connectrpc-hyper use (call, stream open or close) whose tokio runtime
   cannot fully start now raises `fatal` within 5 seconds per start attempt
   instead of hanging with the GVL held, and a later use starts the runtime
