@@ -418,8 +418,8 @@ stage and reset its stream.
     streams, a body error hyper resets the stream for, the caller's cancel
     (after it dropped the response future), a GOAWAY whose last stream id
     is below the stream's, or a connection error h2 reports to every
-    stream; each closes the stream and so ends the response attempt. Its
-    normal end after `close_send` leaves no writer behind. h2's
+    stream; each closes the stream, which resolves any response still
+    pending. Its normal end after `close_send` leaves no writer behind. h2's
     `UserError::PayloadTooBig` from `send_data` (a chunk above the 2^31 - 1
     byte window, `Prioritize::send_data`) is the one exit that leaves the
     stream open, and `check_write_len` in `lib.rs` rejects such a chunk
