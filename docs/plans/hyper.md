@@ -400,29 +400,33 @@ stage and reset its stream.
   `.crate` against the `v1.13.0` tag's tree, a read of the 1.12.0..1.13.0
   diff, the lock moving only hyper, and `cargo deny` and `cargo audit`. The
   exception covers that version only; the next hyper release waits the 7 days.
-  On a hyper or h2 update, reread in the new release's source the two
-  internals the transport relies on:
-  - The GOAWAY retry (D12) relies on the dispatch order and frame writes
-    `wire.rs` documents. `retry_spec.rb`'s stream-id and waiting-HEADERS
+  - On a hyper or h2 update, reread in the new release's source the
+    dispatch order and frame writes `wire.rs` documents, which the GOAWAY
+    retry (D12) relies on. `retry_spec.rb`'s stream-id and waiting-HEADERS
     specs fail when an update breaks them.
-  - The HTTP/2 write wait (#193) relies on hyper's request-body pipe
-    (`PipeToSendStream` in `proto/h2/mod.rs`, polled once by
-    `ClientTask::poll_pipe` and then by `PipeMap` in `proto/h2/client.rs`)
-    dropping the body, while a writer still holds its sender, only once the
-    stream closed, which also resolves the response. Those exits are a
-    reset, a stream h2 no longer streams, a body error hyper resets the
-    stream for, the caller's cancel, and a connection error h2 reports to
-    every stream. The pipe's normal end after `close_send` leaves no writer
-    behind. h2's `UserError::PayloadTooBig` from `send_data` (a chunk above
-    the 2^31 - 1 byte window, `Prioritize::send_data`) is the one exit that
-    leaves the stream open, and `check_write_len` in `lib.rs` rejects such a
-    chunk before it is queued. A write that finds the body dropped waits for
-    the response's outcome, which only the deadline, cancellation, abort,
-    the transport's shutdown or close, or an interrupt otherwise ends. A new
-    exit of that kind would leave a write without a deadline waiting for one
-    of those, and no spec fails unless it takes that exit. Check the pipe's
-    exits and `send_data`'s errors; a new exit needs its own check before
-    the write, as `check_write_len` is for `PayloadTooBig`.
+  - On a hyper or h2 update, also reread the request-body pipe that the
+    HTTP/2 write wait (#193) relies on: `PipeToSendStream` in
+    `proto/h2/mod.rs`, polled once by `ClientTask::poll_pipe` and then by
+    `PipeMap` in `proto/h2/client.rs`. It must never drop the body, while a
+    writer still holds its sender, with the response's outcome still
+    pending. A write that finds the body dropped waits for the response task
+    to publish the head or a failure, and until then only the write's
+    deadline, cancellation, abort, forced teardown's `shutdown` or an
+    interrupt ends that wait. Today the pipe drops the body on a reset, a
+    stream h2 no longer streams, a body error hyper resets the stream for,
+    the caller's cancel, a GOAWAY whose last stream id is below the
+    stream's, or a connection error h2 reports to every stream; each closes
+    the stream, which also resolves the response. Its normal end after
+    `close_send` leaves no writer behind. h2's `UserError::PayloadTooBig`
+    from `send_data` (a chunk above the 2^31 - 1 byte window,
+    `Prioritize::send_data`) is the one exit that leaves the stream open,
+    and `check_write_len` in `lib.rs` rejects such a chunk before it is
+    queued. Check whether any of the pipe's exits or `send_data`'s errors
+    can now drop the body while the response is pending: no spec fails
+    unless it takes that exit, and a write without a deadline would wait
+    until one of those bounds ends it. A new exit that depends on the input
+    needs its own check before the write, as `check_write_len` is for
+    `PayloadTooBig`.
 - D17 `Keepalive` moves to core as `ConnectRPC::Keepalive` (Since 0.3.0,
   loaded by `require "connectrpc"`), with the same constructor, validation,
   equality and freezing as today's `ConnectRPC::Async::Keepalive`.

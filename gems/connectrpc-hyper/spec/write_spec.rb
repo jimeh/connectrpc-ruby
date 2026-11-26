@@ -214,14 +214,22 @@ RSpec.describe "Streaming writes after the stream ended", :interop do
       skip "this host cannot reserve a 2 GiB string"
     end
     from = peer.mark
-    exchange("await-ok:big") do |call|
+    transport = hyper
+    native_driver = driver(transport)
+    # Armed with a zero bound, the point counts the requests handed to hyper:
+    # the rejected write must not even send the request head.
+    native_driver.hold("request:queued", 0)
+    exchange("await-ok:big", transport: transport) do |call|
       expect { call.write(big) }.to raise_error(ArgumentError, "A streaming write must be smaller than 2 GiB")
+      expect(native_driver.reached("request:queued")).to eq(0)
       expect(call.write(envelope)).to be_nil
+      expect(native_driver.reached("request:queued")).to eq(1)
       call.close_send
       expect(call.response_head(timeout: 5).status).to eq(200)
     end
     peer.wait_event(/\Araw handled await-ok:big stream=\d+ bytes=5\z/, from: from)
   ensure
+    native_driver&.release("request:queued")
     big = nil
   end
 
