@@ -263,9 +263,18 @@ RSpec.describe "gRPC public callers and status codec" do
   # Core sends a unary or server-streaming request itself; as in grpc-go and
   # connect-go, the response then decides the outcome of a send failure.
   describe "a send failure while core sends the request" do
-    def failing_client(**)
+    let(:outcomes) { [] }
+    let(:bus) do
+      outcomes = self.outcomes
+      observer = Object.new
+      observer.define_singleton_method(:start) { |_| observer }
+      observer.define_singleton_method(:processing_finished) { |outcome| outcomes << outcome }
+      ConnectRPC::Instrumentation.new(subscribers: [observer])
+    end
+
+    def failing_client(failure: IOError.new("incidental send I/O"), **)
       core, method, exchange, = client(**)
-      exchange.define_singleton_method(:write) { |_| raise IOError, "incidental send I/O" }
+      exchange.define_singleton_method(:write) { |_| raise failure }
       [core, method, exchange]
     end
 
@@ -287,8 +296,22 @@ RSpec.describe "gRPC public callers and status codec" do
       end
 
       it "raises the remote error of a #{label} response" do
-        core, method, = failing_client(body: envelope("reply"), status: "5", kind: kind)
-        expect { run(core, method) }.to raise_error(ConnectRPC::Error) { |error| expect(error.code).to eq("not_found") }
+        core, method, = failing_client(body: envelope("reply"), status: "5", kind: kind, instrumentation: bus)
+        raised = nil
+        expect { run(core, method) }.to raise_error(ConnectRPC::Error) { |error|
+          raised = error
+          expect(error.code).to eq("not_found")
+        }
+        expect(outcomes.map { |outcome| [outcome.code, outcome.error] }).to eq([["not_found", raised]])
+      end
+
+      it "forgives a close_send that re-raises the write's failure on a #{label} call" do
+        failure = IOError.new("incidental send I/O")
+        body = Array(expected).map { |message| envelope(message) }.join
+        core, method, exchange = failing_client(failure: failure, body: body, kind: kind, instrumentation: bus)
+        exchange.define_singleton_method(:close_send) { raise failure }
+        expect(run(core, method)).to eq(expected)
+        expect(outcomes.map { |outcome| [outcome.code, outcome.error] }).to eq([["OK", nil]])
       end
 
       it "raises the read's own failure when a #{label} response never completes" do

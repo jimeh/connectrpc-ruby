@@ -193,6 +193,39 @@ RSpec.describe ConnectRPC::Async::HTTP1Transport, "writer and completion arbitra
     end
   end
 
+  # The writer task records its failure before core's first write, which then
+  # surfaces it as unavailable. Core forgives that send, and the OK response
+  # decides without the writer's raw failure.
+  it "completes an OK server stream without the request writer's failure in its outcome" do
+    outcomes = []
+    observer = Object.new
+    observer.define_singleton_method(:start) { |_| observer }
+    observer.define_singleton_method(:processing_finished) { |outcome| outcomes << outcome }
+    payload = AsyncHelpers::MESSAGE.encode(AsyncHelpers::MESSAGE.new(name: "reply"))
+    bytes = [0, payload.bytesize].pack("CN") + payload + "#{[2, 2].pack('CN')}{}"
+    peer = lambda do |_native, socket, *_|
+      socket.write(http1_wire(bytes, fields: "Content-Type: application/connect+proto\r\n"))
+    end
+    # The head is buffered and the connection open when its flush fails.
+    allow_any_instance_of(AsyncHelpers::INTERNAL::HTTP1Connection).to receive(:write_request)
+      .and_wrap_original do |original, *arguments|
+        original.call(*arguments)
+        raise Errno::EPIPE, "request head flush"
+      end
+    with_raw_http1(peer: peer) do |transport, origin|
+      method = ConnectRPC::ServerStreamMethod.new(service: "h1.Early", name: "Watch",
+                                                  request_type: AsyncHelpers::MESSAGE, response_type: AsyncHelpers::MESSAGE)
+      core = ConnectRPC::Client.new(base_url: origin, binding: ConnectRPC::Bindings::GoogleProtobuf.new,
+                                    transport: transport,
+                                    instrumentation: ConnectRPC::Instrumentation.new(subscribers: [observer]))
+      received = []
+      core.server_stream(method, AsyncHelpers::MESSAGE.new) { |reader| reader.each { |message| received << message } }
+      expect(received.map(&:name)).to eq(["reply"])
+      expect(outcomes.map { |outcome| [outcome.code, outcome.error] }).to eq([["OK", nil]])
+      expect(transport.instance_variable_get(:@leases)).to be_empty
+    end
+  end
+
   it "preserves reuse after a fully delivered remote error and core abandonment" do
     terminal = '{"error":{"code":"not_found","message":"missing"}}'
     body = [2, terminal.bytesize].pack("CN") + terminal

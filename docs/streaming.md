@@ -411,17 +411,24 @@ application code that blocks the reactor remains outside hard timing guarantees.
 That recovery applies to client-streaming and bidi calls, whose application
 sends the requests. Core itself sends the one request of a server-streaming call
 and of a gRPC unary call. Since 0.3.1 a send failure there does not end the
-call: core closes its side and reads the response normally, under the same
-limits, terminal and tail checks and budgets, so the response decides. An OK
-response returns its messages, a remote error raises, and a response that never
-completes raises the read's own failure. grpc-go 1.85.0
-(`clientStreamWrapper.SendMsg` in `stream.go`) and connect-go 1.21.1
-(`callUnary` and `CallServerStream` in `client.go`) also let the response
-decide for these calls. Only a send failure is forgiven: an encoding or
-message-size failure, a nil request, cancellation and the deadline still end
-the call. Instrumentation outcomes leave out the failures recorded during a
-forgiven send, the transport's included, so observers classify the call by its
-response.
+call: core closes its side and reads the response normally, under the normal
+message limits, terminal and tail checks and the call deadline, so the response
+decides. This is not the 100 ms recovery above. An OK response returns its
+messages, a remote error raises, and a response that never completes raises the
+read's own failure. A server that never answers therefore fails the call with
+`deadline_exceeded` when its deadline expires, not with `unavailable` within
+100 ms, and a call without a deadline waits as long as any response read does.
+grpc-go 1.85.0 (`clientStreamWrapper.SendMsg` in `stream.go`) and connect-go
+1.21.1 (`callUnary` and `CallServerStream` in `client.go`) also let the
+response decide for these calls. Only a send failure is forgiven: an encoding
+or message-size failure, a nil request, cancellation and the deadline still end
+the call. If closing the send side then fails with an I/O error or
+`unavailable`, as it may for the same reason the write did, core forgives that
+too; other close failures still end the call. Instrumentation outcomes leave out
+the forgiven failures, the raw transport failure behind them and their causes,
+even when a transport recorded them before core's write, so observers classify
+the call by its response. A failure recorded independently, such as one from
+another fiber during the send, still counts.
 
 ## Bounds and protocol
 
@@ -498,14 +505,14 @@ without a deadline can still block if a peer neither consumes nor closes.
 
 Writer success, full native HTTP EOF and owned cleanup all precede successful
 `finish`. `close_send` is idempotent and never reports writer failure. A writer
-failure surfaced through `write` permits core's bounded terminal-only remote
-error recovery, but always retires the connection. If failure first appears
+failure surfaced through `write` always retires the connection. For a server
+stream, core forgives it and the response decides, as for any request core
+sends itself (see the [completion policy](#completion-policy)). For a client
+stream, it permits core's bounded terminal-only remote error recovery, and an
+unhandled send failure still wins over remote success. If failure first appears
 after the last accepted write, `finish` returns unavailable even when the
 terminal contains a remote error. This existing-SPI limit can mask that remote
 error; the transport does not decode terminals or invent early success.
-An unhandled send failure of a client stream still wins over remote success
-under core's policy; a server-streaming call reads the response's outcome
-instead.
 
 The supplied completion timeout and original RPC deadline also cover cleanup;
 cleanup has at most its existing 1-second allowance. Destructive retirement closes

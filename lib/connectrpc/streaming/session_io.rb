@@ -48,6 +48,9 @@ module ConnectRPC
         @lifecycle&.record_failure(error)
         @state.check!
         if error.is_a?(IOError) || error.is_a?(SystemCallError)
+          # The raised failure has no cause; keep the raw error so a forgiven
+          # send can drop what the lifecycle recorded for it.
+          @raw_send_failure = error
           failure = @send_failure = Error.new(:unavailable, "Streaming write failed")
           raise failure, cause: nil
         end

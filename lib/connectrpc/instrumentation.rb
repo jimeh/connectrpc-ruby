@@ -113,6 +113,9 @@ module ConnectRPC
     # thread or fiber at a time; moving a call to another thread needs an
     # ordering hand-off such as a Queue or Mutex. The first finish wins.
     class Handle # rubocop:disable Metrics/ClassLength
+      FAILURE_LIMIT = 8
+      private_constant :FAILURE_LIMIT
+
       attr_reader :outcome
       attr_accessor :request_bytes, :request_metadata, :code, :normalized_error
 
@@ -174,19 +177,28 @@ module ConnectRPC
 
       def host_rejected? = !!@host_rejected
 
+      # The first recorded failure is the call's error.
       def record_failure(error)
-        @error ||= error
+        failures = @failures ||= [] #: Array[Exception]
+        return if failures.any? { |failure| failure.equal?(error) }
+
+        # Keep the first failures and the latest one, so a call that records
+        # failures repeatedly holds a bounded list.
+        if failures.size < FAILURE_LIMIT
+          failures << error
+        else
+          failures[-1] = error
+        end
         nil
       end
 
-      # Internal. When the block returns true, the failures recorded while it
-      # ran, by core or a transport, are dropped: the call forgave them and its
-      # own outcome decides the error.
-      def forgiving
-        error = @error
-        forgiven = yield
-        @error = error if forgiven
-        forgiven
+      # Internal. Drops the recorded failures a call forgave: the given errors
+      # and every exception in their cause chains. Other failures stay in
+      # order, and the first that remains is the call's error.
+      def forgive(*errors)
+        forgiven = errors.flat_map { |error| cause_chain(error) }
+        @failures&.reject! { |failure| forgiven.any? { |error| error.equal?(failure) } }
+        nil
       end
 
       # Internal, bound single-use processing entry. Hosts only activate and finish.
@@ -204,7 +216,7 @@ module ConnectRPC
                               response_bytes: nil, response_metadata: {}, response_trailers: {})
         record_failure(error) if error
         processing_at = @processing_at #: Float
-        @outcome = Outcome.new(code: code, http_status: http_status, error: @error,
+        @outcome = Outcome.new(code: code, http_status: http_status, error: @failures&.first,
                                normalized_error: normalized_error, duration: now - processing_at,
                                request_bytes: @request_bytes, response_bytes: response_bytes,
                                request_metadata: Instrumentation.carrier(@request_metadata),
@@ -245,13 +257,24 @@ module ConnectRPC
 
         prepared = @outcome #: Outcome
         processing_at = @processing_at #: Float
-        outcome = @outcome = prepared.with(duration: now - processing_at, error: @error)
+        outcome = @outcome = prepared.with(duration: now - processing_at, error: @failures&.first)
         @processing_state = :finished
         notify_processing(outcome)
         nil
       end
 
       def now = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+
+      def cause_chain(error)
+        chain = [] #: Array[Exception]
+        # @type var current: Exception?
+        current = error
+        while current && chain.none? { |seen| seen.equal?(current) }
+          chain << current
+          current = current.cause
+        end
+        chain
+      end
 
       def notify_processing(outcome)
         @notifying_processing = true

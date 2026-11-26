@@ -188,38 +188,44 @@ RSpec.describe "gRPC local transport error conventions" do
   end
 
   # Core forgives a unary request's send failure and lets the OK response
-  # decide; the raw write failure the transport recorded (as connectrpc-async
-  # and connectrpc-hyper do) does not fail the span.
-  it "keeps a forgiven unary request write failure out of an OK span" do
-    provider, exporter, bus = tracing
-    reply = AsyncHelpers::MESSAGE.encode(AsyncHelpers::MESSAGE.new(name: "reply"))
-    source = StringIO.new([0, reply.bytesize].pack("CN") + reply)
-    exchange = Object.new
-    exchange.define_singleton_method(:response_head) do |**|
-      ConnectRPC::GRPCHead.new(status: 200, end_stream: false, headers: { "content-type" => ["application/grpc"] })
-    end
-    exchange.define_singleton_method(:read) { |length, **| source.read(length) }
-    exchange.define_singleton_method(:response_trailers) { { "grpc-status" => ["0"] } }
-    %i[close_send abort].each { |name| exchange.define_singleton_method(name) { nil } }
-    exchange.define_singleton_method(:finish) { |**| nil }
-    transport = Object.new
-    transport.define_singleton_method(:grpc_capabilities) { [:unary] }
-    transport.define_singleton_method(:open_grpc_stream) do |request, &work|
-      exchange.define_singleton_method(:write) do |_|
-        request.lifecycle.record_failure(IOError.new("HTTP/2 response ended before the request"))
-        raise ConnectRPC::Error.new(:unavailable, "HTTP/2 transport failed")
+  # decide; the raw write failure the transport recorded and raised as the
+  # cause of unavailable (as connectrpc-async and connectrpc-hyper do) does
+  # not fail the span, whether recorded during the write or before it.
+  { "during" => false, "before" => true }.each do |label, early|
+    it "keeps a forgiven unary request write failure recorded #{label} the write out of an OK span" do
+      provider, exporter, bus = tracing
+      reply = AsyncHelpers::MESSAGE.encode(AsyncHelpers::MESSAGE.new(name: "reply"))
+      source = StringIO.new([0, reply.bytesize].pack("CN") + reply)
+      exchange = Object.new
+      exchange.define_singleton_method(:response_head) do |**|
+        ConnectRPC::GRPCHead.new(status: 200, end_stream: false, headers: { "content-type" => ["application/grpc"] })
       end
-      work.call(exchange)
+      exchange.define_singleton_method(:read) { |length, **| source.read(length) }
+      exchange.define_singleton_method(:response_trailers) { { "grpc-status" => ["0"] } }
+      %i[close_send abort].each { |name| exchange.define_singleton_method(name) { nil } }
+      exchange.define_singleton_method(:finish) { |**| nil }
+      transport = Object.new
+      transport.define_singleton_method(:grpc_capabilities) { [:unary] }
+      transport.define_singleton_method(:open_grpc_stream) do |request, &work|
+        raw = IOError.new("request write failed")
+        # connectrpc-async's HTTP/1.1 writer records its failure before the first write.
+        request.lifecycle.record_failure(raw) if early
+        exchange.define_singleton_method(:write) do |_|
+          request.lifecycle.record_failure(raw)
+          raise ConnectRPC::Error.new(:unavailable, "HTTP transport failed"), cause: raw
+        end
+        work.call(exchange)
+      end
+      core = ConnectRPC::Client.new(base_url: "https://example.invalid", transport: transport, protocol: :grpc,
+                                    binding: ConnectRPC::Bindings::GoogleProtobuf.new, instrumentation: bus)
+      expect(core.call(AsyncHelpers::ECHO::ECHO, AsyncHelpers::MESSAGE.new).message.name).to eq("reply")
+      span = rpc_spans(exporter).fetch(0)
+      expect(span.attributes).to include("rpc.status_code" => "OK", "connectrpc.delivery" => "completed")
+      expect(span.attributes).not_to have_key("error.type")
+      expect(span.status.code).to eq(OpenTelemetry::Trace::Status::UNSET)
+    ensure
+      provider.shutdown
     end
-    core = ConnectRPC::Client.new(base_url: "https://example.invalid", transport: transport, protocol: :grpc,
-                                  binding: ConnectRPC::Bindings::GoogleProtobuf.new, instrumentation: bus)
-    expect(core.call(AsyncHelpers::ECHO::ECHO, AsyncHelpers::MESSAGE.new).message.name).to eq("reply")
-    span = rpc_spans(exporter).fetch(0)
-    expect(span.attributes).to include("rpc.status_code" => "OK", "connectrpc.delivery" => "completed")
-    expect(span.attributes).not_to have_key("error.type")
-    expect(span.status.code).to eq(OpenTelemetry::Trace::Status::UNSET)
-  ensure
-    provider.shutdown
   end
 end
 

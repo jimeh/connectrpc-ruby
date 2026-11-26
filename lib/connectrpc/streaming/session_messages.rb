@@ -52,8 +52,13 @@ module ConnectRPC
       # writes itself. As in grpc-go and connect-go, a send failure leaves the
       # outcome to the response; other failures still end the call.
       def send_request(message)
-        lifecycle = @lifecycle
-        lifecycle ? lifecycle.forgiving { forgivable_send(message) } : forgivable_send(message)
+        send_message(message)
+      rescue Error => e
+        raise unless send_failure?(e)
+
+        forgive_send(e, @raw_send_failure)
+        close_forgiven_send
+      else
         close_send
       end
 
@@ -69,15 +74,22 @@ module ConnectRPC
 
       private
 
-      # True when the send failed and the failure is forgiven.
-      def forgivable_send(message)
-        send_message(message)
-        false
-      rescue Error => e
-        raise unless send_failure?(e)
+      # The lifecycle drops only the failures this send produced, so failures
+      # recorded independently, before or during it, still count.
+      def forgive_send(*errors)
+        @send_failure = @raw_send_failure = @writing_error = nil
+        @lifecycle&.forgive(*errors)
+        nil
+      end
 
-        @send_failure = @writing_error = nil
-        true
+      # After a forgiven send, closing may fail for the same reason the write
+      # did. Other failures, such as cancellation or a closed scope, end the call.
+      def close_forgiven_send
+        close_send
+      rescue IOError, SystemCallError, Error => e
+        raise if e.is_a?(Error) && e.code != "unavailable"
+
+        forgive_send(e)
       end
 
       def receive_message(skip_data)

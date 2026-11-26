@@ -48,11 +48,14 @@ The [changelog](../CHANGELOG.md) lists every change.
   grpc-go's and connect-go's clients do: an OK response returns its messages, a
   remote error raises, and a response that never completes raises the read's own
   failure. So a server that answers OK before it read the whole request, which
-  the HTTP/2 transports above now reset, still returns its reply. Other request
-  failures, such as encoding, message-size limits, cancellation and the
-  deadline, still end the call, and client-streaming and bidi calls keep a
-  failed write's `unavailable` over an OK status. Instrumentation outcomes no
-  longer carry the forgiven write's failure. See the streaming guide's
+  the HTTP/2 transports above now reset, still returns its reply. Because core
+  then waits for the response within the call deadline, a server that never
+  answers fails the call with `deadline_exceeded` when the deadline expires
+  instead of with `unavailable` within 100 ms. Other request failures, such as
+  encoding, message-size limits, cancellation and the deadline, still end the
+  call, and client-streaming and bidi calls keep a failed write's `unavailable`
+  over an OK status. Instrumentation outcomes no longer carry the forgiven
+  write's failure or the transport failure behind it. See the streaming guide's
   [completion policy](streaming.md#completion-policy).
 - A first connectrpc-hyper use (call, stream open or close) whose tokio runtime
   cannot fully start now raises `fatal` within 5 seconds per start attempt
