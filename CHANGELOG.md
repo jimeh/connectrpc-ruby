@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.3.1](https://github.com/jimeh/connectrpc-ruby/compare/v0.3.0...v0.3.1) (2026-11-26)
+
+
+### Bug Fixes
+
+* **async:** end a stream's exit wait with an operation's expired deadline wait ([#215](https://github.com/jimeh/connectrpc-ruby/issues/215)) ([626558e](https://github.com/jimeh/connectrpc-ruby/commit/626558e1564c7017c061ccfe67822df58c3d7c1d))
+* **falcon:** complete Rack fallback requests on the request fiber ([#226](https://github.com/jimeh/connectrpc-ruby/issues/226)) ([a1b9df7](https://github.com/jimeh/connectrpc-ruby/commit/a1b9df733bb461a1ce1184055812b4c10b2201ee))
+* **falcon:** read rejected Web and early unary HTTP/1 input before the reply ([#220](https://github.com/jimeh/connectrpc-ruby/issues/220)) ([4a5b7e1](https://github.com/jimeh/connectrpc-ruby/commit/4a5b7e116210696b24d17ae8523fa885e23b29fb))
+* **hyper:** bound the runtime start and let a later use retry ([#223](https://github.com/jimeh/connectrpc-ruby/issues/223)) ([be9969d](https://github.com/jimeh/connectrpc-ruby/commit/be9969d169550e189b6686bd6162fc90166ca2ac))
+* **hyper:** let a later close start teardown after the runtime fails to start ([#214](https://github.com/jimeh/connectrpc-ruby/issues/214)) ([a1e6a0e](https://github.com/jimeh/connectrpc-ruby/commit/a1e6a0e6575a2bff248f2254a466d4c808f97e9f))
+* **hyper:** raise from a streaming write once the stream ended ([#216](https://github.com/jimeh/connectrpc-ruby/issues/216)) ([0ba1fda](https://github.com/jimeh/connectrpc-ruby/commit/0ba1fda3bb3523f349bd06dcb1c689e5959eef36))
+* reset half-open streams and let the response decide after a failed request write ([#230](https://github.com/jimeh/connectrpc-ruby/issues/230)) ([caf8bd8](https://github.com/jimeh/connectrpc-ruby/commit/caf8bd8f3fce75d1c4f950e54fe9798b8ed15e90))
+
 ## [0.3.0](https://github.com/jimeh/connectrpc-ruby/compare/v0.2.1...v0.3.0) (2026-11-24)
 
 
