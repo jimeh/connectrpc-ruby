@@ -68,6 +68,13 @@ RSpec.describe CIScope do
       end
     end
 
+    it "runs everything under a gems directory that is not a package, including its README" do
+      %w[gems/connectrpc-unknown/README.md gems/connectrpc/README.md gems/connectrpc/lib/connectrpc.rb].each do |path|
+        expect(select(change(path))).to have_attributes(mode: "full", reason: include("is not a package directory")),
+                                        path
+      end
+    end
+
     it "runs everything for the hyper platform list that ReleaseTrain loads" do
       expect(select(change("gems/connectrpc-hyper/scripts/platforms.rb")))
         .to have_attributes(mode: "full", reason: include("loaded by ReleaseTrain"))
@@ -81,6 +88,13 @@ RSpec.describe CIScope do
       expect(select(change("gems/connectrpc-rack/lib/x.rb", status: "U")).mode).to eq("full")
       expect(select(change("gems/connectrpc-rack/link", status: "A", new_mode: "120000")).mode).to eq("full")
       expect(select(change("gems/connectrpc-rack/vendor", status: "A", new_mode: "160000")).mode).to eq("full")
+    end
+
+    it "runs everything when a symlink or submodule is deleted" do
+      %w[120000 160000].each do |mode|
+        expect(select(change("gems/connectrpc-rack/link", status: "D", old_mode: mode)))
+          .to have_attributes(mode: "full", reason: include("symlink or submodule (mode #{mode})")), mode
+      end
     end
 
     it "runs everything for an empty diff" do
@@ -127,7 +141,14 @@ RSpec.describe CIScope do
     it "runs the release set when every file is release-owned and versions change only their literal" do
       expect(described_class.select(release_files, graph))
         .to have_attributes(mode: "scoped", jobs: %w[static package rails rbs hyper_gems], floors: [])
-      expect(select(change(".github/.release-please-manifest.json")).jobs).to eq(described_class::RELEASE_JOBS)
+    end
+
+    it "needs a version file in the diff for the release set" do
+      expect(select(change("CHANGELOG.md"))).to have_attributes(mode: "scoped", jobs: ["static"])
+      expect(select(change(".github/.release-please-manifest.json"), change("CHANGELOG.md")))
+        .to have_attributes(mode: "full", reason: include(".github/.release-please-manifest.json"))
+      expect(select(version_bump(ReleaseTrain::VERSION_FILES.fetch("connectrpc-yabeda")), change("CHANGELOG.md")).jobs)
+        .to eq(described_class::RELEASE_JOBS)
     end
 
     it "classifies every file by the normal rules when any file is not release-owned" do
@@ -274,6 +295,44 @@ RSpec.describe CIScope do
       end
     end
 
+    it "lists each package a job's Mise tasks reach among the packages that job consumes" do
+      output, error, status = Open3.capture3({ "MISE_ENV" => "ci" }, "mise", "tasks", "--json")
+      expect(status.success?).to be(true), error
+      tasks = JSON.parse(output).to_h { |task| [task.fetch("name"), task] }
+      invoked = ->(text) { text.scan(/mise run "?([^\s";&|]+)/).flatten }
+      closure = lambda do |name, seen = []|
+        next seen if seen.include?(name)
+
+        task = tasks.fetch(name)
+        depends = task.fetch("depends").map { |dependency| dependency.split.first }
+        nested = [*depends, *invoked.call(task.fetch("run").join("\n"))]
+        nested.reduce(seen + [name]) { |visited, dependency| closure.call(dependency, visited) }
+      end
+      # Each floors leg runs its own leaf's task and consumes only that leaf's package.
+      legs = gated.flat_map do |id, job|
+        commands = invoked.call(job.fetch("steps", []).filter_map { |step| step["run"] }.join("\n")).uniq
+        next [[id, commands, described_class::JOBS.fetch(id)]] unless id == "floors"
+
+        described_class::FLOORS.map do |leaf, package|
+          ["floors #{leaf}", commands.map { |command| command.sub("$FLOORS_LEAF", leaf) }, [package]]
+        end
+      end
+      packages = lambda do |task|
+        text = [*task.fetch("run"), task.fetch("dir").to_s, *task.fetch("env")].join("\n")
+        text.scan(%r{gems/(connectrpc-[a-z-]+)}).flatten.uniq
+      end
+      references = legs.flat_map do |leg, commands, consumed|
+        reach = consumed == CIScope::ANY ? nil : consumed.flat_map { |package| [package, *graph.closure(package)] }
+        commands.flat_map { |command| closure.call(command) }.uniq.flat_map do |name|
+          packages.call(tasks.fetch(name)).map { |package| [leg, name, package, reach.nil? || reach.include?(package)] }
+        end
+      end
+      expect(references.map { |leg, _name, package, _ok| [leg, package] })
+        .to include(%w[browser_grpc_web connectrpc-falcon], %w[examples connectrpc-async],
+                    ["floors hyper", "connectrpc-hyper"])
+      expect(references.reject(&:last)).to be_empty
+    end
+
     it "gives every package at least one job of its own beyond Static, Specs and RBS" do
       exempt = []
       generic = %w[static specs rbs]
@@ -411,6 +470,17 @@ RSpec.describe CIScope do
       expect(CIScope.preview(bump, edit, git, graph).mode).to eq("full")
     end
 
+    it "runs everything for a path that is not valid UTF-8" do
+      base = repository(directory)
+      FileUtils.mkdir_p(File.join(directory, "gems/connectrpc-rack"))
+      File.write(File.join(directory, "gems/connectrpc-rack/caf\xE9.rb".b), "x\n")
+      sh(directory, "add", "-A")
+      head = commit(directory, {}, "Latin-1 name")
+      selection = CIScope.preview(base, head, described_class.new(directory), graph)
+      expect(selection).to have_attributes(mode: "full", reason: include("path is not valid UTF-8"))
+      expect(selection.reason).to include('"gems/connectrpc-rack/caf\\xE9.rb"')
+    end
+
     it "runs everything when git cannot read the range" do
       repository(directory)
       expect(CIScope.preview("HEAD", "no-such-revision", described_class.new(directory), graph))
@@ -431,6 +501,27 @@ RSpec.describe CIScope do
         expect(File.read(output)).to eq("jobs=[\"static\",\"hyper\"]\nfloors=[\"hyper\"]\n")
         expect(File.read(summary)).to include("Mode: **scoped**", "`static`, `hyper`", "| M | `gems/a\\|b` |")
         expect(printed.string).to include("CI scope: scoped", "M gems/a|b -> gem: package x")
+      end
+    end
+
+    it "escapes control characters and backticks in printed and summarized paths" do
+      injected = "\n::set-output name=jobs::[]"
+      selection = described_class.select([change("gems/connectrpc-rack/x#{injected}`y`.rb"), change("docs/a`b|c.md"),
+                                          change("x#{injected}")], graph)
+      Dir.mktmpdir("connectrpc-ci-scope-cli-") do |directory|
+        summary = File.join(directory, "summary")
+        printed = StringIO.new
+        described_class.write(selection, { "GITHUB_STEP_SUMMARY" => summary }, printed)
+        lines = printed.string.lines + File.read(summary).lines
+        expect(lines.grep(/\A::/)).to be_empty
+        expect(printed.string).to include('CI scope: full ("x\\n::set-output name=jobs::[]": outside the scoped paths)',
+                                          '  M "gems/connectrpc-rack/x\\n::set-output name=jobs::[]`y`.rb" -> gem')
+        rows = File.read(summary).lines.grep(/\A\| M \|/)
+        expect(rows.size).to eq(3)
+        expect(rows.first)
+          .to start_with('| M | `` "gems/connectrpc-rack/x\\n::set-output name=jobs::[]`y`.rb" `` | gem')
+        expect(rows.drop(1)).to eq(["| M | `` docs/a`b\\|c.md `` | docs: static |\n",
+                                    "| M | `\"x\\n::set-output name=jobs::[]\"` | full: outside the scoped paths |\n"])
       end
     end
 

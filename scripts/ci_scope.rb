@@ -133,7 +133,7 @@ module CIScope # rubocop:disable Metrics/ModuleLength
   def full_reason(fulls)
     change, rule = fulls.first
     more = fulls.size > 1 ? " (and #{fulls.size - 1} more)" : ""
-    "#{change.path}: #{rule.full}#{more}"
+    "#{display(change.path)}: #{rule.full}#{more}"
   end
 
   def release(changes)
@@ -142,14 +142,16 @@ module CIScope # rubocop:disable Metrics/ModuleLength
                   jobs: JOBS.keys & RELEASE_JOBS, floors: [], files: files)
   end
 
-  # Release eligibility covers the whole diff: every file is release-owned,
-  # modified in place as a regular file, and each version file changes only
-  # its VERSION literal.
+  # Release eligibility covers the whole diff: it bumps at least one version
+  # file, every file is release-owned and modified in place as a regular file,
+  # and each version file changes only its VERSION literal.
   def release_only?(changes)
-    changes.all? do |change|
-      RELEASE_FILES.include?(change.path) && change.status == "M" && change.old_mode == change.new_mode &&
-        REGULAR_MODES.include?(change.new_mode) && (!version_file?(change.path) || version_literal_only?(change))
-    end
+    changes.any? { |change| version_file?(change.path) } && changes.all? { |change| release_change?(change) }
+  end
+
+  def release_change?(change)
+    RELEASE_FILES.include?(change.path) && change.status == "M" && change.old_mode == change.new_mode &&
+      REGULAR_MODES.include?(change.new_mode) && (!version_file?(change.path) || version_literal_only?(change))
   end
 
   def version_file?(path) = ReleaseTrain::VERSION_FILES.value?(path)
@@ -162,7 +164,7 @@ module CIScope # rubocop:disable Metrics/ModuleLength
   end
 
   def classify(change, graph)
-    unsupported = unsupported(change)
+    unsupported = unsupported(change) || outside_package(change.path, graph)
     return full_rule(unsupported) if unsupported
     return docs_rule(change) if docs?(change.path)
 
@@ -173,9 +175,23 @@ module CIScope # rubocop:disable Metrics/ModuleLength
   end
 
   def unsupported(change)
+    return "path is not valid UTF-8" unless change.path.valid_encoding?
     return "unsupported diff status #{change.status}" unless SUPPORTED_STATUSES.include?(change.status)
 
-    "symlink or submodule (mode #{change.new_mode})" if FULL_MODES.include?(change.new_mode)
+    mode = [change.old_mode, change.new_mode].find { |entry| FULL_MODES.include?(entry) }
+    "symlink or submodule (mode #{mode})" if mode
+  end
+
+  # A gems/ path must sit inside a package directory other than the root
+  # package's, even for the README exception.
+  def outside_package(path, graph)
+    return unless path.start_with?("gems/")
+
+    package = path[%r{\Agems/([^/]+)/}, 1]
+    return "not inside a package directory" unless package
+    return if package != ROOT_PACKAGE && graph.node?(package)
+
+    "gems/#{display(package)} is not a package directory"
   end
 
   # Gemspecs list docs and READMEs by name, so a deletion can break a build.
@@ -188,10 +204,10 @@ module CIScope # rubocop:disable Metrics/ModuleLength
     ReleaseTrain::GUIDES.include?(change.path) ? rule("installation guide", %w[static specs]) : rule("docs", %w[static])
   end
 
+  # outside_package has already checked any gems/ path.
   def gem_rule(path, graph)
     package = path[%r{\Agems/([^/]+)/}, 1]
     return full_rule("outside the scoped paths") unless package
-    return full_rule("unknown package #{package}") unless graph.node?(package)
 
     Rule.new(label: "gem #{package}", jobs: [], packages: graph.affected(package))
   end
@@ -293,8 +309,11 @@ module CIScope # rubocop:disable Metrics/ModuleLength
 
     def parents(revision) = run("rev-list", "--parents", "-n", "1", revision).split
 
+    # Paths are raw bytes; one that is not valid UTF-8 keeps its bytes as an
+    # invalid UTF-8 string, which classify selects every job for.
     def changes(base, head)
-      fields = run("diff", "--raw", "-z", "--no-renames", "--no-abbrev", base, head, "--").split("\0")
+      output = run("diff", "--raw", "-z", "--no-renames", "--no-abbrev", base, head, "--").b
+      fields = output.split("\0".b).map { |field| field.force_encoding(Encoding::UTF_8) }
       raise Error, "unexpected git diff --raw output" unless fields.size.even?
 
       fields.each_slice(2).map { |meta, path| change(meta, path) }
@@ -357,7 +376,22 @@ module CIScope # rubocop:disable Metrics/ModuleLength
   def text(selection)
     lines = ["CI scope: #{selection.mode} (#{selection.reason})", "jobs: #{selection.jobs.join(' ')}",
              "floors: #{selection.floors.join(' ')}"]
-    lines + selection.files.map { |change, rule| "  #{change.status} #{change.path} -> #{describe(rule)}" }
+    lines + selection.files.map { |change, rule| "  #{change.status} #{display(change.path)} -> #{describe(rule)}" }
+  end
+
+  # Git allows control characters in paths, and a printed line that starts
+  # with :: is a workflow command, so such paths, and invalid UTF-8, print
+  # escaped and quoted.
+  def display(path)
+    path.valid_encoding? && !path.match?(/[[:cntrl:]]/) ? path : path.dump
+  end
+
+  # A Markdown code span whose fence is longer than any backtick run inside,
+  # with table pipes escaped.
+  def code_span(text)
+    fence = "`" * (text.scan(/`+/).map(&:size).max.to_i + 1)
+    pad = fence.size > 1 ? " " : ""
+    "#{fence}#{pad}#{text.gsub('|', '\|')}#{pad}#{fence}"
   end
 
   def describe(rule)
@@ -371,7 +405,7 @@ module CIScope # rubocop:disable Metrics/ModuleLength
 
   def summary_rows(files)
     rows = files.first(SUMMARY_ROWS).map do |change, rule|
-      "| #{change.status} | `#{change.path.gsub('|', '\|')}` | #{describe(rule).gsub('|', '\|')} |"
+      "| #{change.status} | #{code_span(display(change.path))} | #{describe(rule).gsub('|', '\|')} |"
     end
     files.size > SUMMARY_ROWS ? [*rows, "| | #{files.size - SUMMARY_ROWS} more files | |"] : rows
   end
