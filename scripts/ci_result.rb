@@ -6,9 +6,10 @@ require "uri"
 require_relative "ci_scope"
 
 # Decides the aggregate `CI result` check. evaluate is pure: it takes the
-# `needs` context and the run's job list. Api reads that list and main
-# re-reads it, within a bounded deadline, until every other job completed.
-module CIResult
+# `needs` context and the run's job list, every attempt included. Api reads
+# that list and main re-reads it, within a bounded deadline, until every other
+# job's newest attempt completed.
+module CIResult # rubocop:disable Metrics/ModuleLength
   NAME = "CI result"
   ACCEPTED_UNSELECTED = %w[skipped success].freeze
   ACCEPTED_CONCLUSIONS = %w[success skipped].freeze
@@ -71,7 +72,9 @@ module CIResult
   end
 
   # needs.<job>.result can read success while an expanded matrix leg was
-  # cancelled, so the run's own job list is checked too.
+  # cancelled, so the run's own job list is checked too. A job can appear
+  # under several attempts, so each job is judged by its newest attempt's
+  # records, whether or not a re-run copied the job into that attempt.
   def run_errors(jobs)
     others(jobs).filter_map do |job|
       if job["status"] != "completed"
@@ -82,7 +85,16 @@ module CIResult
     end
   end
 
-  def others(jobs) = jobs.reject { |job| job["name"] == NAME }
+  # Keeps every record of each job name's newest attempt. Distinct jobs that
+  # share a name in one attempt all stay.
+  def latest_attempts(jobs)
+    newest = jobs.group_by { |job| job["name"] }.transform_values { |records| records.map { |job| attempt(job) }.max }
+    jobs.select { |job| attempt(job) == newest.fetch(job["name"]) }
+  end
+
+  def attempt(job) = job["run_attempt"].to_i
+
+  def others(jobs) = latest_attempts(jobs).reject { |job| job["name"] == NAME }
 
   def pending?(jobs) = others(jobs).any? { |job| job["status"] != "completed" }
 
@@ -115,13 +127,13 @@ module CIResult
     ["## CI result: #{status}", "", *errors, ("" unless errors.empty?), table(verdict, jobs)].compact.join("\n")
   end
 
-  # Lists a workflow run's latest job attempts through the REST API.
+  # Lists a workflow run's jobs from every attempt through the REST API.
   class Api
     def initialize(env)
       @token = env.fetch("GH_TOKEN")
       @base = URI(env.fetch("GITHUB_API_URL", "https://api.github.com"))
       @first = URI("#{@base}/repos/#{env.fetch('GITHUB_REPOSITORY')}/actions/runs/" \
-                   "#{env.fetch('GITHUB_RUN_ID')}/jobs?filter=latest&per_page=100")
+                   "#{env.fetch('GITHUB_RUN_ID')}/jobs?filter=all&per_page=100")
     end
 
     def jobs

@@ -71,7 +71,9 @@ selected job ids, and `floors`, the selected lowest-allowed leaves. Every other
 job needs `scope` and has `if: contains(fromJSON(needs.scope.outputs.jobs),
 '<job id>')`; the lowest-allowed matrix expands from `floors`, and its `if`
 skips the job before an empty list reaches the matrix. Static is always
-selected. The job summary lists each changed file with the jobs it selects.
+selected. The job summary lists each changed file with the jobs it selects;
+a path with control characters or invalid UTF-8 prints escaped and quoted, so
+it cannot inject a workflow command or break the table.
 
 The changed files come from the event:
 
@@ -86,7 +88,9 @@ The script reads `git diff --raw -z --no-renames`, so a rename is a deletion
 and an addition. It selects every job, failing open, for an unknown path, a
 zero or malformed `before`, a `before` it cannot fetch, a pull request checkout
 that is not a two-parent merge, an empty diff, a status other than added,
-modified or deleted, a symlink or submodule, and any git failure. A bug that
+modified or deleted, a symlink or submodule on either side of the change
+(including a deleted one), a path that is not valid UTF-8, and any git
+failure. A bug that
 makes the script raise fails `CI scope` instead, which skips every gated job
 and fails `CI result`.
 
@@ -94,12 +98,12 @@ Each changed path selects jobs by the first matching class:
 
 | Paths | Jobs |
 | --- | --- |
-| Added or modified `docs/**`, root `*.md`, `img/**` and `gems/*/README.md` | Static; also Specs for the installation guides in `ReleaseTrain::GUIDES`, which root specs read |
+| Added or modified `docs/**`, root `*.md`, `img/**` and `gems/<package>/README.md` | Static; also Specs for the installation guides in `ReleaseTrain::GUIDES`, which root specs read |
 | Top-level `spec/*_spec.rb` | Static, Specs |
 | `typecheck/**` other than `archive.rb` | Static, Specs, RBS; `typecheck/cache_platform.rb` also Runnable examples, whose cache key uses it |
 | `browser/**` | Static, Specs, Browser gRPC-Web |
 | `gems/<package>/**` | Static, Specs, RBS and every job that exercises an affected package |
-| Everything else, including `lib/`, `sig/`, `exe/`, gemspecs, Gemfiles, Mise configuration, `Rakefile`, `scripts/`, `.github/`, `conformance/`, `interop/`, `rbs/`, `third_party/`, `examples/`, spec support and fixtures, `typecheck/archive.rb`, `gems/connectrpc-hyper/scripts/platforms.rb` (ReleaseTrain loads it), deleted docs and unknown gem directories | Every job |
+| Everything else, including `lib/`, `sig/`, `exe/`, gemspecs, Gemfiles, Mise configuration, `Rakefile`, `scripts/`, `.github/`, `conformance/`, `interop/`, `rbs/`, `third_party/`, `examples/`, spec support and fixtures, `typecheck/archive.rb`, `gems/connectrpc-hyper/scripts/platforms.rb` (ReleaseTrain loads it), deleted docs, and any `gems/` path outside a package directory (an unknown directory, its README, or `gems/connectrpc/`) | Every job |
 
 A deleted doc runs everything because gemspecs list docs and READMEs by name.
 Package checks assert shipped doc names, not content, and Static's
@@ -117,14 +121,16 @@ also runs the core jobs. Edges into the core gem are dropped, because a core
 change already runs everything. Each affected package with a lowest-allowed
 leaf runs that leaf.
 
-A release PR that changes only `CHANGELOG.md`,
-`.github/.release-please-manifest.json` and version files, where each version
-file changes only its `VERSION` literal, runs Static, Package, Rails, RBS and
-Hyper gems. Those cover the train agreement (`release:check`), the core and
+A release PR that bumps at least one version file and changes only
+`CHANGELOG.md`, `.github/.release-please-manifest.json` and version files,
+where each version file changes only its `VERSION` literal, runs Static,
+Package, Rails, RBS and Hyper gems. Those cover the train agreement (`release:check`), the core and
 Rails package checks, `rbs:package` (all twelve archives offline) and the hyper
 archive builds and release candidate. Any other file in the diff classifies
 every file by the rules above, so a minor release PR, which also prepares the
-installation guides, runs everything.
+installation guides, runs everything. Without a version file the normal rules
+apply too: `CHANGELOG.md` alone runs Static, and the manifest runs everything
+as a `.github/` path.
 
 `CI result` runs with `if: always()` after every job and is the check to
 require. It runs `mise run ci:result`
@@ -134,8 +140,11 @@ succeeded, and every unselected job was skipped or succeeded. Besides `scope`,
 its `needs` must name exactly the jobs in `CIScope::JOBS`. When Hyper gems is selected, its
 `verified` output must be `true`. Because a job's `needs` result can read
 success while one of its matrix legs was cancelled, it also lists the run's
-latest job attempts through the REST API (`actions: read`) and fails if any
-job other than itself ended other than success or skipped. It re-reads that
+jobs from every attempt through the REST API (`actions: read`) and fails if
+the newest attempt of any job other than itself ended other than success or
+skipped. A job can appear under several attempts (a re-run of failed jobs
+also lists the jobs it did not repeat under its new attempt), and only each
+job's newest attempt counts. It re-reads that
 list for up to 60 seconds while jobs are still pending, then fails with the
 last observed state. The table it prints, also in the job summary, shows each
 job's selection, result and verdict.

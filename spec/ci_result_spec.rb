@@ -87,6 +87,32 @@ RSpec.describe CIResult do
     expect(evaluate(needs, queued).errors).to eq(["Hyper gems / Build: queued"])
   end
 
+  describe "re-run attempts" do
+    let(:leg) { { "name" => "Lowest allowed hyper / Ruby 3.4.12", "status" => "completed" } }
+    let(:first_attempt) do
+      [*run_jobs.each_with_index.map { |job, index| job.merge("run_attempt" => 1, "id" => index + 1) },
+       leg.merge("run_attempt" => 1, "id" => 10, "conclusion" => "cancelled")]
+    end
+    # A partial re-run of Specs alone: the cancelled leg has no attempt 2 record.
+    let(:rerun) { [*first_attempt, run_jobs[1].merge("run_attempt" => 2, "id" => 20)] }
+
+    it "fails for a leg cancelled in an earlier attempt that the re-run did not repeat" do
+      expect(evaluate(needs, rerun).errors).to eq(["Lowest allowed hyper / Ruby 3.4.12: cancelled"])
+    end
+
+    it "passes once a re-run attempt of the cancelled leg succeeded" do
+      retried = [*rerun, leg.merge("run_attempt" => 2, "id" => 21, "conclusion" => "success")]
+      expect(evaluate(needs, retried)).to be_ok
+    end
+
+    it "keeps only each job name's records from its newest attempt" do
+      jobs = [{ "name" => "A", "run_attempt" => 1, "id" => 1 }, { "name" => "A", "run_attempt" => 3, "id" => 7 },
+              { "name" => "A", "run_attempt" => 2, "id" => 9 }, { "name" => "B", "run_attempt" => 1, "id" => 2 },
+              { "name" => "B", "run_attempt" => 1, "id" => 3 }]
+      expect(described_class.latest_attempts(jobs).map { |job| job["id"] }).to eq([7, 2, 3])
+    end
+  end
+
   describe ".settled_jobs" do
     let(:clock) do
       now = [0]
@@ -127,10 +153,41 @@ RSpec.describe CIResult do
       expect(evaluate(needs, jobs).errors).to eq(["Hyper gems / Build: in_progress"])
     end
 
+    it "ignores a pending record that a newer attempt of the same job replaced" do
+      old = pending.last.merge("run_attempt" => 1, "id" => 1)
+      source = api([old, old.merge("run_attempt" => 2, "id" => 2, "status" => "completed", "conclusion" => "success")])
+      described_class.settled_jobs(source, clock: clock, sleeper: ->(seconds) { clock.advance(seconds) })
+      expect(source.calls).to eq(1)
+    end
+
     it "does not re-read when only CI result itself is still running" do
       source = api(run_jobs)
       described_class.settled_jobs(source, clock: clock, sleeper: ->(_seconds) { raise "slept" })
       expect(source.calls).to eq(1)
+    end
+  end
+
+  describe CIResult::Api do
+    def response(jobs, link = nil)
+      Net::HTTPOK.new("1.1", "200", "OK").tap do |page|
+        page.instance_variable_set(:@body, JSON.generate("jobs" => jobs))
+        page.instance_variable_set(:@read, true)
+        page["link"] = link if link
+      end
+    end
+
+    it "lists every attempt's jobs across pages" do
+      api = described_class.new("GH_TOKEN" => "token", "GITHUB_REPOSITORY" => "owner/repo", "GITHUB_RUN_ID" => "7")
+      second = "https://api.github.com/repositories/1/actions/runs/7/jobs?filter=all&per_page=100&page=2"
+      pages = { 1 => response([{ "id" => 1 }], "<#{second}>; rel=\"next\""), 2 => response([{ "id" => 2 }]) }
+      requested = []
+      api.define_singleton_method(:get) do |url|
+        requested << url.to_s
+        pages.fetch(requested.size)
+      end
+      expect(api.jobs).to eq([{ "id" => 1 }, { "id" => 2 }])
+      expect(requested).to eq(["https://api.github.com/repos/owner/repo/actions/runs/7/jobs?filter=all&per_page=100",
+                               second])
     end
   end
 
