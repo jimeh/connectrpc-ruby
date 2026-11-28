@@ -638,3 +638,5 @@ Connect unary response, read the remainder with the same limits and bounds.
 The historical Web TCP/TLS failures, diagnosis and separate baseline repair are
 recorded in the [conformance
 status](../conformance/README.md#connect-http11-server-profiles).
+
+<!-- throwaway: docs-only CI scope evidence -->
