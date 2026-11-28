@@ -70,6 +70,14 @@ description = "Check GitHub Actions syntax and security offline"
 depends = ["setup:tools"]
 run = ["mise exec -- actionlint", "mise exec -- zizmor --offline .github/workflows"]
 
+[tasks."ci:scope"]
+description = "Select the CI jobs a change can affect; pass -- BASE HEAD to preview a range"
+run = "ruby scripts/ci_scope.rb"
+
+[tasks."ci:result"]
+description = "Decide the aggregate CI result from the scope, every job's result and the run's job list"
+run = "ruby scripts/ci_result.rb"
+
 [tasks."check:static"]
 description = "Run platform-independent format, lint, and workflow checks"
 depends = ["format:check", "lint", "lint:workflows", "release:check"]

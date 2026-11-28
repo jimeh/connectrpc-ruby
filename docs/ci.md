@@ -2,16 +2,20 @@
 
 The workflow runs on pull requests, pushes to `main`, manual dispatch and a
 daily schedule (04:37 UTC), on Ubuntu 24.04 unless a row names another runner.
-It has 85 checks: nine core, three optional Rails, four optional HTTP/2, two
-optional Rack, two optional in-process testing, two optional RBS, four Falcon,
-two OpenTelemetry, two Prometheus, two Yabeda, two health, two Sentry, two
-browser gRPC-Web, ten lowest-allowed dependency checks, one runnable-examples
-check and 36 [hyper transport](#optional-hyper-lanes) checks. There is no
-serial cache primer or aggregate job; only the hyper archive workflow's smoke,
-candidate and `Verified` jobs and the Windows job wait for the cross-built gems:
+It has 87 checks: `CI scope`, nine core, three optional Rails, four optional
+HTTP/2, two optional Rack, two optional in-process testing, two optional RBS,
+four Falcon, two OpenTelemetry, two Prometheus, two Yabeda, two health, two
+Sentry, two browser gRPC-Web, ten lowest-allowed dependency checks, one
+runnable-examples check, 36 [hyper transport](#optional-hyper-lanes) checks and
+`CI result`. Every check after `CI scope` waits for it and runs only when it
+selects that check (see [scoped jobs](#scoped-jobs)), and `CI result` waits for
+every other job. There is no serial cache primer. Apart from those two, only
+the hyper archive workflow's smoke, candidate and `Verified` jobs and the
+Windows job wait for other jobs, because they need the cross-built gems:
 
 | Check | Ruby | Canonical commands |
 | --- | --- | --- |
+| CI scope | 3.4.12 | `mise run ci:scope` |
 | Static | 3.4.12 | `mise run check:static` |
 | Specs | 3.4.12, 4.0.9 | `mise run syntax`, then a separate `mise run test` step |
 | Package | 3.4.12, 4.0.9 | `mise run generation:check`, then `mise run check:package` |
@@ -45,6 +49,7 @@ candidate and `Verified` jobs and the Windows job wait for the cross-built gems:
 | Hyper gems / Check the release candidate | 3.4.12 | `mise run release:build` against every downloaded archive and smoke record |
 | Hyper gems / Verified | none | Fails unless every build, smoke and candidate job succeeded |
 | Hyper gem x64-mingw-ucrt and aarch64-mingw-ucrt on Windows (Windows Server 2025 x64, Windows 11 arm64) | 3.4, 4.0 | Install smoke, then the applicable specs and Go interop subset against the artifact |
+| CI result | 3.4.12 | `mise run ci:result` |
 
 Each matrix has `fail-fast: false`. Every check runs its commands on cache
 hits too. Package isolation still installs cached `.gem` artifacts offline and
@@ -57,6 +62,102 @@ cases must pass with zero expected failures; cancellation uses actual source,
 request-write and socket cleanup evidence. Existing canonical commands
 cover both portions without new jobs or matrix axes. Product, generator and harness specs remain
 part of Specs; CI guard specs cover task and runtime boundaries.
+
+## Scoped jobs
+
+The `CI scope` job runs [`scripts/ci_scope.rb`](../scripts/ci_scope.rb)
+through `mise run ci:scope` and writes two outputs: `jobs`, a JSON list of the
+selected job ids, and `floors`, the selected lowest-allowed leaves. Every other
+job needs `scope` and has `if: contains(fromJSON(needs.scope.outputs.jobs),
+'<job id>')`; the lowest-allowed matrix expands from `floors`, and its `if`
+skips the job before an empty list reaches the matrix. Static is always
+selected. The job summary lists each changed file with the jobs it selects;
+a path with control characters or invalid UTF-8 prints escaped and quoted so
+it cannot break the table, and inside Actions the printed selection sits
+between `::stop-commands::` markers, so no path can issue a workflow command.
+
+The changed files come from the event:
+
+- `pull_request`: the checkout (`fetch-depth: 2`) is GitHub's merge commit.
+  It must have exactly two parents, and the diff runs from its first parent,
+  the base, to the merge commit.
+- `push`: the diff runs from `github.event.before` to `github.sha`. When the
+  checkout lacks `before`, the script fetches that one commit from `origin`.
+- `schedule`, `workflow_dispatch` and any other event select every job.
+
+The script reads `git diff --raw -z --no-renames`, so a rename is a deletion
+and an addition. It selects every job, failing open, for an unknown path, a
+zero or malformed `before`, a `before` it cannot fetch, a pull request checkout
+that is not a two-parent merge, an empty diff, a status other than added,
+modified or deleted, a symlink or submodule on either side of the change
+(including a deleted one), a path that is not valid UTF-8, and any git
+failure. A bug that
+makes the script raise fails `CI scope` instead, which skips every gated job
+and fails `CI result`.
+
+Each changed path selects jobs by the first matching class:
+
+| Paths | Jobs |
+| --- | --- |
+| Added or modified `docs/**`, root `*.md`, `img/**` and `gems/<package>/README.md` | Static; also Specs for the installation guides in `ReleaseTrain::GUIDES`, which root specs read |
+| Top-level `spec/*_spec.rb` | Static, Specs |
+| `typecheck/**` other than `archive.rb` | Static, Specs, RBS; `typecheck/cache_platform.rb` also Runnable examples, whose cache key uses it |
+| `browser/**` | Static, Specs, Browser gRPC-Web |
+| `gems/<package>/**` | Static, Specs, RBS and every job that exercises an affected package |
+| Everything else, including `lib/`, `sig/`, `exe/`, gemspecs, Gemfiles, Mise configuration, `Rakefile`, `scripts/`, `.github/`, `conformance/`, `interop/`, `rbs/`, `third_party/`, `examples/`, spec support and fixtures, `typecheck/archive.rb`, `gems/connectrpc-hyper/scripts/platforms.rb` (ReleaseTrain loads it), deleted docs, and any `gems/` path outside a package directory (an unknown directory, its README, or `gems/connectrpc/`) | Every job |
+
+A deleted doc runs everything because gemspecs list docs and READMEs by name.
+Package checks assert shipped doc names, not content, and Static's
+`release:check` checks guide snippets, so edited docs need neither.
+
+`CIScope::JOBS` maps each job to the packages its bundles or files exercise:
+`Package` covers core and the health gem's vendored schema, Browser gRPC-Web
+the OTel, Async, Falcon and Rack bundles, and Runnable examples the Rack,
+Async, Falcon and Rails 8.1 lane bundles. A package change affects that package
+and every package whose transitive `path:` dependencies include it. The script
+derives that graph from each package's `Gemfile` and `gemfiles/*.gemfile`,
+never from a hand-written list, and fails on a `path:` it cannot resolve to a
+package. The root Gemfile's development dependency on Rack means a Rack change
+also runs the core jobs. Edges into the core gem are dropped, because a core
+change already runs everything. Each affected package with a lowest-allowed
+leaf runs that leaf.
+
+A release PR that bumps at least one version file and changes only
+`CHANGELOG.md`, `.github/.release-please-manifest.json` and version files,
+where each version file changes only its numeric `VERSION = "x.y.z"` literal, runs Static,
+Package, Rails, RBS and Hyper gems. Those cover the train agreement (`release:check`), the core and
+Rails package checks, `rbs:package` (all twelve archives offline) and the hyper
+archive builds and release candidate. Any other file in the diff classifies
+every file by the rules above, so a minor release PR, which also prepares the
+installation guides, runs everything. Without a version file the normal rules
+apply too: `CHANGELOG.md` alone runs Static, and the manifest runs everything
+as a `.github/` path.
+
+`CI result` runs with `if: always()` after every job and is the check to
+require. It runs `mise run ci:result`
+([`scripts/ci_result.rb`](../scripts/ci_result.rb)), which fails unless
+`CI scope` succeeded with a job list that includes Static, every selected job
+succeeded, and every unselected job was skipped or succeeded. Besides `scope`,
+its `needs` must name exactly the jobs in `CIScope::JOBS`. When Hyper gems is selected, its
+`verified` output must be `true`. Because a job's `needs` result can read
+success while one of its matrix legs was cancelled, it also lists the run's
+jobs from every attempt through the REST API (`actions: read`) and fails if
+the newest attempt of any job other than itself ended other than success or
+skipped. A job can appear under several attempts (a re-run of failed jobs
+also lists the jobs it did not repeat under its new attempt), and only each
+job's newest attempt counts. Records older than the newest `CI scope` attempt
+are ignored, because re-running the scope re-runs or re-skips every gated job.
+It re-reads that
+list for up to 60 seconds while jobs are still pending, then fails with the
+last observed state. The table it prints, also in the job summary, shows each
+job's selection, result and verdict.
+
+To force a full run, dispatch the workflow manually or change a path that
+selects every job, such as a file under `.github/`. Preview a range locally with
+`mise run ci:scope -- BASE HEAD`. A new CI job or gem needs a `CIScope::JOBS`
+(and, for a lowest-allowed leaf, `CIScope::FLOORS`) entry; `spec/ci_scope_spec.rb`
+fails until the mapping, the job's `needs` and `if`, and `CI result`'s `needs`
+agree with the workflow.
 
 ## Fresh dependency resolution
 
@@ -540,7 +641,8 @@ It opens or updates the release PR using an existing GitHub App from the
 `release-please` environment. After a release PR merges, it tags the commit and
 creates a draft GitHub release. The tag starts `release.yml`, which publishes
 from the `release` environment.
-The 83 CI checks above retain their mapping. `check:static` also runs the offline
+The CI checks above retain their mapping; a patch release PR runs the
+[release set](#scoped-jobs). `check:static` also runs the offline
 `release:check` invariant for all twelve gems, release configuration and
 installation guides. `release.yml` calls the same hyper-gems workflow as CI and
 publishes only after its `verified` output is `true`. See [release preparation](releasing.md) for the candidate procedure and

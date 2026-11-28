@@ -56,6 +56,8 @@ Mise owns setup ordering and verification composition.
 | `mise run test -- spec/connectrpc_spec.rb` | Run focused RSpec examples; accepts `file:line` and RSpec options. |
 | `mise run test` | Run all specs and generate coverage. |
 | `mise run lint:workflows` | Run actionlint and offline zizmor. |
+| `mise run ci:scope -- BASE HEAD` | Print the CI jobs and lowest-allowed leaves a commit range selects, with each file's class; see [scoped jobs](ci.md#scoped-jobs). In CI it reads the event range instead. |
+| `mise run ci:result` | CI only: decide the aggregate `CI result` check from `NEEDS` and the run's job list. |
 | `mise run check:static` | Run format, lint, and workflow checks once. |
 | `mise run check` | Run static checks and Ruby syntax checks. |
 | `mise run build` | Build `pkg/connectrpc-<version>.gem`. |
@@ -87,7 +89,9 @@ for final handoff; moved middleware specs have their own canonical gate.
 canonical component tasks into nine core, three Rails, four optional HTTP/2,
 two optional Rack, two optional testing, two optional RBS and four optional Falcon
 checks, plus the optional OTel, metrics, health, Sentry and hyper leaves, with syntax, specs, package isolation,
-interop and official conformance on both Rubies. Hosted clean-environment and
+interop and official conformance on both Rubies. A `CI scope` job runs only the
+checks a change can affect, and the single `CI result` check fails unless every
+selected check passed. Hosted clean-environment and
 matrix results remain CI evidence; a local pass cannot establish them.
 
 Markdown is maintained manually: check relative links, commands, and fenced

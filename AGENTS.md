@@ -33,6 +33,8 @@ build, and isolated gem installation.
 [Development](docs/development.md) owns setup, verification tiers, coverage,
 updates, hooks, and PR guidance. Docs-only changes need link/command review;
 tests and workflow checks apply only if the edit affects those commands or examples.
+CI runs only the jobs `scripts/ci_scope.rb` selects; a new ci.yml job or gem needs
+its `CIScope::JOBS` mapping, which `spec/ci_scope_spec.rb` enforces.
 
 Before protocol, adapter, message-binding, or public-API work, read
 [design](docs/design.md). Keep shared protocol code independent of HTTP hosting
