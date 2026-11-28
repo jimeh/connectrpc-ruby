@@ -27,8 +27,54 @@ env:
   BUNDLE_VERSION: "4.0.23"
 
 jobs:
+  # Selects the jobs this change can affect (scripts/ci_scope.rb). Every other
+  # job needs it; unknown paths, git failures and schedule or dispatch runs
+  # select every job.
+  scope:
+    name: CI scope
+    runs-on: ubuntu-24.04
+    outputs:
+      jobs: ${{ steps.scope.outputs.jobs }}
+      floors: ${{ steps.scope.outputs.floors }}
+    steps:
+      # Two commits: a pull request's merge commit and its base parent.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 2
+          persist-credentials: false
+      - uses: ruby/setup-ruby@7f797815d8adceb1c412e7abefdd1ab4abc47a5f # v1.335.0
+        with:
+          ruby-version: "3.4.12"
+          bundler: "4.0.23"
+          bundler-cache: false
+          cache-version: bundler-4.0.23-v1
+      - uses: jdx/mise-action@82a612c5ab8bcda7cc5db6b7e81a8e7584c3dc6e # v5.2.3
+        with:
+          version: "2026.10.19"
+          add_shims_to_path: false
+          env: false
+          export_path: false
+          install: false
+          cache: false
+      - name: Select affected jobs
+        id: scope
+        env:
+          CI_SCOPE_EVENT: ${{ github.event_name }}
+          CI_SCOPE_BEFORE: ${{ github.event.before }}
+          CI_SCOPE_AFTER: ${{ github.sha }}
+        run: mise run ci:scope
+      - name: Check workspace stayed clean
+        if: always()
+        run: |
+          if [ -n "$(git status --porcelain --untracked-files=all)" ]; then
+            git status --short --untracked-files=all
+            exit 1
+          fi
+
   static:
     name: Static
+    needs: scope
+    if: contains(fromJSON(needs.scope.outputs.jobs), 'static')
     runs-on: ubuntu-24.04
     env:
       CI_EXPECTED_RUBY_VERSION: "3.4.12"
@@ -64,6 +110,8 @@ jobs:
 
   specs:
     name: Specs / Ruby ${{ matrix.ruby }}
+    needs: scope
+    if: contains(fromJSON(needs.scope.outputs.jobs), 'specs')
     runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
@@ -103,6 +151,8 @@ jobs:
 
   package:
     name: Package / Ruby ${{ matrix.ruby }}
+    needs: scope
+    if: contains(fromJSON(needs.scope.outputs.jobs), 'package')
     runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
@@ -144,6 +194,8 @@ jobs:
 
   interop:
     name: Go interoperability / Ruby ${{ matrix.ruby }}
+    needs: scope
+    if: contains(fromJSON(needs.scope.outputs.jobs), 'interop')
     runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
@@ -194,6 +246,8 @@ jobs:
 
   conformance:
     name: Official conformance / Ruby ${{ matrix.ruby }}
+    needs: scope
+    if: contains(fromJSON(needs.scope.outputs.jobs), 'conformance')
     runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
@@ -233,6 +287,8 @@ jobs:
 
   rails:
     name: Rails ${{ matrix.rails }} / Ruby ${{ matrix.ruby }}
+    needs: scope
+    if: contains(fromJSON(needs.scope.outputs.jobs), 'rails')
     runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
@@ -282,11 +338,13 @@ jobs:
 
   floors:
     name: Lowest allowed ${{ matrix.leaf }} / Ruby 3.4.12
+    needs: scope
+    if: contains(fromJSON(needs.scope.outputs.jobs), 'floors')
     runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
       matrix:
-        leaf: [async, falcon, rack, rails, otel, prometheus, yabeda, health, sentry, hyper]
+        leaf: ${{ fromJSON(needs.scope.outputs.floors) }}
     env:
       CI_EXPECTED_RUBY_VERSION: "3.4.12"
       BUNDLE_COOLDOWN: "3"
@@ -333,6 +391,8 @@ jobs:
 
   async_specs:
     name: Async specs and package / Ruby ${{ matrix.ruby }}
+    needs: scope
+    if: contains(fromJSON(needs.scope.outputs.jobs), 'async_specs')
     runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
@@ -388,6 +448,8 @@ jobs:
 
   async_interop:
     name: Async Go interoperability / Ruby ${{ matrix.ruby }}
+    needs: scope
+    if: contains(fromJSON(needs.scope.outputs.jobs), 'async_interop')
     runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
@@ -448,6 +510,8 @@ jobs:
 
   rack:
     name: Rack specs and package / Ruby ${{ matrix.ruby }}
+    needs: scope
+    if: contains(fromJSON(needs.scope.outputs.jobs), 'rack')
     runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
@@ -493,6 +557,8 @@ jobs:
 
   testing:
     name: In-process testing / Ruby ${{ matrix.ruby }}
+    needs: scope
+    if: contains(fromJSON(needs.scope.outputs.jobs), 'testing')
     runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
@@ -534,6 +600,8 @@ jobs:
 
   rbs:
     name: RBS consumers and package / Ruby ${{ matrix.ruby }}
+    needs: scope
+    if: contains(fromJSON(needs.scope.outputs.jobs), 'rbs')
     runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
@@ -598,6 +666,8 @@ jobs:
 
   falcon_specs:
     name: Falcon specs and package / Ruby ${{ matrix.ruby }}
+    needs: scope
+    if: contains(fromJSON(needs.scope.outputs.jobs), 'falcon_specs')
     runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
@@ -649,6 +719,8 @@ jobs:
 
   falcon_interop:
     name: Falcon Go interoperability / Ruby ${{ matrix.ruby }}
+    needs: scope
+    if: contains(fromJSON(needs.scope.outputs.jobs), 'falcon_interop')
     runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
@@ -705,6 +777,8 @@ jobs:
 
   otel:
     name: OpenTelemetry integration and package / Ruby ${{ matrix.ruby }}
+    needs: scope
+    if: contains(fromJSON(needs.scope.outputs.jobs), 'otel')
     runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
@@ -746,6 +820,8 @@ jobs:
 
   prometheus:
     name: Prometheus metrics specs and package / Ruby ${{ matrix.ruby }}
+    needs: scope
+    if: contains(fromJSON(needs.scope.outputs.jobs), 'prometheus')
     runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
@@ -787,6 +863,8 @@ jobs:
 
   yabeda:
     name: Yabeda metrics specs and package / Ruby ${{ matrix.ruby }}
+    needs: scope
+    if: contains(fromJSON(needs.scope.outputs.jobs), 'yabeda')
     runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
@@ -828,6 +906,8 @@ jobs:
 
   health:
     name: Health service specs, package and grpc-go interop / Ruby ${{ matrix.ruby }}
+    needs: scope
+    if: contains(fromJSON(needs.scope.outputs.jobs), 'health')
     runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
@@ -876,6 +956,8 @@ jobs:
 
   sentry:
     name: Sentry tracing specs and package / Ruby ${{ matrix.ruby }}
+    needs: scope
+    if: contains(fromJSON(needs.scope.outputs.jobs), 'sentry')
     runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
@@ -917,6 +999,8 @@ jobs:
 
   hyper:
     name: Hyper transport specs, interop and package / Ruby ${{ matrix.ruby }}
+    needs: scope
+    if: contains(fromJSON(needs.scope.outputs.jobs), 'hyper')
     runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
@@ -973,6 +1057,8 @@ jobs:
 
   hyper_msrv:
     name: Hyper extension at its declared MSRV / Ruby 3.4.12
+    needs: scope
+    if: contains(fromJSON(needs.scope.outputs.jobs), 'hyper_msrv')
     runs-on: ubuntu-24.04
     env:
       CI_EXPECTED_RUBY_VERSION: "3.4.12"
@@ -1011,6 +1097,8 @@ jobs:
   # release workflow does before publishing.
   hyper_gems:
     name: Hyper gems
+    needs: scope
+    if: contains(fromJSON(needs.scope.outputs.jobs), 'hyper_gems')
     # GitHub resolves a local reusable workflow from the caller's commit, not the
     # workspace; actionlint 1.7.12 does not accept the `$/` form yet.
     uses: ./.github/workflows/hyper-gems.yml # zizmor: ignore[self-repository]
@@ -1023,7 +1111,8 @@ jobs:
   # accept-backlog probes.
   hyper_windows:
     name: Hyper gem ${{ matrix.platform }} on Windows / Ruby ${{ matrix.ruby }}
-    needs: hyper_gems
+    needs: [scope, hyper_gems]
+    if: contains(fromJSON(needs.scope.outputs.jobs), 'hyper_windows')
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
@@ -1093,6 +1182,8 @@ jobs:
 
   browser_grpc_web:
     name: Browser gRPC-Web / Ruby ${{ matrix.ruby }}
+    needs: scope
+    if: contains(fromJSON(needs.scope.outputs.jobs), 'browser_grpc_web')
     runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
@@ -1145,6 +1236,8 @@ jobs:
 
   examples:
     name: Runnable examples / Ruby 4.0.9
+    needs: scope
+    if: contains(fromJSON(needs.scope.outputs.jobs), 'examples')
     runs-on: ubuntu-24.04
     env:
       CI_EXPECTED_RUBY_VERSION: "4.0.9"
@@ -1179,6 +1272,75 @@ jobs:
           key: example-bundles-v1-${{ runner.os }}-${{ runner.arch }}-${{ steps.bundle-platform.outputs.platform }}-bundler-4.0.23-${{ hashFiles('connectrpc.gemspec', 'gems/connectrpc-rack/Gemfile*', 'gems/connectrpc-async/Gemfile*', 'gems/connectrpc-falcon/Gemfile*', 'gems/**/*.gemspec') }}
       - name: Run example:verify
         run: mise run example:verify
+      - name: Check workspace stayed clean
+        if: always()
+        run: |
+          if [ -n "$(git status --porcelain --untracked-files=all)" ]; then
+            git status --short --untracked-files=all
+            exit 1
+          fi
+
+  # The single required check. It runs after every job, even a failed or
+  # cancelled one, and fails unless the scope succeeded, every selected job
+  # succeeded, every unselected job was skipped and the run's own job list
+  # (matrix legs and reusable workflow jobs included) has no other outcome.
+  ci_result:
+    name: CI result
+    needs:
+      - scope
+      - static
+      - specs
+      - package
+      - interop
+      - conformance
+      - rails
+      - floors
+      - async_specs
+      - async_interop
+      - rack
+      - testing
+      - rbs
+      - falcon_specs
+      - falcon_interop
+      - otel
+      - prometheus
+      - yabeda
+      - health
+      - sentry
+      - hyper
+      - hyper_msrv
+      - hyper_gems
+      - hyper_windows
+      - browser_grpc_web
+      - examples
+    if: always()
+    runs-on: ubuntu-24.04
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ruby/setup-ruby@7f797815d8adceb1c412e7abefdd1ab4abc47a5f # v1.335.0
+        with:
+          ruby-version: "3.4.12"
+          bundler: "4.0.23"
+          bundler-cache: false
+          cache-version: bundler-4.0.23-v1
+      - uses: jdx/mise-action@82a612c5ab8bcda7cc5db6b7e81a8e7584c3dc6e # v5.2.3
+        with:
+          version: "2026.10.19"
+          add_shims_to_path: false
+          env: false
+          export_path: false
+          install: false
+          cache: false
+      - name: Require every selected job to succeed
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+          GH_TOKEN: ${{ github.token }}
+        run: mise run ci:result
       - name: Check workspace stayed clean
         if: always()
         run: |

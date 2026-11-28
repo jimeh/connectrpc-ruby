@@ -5,6 +5,7 @@ require "open3"
 require "rbconfig"
 require "tmpdir"
 require "yaml"
+require_relative "../scripts/ci_scope"
 require_relative "../scripts/dependency_floors"
 require_relative "../scripts/release_train"
 
@@ -140,7 +141,9 @@ RSpec.describe "CI check mapping" do
   # The hyper transport's jobs, including the reusable archive workflow and
   # the dependent Windows job, have their own mapping below.
   let(:hyper_jobs) { %w[hyper hyper_msrv hyper_gems hyper_windows] }
-  let(:jobs) { all_jobs.except(*hyper_jobs) }
+  # The scope and CI result control jobs have their own mapping in ci_scope_spec.
+  let(:control_jobs) { %w[scope ci_result] }
+  let(:jobs) { all_jobs.except(*hyper_jobs, *control_jobs) }
 
   it "preserves all 28 existing checks and adds browser, metrics, health, Sentry and lowest-allowed leaves" do
     expect(all_jobs.keys).to include(*hyper_jobs)
@@ -153,7 +156,7 @@ RSpec.describe "CI check mapping" do
     count = lambda do |names|
       jobs.slice(*names).values.sum do |job|
         matrix = job.dig("strategy", "matrix") || {}
-        matrix["ruby"]&.size || matrix["include"]&.size || matrix["leaf"]&.size || 1
+        matrix["ruby"]&.size || matrix["include"]&.size || (matrix["leaf"] && CIScope::FLOORS.size) || 1
       end
     end
     expect(count.call(core)).to eq(9)
@@ -171,7 +174,11 @@ RSpec.describe "CI check mapping" do
     expect(count.call(["sentry"])).to eq(2)
     expect(count.call(["floors"])).to eq(10)
     expect(count.call(jobs.keys - ["examples"])).to eq(48)
-    jobs.each_value { |job| expect(job).not_to have_key("needs") }
+    expect(all_jobs.keys).to include(*control_jobs)
+    jobs.each do |name, job|
+      expect(job.fetch("needs")).to eq("scope")
+      expect(job.fetch("if")).to eq("contains(fromJSON(needs.scope.outputs.jobs), '#{name}')")
+    end
     jobs.except("static", "rails", "examples", "floors").each_value do |job|
       expect(job.dig("strategy", "fail-fast")).to be(false)
       expect(job.dig("strategy", "matrix", "ruby")).to eq(%w[3.4.12 4.0.9])
@@ -208,8 +215,8 @@ RSpec.describe "CI check mapping" do
   it "runs each lowest-allowed leaf on Ruby 3.4.12 through its Mise floors task" do
     floors = jobs.fetch("floors")
     expect(floors.dig("strategy", "fail-fast")).to be(false)
-    expect(floors.dig("strategy", "matrix", "leaf"))
-      .to eq(%w[async falcon rack rails otel prometheus yabeda health sentry hyper])
+    expect(floors.dig("strategy", "matrix", "leaf")).to eq("${{ fromJSON(needs.scope.outputs.floors) }}")
+    expect(CIScope::FLOORS.keys).to eq(%w[async falcon rack rails otel prometheus yabeda health sentry hyper])
     expect(floors.fetch("env")).to include("CI_EXPECTED_RUBY_VERSION" => "3.4.12", "BUNDLE_COOLDOWN" => "3")
     ruby = floors.fetch("steps").find { |step| step.fetch("uses", "").start_with?("ruby/setup-ruby@") }
     expect(ruby.fetch("with")).to include("ruby-version" => "3.4.12", "bundler-cache" => false)
@@ -219,7 +226,7 @@ RSpec.describe "CI check mapping" do
     output, error, status = Open3.capture3("mise", "tasks", "--json")
     expect(status.success?).to be(true), error
     tasks = JSON.parse(output).to_h { |task| [task.fetch("name"), task] }
-    floors.dig("strategy", "matrix", "leaf").each do |leaf|
+    CIScope::FLOORS.each_key do |leaf|
       task = tasks.fetch("floors:#{leaf}")
       expect(task.fetch("env")).to include("CONNECTRPC_DEPENDENCY_FLOORS=1")
       expect(task.fetch("run")).to include(a_string_ending_with(" setup"), a_string_ending_with(" floors"),
@@ -232,7 +239,7 @@ RSpec.describe "CI check mapping" do
     expected = ReleaseTrain::NAMES.reject { |name| DependencyFloors.floors([name]).empty? }.map do |name|
       name == "connectrpc-on-rails" ? "rails" : name.delete_prefix("connectrpc-")
     end
-    expect(jobs.dig("floors", "strategy", "matrix", "leaf")).to match_array(expected)
+    expect(CIScope::FLOORS.keys).to match_array(expected)
     output, error, status = Open3.capture3("mise", "tasks", "info", "floors", "--json")
     expect(status.success?).to be(true), error
     expect(JSON.parse(output).fetch("depends")).to match_array(expected.map { |leaf| "floors:#{leaf}" })
@@ -529,9 +536,10 @@ RSpec.describe "Hyper CI mapping" do
 
   it "calls the reusable archive workflow read-only and runs the Windows specs after it" do
     caller = jobs.fetch("hyper_gems")
-    expect(caller).to eq("name" => "Hyper gems", "uses" => "./.github/workflows/hyper-gems.yml",
-                         "permissions" => { "contents" => "read" })
-    expect(jobs.fetch("hyper_windows").fetch("needs")).to eq("hyper_gems")
+    expect(caller).to eq("name" => "Hyper gems", "needs" => "scope",
+                         "if" => "contains(fromJSON(needs.scope.outputs.jobs), 'hyper_gems')",
+                         "uses" => "./.github/workflows/hyper-gems.yml", "permissions" => { "contents" => "read" })
+    expect(jobs.fetch("hyper_windows").fetch("needs")).to eq(%w[scope hyper_gems])
     expect(gems_workflow.fetch("on", gems_workflow[true]).keys).to eq(["workflow_call"])
     expect(gems_workflow.fetch("permissions")).to eq("contents" => "read")
     # Called workflows do not inherit the caller's env; the runtime guard needs these.
