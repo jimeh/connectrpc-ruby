@@ -173,6 +173,14 @@ RSpec.describe CIScope do
       expect(select(change(file, old_mode: "100644", new_mode: "100755", **version_bump(file).to_h
         .slice(:old_content, :new_content))).jobs).to include("rack")
     end
+
+    it "accepts only a numeric x.y.z VERSION literal, and never raises on unreadable contents" do
+      file = ReleaseTrain::VERSION_FILES.fetch("connectrpc-rack")
+      interpolated = change(file, old_content: "VERSION = \"0.3.0\"\n", new_content: "VERSION = \"0.3.\#{1}\"\n")
+      expect(select(interpolated).jobs).to include("rack")
+      invalid = change(file, old_content: "VERSION = \"0.3.0\"\n", new_content: "VERSION = \"0.3.1\"\n# \xFF\n")
+      expect(select(invalid).jobs).to include("rack")
+    end
   end
 
   describe CIScope::Graph do
@@ -203,6 +211,29 @@ RSpec.describe CIScope do
         File.write(File.join(temporary, "Gemfile"), "gemspec\n")
         File.write(File.join(temporary, "gems/connectrpc-demo/Gemfile"), "gem \"other\", path: \"../other\"\n")
         expect { described_class.load(temporary) }.to raise_error(RuntimeError, %r{gems/other is not a known package})
+      end
+    end
+
+    it "keeps the root package when a gems/connectrpc directory has a Gemfile" do
+      Dir.mktmpdir("connectrpc-ci-scope-graph-") do |temporary|
+        %w[gems/connectrpc gems/connectrpc-demo].each { |dir| FileUtils.mkdir_p(File.join(temporary, dir)) }
+        File.write(File.join(temporary, "Gemfile"), "gemspec\n")
+        File.write(File.join(temporary, "gems/connectrpc/Gemfile"), "gemspec\n")
+        File.write(File.join(temporary, "gems/connectrpc-demo/Gemfile"), "gem \"connectrpc\", path: \"../..\"\n")
+        loaded = described_class.load(temporary)
+        expect(loaded.directories).to eq("connectrpc" => temporary,
+                                         "connectrpc-demo" => File.join(temporary, "gems/connectrpc-demo"))
+        expect(CIScope.select([change("gems/connectrpc/Gemfile")], loaded).mode).to eq("full")
+      end
+    end
+
+    it "reads Gemfiles with bytes that are not valid UTF-8" do
+      Dir.mktmpdir("connectrpc-ci-scope-graph-") do |temporary|
+        FileUtils.mkdir_p(File.join(temporary, "gems/connectrpc-demo"))
+        File.write(File.join(temporary, "Gemfile"), "gemspec\n")
+        File.binwrite(File.join(temporary, "gems/connectrpc-demo/Gemfile"),
+                      "# \xFF\ngem \"connectrpc\", path: \"../..\"\n")
+        expect(described_class.load(temporary).edges.fetch("connectrpc-demo")).to eq([])
       end
     end
 
@@ -523,6 +554,20 @@ RSpec.describe CIScope do
         expect(rows.drop(1)).to eq(["| M | `` docs/a`b\\|c.md `` | docs: static |\n",
                                     "| M | `\"x\\n::set-output name=jobs::[]\"` | full: outside the scoped paths |\n"])
       end
+    end
+
+    it "stops workflow command processing around the printed selection inside Actions" do
+      selection = described_class.select([change("gems/connectrpc-rack/##[set-output name=jobs;][].rb")], graph)
+      printed = StringIO.new
+      described_class.write(selection, { "GITHUB_ACTIONS" => "true" }, printed)
+      lines = printed.string.lines(chomp: true)
+      token = lines.first[/\A::stop-commands::(\h{32})\z/, 1]
+      expect(token).not_to be_nil
+      expect(lines.last).to eq("::#{token}::")
+      expect(lines[1..-2].join("\n")).to include("##[set-output name=jobs;][].rb").and(exclude(token))
+      plain = StringIO.new
+      described_class.write(selection, {}, plain)
+      expect(plain.string).to start_with("CI scope: scoped")
     end
 
     it "previews a range from the real checkout and fails without an event" do

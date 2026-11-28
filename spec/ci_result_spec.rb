@@ -105,6 +105,17 @@ RSpec.describe CIResult do
       expect(evaluate(needs, retried)).to be_ok
     end
 
+    it "ignores records older than the newest CI scope attempt" do
+      # Attempt 1 ran in full and a floors leg failed; a full re-run scoped it out.
+      full = [{ "name" => "CI scope", "status" => "completed", "conclusion" => "success", "run_attempt" => 1 },
+              { "name" => "Lowest allowed falcon / Ruby 3.4.12", "status" => "completed", "conclusion" => "failure",
+                "run_attempt" => 1 }]
+      scoped = run_jobs.map { |job| job.merge("run_attempt" => 2) }
+      expect(evaluate(needs, [*full, *scoped])).to be_ok
+      expect(evaluate(needs, [*full, *scoped.reject { |job| job["name"] == "CI scope" }]).errors)
+        .to eq(["Lowest allowed falcon / Ruby 3.4.12: failure"])
+    end
+
     it "keeps only each job name's records from its newest attempt" do
       jobs = [{ "name" => "A", "run_attempt" => 1, "id" => 1 }, { "name" => "A", "run_attempt" => 3, "id" => 7 },
               { "name" => "A", "run_attempt" => 2, "id" => 9 }, { "name" => "B", "run_attempt" => 1, "id" => 2 },

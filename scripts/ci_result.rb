@@ -11,6 +11,7 @@ require_relative "ci_scope"
 # job's newest attempt completed.
 module CIResult # rubocop:disable Metrics/ModuleLength
   NAME = "CI result"
+  SCOPE_NAME = "CI scope"
   ACCEPTED_UNSELECTED = %w[skipped success].freeze
   ACCEPTED_CONCLUSIONS = %w[success skipped].freeze
 
@@ -86,11 +87,16 @@ module CIResult # rubocop:disable Metrics/ModuleLength
   end
 
   # Keeps every record of each job name's newest attempt. Distinct jobs that
-  # share a name in one attempt all stay.
+  # share a name in one attempt all stay. Records older than the newest CI
+  # scope attempt are dropped: re-running the scope re-runs or re-skips every
+  # gated job, so a leg the new selection left out no longer counts.
   def latest_attempts(jobs)
-    newest = jobs.group_by { |job| job["name"] }.transform_values { |records| records.map { |job| attempt(job) }.max }
-    jobs.select { |job| attempt(job) == newest.fetch(job["name"]) }
+    current = jobs.select { |job| attempt(job) >= scope_attempt(jobs) }
+    newest = current.group_by { |job| job["name"] }.transform_values { |records| records.map { attempt(it) }.max }
+    current.select { |job| attempt(job) == newest.fetch(job["name"]) }
   end
+
+  def scope_attempt(jobs) = jobs.select { |job| job["name"] == SCOPE_NAME }.map { |job| attempt(job) }.max.to_i
 
   def attempt(job) = job["run_attempt"].to_i
 

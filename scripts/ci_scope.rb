@@ -2,6 +2,7 @@
 
 require "json"
 require "open3"
+require "securerandom"
 require_relative "release_train"
 
 # Selects the ci.yml jobs a change can affect. The pure part (CIScope.select,
@@ -63,7 +64,7 @@ module CIScope # rubocop:disable Metrics/ModuleLength
   # core and Rails package checks, rbs:package and the hyper candidate cover it.
   RELEASE_JOBS = %w[static package rails rbs hyper_gems].freeze
   RELEASE_FILES = ["CHANGELOG.md", ".github/.release-please-manifest.json", *ReleaseTrain::VERSION_FILES.values].freeze
-  VERSION_LITERAL = /^(\s*VERSION = )"[^"\n]*"/
+  VERSION_LITERAL = /^(\s*VERSION = )"\d+\.\d+\.\d+"/
   # ReleaseTrain requires this file, and Static, Package, Rails and every
   # package check load ReleaseTrain.
   FULL_GEM_FILES = %w[gems/connectrpc-hyper/scripts/platforms.rb].freeze
@@ -158,7 +159,7 @@ module CIScope # rubocop:disable Metrics/ModuleLength
 
   def version_literal_only?(change)
     contents = [change.old_content, change.new_content]
-    return false unless contents.all? { |content| content&.scan(VERSION_LITERAL)&.size == 1 }
+    return false unless contents.all? { |content| content&.valid_encoding? && content.scan(VERSION_LITERAL).size == 1 }
 
     contents.map { |content| content.sub(VERSION_LITERAL, '\1"*"') }.uniq.size == 1
   end
@@ -230,14 +231,19 @@ module CIScope # rubocop:disable Metrics/ModuleLength
 
     def self.load(root = ROOT)
       root = File.expand_path(root)
-      packages = Dir[File.join(root, "gems/*/Gemfile")].map { |file| File.basename(File.dirname(file)) }.sort
+      # gems/connectrpc is not a package: its name would replace the root's node.
+      packages = Dir[File.join(root, "gems/*/Gemfile")].map { |file| File.basename(File.dirname(file)) }
+                                                       .reject { |name| name == ROOT_PACKAGE }.sort
       directories = { ROOT_PACKAGE => root, **packages.to_h { |name| [name, File.join(root, "gems", name)] } }
       new(directories)
     end
 
     # Absolute directories each path: option names, relative to the file.
     def self.path_sources(file)
-      File.read(file).scan(PATH_OPTION).map { |_quote, path| File.expand_path(path, File.dirname(file)) }.uniq
+      # Bytes, so a Gemfile that is not valid UTF-8 still parses.
+      File.binread(file).scan(PATH_OPTION).map do |_quote, path|
+        File.expand_path(path.force_encoding(Encoding::UTF_8), File.dirname(file))
+      end.uniq
     end
 
     def self.gemfiles(directory)
@@ -427,8 +433,13 @@ module CIScope # rubocop:disable Metrics/ModuleLength
     MARKDOWN
   end
 
+  # Inside Actions, workflow command processing stops around the printed
+  # selection, so no changed path can issue a command in either syntax.
   def write(selection, env, out)
+    token = SecureRandom.hex(16) if env["GITHUB_ACTIONS"] == "true"
+    out.puts "::stop-commands::#{token}" if token
     out.puts text(selection)
+    out.puts "::#{token}::" if token
     append(env["GITHUB_OUTPUT"], "jobs=#{JSON.generate(selection.jobs)}", "floors=#{JSON.generate(selection.floors)}")
     append(env["GITHUB_STEP_SUMMARY"], summary(selection))
   end
