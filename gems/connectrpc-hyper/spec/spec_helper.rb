@@ -39,3 +39,5 @@ RSpec.configure do |config|
   Kernel.srand config.seed
   config.after(:suite) { Peer.instance&.close }
 end
+
+# Throwaway: hyper-only CI scope evidence.
