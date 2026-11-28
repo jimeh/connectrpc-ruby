@@ -72,8 +72,9 @@ job needs `scope` and has `if: contains(fromJSON(needs.scope.outputs.jobs),
 '<job id>')`; the lowest-allowed matrix expands from `floors`, and its `if`
 skips the job before an empty list reaches the matrix. Static is always
 selected. The job summary lists each changed file with the jobs it selects;
-a path with control characters or invalid UTF-8 prints escaped and quoted, so
-it cannot inject a workflow command or break the table.
+a path with control characters or invalid UTF-8 prints escaped and quoted so
+it cannot break the table, and inside Actions the printed selection sits
+between `::stop-commands::` markers, so no path can issue a workflow command.
 
 The changed files come from the event:
 
@@ -123,7 +124,7 @@ leaf runs that leaf.
 
 A release PR that bumps at least one version file and changes only
 `CHANGELOG.md`, `.github/.release-please-manifest.json` and version files,
-where each version file changes only its `VERSION` literal, runs Static,
+where each version file changes only its numeric `VERSION = "x.y.z"` literal, runs Static,
 Package, Rails, RBS and Hyper gems. Those cover the train agreement (`release:check`), the core and
 Rails package checks, `rbs:package` (all twelve archives offline) and the hyper
 archive builds and release candidate. Any other file in the diff classifies
@@ -144,7 +145,9 @@ jobs from every attempt through the REST API (`actions: read`) and fails if
 the newest attempt of any job other than itself ended other than success or
 skipped. A job can appear under several attempts (a re-run of failed jobs
 also lists the jobs it did not repeat under its new attempt), and only each
-job's newest attempt counts. It re-reads that
+job's newest attempt counts. Records older than the newest `CI scope` attempt
+are ignored, because re-running the scope re-runs or re-skips every gated job.
+It re-reads that
 list for up to 60 seconds while jobs are still pending, then fails with the
 last observed state. The table it prints, also in the job summary, shows each
 job's selection, result and verdict.
