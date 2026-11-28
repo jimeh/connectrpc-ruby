@@ -240,8 +240,11 @@ module CIScope # rubocop:disable Metrics/ModuleLength
 
     # Absolute directories each path: option names, relative to the file.
     def self.path_sources(file)
-      # Bytes, so a Gemfile that is not valid UTF-8 still parses.
-      File.binread(file).scan(PATH_OPTION).map do |_quote, path|
+      # UTF-8 text keeps Unicode word boundaries; only a Gemfile that is not
+      # valid UTF-8 is scanned as bytes.
+      content = File.binread(file).force_encoding(Encoding::UTF_8)
+      content = content.b unless content.valid_encoding?
+      content.scan(PATH_OPTION).map do |_quote, path|
         File.expand_path(path.force_encoding(Encoding::UTF_8), File.dirname(file))
       end.uniq
     end

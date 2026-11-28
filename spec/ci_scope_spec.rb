@@ -237,6 +237,15 @@ RSpec.describe CIScope do
       end
     end
 
+    it "keeps Unicode word boundaries when a Gemfile is valid UTF-8" do
+      Dir.mktmpdir("connectrpc-ci-scope-graph-") do |temporary|
+        FileUtils.mkdir_p(File.join(temporary, "gems/connectrpc-demo"))
+        File.write(File.join(temporary, "Gemfile"), "gemspec\n")
+        File.write(File.join(temporary, "gems/connectrpc-demo/Gemfile"), "# 実際のpath: \"../unused\"\ngemspec\n")
+        expect(described_class.load(temporary).edges.fetch("connectrpc-demo")).to eq([])
+      end
+    end
+
     it "keeps every cross-gem path reference in a gem's files inside its path dependency closure" do
       graph.directories.except("connectrpc").each do |name, directory|
         files, _error, status = Open3.capture3("git", "ls-files", "-z", chdir: directory)
@@ -572,14 +581,17 @@ RSpec.describe CIScope do
 
     it "previews a range from the real checkout and fails without an event" do
       script = File.join(root, "scripts/ci_scope.rb")
+      # A hosted Specs job sets these; the child must not write to that job.
+      runner = { "GITHUB_ACTIONS" => nil, "GITHUB_OUTPUT" => nil, "GITHUB_STEP_SUMMARY" => nil }
       Dir.mktmpdir("connectrpc-ci-scope-cli-") do |directory|
         output = File.join(directory, "output")
-        printed, error, status = Open3.capture3({ "GITHUB_OUTPUT" => output }, RbConfig.ruby, script, "HEAD", "HEAD")
+        printed, error, status = Open3.capture3(runner.merge("GITHUB_OUTPUT" => output), RbConfig.ruby, script,
+                                                "HEAD", "HEAD")
         expect(status.success?).to be(true), error
         expect(printed).to start_with("CI scope: full (the diff is empty)")
         expect(JSON.parse(File.read(output)[/^jobs=(.*)$/, 1])).to eq(described_class::JOBS.keys)
       end
-      _printed, error, status = Open3.capture3({ "CI_SCOPE_EVENT" => nil }, RbConfig.ruby, script)
+      _printed, error, status = Open3.capture3(runner.merge("CI_SCOPE_EVENT" => nil), RbConfig.ruby, script)
       expect(status.success?).to be(false)
       expect(error).to include("CI_SCOPE_EVENT")
     end
