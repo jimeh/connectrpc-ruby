@@ -4,10 +4,7 @@ require "stringio"
 require "tmpdir"
 require_relative "../scripts/canary_driver"
 
-RSpec.describe DependencyCanary do
-  def requirement(*parts) = Gem::Requirement.new(*parts)
-  def version(text) = Gem::Version.new(text)
-
+RSpec.shared_context "canary environment" do
   def with_environment(values)
     previous = values.keys.to_h { |key| [key, ENV.fetch(key, nil)] }
     values.each { |key, value| ENV[key] = value }
@@ -15,6 +12,13 @@ RSpec.describe DependencyCanary do
   ensure
     previous.each { |key, value| ENV[key] = value }
   end
+end
+
+RSpec.describe DependencyCanary do
+  def requirement(*parts) = Gem::Requirement.new(*parts)
+  def version(text) = Gem::Version.new(text)
+
+  include_context "canary environment"
 
   def canary(&) = with_environment(described_class::ENVIRONMENT => "1", DependencyFloors::ENVIRONMENT => nil, &)
 
@@ -176,6 +180,8 @@ RSpec.describe DependencyCanary do
 end
 
 RSpec.describe CanaryDriver do
+  include_context "canary environment"
+
   describe ".classify" do
     def outcome(output, exit_status: 1, timed_out: false)
       described_class::Bounded::Outcome.new(output, exit_status, timed_out)
@@ -383,11 +389,19 @@ RSpec.describe CanaryDriver do
       expect(markdown).to include("| report | passed |  |", "| contract | contract guard failure | async-http 0.106.0:",
                                   "<br>async 2.47.0:", "| suite | timeout (hang) | a \\| b |")
       result = nil
-      expect { result = described_class.summary("connectrpc-async", phases) }
-        .to output(/contract: contract guard failure\n    async-http 0.106.0/).to_stdout
-      expect(result).to be(false)
-      expect { result = described_class.summary("connectrpc-async", phases.first(1)) }.to output.to_stdout
-      expect(result).to be(true)
+      # A private summary file keeps these fixture tables out of a hosted job's real summary.
+      Dir.mktmpdir("connectrpc-canary-summary-") do |directory|
+        path = File.join(directory, "summary.md")
+        with_environment("GITHUB_STEP_SUMMARY" => path) do
+          expect { result = described_class.summary("connectrpc-async", phases) }
+            .to output(/contract: contract guard failure\n    async-http 0.106.0/).to_stdout
+          expect(result).to be(false)
+          expect { result = described_class.summary("connectrpc-async", phases.first(1)) }.to output.to_stdout
+          expect(result).to be(true)
+        end
+        passed = described_class.summary_markdown("connectrpc-async", phases.first(1))
+        expect(File.read(path)).to eq("#{markdown}\n#{passed}\n")
+      end
     end
   end
 
